@@ -1711,19 +1711,30 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _fetch_failed_items(self, ids: list[str], source: GoogleDriveDataSource) -> list[dict]:
         """The items a listing failed on, fetched again by id as the same user. One that is gone or out of their
-        reach is dropped, since their change feed reports that; one that fails again is kept to retry."""
+        reach is dropped, since their change feed reports that; one in the trash is deleted if it was ever written,
+        and never written now; one that fails again is kept to retry."""
         found: list[dict] = []
         for file_id in ids:
             try:
-                found.append(await source.files_get(
+                metadata = await source.files_get(
                     fileId=file_id, supportsAllDrives=True, fields=DRIVE_WORKSPACE_FILE_GET_FIELDS
-                ))
+                )
             except HttpError as e:
                 if e.resp.status == HttpStatusCode.NOT_FOUND.value:
                     continue
+                reasons = ", ".join(sorted(drive_error_reasons(e))) or "no reason given"
+                self.logger.warning(
+                    f"Reading a failed item again by id failed (HTTP {e.resp.status}: {reasons}); it is read again "
+                    "next run"
+                )
                 self._sync_ledger.fail_item()
                 if (failed := _failed_items.get()) is not None:
                     failed.add(file_id)
+                continue
+            if metadata.get("trashed"):
+                await self._delete_gone_item(file_id)
+                continue
+            found.append(metadata)
         return found
 
     def _too_many_failed(self, failed: set[str]) -> bool:
@@ -1760,10 +1771,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
             )
             if reseed:
-                # Cost: one shared-with-me listing per synced user, on a change of the limits, which is rare.
+                # Cost: one shared-with-me listing per synced user, on a change of the limits, which is rare. Ids
+                # left to retry are dropped: only a whole listing answers for a change of the limits.
                 await self.drive_delta_sync_point.update_sync_point(
                     generate_record_sync_point_key(RecordType.DRIVE.value, "users", user.source_user_id),
-                    {RESEED_SHARED_WITH_ME: True},
+                    {RESEED_SHARED_WITH_ME: True, FAILED_ITEMS: []},
                 )
 
     @staticmethod

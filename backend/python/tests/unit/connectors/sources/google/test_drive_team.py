@@ -543,7 +543,7 @@ class TestFetchPermissions:
         deleted = [c.args[0].split("/", 1)[1] for c in connector.drive_delta_sync_point.delete_sync_point.await_args_list]
         assert deleted == ["drives/u1_sd-1"]
         writes = [(c.args[0].split("/", 1)[-1], c.args[1]) for c in connector.drive_delta_sync_point.update_sync_point.await_args_list]
-        assert writes == [("users/u1", {"reseed_shared_with_me": True}), ("shared_drive_restrictions_sd-1", {"assumed": True})]
+        assert writes == [("users/u1", {"reseed_shared_with_me": True, "failed_items": []}), ("shared_drive_restrictions_sd-1", {"assumed": True})]
 
     async def test_a_drive_still_answering_without_restrictions_is_not_read_again(self, connector) -> None:
         connector.drive_delta_sync_point.read_sync_point = AsyncMock(
@@ -576,7 +576,7 @@ class TestFetchPermissions:
         assert [k.split("/", 1)[1] for k in deleted] == ["drives/u1_sd-1"]
         writes = {c.args[0].split("/", 1)[-1]: c.args[1] for c in connector.drive_delta_sync_point.update_sync_point.await_args_list}
         assert writes == {
-            "users/u1": {"reseed_shared_with_me": True},
+            "users/u1": {"reseed_shared_with_me": True, "failed_items": []},
             "shared_drive_restrictions_sd-1": {
                 "driveMembersOnly": False, "domainUsersOnly": False, "hidden_groups": [], "group_hashes": [], "assumed": False,
             },

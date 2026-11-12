@@ -2357,6 +2357,82 @@ async def test_an_item_that_fails_while_a_drive_is_read_under_assumed_limits_is_
     assert f1_people(ws) == MEMBERS
 
 
+async def g1_left_to_retry(ws: Workspace) -> None:
+    """sd-2 (no synced member) holds g1, which Bob writes and whose read keeps failing, and g2, which Bob reads.
+    After the runs a failure holds Bob's checkpoint for, g1 is left on it to read again by id."""
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"})
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[BOB_WRITES])
+    ws.world.add_item("g2", "notes.txt", parent="sd-2", perms=[bob_as("reader")])
+    ws.http.fail("GET", "/drive/v3/files/g1/permissions", 500, "backendError")
+    for _ in range(MAX_HELD_RUNS):
+        await ws.sync()
+    assert bob_checkpoint(ws)["failed_items"] == ["g1"]
+
+
+def g2_people(ws: Workspace) -> set[str]:
+    return {who for who, _, _ in ws.grants("g2")}
+
+
+async def test_a_retry_list_left_from_an_earlier_read_never_stands_in_for_a_full_shared_read(ws: Workspace) -> None:
+    await g1_left_to_retry(ws)
+    assert BOB in g2_people(ws)
+
+    # g2 does not change; only the drive's limit does. Reading g1 alone again would leave Bob on g2.
+    ws.world.drives["sd-2"]["restrictions"] = MEMBERS_ONLY
+    await restart(ws)
+    await ws.sync()
+    assert BOB not in g2_people(ws)
+    assert bob_checkpoint(ws)["reseed_shared_with_me"] is True  # g1 still fails
+
+    ws.http.clear_faults()
+    await restart(ws)
+    await ws.sync()
+    assert BOB not in g2_people(ws) and BOB not in g1_people(ws)
+    assert bob_checkpoint(ws)["reseed_shared_with_me"] is False
+
+
+async def test_a_drive_retry_list_never_stands_in_for_the_full_read_a_limit_change_asks_for(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    restricted_drive(ws)
+    ws.world.add_item("f2", "notes.txt", parent="sd-1", perms=[reader(PARTNER)])
+    ws.http.fail("GET", "/drive/v3/files/f1/permissions", 500, "backendError")
+    for _ in range(MAX_HELD_RUNS):
+        await ws.sync()
+    assert ws.sync_points.value(f"/drives/{ws.world.users[ALICE].user_id}_sd-1")["failed_items"] == ["f1"]
+    assert PARTNER in {who for who, _, _ in ws.grants("f2")}
+
+    ws.world.drives["sd-1"]["restrictions"] = MEMBERS_ONLY  # f2 does not change
+    await restart(ws)
+    await ws.sync()
+    assert PARTNER not in {who for who, _, _ in ws.grants("f2")}
+
+
+async def test_a_failed_item_trashed_before_it_could_be_read_again_is_not_written(ws: Workspace) -> None:
+    await g1_left_to_retry(ws)
+    assert "memo.txt" not in ws.names()  # never written: its read failed every time
+
+    ws.world.trash("g1")
+    ws.http.clear_faults()
+    await ws.sync()
+    assert "memo.txt" not in ws.names()
+    assert bob_checkpoint(ws)["failed_items"] == []
+
+
+async def test_a_failed_retry_is_logged_with_its_status_and_reason_but_no_id(
+    ws: Workspace, caplog: pytest.LogCaptureFixture
+) -> None:
+    await g1_left_to_retry(ws)
+    ws.http.fail("GET", "/drive/v3/files/g1", 403, "insufficientFilePermissions")
+    caplog.clear()
+    await ws.sync()
+    retried = [r.getMessage() for r in caplog.records if "read again" in r.getMessage() and "403" in r.getMessage()]
+    assert retried and "insufficientFilePermissions" in retried[0]
+    assert "g1" not in retried[0] and BOB not in retried[0]
+
+
 async def test_an_unreadable_answer_for_a_new_drive_shares_nothing(ws: Workspace) -> None:
     restricted_drive(ws)
     ws.world.restrictions_unlisted = ws.world.restrictions_unreadable = True
