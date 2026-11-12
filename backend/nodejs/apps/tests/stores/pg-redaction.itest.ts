@@ -1,8 +1,9 @@
 /**
- * The per-viewer redaction of shared chats and saved searches, on PostgreSQL: a viewer gets a placeholder for each
- * citation, attachment and saved record they cannot read, on a conversation read, the archive list, the search history and
- * a search by id. The controllers run for real over the PostgreSQL conversation and semantic-search stores; only the query
- * service's access check (the AI-service command) and the project lookup are stubbed.
+ * Hiding what a reader cannot read, on PostgreSQL. An answer that used a record its reader cannot read is replaced
+ * whole by a marker, for the owner and a shared viewer alike; another user's question loses the attachments the viewer
+ * cannot read; a saved search loses the hits and records its reader cannot read. Covered on a conversation read, the
+ * archive list, the search history and a search by id. The controllers run for real over the PostgreSQL conversation and
+ * semantic-search stores; only the query service's access check (the AI-service command) and the project lookup are stubbed.
  *
  *   PG_TEST_BINS=… PG_TEST_PGBOUNCER=… PG_TEST_MIGRATE_PYTHON=… npm run test:pg-stores
  */
@@ -53,12 +54,15 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     after(async () => {
       await stack?.stop();
     });
+    const stubProjects = () => {
+      sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
+      sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false);
+    };
     beforeEach(() => {
       setConversationRepository(conversations);
       setSemanticSearchRepository(searches);
       setUserRepository({ listNamesByIds: () => Promise.resolve([]) } as never);
-      sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
-      sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false);
+      stubProjects();
     });
     afterEach(() => {
       sinon.restore();
@@ -69,6 +73,8 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
 
     /** The access route names `readable`; every other call of the command is the unrelated permission sync. */
     const stubAccess = (readable: string[]): string[][] => {
+      sinon.restore();
+      stubProjects();
       const asked: string[][] = [];
       sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (
         this: { uri: string; body?: string },
@@ -119,7 +125,14 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
             status: 'Complete',
             sessionType: 'chat',
           } as never,
-          { messageType: 'user_query', content: 'question' },
+          {
+            messageType: 'user_query',
+            content: 'question',
+            attachments: [
+              { recordId: 'att-ok', recordName: 'ok.pdf' },
+              { recordId: 'att-no', recordName: 'hidden-name.pdf' },
+            ],
+          },
         );
         await conversations.appendMessages(s._id, org, [
           {
@@ -177,68 +190,91 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       return { body, failure };
     };
 
-    const hidden = { redacted: true, reason: 'no_access' };
-
-    it('a conversation read hides the citations and attachments the viewer cannot read, and the owner sees all', async () => {
-      const w = await world();
-      stubAccess(['rec-ok', 'att-ok']);
-      const asViewer = await run(w.org, w.viewer, getConversationById(appConfig) as never, {
+    const ALL = ['rec-ok', 'rec-no', 'att-ok', 'att-no'];
+    const lost = { redacted: true, reason: 'no_longer_accessible' };
+    const unconfirmed = { redacted: true, reason: 'access_check_unavailable' };
+    const readConversation = (w: Awaited<ReturnType<typeof world>>, as: string) =>
+      run(w.org, as, getConversationById(appConfig) as never, {
         params: { conversationId: w.session._id },
       });
+    /** The answer keeps its marker and nothing it said or used. */
+    const expectHidden = (answer: any, marker: object) => {
+      expect(answer.answerHidden).to.deep.equal(marker);
+      for (const k of ['citations', 'attachments', 'referenceData', 'followUpQuestions', 'reasoning', 'tools', 'parts'])
+        expect(answer[k] ?? [], k).to.deep.equal([]);
+      const wire = JSON.stringify(answer);
+      for (const leaked of [SECRET, 'hidden-name', 'The answer', 'readable', 'rec-no', 'att-no'])
+        expect(wire).to.not.contain(leaked);
+    };
+
+    it('a conversation read hides an answer that used a record its reader cannot read, for the owner too, and drops the viewer’s unreadable attachments', async () => {
+      const w = await world();
+      const asked = stubAccess(['rec-ok', 'att-ok']);
+      const asViewer = await readConversation(w, w.viewer);
       expect(asViewer.failure).to.equal(undefined);
-      const [, answer] = asViewer.body.conversation.messages;
-      expect(answer.citations[0].citationData.content).to.equal('readable text');
-      expect(answer.citations[1]).to.deep.equal(hidden);
-      expect(answer.attachments).to.deep.equal([{ recordId: 'att-ok', recordName: 'ok.pdf' }]);
+      const [question, answer] = asViewer.body.conversation.messages;
+      expect(question.content).to.equal('question');
+      expect(question.attachments).to.deep.equal([{ recordId: 'att-ok', recordName: 'ok.pdf' }]);
+      expectHidden(answer, lost);
+      expect(asked.flat()).to.include.members(['rec-no', 'att-no']);
       expect(JSON.stringify(asViewer.body)).to.not.contain(SECRET);
       expect(JSON.stringify(asViewer.body)).to.not.contain('hidden-name');
 
-      sinon.restore();
-      sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
-      sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false);
-      const asked = stubAccess([]);
-      const asOwner = await run(w.org, w.owner, getConversationById(appConfig) as never, {
-        params: { conversationId: w.session._id },
-      });
-      const ownerAnswer = asOwner.body.conversation.messages[1];
-      expect(ownerAnswer.citations[1].citationData.content).to.equal(SECRET);
-      expect(ownerAnswer.attachments).to.have.length(2);
-      expect(asked, 'no access check for the owner').to.have.length(0);
+      stubAccess(['rec-ok', 'att-ok']);
+      expectHidden((await readConversation(w, w.owner)).body.conversation.messages[1], lost);
+
+      for (const reader of [w.viewer, w.owner]) {
+        stubAccess(ALL);
+        const whole = (await readConversation(w, reader)).body.conversation.messages;
+        expect(whole[0].attachments, reader).to.have.length(2);
+        expect(whole[1].answerHidden, reader).to.equal(undefined);
+        expect(whole[1].content).to.equal('The answer [1][2]');
+        expect(whole[1].citations.map((c: any) => c.citationData.content)).to.deep.equal(['readable text', SECRET]);
+        expect(whole[1].attachments).to.have.length(2);
+      }
     });
 
-    it('a failed access check hides every record reference', async () => {
+    it('a failed access check hides the answer as unconfirmed and every attachment of another user', async () => {
       const w = await world();
       sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: { uri: string }) {
         return this.uri.endsWith('/chat/records/access')
           ? Promise.reject(new Error('access service down'))
           : Promise.resolve({ statusCode: 200, data: {}, msg: '' } as never);
       });
-      const r = await run(w.org, w.viewer, getConversationById(appConfig) as never, {
-        params: { conversationId: w.session._id },
-      });
-      const answer = r.body.conversation.messages[1];
-      expect(answer.citations).to.deep.equal([hidden, hidden]);
-      expect(answer.attachments).to.deep.equal([]);
+      const r = await readConversation(w, w.viewer);
+      expect(r.failure).to.equal(undefined);
+      const [question, answer] = r.body.conversation.messages;
+      expect(question.attachments).to.deep.equal([]);
+      expectHidden(answer, unconfirmed);
       expect(JSON.stringify(r.body)).to.not.contain(SECRET);
+      expect(JSON.stringify(r.body)).to.not.contain('hidden-name');
     });
 
-    it('the archive list redacts the messages of another user’s archived chat, citations stored as bare ids included', async () => {
+    it('the archive list hides the answer of another user’s archived chat, citations stored as bare ids included', async () => {
       const w = await world();
       await inOrg(
         w.org,
         () => conversations.setArchived({ kind: 'chat' }, w.session._id, { by: w.owner }),
         w.owner,
       );
-      stubAccess(['rec-ok']);
-      const r = await run(w.org, w.viewer, listAllArchivesConversation(appConfig) as never);
-      expect(r.failure).to.equal(undefined);
-      const mine = r.body.conversations.find((c: any) => c._id === w.session._id);
-      expect(mine, 'the shared archived chat is listed').to.not.equal(undefined);
-      const answer = mine.messages.find((m: any) => m.messageType === 'bot_response');
-      expect(answer.citations[0].excerpt).to.equal('readable excerpt');
-      expect(answer.citations[1]).to.deep.equal(hidden);
-      expect(answer.attachments).to.deep.equal([]);
-      expect(JSON.stringify(r.body)).to.not.contain(SECRET);
+      const listArchived = async () => {
+        const r = await run(w.org, w.viewer, listAllArchivesConversation(appConfig) as never);
+        expect(r.failure).to.equal(undefined);
+        const mine = r.body.conversations.find((c: any) => c._id === w.session._id);
+        expect(mine, 'the shared archived chat is listed').to.not.equal(undefined);
+        return { body: r.body, answer: mine.messages.find((m: any) => m.messageType === 'bot_response') };
+      };
+      const asked = stubAccess(['rec-ok']);
+      const denied = await listArchived();
+      // `no_longer_accessible`, not `access_check_unavailable`: each bare id was resolved to its record in PostgreSQL.
+      expectHidden(denied.answer, lost);
+      expect(asked.flat()).to.include.members(['rec-ok', 'rec-no']);
+      expect(JSON.stringify(denied.body)).to.not.contain(SECRET);
+
+      stubAccess(ALL);
+      const whole = await listArchived();
+      expect(whole.answer.answerHidden).to.equal(undefined);
+      expect(whole.answer.citations.map((c: any) => c.excerpt)).to.deep.equal(['readable excerpt', SECRET]);
     });
 
     const savedSearch = async (w: Awaited<ReturnType<typeof world>>) =>
@@ -284,7 +320,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(JSON.stringify(r.body)).to.not.contain(SECRET);
     });
 
-    it('a search by id hides them too, and the owner’s own search is returned whole without an access check', async () => {
+    it('a search by id hides them too, and the owner’s own search hides only a record the owner lost', async () => {
       const w = await world();
       const s = await savedSearch(w);
       stubAccess(['rec-ok']);
@@ -295,15 +331,18 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(JSON.stringify(viewer.body)).to.not.contain(SECRET);
       expect(JSON.stringify(viewer.body)).to.contain('rec-ok');
 
-      sinon.restore();
-      sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
-      sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false);
-      const asked = stubAccess([]);
-      const owner = await run(w.org, w.owner, getSearchById(appConfig) as never, {
-        params: { searchId: s._id },
-      });
-      expect(JSON.stringify(owner.body)).to.contain(SECRET);
-      expect(asked).to.have.length(0);
+      const asOwner = async () =>
+        JSON.stringify(
+          (await run(w.org, w.owner, getSearchById(appConfig) as never, { params: { searchId: s._id } })).body,
+        );
+      stubAccess(['rec-ok', 'rec-no']);
+      expect(await asOwner()).to.contain(SECRET);
+
+      stubAccess(['rec-ok']);
+      const lostOne = await asOwner();
+      expect(lostOne).to.not.contain(SECRET);
+      expect(lostOne).to.contain('rec-ok');
+      expect(lostOne).to.contain('"reason":"no_longer_accessible"');
     });
   });
 }
