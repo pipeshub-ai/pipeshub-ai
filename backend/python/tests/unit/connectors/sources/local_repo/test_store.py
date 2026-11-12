@@ -237,7 +237,7 @@ def test_a_replacement_or_deletion_changes_the_committed_tree_only_at_the_commit
     assert (repo.tree / "a.py").read_text() == "v = 2\n" and not (repo.tree / "b.py").exists()
 
 
-def _fail_link_on(monkeypatch, name):
+def _fail_link_on(monkeypatch, name):  # noqa: ANN202
     """Make linking of the file called ``name`` into a new generation fail, once the others have been linked."""
     real, real_copy = os.link, store.shutil.copy2
 
