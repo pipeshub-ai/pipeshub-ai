@@ -402,8 +402,14 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
                 NET.inc("verify", "restarted")                  # rows of the connector were rewritten since the scan began: a key it had passed may be one of them
                 st.cursor = None
             if st.cursor is None:
-                st.cursor, st.since = Cursor(), st.since or time.monotonic()
-                st.mark = await _begin(db, org, app)
+                st.since = st.since or time.monotonic()
+                try:
+                    mark = await _begin(db, org, app)
+                except Exception:                                # the lock is held longer than this unit may wait (a projection unit holds it up to its statement timeout): no scan state survives
+                    NET.inc("verify", "busy")
+                    st.cursor, st.due = None, time.monotonic() + SKIP_RETRY_S
+                    break
+                st.cursor, st.mark = Cursor(), mark
             try:
                 found = await _chunk(db, org, app, st.cursor)
             except Exception:

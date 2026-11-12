@@ -783,3 +783,25 @@ async def test_a_scan_begins_only_after_a_unit_that_has_counted_has_committed(pg
         await scan
     assert waiting
     assert states[(org, "drv")].mark == net.locks.written(org, "drv")           # taken once the unit had committed
+
+
+async def test_a_scan_that_cannot_get_the_lock_in_time_leaves_no_state_and_tries_again_later(pg_db, no_jitter) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org, extra=10)
+    states: dict = {}
+    held, release = asyncio.Event(), asyncio.Event()
+
+    async def unit(tx) -> None:
+        await net.locks.lock_apps(tx, org, {"drv"}, org_wide=False)
+        held.set()
+        await release.wait()
+    with ctx(org):
+        writer = asyncio.create_task(pg_db.run(unit, write=True))
+        try:
+            await held.wait()
+            await net.verify_due(pg_db, org, states)                                   # waits for the lock for as long as a unit may (the connectors service: 5 s), then gives up
+            st = states[(org, "drv")]
+            assert st.cursor is None and st.due > time.monotonic()                      # no scan state survives: it starts again at its next turn
+        finally:
+            release.set()
+            await writer
