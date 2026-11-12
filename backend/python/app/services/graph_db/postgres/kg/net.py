@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import bind, spawn_detached
 from app.services.graph_db.postgres import access as access_sql
-from app.services.graph_db.postgres.kg import backfill, bootstrap, drainer
+from app.services.graph_db.postgres.kg import backfill, bootstrap, drainer, locks
 from app.services.graph_db.postgres.kg.verify import (
     Cursor,
     verify_chunk,
@@ -329,6 +329,7 @@ class VerifyState:
     cursor: Cursor | None = None
     since: float | None = None
     flagged: bool = False
+    mark: int = 0                  # what the projection had written for the connector when the scan began (locks.written)
 
 
 async def _chunk(db: KernelDB, org: str, app: str, cur: Cursor) -> str:
@@ -388,8 +389,11 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
         st = states[(org, app)]
         deadline = time.monotonic() + VERIFY_BUDGET_S
         while True:
+            if st.cursor is not None and locks.written(org, app) != st.mark:
+                NET.inc("verify", "restarted")                  # rows of the connector were rewritten since the scan began: a key it had passed may be one of them
+                st.cursor = None
             if st.cursor is None:
-                st.cursor, st.since = Cursor(), st.since or time.monotonic()
+                st.cursor, st.since, st.mark = Cursor(), st.since or time.monotonic(), locks.written(org, app)
             try:
                 found = await _chunk(db, org, app, st.cursor)
             except Exception:
@@ -405,6 +409,10 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
                 if (stop is not None and stop.is_set()) or time.monotonic() >= deadline:
                     break                                      # a page was done; the next pass goes on from the cursor
                 continue
+            if found == "done" and locks.written(org, app) != st.mark:
+                NET.inc("verify", "restarted")                  # rewritten during the last page: not a complete verify
+                st.cursor = None
+                break
             ok = st.cursor.res.ok
             try:
                 ok = ok and found == "done" and await _principals(db, org)

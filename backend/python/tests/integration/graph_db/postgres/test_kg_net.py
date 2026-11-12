@@ -710,3 +710,29 @@ async def test_a_request_that_failed_is_asked_again_at_the_next_detection_not_a_
     assert await _marks(org) == 0
     await net._ask(Flaky(), org, "drv")                                         # the next detection, at once
     assert await _marks(org) == 1
+
+
+async def test_a_change_drained_between_two_pages_restarts_the_scan_so_the_rewritten_key_is_verified(pg_db, no_jitter, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org, extra=10)
+    monkeypatch.setattr(verify_mod, "PAGE", 2)
+    monkeypatch.setattr(net, "VERIFY_BUDGET_S", 0.0)
+    states: dict = {}
+    await net.verify_due(pg_db, org, states)
+    await net.verify_due(pg_db, org, states)
+    assert states[(org, "drv")].cursor.pages == 2                              # two pages in
+    monkeypatch.setenv("PG_KG_FLUSH", "async")
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "r1", "recordName": "rewritten after its page was checked"}], "records")
+    await drainer.drain_org(pg_db, org)                                        # the drain rewrites the key and deletes its log row: the connector is served again
+    await net.verify_due(pg_db, org, states)
+    cur = states[(org, "drv")].cursor
+    assert cur is not None and cur.pages == 1 and cur.after is not None and cur.after[1] != ""      # a new scan, from the first page
+    seen: list[int] = []
+    for _ in range(40):
+        await net.verify_due(pg_db, org, states)
+        c = states[(org, "drv")].cursor
+        if c is None:
+            break
+        seen.append(c.pages)
+    assert states[(org, "drv")].cursor is None and await _mode(p, org) == "enforce"      # and it completes clean when nothing moves meanwhile
