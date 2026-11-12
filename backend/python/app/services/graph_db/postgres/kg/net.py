@@ -409,13 +409,13 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
                 if (stop is not None and stop.is_set()) or time.monotonic() >= deadline:
                     break                                      # a page was done; the next pass goes on from the cursor
                 continue
-            if found == "done" and locks.written(org, app) != st.mark:
-                NET.inc("verify", "restarted")                  # rewritten during the last page: not a complete verify
-                st.cursor = None
-                break
             ok = st.cursor.res.ok
             try:
                 ok = ok and found == "done" and await _principals(db, org)
+                if found == "done" and locks.written(org, app) != st.mark:      # the last look, after the last step: a rewrite during the final page or the principals is not a complete verify
+                    NET.inc("verify", "restarted")
+                    st.cursor = None
+                    break
             except Exception:
                 NET.inc("verify", "error")
                 logger.warning("kg verify of the principals failed; connector %s is left as it is", app, exc_info=True)

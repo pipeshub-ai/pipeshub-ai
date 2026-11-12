@@ -736,3 +736,24 @@ async def test_a_change_drained_between_two_pages_restarts_the_scan_so_the_rewri
             break
         seen.append(c.pages)
     assert states[(org, "drv")].cursor is None and await _mode(p, org) == "enforce"      # and it completes clean when nothing moves meanwhile
+
+
+async def test_a_change_drained_during_the_principals_check_restarts_the_scan(pg_db, no_jitter, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    sets: list = []
+    monkeypatch.setattr(net, "LAST_VERIFIED", type("G", (), {"set": staticmethod(lambda *labels, value: sets.append(labels))})())
+    real = net._principals
+
+    async def drain_meanwhile(db, o) -> bool:
+        net.locks.bump(o, {"drv"})                                              # what a drain of the connector does while the principals are read
+        return await real(db, o)
+    monkeypatch.setattr(net, "_principals", drain_meanwhile)
+    states: dict = {}
+    for _ in range(3):
+        await net.verify_due(pg_db, org, states)
+    assert sets == [] and await _mode(p, org) == "enforce"                      # never recorded as verified, and not demoted either
+    monkeypatch.setattr(net, "_principals", real)
+    for _ in range(3):
+        await net.verify_due(pg_db, org, states)
+    assert sets and sets[0] == (org, "drv")                                     # a scan nothing moved under completes

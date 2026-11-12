@@ -431,6 +431,8 @@ async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int
             frontier = set(await held_apps(tx, org, await children_of(tx, org, frontier))) - below - keys
             below |= frontier
         keys |= below
+    if not dry:      # every connector whose rows this page rewrites, not only its own
+        bump(org, {a for a in (await held_apps(tx, org, keys)).values() if a})
     await stamp_keys(tx, org, keys, st, app_sks=app_sks, facts=facts, dry=dry, locked=locked)
     return stampgraph.nk(rows[-1]["coll"], rows[-1]["id"])
 
