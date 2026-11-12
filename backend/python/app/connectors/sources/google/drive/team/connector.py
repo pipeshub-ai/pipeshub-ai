@@ -203,6 +203,8 @@ FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup"
 SYNCED_SHARED_DRIVES_SYNC_POINT_KEY = "synced_shared_drives"
 DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX = "shared_drive_restrictions_"
 DRIVE_RESTRICTION_FLAGS = ("driveMembersOnly", "domainUsersOnly")
+# Set when a drive's items were synced under assumed restrictions: the next answer that has them lists it in full.
+DRIVE_RESTRICTIONS_ASSUMED = "assumed"
 FILTER_CLEANUP_PAGE_SIZE = 500
 
 
@@ -414,6 +416,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._drive_member_emails: dict[str, list[str]] = {}
         # Per shared drive, this run: its restrictions, and the people and groups that are members.
         self._drive_restrictions: dict[str, dict[str, bool]] = {}
+        self._assumed_restrictions: set[str] = set()
         self._drive_principals: dict[str, tuple[set[str], set[str]]] = {}
         self._group_people: dict[str, set[str] | None] = {}
         self._warned_groups: set[tuple[str, str]] = set()
@@ -657,6 +660,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._drive_has_member_cache = {}
             self._drive_member_emails = {}
             self._drive_restrictions = {}
+            self._assumed_restrictions = set()
             self._drive_principals = {}
             self._group_people = {}
             self._warned_groups = set()
@@ -1494,9 +1498,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         """The restrictions of one of this domain's shared drives. A drive whose listing carried none is asked
         for directly; a failed read raises rather than reading as unrestricted.
 
-        An answer with no restrictions object changes nothing: the drive keeps the flags its items were last synced
-        under (none stored is the steady state of an unrestricted drive), the run is reported incomplete, and nothing
-        is listed again for it or saved. A known restriction is never dropped by such an answer."""
+        An answer with no restrictions object is unknown, never unrestricted, and the run is reported incomplete. A
+        drive with flags stored keeps them. A drive with none is read as restricted in every way that only narrows
+        access, for this run alone: only a mark is saved, so the next answer that has the object lists the drive in
+        full and rebuilds every grant this run cut."""
         if drive_id not in self._drive_restrictions:
             got = await self.drive_data_source.drives_get(
                 driveId=drive_id, useDomainAdminAccess=True, fields="id,restrictions"
@@ -1505,12 +1510,20 @@ class GoogleDriveTeamConnector(BaseConnector):
             if isinstance(restrictions, dict):
                 self._drive_restrictions[drive_id] = self._restriction_flags(restrictions)
             else:
-                stored = await self.drive_delta_sync_point.read_sync_point(
-                    f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}"
-                )
-                self.logger.warning(f"Shared drive {drive_id}: no restrictions in the answer; keeping the last known ones")
+                key = f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}"
+                stored = await self.drive_delta_sync_point.read_sync_point(key) or {}
                 self._sync_ledger.note_incomplete()
-                self._drive_restrictions[drive_id] = self._restriction_flags(stored)
+                if any(flag in stored for flag in DRIVE_RESTRICTION_FLAGS):
+                    self.logger.warning("A shared drive answered without its restrictions; keeping the last known ones")
+                    self._drive_restrictions[drive_id] = self._restriction_flags(stored)
+                else:
+                    await self.drive_delta_sync_point.update_sync_point(key, {DRIVE_RESTRICTIONS_ASSUMED: True})
+                    self._assumed_restrictions.add(drive_id)
+                    self.logger.warning(
+                        f"{len(self._assumed_restrictions)} shared drive(s) answered without restrictions and have none "
+                        "stored: read as restricted this run, listed in full on the next answer that has them"
+                    )
+                    self._drive_restrictions[drive_id] = dict.fromkeys(DRIVE_RESTRICTION_FLAGS, True)
         return self._drive_restrictions[drive_id]
 
     @staticmethod
@@ -1646,11 +1659,13 @@ class GoogleDriveTeamConnector(BaseConnector):
         if isinstance(drive.get("restrictions"), dict):
             self._drive_restrictions[drive_id] = self._restriction_flags(drive["restrictions"])
         now = await self._drive_restrictions_of(drive_id)
+        if drive_id in self._assumed_restrictions:
+            return  # a guess: never saved, never a reason to list again
         key = f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}"
         stored = await self.drive_delta_sync_point.read_sync_point(key)
         hidden = [str(g) for g in ((stored or {}).get("hidden_groups") or [])]
         seen = dict(str(e).rpartition("|")[::2] for e in ((stored or {}).get("group_hashes") or []))
-        relist = now != self._restriction_flags(stored)
+        relist = now != self._restriction_flags(stored) or bool((stored or {}).get(DRIVE_RESTRICTIONS_ASSUMED))
         for group in hidden:
             if relist:
                 break
@@ -1671,7 +1686,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             await self.drive_delta_sync_point.delete_sync_point(
                 generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
             )
-        await self.drive_delta_sync_point.update_sync_point(key, {**now, "hidden_groups": [], "group_hashes": []})
+        await self.drive_delta_sync_point.update_sync_point(
+            key, {**now, "hidden_groups": [], "group_hashes": [], DRIVE_RESTRICTIONS_ASSUMED: False}
+        )
         self._hidden_groups[drive_id] = set()
         self._group_digests[drive_id] = {}
 

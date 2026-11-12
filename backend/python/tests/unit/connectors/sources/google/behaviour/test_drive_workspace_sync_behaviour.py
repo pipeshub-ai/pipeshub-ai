@@ -1921,11 +1921,15 @@ async def test_a_restriction_that_does_not_change_does_not_relist_the_drive(ws: 
     assert len([k for k, w in ws.sync_points.writes if "shared_drive_restrictions_sd-1" in k and "driveMembersOnly" in w]) == 1
 
 
-async def test_restrictions_left_out_of_the_listing_are_asked_for_directly(ws: Workspace) -> None:
-    restricted_drive(ws, MEMBERS_ONLY)
+@pytest.mark.parametrize(("truth", "people"), [(MEMBERS_ONLY, MEMBERS), (None, EVERYONE)])
+async def test_restrictions_left_out_of_the_listing_are_asked_for_directly(
+    ws: Workspace, truth: Optional[dict[str, bool]], people: set[str]
+) -> None:
+    restricted_drive(ws, truth)
     ws.world.restrictions_unlisted = True
     await ws.sync()
-    assert f1_people(ws) == MEMBERS
+    assert f1_people(ws) == people
+    assert ws.incomplete is False
 
 
 async def test_restrictions_that_cannot_be_read_fail_closed_and_keep_the_stored_grants(ws: Workspace) -> None:
@@ -1947,6 +1951,66 @@ async def test_restrictions_that_cannot_be_read_fail_closed_and_keep_the_stored_
     await ws.sync()
     assert ws.incomplete is False
     assert f1_people(ws) == MEMBERS
+
+
+def all_grants(ws: Workspace) -> dict[str, set[tuple[Optional[str], str, str]]]:
+    groups = {
+        f"group:{k}": {(p.email or p.external_id, p.entity_type.name, p.type.name) for p in v}
+        for k, v in ws.records.record_group_permissions.items()
+    }
+    return {**{k: ws.grants(k) for k in ws.records.permissions}, **groups}
+
+
+def restrictions_left_out(ws: Workspace, left_out: bool) -> None:
+    ws.world.restrictions_unlisted = ws.world.restrictions_omitted = left_out
+
+
+@pytest.mark.parametrize(("truth", "healed"), [(None, EVERYONE), (MEMBERS_ONLY, MEMBERS)])
+async def test_a_new_drive_answering_without_restrictions_is_read_as_restricted_until_an_answer_has_them(
+    ws: Workspace, truth: Optional[dict[str, bool]], healed: set[str]
+) -> None:
+    restricted_drive(ws, truth)
+    restrictions_left_out(ws, True)
+    await ws.sync()
+
+    assert ws.incomplete is True
+    assert f1_people(ws) == MEMBERS  # no share beyond what members-only and domain-only both allow
+    restriction_writes = [w for k, w in ws.sync_points.writes if "shared_drive_restrictions_sd-1" in k]
+    assert restriction_writes and not [w for w in restriction_writes if "driveMembersOnly" in w or "domainUsersOnly" in w]
+
+    restrictions_left_out(ws, False)
+    await ws.sync()
+    assert ws.incomplete is False
+    assert f1_people(ws) == healed
+
+
+async def test_an_unrestricted_drive_read_as_restricted_for_one_run_gets_every_grant_back(ws: Workspace) -> None:
+    restricted_drive(ws)
+    await ws.sync()
+    before = all_grants(ws)
+
+    restrictions_left_out(ws, True)
+    ws.world.share("f1", reader("late@example.com"))
+    await ws.sync()
+    assert ws.incomplete is True
+    assert f1_people(ws) == MEMBERS  # read again under the assumed restrictions
+
+    restrictions_left_out(ws, False)
+    await ws.sync()
+    assert ws.incomplete is False
+    assert all_grants(ws) == {**before, "f1": before["f1"] | {("late@example.com", "USER", "READ")}}
+
+
+async def test_an_unreadable_answer_for_a_new_drive_shares_nothing(ws: Workspace) -> None:
+    restricted_drive(ws)
+    ws.world.restrictions_unlisted = ws.world.restrictions_unreadable = True
+    await ws.sync()
+    assert ws.incomplete is True
+    assert f1_people(ws) <= MEMBERS
+
+    ws.world.restrictions_unlisted = ws.world.restrictions_unreadable = False
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE
 
 
 async def test_the_organization_drive_listing_asks_for_the_restrictions(ws: Workspace) -> None:
