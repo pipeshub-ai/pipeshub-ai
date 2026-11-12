@@ -346,12 +346,14 @@ class RevisionRetentionSweep:
 
     async def _deletable_revisions(
         self, pointer: dict[str, Any], cutoff_ms: int, report: RetentionReport
-    ) -> tuple[list[dict[str, Any]], bool]:
-        """The listed sets, and those past the grace that are not the newest set of the current or the
-        previous revision (the set the pointer names is told apart under the leases).
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+        """``(candidates, listed, ok)``: the sets past the grace that are not the newest set of the current
+        or the previous revision, every set listed (the sets kept are told apart again under the leases,
+        with the set the pointer names), and False when the listing failed (storage or network), which
+        feeds the page's failures-in-a-row stop.
 
-        The flag is False when the listing failed (storage or network), which feeds
-        the page's failures-in-a-row stop.
+        Sets are grouped by the content revision the listing names (``rev``), a stored write's own set
+        included; ``writeId`` only tells the sets of one revision apart.
         """
         vrid = str(pointer["virtualRecordId"])
         if not pointer.get("currentRev") or not ARTIFACT_ROUTES.available:

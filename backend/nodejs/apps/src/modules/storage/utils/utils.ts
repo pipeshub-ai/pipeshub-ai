@@ -226,22 +226,16 @@ export function getArtifactSetFolder(
 }
 
 /**
- * Where one stored write of a content revision of a virtual record keeps its files.
- * e.g. 'org1/PipesHub/record-revisions/vr-1/0123abcd-<writeId>'; without a write
- * id, the revision's one set from before writes had their own:
- * 'org1/PipesHub/record-revisions/vr-1/0123abcd'.
- *
- * A sibling of the revision's folder, never inside it: a tree delete of the
- * revision's own set must not take the sets of its writes with it.
+ * Where one artifact set of a virtual record keeps its files, by the set's key
+ * (`artifactSet.rev`): e.g. 'org1/PipesHub/record-revisions/vr-1/0123abcd' for a
+ * revision's shared set, '.../vr-1/0123abcd-<writeId>' for a stored write's own.
  */
 export function getArtifactSetRoot(
   orgId: string,
   virtualRecordId: string,
   rev: string,
-  writeId?: string,
 ): string {
-  const folder = writeId ? `${rev}-${writeId}` : rev;
-  return `${getArtifactSetFolder(orgId, virtualRecordId)}/${folder}`;
+  return `${getArtifactSetFolder(orgId, virtualRecordId)}/${rev}`;
 }
 
 /**

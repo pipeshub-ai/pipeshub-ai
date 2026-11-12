@@ -30,7 +30,7 @@ const setAt = (row: Row, key: string, value: unknown): void => {
 }
 
 // Enough of Mongo's filter language for these queries: equality on dotted
-// paths, $or, $in, $exists, $eq (null matching a missing field), $ne, $lt and $lte.
+// paths, $or, $in, $exists, $eq, $ne, $lt and $lte.
 const matches = (row: Row, filter: Filter): boolean =>
   Object.entries(filter).every(([key, want]) => {
     if (key === '$or') return (want as Filter[]).some((branch) => matches(row, branch))
@@ -48,8 +48,6 @@ const matches = (row: Row, filter: Filter): boolean =>
       return (have !== undefined) === (want as { $exists: boolean }).$exists
     }
     if (want !== null && typeof want === 'object' && '$eq' in want) {
-      // As in Mongo, null also matches a missing field.
-      if ((want as { $eq: unknown }).$eq === null) return have === undefined || have === null
       return String(have) === String((want as { $eq: unknown }).$eq)
     }
     if (want !== null && typeof want === 'object' && '$ne' in want) {
@@ -302,16 +300,32 @@ describe('StorageController artifact sets', () => {
       expect(shared.res.body).to.not.have.property('writeId')
       // A sibling of the revision's folder, never inside it: a tree delete of the shared set keeps the writes' sets.
       expect(first.res.body.root).to.equal(`${root()}-${W1}`)
+      // A write's set is keyed `{rev}-{writeId}` in the existing unique index on (org, vrid, rev), its revision kept beside.
       expect(rows.map((r) => r.artifactSet)).to.deep.equal([
         { virtualRecordId: VRID, rev: REV, root: root() },
-        { virtualRecordId: VRID, rev: REV, writeId: W1, root: `${root()}-${W1}` },
-        { virtualRecordId: VRID, rev: REV, writeId: W2, root: `${root()}-${W2}` },
+        { virtualRecordId: VRID, rev: `${REV}-${W1}`, contentRev: REV, writeId: W1, root: `${root()}-${W1}` },
+        { virtualRecordId: VRID, rev: `${REV}-${W2}`, contentRev: REV, writeId: W2, root: `${root()}-${W2}` },
       ])
-      expect(rows[1]!.documentName).to.equal(`revision_${REV}_${W1}`)
+      expect(rows[1]!.documentName).to.equal(`revision_${REV}-${W1}`)
       expect(adapter.signObjectUrl.lastCall.args[0]).to.equal(`${root()}-${W2}/${IMAGE}`)
 
+      // The listing names each set's content revision, never a write's key.
       const list = await run('listArtifactSets', request({ query: { virtualRecordId: VRID } }))
-      expect(list.res.body.revisions.map((r: Row) => r.writeId)).to.deep.equal([undefined, W1, W2])
+      expect(list.res.body.revisions.map((r: Row) => [r.rev, r.writeId])).to.deep.equal([[REV, undefined], [REV, W1], [REV, W2]])
+    })
+
+    it('keeps code that keys a set by revision alone off every write\'s set', async () => {
+      const W1 = 'a'.repeat(32)
+      await run('presignArtifactSet', request({ body: presignBody({ writeId: W1 }) }))
+      // What code built before writes had their own sets looks a set up by, and the root it rebuilds from a row.
+      const byRevision = { orgId, 'artifactSet.virtualRecordId': VRID, 'artifactSet.rev': { $eq: REV } }
+      expect(rows.filter((r) => matches(r, byRevision))).to.have.length(0)
+      expect(root(VRID, rows[0]!.artifactSet.rev)).to.equal(rows[0]!.artifactSet.root)
+
+      // A presign without a write id (an older writer) gets the revision's shared set, not the write's.
+      const shared = await run('presignArtifactSet', request({ body: presignBody() }))
+      expect(shared.res.body.root).to.equal(root())
+      expect(rows.filter((r) => matches(r, byRevision)).map((r) => String(r._id))).to.deep.equal([shared.res.body.documentId])
     })
 
     it('settles on the document a racing presign created when the unique index refuses a second', async () => {

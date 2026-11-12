@@ -61,8 +61,10 @@ const DocumentVersionSchema = new Schema<DocumentVersion>(
 const ArtifactSetSchema = new Schema<ArtifactSet>(
   {
     virtualRecordId: { type: String, required: true },
+    // The set's key in the unique index below: the revision, or `{rev}-{writeId}` for a stored write's own set.
     rev: { type: String, required: true },
-    // The stored write the set is of; absent on a set from before writes had their own.
+    // A stored write's own set only: its revision and write. Not indexed; nothing looks a set up by them.
+    contentRev: { type: String },
     writeId: { type: String },
     root: { type: String, required: true },
     // Set when a delete claims the revision; presign refuses it from then on.
@@ -227,32 +229,20 @@ DocumentSchema.index(
     partialFilterExpression: { idempotencyKey: { $type: 'string' } },
   },
 );
-// One document per stored write of a content revision (a set without a write
-// id counts as one write: the revision's set from before writes had their own),
-// so two presigns of the same write racing each other settle on one. Its prefix
-// also serves listing and purging a virtual record's sets. It replaces the index
-// on (orgId, virtualRecordId, rev) that ArtifactSetIndexMigration drops.
-export const ARTIFACT_SET_INDEX = {
-  keys: {
-    orgId: 1,
-    'artifactSet.virtualRecordId': 1,
-    'artifactSet.rev': 1,
-    'artifactSet.writeId': 1,
-  },
-  options: {
+// One document per set key (`artifactSet.rev`: a revision's shared set, or a
+// stored write's own `{rev}-{writeId}`), so two presigns of the same set racing
+// each other settle on one. Its prefix also serves listing and purging a virtual
+// record's sets. Keep it as it is: builds from before writes had their own sets
+// declare it too, and rebuild it at boot.
+DocumentSchema.index(
+  { orgId: 1, 'artifactSet.virtualRecordId': 1, 'artifactSet.rev': 1 },
+  {
     unique: true,
     partialFilterExpression: {
       'artifactSet.virtualRecordId': { $exists: true },
     },
   },
-} as const;
-/** The key of the index of one document per revision, which writes with their own sets replace. */
-export const ARTIFACT_SET_REVISION_INDEX_KEY = {
-  orgId: 1,
-  'artifactSet.virtualRecordId': 1,
-  'artifactSet.rev': 1,
-} as const;
-DocumentSchema.index(ARTIFACT_SET_INDEX.keys, ARTIFACT_SET_INDEX.options);
+);
 
 // Create and export the model
 export const DocumentModel = mongoose.model<DocumentModel>(

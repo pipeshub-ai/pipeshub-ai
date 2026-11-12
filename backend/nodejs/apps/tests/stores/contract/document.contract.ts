@@ -389,26 +389,29 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       const org = fx.newId();
       const W1 = 'a'.repeat(32);
       const W2 = 'b'.repeat(32);
-      const set = (writeId?: string): NewDocument =>
-        mk(org, {
-          documentName: writeId ? `revision_r1_${writeId}` : 'revision_r1',
+      // As storage files them: a write's set is keyed `{rev}-{writeId}` under the one unique index on (org, vrid, rev).
+      const set = (writeId?: string): NewDocument => {
+        const key = writeId ? `r1-${writeId}` : 'r1';
+        return mk(org, {
+          documentName: `revision_${key}`,
           artifactSet: {
             virtualRecordId: 'v1',
-            rev: 'r1',
-            ...(writeId && { writeId }),
-            root: `${org}/PipesHub/record-revisions/v1/r1${writeId ? `-${writeId}` : ''}`,
+            rev: key,
+            ...(writeId && { contentRev: 'r1', writeId }),
+            root: `${org}/PipesHub/record-revisions/v1/${key}`,
           },
         });
-      const shared = await repo.createArtifactSetOnce(set(), fence(Date.now()));
-      // Racing presigns of one write settle on one row; another write of the same revision gets its own.
+      };
       const [a, b] = await Promise.all([repo.createArtifactSetOnce(set(W1), fence(Date.now())), repo.createArtifactSetOnce(set(W1), fence(Date.now()))]);
+      // Code that keys a set by revision alone (an older build presigning without a write id) never finds a write's row.
+      const shared = await repo.createArtifactSetOnce(set(), fence(Date.now()));
       const second = await repo.createArtifactSetOnce(set(W2), fence(Date.now()));
       expect(b._id).to.equal(a._id);
       expect(new Set([shared._id, a._id, second._id]).size).to.equal(3);
-      expect(a.artifactSet).to.deep.equal({ virtualRecordId: 'v1', rev: 'r1', writeId: W1, root: `${org}/PipesHub/record-revisions/v1/r1-${W1}` });
-      expect(shared.artifactSet).to.not.have.property('writeId');
+      expect(a.artifactSet).to.deep.equal({ virtualRecordId: 'v1', rev: `r1-${W1}`, contentRev: 'r1', writeId: W1, root: `${org}/PipesHub/record-revisions/v1/r1-${W1}` });
+      expect(shared.artifactSet).to.deep.equal({ virtualRecordId: 'v1', rev: 'r1', root: `${org}/PipesHub/record-revisions/v1/r1` });
       expect((await repo.createArtifactSetOnce(set(), fence(Date.now())))._id).to.equal(shared._id);
-      expect((await repo.listArtifactSets(org, 'v1')).map((r) => r.artifactSet?.writeId)).to.deep.equal([undefined, W1, W2]);
+      expect((await repo.listArtifactSets(org, 'v1')).map((r) => r.artifactSet?.writeId ?? '').sort()).to.deep.equal(['', W1, W2]);
     });
 
     describe('the delete fence of a content revision', () => {

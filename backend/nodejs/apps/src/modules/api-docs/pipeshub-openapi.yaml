@@ -37434,6 +37434,7 @@ paths:
                           type: string
                         rev:
                           type: string
+                          description: The content revision the set holds, for a stored write's own set too.
                         writeId:
                           type: string
                           description: The stored write the set is of; absent on a set written without one.

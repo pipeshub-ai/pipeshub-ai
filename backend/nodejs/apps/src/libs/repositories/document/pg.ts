@@ -357,6 +357,7 @@ async function insert(
         storageInfo(i.artifactSet, [
           'virtualRecordId',
           'rev',
+          'contentRev',
           'writeId',
           'root',
         ]),
@@ -1116,20 +1117,17 @@ export class PgDocumentRepository implements DocumentRepository, Importable {
     { now, staleMs }: ArtifactFence,
   ): Promise<DocumentRow | null> {
     assertOrg(k, String(input.orgId));
-    // '' stands for no write id, as in the unique index: the revision's one shared set.
     const key = [
       k.orgId,
       input.artifactSet?.virtualRecordId,
       input.artifactSet?.rev,
-      input.artifactSet?.writeId ?? '',
     ];
     const { rows } = await k.query<Row>(
       fill(
         `/* pipeshub:content.document_artifact_touch */ UPDATE content.documents
-        SET updated_at = $5, artifact_set = artifact_set - 'retiringAt'
+        SET updated_at = $4, artifact_set = artifact_set - 'retiringAt'
         WHERE org_id = $1 AND artifact_set->>'virtualRecordId' = $2 AND artifact_set->>'rev' = $3
-          AND COALESCE(artifact_set->>'writeId', '') = $4
-          AND (NOT artifact_set ? 'retiringAt' OR (artifact_set->>'retiringAt')::bigint < $6)
+          AND (NOT artifact_set ? 'retiringAt' OR (artifact_set->>'retiringAt')::bigint < $5)
         RETURNING @{COLS}`,
         { COLS },
       ),
@@ -1138,8 +1136,7 @@ export class PgDocumentRepository implements DocumentRepository, Importable {
     if (rows[0]) return docOf(rows[0]);
     const { rowCount } = await k.query(
       `/* pipeshub:content.document_artifact_present */ SELECT 1 FROM content.documents
-      WHERE org_id = $1 AND artifact_set->>'virtualRecordId' = $2 AND artifact_set->>'rev' = $3
-        AND COALESCE(artifact_set->>'writeId', '') = $4`,
+      WHERE org_id = $1 AND artifact_set->>'virtualRecordId' = $2 AND artifact_set->>'rev' = $3`,
       key,
     );
     if ((rowCount ?? 0) > 0)

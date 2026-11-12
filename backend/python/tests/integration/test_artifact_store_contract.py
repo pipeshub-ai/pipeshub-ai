@@ -152,6 +152,14 @@ async def test_a_revision_round_trips_through_the_storage_service(blob: BlobStor
     )
     assert other.document_id != document_id and other.root != written.manifest_ref.root
     assert await store.delete_revision(ORG_ID, other.document_id) == 1
+    # A presign without a write id (an older writer keys a set by revision alone) never finds a write's set.
+    shared = await store.presign_revision(ORG_ID, vrid, rev, [(MANIFEST_PATH, "application/json")])
+    assert shared.document_id != document_id
+    assert shared.root == f"{ORG_ID}/PipesHub/record-revisions/{vrid}/{rev}"
+    assert sorted((r["rev"], r.get("writeId") or "") for r in await store.list_revisions(ORG_ID, vrid)) == [
+        (rev, ""), (rev, write_id("gen-it:run")),
+    ]
+    assert await store.delete_revision(ORG_ID, shared.document_id) == 1
 
     assert await store.delete_revision(ORG_ID, document_id) == 1
     assert await store.list_revisions(ORG_ID, vrid) == []

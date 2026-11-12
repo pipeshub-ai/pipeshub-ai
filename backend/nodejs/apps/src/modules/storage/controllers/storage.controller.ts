@@ -172,22 +172,23 @@ function tagOf(doc: ScopedDocument, key: string): unknown {
 const flatRecordPath = (orgId: string, virtualRecordId: string): string =>
   getFullDocumentPath(orgId, `records/${virtualRecordId}`);
 
-// Rebuilt from the revision's ids rather than read from the stored root, so a
-// damaged row can never point a tree delete anywhere else.
+// Rebuilt from the set's ids rather than read from the stored root, so a
+// damaged row can never point a tree delete anywhere else. `rev` is the set's
+// key, so a stored write's own set rebuilds to its own root here and in code
+// built before writes had their own sets.
 function artifactSetRootOf(document: {
   orgId: unknown;
-  artifactSet?: { virtualRecordId: string; rev: string; writeId?: string };
+  artifactSet?: { virtualRecordId: string; rev: string };
 }): string | null {
   const set = document.artifactSet;
   return set
-    ? getArtifactSetRoot(
-        String(document.orgId),
-        set.virtualRecordId,
-        set.rev,
-        set.writeId,
-      )
+    ? getArtifactSetRoot(String(document.orgId), set.virtualRecordId, set.rev)
     : null;
 }
+
+/** A set's key (`artifactSet.rev`): the revision, or `{rev}-{writeId}` for a stored write's own set. */
+const artifactSetKey = (rev: string, writeId: string | undefined): string =>
+  writeId === undefined ? rev : `${rev}-${writeId}`;
 
 function virtualRecordIdOf(
   orgId: string,
@@ -1151,7 +1152,8 @@ export class StorageController {
         revisions: documents.map((d) => ({
           documentId: d._id,
           virtualRecordId,
-          rev: d.artifactSet?.rev,
+          // The content revision, never a write's key: retention groups sets by it.
+          rev: d.artifactSet?.contentRev ?? d.artifactSet?.rev,
           ...(d.artifactSet?.writeId !== undefined && {
             writeId: d.artifactSet.writeId,
           }),
@@ -1232,14 +1234,15 @@ export class StorageController {
   ): Promise<Document> {
     const userId = extractUserId(req);
     // One set per stored write of the revision (`writeId`), so no write can overwrite another's
-    // files; without one, the revision's one shared set. A sidecar written later for the same
-    // write lands in the same set, and the write stamp the repository moves is how a delete that
-    // listed the set earlier sees that write.
+    // files; without one, the revision's one shared set. A write's set is keyed `{rev}-{writeId}` in
+    // the existing unique index on (org, vrid, rev): a rev is hex only, so code that keys a set by
+    // revision alone never matches a write's set, and the index needs no change. A sidecar written
+    // later for the same write lands in the same set, and the write stamp the repository moves is
+    // how a delete that listed the set earlier sees that write.
+    const key = artifactSetKey(rev, writeId);
     return getDocumentRepository().createArtifactSetOnce(
       {
-        documentName: writeId
-          ? `revision_${rev}_${writeId}`
-          : `revision_${rev}`,
+        documentName: `revision_${key}`,
         documentPath: getArtifactSetFolder(orgId, virtualRecordId),
         orgId: requireId(orgId, 'organization'),
         isVersionedFile: false,
@@ -1248,9 +1251,9 @@ export class StorageController {
         extension: '',
         artifactSet: {
           virtualRecordId,
-          rev,
-          ...(writeId !== undefined && { writeId }),
-          root: getArtifactSetRoot(orgId, virtualRecordId, rev, writeId),
+          rev: key,
+          ...(writeId !== undefined && { contentRev: rev, writeId }),
+          root: getArtifactSetRoot(orgId, virtualRecordId, key),
         },
       },
       { now: Date.now(), staleMs: ARTIFACT_RETIRING_STALE_MS },
