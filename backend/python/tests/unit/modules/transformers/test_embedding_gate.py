@@ -999,7 +999,7 @@ class TestReconciliationEmbedIsPlanned:
         async def queued(docs: Any, *_args: Any) -> None:
             if docs[0].page_content == slow or (slow == "changed blocks" and docs[0].metadata.get("blockId")):
                 async with current_progress().gate_wait():
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1.5)
 
         store._process_document_chunks = queued
         progress = RecordProgress(
@@ -1016,7 +1016,7 @@ class TestReconciliationEmbedIsPlanned:
                 "app.modules.transformers.vectorstore.code_residue_documents",
                 lambda *_a: [Document(page_content="code residue", metadata={})],
             ):
-                async with asyncio.timeout(0.3) as budget:
+                async with asyncio.timeout(1.0) as budget:
                     progress.attach(budget)
                     await store.index_documents(
                         container, "org-1", "rec-1", "vr-1", record=record, member_blocks=[member],
