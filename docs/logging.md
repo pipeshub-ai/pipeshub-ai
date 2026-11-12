@@ -138,8 +138,9 @@ if log_once(f"envelope:stripped:{topic}", 30): ...          # bounded keys only,
 
 - Bindable ids (`LOG_FIELD_NAMES`): `conversation_id`, `agent_id`, `run_id`, `parent_run_id`, `agent_run_id`, `attempt`, `connector_id`,
   `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`, `mcp_server_id`, `toolset_id`, `job`, and for credential
-  refresh `refresh_kind`, `trigger`, `provider`, `scheduled_by`, `owner_id`, and for broker messages `topic`, `message_id`, `event_type`.
-  A module that needs another adds it there and here. A name with
+  refresh `refresh_kind`, `trigger`, `provider`, `scheduled_by`, `owner_id`, for broker messages `topic`, `message_id`,
+  `event_type`, and for the user a step acts on `target_user_id` and `source_user_id` (see "Personal data"). A module that
+  needs another adds it there and here. A name with
   a credential word in it (`token`, `secret`, `credential`, …) is masked like a secret, so ids never use one. Another key, or `org_id`/`user_id`, raises `ValueError`. `None` values are skipped. Pass literal keyword
   arguments, not a `**dict`. Do not hold `log_fields` across `yield` in an async generator.
 - `log_event(logger, event, /, *, level=logging.INFO, **fields)`: message = the event name; `None` values, identity names and record
@@ -625,6 +626,58 @@ time name (`token_expires_at=1730000000`, `token_expires_in=3600.5`); any other 
 alike. Other numeric types (`Decimal`, numpy scalars) take the string path and are masked under a credential name. Redaction is a
 safety net; it cannot recognise content, so the rules below still apply.
 
+## Personal data
+
+Log lines never carry an email or a person's name (full, display, first or last name, username, login), and never a whole user
+object or list. Org and user ids are opaque and may be logged. Never mask (`a***@x.com`), truncate, keep only the domain, or hash an
+email: it is still personal data, and an id says more.
+
+Which id replaces it:
+
+- **`target_user_id`**: the PipesHub user id (the users `_id`; `userId` on a graph user) of the user a step acts on, and only
+  where the code holds that id: Node `user._id` or `req.user.userId`, Python graph `User.user_id`, or a connector's `created_by`.
+  Never `AppUser.id` (a fresh uuid each sync run) or a graph key, which support cannot match. `user_id` stays the caller's id, set
+  from the bound context.
+- **`source_user_id`**: the provider's id of an external account, and only where that id is opaque: a Google directory id, a
+  Microsoft Graph object id, an Atlassian Cloud `accountId`, a Box, Dropbox (`dbmid:`/`dbid:`), Salesforce, GitLab, GitHub (the
+  numeric id, not the login), Linear, Notion, Zammad or BookStack id. Some connectors' ids can be an email or a login, so they never
+  log one: Gmail individual (`source_user_id` is the address), Nextcloud (the uid is a login), Jira and Confluence Data Center (the
+  key can be the username), a Dropbox invitee's `Permission.external_id`, connector core (it can't tell which connector's id it
+  has), and every connector that fills `source_user_id` from `user.source_user_id or user.id or user.email`.
+- **Neither**: drop the value. Where a count helps, use a counter the code already keeps or the sync run's stats, and keep the
+  summary at the old line's level.
+
+In a per-user loop, bind the id once inside the per-user coroutine: `with log_fields(source_user_id=user.source_user_id):` at the
+top of the function that `gather` runs. `gather` runs each coroutine in a task that copies the context at the `gather` call, so a
+binding made around `asyncio.gather(...)` reaches every coroutine, and all users' lines would carry the same id: bind only fields
+they share there (`connector_id`). A binding made while the coroutines are only being created, and ended before `gather`, reaches
+none of them. A line about one user's result logged after `gather` passes the id with `extra=`.
+
+If an exception's text can quote an email (a driver error, `Email already in use: <address>`), keep its class only: in Python
+pass `include_error_text=False` to `log_failure` (it logs the text by default, and the redactor masks secrets, not emails); in
+Node, drop the address from the thrown message.
+
+**Finding a user's lines (support).** Get the PipesHub id from the admin console (Users, open the user: the profile URL has
+`userId=<id>`) or `GET /api/v1/users?search=<email>` (`_id`), then filter on `user_id=<id>` (requests made by that user) or
+`target_user_id=<id>` (sign-in, user management and connector-creator lines). A connector's per-user lines carry
+`source_user_id`: find that id for the email in the provider's admin console (Google Admin user id, Entra object id, Atlassian
+account id, Box or Salesforce user id). For a connector with no opaque id (the list above), per-user lines carry only
+`connector_id` and counts: reproduce with a one-user sync, or read the run's `sync_run.end` stats.
+
+**CI.** `.github/scripts/new_lint_findings.py log-pii` (scanner `scripts/log_pii.py`, which reads TypeScript through
+`scripts/log_pii_ts.cjs`) fails a pull request that adds an email or a person's name to a log call under `backend/python/app` or
+`backend/nodejs/apps/src`, in a new call or in one that already logs one (each value counts): `user.email`, `user_email`, `payload["email"]`, `m.get("emailAddress")`,
+`extra={"email": …}`, `{ email }`, `member.name`, `full_name` of a user, `users`. Like the emoji check it counts per file, so
+ones already on main do not fail and moving one to another file counts as new. Names of connectors, files, tools, groups and
+repos are not findings (`group.email` either), and neither are ids, counts, flags or settings about email (`email_count`,
+`bool(user.email)`, `email_format`, `mail_server`), nor a bare `name` or `user` in Python, nor a field named `user` (`{ user: userId }`). It reads names, not values, so an email stored in an id-named field (`source_user_id`, `external_id`) or copied to another
+variable is not caught: the rules above still apply, and tests use `tests/support/log_capture.py` (`assert_not_logged`,
+`assert_not_logged_mock`) or Node's `assertNotLogged` (`tests/helpers/mock-logger.ts`) with the email seeded into id fields too.
+A real false positive is better renamed (`repo_full_name`, `entry` for a tar member); otherwise mark the line of the flagged value
+with `# log-pii: ok <reason>` (`// log-pii: ok <reason>` in TypeScript). The mark covers only the values on its line, must be a
+comment and must give a reason, and each new one is shown to reviewers as a `LOG-PII-OK` warning. Run the scanner's tests locally
+with `TS_MODULE=backend/nodejs/apps/node_modules/typescript python3 -m unittest discover -s scripts -p 'test_*.py'`.
+
 ## Conventions
 
 - **Bind ids once** where work enters: an HTTP request, a broker message, a scheduled tick. Never thread ids through call sites.
@@ -633,17 +686,18 @@ safety net; it cannot recognise content, so the rules below still apply.
 - **Event names** are dotted lowercase: `sync_run.end`, `tool_call.end`, `http.request.end`.
 - **Field names** are snake_case and the same in Python and Node: `org_id`, `user_id`, `request_id`, `conversation_id`, `agent_id`,
   `run_id`, `parent_run_id`, `attempt`, `connector_id`, `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`,
-  `mcp_server_id`, `toolset_id`, `job`, `workload`, `duration_ms`, `status`, `error_class`, `error_type`, `outcome`, `method`,
-  `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`, `target_user_id`. Python also has
-  `ctx_kind`, `ctx_source`, `error_message` and `cause_type`; Node's `error` is an object (`error.message`). Node also has
-  `upstream` and `network_code` (on `upstream.call.end`).
+  `mcp_server_id`, `toolset_id`, `job`, `workload`, `target_user_id`, `source_user_id`, `duration_ms`, `status`, `error_class`,
+  `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Python
+  also has `ctx_kind`, `ctx_source`, `error_message` and `cause_type`; Node's `error` is an object (`error.message`). Node also
+  has `upstream` and `network_code` (on `upstream.call.end`).
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
   (`raise … from e`), they do not log and re-raise.
 - **Levels**: ERROR = our fault, needs a human. WARNING = degraded, retried, or an upstream 4xx. INFO = lifecycle, about one line
   per unit of work. DEBUG = per item.
 - **Never log** secrets, tokens, request or response bodies, prompts, document content, emails or names. Log ids, sizes, counts and
-  enums. Org and user ids are opaque ids and may be logged; the provider can hash or hide them.
+  enums. Org and user ids are opaque ids and may be logged; the provider can hash or hide them. Emails and names: see "Personal
+  data", which CI checks.
 - **No emoji** in log text: the level already says it. CI (`.github/scripts/new_lint_findings.py log-emoji`, scanner
   `scripts/log_emoji.py`) fails a pull request that adds an emoji log call to a file under `backend/python/app`; ones already on
   main do not fail, and moving one to another file counts as new. It reads the direct arguments of any method named after a
