@@ -164,6 +164,11 @@ def _report(conn: psycopg.Connection) -> None:
     if rows:
         for row in rows:
             log(f"VIOLATION {row}")
+        if any("sysfuncs@" in str(r) for r in rows):
+            log("HINT the built-in functions match no reviewed sysfuncs line for this PostgreSQL major; a new minor release can add one. "
+                "Start a stock server of a reviewed minor, run  PG_ADMIN_URL=<this server> python -m db.surface --sysfuncs <stock server URL>  "
+                "to print the built-ins added (+) and removed (-), and if none is SECURITY DEFINER, LEAKPROOF or has settings, add the live "
+                "sysfuncs line to backend/db/surface.snapshot.txt next to the existing ones (see backend/db/README.md)")
         if any("role pipeshub_import " in str(r) for r in rows):
             log("HINT the import login (pipeshub_import) can log in and no document-store move is running (a rollback leaves it open): "
                 "shut it with  ALTER ROLE pipeshub_import NOLOGIN  as the administrative login, then run the migration again")

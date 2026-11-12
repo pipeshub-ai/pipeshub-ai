@@ -196,6 +196,8 @@ class DriveWorld:
         # Or only from one domain to another: {("example.com", "labs.example.org")}.
         self.domain_share_reaches: set[tuple[str, str]] = set()
         self.restrictions_unreadable = False
+        # drives.get answers too, but without the restrictions object.
+        self.restrictions_omitted = False
         self.hide_unreadable_parents = False
         self.files: dict[str, FileState] = {}
         self.log: list[_Change] = []
@@ -725,7 +727,8 @@ class DriveWorld:
             return google_error(404, "notFound")
         if self.restrictions_unreadable:
             return google_error(500, "backendError")
-        return {"id": drive["id"], "name": drive["name"], "createdTime": drive["createdTime"], "restrictions": dict(drive["restrictions"])}
+        answer = {"id": drive["id"], "name": drive["name"], "createdTime": drive["createdTime"]}
+        return answer if self.restrictions_omitted else {**answer, "restrictions": dict(drive["restrictions"])}
 
     def _admin_guard(self, req: ApiRequest) -> Optional[object]:
         if self._caller(req) != self.admin_email:

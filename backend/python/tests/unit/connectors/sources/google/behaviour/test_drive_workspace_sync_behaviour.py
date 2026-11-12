@@ -2070,11 +2070,15 @@ async def test_a_restriction_that_does_not_change_does_not_relist_the_drive(ws: 
     assert len([k for k, w in ws.sync_points.writes if "shared_drive_restrictions_sd-1" in k and "driveMembersOnly" in w]) == 1
 
 
-async def test_restrictions_left_out_of_the_listing_are_asked_for_directly(ws: Workspace) -> None:
-    restricted_drive(ws, MEMBERS_ONLY)
+@pytest.mark.parametrize(("truth", "people"), [(MEMBERS_ONLY, MEMBERS), (None, EVERYONE)])
+async def test_restrictions_left_out_of_the_listing_are_asked_for_directly(
+    ws: Workspace, truth: Optional[dict[str, bool]], people: set[str]
+) -> None:
+    restricted_drive(ws, truth)
     ws.world.restrictions_unlisted = True
     await ws.sync()
-    assert f1_people(ws) == MEMBERS
+    assert f1_people(ws) == people
+    assert ws.incomplete is False
 
 
 async def test_restrictions_that_cannot_be_read_fail_closed_and_keep_the_stored_grants(ws: Workspace) -> None:
@@ -2096,6 +2100,528 @@ async def test_restrictions_that_cannot_be_read_fail_closed_and_keep_the_stored_
     await ws.sync()
     assert ws.incomplete is False
     assert f1_people(ws) == MEMBERS
+
+
+def all_grants(ws: Workspace) -> dict[str, set[tuple[Optional[str], str, str]]]:
+    groups = {
+        f"group:{k}": {(p.email or p.external_id, p.entity_type.name, p.type.name) for p in v}
+        for k, v in ws.records.record_group_permissions.items()
+    }
+    return {**{k: ws.grants(k) for k in ws.records.permissions}, **groups}
+
+
+def restrictions_left_out(ws: Workspace, left_out: bool) -> None:
+    ws.world.restrictions_unlisted = ws.world.restrictions_omitted = left_out
+
+
+@pytest.mark.parametrize(("truth", "healed"), [(None, EVERYONE), (MEMBERS_ONLY, MEMBERS)])
+async def test_a_new_drive_answering_without_restrictions_is_read_as_restricted_until_an_answer_has_them(
+    ws: Workspace, truth: Optional[dict[str, bool]], healed: set[str]
+) -> None:
+    restricted_drive(ws, truth)
+    restrictions_left_out(ws, True)
+    await ws.sync()
+
+    assert ws.incomplete is True
+    assert f1_people(ws) == MEMBERS  # no share beyond what members-only and domain-only both allow
+    restriction_writes = [w for k, w in ws.sync_points.writes if "shared_drive_restrictions_sd-1" in k]
+    assert restriction_writes and not [w for w in restriction_writes if "driveMembersOnly" in w or "domainUsersOnly" in w]
+
+    restrictions_left_out(ws, False)
+    await ws.sync()
+    assert ws.incomplete is False
+    assert f1_people(ws) == healed
+
+
+async def test_an_unrestricted_drive_read_as_restricted_for_one_run_gets_every_grant_back(ws: Workspace) -> None:
+    restricted_drive(ws)
+    await ws.sync()
+    before = all_grants(ws)
+
+    restrictions_left_out(ws, True)
+    ws.world.share("f1", reader("late@example.com"))
+    await ws.sync()
+    assert ws.incomplete is True
+    assert f1_people(ws) == MEMBERS  # read again under the assumed restrictions
+
+    restrictions_left_out(ws, False)
+    await ws.sync()
+    assert ws.incomplete is False
+    assert all_grants(ws) == {**before, "f1": before["f1"] | {("late@example.com", "USER", "READ")}}
+
+
+async def test_a_file_shared_out_of_a_drive_with_no_synced_member_gets_its_grant_back(ws: Workspace) -> None:
+    # Only Bob's own listing (files shared with him) reaches this file, and his checkpoint moves on after the run.
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"})
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[BOB_WRITES])
+    restrictions_left_out(ws, True)
+    await ws.sync()
+    assert BOB not in {who for who, _, _ in ws.grants("g1")}
+
+    restrictions_left_out(ws, False)
+    await ws.sync()
+    assert BOB in {who for who, _, _ in ws.grants("g1")}
+
+
+async def stored_as_unrestricted(ws: Workspace) -> None:
+    """sd-1 (members Alice and eng) and sd-2 (no synced member; g1 shared with Bob), both with unrestricted flags
+    stored: each was members-only, then lifted."""
+    restricted_drive(ws, MEMBERS_ONLY)
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[BOB_WRITES])
+    await ws.sync()
+    for drive in ("sd-1", "sd-2"):
+        ws.world.drives[drive]["restrictions"] = {}
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE and BOB in g1_people(ws)
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["driveMembersOnly"] is False
+
+
+async def test_stored_unrestricted_flags_are_not_trusted_when_a_tightened_drive_answers_without_them(
+    ws: Workspace,
+) -> None:
+    await stored_as_unrestricted(ws)
+    for drive in ("sd-1", "sd-2"):
+        ws.world.drives[drive]["restrictions"] = MEMBERS_ONLY
+    restrictions_left_out(ws, True)
+    await ws.sync()
+
+    # Neither file changed, so no feed reports them: the stored, looser flags must not keep their outsiders.
+    assert ws.incomplete is True
+    assert f1_people(ws) == MEMBERS and BOB not in g1_people(ws)
+    restrictions_left_out(ws, False)
+    await ws.sync()
+    assert f1_people(ws) == MEMBERS and BOB not in g1_people(ws)
+
+
+async def test_a_drive_stored_as_unrestricted_answering_without_restrictions_heals_fully(ws: Workspace) -> None:
+    await stored_as_unrestricted(ws)
+    before = all_grants(ws)
+
+    restrictions_left_out(ws, True)
+    ws.world.share("f1", reader("late@example.com"))
+    ws.world.share("g1", reader("erin@partner.org"))  # g1 is read again, through Bob's feed only
+    await ws.sync()
+    assert ws.incomplete is True
+    assert f1_people(ws) == MEMBERS and BOB not in g1_people(ws)  # one run under the assumed limits
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["driveMembersOnly"] is False  # left as stored
+
+    await ws.sync()  # still left out: the mark is kept and the drive is not read again
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["assumed"] is True
+
+    restrictions_left_out(ws, False)
+    await ws.sync()
+    assert ws.incomplete is False
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["assumed"] is False
+    assert all_grants(ws) == {
+        **before,
+        "f1": before["f1"] | {("late@example.com", "USER", "READ")},
+        "g1": before["g1"] | {("erin@partner.org", "USER", "READ")},
+    }
+
+
+# A writer reads the item's sharing; a reader is answered an empty list and synced with their own grant only.
+BOB_WRITES = {"type": "user", "role": "writer", "emailAddress": BOB}
+
+
+def g1_people(ws: Workspace) -> set[str]:
+    return {who for who, _, _ in ws.grants("g1")}
+
+
+@pytest.mark.parametrize(("limit", "outsider"), [(MEMBERS_ONLY, BOB), (DOMAIN_ONLY, "erin@partner.org")])
+async def test_a_file_shared_out_of_a_drive_with_no_synced_member_comes_back_when_its_limit_is_lifted(
+    ws: Workspace, limit: dict[str, bool], outsider: str
+) -> None:
+    # Only Bob's own listing (files shared with him) reaches this file; lifting the limit changes nothing in his feed.
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"}, limit)
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[BOB_WRITES, reader("erin@partner.org")])
+    await ws.sync()
+    assert outsider not in g1_people(ws)
+
+    ws.world.drives["sd-2"]["restrictions"] = {}
+    await ws.sync()
+    assert ws.incomplete is False
+    assert {BOB, "erin@partner.org"} <= g1_people(ws)
+
+
+async def test_a_file_shared_out_of_a_drive_with_no_synced_member_is_cut_when_a_limit_is_set(ws: Workspace) -> None:
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"})
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[BOB_WRITES])
+    await ws.sync()
+    assert BOB in g1_people(ws)
+
+    ws.world.drives["sd-2"]["restrictions"] = MEMBERS_ONLY
+    await ws.sync()
+    assert BOB not in g1_people(ws)
+
+
+class Crash(BaseException):
+    """The process stops here: no handler in the connector catches it."""
+
+
+async def restart(ws: Workspace) -> None:
+    """A new connector object over the same graph and sync points: nothing in memory survives."""
+    old, ws.connector = ws.connector, None
+    with contextlib.suppress(Exception):
+        await old.cleanup()
+
+
+def crash_on_write(ws: Workspace, key_suffix: str, data: dict[str, Any]) -> None:
+    """The next write of `data` to the sync point ending in `key_suffix` never happens: the process stops first."""
+    real = ws.sync_points.update_sync_point
+
+    async def update(key: str, written: dict[str, Any]) -> None:
+        if key.endswith(key_suffix) and data.items() <= written.items():
+            ws.sync_points.update_sync_point = real
+            raise Crash
+        await real(key, written)
+
+    ws.sync_points.update_sync_point = update
+
+
+def crash_on_reset(ws: Workspace, key_suffix: str) -> None:
+    """The next reset of the token ending in `key_suffix` never happens: the process stops first."""
+    real = ws.sync_points.delete_sync_point
+
+    async def delete(key: str) -> None:
+        if key.endswith(key_suffix):
+            ws.sync_points.delete_sync_point = real
+            raise Crash
+        await real(key)
+
+    ws.sync_points.delete_sync_point = delete
+
+
+async def crash_in_bobs_shared_read(ws: Workspace) -> None:
+    """Bob's shared-with-me read stops after it has written its items, before it finishes."""
+    connector = await ws.connector_()
+    real = connector._process_shared_with_me_items
+
+    async def process(**kwargs: object) -> tuple[list, int, int]:
+        out = await real(**kwargs)
+        if getattr(kwargs["user"], "email", None) == BOB:
+            raise Crash
+        return out
+
+    connector._process_shared_with_me_items = process
+
+
+def bob_checkpoint(ws: Workspace) -> dict[str, Any]:
+    return ws.sync_points.value(f"/users/{ws.world.users[BOB].user_id}") or {}
+
+
+async def tightened_and_left_out(ws: Workspace) -> dict[str, set[tuple[Optional[str], str, str]]]:
+    """Both drives stored as unrestricted, then made members-only at the source, which answers without restrictions.
+    Returns the grants before, which the drives get back once they are unrestricted again."""
+    await stored_as_unrestricted(ws)
+    before = all_grants(ws)
+    for drive in ("sd-1", "sd-2"):
+        ws.world.drives[drive]["restrictions"] = MEMBERS_ONLY
+    restrictions_left_out(ws, True)
+    return before
+
+
+async def lifted_with_the_object(ws: Workspace, before: dict[str, set[tuple[Optional[str], str, str]]]) -> None:
+    for drive in ("sd-1", "sd-2"):
+        ws.world.drives[drive]["restrictions"] = {}
+    restrictions_left_out(ws, False)
+    await ws.sync()
+    assert ws.incomplete is False
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["assumed"] is False
+    assert bob_checkpoint(ws).get("reseed_shared_with_me") is not True
+    assert all_grants(ws) == before
+
+
+@pytest.mark.parametrize("stop", ["at the first token reset", "after the resets, before the mark"])
+async def test_a_restart_between_the_token_reset_and_the_mark_reads_the_drive_again_under_the_assumed_limits(
+    ws: Workspace, stop: str
+) -> None:
+    before = await tightened_and_left_out(ws)
+    if stop == "at the first token reset":
+        crash_on_reset(ws, "_sd-1")
+    else:
+        crash_on_write(ws, "shared_drive_restrictions_sd-1", {"assumed": True})
+    with pytest.raises(Crash):
+        await ws.sync()
+    assert not ws.sync_points.value("shared_drive_restrictions_sd-1").get("assumed")
+
+    await restart(ws)
+    await ws.sync()  # still left out: no mark was stored, so this run resets and reads again
+    assert ws.incomplete is True
+    assert f1_people(ws) == MEMBERS and BOB not in g1_people(ws)
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["assumed"] is True
+
+    await restart(ws)
+    await lifted_with_the_object(ws, before)
+
+
+async def test_a_restart_after_the_mark_finishes_the_interrupted_shared_read_under_the_assumed_limits(
+    ws: Workspace,
+) -> None:
+    before = await tightened_and_left_out(ws)
+    await crash_in_bobs_shared_read(ws)
+    await ws.sync()  # Bob's sync stops partway; the run ends incomplete
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["assumed"] is True
+    assert bob_checkpoint(ws)["reseed_shared_with_me"] is True  # kept: the read did not finish
+
+    await restart(ws)
+    await ws.sync()  # still left out: the mark is stored, so tokens stay, and Bob's read is done again
+    assert ws.incomplete is True
+    assert f1_people(ws) == MEMBERS and BOB not in g1_people(ws)
+    assert bob_checkpoint(ws)["reseed_shared_with_me"] is False
+
+    await restart(ws)
+    await lifted_with_the_object(ws, before)
+
+
+async def test_a_shared_read_interrupted_after_a_limit_is_lifted_is_finished_by_a_new_process(ws: Workspace) -> None:
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[BOB_WRITES])
+    await ws.sync()
+    assert BOB not in g1_people(ws)
+
+    ws.world.drives["sd-2"]["restrictions"] = {}
+    await crash_in_bobs_shared_read(ws)
+    await ws.sync()
+    assert bob_checkpoint(ws)["reseed_shared_with_me"] is True  # cleared only after a complete read
+
+    await restart(ws)
+    await ws.sync()
+    assert ws.incomplete is False
+    assert BOB in g1_people(ws)
+    assert bob_checkpoint(ws)["reseed_shared_with_me"] is False
+
+
+async def test_a_new_process_heals_a_drive_marked_assumed_on_the_first_answer_with_restrictions(ws: Workspace) -> None:
+    before = await tightened_and_left_out(ws)
+    await ws.sync()
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["assumed"] is True
+    assert f1_people(ws) == MEMBERS and BOB not in g1_people(ws)
+
+    await restart(ws)
+    await lifted_with_the_object(ws, before)
+
+
+def bob_as(role: str) -> dict[str, str]:
+    return {"type": "user", "role": role, "emailAddress": BOB}
+
+
+# A reader or commenter of a shared drive item is answered an empty permission list: their grant is their own.
+@pytest.mark.parametrize("role", ["reader", "commenter"])
+async def test_a_reader_of_a_file_shared_out_of_a_drive_is_cut_on_the_run_a_limit_is_set(ws: Workspace, role: str) -> None:
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"})
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[bob_as(role)])
+    await ws.sync()
+    assert BOB in g1_people(ws)
+
+    ws.world.drives["sd-2"]["restrictions"] = MEMBERS_ONLY
+    await ws.sync()
+    assert BOB not in g1_people(ws)
+
+    ws.world.drives["sd-2"]["restrictions"] = {}
+    await ws.sync()
+    assert BOB in g1_people(ws)
+
+
+@pytest.mark.parametrize("role", ["reader", "commenter"])
+async def test_a_reader_of_a_file_shared_out_of_a_drive_is_cut_while_its_restrictions_are_left_out(
+    ws: Workspace, role: str
+) -> None:
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"})
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[bob_as(role)])
+    await ws.sync()
+    assert BOB in g1_people(ws)
+
+    restrictions_left_out(ws, True)
+    await ws.sync()
+    assert ws.incomplete is True
+    assert BOB not in g1_people(ws)
+
+    restrictions_left_out(ws, False)
+    await ws.sync()
+    assert BOB in g1_people(ws)
+
+
+@pytest.mark.parametrize("role", ["reader", "commenter"])
+async def test_a_reader_of_a_file_shared_out_of_a_drive_gets_it_back_when_its_limit_is_lifted(
+    ws: Workspace, role: str
+) -> None:
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[bob_as(role)])
+    await ws.sync()
+    assert BOB not in g1_people(ws)
+
+    ws.world.drives["sd-2"]["restrictions"] = {}
+    await ws.sync()
+    assert BOB in g1_people(ws)
+
+
+def shared_listings(ws: Workspace) -> int:
+    return len([r for r in ws.http.calls("GET", "/drive/v3/files") if "sharedWithMe" in r.query.get("q", "")])
+
+
+async def test_a_file_that_fails_during_a_shared_read_is_read_again_by_id_until_it_succeeds(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[BOB_WRITES])
+    ws.world.add_item("g2", "notes.txt", parent="sd-2", perms=[BOB_WRITES])
+    await ws.sync()
+    assert BOB not in g1_people(ws)
+
+    # Lifting the limit changes Bob's grant on g1, but not g1: no feed reports it, and its read keeps failing.
+    ws.world.drives["sd-2"]["restrictions"] = {}
+    ws.http.fail("GET", "/drive/v3/files/g1/permissions", 500, "backendError")
+    for _ in range(MAX_HELD_RUNS + 1):  # past the runs a failure holds the checkpoint for
+        await ws.sync()
+        assert bob_checkpoint(ws)["reseed_shared_with_me"] is True
+    assert bob_checkpoint(ws)["failed_items"] == ["g1"]
+    assert BOB in {who for who, _, _ in ws.grants("g2")} and BOB not in g1_people(ws)
+
+    await restart(ws)
+    ws.http.clear_faults()
+    listings = shared_listings(ws)
+    await ws.sync()
+    assert BOB in g1_people(ws)
+    assert bob_checkpoint(ws)["reseed_shared_with_me"] is False and bob_checkpoint(ws)["failed_items"] == []
+    assert shared_listings(ws) == listings  # read again by id, not by listing everything shared with Bob
+
+
+async def test_an_item_that_fails_while_a_drive_is_read_under_assumed_limits_is_read_again_until_it_succeeds(
+    ws: Workspace,
+) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    await stored_as_unrestricted(ws)
+    ws.world.drives["sd-1"]["restrictions"] = MEMBERS_ONLY
+    restrictions_left_out(ws, True)
+    ws.http.fail("GET", "/drive/v3/files/f1/permissions", 500, "backendError")
+    for _ in range(MAX_HELD_RUNS + 1):
+        await ws.sync()
+    assert ws.incomplete is True
+
+    await restart(ws)
+    ws.http.clear_faults()
+    await ws.sync()  # still left out: the drive is not listed again, f1 alone is read again by id
+    assert f1_people(ws) == MEMBERS
+
+
+async def g1_left_to_retry(ws: Workspace) -> None:
+    """sd-2 (no synced member) holds g1, which Bob writes and whose read keeps failing, and g2, which Bob reads.
+    After the runs a failure holds Bob's checkpoint for, g1 is left on it to read again by id."""
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"})
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[BOB_WRITES])
+    ws.world.add_item("g2", "notes.txt", parent="sd-2", perms=[bob_as("reader")])
+    ws.http.fail("GET", "/drive/v3/files/g1/permissions", 500, "backendError")
+    for _ in range(MAX_HELD_RUNS):
+        await ws.sync()
+    assert bob_checkpoint(ws)["failed_items"] == ["g1"]
+
+
+def g2_people(ws: Workspace) -> set[str]:
+    return {who for who, _, _ in ws.grants("g2")}
+
+
+async def test_a_retry_list_left_from_an_earlier_read_never_stands_in_for_a_full_shared_read(ws: Workspace) -> None:
+    await g1_left_to_retry(ws)
+    assert BOB in g2_people(ws)
+
+    # g2 does not change; only the drive's limit does. Reading g1 alone again would leave Bob on g2.
+    ws.world.drives["sd-2"]["restrictions"] = MEMBERS_ONLY
+    await restart(ws)
+    await ws.sync()
+    assert BOB not in g2_people(ws)
+    assert bob_checkpoint(ws)["reseed_shared_with_me"] is True  # g1 still fails
+
+    ws.http.clear_faults()
+    await restart(ws)
+    await ws.sync()
+    assert BOB not in g2_people(ws) and BOB not in g1_people(ws)
+    assert bob_checkpoint(ws)["reseed_shared_with_me"] is False
+
+
+async def test_a_drive_retry_list_never_stands_in_for_the_full_read_a_limit_change_asks_for(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    restricted_drive(ws)
+    ws.world.add_item("f2", "notes.txt", parent="sd-1", perms=[reader(PARTNER)])
+    ws.http.fail("GET", "/drive/v3/files/f1/permissions", 500, "backendError")
+    for _ in range(MAX_HELD_RUNS):
+        await ws.sync()
+    assert ws.sync_points.value(f"/drives/{ws.world.users[ALICE].user_id}_sd-1")["failed_items"] == ["f1"]
+    assert PARTNER in {who for who, _, _ in ws.grants("f2")}
+
+    ws.world.drives["sd-1"]["restrictions"] = MEMBERS_ONLY  # f2 does not change
+    await restart(ws)
+    await ws.sync()
+    assert PARTNER not in {who for who, _, _ in ws.grants("f2")}
+
+
+async def test_an_item_retried_by_id_that_fails_again_does_not_hold_the_users_feed(ws: Workspace) -> None:
+    await g1_left_to_retry(ws)  # past the hold: the token moved on, g1 left to retry
+    token = bob_checkpoint(ws)["pageToken"]
+
+    ws.world.add_item("g3", "later.txt", parent="sd-2", perms=[BOB_WRITES])  # a change in Bob's feed
+    await ws.sync()  # g1 fails once more, now as a retry
+    assert bob_checkpoint(ws)["pageToken"] != token
+    assert not bob_checkpoint(ws).get("heldFailedItemRuns")
+    assert bob_checkpoint(ws)["failed_items"] == ["g1"]
+    assert BOB in {who for who, _, _ in ws.grants("g3")}
+
+
+async def test_an_item_retried_by_id_that_fails_again_does_not_hold_the_drives_feed(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    restricted_drive(ws)
+    ws.http.fail("GET", "/drive/v3/files/f1/permissions", 500, "backendError")
+    for _ in range(MAX_HELD_RUNS):
+        await ws.sync()
+    key = f"/drives/{ws.world.users[ALICE].user_id}_sd-1"
+    token = ws.sync_points.value(key)["pageToken"]
+
+    ws.world.add_item("f3", "later.txt", parent="sd-1", perms=[reader(CAROL)])  # a change in the drive's feed
+    await ws.sync()  # f1 fails once more, now as a retry
+    assert ws.sync_points.value(key)["pageToken"] != token
+    assert not ws.sync_points.value(key).get("heldFailedItemRuns")
+    assert ws.sync_points.value(key)["failed_items"] == ["f1"]
+    assert CAROL in {who for who, _, _ in ws.grants("f3")}
+
+
+async def test_a_failed_item_trashed_before_it_could_be_read_again_is_not_written(ws: Workspace) -> None:
+    await g1_left_to_retry(ws)
+    assert "memo.txt" not in ws.names()  # never written: its read failed every time
+
+    ws.world.trash("g1")
+    ws.http.clear_faults()
+    await ws.sync()
+    assert "memo.txt" not in ws.names()
+    assert bob_checkpoint(ws)["failed_items"] == []
+
+
+async def test_a_failed_retry_is_logged_with_its_status_and_reason_but_no_id(
+    ws: Workspace, caplog: pytest.LogCaptureFixture
+) -> None:
+    await g1_left_to_retry(ws)
+    ws.http.fail("GET", "/drive/v3/files/g1", 403, "insufficientFilePermissions")
+    caplog.clear()
+    await ws.sync()
+    retried = [r.getMessage() for r in caplog.records if "read again" in r.getMessage() and "403" in r.getMessage()]
+    assert retried and "insufficientFilePermissions" in retried[0]
+    assert "g1" not in retried[0] and BOB not in retried[0]
+
+
+async def test_an_unreadable_answer_for_a_new_drive_shares_nothing(ws: Workspace) -> None:
+    restricted_drive(ws)
+    ws.world.restrictions_unlisted = ws.world.restrictions_unreadable = True
+    await ws.sync()
+    assert ws.incomplete is True
+    assert f1_people(ws) <= MEMBERS
+
+    ws.world.restrictions_unlisted = ws.world.restrictions_unreadable = False
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE
 
 
 async def test_the_organization_drive_listing_asks_for_the_restrictions(ws: Workspace) -> None:

@@ -158,9 +158,16 @@ database, and the doctor command should too):
    attributes, every membership edge with its ADMIN/INHERIT/SET options, role and database settings, ACLs on databases, schemas,
    relations, columns, functions, types, languages, large objects and foreign servers, default privileges, policies, RLS and FORCE
    flags, rules, triggers, constraints, indexes, view and function definitions (hashed), SECURITY DEFINER / LEAKPROOF flags and function
-   settings, operators and casts, built-in function attributes (name, arguments, language, owner, SECURITY DEFINER, LEAKPROOF, volatility, kind, settings; not the OID, body or library path, which differ between builds of one major; one hash per PostgreSQL major, `sysfuncs@17 ...`, and a line for any built-in that is SECURITY DEFINER or has settings), extensions, foreign data, publications, subscriptions and event triggers. A live line that is not
+   settings, operators and casts, built-in function attributes (name, arguments, language, owner, SECURITY DEFINER, LEAKPROOF, volatility, kind, settings; not the OID, body or library path, which differ between builds of one major; a hash per PostgreSQL major, `sysfuncs@17 ...`, and a line for any built-in that is SECURITY DEFINER or has settings), extensions, foreign data, publications, subscriptions and event triggers. A live line that is not
    expected, or an expected line that is not live, is a violation (rule `50`). A change to any of it shows up as a diff in the pull
    request that makes it: regenerate with `UPDATE_SURFACE=1 pytest` (or `python -m db.surface` on a migrated database) and review.
+   A minor release can add a built-in, so the snapshot keeps one reviewed `sysfuncs@<major>` line per minor release in use, and a
+   server passes when it matches any of them (installs on an earlier minor keep passing). To accept a new minor, run
+   `PG_ADMIN_URL=<new minor> python -m db.surface --sysfuncs <stock server of a reviewed minor>`: it prints the built-ins added (`+`)
+   and removed (`-`) as `name(args):language:owner is the bootstrap superuser:secdef:leakproof:volatility:kind:settings`. If none
+   is SECURITY DEFINER, LEAKPROOF or has settings, add the new line and keep the old ones. The `sysfunc` lines are never relaxed. The
+   CI images in `.github/workflows/db-migrations.yml` are pinned by digest, like `deployment/docker-compose/postgres/Dockerfile`: bump
+   both together in a pull request that adds any new `sysfuncs` line.
    `PG_MIGRATE_SURFACE_CHECK=skip` switches the comparison off (development only). It is skipped while a restore window is open.
 2. **Semantic checks** (`kernel.rls_violations`, checks 01-51), which say why: every relation outside schema `kernel` is registered
    (org, lineage, global or internal), keys and foreign keys lead with `org_id`, policies match their templates, `pg_temp` is
