@@ -12,6 +12,9 @@ a ``remove:`` key drops base lines the location replaces),
 plus the files named in ``PG_MIGRATE_SURFACE_FILES`` (os.pathsep separated). A line that is live but not expected,
 or expected but not live, is a violation. ``PG_MIGRATE_SURFACE_CHECK=skip`` turns the comparison off (development only).
 Regenerate a file with ``python -m db.surface`` on a freshly migrated database and review the diff.
+
+``python -m db.surface --sysfuncs [OTHER_URL]`` lists the built-in functions behind the ``sysfuncs@<major>`` hash, or, with a
+second server (a stock one of a reviewed minor release), prints ``+``/``-`` for the built-ins added or removed in ``PG_ADMIN_URL``.
 """
 import os
 import re
@@ -53,6 +56,13 @@ _FOLD_SELECT = f"""SELECT c.oid FROM pg_class c JOIN kernel.rls_registry g ON g.
           = (SELECT string_agg(e, ',' ORDER BY e) FROM unnest(ARRAY[s.backup || ':SELECT:false', s.restore || ':INSERT:false']) e)
       AND {_POLICIES.format(rel="c.oid")} = {_POLICIES.format(rel="r.oid")}"""
 _NOT_FOLDED = "NOT EXISTS (SELECT 1 FROM (" + _FOLD_SELECT + ") f WHERE f.oid = {rel})"
+
+# One built-in function as the sysfuncs hash sees it: name(args):language:owner is the bootstrap superuser:secdef:leakproof:volatility:kind:settings
+_SYSFUNC_ROW = """p.oid::regprocedure || ':' || l.lanname || ':' || (p.proowner = 10) || ':' || p.prosecdef
+        || ':' || p.proleakproof || ':' || p.provolatile::text || ':' || p.prokind::text || ':' || COALESCE(array_to_string(p.proconfig, ','), '')"""
+_SYSFUNC_ORDER = '(p.oid::regprocedure::text) COLLATE "C"'
+_SYSFUNC_FROM = f"FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang WHERE {_SYS} AND p.oid < 16384"
+SYSFUNC_ROWS = f"SELECT {_SYSFUNC_ROW} {_SYSFUNC_FROM} ORDER BY {_SYSFUNC_ORDER}"
 
 QUERIES = [
     ("role", f"""SELECT r.rolname || ' login=' || r.rolcanlogin || ' super=' || r.rolsuper || ' inherit=' || r.rolinherit || ' createrole=' || r.rolcreaterole
@@ -170,10 +180,8 @@ QUERIES = [
     # on the database locale. The body (prosrc) and probin are left out on purpose: they can differ between builds (distribution packages,
     # library paths) and only a superuser, who is outside the threat model, can change them.
     # A readable line follows for any built-in that runs with its owner's rights or has settings.
-    ("sysfuncs", f"""SELECT 'count=' || count(*) || ' md5=' || md5(string_agg(p.oid::regprocedure || ':' || l.lanname || ':' || (p.proowner = 10) || ':' || p.prosecdef
-        || ':' || p.proleakproof || ':' || p.provolatile::text || ':' || p.prokind::text || ':' || COALESCE(array_to_string(p.proconfig, ','), ''), E'\\n'
-        ORDER BY (p.oid::regprocedure::text) COLLATE "C"))
-        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang WHERE {_SYS} AND p.oid < 16384"""),
+    # Minor releases can add built-ins, so the snapshot may hold one reviewed line per minor (see diff); `--sysfuncs` lists the hashed rows.
+    ("sysfuncs", f"""SELECT 'count=' || count(*) || ' md5=' || md5(string_agg({_SYSFUNC_ROW}, E'\\n' ORDER BY {_SYSFUNC_ORDER})) {_SYSFUNC_FROM}"""),
     ("sysfunc", f"""SELECT p.oid::regprocedure || ' language=' || l.lanname || ' secdef=' || p.prosecdef || ' config=' || COALESCE(array_to_string(p.proconfig, ';'), '-')
         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang
         WHERE {_SYS} AND p.oid < 16384 AND (p.prosecdef OR p.proconfig IS NOT NULL)"""),
@@ -272,7 +280,12 @@ def expected_lines(files: Iterable[Path]) -> set[str]:
 
 
 def diff(live: Iterable[str], expected: set[str]) -> list[tuple[str, str]]:
+    """``expected`` holds the lines of one major. Its ``sysfuncs@`` lines are alternatives (one per reviewed minor release): matching
+    any of them is enough. No other line is relaxed, so a ``sysfunc`` line (SECURITY DEFINER or settings) must still be listed."""
     live = set(live)
+    reviewed = {x for x in expected if x.startswith("sysfuncs@")}
+    if reviewed & live:
+        expected = (expected - reviewed) | (reviewed & live)
     return ([("50 surface: unexpected", line) for line in sorted(live - expected)]
             + [("50 surface: missing", line) for line in sorted(expected - live)])
 
@@ -311,13 +324,34 @@ def violations(conn: psycopg.Connection, extra: Iterable[str] = ()) -> list[tupl
     return diff(live, expected)
 
 
+def sysfunc_rows(conn: psycopg.Connection) -> list[str]:
+    """The rows the ``sysfuncs`` hash is taken over, in its order: md5 of them joined by newlines is the hash."""
+    with conn.transaction():
+        conn.execute("SET LOCAL search_path = pg_catalog")
+        return [r[0] for r in conn.execute(SYSFUNC_ROWS)]
+
+
+def _url(url: str) -> str:
+    return url.replace("postgresql+psycopg://", "postgresql://")
+
+
 def main() -> int:
-    url = os.environ.get("PG_ADMIN_URL", "").replace("postgresql+psycopg://", "postgresql://")
+    argv = sys.argv[1:]
+    url = _url(os.environ.get("PG_ADMIN_URL", ""))
     if not url:
         print("surface: PG_ADMIN_URL is not set", file=sys.stderr)
         return 2
     with psycopg.connect(url, autocommit=True) as conn:
-        sys.stdout.write("\n".join(live_lines(conn)) + "\n")
+        if argv[:1] != ["--sysfuncs"]:
+            sys.stdout.write("\n".join(live_lines(conn)) + "\n")
+            return 0
+        here = sysfunc_rows(conn)
+    if len(argv) == 1:
+        sys.stdout.write("\n".join(here) + "\n")
+        return 0
+    with psycopg.connect(_url(argv[1]), autocommit=True) as conn:       # a stock server of a reviewed minor release
+        there = set(sysfunc_rows(conn))
+    sys.stdout.write("".join(f"+ {x}\n" for x in sorted(set(here) - there)) + "".join(f"- {x}\n" for x in sorted(there - set(here))))
     return 0
 
 
