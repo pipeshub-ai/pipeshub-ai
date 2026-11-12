@@ -1292,6 +1292,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Accessible-records cache closed")
     except Exception as e:
         logger.error(f"❌ Error closing accessible-records cache: {e}")
+    try:
+        from app.connectors.sources.localKB.push import api as kb_push_api
+
+        await kb_push_api.close_runtime(app)
+    except Exception as e:
+        logger.warning(f"Error stopping the knowledge-base push runtime at shutdown: {e}")
     # Shutdown all container resources
     try:
         await shutdown_container_resources(app_container)
