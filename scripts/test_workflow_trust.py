@@ -1805,3 +1805,16 @@ class TestCalledWorkflowPermissions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestQaBotCommitsArePlain(unittest.TestCase):
+    """The tests /qa adds land as one normal commit on the PR head: no merge, rebase or forced push."""
+
+    def test_the_publish_job_commits_once_on_the_pr_head_and_never_forces(self) -> None:
+        job = yaml.safe_load((REPO / ".github" / "workflows" / "qa-tests.yml").read_text())["jobs"]["publish"]
+        checkout = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout"))
+        self.assertEqual(checkout["with"]["ref"], "${{ inputs.head_sha }}")
+        script = "\n".join(_scripts(job))
+        self.assertEqual(len(re.findall(r"\bcommit -q -s\b", script)), 1)
+        for banned in (r"git\s+(merge|pull|rebase|cherry-pick|am)\b", r"push[^\n]*(--force|\s-f\b|\+HEAD|\+refs)"):
+            self.assertIsNone(re.search(banned, script), banned)
