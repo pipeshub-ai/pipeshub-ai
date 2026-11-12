@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import secrets
 
 import pytest
 
@@ -14,6 +15,8 @@ from app.exceptions.graph_db_exceptions import (
 from app.services.graph_db.postgres import kh_listing
 from app.services.graph_db.postgres.base import NotImplementedInPostgres
 from app.services.graph_db.postgres.kg import listing as kgl
+from app.services.graph_db.postgres.kg import net
+from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
 
 from .pg_support import new_org
@@ -360,3 +363,44 @@ async def test_a_folder_whose_only_readable_child_is_linked_after_deleted_links_
     if not served:
         await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
     assert await folder_arrow(p, org, ["fold", "far"]) is True
+
+
+async def _open_to_all(org: str, rec: str) -> None:
+    """Point ``rec`` at a class that admits every viewer (an empty clause): kg then admits a row the walk denies, as a copy that differs from the graph does."""
+    await _admin("INSERT INTO kg.scope_classes (org_id, id, app_sk, group_sk, clauses, hash) SELECT $1, 990001, k.sk, NULL, '[[]]'::jsonb, $2 FROM kg.node_keys k "
+                 "WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'app1'", org, secrets.token_bytes(16))
+    await _admin("UPDATE kg.records SET class_id = 990001 WHERE org_id = $1 AND id = $2 AND coll = 3", org, rec)
+
+
+@pytest.mark.parametrize("wide", [False, True], ids=["by_class", "by_window"])
+async def test_a_connector_this_process_distrusts_is_listed_and_counted_by_the_walk(pg_db, monkeypatch, wide) -> None:
+    """Once the walk has disagreed with kg about a connector, its listing is the walk's (as ``read.decide``), whatever the mode still says: the page, the total and the rows left to the
+    access check (``by_window``: too many classes for the statement, so every window is asked)."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 12, readable=7)
+    await _open_to_all(org, "r0010")
+    if wide:
+        monkeypatch.setattr(kh_listing, "CLASS_MAX", 0)
+    readable = [f"r{i:04d}" for i in range(7)]
+    ids, _, first = await walk(p, org, 4, granted=7)
+    assert ids == [*readable, "r0010"] and first["total"] == 8                # trusted: kg's answer, which differs from the graph
+    monkeypatch.setattr(net, "DISTRUSTED", {(org, "app1"): None})
+    asked: list[list[str]] = []
+    real = kg_read.decide
+
+    async def spy(tx, o, i, a) -> object:
+        asked.append(list(i))
+        return await real(tx, o, i, a)
+    monkeypatch.setattr(kg_read, "decide", spy)
+    ids, _, first = await walk(p, org, 4, granted=7)
+    assert ids == readable and first["total"] == 7 and not first.get("totalCapped") and first["counts"] == {"record": 7}
+    assert not {i for a in asked for i in a if i.startswith("r")}            # the records are asked of the live check directly, not through kg
+
+
+async def test_a_folder_of_a_connector_this_process_distrusts_shows_the_walks_arrow(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 3, readable_kids=[])
+    await _open_to_all(org, "c0001")
+    assert await folder_arrow(p, org, ["fold"]) is True                      # trusted: kg's class opens c0001
+    monkeypatch.setattr(net, "DISTRUSTED", {(org, "app1"): None})
+    assert await folder_arrow(p, org, ["fold"]) is False

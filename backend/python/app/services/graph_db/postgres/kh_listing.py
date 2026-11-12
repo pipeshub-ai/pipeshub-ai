@@ -22,7 +22,6 @@ from app.exceptions.graph_db_exceptions import (
 )
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import NotImplementedInPostgres, PgBase, _doc
-from app.services.graph_db.postgres.kg import drainer
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.model import CODE_COLL, CODE_EPOCH
@@ -113,7 +112,7 @@ class KhListingMixin(PgBase):
                 hidden = list(await tx.fetchval(kgl.HIDDEN, org, k["sk"]))
                 if len(hidden) > HIDDEN_MAX:
                     raise KnowledgeHubListingTooLarge
-            served = ready and await drainer.serves(tx, org, app_id)
+            served = ready and await kg_read.serves(tx, org, app_id)      # a connector this process distrusts is the walk's, as in ``read.decide``
             return (k["sk"] if ready else None), (k["mode"] if k else "legacy"), (_doc(doc["doc"]) if doc else {}), hidden, served
         app_sk, mode, app_doc, hidden, served = await self._kq(head, transaction)
         if app_sk is None:
@@ -188,7 +187,7 @@ class KhListingMixin(PgBase):
         kg cannot vouch for (``unvouched``) and the few rows no class decides, with the ones among them the access check admits (``walked``). None when the connector is not served or too many rows are
         left to the check: the rows are then asked of the access check one window at a time."""
         async def classes(tx: Tx) -> dict[int, list[list[Any]]] | None:
-            if not await drainer.serves(tx, org, app_id):
+            if not await kg_read.serves(tx, org, app_id):
                 return None
             rows = await tx.fetch(kgl.CLASSES, org, app_sk, CLASS_MAX + 1)
             if len(rows) > CLASS_MAX:

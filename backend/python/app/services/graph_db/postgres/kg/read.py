@@ -98,6 +98,11 @@ async def class_verdicts(tx: Tx, org: str, classes: dict[int, list[list[Any]]], 
     return out
 
 
+async def serves(tx: Tx, org: str, app: str) -> bool:
+    """Whether kg answers access for the connector's rows: ``drainer.serves`` and not distrusted by this process (:mod:`net`). Every reader that decides access from kg asks this."""
+    return not (net.DISTRUSTED and await net.distrusted(tx, org, app)) and await drainer.serves(tx, org, app)
+
+
 async def decide(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> Decision:
     """Classify the asked nodes: admitted by kg, denied by kg, or left to the walk (module docstring). Runs in one snapshot."""
     d = Decision()
@@ -130,7 +135,7 @@ async def decide(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> De
             to_walk(i, "no_app")
             continue
         if app not in served:
-            served[app] = not (net.DISTRUSTED and await net.distrusted(tx, org, app)) and await drainer.serves(tx, org, app)
+            served[app] = await serves(tx, org, app)
         if not served[app]:
             to_walk(i, "not_current")
         elif r["deleted"]:
