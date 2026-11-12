@@ -1,9 +1,13 @@
 """The parameters of a hop page: where the cursor is decides which branches of the statement read, and from where."""
 import pytest
 
-from app.services.graph_db.postgres.codegraph import _hop_args
+from app.services.graph_db.postgres.codegraph import _cursor, _decode_cursor, _hop_args
 
 SEP = "\x01"
+
+
+def cur(anchor: str, d: str, coll: str, key: str, rel: str, edge_coll: str, ekey: str) -> str:
+    return _cursor({"anchor": anchor, "dir": d, "coll": coll, "key": key, "rel": rel, "edge_coll": edge_coll, "ekey": ekey})
 
 
 def args(anchors: list[str], after: str, *, out: bool = True, inn: bool = True, both: bool = False) -> list:
@@ -16,26 +20,33 @@ def test_the_first_page_reads_every_anchor_from_its_start() -> None:
 
 
 def test_a_cursor_in_an_anchors_inbound_edges_resumes_there_and_reads_the_later_anchors() -> None:
-    a = args(["a", "b", "c"], SEP.join(["b", "inbound", "blocks", "k", "CALLS", "nodeRelations", "CALLS"]))
+    a = args(["a", "b", "c"], cur("b", "inbound", "blocks", "k", "CALLS", "nodeRelations", "CALLS"))
     assert a[7] is True and a[8] == "b" and a[9:14] == ["", "", "", "", ""]                                   # outbound edges of b all follow a cursor in its inbound edges
     assert a[15] is True and a[17:22] == ["blocks", "k", "CALLS", "nodeRelations", "CALLS"]                    # the inbound ones resume after it
     assert a[14] == ["c"] and a[22] == ["c"]
 
 
 def test_a_cursor_in_an_anchors_outbound_edges_leaves_its_inbound_edges_behind() -> None:
-    a = args(["a", "b", "c"], SEP.join(["b", "outbound", "blocks", "k", "CALLS", "nodeRelations", "CALLS"]))
+    a = args(["a", "b", "c"], cur("b", "outbound", "blocks", "k", "CALLS", "nodeRelations", "CALLS"))
     assert a[7] is True and a[9:14] == ["blocks", "k", "CALLS", "nodeRelations", "CALLS"] and a[15] is False
 
 
 def test_a_cursor_of_an_anchor_not_asked_for_resumes_with_the_anchors_after_it() -> None:
-    a = args(["a", "z"], SEP.join(["m", "inbound", "blocks", "k", "CALLS", "nodeRelations", "CALLS"]))
+    a = args(["a", "z"], cur("m", "inbound", "blocks", "k", "CALLS", "nodeRelations", "CALLS"))
     assert a[7] is False and a[15] is False and a[14] == ["z"]
 
 
-@pytest.mark.parametrize("bad", ["x", SEP.join(["a", "b"]), SEP.join(["a"] * 8)])
-def test_a_malformed_cursor_is_an_error(bad) -> None:
-    with pytest.raises(ValueError, match="invalid cursor"):
+@pytest.mark.parametrize("bad", ["x", SEP.join(["a", "b"]), SEP.join(["a", "inbound", "blocks", "k", "CALLS", "nodeRelations", "CALLS"]), "v2:" + SEP.join(["a"] * 7), "v2:a"])
+def test_a_cursor_that_is_not_of_the_ordered_page_is_an_error_here(bad: str) -> None:
+    with pytest.raises(ValueError, match="not a cursor"):
         args(["a"], bad)
+
+
+@pytest.mark.parametrize("field", ["plain", "p\x01A", "\x01", "a\\", "\\1", "\\\x01\\", "v2:", "é\x01é", ""])
+def test_a_field_of_any_text_round_trips_through_the_cursor(field: str) -> None:
+    fields = [field, "inbound", "blocks", field, field, "nodeRelations", field]
+    assert _decode_cursor(cur(*fields)) == fields
+    assert SEP not in cur(*fields)[3:].replace(SEP, "", 6)               # the separator of the fields is the only one in it
 
 
 def test_the_directions_asked_for_switch_the_branches() -> None:

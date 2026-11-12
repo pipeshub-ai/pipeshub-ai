@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections import Counter
 
 import asyncpg
 import pytest
@@ -70,8 +71,8 @@ async def _seed(org: str) -> None:
                      org, *([r[n] for r in values[i:i + 500]] for n in range(7)))
 
 
-async def _walk(db, org: str, sql_new: bool, anchors: list[str], types: list[str], direction: str, limit: int) -> list[list[tuple]]:
-    """Every page of the hop, from the first to the last, as (anchor, dir, collection, key, type, cursor) rows."""
+async def _walk(db, org: str, sql_new: bool, anchors: list[str], types: list[str], direction: str, limit: int, *, cursors: bool = False) -> list[list[tuple]]:
+    """Every page of the hop, from the first to the last, as (anchor, dir, collection, key, type) rows, with the cursor of each if asked (the old statement's cursors are another format)."""
     out, after = [], ""
     out_f, in_f, both = direction in ("outbound", "any"), direction in ("inbound", "any"), direction == "any"
     for _ in range(2000):
@@ -81,7 +82,7 @@ async def _walk(db, org: str, sql_new: bool, anchors: list[str], types: list[str
             return list(await tx.fetch(LEGACY, org, ["nodeRelations", "recordLinks"], "blocks", anchors, types, limit, out_f, in_f, both, after))
         with _bound(org):
             rows = await db.run(go)
-        out.append([(r["anchor"], r["dir"], r["coll"], r["key"], r["rel"], r["page_key"]) for r in rows])
+        out.append([(r["anchor"], r["dir"], r["coll"], r["key"], r["rel"], *((r["page_key"],) if cursors else ())) for r in rows])
         if len(rows) < limit:
             return out
         after = rows[-1]["page_key"]
@@ -106,15 +107,15 @@ async def test_every_page_is_the_page_the_old_statement_returned(pg_db) -> None:
 async def test_the_pages_are_the_whole_order_of_the_tuple_byte_wise(pg_db) -> None:
     org = new_org()
     await _seed(org)
-    pages = await _walk(pg_db, org, True, IDS, ["CALLS", "IMPORTS_FROM", "calls", "INHERITS"], "any", 5)
-    keys = [row[5] for page in pages for row in page]
-    assert len(keys) > 100 and keys == sorted(keys, key=lambda k: k.encode("utf-8")) and len(set(keys)) == len(keys)     # strictly increasing, nothing twice
+    pages = await _walk(pg_db, org, True, IDS, ["CALLS", "IMPORTS_FROM", "calls", "INHERITS"], "any", 5, cursors=True)
+    keys = [tuple(f.encode("utf-8") for f in cg._decode_cursor(row[5])) for page in pages for row in page]
+    assert len(keys) > 100 and keys == sorted(keys) and len(set(keys)) == len(keys)     # strictly increasing, nothing twice
 
 
 async def test_a_cursor_in_the_middle_of_a_page_resumes_after_exactly_that_row(pg_db) -> None:
     org = new_org()
     await _seed(org)
-    whole = [r for page in await _walk(pg_db, org, True, IDS, TYPES, "any", 1000) for r in page]
+    whole = [r for page in await _walk(pg_db, org, True, IDS, TYPES, "any", 1000, cursors=True) for r in page]
     for i in (0, 1, len(whole) // 2, len(whole) - 2):
         async def go(tx, after=whole[i][5]) -> list:
             return await cg._hop_page(tx, org, "blocks", IDS, TYPES, 3, out=True, inn=True, both=True, after=after)
@@ -171,7 +172,7 @@ async def test_a_page_of_a_node_of_any_degree_reads_about_a_page_of_its_edges(pg
                  "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 120000) g", org)
     await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'x' || g, 'blocks', 'y' || ((g * 7) % 20000), 'CALLS', "
                  "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 120000) g", org)
-    far = "\x01".join(["hub", "inbound", "blocks", "c090000", "CALLS", "nodeRelations", "CALLS"])
+    far = cg._cursor({"anchor": "hub", "dir": "inbound", "coll": "blocks", "key": "c090000", "rel": "CALLS", "edge_coll": "nodeRelations", "ekey": "CALLS"})
     for state in ("fresh", "analysed"):
         if state == "analysed":
             await _admin("ANALYZE graph.edges")
@@ -183,7 +184,8 @@ async def test_a_page_of_a_node_of_any_degree_reads_about_a_page_of_its_edges(pg
             with _bound(org):
                 plan = await pg_db.run(go)
             assert "edges_by_neighbour_in" in plan and "Seq Scan on" not in plan and "Bitmap Heap Scan" not in plan, (state, after, plan)
-            touched = sum(int(n) for n in re.findall(r"shared (?:hit|read)=(\d+)", plan.split("Planning:")[0].splitlines()[1]))
+            root = next(line for line in plan.splitlines() if line.strip().startswith("Buffers:"))               # the whole statement's, hit and read (a cold cache reads)
+            touched = sum(int(part.split("=")[1]) for part in root.split() if part.startswith(("hit=", "read=")))
             assert touched < 2500, (state, after, touched, plan)                                                         # a page's rows, not the 120,000 of the hub
             if after:
                 assert re.search(r"Index Cond: .*ROW\(", plan), plan                                                  # the cursor is a bound of the index scan
@@ -213,3 +215,80 @@ async def test_the_page_is_planned_for_its_arguments_in_every_run_of_a_unit(pg_d
     finally:
         with _bound(org):
             await p.rollback_transaction(t)
+
+
+SEPS = ["p", "p\x01A", "p\x01", "p\x01\x01", "q", "q\x01x", "p\\1", "é\x01", "p\x01A\x01", "a\\"]
+
+
+async def _seed_separators(org: str) -> list[tuple]:
+    """Edges between ids that hold the separator and the escape (some are prefixes of others) in some types and both edge collections; returns the rows a hop of all of them reads, as (anchor, dir, coll, key, type)."""
+    values = []
+    for i, a in enumerate(SEPS):
+        for j, b in enumerate(SEPS):
+            if (i + 2 * j) % 3 == 0:
+                values.append(("nodeRelations", a, b, "CALLS", '{"relationshipType": "CALLS"}'))
+            if (i * j) % 4 == 1:
+                values.append(("recordLinks", a, b, "CALLS", '{"relationshipType": "CALLS"}'))        # the same neighbour and type in the other edge collection
+            if (i + j) % 5 == 0:
+                values.append(("nodeRelations", a, b, "IMPORTS_FROM", '{"relationshipType": "IMPORTS_FROM"}'))
+    await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, v.c, 'blocks', v.f, 'blocks', v.t, v.k, v.d::jsonb "
+                 "FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS v(c, f, t, k, d)", org, *([r[n] for r in values] for n in range(5)))
+    rows = []
+    for _, a, b, k, _d in values:
+        t = k
+        rows.append((a, "outbound", "blocks", b, t))
+        if a != b:
+            rows.append((b, "inbound", "blocks", a, t))
+    return rows
+
+
+@pytest.mark.parametrize("limit", [1, 2, 7])
+async def test_a_whole_walk_over_ids_that_hold_the_separator_returns_every_row_once_and_ends(pg_db, limit: int) -> None:
+    org = new_org()
+    want = await _seed_separators(org)
+    p = PostgresGraphProvider(logging.getLogger("hop"), pg_db)
+    got, after = [], ""
+    for _ in range(len(want) + 3):
+        with _bound(org):
+            rows = await p.get_neighbors_for_nodes_by_relationship_types(SEPS, "blocks", ["CALLS", "IMPORTS_FROM"], "any", limit=limit, after=after, raise_on_error=True)
+        got += [(r["anchorKey"], r["direction"], r["collection"], r["key"], r["relationshipType"]) for r in rows]
+        if len(rows) < limit:
+            break
+        after = rows[-1]["cursor"]
+    else:
+        raise AssertionError("a walk that never ends")
+    assert len(want) > 50 and Counter(got) == Counter(want) and len(got) == len(want), (len(got), len(want))
+
+
+async def test_a_walk_that_began_with_an_old_cursor_ends_in_the_order_it_began_in(pg_db) -> None:
+    """A cursor of the whole-key order (a walk started before the ordered page): the walk goes on in that order, returns old cursors, and ends with every row after the cursor once."""
+    org = new_org()
+    await _seed_separators(org)
+    p = PostgresGraphProvider(logging.getLogger("hop"), pg_db)
+
+    async def old_walk(after: str, limit: int) -> list[tuple]:
+        out = []
+        for _ in range(500):
+            async def go(tx, after=after) -> list:
+                return list(await tx.fetch(LEGACY, org, ["nodeRelations", "recordLinks"], "blocks", SEPS, ["CALLS", "IMPORTS_FROM"], limit, True, True, True, after))
+            with _bound(org):
+                rows = await pg_db.run(go)
+            out += [(r["anchor"], r["dir"], r["coll"], r["key"], r["page_key"]) for r in rows]
+            if len(rows) < limit:
+                return out
+            after = rows[-1]["page_key"]
+        raise AssertionError("never ends")
+    whole = await old_walk("", 5)
+    assert len(whole) > 50
+    for start in (3, 20, len(whole) - 4):                     # a walk that was at this row when the new code came in
+        got, after = [], whole[start][4]
+        for _ in range(500):
+            with _bound(org):
+                rows = await p.get_neighbors_for_nodes_by_relationship_types(SEPS, "blocks", ["CALLS", "IMPORTS_FROM"], "any", limit=4, after=after, raise_on_error=True)
+            got += [(r["anchorKey"], r["direction"], r["collection"], r["key"], r["cursor"]) for r in rows]
+            if len(rows) < 4:
+                break
+            after = rows[-1]["cursor"]
+        else:
+            raise AssertionError("never ends")
+        assert got == whole[start + 1:], start

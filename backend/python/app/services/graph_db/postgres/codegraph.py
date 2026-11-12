@@ -7,6 +7,7 @@ to the ambient org; the per-record access filter sits in the agent tools (``Reco
 from __future__ import annotations
 
 import json
+import re
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -86,8 +87,7 @@ def _neighbour(r: Any, key: str, coll: str) -> dict[str, Any]:  # noqa: ANN401
 # page of a node of any degree reads about a page of rows and not all its edges: the branches of the anchor the cursor is in carry its position as an index bound, those of the
 # anchors after it start from their first edge. Each returns at most a page, and the page is the first ``limit`` of what they return together.
 _NEIGHBOUR_ORDER = ('anchor COLLATE "C", dir COLLATE "C", coll COLLATE "C", key COLLATE "C", rel COLLATE "C", edge_coll COLLATE "C", ekey COLLATE "C"')
-_HOP_PAGE_SQL = """/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT x.anchor, x.coll, x.key, x.dir, x.rel, x.doc,
-    concat_ws(chr(1), x.anchor, x.dir, x.coll, x.key, x.rel, x.edge_coll, x.ekey) COLLATE "C" AS page_key FROM (
+_HOP_PAGE_SQL = """/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT x.anchor, x.coll, x.key, x.dir, x.rel, x.doc, x.edge_coll, x.ekey FROM (
   (SELECT e.from_id AS anchor, 'outbound' AS dir, e.to_coll AS coll, e.to_id AS key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.coll AS edge_coll, e.ekey, e.doc
      FROM graph.edges e WHERE $8::bool AND e.org_id = $1 AND e.coll IN ('nodeRelations', 'recordLinks') AND e.from_coll = $2 AND e.from_id COLLATE "C" = $9::text
        AND (e.to_coll COLLATE "C", e.to_id COLLATE "C") >= ($10::text, $11::text)
@@ -139,6 +139,24 @@ _HOP_PAGE_WHOLE_KEY_SQL = """/* pipeshub:graph.get_neighbors_for_nodes_by_relati
 _HOP_PROFILE = "/* pipeshub:graph.hop_page_profile */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('enable_seqscan', 'off', true), set_config('max_parallel_workers_per_gather', '0', true)"
 
 
+# A cursor of the paged read is "v2:" and the seven fields of the row's order (anchor, direction, neighbour collection, neighbour id, type, edge collection, edge key), each with "\\" written "\\\\" and the
+# separator "\x01" written "\\1", joined by the separator: every id round-trips, and the order is the tuple's throughout. A cursor without the prefix is one a walk began before this format, in the order of the
+# whole key as one string: it is served by the statement that compares that string and keeps returning cursors of its own kind, so a walk keeps its one order to its end and ends (the key only grows).
+# shortcut: such a walk reads every edge of its anchors per page, as before; it is only a walk started before the upgrade. An anchor id that starts with "v2:" in such a walk would be read as the new format.
+V2 = "v2:"
+
+
+def _cursor(row: Any) -> str:  # noqa: ANN401
+    return V2 + "\x01".join(str(f).replace("\\", "\\\\").replace("\x01", "\\1") for f in (row["anchor"], row["dir"], row["coll"], row["key"], row["rel"], row["edge_coll"], row["ekey"]))
+
+
+def _decode_cursor(after: str) -> list[str]:
+    parts = after[len(V2):].split("\x01") if after.startswith(V2) else []
+    if len(parts) != 7 or parts[1] not in ("inbound", "outbound"):
+        raise ValueError("not a cursor of the ordered neighbour page")
+    return [re.sub(r"\\(.)", lambda m: "\x01" if m.group(1) == "1" else m.group(1), f) for f in parts]
+
+
 def _hop_args(org: str, node_collection: str, node_keys: list[str], types: list[str], limit: int, *, out: bool, inn: bool, both: bool, after: str) -> list[Any]:
     """The parameters of ``_HOP_PAGE_SQL`` for the page after cursor ``after`` (empty: the first page). A cursor is what a page returned, so a malformed one is an error."""
     anchors = sorted(set(node_keys))
@@ -146,9 +164,7 @@ def _hop_args(org: str, node_collection: str, node_keys: list[str], types: list[
         eq_out = eq_in = False
         a, o_after, i_after, gt = "", _NO_AFTER, _NO_AFTER, anchors
     else:
-        parts = after.split("\x01")
-        if len(parts) != 7:
-            raise ValueError("invalid cursor for a neighbour page")
+        parts = _decode_cursor(after)
         a, d, *rest = parts
         o_after = tuple(rest) if d == "outbound" else _NO_AFTER       # the anchor's own outbound edges all follow a cursor that is in its inbound edges
         i_after = tuple(rest)
@@ -157,14 +173,15 @@ def _hop_args(org: str, node_collection: str, node_keys: list[str], types: list[
     return [org, node_collection, types, limit, out, inn, both, out and eq_out, a, *o_after, gt, inn and eq_in, a, *i_after, gt]
 
 
-async def _hop_page(tx: Tx, org: str, node_collection: str, node_keys: list[str], types: list[str], limit: int, *, out: bool, inn: bool, both: bool, after: str) -> list[Any]:
+async def _hop_page(tx: Tx, org: str, node_collection: str, node_keys: list[str], types: list[str], limit: int, *, out: bool, inn: bool, both: bool, after: str) -> list[dict[str, Any]]:
+    """The page after ``after`` with each row's cursor as ``page_key``: of the new format for a first page or a cursor of that format, of the old one (the whole key) for a cursor of the old one."""
     try:
         args = _hop_args(org, node_collection, node_keys, types, limit, out=out, inn=inn, both=both, after=after)
-    except ValueError:      # a cursor that does not split into its seven parts (an id holding the separator): the statement that compares the whole key resumes it, as it always did
-        return list(await tx.fetch(_HOP_PAGE_WHOLE_KEY_SQL, org, _LINK_COLLS, node_collection, node_keys, types, limit, out, inn, both, after))
+    except ValueError:      # a cursor of a walk that began before the ordered page: its own order to its end
+        return [dict(r) for r in await tx.fetch(_HOP_PAGE_WHOLE_KEY_SQL, org, _LINK_COLLS, node_collection, node_keys, types, limit, out, inn, both, after)]
     await tx.fetchval(_HOP_PROFILE)
     # a custom plan every time: after five runs a prepared statement may take the generic plan, which cannot use the cursor bound or the anchor list (as in access.py)
-    return list(await tx.fetch_custom_plan(_HOP_PAGE_SQL, *args))
+    return [{**r, "page_key": _cursor(r)} for r in await tx.fetch_custom_plan(_HOP_PAGE_SQL, *args)]
 
 
 def _page_whole_ids(pointers: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
