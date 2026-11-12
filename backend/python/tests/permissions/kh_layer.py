@@ -12,7 +12,7 @@ holds them to the oracle:
 * facet: a filtered total equals the oracle's count of visible nodes with that value, and a value no visible node
   holds has total 0 (a bucket with no visible item does not exist). The oracle's count, not the listing's rows;
 * browse: the service path (`totalItems`, `counts`, the rows of a folder) against the oracle, and each row's expand arrow against opening that
-  row: it is on exactly when the browse of the row lists something.
+  row: it is on exactly when the browse of the row lists something, and a stub is listed only where opening it lists something.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ MAX_PAGES = 400
 class KhFinding:
     scenario: str
     viewer: str
-    kind: str  # over | under | gap | browse_gap | browse_extra | total | counts | facet | browse | arrow
+    kind: str  # over | under | gap | browse_gap | browse_extra | total | counts | facet | browse | arrow | stub
     detail: str
 
 
@@ -237,4 +237,6 @@ async def _browse(layer: GraphCheckLayer, world: World, viewer: str, seen: dict[
                     add("browse_gap", f"{item_id}: the browse leaves out {missing}, which the viewer may open")
             if bool(getattr(item, "hasChildren", False)) != lists:
                 add("arrow", f"{folder}: {item_id} hasChildren {item.hasChildren}, opening it lists something: {lists}")
+            if getattr(item, "isPlaceholder", False) and not lists:      # a stub is listed only as the way to something the viewer may open
+                add("stub", f"{folder}: lists the stub {item_id}, and opening it lists nothing")
     return found

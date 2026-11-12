@@ -13,7 +13,7 @@ import pytest
 
 from . import gen
 from .kh_layer import KhFinding, check_world, children_of
-from .kh_worlds import KH_WORLDS, OPENSTUB
+from .kh_worlds import DECLSTUB, KH_WORLDS, OPENSTUB
 from .scenario import Scenario, load_all
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(0)]  # sized by the scenario set and PERM_GEN_WORLDS
@@ -72,6 +72,21 @@ async def test_a_stub_on_the_way_to_a_node_the_open_app_reads_is_listed_and_open
         assert await children_of(layer, OPENSTUB, "u", "g", "recordGroup") == {"p": True}, layer.name
         assert await children_of(layer, OPENSTUB, "u", "p", "record") == {"s": True}, layer.name
         await layer.release([OPENSTUB])
+
+
+async def test_a_stub_is_listed_only_where_a_browse_of_the_stub_itself_lists_something(graph_layers) -> None:
+    """A stub's way below it is read as a browse of the stub starts, not as the folder it is listed under: in a declared group that walk starts
+    below a seed, so a stub that leads only to a strict node is not listed, and the group shows no arrow."""
+    for layer in graph_layers:
+        await layer.preload([DECLSTUB])
+        try:
+            assert await children_of(layer, DECLSTUB, "u", "s", "record") == {}, layer.name
+            assert await children_of(layer, DECLSTUB, "u", "d", "recordGroup") == {}, layer.name
+            assert await children_of(layer, DECLSTUB, "u", "g", "recordGroup") == {"d": False}, layer.name
+            bad = _bad(await check_world(layer, DECLSTUB, "declstub"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([DECLSTUB])
 
 
 async def test_the_declared_group_arm_lists_only_its_own_connectors_records(graph_layers) -> None:

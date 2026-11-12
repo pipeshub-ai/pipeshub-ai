@@ -21547,17 +21547,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
         def placeholder_test(v: str, reached: str = "false") -> str:
-            """A stub is listed when a readable node lies below it. ``reached``: whether the browse reaches the stub from the App (a child of the
-            browsed folder: its ``fromApp``); below it the hops read as an expansion of it reads them. A stub only filed in a node is not reached."""
+            """A stub is listed when a readable node lies below it. ``reached``: whether a browse of the stub itself starts from the App (its own
+            ``fromApp``, `walked_from_app`, as the page reads a row's); below it the hops read as that browse reads them. A stub only filed in a node
+            is not reached."""
             if not lists_placeholders:
                 return f"AND NOT {self._kh_placeholder(v, state=state)}"
             # A browse shows a stub only as the way to something readable below it: a path of hierarchy hops, each of which passes the
-            # browse rule, ending at a node that is no stub.
+            # browse rule, ending at a node that is no stub. `reached` is read once, not at every hop.
             below = self._kh_v3_child_rule(
-                "kh_xs", "kh_xp", from_app=reached, opens=app_opens, state=state, grant_once=grant_once)
-            return (f"AND (NOT {self._kh_placeholder(v, state=state)} OR EXISTS {{ ({v}) "
+                "kh_xs", "kh_xp", from_app="kh_xfa", opens=app_opens, state=state, grant_once=grant_once)
+            return (f"AND (NOT {self._kh_placeholder(v, state=state)} OR EXISTS {{ WITH app, {v} AS kh_xv, {reached} AS kh_xfa MATCH (kh_xv) "
                     f"((kh_xp)-[kh_xr:NODE_RELATION]->(kh_xs) WHERE kh_xr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
                     f"AND ({below})){{1,50}} (kh_xz) WHERE NOT {self._kh_placeholder('kh_xz', state=state)} }})")
+
+        def walked_from_app(v: str) -> str:
+            """What a browse of ``v`` itself would start from (`fromApp`): a row below two parents may be reached from the App by one and not the
+            other, so it is the row's own, not that of the folder it is listed under."""
+            return self._kh_v3_row_from_app(
+                v, hop=self._kh_v3_granted_hop("kh_oc", "kh_op", state=state, grant_once=grant_once, opens=app_opens), hierarchy=hierarchy)
         deleted, hides = self._kh_deleted, self._kh_hides
         hop = self._kh_v3_granted_hop("ca", "pa", state=state, grant_once=probe is not None and listing_by_probe)
         # NODE_RELATION also holds untyped edges and links not yet split off it.
@@ -21584,7 +21591,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "OR toUpper(coalesce(node.recordType, '')) = 'FOLDER')"
             )
             expr = _cypher_kh_has_children(
-                "node", rule, app_opens, lambda v: placeholder_test(v, row_from_app), container, exact=not flatten, chain_tops=not row,
+                "node", rule, app_opens, lambda v: placeholder_test(v, walked_from_app(v)), container, exact=not flatten, chain_tops=not row,
                 stub_filed=placeholder_test,
                 reached=row_from_app if row and scoped_start and not flatten else "true")
             # $grantedIds holds only the App's direct children here: every grant test, the rule's and the
@@ -21592,10 +21599,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return self._kh_grants_by_probe(expr) if probe is not None and not listing_by_probe else expr
 
         def own_from_app() -> str:
-            """What a browse of the row itself would start from (`fromApp`), the one value the row's arrow and its openable test read: a row below
-            two parents may be reached from the App by one and not the other, so it is the row's own, not that of the folder it is listed under."""
-            expr = self._kh_v3_row_from_app(
-                "node", hop=self._kh_v3_granted_hop("kh_oc", "kh_op", state=state, grant_once=grant_once), hierarchy=hierarchy)
+            """The row's own `fromApp` (`walked_from_app`), the one value the row's arrow and its openable test read."""
+            expr = walked_from_app("node")
             return self._kh_grants_by_probe(expr) if probe is not None and not listing_by_probe else expr
 
         def held_by_row() -> str:
@@ -22088,7 +22093,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WHERE (node:Record OR node:RecordGroup)
           AND node.id IS NOT NULL
           AND node.orgId = $org_id
-          {placeholder_test("node", "true")}
+          {placeholder_test("node", slim_from_app)}
         WITH {slim} AS node
         {tail}
         {enrich}
@@ -22126,7 +22131,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                          AND n <> start
                          AND n.orgId = $org_id
                          AND n.id IS NOT NULL
-                         {placeholder_test("n", "fromApp")}] AS rawNodes
+                         {placeholder_test("n", walked_from_app("n"))}] AS rawNodes
             UNWIND rawNodes + [null] AS node
             WITH app, fromApp, CASE WHEN node IS NULL THEN true ELSE false END AS sentinel,
                  CASE WHEN node IS NULL THEN {{

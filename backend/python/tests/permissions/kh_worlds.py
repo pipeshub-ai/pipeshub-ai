@@ -301,5 +301,19 @@ grants: [[u, h], [u, r]]
 gates: [[u, A]]
 """))
 
+# DECLSTUB: a stub in a declared group the walk from the App reaches, granted to the viewer, over a strict node it leads to: a browse of the stub
+# starts below a seed (the walk does not pass the declaration), where the strict node is not read, so the group lists no stub and shows no arrow
+DECLSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [g], inherits: [g], belongs: [g]}
+  - {id: s, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [d], belongs: [d]}
+  - {id: t, kind: record, connector: A, rule: STRICT, parents: [s], inherits: [s]}
+grants: [[u, g], [u, s]]
+gates: [[u, A]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
-             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN]
+             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB]
