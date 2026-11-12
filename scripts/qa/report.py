@@ -88,6 +88,30 @@ def _model_text(text: str, limit: int) -> str:
     return text.replace("@", "@\u200b").replace("<!--", "&lt;!--")
 
 
+NOTEBOOK_MARK = "<!-- qa-notebook:"
+
+
+def notebook_line(notebook: dict[str, Any]) -> str:
+    """The notebook as one hidden line of the PR comment, read back by the next /qa run on this PR."""
+    import base64
+    return NOTEBOOK_MARK + base64.b64encode(json.dumps(notebook, separators=(",", ":")).encode()).decode() + " -->"
+
+
+def notebook_from_comments(comments: list[dict[str, Any]], author: str = "github-actions[bot]") -> Any:
+    """The newest notebook in the bot's own comments (anyone can post a comment that looks like one)."""
+    import base64
+    for c in reversed(comments):
+        if (c.get("user") or {}).get("login") != author:
+            continue
+        for line in str(c.get("body") or "").splitlines():
+            if line.startswith(NOTEBOOK_MARK) and line.endswith(" -->"):
+                try:
+                    return json.loads(base64.b64decode(line[len(NOTEBOOK_MARK):-4], validate=True))
+                except (ValueError, json.JSONDecodeError):
+                    return None
+    return None
+
+
 def agent_section(doc: dict[str, Any]) -> list[str]:
     """The QA agent's analysis. It never changes the gate, which reads the test results only."""
     v = doc.get("verdict") or {}
@@ -98,6 +122,14 @@ def agent_section(doc: dict[str, Any]) -> list[str]:
         for c in combined.get("conflicts", []):
             lines.append(f"- Conflict: #{c['pr']} against " + ", ".join(f"#{n}" for n in c.get("against", [])) +
                          " in " + ", ".join(f"`{f}`" for f in c.get("files", [])[:10]) + f" (resolved in `{str(c.get('commit', ''))[:10]}`)")
+        lines.append("")
+    prev = doc.get("previous")
+    if prev:
+        lines.append(f"Run {int(prev.get('runs') or 0) + 1} on this PR; the last run tested `{str(prev.get('head', ''))[:10]}` "
+                     f"(verdict {prev.get('verdict', 'none')}).")
+        if v.get("since_last"):
+            lines += ["", "| Earlier finding | Now | Evidence |", "| --- | --- | --- |"]
+            lines += [f"| {_model_text(f['title'], 120)} | {f['now']} | {_model_text(f.get('evidence'), 200)} |" for f in v["since_last"][:20]]
         lines.append("")
     if v:
         lines += [f"**Verdict: {v.get('verdict', 'unsure')}** (Claude's judgment; the gate comes from the test results only)", "",
@@ -147,6 +179,13 @@ def render(cfg: Config, plan: dict[str, Any], results: dict[str, Any] | None, al
 
     if plan.get("agent"):
         lines += agent_section(plan["agent"])
+        notebook = plan["agent"].get("notebook")
+        if notebook:
+            from . import agent as agent_mod
+            checked = agent_mod.validate_notebook(notebook, None)
+            if checked:
+                # Near the top: the comment-size guard trims from the end.
+                lines.insert(1, notebook_line(checked))
     if results is not None:
         counts = Counter(t["outcome"] for t in results["tests"])
         lines += ["", "| Outcome | Tests |", "| --- | --- |"]

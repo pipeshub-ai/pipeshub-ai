@@ -312,6 +312,16 @@ def cmd_agent(args) -> int:
     out = _out(args)
     # Out of the environment before any test runs; only the claude processes get it.
     creds = agent.take_credentials()
+    # What the agent knew about this PR: --previous, or a local run's last notebook in this run directory.
+    previous = None
+    source = Path(args.previous) if args.previous else out / "agent-notebook.json"
+    if source.is_file() and not args.combine:
+        try:
+            previous = agent.validate_notebook(json.loads(source.read_text(encoding="utf-8")), args.pr)
+        except (OSError, json.JSONDecodeError):
+            previous = None
+        if previous is None:
+            print(f"qa agent: {source} is not a notebook for this PR; starting fresh", file=sys.stderr)
     combined = None
     if args.combine:
         try:
@@ -358,7 +368,7 @@ def cmd_agent(args) -> int:
             _dump(where / "results.json", result)
 
         doc = agent.run_agent(cfg, out, plan, run_round, sess=sess, minutes=args.minutes, max_turns=args.max_turns,
-                              combined=_combined_summary(combined), creds=creds)
+                              combined=_combined_summary(combined), creds=creds, previous=previous, pr=args.pr)
     except run._Cancelled:
         print("qa agent: cancelled", file=sys.stderr)
         return 130
@@ -410,6 +420,25 @@ def _combine_stopped(args, out: Path, why: str, partial: dict) -> int:
         if repo:
             print(report.post_comment(repo, int(args.pr), body, "all"))
     return 1
+
+
+def cmd_notebook(args) -> int:
+    if not args.repo:
+        print("notebook needs --repo or GITHUB_REPOSITORY", file=sys.stderr)
+        return 2
+    out = subprocess.run(["gh", "api", f"repos/{args.repo}/issues/{args.pr}/comments", "--paginate",
+                          "--jq", ".[] | {user: {login: .user.login}, body: .body}"], capture_output=True, text=True)
+    if out.returncode:
+        print(f"notebook: could not read the comments of #{args.pr}: {out.stderr.strip()[:200]}", file=sys.stderr)
+        return 1
+    comments = [json.loads(line) for line in out.stdout.splitlines() if line.strip()]
+    notebook = agent.validate_notebook(report.notebook_from_comments(comments), args.pr)
+    if not notebook:
+        print(f"notebook: none for #{args.pr}")
+        return 1
+    _dump(Path(args.to), notebook)
+    print(f"notebook: #{args.pr} last tested {notebook['head'][:10]} ({notebook['verdict']}, run {notebook['runs']})")
+    return 0
 
 
 def cmd_stack(args) -> int:
@@ -1013,7 +1042,14 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--combine", action="append", default=[], metavar="NUMBER:SHA[:TITLE]",
                    help="stack these pull requests on --combine-base first (in order), then test the result")
     s.add_argument("--combine-base", default="main", metavar="REF")
+    s.add_argument("--previous", metavar="FILE", help="the notebook of the last run on this PR (default: <out>/agent-notebook.json)")
     s.set_defaults(fn=cmd_agent, emit_gh_outputs=False)
+
+    s = sub.add_parser("notebook", help="fetch the QA agent's notebook for a PR from the bot's comments on it")
+    s.add_argument("--pr", type=int, required=True)
+    s.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY"))
+    s.add_argument("--to", required=True, metavar="FILE")
+    s.set_defaults(fn=cmd_notebook)
 
     s = sub.add_parser("stack", help="keep one managed stack up across several runs (qa run --session)")
     s.add_argument("action", choices=["up", "down", "status"])

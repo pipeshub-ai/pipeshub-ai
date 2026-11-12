@@ -283,10 +283,12 @@ jobs:
         variant: ${{ inputs.agent && fromJSON('[""]') || fromJSON(needs.plan.outputs.variants || '[""]') }}
     environment:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
-    # actions: read is for `gh run download` of the previous nightly's screenshots (schedule only).
+    # actions: read is for `gh run download` of the previous nightly's screenshots (schedule only);
+    # pull-requests: read is for the QA agent's notebook, which rides in the bot's PR comments.
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     timeout-minutes: 300
     env:
       DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
@@ -610,6 +612,16 @@ jobs:
           echo "QA_PYTHON=$RUNNER_TEMP/backend-venv/bin/python" >> "$GITHUB_ENV"
           (cd backend/nodejs/apps && npm ci)
           npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 || echo "::warning::the claude CLI did not install; the floor alone will run"
+      # What the QA agent found on this PR before, from the bot's own comments; read by the default
+      # branch's engine, in a step of its own, so no PR code runs while this token is in the environment.
+      - name: Fetch the QA agent's notebook for this PR
+        if: inputs.agent && inputs.combine == '' && env.PR_NUMBER != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -f qa-engine/scripts/qa/agent.py ]] && grep -q 'def cmd_notebook' qa-engine/scripts/qa/__main__.py; then
+            python3 qa-engine/scripts/qa notebook --pr "$PR_NUMBER" --to "$RUNNER_TEMP/previous-notebook.json" || true
+          fi
       - name: Fetch the pull requests to combine
         if: inputs.agent && inputs.combine != ''
         env:
@@ -652,7 +664,8 @@ jobs:
               args=(--stack managed --graph-db neo4j --combine-base "origin/$DEFAULT_BRANCH")
               for pair in $COMBINE; do args+=(--combine "$pair"); done
             else
-              args=(--stack managed --graph-db neo4j --target "$DEFAULT_BRANCH" --head "$HEAD_SHA")
+              args=(--stack managed --graph-db neo4j --target "$DEFAULT_BRANCH" --head "$HEAD_SHA" --pr "$PR_NUMBER")
+              if [[ -f "$RUNNER_TEMP/previous-notebook.json" ]]; then args+=(--previous "$RUNNER_TEMP/previous-notebook.json"); fi
             fi
             # A secret this repository lacks arrives as an empty variable; the unit suites the agent runs
             # read "set but empty" as a broken setting (SECRET_KEY), where the run-unit job leaves them unset.

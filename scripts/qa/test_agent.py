@@ -63,7 +63,8 @@ class AgentCase(unittest.TestCase):
     def setUp(self) -> None:
         self.root, tmp = testing.make_repo()
         self.addCleanup(tmp.cleanup)
-        self.base = testing.git(self.root, "rev-parse", "HEAD")
+        testing.write(self.root, ".gitignore", "qa-out/\n__pycache__/\n")  # as in the real repository
+        self.base = testing.commit(self.root, "ignore run output")
         testing.write(self.root, "backend/python/app/services/retrieval.py", "def search():\n    return [1, 2]\n")
         self.head = testing.commit(self.root, "change retrieval")
         self.cfg = config.load(self.root)
@@ -305,6 +306,77 @@ class TestCommand(AgentCase):
             with self.assertRaises(RuntimeError):
                 qa_main.main(["--out", str(self.out), "agent", "--base", self.base])
         down.assert_called_once()
+
+
+class TestNotebook(AgentCase):
+    def test_a_run_writes_a_notebook_and_the_next_run_gets_it_with_what_changed(self) -> None:
+        doc = self.go({"verdict": verdict()})
+        nb = json.loads((self.out / "agent-notebook.json").read_text())
+        self.assertEqual((nb["schema"], nb["head"], nb["verdict"], nb["runs"]), ("qa-notebook/v1", self.head, "broken", 1))
+        self.assertEqual(nb["failing"], [RETRIEVAL])
+        self.assertEqual(doc["notebook"], nb)
+        # The author pushes a fix; the next run gets the notebook and the files changed since.
+        testing.write(self.root, "backend/python/app/services/retrieval.py", "def search():\n    return [1, 2, 3]\n")
+        self.plan = dict(self.plan, head=testing.commit(self.root, "fix retrieval"))
+        doc2 = self.go_with(nb, {"verdict": verdict(verdict="works", findings=[], since_last=[
+            {"title": "search drops results", "now": "fixed", "evidence": "test_retrieval passes"}])})
+        inp = json.loads((self.out / "agent/input.json").read_text())
+        self.assertEqual(inp["previous"]["head"], self.head)
+        self.assertEqual(inp["since_last"]["files"], ["backend/python/app/services/retrieval.py"])
+        self.assertEqual(doc2["verdict"]["since_last"][0]["now"], "fixed")
+        self.assertEqual(doc2["previous"]["head"], self.head)
+        self.assertEqual(json.loads((self.out / "agent-notebook.json").read_text())["runs"], 2)
+
+    def go_with(self, previous, scenario):
+        self.scenario.write_text(json.dumps(scenario), encoding="utf-8")
+        with mock.patch.object(agent.paths, "REPO", Path(__file__).resolve().parents[2]):
+            return agent.run_agent(self.cfg, self.out, self.plan, self.run_round, sess=None, minutes=5, max_turns=5,
+                                   previous=previous, pr=None)
+
+    def test_since_last_handles_unchanged_and_rewritten_history(self) -> None:
+        prev = {"head": self.head}
+        self.assertTrue(agent.since(self.root, prev, self.head)["unchanged"])
+        self.assertIn("history rewritten", agent.since(self.root, {"head": "f" * 40}, self.head)["note"])
+        testing.git(self.root, "checkout", "-q", "-b", "other", self.base)
+        other = testing.commit(self.root, "elsewhere")
+        self.assertIn("rebased or force-pushed", agent.since(self.root, prev, other)["note"])
+        self.assertIsNone(agent.since(self.root, None, self.head))
+
+    def test_a_notebook_is_only_used_for_its_own_pr_and_is_trimmed(self) -> None:
+        nb = agent.build_notebook(agent.validate_verdict(verdict(summary="s" * 5000), {RETRIEVAL, PROVIDER})[0],
+                                  {RETRIEVAL: {"outcome": "fail"}}, self.plan, [], 7, None)
+        self.assertEqual(len(nb["summary"]), 600)
+        self.assertIsNotNone(agent.validate_notebook(nb, 7))
+        self.assertIsNone(agent.validate_notebook(nb, 8))
+        self.assertIsNone(agent.validate_notebook(dict(nb, head="main"), 7))
+        self.assertIsNone(agent.validate_notebook({"schema": "x"}, 7))
+        bad = agent.validate_notebook(dict(nb, verdict="great", runs=-3, findings=[{"kind": "vibes", "title": "t"}]), 7)
+        self.assertEqual((bad["verdict"], bad["runs"], bad["findings"][0]["kind"]), ("none", 1, "test-bug"))
+
+    def test_the_notebook_rides_in_the_comment_and_only_the_bots_own_counts(self) -> None:
+        nb = agent.build_notebook(verdict(), {RETRIEVAL: {"outcome": "fail"}}, self.plan, [], 7, None)
+        plan = {"edition": "all", "profile": "standard", "mode": "pr", "base": "a" * 40, "head": "b" * 40,
+                "tests": [{"id": RETRIEVAL, "source": "floor", "why": ["rule"]}],
+                "agent": {"verdict": {}, "notes": [], "notebook": nb}}
+        body = report.render(self.cfg, plan, {"tests": [{"id": RETRIEVAL, "outcome": "fail", "details": "x"}]})
+        self.assertTrue(body.splitlines()[1].startswith(report.NOTEBOOK_MARK))
+        forged = {"user": {"login": "someone"}, "body": report.notebook_line(dict(nb, verdict="works"))}
+        bot = {"user": {"login": "github-actions[bot]"}, "body": body}
+        self.assertEqual(report.notebook_from_comments([bot, forged])["verdict"], "broken")
+        self.assertIsNone(report.notebook_from_comments([forged]))
+
+    def test_the_notebook_command_reads_the_newest_bot_comment(self) -> None:
+        from qa import __main__ as qa_main
+        nb = agent.build_notebook(verdict(), {}, self.plan, [], 7, None)
+        old = agent.build_notebook(verdict(verdict="unsure"), {}, dict(self.plan, head=self.base), [], 7, None)
+        lines = "\n".join(json.dumps(c) for c in ({"user": {"login": "github-actions[bot]"}, "body": "x\n" + report.notebook_line(old)},
+                                                   {"user": {"login": "github-actions[bot]"}, "body": "x\n" + report.notebook_line(nb)},
+                                                   {"user": {"login": "mallory"}, "body": report.notebook_line(dict(nb, verdict="works"))}))
+        target = self.out / "prev.json"
+        with mock.patch.object(qa_main.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=lines, stderr="")), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(qa_main.main(["notebook", "--pr", "7", "--repo", "o/r", "--to", str(target)]), 0)
+        self.assertEqual(json.loads(target.read_text())["verdict"], "broken")
 
 
 class TestNestedArtifact(unittest.TestCase):
