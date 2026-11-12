@@ -112,3 +112,86 @@ describe('RecordViewShell on phones', () => {
     await waitFor(() => expect(env.push).toHaveBeenCalledWith('/knowledge-base/?nodeType=app&nodeId=kb-1'));
   });
 });
+
+describe('RecordViewShell when the record cannot be read', () => {
+  it.each([403, 404])('shows the one no-access page for a %i, naming nothing', async (status) => {
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    vi.mocked(KnowledgeBaseApi.getRecordDetails).mockRejectedValueOnce({ type: 'NOT_FOUND', message: 'Record Plan.pdf was deleted', statusCode: status });
+    renderShell();
+
+    expect(await screen.findByTestId('no-access-page')).toBeTruthy();
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(document.body.textContent).not.toContain('Plan.pdf');
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('keeps the ordinary error for a failure that says nothing about access', async () => {
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    vi.mocked(KnowledgeBaseApi.getRecordDetails).mockRejectedValueOnce({ type: 'SERVER_ERROR', message: 'boom', statusCode: 500 });
+    renderShell();
+
+    await waitFor(() => expect(screen.queryByText('loading')).toBeNull());
+    expect(screen.queryByTestId('no-access-page')).toBeNull();
+  });
+
+  it('keeps the preview handling when only the stream says 404: the record opens, it is not a no-access page', async () => {
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    vi.mocked(KnowledgeBaseApi.streamRecord).mockRejectedValue({ type: 'NOT_FOUND', message: 'file gone', statusCode: 404 });
+    renderShell();
+
+    await waitFor(() => expect(screen.queryByText('loading')).toBeNull());
+    expect(screen.queryByTestId('no-access-page')).toBeNull();
+    expect(await screen.findByTestId('metadata')).toBeTruthy();
+    vi.mocked(KnowledgeBaseApi.streamRecord).mockImplementation(async () => new Blob(['x'], { type: 'application/pdf' }));
+  });
+
+  it('asks for no toast on a refusal, so the server\'s words cannot confirm the record exists', async () => {
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    const { useToastStore } = await import('@/lib/store/toast-store');
+    vi.mocked(KnowledgeBaseApi.getRecordDetails).mockClear();
+    renderShell();
+    await screen.findByTestId('metadata');
+
+    const options = vi.mocked(KnowledgeBaseApi.getRecordDetails).mock.calls[0][1] as { suppressErrorToast: (e: { statusCode?: number }) => boolean };
+    expect([403, 404, 500, undefined].map((statusCode) => options.suppressErrorToast({ statusCode }))).toEqual([true, true, false, false]);
+    expect(useToastStore.getState().toasts).toEqual([]);
+  });
+
+  it('looks the same for a 403 and a 404', async () => {
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    const seen: string[] = [];
+    for (const statusCode of [403, 404]) {
+      vi.mocked(KnowledgeBaseApi.getRecordDetails).mockRejectedValueOnce({ type: 'NOT_FOUND', message: `status ${statusCode} words`, statusCode });
+      const { unmount } = renderShell();
+      seen.push((await screen.findByTestId('no-access-page')).outerHTML);
+      unmount();
+    }
+    expect(seen[0]).toBe(seen[1]);
+  });
+
+  it('gives the no-access page a Back that leaves it: the collections, when the record is unknown', async () => {
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    env.mobile = false;
+    env.inAppBack = false;
+    env.push.mockClear();
+    vi.mocked(KnowledgeBaseApi.getRecordDetails).mockRejectedValueOnce({ type: 'NOT_FOUND', message: 'gone', statusCode: 404 });
+    renderShell();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Back' }));
+
+    expect(env.push).toHaveBeenCalledWith('/knowledge-base/');
+  });
+
+  it('goes back in the app, where the app has a history, from the no-access page', async () => {
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    env.inAppBack = true;
+    env.back.mockClear();
+    vi.mocked(KnowledgeBaseApi.getRecordDetails).mockRejectedValueOnce({ type: 'NOT_FOUND', message: 'gone', statusCode: 403 });
+    renderShell();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Back' }));
+
+    expect(env.back).toHaveBeenCalledOnce();
+    env.inAppBack = false;
+  });
+});

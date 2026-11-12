@@ -13,7 +13,7 @@ import {
 import {
   BadRequestError,
   ServiceUnavailableError,
-  UnauthorizedError,
+  WrongCredentialError,
 } from '../../../../src/libs/errors/http.errors';
 
 const CLIENT_ID = 'pipeshub-client-id';
@@ -56,7 +56,8 @@ const serveMicrosoft = (tenant: string) => {
 
 const expectRejected = async (
   promise: Promise<unknown>,
-  type: Function = UnauthorizedError,
+  // A refused ID token is a credential the request submitted: logged bad_request.
+  type: Function = WrongCredentialError,
 ) => {
   try {
     await promise;
@@ -149,11 +150,20 @@ describe('azureAdTokenValidation', () => {
         );
         expect.fail('Should have been rejected');
       } catch (error) {
-        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect(error).to.be.instanceOf(WrongCredentialError);
         expect((error as Error).message).to.equal(
           'Your Microsoft sign-in expired. Please sign in again.',
         );
       }
+    });
+
+    it('rejects a token that is not a JWT', async () => {
+      await expectRejected(
+        validateAzureAdUser(
+          { idToken: 'not-a-jwt' },
+          { clientId: CLIENT_ID, tenantId: OUR_TENANT },
+        ),
+      );
     });
 
     it('rejects a token signed with an unknown key', async () => {

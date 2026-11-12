@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from aiokafka import AIOKafkaConsumer  # type: ignore
 from pydantic import ValidationError
 
-from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, open_configured
+from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, decode_message, open_configured
 from app.core.org_context import spawn_detached
 from app.services.messaging import message_log
 from app.services.messaging.config import MessageHandler, StreamMessage, messaging_env
@@ -225,10 +225,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
 
                 if isinstance(message_value, str):
                     try:
-                        parsed_message = json.loads(message_value)
-                        # Handle double-encoded JSON
-                        if isinstance(parsed_message, str):
-                            parsed_message = json.loads(parsed_message)
+                        parsed_message = decode_message(message_value)
                     except json.JSONDecodeError as e:
                         message_log.note(reason="unparseable", size_bytes=size_bytes)
                         return False, e

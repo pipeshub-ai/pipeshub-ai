@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.exceptions.non_retryable import NonRetryableError
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 
@@ -46,9 +47,8 @@ class TestAiConfigEventService:
             side_effect=RuntimeError("config error")
         )
 
-        result = await svc.process_event("llmConfigured", {})
-
-        assert result is False
+        with pytest.raises(RuntimeError, match="config error"):
+            await svc.process_event("llmConfigured", {})
 
     @pytest.mark.asyncio
     async def test_llm_configured_reloads_the_already_initialized_store(self):
@@ -109,34 +109,31 @@ class TestAiConfigEventService:
             side_effect=RuntimeError("embed fail")
         )
 
-        result = await svc.process_event("embeddingModelConfigured", {})
-
-        assert result is False
+        with pytest.raises(RuntimeError, match="embed fail"):
+            await svc.process_event("embeddingModelConfigured", {})
 
     # -- unknown event --
 
     @pytest.mark.asyncio
-    async def test_unknown_event_returns_false(self):
+    async def test_unknown_event_raises(self):
         svc = self._make_service()
 
-        result = await svc.process_event("unknownEvent", {})
-
-        assert result is False
+        with pytest.raises(NonRetryableError):
+            await svc.process_event("unknownEvent", {})
 
     # -- top-level exception --
 
     @pytest.mark.asyncio
-    async def test_top_level_exception_returns_false(self):
-        """If process_event itself throws unexpectedly, it returns False."""
+    async def test_top_level_exception_raises(self):
+        """If process_event itself throws unexpectedly, it raises."""
         svc = self._make_service()
         # Monkey-patch the private handler to explode
         svc._AiConfigEventService__handle_llm_configured = AsyncMock(
             side_effect=Exception("unexpected")
         )
 
-        result = await svc.process_event("llmConfigured", {})
-
-        assert result is False
+        with pytest.raises(Exception, match="unexpected"):
+            await svc.process_event("llmConfigured", {})
 
 
 # ============================================================================
@@ -220,7 +217,7 @@ class TestEntityEventService:
         svc.graph_provider.batch_create_edges.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_org_created_exception_returns_false(self):
+    async def test_org_created_exception_raises(self):
         svc = self._make_service()
         svc.graph_provider.batch_upsert_nodes = AsyncMock(
             side_effect=RuntimeError("db error")
@@ -232,8 +229,8 @@ class TestEntityEventService:
             "accountType": "ENTERPRISE",
         }
 
-        result = await svc.process_event("orgCreated", payload)
-        assert result is False
+        with pytest.raises(RuntimeError, match="db error"):
+            await svc.process_event("orgCreated", payload)
 
     # -- orgUpdated --
 
@@ -255,9 +252,8 @@ class TestEntityEventService:
         )
 
         payload = {"orgId": "org1", "registeredName": "X"}
-        result = await svc.process_event("orgUpdated", payload)
-
-        assert result is False
+        with pytest.raises(RuntimeError, match="fail"):
+            await svc.process_event("orgUpdated", payload)
 
     # -- orgDeleted --
 
@@ -279,9 +275,8 @@ class TestEntityEventService:
         )
 
         payload = {"orgId": "org1"}
-        result = await svc.process_event("orgDeleted", payload)
-
-        assert result is False
+        with pytest.raises(RuntimeError, match="fail"):
+            await svc.process_event("orgDeleted", payload)
 
     # -- userAdded --
 
@@ -516,25 +511,25 @@ class TestEntityEventService:
     # -- unknown event --
 
     @pytest.mark.asyncio
-    async def test_unknown_event_returns_false(self):
+    async def test_unknown_event_raises(self):
         svc = self._make_service()
 
-        result = await svc.process_event("someRandomEvent", {})
-        assert result is False
+        with pytest.raises(NonRetryableError):
+            await svc.process_event("someRandomEvent", {})
 
     # -- top-level exception --
 
     @pytest.mark.asyncio
-    async def test_process_event_exception_returns_false(self):
+    async def test_process_event_exception_raises(self):
         svc = self._make_service()
         svc._handle_org_created = AsyncMock(
             side_effect=Exception("boom")
         )
 
-        result = await svc.process_event("orgCreated", {
-            "orgId": "o1", "registeredName": "X", "accountType": "ENTERPRISE"
-        })
-        assert result is False
+        with pytest.raises(Exception, match="boom"):
+            await svc.process_event("orgCreated", {
+                "orgId": "o1", "registeredName": "X", "accountType": "ENTERPRISE"
+            })
 
     # -- _kb_name_from_user_added_payload --
 

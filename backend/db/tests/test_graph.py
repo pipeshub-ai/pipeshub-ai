@@ -1124,3 +1124,15 @@ def test_the_sweep_reads_use_their_indexes_where_the_plain_statements_cannot(rdb
         for sql, params, key in ((STALE_PLAIN, (["PENDING", "RUNNING"], 100000, 50), "status"), (UNHELD_PLAIN, (["v7", "v77", "v777"], 100000), "virtualRecordId")):
             plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, sql, params)
             assert not any(re.search(rf"Index Cond: .*{key}", p) for p in plans), (key, plans[0])
+
+
+def test_the_hop_order_indexes_are_partial_byte_ordered_and_on_every_leaf(rdb):
+    """graph_0011: a page of a code-graph hop reads its anchor's edges in the order of these two indexes, on the link edges only."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for idx, coll, lead in (("edges_by_neighbour_in", "to_coll", "to_id"), ("edges_by_neighbour_out", "from_coll", "from_id")):
+            d = c.execute("SELECT indexdef FROM pg_indexes WHERE schemaname = 'graph' AND tablename = 'edges' AND indexname = %s", (idx,)).fetchone()[0]
+            assert f'{coll}, {lead} COLLATE "C"' in d and "WHERE" in d and "nodeRelations" in d and "recordLinks" in d, d
+            leaves = c.execute("SELECT count(*) FROM pg_partition_tree(%s::regclass) WHERE isleaf", (f"graph.{idx}",)).fetchone()[0]
+            parts = c.execute("SELECT count(*) FROM pg_partition_tree('graph.edges'::regclass) WHERE isleaf").fetchone()[0]
+            assert leaves == parts and leaves > 0, (idx, leaves, parts)

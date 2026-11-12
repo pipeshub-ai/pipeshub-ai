@@ -209,7 +209,7 @@ class PermissionsMixin(PgBase):
         if transaction is None and kg_read.enabled() and current_or_system().kind != "system":
             def run(fn: Callable[[Tx], Awaitable[Any]]) -> Awaitable[Any]:
                 return self._db.run(fn, isolation="repeatable_read", custom_plan=True)
-            return await kg_read.accessible_rows(run, org, ids, vrids, access, walk)
+            return await kg_read.accessible_rows(run, org, ids, vrids, access, walk, self._db)
         return await walk(ids, vrids, access)
 
     async def get_selection_nodes(self, org_id: str, *, group_ids: list[str], record_ids: list[str],

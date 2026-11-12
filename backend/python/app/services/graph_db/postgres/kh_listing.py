@@ -24,7 +24,6 @@ from app.exceptions.graph_db_exceptions import (
 )
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import NotImplementedInPostgres, PgBase, _doc
-from app.services.graph_db.postgres.kg import drainer
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.model import CODE_COLL, CODE_EPOCH
@@ -87,7 +86,7 @@ async def head(tx: Tx, org: str, app_id: str, granted: list[str]) -> tuple[int |
         hidden = list(await tx.fetchval(kgl.HIDDEN, org, k["sk"]))
         if len(hidden) > HIDDEN_MAX:
             raise KnowledgeHubListingTooLarge
-    served = ready and kg_read.enabled() and await drainer.serves(tx, org, app_id)      # PG_KG_READ=0: every row is the live check's
+    served = ready and kg_read.enabled() and await kg_read.serves(tx, org, app_id)      # PG_KG_READ=0, or a connector this process distrusts (as ``read.decide``): every row is the live check's
     return (k["sk"] if ready else None), (_doc(k["app_doc"]) if k["app_doc"] else {}), hidden, served, (await class_sets(tx, org, k["sk"], granted) if served else None)
 
 

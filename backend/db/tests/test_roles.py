@@ -1,4 +1,5 @@
 """Role bootstrap, the migration's behaviour without CREATEROLE, and the grant snapshot."""
+import hashlib
 import os
 from pathlib import Path
 
@@ -58,10 +59,10 @@ def test_surface_matches_the_committed_text(db):
     with cluster.admin(name) as c:
         live = surface.live_lines(c)
         version = surface.major(c)
-    if update:        # lines of the other PostgreSQL majors are kept
-        keep = [x for x in BASE.read_text(encoding="utf-8").splitlines() if x not in surface.for_major([x], version)]
-        BASE.write_text("\n".join(sorted([*keep, *live])) + "\n", encoding="utf-8")
-    assert live == sorted(surface.for_major(surface.expected_lines([BASE]), version)), "the security surface changed: review the diff, then rerun with UPDATE_SURFACE=1"
+    if update:        # lines of the other PostgreSQL majors are kept, and the reviewed sysfuncs lines of other minor releases
+        keep = [x for x in BASE.read_text(encoding="utf-8").splitlines() if x not in surface.for_major([x], version) or x.startswith("sysfuncs@")]
+        BASE.write_text("\n".join(sorted({*keep, *live})) + "\n", encoding="utf-8")
+    assert surface.diff(live, surface.for_major(surface.expected_lines([BASE]), version)) == [], "the security surface changed: review the diff, then rerun with UPDATE_SURFACE=1"
 
 
 def test_surface_diff_reports_extra_and_missing_lines(db):
@@ -88,3 +89,13 @@ def test_sysfuncs_hash_ignores_function_bodies_and_library_paths(db):
         c.execute("UPDATE pg_proc SET provolatile = 'v' WHERE proname = 'lower' AND provolatile <> 'v'")
         assert c.execute(query).fetchone()[0] != before
         c.rollback()
+
+
+def test_sysfuncs_rows_are_what_the_hash_is_taken_over(db):
+    cluster, name = db
+    with cluster.admin(name) as c:
+        rows = surface.sysfunc_rows(c)
+        c.execute("SET search_path = pg_catalog")     # as live_lines does
+        line = c.execute(next(t for k, t in surface.QUERIES if k == "sysfuncs")).fetchone()[0]
+    digest = hashlib.md5("\n".join(rows).encode()).hexdigest()
+    assert line == f"count={len(rows)} md5={digest}", line

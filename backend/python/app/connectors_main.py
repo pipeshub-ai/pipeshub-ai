@@ -35,6 +35,8 @@ from app.agents.mcp.registry import get_mcp_registry
 from app.agents.registry.toolset_registry import get_toolset_registry
 from app.api.routes.api_toolsets import router as api_toolsets_router  # noqa: E402 - after set_service_suffix, like its neighbours
 from app.api.routes.entity import router as entity_router
+from app.api.routes.local_repos import BodyLimit as LocalReposBodyLimit  # noqa: E402
+from app.api.routes.local_repos import router as local_repos_router  # noqa: E402
 from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.config.configuration_service import ConfigurationService
@@ -1290,6 +1292,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Accessible-records cache closed")
     except Exception as e:
         logger.error(f"❌ Error closing accessible-records cache: {e}")
+    try:
+        from app.connectors.sources.localKB.push import api as kb_push_api
+
+        await kb_push_api.close_runtime(app)
+    except Exception as e:
+        logger.warning(f"Error stopping the knowledge-base push runtime at shutdown: {e}")
     # Shutdown all container resources
     try:
         await shutdown_container_resources(app_container)
@@ -1687,6 +1695,8 @@ install_push_routes(app)  # the push routes and the ENABLE_KB_PUSH gate (off by 
 app.include_router(knowledge_hub_router)
 app.include_router(demo_data_router)
 app.include_router(connector_router)
+app.add_middleware(LocalReposBodyLimit)
+app.include_router(local_repos_router)
 app.include_router(artifacts_router)
 app.include_router(permission_explain_router)
 if oauth_apps_router is not None:

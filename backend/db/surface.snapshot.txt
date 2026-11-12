@@ -1482,6 +1482,8 @@ index conversation.semantic_search_members_by_user on conversation.semantic_sear
 index conversation.semantic_search_members_pkey on conversation.semantic_search_members unique=true exclusion=false valid=true def=47fc089f0ad23e20b90919c90e7671f4
 index conversation.semantic_searches_by_user on conversation.semantic_searches unique=false exclusion=false valid=true def=9a480d28e67f5fb38dde0e7f96244463
 index conversation.semantic_searches_pkey on conversation.semantic_searches unique=true exclusion=false valid=true def=5afcff0ea8f2d669186c57738eb82fd3
+index graph.edges_by_neighbour_in on graph.edges unique=false exclusion=false valid=true def=45e665142a6e336eb541b79f46f98cae
+index graph.edges_by_neighbour_out on graph.edges unique=false exclusion=false valid=true def=442cf41b6fe034fa520658aeee43de80
 index graph.edges_by_target on graph.edges unique=false exclusion=false valid=true def=f87b2d07ea6c1bb8dcebe54000a174c1
 index graph.edges_pkey on graph.edges unique=true exclusion=false valid=true def=cb40875fb7aeea0903e6713524de17e3
 index graph.nodes_app_by_id on graph.nodes unique=false exclusion=false valid=true def=9fb2c424ad701514ef37f152dfa19f27
@@ -3038,7 +3040,9 @@ schemaacl retrieval pipeshub_restore USAGE grantable=false
 schemaacl retrieval pipeshub_vetted_retrieval USAGE grantable=false
 settings admins= extensions=plpgsql,vector,pg_trgm,pg_textsearch,btree_gin,pg_search,pg_stat_statements services=pipeshub_node,pipeshub_connectors,pipeshub_indexing,pipeshub_query,pipeshub_kv
 sysfuncs@17 count=3330 md5=4ffc20628a8498ed9cac0aa6b3560b9e
+sysfuncs@17 count=3331 md5=787de60ec3a94cbcff93270564d6660f
 sysfuncs@18 count=3413 md5=e1d09e84fd442d7baa0c82daf2e7df8a
+sysfuncs@18 count=3414 md5=8793d93eb531473371d069e64059630f
 sysrelacl information_schema.administrable_role_authorizations PUBLIC SELECT
 sysrelacl information_schema.applicable_roles PUBLIC SELECT
 sysrelacl information_schema.attributes PUBLIC SELECT

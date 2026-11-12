@@ -7,9 +7,14 @@ is neither listed nor counted. Written in the same shape as the golden worlds; i
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import yaml
 
 from .scenario import world_from_data
+
+if TYPE_CHECKING:
+    from .model import World
 
 # more cross-connector shapes: BELONGS_TO the app, hierarchy-only, a KB, an app-level connector, a shared record group name
 CROSS2 = world_from_data(yaml.safe_load("""
@@ -314,5 +319,85 @@ grants: [[u, d], [u, s]]
 gates: [[u, A]]
 """))
 
+# DECLSTUB: a stub in a declared group the walk from the App reaches, granted to the viewer, over a strict node it leads to: a browse of the stub
+# starts below a seed (the walk does not pass the declaration), where the strict node is not read, so the group lists no stub and shows no arrow
+DECLSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [g], inherits: [g], belongs: [g]}
+  - {id: s, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [d], belongs: [d]}
+  - {id: t, kind: record, connector: A, rule: STRICT, parents: [s], inherits: [s]}
+grants: [[u, g], [u, s]]
+gates: [[u, A]]
+"""))
+
+# TWOWAY: a stub below two folders, which the App reaches through q and not through p (p does not pass it on): a browse of the stub starts from
+# the App and lists the strict node below it, so the browse of p lists the stub as the way to it, with an arrow
+TWOWAY = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: p, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [p, q], inherits: [q]}
+  - {id: t, kind: record, connector: A, rule: STRICT, parents: [s], inherits: [s]}
+grants: [[u, p], [u, q]]
+gates: [[u, A]]
+"""))
+
+# SCOPEDTWO: the same through the declared-scope arm: p lists the stub as a member of a declared group the viewer is granted, though p does not pass
+# it on, and the App reaches it through q
+SCOPEDTWO = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: p, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: RESTRICTED, placeholder: true, parents: [p, q], inherits: [q], belongs: [d]}
+  - {id: t, kind: record, connector: A, rule: STRICT, parents: [s], inherits: [s]}
+grants: [[u, d], [u, p], [u, q], [u, s]]
+gates: [[u, A]]
+"""))
+
+# FOLDERSTUB: a folder (a record) holding a stub its rule lists and its reach reaches, beside more records than one page holds: the stub is one row
+FOLDERSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: f, kind: record, connector: A, rule: OPEN, parents: [g], inherits: [g], belongs: [g]}
+  - {id: s, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [f], inherits: [f]}
+  - {id: r, kind: record, connector: A, rule: OPEN, parents: [s], inherits: [s]}
+""" + "".join(f"  - {{id: f{i}, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]}}\n" for i in range(8)) + """
+grants: [[u, g]]
+gates: [[u, A]]
+"""))
+
+
+def _deep_chain(app: str, grants: bool) -> World:
+    """56 OPEN records in a chain below a group of the App: past 50 hops the walk from the App stops, and each is read as a seed (``grants``) or as
+    a member of an App that opens everything."""
+    nodes = "".join(f"  - {{id: c{i}, kind: record, connector: A, rule: OPEN, parents: [{'g' if i == 0 else f'c{i - 1}'}], "
+                    f"inherits: [{'g' if i == 0 else f'c{i - 1}'}], belongs: [A]}}\n" for i in range(DEEP_CHAIN))
+    granted = "".join(f", [u, c{i}]" for i in range(DEEP_CHAIN)) if grants else ""
+    return world_from_data(yaml.safe_load(f"""
+principals: [{{id: u}}]
+nodes:
+  - {app}
+  - {{id: g, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A], inherits: [A]}}
+{nodes}grants: [[u, g]{granted}]
+gates: [[u, A]]
+"""))
+
+
+# DEEPSEED / DEEPOPEN: a chain deeper than the walk's cap; the oracle admits every link with no hop cap (a seed, a member of an App that opens
+# everything), so each is listed under its parent and opens on the next, past depth 50 as above it
+DEEP_CHAIN = 56
+DEEPSEED = _deep_chain("{id: A, kind: app, app_type: DRIVE}", grants=True)
+DEEPOPEN = _deep_chain("{id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}", grants=False)
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
-             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN]
+             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB]

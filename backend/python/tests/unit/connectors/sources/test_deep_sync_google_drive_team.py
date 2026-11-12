@@ -154,7 +154,7 @@ def connector():
         conn.drive_data_source = AsyncMock()
         conn.config = {"credentials": {}}
         # Collaborators the run safety fixes call: account status, groups, access withdrawal.
-        conn._user_status = MagicMock(compare=AsyncMock(return_value=UserStatusChange()), save=AsyncMock())
+        conn._user_status = MagicMock(compare=AsyncMock(return_value=UserStatusChange()), save=AsyncMock(), forget_fingerprint=AsyncMock())
         dep.get_all_user_groups = AsyncMock(return_value=[])
         dep.remove_user_access_to_connector = AsyncMock(return_value=0)
         dep.on_new_user_groups = AsyncMock()

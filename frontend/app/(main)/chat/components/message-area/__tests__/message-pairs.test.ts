@@ -137,4 +137,15 @@ describe('buildMessagePairs', () => {
 
     expect(pairs.map((p) => p.searchDegraded)).toEqual([true, false]);
   });
+
+  it("shows the access notices from each answer's own record, not from the last answer", () => {
+    const notices = [{ code: 'permissions_updating' }];
+    const flagged = { ...assistant('a1', 'Old.'), metadata: { custom: { messageId: 'a1', accessNotices: notices } } };
+    const pairs = buildMessagePairs(
+      [user('u1', 'Q1'), flagged, user('u2', 'Q2'), assistant('a2', 'New.')],
+      OPTIONS,
+    );
+
+    expect(pairs.map((p) => p.accessNotices)).toEqual([notices, undefined]);
+  });
 });

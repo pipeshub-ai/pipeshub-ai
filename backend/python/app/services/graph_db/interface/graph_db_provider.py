@@ -3058,6 +3058,8 @@ class IGraphDBProvider(ABC):
         org_id: str,
         per_address: int = 2,
         transaction: str | None = None,
+        *,
+        include_deleted: bool = False,
     ) -> list[dict[str, Any]]:
         """The live records of the org stored under any of ``weburls`` (exact
         match), in any connector. Link records and placeholders are left out:
@@ -3071,6 +3073,8 @@ class IGraphDBProvider(ABC):
             per_address: Most rows per address, records that are not dependent
                 nodes first; each address is looked up on its own.
             transaction: Optional transaction ID.
+            include_deleted: Also return deleted records, so a caller asking who may
+                read what is at an address can tell a deleted record from no record.
 
         Returns:
             Rows ``{"id", "recordType", "connectorName", "webUrl",

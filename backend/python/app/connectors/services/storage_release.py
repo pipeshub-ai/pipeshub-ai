@@ -17,6 +17,7 @@ import contextlib
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from app.config.configuration_service import delete_config_confirmed
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.connector_intents import ConnectorIntentStore
@@ -97,11 +98,7 @@ async def delete_connector_credentials(
     """Whether the connector's credentials are gone. Never raises."""
     key = f"/services/connectors/{connector_id}/config"
     try:
-        # delete_config answers False rather than raising, and Redis answers
-        # False for a key an earlier attempt already deleted.
-        if await config_service.delete_config(key) or await config_service.get_config(
-            key, raise_on_error=True
-        ) is None:
+        if await delete_config_confirmed(config_service, key):
             return True
     except Exception:
         logger.warning("Connector credentials not confirmed deleted | connector=%s", connector_id, exc_info=True)

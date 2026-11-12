@@ -88,6 +88,7 @@ class Connectors(Enum):
 
     RSS = "RSS"
     LOCAL_FS = "LOCAL_FS"
+    LOCAL_REPO = "LOCAL REPOSITORY"
     DEMO = "DEMO"
     SMB = "SMB"
     CIFS = "CIFS"

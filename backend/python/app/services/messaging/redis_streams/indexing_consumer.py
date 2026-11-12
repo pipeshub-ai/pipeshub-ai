@@ -15,7 +15,12 @@ from typing import TYPE_CHECKING, Any, Optional, override
 
 from pydantic import ValidationError
 
-from app.core.envelope import EnvelopeRejected, ctx_of, open_stream_message
+from app.core.envelope import (
+    EnvelopeRejected,
+    ctx_of,
+    decode_message,
+    open_stream_message,
+)
 from app.core.org_context import bind_optional, spawn_detached
 from app.modules.indexing.embed_resume import stamp_delivery_id
 from app.modules.indexing.record_progress import (
@@ -86,6 +91,7 @@ from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.services.resource_governor import ParseTier, Pool
 from app.telemetry.modules import scheduling_metrics as metrics
+from app.utils import error_class
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
 from app.utils.logging_fields import log_fields
@@ -130,14 +136,6 @@ _RECOVERY_BATCH = 10
 # idle-claim window ago has missed a refresh (they run every third of it),
 # so a peer may be about to claim it (see __release_entries_at_risk).
 _AT_RISK_FRACTION = 2 / 3
-
-
-def _loads_possibly_double_encoded(value: str) -> object:
-    """Decode an envelope that producers sometimes JSON-encode twice."""
-    raw = json.loads(value)
-    if isinstance(raw, str):
-        raw = json.loads(raw)
-    return raw
 
 
 class RedisAcknowledgementError(RuntimeError):
@@ -2294,15 +2292,23 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             for stream_name, messages in results
             for message_id, fields in messages
         ]
-        parsed = [
-            await self._parse_message(message_id, fields, _stream)
-            for _stream, message_id, fields in entries
-        ]
+        parsed: list[StreamMessage | None] = []
+        unparsed: set[int] = set()
+        for position, (stream_name, message_id, fields) in enumerate(entries):
+            try:
+                parsed.append(await self._parse_message(message_id, fields, stream_name))
+            except Exception as e:
+                # Not the message (that parses to None): left pending for recovery, so the rest of the read goes on.
+                error_class.log_failure(
+                    self.logger, "message.parse_deferred", e, topic=stream_name, message_id=message_id
+                )
+                parsed.append(None)
+                unparsed.add(position)
         settled = await self.__settle_connector_off(entries, parsed)
         for position, (stream_name, message_id, fields) in enumerate(entries):
             if not self.running:
                 return
-            if position in settled:
+            if position in settled or position in unparsed:
                 continue
             try:
                 await self.__enqueue_parsed(
@@ -2555,7 +2561,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Parse a Redis stream entry into a ``StreamMessage``.
 
         Returns ``None`` for any unparseable ("poison") entry — missing value
-        field, malformed JSON, non-object payload, or a payload that fails
+        field, malformed or undecodable JSON, a rejected envelope, non-object
+        payload, or a payload that fails
         ``StreamMessage`` validation. Such entries can never become valid on
         retry, so the caller drops them (see ``_process_message_wrapper``).
         """
@@ -2572,15 +2579,16 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 # Offloaded above a size threshold: a connector can emit a record
                 # whose whole body rides in the envelope, and parsing it inline
                 # blocks every other in-flight record on this one worker loop.
-                raw = await offload_if_large(_loads_possibly_double_encoded, value_str)
+                raw = await offload_if_large(decode_message, value_str)
                 return await open_stream_message(stream_name, raw, StreamMessage)
             except EnvelopeRejected as e:
                 self.logger.error("Envelope rejected for %s on %s: %s", message_id, stream_name, e.reason)
             except (json.JSONDecodeError, ValidationError, TypeError) as e:
-                # The type only: a ValidationError's text quotes the payload's values.
+                # The type only: a ValidationError's text quotes the payload's values. The cause names nesting or a
+                # too-long number behind a JSONDecodeError (decode_json).
                 self.logger.error(
                     "Failed to parse message %s as StreamMessage", message_id,
-                    extra={"error_type": type(e).__name__, "size_bytes": len(value_str)},
+                    extra={"error_type": type(e.__cause__ or e).__name__, "size_bytes": len(value_str)},
                 )
                 return None
 
