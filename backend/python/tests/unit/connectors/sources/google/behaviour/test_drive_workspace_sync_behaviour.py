@@ -3979,3 +3979,68 @@ async def test_a_failed_removal_of_the_reporters_grant_on_an_undecided_my_drive_
     await ws.sync()
     assert "f" in ws.records.records and (LABS, "USER", "READ") not in ws.grants("f")
     assert ws.user_checkpoint(LABS) != held
+
+
+async def test_an_undecided_removal_holds_the_users_changes_only_up_to_the_limit_and_is_settled_later(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+        MAX_UNRECOGNISED_403_RUNS,
+    )
+
+    _audience_file_in_an_unwalked_drive(ws, discoverable("anyone"))
+    ws.world.add_drive("sd-9", "Bob's", {BOB: "organizer"})
+    ws.world.add_item("s", "s.txt", parent="sd-9", perms=[])
+    await ws.sync()
+    held = ws.user_checkpoint(BOB)
+
+    ws.world.unshare("g1", BOB)
+    # Everyone else asked is refused (Drive off for them, say), for as long as it lasts.
+    ws.http.fail("GET", "/drive/v3/files/g1", 403, "insufficientFilePermissions", when=lambda r: r.identity != BOB)
+    ws.world.delete("s")  # a later change that only Bob's drive feed applies
+    for _ in range(MAX_UNRECOGNISED_403_RUNS - 1):
+        await ws.sync()
+        assert ws.user_checkpoint(BOB) == held
+        assert ("workspace-members", "GROUP", "READ") in ws.grants("g1"), "the record keeps its other grants"
+    assert "s" in ws.records.records, "held: Bob's drives are not read yet"
+
+    await ws.sync()
+    assert ws.user_checkpoint(BOB) != held, "at the limit the checkpoint moves on"
+    assert "s" not in ws.records.records, "so Bob's later changes apply"
+    assert "g1" in ws.records.records and (BOB, "USER", "WRITE") not in ws.grants("g1")
+
+    # Checked again on a later run: now a clean answer, nobody can open it.
+    ws.http.clear_faults()
+    ws.world.files["g1"].perms = [p for p in ws.world.files["g1"].perms if p.get("type") != "anyone"]
+    await ws.sync()
+    assert "g1" not in ws.records.records
+
+
+async def test_an_undecided_shared_drive_removal_holds_the_drive_only_up_to_the_limit_and_is_settled_later(
+    ws: Workspace,
+) -> None:
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+        MAX_UNRECOGNISED_403_RUNS,
+    )
+
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "writer"})
+    ws.world.add_item("d", "d.txt", parent="sd-1", perms=[])
+    await ws.sync()
+
+    def drive_token() -> str | None:
+        uid = ws.world.users[BOB].user_id
+        return (ws.sync_points.value(f"/{uid}_sd-1") or {}).get("pageToken")
+
+    held = drive_token()
+    ws.world.cut_user_listing = {ADMIN, ALICE}  # Alice, who was not asked, stays left out
+    ws.world.delete("d")
+    ws.world.add_item("e", "e.txt", parent="sd-1", perms=[])  # a later change in the drive
+    for _ in range(MAX_UNRECOGNISED_403_RUNS - 1):
+        await ws.sync()
+        assert drive_token() == held and "d" in ws.records.records
+
+    await ws.sync()
+    assert drive_token() != held, "at the limit the drive's checkpoint moves on"
+    assert "d" in ws.records.records and "e" in ws.records.records
+
+    ws.world.cut_user_listing = None
+    await ws.sync()
+    assert "d" not in ws.records.records, "checked again with Alice listed: nobody can open it"

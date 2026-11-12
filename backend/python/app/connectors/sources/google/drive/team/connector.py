@@ -8,6 +8,7 @@ import tempfile
 import uuid
 from contextvars import ContextVar
 from datetime import datetime, timezone
+from functools import partial
 from logging import Logger
 from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -236,6 +237,9 @@ RESEED_SHARED_WITH_ME = "reseed_shared_with_me"
 # checkpoint that moves on past a failure gives nothing up. Past the cap the listing itself is read again instead.
 FAILED_ITEMS = "failed_items"
 MAX_FAILED_ITEMS = 500
+# On a checkpoint: removed files whose check stayed undecided for MAX_UNRECOGNISED_403_RUNS runs, as "fileId:driveId".
+# Each is kept and checked again on later runs until a clean answer settles it, without holding the checkpoint.
+UNDECIDED_REMOVALS = "undecided_removals"
 # The ids of the items that failed in the listing this task is reading (each user's sync runs in its own task).
 _failed_items: ContextVar[set[str] | None] = ContextVar("drive_failed_items", default=None)
 FILTER_CLEANUP_PAGE_SIZE = 500
@@ -2986,17 +2990,21 @@ class GoogleDriveTeamConnector(BaseConnector):
         owner_sources: dict[str, GoogleDriveDataSource],
         held: FolderFailureRuns,
         sync_point_key: str,
-    ) -> HttpError | None:
+    ) -> Exception | None:
         """Apply a `removed` change, giving up on one an unrecognised 403 keeps failing.
 
         Returns that 403 while the file has failed fewer than MAX_UNRECOGNISED_403_RUNS
         runs in a row, so the caller holds the checkpoint once the rest of the feed is
         read. At the limit only this user's access is dropped and the checkpoint may
-        move on; the record stays for everyone else. Any other failure raises as before.
+        move on; the record stays for everyone else. An undecided check is bounded the
+        same way (`_bounded_removal`). Any other failure raises as before.
         """
         file_id = change.get("fileId")
         try:
-            await self._handle_removed_change(file_id, user, owner_sources, drive_id=change.get("driveId"))
+            return await self._bounded_removal(
+                file_id, change.get("driveId"), held, sync_point_key,
+                partial(self._handle_removed_change, file_id, user, owner_sources, drive_id=change.get("driveId")),
+            )
         except HttpError as e:
             if not file_id or not is_unrecognised_403(e):
                 raise
@@ -3025,10 +3033,77 @@ class GoogleDriveTeamConnector(BaseConnector):
                     record_id=record.id, user_email=user.email, connector_id=record.connector_id
                 )
             return None
-        if file_id:
-            held.clear(file_id)
+
+    async def _bounded_removal(
+        self,
+        file_id: str | None,
+        drive_id: str | None,
+        held: FolderFailureRuns,
+        sync_point_key: str,
+        apply: Callable[[], Awaitable[None]],
+    ) -> _RemovalUndecided | None:
+        """Apply a removed change whose check may stay undecided (people a cut user listing left out, nobody asked
+        answering). Returns that while the file has been undecided fewer than MAX_UNRECOGNISED_403_RUNS runs in a
+        row, so the caller holds its checkpoint once the rest of the feed is read; the record and its other grants
+        stay. At the limit the file is kept, listed under UNDECIDED_REMOVALS to be checked again on later runs, and
+        the checkpoint may move on: one file nobody answers for must not hold every later change. The reporting
+        user's own grant is already gone. Any other failure raises."""
+        if not file_id:
+            await apply()
+            return None
+        try:
+            await apply()
+        except _RemovalUndecided as e:
+            runs = held.record_failure(file_id)
             await self._save_held_removed_changes(held, sync_point_key)
+            if runs < MAX_UNRECOGNISED_403_RUNS:
+                self.logger.warning(
+                    f"Not yet known whether anyone else can open file {file_id} ({e}); the change is read again "
+                    f"next run (attempt {runs} of {MAX_UNRECOGNISED_403_RUNS})"
+                )
+                return e
+            self.logger.error(
+                f"Still not known after {MAX_UNRECOGNISED_403_RUNS} runs whether anyone else can open file {file_id} "
+                f"({e}); it is kept and checked again on later runs, and the other changes move on"
+            )
+            stored = (await self.drive_delta_sync_point.read_sync_point(sync_point_key) or {}).get(UNDECIDED_REMOVALS)
+            entries = {str(x) for x in stored or []}
+            if (entry := f"{file_id}:{drive_id or ''}") not in entries:
+                await self.drive_delta_sync_point.update_sync_point(
+                    sync_point_key, {UNDECIDED_REMOVALS: sorted(entries | {entry})}
+                )
+            return None
+        held.clear(file_id)
+        await self._save_held_removed_changes(held, sync_point_key)
         return None
+
+    async def _recheck_undecided_removals(
+        self,
+        sync_point_key: str,
+        stored: object,
+        user: AppUser,
+        source: GoogleDriveDataSource,
+        settle: Callable[[str, str | None], Awaitable[None]],
+    ) -> None:
+        """Check again each removal kept undecided past the limit, until a clean answer settles it: the file is
+        removed or kept as for any removed change, or the user can open it again (their feed then reports what
+        changed). One still undecided, or whose check fails, stays listed. Nothing here holds the checkpoint."""
+        entries = [str(x) for x in stored] if isinstance(stored, list) else []
+        left: list[str] = []
+        for entry in entries:
+            file_id, _, drive_id = entry.partition(":")
+            try:
+                record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id, external_record_id=file_id
+                )
+                if record is None or await self._user_can_open(record, user, {user.email: source}):
+                    continue
+                await settle(file_id, drive_id or None)
+            except Exception as e:
+                self.logger.warning(f"Whether anyone else can open file {file_id} is still not settled: {e}")
+                left.append(entry)
+        if left != entries:
+            await self.drive_delta_sync_point.update_sync_point(sync_point_key, {UNDECIDED_REMOVALS: left})
 
     async def _apply_shared_drive_removal(
         self,
@@ -4696,7 +4771,14 @@ class GoogleDriveTeamConnector(BaseConnector):
             total_changes = 0
             owner_sources: dict[str, GoogleDriveDataSource] = {}
             held_removals = FolderFailureRuns(sync_point.get(HELD_REMOVED_CHANGES))
-            removal_retry_error: HttpError | None = None
+            removal_retry_error: Exception | None = None
+
+            async def settle(file_id: str, removed_drive_id: str | None) -> None:
+                await self._handle_removed_change(file_id, user, owner_sources, drive_id=removed_drive_id)
+
+            await self._recheck_undecided_removals(
+                sync_point_key, sync_point.get(UNDECIDED_REMOVALS), user, user_drive_data_source, settle
+            )
 
             while True:
                 # Prepare changes_list parameters
@@ -5440,6 +5522,19 @@ class GoogleDriveTeamConnector(BaseConnector):
                                         tracked_folder_ids=tracked_folder_ids
                                     )
                             retry_failures = self._sync_ledger.item_failures - failures_before_retry
+                            drive_held = FolderFailureRuns(sync_point.get(HELD_REMOVED_CHANGES))
+                            drive_removal_error: Exception | None = None
+
+                            async def settle_in_drive(
+                                file_id: str, _: str | None, drive_id: str = drive_id,
+                                source: GoogleDriveDataSource = user_drive_data_source,
+                            ) -> None:
+                                await self._apply_shared_drive_removal(file_id, user, drive_id, source)
+
+                            await self._recheck_undecided_removals(
+                                sync_point_key, sync_point.get(UNDECIDED_REMOVALS), user, user_drive_data_source,
+                                settle_in_drive,
+                            )
 
                             while True:
                                 try:
@@ -5485,9 +5580,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                                         if is_removed:
                                             # Deleted, moved to another drive, or only this user lost
                                             # access: removed only once no synced user can open it.
-                                            await self._apply_shared_drive_removal(
-                                                change.get("fileId"), user, drive_id, user_drive_data_source,
+                                            error = await self._bounded_removal(
+                                                change.get("fileId"), drive_id, drive_held, sync_point_key,
+                                                partial(
+                                                    self._apply_shared_drive_removal,
+                                                    change.get("fileId"), user, drive_id, user_drive_data_source,
+                                                ),
                                             )
+                                            drive_removal_error = drive_removal_error or error
                                             continue
 
                                         if file_metadata and file_metadata.get("trashed"):
@@ -5562,7 +5662,18 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 if self._sync_ledger.item_failures - retry_failures > drive_failures_before
                                 else None
                             )
-                            if hold is not None:
+                            if drive_removal_error is not None:
+                                # The whole feed was read, so removals undecided alike use their runs together.
+                                self._sync_ledger.note_incomplete()
+                                if retry or drive_failed:
+                                    await self.drive_delta_sync_point.update_sync_point(
+                                        sync_point_key, {FAILED_ITEMS: sorted(drive_failed)}
+                                    )
+                                self.logger.warning(
+                                    f"A removed file in drive '{drive_name}' is not settled yet; the drive's "
+                                    "changes are read again next run"
+                                )
+                            elif hold is not None:
                                 await self.drive_delta_sync_point.update_sync_point(sync_point_key, hold)
                                 self.logger.warning(
                                     f"Some changes in drive '{drive_name}' could not be stored; they are "
@@ -5578,7 +5689,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 await self.drive_delta_sync_point.update_sync_point(
                                     sync_point_key,
                                     {"pageToken": current_page_token, **released(sync_point),
-                                     FAILED_ITEMS: sorted(drive_failed)}
+                                     FAILED_ITEMS: sorted(drive_failed),
+                                     # Counts at the limit were kept until now, so a replay gave up again at once.
+                                     **({HELD_REMOVED_CHANGES: []} if drive_held.folder_ids() else {})}
                                 )
                                 self.logger.info(
                                     f"✅ Incremental sync completed for shared drive '{drive_name}' for user {user.email}. "
