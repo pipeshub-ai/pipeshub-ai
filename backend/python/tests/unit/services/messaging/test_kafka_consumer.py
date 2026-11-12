@@ -18,8 +18,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.messaging.config import StreamMessage
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+)
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
+from tests.support.undecodable_json import UNDECODABLE
 from tests.unit.services.messaging.message_log_helpers import in_delivery
 
 # ---------------------------------------------------------------------------
@@ -298,15 +303,17 @@ class TestProcessMessage:
         assert called_arg.payload == {"nested": True}
 
     @pytest.mark.asyncio
-    async def test_invalid_json_returns_false(self, consumer):
-        """Invalid JSON should return False."""
+    @pytest.mark.parametrize("value", ["not-valid-json{{", *UNDECODABLE.values()], ids=["syntax", *UNDECODABLE])
+    async def test_invalid_json_returns_false(self, consumer, value):
+        """Invalid JSON should return False, with an error the caller classifies as terminal."""
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        msg = _make_message(value=b"not-valid-json{{", offset=13)
+        msg = _make_message(value=value.encode(), offset=13)
 
         result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result[0] is False
+        assert MessageErrorClassifier.classify_by_exception(result[1]) == MessageErrorType.TERMINAL
         handler.assert_not_awaited()
 
     @pytest.mark.asyncio

@@ -23,6 +23,7 @@ from app.core.envelope import (
     DuplicateEnvelope,
     EnvelopeRejected,
     ctx_of,
+    decode_message,
     open_configured,
     open_stream_message,
 )
@@ -82,13 +83,6 @@ class RecordHeld(RequeueWithoutAttempt):
 
 def _retry_base_s() -> float:
     return float(os.getenv("PG_QUEUE_RETRY_BASE_S", "5"))
-
-
-def _loads(value: str) -> Any:  # noqa: ANN401
-    raw = json.loads(value)
-    return (
-        json.loads(raw) if isinstance(raw, str) else raw
-    )  # a double-encoded body, as the Redis consumers accept
 
 
 class _ExpectedOutcome(str):
@@ -438,7 +432,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if not self.indexing:
             return None
         try:
-            raw = _loads(d.value)
+            raw = decode_message(d.value)
             return await open_stream_message(d.topic, raw, StreamMessage) if isinstance(raw, dict) else None
         except Exception as e:
             self.logger.warning("Could not read the exhausted message %s for its record: %s", d.message_id, e)
@@ -466,7 +460,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if self.message_handler is None:
             return False, True, None, "no message handler"
         try:
-            raw = _loads(d.value)
+            raw = decode_message(d.value)
         except json.JSONDecodeError as e:
             return False, True, None, f"JSON parsing failed: {e}"
         if not isinstance(raw, dict):

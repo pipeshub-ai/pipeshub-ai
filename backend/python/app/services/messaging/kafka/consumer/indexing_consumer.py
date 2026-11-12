@@ -18,7 +18,12 @@ from aiokafka import (  # type: ignore
 from aiokafka.structs import ConsumerRecord  # type: ignore
 from pydantic import ValidationError
 
-from app.core.envelope import EnvelopeRejected, ctx_of, open_stream_message
+from app.core.envelope import (
+    EnvelopeRejected,
+    ctx_of,
+    decode_message,
+    open_stream_message,
+)
 from app.core.org_context import bind_optional, spawn_detached
 from app.modules.indexing.embed_resume import stamp_delivery_id
 from app.modules.indexing.record_progress import (
@@ -137,14 +142,6 @@ _FETCH_BACK_TIMEOUT_SECONDS = 15.0
 # so the Redis Streams consumer can share the same backoff schedule.
 _compute_retry_backoff_seconds = compute_retry_backoff_seconds
 
-
-
-def _loads_possibly_double_encoded(value: str) -> object:
-    """Decode an envelope that producers sometimes JSON-encode twice."""
-    parsed = json.loads(value)
-    if isinstance(parsed, str):
-        parsed = json.loads(parsed)
-    return parsed
 
 
 class _InFlightOffset:
@@ -2143,7 +2140,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         Handles bytes decoding, JSON parsing, and double-encoded JSON. Never logs the value.
 
         Returns:
-            StreamMessage, or None for a message that can never parse (poison): not UTF-8, not JSON, a rejected
+            StreamMessage, or None for a message that can never parse (poison): not UTF-8, not JSON (including nesting or a
+            number too large to decode), a rejected
             envelope, or JSON that is not a StreamMessage. Anything else (a key-store or network failure) raises,
             so the caller re-reads it.
         """
@@ -2162,9 +2160,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         # record whose whole body rides in the envelope, and
                         # parsing it inline blocks every other in-flight record on
                         # this one worker loop.
-                        parsed = await offload_if_large(
-                            _loads_possibly_double_encoded, message_value
-                        )
+                        parsed = await offload_if_large(decode_message, message_value)
                         return await open_stream_message(message.topic, parsed, StreamMessage)
                     except EnvelopeRejected as e:
                         self.logger.error(f"Envelope rejected for {message_id}: {e.reason}")
@@ -2174,9 +2170,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         # The type only: a ValidationError's text quotes the payload's values.
                         self.logger.error(f"Failed to parse message {message_id} as StreamMessage: {type(e).__name__}")
                         return None
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as e:
+                        # The cause names nesting or a too-long number when the text is valid JSON.
                         self.logger.error(
-                            f"JSON parsing failed for message {message_id}", extra={"size_bytes": size_bytes}
+                            f"JSON parsing failed for message {message_id}",
+                            extra={"size_bytes": size_bytes, "error_type": type(e.__cause__ or e).__name__},
                         )
                         return None
                 else:
