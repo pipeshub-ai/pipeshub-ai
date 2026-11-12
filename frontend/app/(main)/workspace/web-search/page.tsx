@@ -144,7 +144,9 @@ export default function WebSearchPage() {
             ? `${label} is now the default web search provider. Web search is on for everyone.`
             : meta?.searches
               ? `${label} is now configured. Click "Set as default" to start using it.`
-              : `${label} is now configured. It reads pages for web search; add a search provider to turn web search on.`,
+              : `${label} is now configured. It reads pages for web search${
+                  configuredProviders.some((p) => p.isDefault) ? '.' : '; add a search provider to turn web search on.'
+                }`,
         duration: 5000,
       });
       loadData(false);
