@@ -329,7 +329,7 @@ class VerifyState:
     cursor: Cursor | None = None
     since: float | None = None
     flagged: bool = False
-    mark: int = 0                  # what the projection had written for the connector when the scan began (locks.written)
+    mark: int = 0                  # the connector's write count when the scan began (read under its lock, see _begin)
 
 
 async def _chunk(db: KernelDB, org: str, app: str, cur: Cursor) -> str:
@@ -342,6 +342,15 @@ async def _chunk(db: KernelDB, org: str, app: str, cur: Cursor) -> str:
         return "done" if await verify_chunk(tx, org, app, cur) else "more"
     with bind(drainer._ctx(org)):
         return await db.run(go, isolation="repeatable_read", custom_plan=True)
+
+
+async def _begin(db: KernelDB, org: str, app: str) -> int:
+    """The write count of the connector, read under its lock: a unit that has counted and not yet committed holds the lock, so this waits for it, and what the first page reads includes it."""
+    async def go(tx: Tx) -> int:
+        await locks.lock_apps(tx, org, {app}, org_wide=False)
+        return locks.written(org, app)
+    with bind(drainer._ctx(org)):
+        return await db.run(go, write=True)
 
 
 async def _principals(db: KernelDB, org: str) -> bool:
@@ -393,7 +402,8 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
                 NET.inc("verify", "restarted")                  # rows of the connector were rewritten since the scan began: a key it had passed may be one of them
                 st.cursor = None
             if st.cursor is None:
-                st.cursor, st.since, st.mark = Cursor(), st.since or time.monotonic(), locks.written(org, app)
+                st.cursor, st.since = Cursor(), st.since or time.monotonic()
+                st.mark = await _begin(db, org, app)
             try:
                 found = await _chunk(db, org, app, st.cursor)
             except Exception:
