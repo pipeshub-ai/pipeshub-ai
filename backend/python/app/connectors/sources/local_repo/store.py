@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from app.connectors.sources.local_folder import scan
-from app.modules.parsers.code_parser.lang_config import detect_language
+from app.connectors.sources.local_repo import code_rule
 
 logger = logging.getLogger(__name__)
 
@@ -345,19 +345,28 @@ class Repo:
             return saved
 
     def _changes_code(self, manifest: dict[str, list[Any]], current: Path | None) -> bool:
-        """Whether publishing ``manifest`` changes the code of ``current``: a code path added or removed, or one whose bytes differ."""
+        """Whether publishing ``manifest`` changes the code records of ``current``.
+
+        Only files that become code records count (``code_rule.is_code_record``, the rule the sync itself applies): a change to a file the sync
+        leaves out (``dist/``, ``third_party/``, a minified or generated file) moves nothing the code graph holds. A file that becomes a code
+        record, stops being one, is added or removed, or has other bytes, is a change."""
+        def code(path: Path, rel: str) -> bool:
+            return code_rule.is_code_record(rel, lambda: code_rule.read_head(path))
+
         for path in manifest:
             staged = self.staging / path
-            if not detect_language(path) or not staged.is_file() or staged.is_symlink():
-                continue  # not code, or not staged: it carries over from the current generation as it is
+            if not staged.is_file() or staged.is_symlink():
+                continue  # not staged: it carries over from the current generation as it is
             old = (current / path) if current else None
-            if old is None or not old.is_file() or not _same_bytes(staged, old):
+            had = old is not None and old.is_file() and not old.is_symlink() and code(old, path)
+            now = code(staged, path)
+            if had != now or (now and not _same_bytes(staged, old)):
                 return True
-        for _dirpath, _dirs, files in os.walk(current, followlinks=False) if current else ():
-            rel_dir = os.path.relpath(_dirpath, current).replace(os.sep, "/")
+        for dirpath, _dirs, files in os.walk(current, followlinks=False) if current else ():
+            rel_dir = os.path.relpath(dirpath, current).replace(os.sep, "/")
             for name in files:
                 rel = name if rel_dir == "." else f"{rel_dir}/{name}"
-                if rel not in manifest and detect_language(rel):
+                if rel not in manifest and code(Path(dirpath, name), rel):
                     return True
         return False
 

@@ -21,9 +21,8 @@ from app.connectors.core.registry.connector_builder import (
 )
 from app.connectors.sources.local_folder import scan
 from app.connectors.sources.local_folder.connector import FolderConnector, _cfg
-from app.connectors.sources.local_repo import store
+from app.connectors.sources.local_repo import code_rule, store
 from app.connectors.sources.local_repo.store import LOCAL_REPO_CONNECTOR_NAME, REPO_KEY
-from app.modules.parsers.code_parser.file_role import FileRole, has_generator_header, is_generated_content, is_ignored_path, is_sensitive_path, should_index_code_file
 
 
 
@@ -102,33 +101,20 @@ class LocalRepoConnector(FolderConnector):
         return self._repo_dir
 
     def _may_index_code(self, entry: scan.Entry, name: str) -> tuple[bool, Any]:  # noqa: ANN401, RUF100
-        """The path rules, except that a name or folder that only *looks* generated (``gen/``, ``generated/``, ``*_pb2.py``) is decided by what the
-        file says: a generator's header or a minified body excludes it, hand-written source is kept. A refusal is remembered with its reason."""
-        ok, role = should_index_code_file(entry.rel, name)
+        """The shared rule (``code_rule.decide``) on the file as the sync reads it; a refusal is remembered with its reason."""
+        ok, role, why = code_rule.decide(entry.rel, lambda: self._head(entry))
         self._excluded.pop(entry.rel, None)
-        if ok:
-            # A generator's header decides for any name: left to the indexer the file would end "not supported", uncounted by `status`.
-            if self._looks_generated(entry, header_only=True):
-                self._excluded[entry.rel] = "generated"
-                return False, role
-            return True, role
-        if is_sensitive_path(name):
-            self._excluded[entry.rel] = "sensitive"
-        elif is_ignored_path(entry.rel) or role is not FileRole.GENERATED:
-            self._excluded[entry.rel] = "ignored_path"
-        elif self._looks_generated(entry):
-            self._excluded[entry.rel] = "generated"
-        else:
-            return True, FileRole.SOURCE
-        return False, role
+        if why:
+            self._excluded[entry.rel] = why
+        return ok, role
 
-    def _looks_generated(self, entry: scan.Entry, header_only: bool = False) -> bool:  # noqa: FBT001, FBT002
+    def _head(self, entry: scan.Entry) -> bytes | None:
         try:
             fd = scan.safe_open(self.root, entry.rel, self.MAX_LINKS)
         except (scan.PathRefused, OSError):
-            return not header_only  # an unreadable look-alike stays out; any other file fails visibly later
+            return None
         try:
-            return (has_generator_header if header_only else is_generated_content)(os.pread(fd, 64 * 1024, 0))
+            return os.pread(fd, code_rule.HEAD_BYTES, 0)
         finally:
             os.close(fd)
 
