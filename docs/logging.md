@@ -262,6 +262,9 @@ the auth middleware bound.
   the three services mounts one.
 - Node writes the same event and fields (`HttpAccess`, `access-log.middleware.ts`). Node also logs the error on its own
   `http.request.error` line; Python logs it on this one.
+- Node: a 401 for a credential the request submitted (a sign-in code, a password, a CAPTCHA, an identity-provider token) that
+  is wrong, expired or already used is a `WrongCredentialError`, logged `error_class=bad_request`; the request's own session or
+  token refused stays `auth_expired`. `status=401 error_class=bad_request` on `http.request.end` selects credential guessing.
 
 ## Connector sync runs
 
