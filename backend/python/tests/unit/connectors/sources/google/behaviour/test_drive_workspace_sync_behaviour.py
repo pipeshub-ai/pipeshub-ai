@@ -4044,3 +4044,83 @@ async def test_an_undecided_shared_drive_removal_holds_the_drive_only_up_to_the_
     ws.world.cut_user_listing = None
     await ws.sync()
     assert "d" not in ws.records.records, "checked again with Alice listed: nobody can open it"
+
+
+async def _park_an_undecided_removal_of_g1(ws: Workspace) -> None:
+    """g1, whose audience nobody asked can answer for, is kept past the limit and listed to be checked again."""
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+        MAX_UNRECOGNISED_403_RUNS,
+    )
+
+    _audience_file_in_an_unwalked_drive(ws, discoverable("anyone"))
+    await ws.sync()
+    ws.world.unshare("g1", BOB)
+    ws.http.fail("GET", "/drive/v3/files/g1", 403, "insufficientFilePermissions", when=lambda r: r.identity != BOB)
+    for _ in range(MAX_UNRECOGNISED_403_RUNS):
+        await ws.sync()
+    assert "g1" in ws.records.records
+
+
+async def test_a_parked_removal_is_settled_after_a_returning_users_drive_is_read_again_in_full(ws: Workspace) -> None:
+    await _park_an_undecided_removal_of_g1(ws)
+    connector = await ws.connector_()
+    connector._returning_emails = {BOB}
+    await connector._restore_returning_users()  # deletes Bob's checkpoints: his next read is a full listing
+
+    ws.http.clear_faults()
+    ws.world.files["g1"].perms = [p for p in ws.world.files["g1"].perms if p.get("type") != "anyone"]
+    await ws.sync()
+    assert "g1" not in ws.records.records, "checked again at the start of the run, though it lists in full"
+
+
+@pytest.mark.parametrize("reset", ["drive read again", "too many failed items"])
+async def test_a_parked_shared_drive_removal_is_settled_after_the_drive_checkpoint_is_deleted(
+    ws: Workspace, reset: str
+) -> None:
+    from app.connectors.core.base.sync_point.sync_point import (
+        generate_record_sync_point_key,
+    )
+    from app.connectors.sources.google.drive.team.connector import MAX_FAILED_ITEMS
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+        MAX_UNRECOGNISED_403_RUNS,
+    )
+    from app.models.entities import RecordType
+
+    ws.world.add_user(CAROL)  # in the account, not a user of this deployment
+    ws.world.add_drive("sd-1", "Team", {BOB: "writer", CAROL: "reader"})
+    ws.world.add_item("d", "d.txt", parent="sd-1", perms=[])
+    await ws.sync()
+    ws.world.cut_user_listing = {CAROL}  # Carol, who may still open it, is not asked
+    ws.world.delete("d")
+    for _ in range(MAX_UNRECOGNISED_403_RUNS):
+        await ws.sync()
+    assert "d" in ws.records.records
+
+    connector = await ws.connector_()
+    if reset == "drive read again":
+        await connector._read_drive_again("sd-1", reseed=False)
+    else:
+        bob = next(u for u in connector.synced_users if u.email == BOB)
+        key = generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{bob.source_user_id}_sd-1")
+        assert not await connector._keep_failed_items(key, {str(i) for i in range(MAX_FAILED_ITEMS + 1)})
+
+    ws.world.cut_user_listing = None
+    await ws.sync()
+    assert "d" not in ws.records.records, "checked again with Carol listed: nobody can open it"
+
+
+async def test_a_full_undecided_list_owes_a_full_reconciliation_instead_of_dropping_the_file(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+
+    monkeypatch.setattr(drive_connector, "MAX_UNDECIDED_REMOVALS", 0)
+    ws.world.add_item("a", "a.txt", parent="root-alice", owner=ALICE)  # a listing that finds something
+    await _park_an_undecided_removal_of_g1(ws)
+    assert (ws.sync_points.value("full_reconcile_owed") or {}).get("owed") is True
+
+    ws.http.clear_faults()
+    ws.world.files["g1"].perms = [p for p in ws.world.files["g1"].perms if p.get("type") != "anyone"]
+    await ws.sync()  # every Drive is read in full, and no listing finds g1 any more
+    assert "g1" not in ws.records.records
+    assert ws.sync_points.value("full_reconcile_owed")["owed"] is False
