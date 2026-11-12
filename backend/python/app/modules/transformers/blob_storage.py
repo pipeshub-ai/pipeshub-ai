@@ -3347,7 +3347,7 @@ class BlobStorage(Transformer):
                 lookup_result = await self.get_document_id_by_virtual_record_id(virtual_record_id)
             except Exception:
                 self.logger.exception(
-                    "❌ Error retrieving record from storage (virtual_record_id=%s)",
+                    "Error retrieving record from storage (virtual_record_id=%s)",
                     virtual_record_id,
                 )
                 raise
