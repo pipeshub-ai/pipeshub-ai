@@ -471,7 +471,7 @@ def test_a_delayed_delete_leaves_a_repository_that_was_registered_again_under_th
     assert repo.destroy("new-connector") is True and not repo.dir.exists()
 
 
-def _clock(monkeypatch):
+def _clock(monkeypatch) -> None:
     import types
 
     ticks = iter(range(2_000_000_000, 3_000_000_000, 5))
