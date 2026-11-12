@@ -233,7 +233,7 @@ a PR.
 
 | Provider | `QA_PLANNER` | `QA_PLANNER_MODEL` | Secrets |
 | --- | --- | --- | --- |
-| Claude (Claude Code, reads the repo itself) | `claude_code` | optional | `ANTHROPIC_API_KEY` |
+| Claude (Claude Code, reads the repo itself) | `claude_code` | optional | `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN` to use a Claude subscription login instead (create it with `claude setup-token`) |
 | Azure OpenAI | `litellm` | `azure/<deployment>` | `AZURE_API_KEY`, `AZURE_API_BASE` (+ variable `AZURE_API_VERSION`) |
 | OpenAI | `litellm` | `openai/<model>` | `OPENAI_API_KEY` |
 | Gemini | `litellm` | `gemini/<model>` | `GEMINI_API_KEY` |

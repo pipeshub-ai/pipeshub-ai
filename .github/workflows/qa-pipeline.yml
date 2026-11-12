@@ -160,6 +160,8 @@ jobs:
       - name: Plan
         env:
           ANTHROPIC_API_KEY: ${{ inputs.use_model && secrets.ANTHROPIC_API_KEY || '' }}
+          # A Claude subscription login (claude setup-token), used by Claude Code in place of an API key.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.use_model && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           OPENAI_API_KEY: ${{ inputs.use_model && secrets.OPENAI_API_KEY || '' }}
           AZURE_API_KEY: ${{ inputs.use_model && secrets.AZURE_API_KEY || '' }}
           AZURE_API_BASE: ${{ inputs.use_model && secrets.AZURE_API_BASE || '' }}
@@ -174,7 +176,7 @@ jobs:
         run: |
           adapter="$QA_PLANNER"
           if [[ "$USE_MODEL" != true \
-                || ( "$adapter" == claude_code && -z "$ANTHROPIC_API_KEY" ) \
+                || ( "$adapter" == claude_code && -z "$ANTHROPIC_API_KEY" && -z "$CLAUDE_CODE_OAUTH_TOKEN" ) \
                 || ( "$adapter" == litellm && -z "$QA_PLANNER_MODEL" ) \
                 || ( "$adapter" == command && -z "$QA_PLANNER_CMD" ) ]]; then
             adapter=none
@@ -701,6 +703,7 @@ jobs:
         continue-on-error: true
         env:
           ANTHROPIC_API_KEY: ${{ inputs.review && inputs.use_model && secrets.ANTHROPIC_API_KEY || '' }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.review && inputs.use_model && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           OPENAI_API_KEY: ${{ inputs.review && inputs.use_model && secrets.OPENAI_API_KEY || '' }}
           AZURE_API_KEY: ${{ inputs.review && inputs.use_model && secrets.AZURE_API_KEY || '' }}
           AZURE_API_BASE: ${{ inputs.review && inputs.use_model && secrets.AZURE_API_BASE || '' }}
@@ -723,7 +726,7 @@ jobs:
         run: |
           adapter="$QA_PLANNER"
           if [[ "$USE_MODEL" != true \
-                || ( "$adapter" == claude_code && -z "$ANTHROPIC_API_KEY" ) \
+                || ( "$adapter" == claude_code && -z "$ANTHROPIC_API_KEY" && -z "$CLAUDE_CODE_OAUTH_TOKEN" ) \
                 || ( "$adapter" == litellm && -z "$QA_PLANNER_MODEL" ) \
                 || ( "$adapter" == command && -z "$QA_PLANNER_CMD" ) ]]; then
             adapter=none
