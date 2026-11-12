@@ -77,7 +77,10 @@ from app.api.middlewares.request_log import (
     mark_request_failure,
     path_log_fields,
 )
-from app.config.configuration_service import ConfigurationService
+from app.config.configuration_service import (
+    ConfigurationService,
+    delete_config_confirmed,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
 from app.core.org_context import current_org_id
@@ -794,7 +797,7 @@ async def delete_instance(request: Request, instance_id: str) -> dict[str, Any]:
 
     # The record goes first and must go: if it stays, the server is still listed and usable.
     # What hangs off it is removed best-effort.
-    if not await config_service.delete_config(mcp_service.instance_record_path(instance)):
+    if not await delete_config_confirmed(config_service, mcp_service.instance_record_path(instance)):
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete MCP server instance.")
     await mcp_lifecycle.delete_instance_data(config_service, instance)
 
