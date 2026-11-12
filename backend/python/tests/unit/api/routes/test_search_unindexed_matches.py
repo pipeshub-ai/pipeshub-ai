@@ -9,6 +9,7 @@ such records. ``/retrieve`` is unchanged.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,6 +26,12 @@ from app.modules.retrieval.selection_scope import SelectionScope
 from app.modules.retrieval.title_hits import UnindexedMatch
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.not_indexed import not_indexed_note
+from tests.support.provider_errors import (
+    MARK,
+    assert_text_free,
+    failure_line,
+    openai_error,
+)
 
 ROUTE = "app.api.routes.search"
 
@@ -283,3 +290,30 @@ class TestTheLookupItself:
             )
         assert found is None
         mocks["find_unindexed_matches"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "error_class", "level"),
+    [(lambda: openai_error(429), "rate_limited", logging.WARNING), (lambda: KeyError(MARK), "internal", logging.ERROR)],
+    ids=["provider-429", "our-bug"],
+)
+async def test_a_failed_name_lookup_is_one_text_free_line(caplog: pytest.LogCaptureFixture, error, error_class, level) -> None:
+    """A provider's error (the title check's dense similarity is not wrapped) stays a WARNING without its text;
+    a bug of ours is an ERROR whose frames remain."""
+    caplog.set_level(logging.DEBUG)
+    mocks, _ = TestTheLookupItself._patches()
+    mocks["find_unindexed_matches"].side_effect = error()
+
+    with patch.multiple(ROUTE, **mocks):
+        found = await search_route._unindexed_matches(
+            _request({"userId": "user1", "orgId": "org1"}), MagicMock(name="graph"), {}, "quarterly planning",
+            logging.getLogger("f24b.search"),
+        )
+
+    assert found is None
+    failure_line(caplog.records, "title_lookup.failed", error_class, level)
+    if level == logging.ERROR:
+        (line,) = [r for r in caplog.records if r.getMessage() == "title_lookup.failed"]
+        assert "Traceback" in line.exc_text and "KeyError: <message omitted>" in line.exc_text
+    assert_text_free(caplog.records)

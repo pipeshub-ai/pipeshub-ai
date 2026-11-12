@@ -20,6 +20,12 @@ from app.modules.retrieval.retrieval_service import (
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.services.vector_db.search_retry import VectorSearchUnavailableError
 from app.utils.chat_helpers import attach_connector_instance_names
+from tests.support.provider_errors import (
+    assert_text_free,
+    failure_line,
+    httpx_error,
+    openai_error,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers to build a RetrievalService without real FastEmbedSparse / model load
@@ -3395,3 +3401,26 @@ async def test_retrieval_embeds_instructed_query_only_for_bge(retrieval_service,
         retrieval_service._cached_embedding_is_local = True
         await retrieval_service._execute_parallel_searches(["hi"], None, 5, "org")
         emb.aembed_query.assert_awaited_once_with(expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "error_class"),
+    [(lambda: openai_error(401), "misconfigured"), (lambda: httpx_error(400), "bad_request")],
+    ids=["openai-401", "httpx-400"],
+)
+async def test_a_refused_query_embedding_is_one_text_free_line(
+    retrieval_service, mock_graph_provider, caplog, error, error_class,
+) -> None:
+    """The search's catch-all also catches a refused query embedding, whose text is the provider's body."""
+    caplog.set_level(logging.DEBUG)
+    mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+    retrieval_service.logger = logging.getLogger("f24b.retrieval")
+    retrieval_service._execute_parallel_searches = AsyncMock(side_effect=error())
+
+    result = await retrieval_service.search_with_filters(queries=["test"], user_id="u1", org_id="o1")
+
+    assert (result["status"], result["message"]) == (Status.ERROR.value, "Unexpected server error during search.")
+    level = logging.ERROR if error_class == "misconfigured" else logging.WARNING
+    failure_line(caplog.records, "search.failed", error_class, level)
+    assert_text_free(caplog.records)

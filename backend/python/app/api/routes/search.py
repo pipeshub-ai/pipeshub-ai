@@ -67,6 +67,7 @@ from app.services.model_identity.runtime import call_scope
 from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
+from app.utils.error_class import log_failure
 from app.utils.opik import get_llm_invoke_config
 from app.utils.query_transform import setup_query_transformation
 from app.utils.request_deadline import deadline_after, search_deadline_seconds
@@ -562,8 +563,9 @@ async def _unindexed_matches(
             find_unindexed_matches(store, graph_provider, context, query),
             timeout=ENTITY_SEARCH_DEADLINE_SECONDS + 2.0,
         )
-    except Exception:
-        logger.warning("Search: the lookup of records by name failed", exc_info=True)
+    except Exception as exc:
+        # The search answers without it. Text-free: the title check's embedding error is the provider's body.
+        log_failure(logger, "title_lookup.failed", exc, include_error_text=False)
         return None
 
 

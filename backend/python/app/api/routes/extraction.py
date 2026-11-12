@@ -36,10 +36,12 @@ from app.modules.named_entities.domain.config import (
 from app.modules.named_entities.domain.kinds import EntityKind, default_enabled_kinds
 from app.modules.transformers.document_extraction import (
     ExtractionLLMError,
+    extraction_error_class,
 )
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
 from app.utils.env_utils import env_positive_int
+from app.utils.error_class import log_failure
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 logger = logging.getLogger(__name__)
@@ -119,14 +121,22 @@ async def classify(
             fallback_service="extraction",
             config_service=_config_service(request),
         ):
-            metadata = await document_extraction.classify(
-                blocks=body.block_container.blocks,
-                org_id=org_id,
-                departments=body.departments or None,
-                record_name=body.record_name,
-                record_type=body.record_type,
-                block_groups=body.block_container.block_groups,
-            )
+            try:
+                metadata = await document_extraction.classify(
+                    blocks=body.block_container.blocks,
+                    org_id=org_id,
+                    departments=body.departments or None,
+                    record_name=body.record_name,
+                    record_type=body.record_type,
+                    block_groups=body.block_container.block_groups,
+                )
+            except (LLMUnavailableError, ExtractionLLMError) as exc:
+                # Logged here, while the call scope still binds the org; the handlers below answer.
+                log_failure(
+                    logger, "document_classify.failed", exc, include_error_text=False,
+                    error_class=extraction_error_class(exc),
+                )
+                raise
     except LLMNotConfiguredError as exc:
         # 4xx: a configuration state, not an outage — the client must neither retry it
         # nor count it against its circuit breaker.
@@ -140,7 +150,6 @@ async def classify(
         # 424, not 5xx: this service is up and its model provider is not. A 5xx would be
         # retried and counted by the caller's breaker, whose health probe cannot see the
         # provider; the code tells the caller to pause the work instead.
-        logger.warning("Model provider unavailable while classifying for org '%s': %s", org_id, exc)
         retry_after = getattr(exc, "retry_after", None)
         return JSONResponse(
             status_code=status.HTTP_424_FAILED_DEPENDENCY,
@@ -152,7 +161,6 @@ async def classify(
         )
     except ExtractionLLMError as exc:
         # The model answered but produced nothing usable for this document: retried a few times.
-        logger.warning("LLM failed to classify a document for org '%s': %s", org_id, exc)
         return JSONResponse(
             status_code=status.HTTP_424_FAILED_DEPENDENCY,
             content=ClassifyResponse(

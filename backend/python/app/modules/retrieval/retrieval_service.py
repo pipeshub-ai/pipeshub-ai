@@ -4,7 +4,6 @@ import logging
 import math
 import os
 import time
-import traceback
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -124,6 +123,7 @@ from app.utils.chat_helpers import (
 )
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.embedding_retry import await_with_retry
+from app.utils.error_class import log_failure
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.query_instruction import instruct_query
 from app.utils.stage_timer import span, spanned
@@ -1574,7 +1574,8 @@ class RetrievalService:
             self.logger.error("Filtered search failed with a ValueError: %s", e, exc_info=True)
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
         except Exception as e:
-            self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
+            # A refused query embedding lands here too, its text the provider's body.
+            log_failure(self.logger, "search.failed", e, include_error_text=False)
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
     async def _diversity_candidates(

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -34,6 +35,7 @@ from app.modules.named_entities.linking.records import (
 from app.modules.named_entities.linking.service import Linking, LinkResult, LinkStatus
 from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.modules.retrieval.provenance import RETRIEVED_BY_KEY
+from tests.support.provider_errors import assert_text_free, openai_error, with_cause
 
 
 def _meta() -> Any:  # noqa: ANN401 - ToolMeta
@@ -233,7 +235,6 @@ async def test_an_exact_first_name_says_which_longer_names_it_left_out(wired: di
     text = await entity_search.execute_search_by_entities(_state(), mentions=[{"name": "Sam", "kind": "person"}, "Sam Q"])
     assert "Longer names that may be the same could not be checked and were not used: Sam Lee (person)" in text
     assert "Many more readable names start with it" in text
-
 
 
 @pytest.mark.asyncio
@@ -579,3 +580,18 @@ def test_a_resolved_name_gives_the_call_that_lists_every_record() -> None:
     text = _render(_result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e-acme", "Acme")]))
     assert 'Every record: knowledgegraph__find_records_by_entity(entity_id="e-acme", entity_type="named_entity").' in text
 
+
+@pytest.mark.asyncio
+async def test_a_failed_name_lookup_is_logged_by_type_without_the_provider_text(
+    wired: dict[str, Any], caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    wired["linking"] = with_cause(EntityAccessError("Entity vector search failed"), openai_error(429))
+
+    assert await entity_search.execute_search_by_entities(_state(), mentions=["Acme"]) == (False, LOOKUP_FAILED_MSG)
+
+    (line,) = [r for r in caplog.records if "access check failed" in r.getMessage()]
+    assert (line.levelno, line.error_type, line.cause_type, line.exc_info) == (
+        logging.WARNING, "EntityAccessError", "RateLimitError", None,
+    )
+    assert_text_free(caplog.records)

@@ -2,6 +2,7 @@
 service on every chat request — a fresh `SkillManager` is built per request and
 calls `rebuild()` each time."""
 
+import logging
 import os
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
@@ -10,6 +11,7 @@ import pytest
 
 from app.agent_loop_lib.modules.providers.skills.base import SkillMetadata, SkillStatus
 from app.agents.agent_loop.skills import semantic_index as si
+from tests.support.provider_errors import assert_text_free, failure_line, openai_error
 
 
 def _skill(name: str, description: str = "does a thing") -> SkillMetadata:
@@ -162,3 +164,30 @@ class TestVectorCacheSizing:
     def test_unset_uses_the_default(self, monkeypatch) -> None:
         module = self._reload(monkeypatch, None)
         assert module._VECTOR_CACHE_MAX == 4096
+
+
+class TestEmbeddingFailures:
+    """A failed embedding falls back to keyword search with one line that has the class but not the provider's
+    text, which can echo the skill text or the user's query."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("step", ["skill", "bulk", "query"])
+    async def test_a_failed_embedding_is_one_text_free_line(self, caplog, step) -> None:
+        caplog.set_level(logging.DEBUG)
+        embedder = _embedder()
+        error = openai_error(400)
+        index = _index_with(embedder)
+        if step == "skill":
+            embedder.aembed_query = AsyncMock(side_effect=error)
+            await index._embed_one(_skill("a"))
+        elif step == "bulk":
+            embedder.aembed_documents = AsyncMock(side_effect=error)
+            await index.rebuild([_skill("a"), _skill("b")])
+        else:
+            await index.rebuild([_skill("a")])
+            embedder.aembed_query = AsyncMock(side_effect=error)
+            assert [m.skill.name for m in await index.search("does a thing")] == ["a"]  # keyword fallback
+
+        fields = failure_line(caplog.records, "skill_index.embed_failed", "bad_request", logging.WARNING)
+        assert fields["step"] == step
+        assert_text_free(caplog.records)

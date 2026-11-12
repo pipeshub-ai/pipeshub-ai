@@ -12,6 +12,7 @@ import aiohttp
 from fastapi.responses import StreamingResponse
 from langchain_anthropic import ChatAnthropic
 from langchain_aws import ChatBedrock, ChatBedrockConverse
+from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -43,6 +44,7 @@ from app.utils.citations import (
     normalize_citations_and_chunks,
     normalize_citations_and_chunks_for_agent,  # noqa: F401  # tests patch this module attribute
 )
+from app.utils.error_class import log_failure
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.llm import LLMUnavailableError
 from app.utils.logger import create_logger
@@ -435,56 +437,53 @@ async def aiter_llm_stream(
         if all(cb is not opik_tracer for cb in callbacks):
             callbacks.append(opik_tracer)
         config = {"callbacks": callbacks}
-    try:
-        if hasattr(llm, "astream"):
-            # Fix #1710: Manual iteration to catch per-chunk ValidationError
-            # when providers like LiteLLM send role=None on non-first chunks
-            astream_iter = llm.astream(messages, config=config).__aiter__()
-            while True:
-                try:
-                    part = await astream_iter.__anext__()
-                except StopAsyncIteration:
-                    break
-                except ValidationError as e:
-                    # Only suppress the specific validation error related to 'role'
-                    if "role" in str(e).lower():
-                        logger.warning(
-                            f"Skipping chunk due to validation error "
-                            f"(likely role=None from provider): {e}"
-                        )
-                        continue
-                    # Re-raise other validation errors to avoid hiding unexpected issues.
-                    raise
-
-                if not part:
+    if hasattr(llm, "astream"):
+        # Fix #1710: Manual iteration to catch per-chunk ValidationError
+        # when providers like LiteLLM send role=None on non-first chunks
+        astream_iter = llm.astream(messages, config=config).__aiter__()
+        while True:
+            try:
+                part = await astream_iter.__anext__()
+            except StopAsyncIteration:
+                break
+            except ValidationError as e:
+                # Only suppress the specific validation error related to 'role'
+                if "role" in str(e).lower():
+                    # Type only: pydantic's text quotes the rejected chunk, the model's output.
+                    logger.warning(
+                        "Skipping chunk due to validation error (likely role=None from provider)",
+                        extra={"error_type": type(e).__name__},
+                    )
                     continue
-                parts.append(part)
+                # Re-raise other validation errors to avoid hiding unexpected issues.
+                raise
 
-                if isinstance(part, dict):
-                    yield part
-                    continue
-                else:
-                    content = getattr(part, "content", None)
-                text = _stringify_content(content)
-                if text:
-                    yield text
-        else:
-            logger.info("Using non-streaming mode")
-            response = await llm.ainvoke(messages, config=config)
-            content = getattr(response, "content", response)
-            parts.append(response)
+            if not part:
+                continue
+            parts.append(part)
 
-            if isinstance(content, dict):
-                yield content
+            if isinstance(part, dict):
+                yield part
+                continue
             else:
-                text = _stringify_content(content)
-                if text:
-                    yield text
-                else:
-                    logger.info("No content found in response")
-    except Exception as e:
-        logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
-        raise
+                content = getattr(part, "content", None)
+            text = _stringify_content(content)
+            if text:
+                yield text
+    else:
+        logger.info("Using non-streaming mode")
+        response = await llm.ainvoke(messages, config=config)
+        content = getattr(response, "content", response)
+        parts.append(response)
+
+        if isinstance(content, dict):
+            yield content
+        else:
+            text = _stringify_content(content)
+            if text:
+                yield text
+            else:
+                logger.info("No content found in response")
 
 # Configuration for Qdrant limits based on context length.
 VECTOR_DB_LIMIT_TIERS = [
@@ -1041,7 +1040,7 @@ async def call_aiter_llm_stream_simple(
             }),
         }
     except Exception as exc:
-        logger.error("Error in call_aiter_llm_stream_simple", exc_info=True)
+        log_failure(logger, "llm_stream.failed", exc, include_error_text=False)
         yield {"event": "error", "data": {"error": f"Error in LLM streaming: {exc}"}}
         return
 
@@ -1100,6 +1099,15 @@ def cleanup_content(response_text: str) -> str:
     if response_text.endswith("```"):
         response_text = response_text.rsplit("```", 1)[0]
     return response_text.strip()
+
+
+# An answer that does not fit the schema is the model's doing, not a bug of ours: a WARNING, as before.
+_ANSWER_PARSE_ERRORS = (ValidationError, OutputParserException)
+
+
+def answer_error_class(exc: BaseException) -> str | None:
+    """``bad_request`` for a model answer that did not fit the schema; None lets ``classify_error`` decide."""
+    return "bad_request" if isinstance(exc, _ANSWER_PARSE_ERRORS) else None
 
 
 def _recover_structured_json_from_exception(
@@ -1205,7 +1213,10 @@ async def invoke_with_structured_output_and_reflection(
                 refused = refused_cache_params(exc, sent - dropped)
                 if not refused:
                     raise
-                logger.warning("Prompt-cache parameters %s rejected; resending without them: %s", sorted(refused), exc)
+                logger.warning(
+                    "Prompt-cache parameters %s rejected; resending without them", sorted(refused),
+                    extra={"error_type": type(exc).__name__},
+                )
                 if on_cache_rejected is not None:
                     on_cache_rejected(refused)
                 else:
@@ -1225,9 +1236,12 @@ async def invoke_with_structured_output_and_reflection(
         if recovered is not None:
             logger.info("Recovered schema-valid structured output from invocation error")
             return recovered
-        logger.error(f"LLM invocation failed: {type(e).__name__}: {e}")
         if raise_call_errors:
             raise
+        log_failure(
+            logger, "structured_llm.failed", e, include_error_text=False,
+            error_class=answer_error_class(e), schema=schema.__name__, attempt=0,
+        )
         return None
 
     # Try to parse the response
@@ -1335,14 +1349,14 @@ Respond only with valid JSON that matches the schema."""
                         "Recovered schema-valid structured output from reflection invocation error"
                     )
                     return recovered
-                logger.warning(
-                    f"Reflection attempt {attempt + 1} failed: "
-                    f"{type(reflection_error).__name__}: {reflection_error}"
-                )
                 # An earlier timeout still leaves a retry; one that ends the loop means the
                 # last word was a starved call, not a reply that did not fit the schema.
                 if raise_call_errors and isinstance(reflection_error, TimeoutError) and attempt == max_retries - 1:
                     raise
+                log_failure(
+                    logger, "structured_llm.failed", reflection_error, include_error_text=False,
+                    error_class=answer_error_class(reflection_error), schema=schema.__name__, attempt=attempt + 1,
+                )
                 # A call that failed outright left no reply to correct, and
                 # the pending request already asks for valid JSON.
                 if attempt < max_retries - 1 and reflection_content is not None:

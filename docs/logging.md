@@ -483,6 +483,32 @@ whole spawn tree, `agent_run_id=C` one child, and `parent_run_id` rebuilds the t
   child's call opened) (inferred). Programmatic dispatch binds its synthetic call ids (`programmatic_spawn_<step>_<hex>`) as the
   children's `tool_call_id`; they have no `tool_call.end`.
 
+## Model calls outside the agent loop (Python)
+
+A model provider puts its response body in the exception message, and the body can echo the prompt, the document or the
+account's email. So a failed model or embedding call is never logged with its text: the line that handles it calls
+`log_failure(..., include_error_text=False)` (class, type, the site's ids, a text-free stack at ERROR), and a retry or skip note
+names `error_type` (and `cause_type`, the innermost cause) instead of the error. Lines that only relay the error (log, then raise)
+are not written: the handler above logs it once. An answer that does not fit the schema is `bad_request` (WARNING), not `internal`.
+
+| Event | Level | Fields |
+|---|---|---|
+| `structured_llm.failed` | `log_failure` policy; a reply that does not fit the schema `bad_request` | `schema`, `attempt` (0 = the first call, n = reflection n) |
+| `llm_stream.failed` | `log_failure` policy | the no-tools chat answer; the SSE error event is still sent |
+| `table_summary.failed` | `log_failure` policy | `parser` (`csv`, `excel`); a plain summary is used |
+| `document_extraction.failed` | `log_failure` policy; a failure with no cause: `bad_request` (no usable answer) or `unavailable` (open circuit) | `record_id` |
+| `extraction.fallback_failed` | `log_failure` policy | `kind` (`document`, `code`) |
+| `document_classify.failed` | as `document_extraction.failed` | the extraction service's route; `org_id` from the call scope |
+| `vlm_ocr.page_failed` | `log_failure` policy | `page`, `attempts`; the page is indexed empty |
+| `grep_generation.failed` | `log_failure` policy | `attempt` |
+| `record_extract.failed` | `log_failure` policy | `record_id`; the plain read is returned |
+| `image_generation.failed` | `log_failure` policy | `provider`, `model`, `mode` (`generate`, `edit`) |
+| `skill_index.embed_failed` | `log_failure` policy | `step` (`skill`, `bulk`, `query`), `count`, `total`; keyword search is used |
+| `entity_index.upsert_failed` | `log_failure` policy | `batch_start`, `count` |
+| `search.failed` | `log_failure` policy | the search's catch-all (a refused query embedding lands here) |
+| `parse.failed` | `log_failure` policy | `provider`, `parse_ms`; the parsing service's catch-all |
+| `title_lookup.failed` | `log_failure` policy | the lookup of records by name beside a search (route and knowledge-graph tool); the search answers without it |
+
 ## Credential refresh
 
 The connector, toolset and MCP token refresh services log through `app/utils/credential_refresh_log.py`, so one

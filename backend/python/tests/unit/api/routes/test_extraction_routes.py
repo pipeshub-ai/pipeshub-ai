@@ -23,6 +23,13 @@ from app.modules.transformers.document_extraction import (
     semantic_metadata_from_classification,
 )
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
+from tests.support.provider_errors import (
+    MARK,
+    assert_text_free,
+    failure_line,
+    openai_error,
+    with_cause,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -588,3 +595,30 @@ def test_an_outage_before_the_circuit_opens_names_no_wait() -> None:
     )
     assert response.status_code == 424
     assert "Retry-After" not in response.headers
+
+
+@pytest.mark.parametrize(
+    ("error", "error_class", "level"),
+    [
+        (lambda: with_cause(ExtractionLLMError(f"call failed: {MARK}"), openai_error(400)), "bad_request",
+         logging.WARNING),
+        (lambda: with_cause(LLMUnavailableError(f"p could not serve the call: {MARK}"), openai_error(429)),
+         "rate_limited", logging.WARNING),
+        (lambda: ExtractionLLMError("Document classification and the fallback summary both failed"), "bad_request",
+         logging.WARNING),
+    ],
+    ids=["model-400", "outage-429", "both-failed"],
+)
+def test_a_model_failure_is_one_text_free_line_with_the_org(caplog, error, error_class, level) -> None:
+    caplog.set_level(logging.DEBUG)
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(side_effect=error())
+
+    response = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123"}
+    )
+
+    assert response.status_code == 424
+    fields = failure_line(caplog.records, "document_classify.failed", error_class, level)
+    assert fields["org_id"] == "org-123"
+    assert_text_free(caplog.records)

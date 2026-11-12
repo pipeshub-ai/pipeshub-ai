@@ -38,6 +38,7 @@ from app.modules.retrieval.entity_permissions import (
 )
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
+from app.utils.error_class import innermost_type
 from app.utils.not_indexed import not_indexed_note
 
 if TYPE_CHECKING:
@@ -162,8 +163,11 @@ async def execute_search_entities(
             "this is not an empty result. Try again, or use knowledgegraph__search.",
             retryable=True,
         )
-    except EntityAccessError:
-        logger.warning("search_entities failed", exc_info=True)
+    except EntityAccessError as exc:
+        logger.warning(
+            "search_entities failed",
+            extra={"error_type": type(exc).__name__, "cause_type": innermost_type(exc)},
+        )
         return False, _error("Entity search failed — try again.", retryable=True)
 
     ignored = sorted(set(requested) - SEARCHABLE_ENTITY_TYPES)
