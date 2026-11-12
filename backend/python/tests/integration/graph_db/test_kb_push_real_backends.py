@@ -101,7 +101,7 @@ class FakeConfig:
         self.data: dict = {}
         self.logger = logger
 
-    async def get_config(self, key, default=None, use_cache=True, raise_on_error=False) -> object:
+    async def get_config(self, key, default=None, use_cache=True, raise_on_error=False, keep_in_cache=True) -> object:
         return self.data.get(key, default)
 
     async def create_config_if_absent(self, key, value, **_ttl) -> bool:

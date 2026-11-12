@@ -18,6 +18,7 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiokafka.structs import TopicPartition
 
 from app.services.messaging.config import (
     IndexingEvent,
@@ -296,21 +297,25 @@ class TestConsumeLoopNotRunningInner:
 class TestConsumeLoopMessageException:
 
     @pytest.mark.asyncio
-    async def test_continues_after_message_error(self, consumer):
-        """Error processing one message doesn't stop other messages."""
+    async def test_dispatch_error_stops_only_its_partition(self, consumer: IndexingKafkaConsumer) -> None:
+        """A dispatch error stops its partition's batch and rewinds it there; other partitions go on (F25)."""
         consumer.running = True
         mock_consumer = MagicMock()
+        tp0, tp1 = TopicPartition("test-topic", 0), TopicPartition("test-topic", 1)
 
-        msg1 = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val1"}}).encode("utf-8"))
-        msg2 = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val2"}}).encode("utf-8"))
+        def message(partition: int, offset: int) -> MagicMock:
+            value = json.dumps({"eventType": "test", "payload": {"key": f"p{partition}-{offset}"}}).encode("utf-8")
+            return _make_message(partition=partition, offset=offset, value=value)
+
+        msg1, msg2, msg3 = message(0, 0), message(0, 1), message(1, 0)
 
         call_count = 0
 
-        async def mock_getmany(**kwargs):
+        async def mock_getmany(**kwargs: object) -> dict[TopicPartition, list[MagicMock]]:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return {"tp": [msg1, msg2]}
+                return {tp0: [msg1, msg2], tp1: [msg3]}
             consumer.running = False
             return {}
 
@@ -319,20 +324,20 @@ class TestConsumeLoopMessageException:
         mock_consumer.paused.return_value = set()
         consumer.consumer = mock_consumer
 
-        process_call_count = 0
+        dispatched: list[MagicMock] = []
 
-        async def mock_process(msg, parsed=None):
-            nonlocal process_call_count
-            process_call_count += 1
-            if process_call_count == 1:
+        async def mock_process(msg: MagicMock, parsed: object = None) -> None:
+            dispatched.append(msg)
+            if msg is msg1:
                 raise Exception("processing error")
 
         with patch.object(consumer, '_IndexingKafkaConsumer__start_processing_task',
                           side_effect=mock_process):
             await consumer._IndexingKafkaConsumer__consume_loop()
 
-        # Both messages should be attempted
-        assert process_call_count == 2
+        assert dispatched == [msg1, msg3]
+        mock_consumer.seek.assert_called_once_with(tp0, 0)
+        assert tp0 not in consumer._in_flight_partitions
 
 
 # ===================================================================

@@ -338,11 +338,20 @@ class TestEtcd3DistributedKeyValueStore:
     @pytest.mark.asyncio
     async def test_delete_key_failure_raises(self, store, mock_client):
         """Exception during delete raises ConnectionError."""
-        mock_client.delete = MagicMock(side_effect=RuntimeError("fail"))
+        err = RuntimeError("fail")
+        mock_client.delete = MagicMock(side_effect=err)
 
         with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
-            with pytest.raises(ConnectionError, match="Failed to delete key"):
+            with pytest.raises(ConnectionError, match="Failed to delete key") as excinfo:
                 await store.delete_key("key1")
+        assert excinfo.value.__cause__ is err
+
+    @pytest.mark.asyncio
+    async def test_delete_key_absent_returns_false(self, store, mock_client) -> None:
+        mock_client.delete = MagicMock(return_value=False)
+
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            assert await store.delete_key("key1") is False
 
     # ------------------------------------------------------------------ #
     # get_all_keys tests

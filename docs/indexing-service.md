@@ -372,6 +372,8 @@ flowchart TD
     E --> A
 ```
 
+With fair scheduling off (`FAIR_SCHEDULING_ENABLED=false`, Kafka only) the loop is FIFO: each partition has one message in flight, and the commit is that message's offset + 1. The first message of a batch that is not dispatched (its re-queue backoff has not elapsed, its partition is busy, or its parse or dispatch failed and it is not poison) ends that partition's batch, and the partition is read again from it: at once, or when the message in flight ends. A failure on one partition does not stop the others in the batch.
+
 Key structures:
 
 - **`DRRScheduler`** (`scheduling/drr_scheduler.py`): hierarchical deficit round robin over `(orgId, connectorId, tier)`; the tier level is appended by `TieredKeyExtractor` and enabled by `FairSchedulerConfig.tier_level` (on by default). Each leaf is a FIFO. `try_pop` only inspects the *head* of each leaf; a head that is not eligible is skipped without spending deficit, which is what lets a connector's light leaf proceed while its heavy leaf is blocked. Buffer bounded by `FAIR_SCHEDULING_MAX_BUFFER` (2000) and `FAIR_SCHEDULING_MAX_PER_ENTITY` (500 per connector across both tiers; `entity_key()` gives the prefix the cap applies to).
