@@ -8,6 +8,8 @@ type that sum the rows, and facet totals that count only what the viewer may rea
 from __future__ import annotations
 
 import logging
+import warnings
+from collections import Counter
 
 import pytest
 
@@ -50,17 +52,26 @@ def _bad(found: list[KhFinding], known: set[tuple[str, str]] = frozenset()) -> l
     return [f for f in found if f.kind not in GAPS and (f.kind != "browse_gap" or (f.scenario, f.detail) not in known)]
 
 
+def _report(where: str, found: list[KhFinding]) -> None:
+    """The findings reported, not failed, counted by class in one warning: pytest lists it in the run's summary."""
+    counts = Counter(f.kind for f in found if f.kind in GAPS)
+    if counts:
+        warnings.warn(f"{where}: reported {dict(sorted(counts.items()))}", stacklevel=2)
+
+
 async def test_golden_worlds_count_what_the_viewer_may_read(graph_layers) -> None:
     scenarios: list[Scenario] = load_all()
     for layer in graph_layers:
         worlds = [*dict.fromkeys(s.final_world() for s in scenarios), *KH_WORLDS]      # shapes no generator builds: the connector check of every arm, arrows, a multi-page walk
-        bad: list[KhFinding] = []
+        found: list[KhFinding] = []
         for start in range(0, len(worlds), CHUNK):
             chunk = worlds[start:start + CHUNK]
             await layer.preload(chunk)
             for offset, world in enumerate(chunk):
-                bad += _bad(await check_world(layer, world, f"golden-{start + offset}"))
+                found += await check_world(layer, world, f"golden-{start + offset}")
             await layer.release(chunk)
+        _report(f"{layer.name} golden", found)
+        bad = _bad(found)
         assert not bad, f"{layer.name}\n{_describe(bad)}"
 
 
@@ -186,11 +197,13 @@ async def test_generated_worlds_count_what_the_viewer_may_read(graph_layers, kin
     for seed in gen.seeds():
         worlds = gen.generate(kind, seed, gen.world_count())
         for layer in graph_layers:
-            bad: list[KhFinding] = []
+            found: list[KhFinding] = []
             for start in range(0, len(worlds), CHUNK):
                 chunk = worlds[start:start + CHUNK]
                 await layer.preload(chunk)
                 for offset, world in enumerate(chunk):
-                    bad += _bad(await check_world(layer, world, f"{kind}-{seed}-{start + offset}"))
+                    found += await check_world(layer, world, f"{kind}-{seed}-{start + offset}")
                 await layer.release(chunk)
+            _report(f"{layer.name} {kind} seed {seed}", found)
+            bad = _bad(found)
             assert not bad, f"{layer.name} {kind} seed {seed}\n{_describe(bad)}"

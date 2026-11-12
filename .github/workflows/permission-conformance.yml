@@ -84,7 +84,7 @@ jobs:
       # The one allowed skip is the strict expected failure that reports matrix cells without a scenario, by its exact name.
       - name: Check the oracle run for skips
         run: |
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 1355 \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 1364 \
             --allow test_coverage_gaps_are_reported
 
       - name: Run the viewer-scope service tests (no services)
@@ -97,7 +97,8 @@ jobs:
   graph:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    # On four cores (stores and pytest pinned to them) the graph suite takes 13 minutes and the conformance step 44; with setup, about an hour.
+    timeout-minutes: 90
     services:
       neo4j:
         image: neo4j:5.26.0
@@ -163,8 +164,8 @@ jobs:
           cd backend/python
           # Log capture off: pytest keeps every record a test logs, and the Knowledge Hub layer's whole-tree browse logs enough to run out of
           # memory with it on (tens of GB); with it off the step peaks near 1.5 GB. The generated-worlds test browses every node of 50 worlds
-          # on both stores (26 minutes on a 32-core host), hence the per-test timeout.
-          pytest tests/permissions -m integration -v -p no:logging --timeout=6000 --junitxml="$RUNNER_TEMP/graph-conformance-junit.xml"
+          # on both stores (23 minutes for the adversarial set on four cores), hence the per-test timeout.
+          pytest tests/permissions -m integration -v -p no:logging --timeout=3000 --junitxml="$RUNNER_TEMP/graph-conformance-junit.xml"
 
       # A skipped test here means a store was missing, so a skip fails the job; --min-tests pins the size of each run
       # (a PR that adds tests raises it; it equals what `pytest --collect-only -m integration` lists). The suite's three skips are tests of one store only. An allow is matched as a substring of the report's `classname::name`, so each one names its module.
@@ -174,7 +175,7 @@ jobs:
             --allow "test_hierarchy_backfill::test_an_edge_from_a_removed_document_is_no_parent[neo4j]" \
             --allow "test_redundant_group_edges::test_the_tree_labels_follow_the_edges[arango]" \
             --allow "test_record_links::test_a_hierarchy_write_does_not_overwrite_a_link_waiting_for_the_migration[neo4j]"
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-conformance-junit.xml" --min-tests 298 \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-conformance-junit.xml" --min-tests 299 \
             --allow "test_generation_paths::test_an_edge_another_transaction_removed_and_this_write_put_back_moves_the_generation[arango]"
 
       - name: Upload the regressions the generator filed
