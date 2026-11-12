@@ -3022,7 +3022,9 @@ schemaacl retrieval pipeshub_restore USAGE grantable=false
 schemaacl retrieval pipeshub_vetted_retrieval USAGE grantable=false
 settings admins= extensions=plpgsql,vector,pg_trgm,pg_textsearch,btree_gin,pg_search,pg_stat_statements services=pipeshub_node,pipeshub_connectors,pipeshub_indexing,pipeshub_query,pipeshub_kv
 sysfuncs@17 count=3330 md5=4ffc20628a8498ed9cac0aa6b3560b9e
+sysfuncs@17 count=3331 md5=787de60ec3a94cbcff93270564d6660f
 sysfuncs@18 count=3413 md5=e1d09e84fd442d7baa0c82daf2e7df8a
+sysfuncs@18 count=3414 md5=8793d93eb531473371d069e64059630f
 sysrelacl information_schema.administrable_role_authorizations PUBLIC SELECT
 sysrelacl information_schema.applicable_roles PUBLIC SELECT
 sysrelacl information_schema.attributes PUBLIC SELECT
