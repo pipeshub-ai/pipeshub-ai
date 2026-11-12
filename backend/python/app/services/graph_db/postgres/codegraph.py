@@ -84,7 +84,8 @@ def _neighbour(r: Any, key: str, coll: str) -> dict[str, Any]:  # noqa: ANN401
 # One page of a hop read, in the order the cursor names: (anchor, direction, neighbour collection, neighbour id, relationship type, edge collection, edge key), each byte-wise ("C").
 # The cursor is ``v2:`` and that tuple's fields, escaped and joined by chr(1) (see ``_cursor``), so any id round-trips and the order is the tuple's throughout; the statements below take its fields
 # as bounds, they do not compare a string. Every branch reads one anchor range of one partial index in that order (``edges_by_neighbour_in`` / ``_out``: the anchor, then the neighbour's collection and id), so a
-# page of a node of any degree reads about a page of rows and not all its edges: the branches of the anchor the cursor is in carry its position as an index bound, those of the
+# page of a node of any degree reads about a page of rows and not all its edges when most of the anchor's edges are of the asked types (a selective type filter reads past
+# the anchor's other edges in that range): the branches of the anchor the cursor is in carry its position as an index bound, those of the
 # anchors after it start from their first edge. Each returns at most a page, and the page is the first ``limit`` of what they return together.
 _NEIGHBOUR_ORDER = ('anchor COLLATE "C", dir COLLATE "C", coll COLLATE "C", key COLLATE "C", rel COLLATE "C", edge_coll COLLATE "C", ekey COLLATE "C"')
 _HOP_PAGE_SQL = """/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT x.anchor, x.coll, x.key, x.dir, x.rel, x.doc, x.edge_coll, x.ekey FROM (
@@ -123,14 +124,14 @@ _HOP_FIRST_OUT_SQL = """/* pipeshub:graph.get_neighbors_for_nodes_by_relationshi
      FROM graph.edges e WHERE e.org_id = $1 AND e.coll IN ('nodeRelations', 'recordLinks') AND e.from_coll = $2 AND e.from_id COLLATE "C" = ANY($5::text[])
        AND coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($3::text[])
      ORDER BY e.from_id COLLATE "C", e.to_coll COLLATE "C", e.to_id COLLATE "C", coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) COLLATE "C", e.coll COLLATE "C", e.ekey COLLATE "C" LIMIT $4
-) x"""
+) x ORDER BY x.anchor COLLATE "C", x.coll COLLATE "C", x.key COLLATE "C", x.rel COLLATE "C", x.edge_coll COLLATE "C", x.ekey COLLATE "C" LIMIT $4"""
 _HOP_FIRST_IN_SQL = """/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT x.anchor, x.coll, x.key, x.dir, x.rel, x.doc, x.edge_coll, x.ekey FROM (
   SELECT e.to_id AS anchor, 'inbound' AS dir, e.from_coll AS coll, e.from_id AS key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.coll AS edge_coll, e.ekey, e.doc
      FROM graph.edges e WHERE e.org_id = $1 AND e.coll IN ('nodeRelations', 'recordLinks') AND e.to_coll = $2 AND e.to_id COLLATE "C" = ANY($5::text[])
        AND NOT ($6::bool AND e.from_coll = e.to_coll AND e.from_id = e.to_id)
        AND coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($3::text[])
      ORDER BY e.to_id COLLATE "C", e.from_coll COLLATE "C", e.from_id COLLATE "C", coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) COLLATE "C", e.coll COLLATE "C", e.ekey COLLATE "C" LIMIT $4
-) x"""
+) x ORDER BY x.anchor COLLATE "C", x.coll COLLATE "C", x.key COLLATE "C", x.rel COLLATE "C", x.edge_coll COLLATE "C", x.ekey COLLATE "C" LIMIT $4"""
 _HOP_FIRST_ANY_SQL = """/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT x.anchor, x.coll, x.key, x.dir, x.rel, x.doc, x.edge_coll, x.ekey FROM (
   (SELECT e.from_id AS anchor, 'outbound' AS dir, e.to_coll AS coll, e.to_id AS key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.coll AS edge_coll, e.ekey, e.doc
      FROM graph.edges e WHERE e.org_id = $1 AND e.coll IN ('nodeRelations', 'recordLinks') AND e.from_coll = $2 AND e.from_id COLLATE "C" = ANY($5::text[])
@@ -232,7 +233,16 @@ async def _hop_page(tx: Tx, org: str, node_collection: str, node_keys: list[str]
     except ValueError:      # a cursor of a walk that began before the ordered page: its own order to its end
         return [dict(r) for r in await tx.fetch(_HOP_PAGE_WHOLE_KEY_SQL, org, _LINK_COLLS, node_collection, node_keys, types, limit, out, inn, both, after)]
     was = await tx.fetchrow(_HOP_PROFILE)
-    rows = [{**r, "page_key": _cursor(r)} for r in await tx.fetch(sql, *args)]
+    # Each statement is named at its call, so the statement checks can read it.
+    if sql is _HOP_FIRST_ANY_SQL:
+        recs = await tx.fetch(_HOP_FIRST_ANY_SQL, *args)
+    elif sql is _HOP_FIRST_OUT_SQL:
+        recs = await tx.fetch(_HOP_FIRST_OUT_SQL, *args)
+    elif sql is _HOP_FIRST_IN_SQL:
+        recs = await tx.fetch(_HOP_FIRST_IN_SQL, *args)
+    else:
+        recs = await tx.fetch(_HOP_PAGE_SQL, *args)
+    rows = [{**r, "page_key": _cursor(r)} for r in recs]
     if restore:      # the caller's transaction goes on with the settings it had
         await tx.fetchval(_HOP_RESTORE, was["b"], was["s"], was["p"], was["m"])
     return rows
