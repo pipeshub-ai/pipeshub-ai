@@ -189,6 +189,8 @@ class DriveWorld:
         self.unlistable_groups: dict[str, int] = {}
         self.other_domains: dict[str, list[str]] = {}
         self.domains_unreadable = False
+        # When set, the user listing is cut: these people are left out of it.
+        self.cut_user_listing: Optional[set[str]] = None
         # Whether a domain share reaches the people of the account's other domains, which Google does not document.
         self.domain_share_reaches_all = False
         # Or only from one domain to another: {("example.com", "labs.example.org")}.
@@ -740,6 +742,11 @@ class DriveWorld:
         if denied := self._admin_guard(req):
             return denied
         users = [self._directory_user(u) for u in sorted(self.users.values(), key=lambda u: u.email)]
+        if self.cut_user_listing is not None:
+            # A cut listing: an empty page that still has a next token, then a listing without these people.
+            if not req.query.get("pageToken"):
+                return {"users": [], "nextPageToken": "0"}
+            users = [u for u in users if u["primaryEmail"] not in self.cut_user_listing]
         return paginate(users, req.query, default_size=self.admin_page_size, key="users")
 
     def _admin_user(self, req: ApiRequest) -> object:

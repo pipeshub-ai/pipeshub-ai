@@ -442,6 +442,8 @@ class FakeEntitiesProcessor:
             if raise_on_error:
                 raise RuntimeError("graph unavailable while reading the record's permissions")
             return []
+        if node_collection == "groups":  # a group's members
+            return next((list(members) for group, members in self.user_groups.values() if group.id == node_id), [])
         record = self.by_id(node_id)
         if record is None:
             return []
@@ -613,9 +615,24 @@ class FakeEntitiesProcessor:
     async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
         self.kept_user_groups.append(external_group_id)
 
-    async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
+    async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]], *, replace_members: bool = True) -> None:
         for group, members in groups:
-            self.user_groups[group.source_user_group_id] = (group, list(members))
+            stored = self.user_groups.get(group.source_user_group_id)
+            if stored is not None and not replace_members:  # the stored group keeps its id and its people
+                have = {(m.email or "").lower() for m in stored[1]}
+                self.user_groups[group.source_user_group_id] = (
+                    stored[0], [*stored[1], *(m for m in members if (m.email or "").lower() not in have)]
+                )
+            else:
+                self.user_groups[group.source_user_group_id] = (group, list(members))
+
+    async def on_user_group_member_removed(self, external_group_id: str, user_email: str, connector_id: str) -> bool:
+        stored = self.user_groups.get(external_group_id)
+        if stored is None:
+            return False
+        kept = [m for m in stored[1] if (m.email or "").lower() != user_email.lower()]
+        self.user_groups[external_group_id] = (stored[0], kept)
+        return len(kept) != len(stored[1])
 
     async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
         return [group for group, _ in self.user_groups.values()]

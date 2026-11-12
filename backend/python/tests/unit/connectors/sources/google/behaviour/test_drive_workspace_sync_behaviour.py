@@ -3087,3 +3087,48 @@ async def test_a_refusal_from_every_audience_person_asked_is_not_a_no(ws: Worksp
     ws.http.fail("GET", "/drive/v3/files/g1", 403, "insufficientFilePermissions", when=lambda r: r.identity != BOB)
     await ws.sync()
     assert "g1" in ws.records.records and ws.incomplete is True
+
+
+def audience_members(ws: Workspace, group_id: str) -> set[str]:
+    return {m.email for m in ws.records.user_groups[group_id][1]}
+
+
+async def test_a_cut_user_listing_that_leaves_out_a_member_keeps_them_in_the_audience(ws: Workspace) -> None:
+    ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[discoverable("anyone")])
+    await ws.sync()
+    assert BOB in audience_members(ws, "workspace-members")
+
+    ws.world.cut_user_listing = {BOB}
+    await ws.sync()
+    assert ws.incomplete is True
+    assert BOB in audience_members(ws, "workspace-members"), "left out of a cut listing is unknown, not gone"
+    assert BOB in domain_members(ws, "example.com")
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f")
+
+    ws.world.cut_user_listing = None
+    ws.world.users[BOB].suspended = True
+    await ws.sync()
+    assert BOB not in audience_members(ws, "workspace-members"), "the next complete listing writes the groups exactly"
+
+
+async def test_a_cut_user_listing_that_shows_someone_suspended_takes_them_out_of_the_audience(ws: Workspace) -> None:
+    await ws.sync()
+    ws.world.cut_user_listing = {ALICE}
+    ws.world.users[BOB].suspended = True
+    await ws.sync()
+    assert BOB not in audience_members(ws, "workspace-members") and BOB not in domain_members(ws, "example.com")
+    assert ALICE in audience_members(ws, "workspace-members")
+
+
+async def test_a_reach_answer_that_narrows_on_a_cut_listing_takes_the_other_domains_out(ws: Workspace) -> None:
+    two_domains(ws, reach_all=True)
+    await settle(ws)
+    assert {LABS, XIA, YAN} <= domain_members(ws, "example.com")
+
+    ws.world.domain_share_reaches_all = False
+    age(ws)
+    ws.world.cut_user_listing = {ADMIN, XIA}
+    await ws.sync()
+    assert reach(ws) is False
+    assert not {LABS, XIA, YAN} & domain_members(ws, "example.com"), "Xia too, though the cut listing left her out"
+    assert ALICE in domain_members(ws, "example.com")

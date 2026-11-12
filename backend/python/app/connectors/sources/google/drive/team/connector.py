@@ -1002,11 +1002,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         by_domain: dict[str, list[AppUser]] = {}
         for user in enabled:
             by_domain.setdefault(_email_domain(user.email), []).append(user)
+        domains_read = True
         try:
             domains = await self._workspace_domains()
         except Exception as e:
             self.logger.warning(f"Workspace domains could not be read; domain shares reach their own domain only: {e}")
-            domains = set()
+            domains, domains_read = set(), False
         try:
             reach = await self._domain_reach(domains, enabled)
         except Exception as e:
@@ -1019,11 +1020,23 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
             for d in set(by_domain) | domains
         })
+        # The domains whose people each group may hold (None: everyone).
+        allowed: dict[str, set[str] | None] = {ALL_MEMBERS_GROUP_ID: None}
+        allowed.update({DOMAIN_MEMBERS_GROUP_PREFIX + d: {d, *reach.get(d, ())} for d in set(by_domain) | domains})
         try:
+            stored_groups = {}
             for stored in await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True):
                 gone = stored.source_user_group_id or ""
+                stored_groups[gone] = stored
                 if gone.startswith(DOMAIN_MEMBERS_GROUP_PREFIX) and gone not in audiences:
                     audiences[gone] = (stored.name, [])
+                    # No longer a verified domain: nobody. Unless the domains could not be read: its own people.
+                    allowed[gone] = set() if domains_read else {gone.removeprefix(DOMAIN_MEMBERS_GROUP_PREFIX)}
+            if self._listing_cut:
+                await self._write_audience_groups_on_cut_listing(audiences, allowed, stored_groups)
+                self._audience_groups = set(audiences)
+                self._audience_loaded = True
+                return
             digests: dict[str, str] = {}
             for group_id, (_, members) in audiences.items():
                 people = {f"{(u.email or '').lower()}|{u.source_user_id}" for u in members}
@@ -1069,6 +1082,42 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._audience_groups = set(audiences)
         self._audience_members = {g: {(u.email or "").lower() for u in members} for g, (_, members) in audiences.items()}
         self._audience_loaded = True
+
+    async def _write_audience_groups_on_cut_listing(
+        self, audiences: dict[str, tuple[str, list[AppUser]]], allowed: dict[str, set[str] | None], stored_groups: dict
+    ) -> None:
+        """A cut user listing may only narrow: a person it leaves out is unknown and keeps their place. Each group
+        keeps its stored people, less those the listing shows unable to sign in and those on a domain the group may no
+        longer hold (a narrower answer from Google applies at once), plus the listed people it should hold. Each group is
+        then written in full again on the next complete listing."""
+        # Forgotten first, so that write is not skipped as unchanged.
+        await self.drive_delta_sync_point.update_sync_point(AUDIENCE_DIGESTS_SYNC_POINT_KEY, {"digests": [], "written_at": 0})
+        self._audience_members = {}
+        for group_id, (name, listed) in audiences.items():
+            domains = allowed.get(group_id)
+            held: set[str] = set()
+            if group_id in stored_groups:
+                for user in await self.data_entities_processor.get_users_with_permission_to_node(
+                    stored_groups[group_id].id, CollectionNames.GROUPS.value, raise_on_error=True
+                ):
+                    email = (user.email or "").lower()
+                    if not email:
+                        continue
+                    if self._is_inactive_email(email) or (domains is not None and _email_domain(email) not in domains):
+                        await self.data_entities_processor.on_user_group_member_removed(group_id, email, self.connector_id)
+                    else:
+                        held.add(email)
+            await self.data_entities_processor.on_new_user_groups([(
+                AppUserGroup(
+                    source_user_group_id=group_id,
+                    app_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    name=name,
+                    description="Enabled people a discoverable share is open to",
+                ),
+                listed,
+            )], replace_members=False)
+            self._audience_members[group_id] = held | {(u.email or "").lower() for u in listed}
 
     async def _domain_reach(self, domains: set[str], enabled: list[AppUser]) -> dict[str, set[str]]:
         """For each verified domain D, the other verified domains whose people Google has shown a share with D reaches.
