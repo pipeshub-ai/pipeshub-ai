@@ -69,7 +69,6 @@ from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.api.artifacts_router import artifacts_router
 from app.connectors.api.permission_explain_router import permission_explain_router  # noqa: E402
 from app.connectors.sources.localKB.api.kb_router import install_push_routes, kb_router
-from app.connectors.sources.localKB.push.api import close_runtime as close_kb_push_runtime
 from app.connectors.sources.web.crawl4ai_fetcher import close_shared_fetcher  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.connectors.sources.localKB.api.knowledge_hub_router import (
     get_knowledge_hub_service,
@@ -1292,6 +1291,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error closing accessible-records cache: {e}")
     try:
+        from app.connectors.sources.localKB.push.api import close_runtime as close_kb_push_runtime
+
         await close_kb_push_runtime(app)
     except Exception as e:
         logger.warning(f"Error stopping the knowledge-base push runtime at shutdown: {e}")
