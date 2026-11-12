@@ -142,7 +142,9 @@ export default function WebSearchPage() {
           ? 'Configuration saved successfully.'
           : becomesDefault
             ? `${label} is now the default web search provider. Web search is on for everyone.`
-            : `${label} is now configured. Click "Set as default" to start using it.`,
+            : meta?.searches
+              ? `${label} is now configured. Click "Set as default" to start using it.`
+              : `${label} is now configured. It reads pages for web search; add a search provider to turn web search on.`,
         duration: 5000,
       });
       loadData(false);

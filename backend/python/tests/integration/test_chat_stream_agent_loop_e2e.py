@@ -43,7 +43,7 @@ _WEB_SEARCH_KEY = "/services/webSearch"
 def _mock_config_service() -> AsyncMock:
     config_service = AsyncMock()
 
-    async def get_config(key, *args, **kwargs):
+    async def get_config(key: str, *args: object, **kwargs: object) -> dict[str, object]:
         # Web search has no implicit provider: a run that searches needs one an admin chose.
         if key == _WEB_SEARCH_KEY:
             return {"providers": [{"provider": "duckduckgo", "providerKey": "k", "configuration": {}, "isDefault": True}]}
