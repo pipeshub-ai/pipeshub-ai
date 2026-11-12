@@ -368,6 +368,20 @@ async def test_a_node_reads_its_linked_children_once_and_refuses_more_than_it_re
     assert (await browse(p, org, "g1", ["fold"], start_type="recordGroup"))["scope"]["admitted"] is False      # not open to the viewer: the 404, not the 422
 
 
+async def test_a_node_counts_only_live_linked_children_against_its_bound_and_lists_one_behind_deleted_links(pg_db, monkeypatch) -> None:
+    """The bound on a node's linked children counts the ones that are live and not hidden: links to deleted rows before a readable child neither refuse the browse nor hide the
+    child, and the child's parent shows its arrow (exact when kg serves the connector, the sample when it does not)."""
+    from .test_kh_listing_flat import _folder_with_a_linked_child_after
+    p, org = prov(pg_db), new_org()
+    await _folder_with_a_linked_child_after(p, pg_db, org, 300)
+    monkeypatch.setattr(kh_browse.kgl, "LINKS_MAX", 250)
+    for served in (True, False):
+        if not served:
+            await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+        assert [r["id"] for r in (await browse(p, org, "fold", ["fold", "far"]))["rows"]] == ["far"], served
+        assert (await flat_arrows(p, org, ["fold", "far"]))["fold"] is True, served
+
+
 def _generic_plan(sql: str) -> object:
     """``EXPLAIN (GENERIC_PLAN)`` of a statement with its ``$n`` unbound: sent as a simple query (a client-side cursor), which the extended protocol of asyncpg cannot."""
     import psycopg
@@ -411,7 +425,7 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
         statements = []
         # a node's children, the App's, and a node whose children are all linked; each with and without the filters and the hidden rows a request carries
         for start, key in (("node", sk), ("app", app_sk), ("linked", g1)):
-            linked = [r["child_sk"] for r in await con.fetch(kgl.LINKED_CHILDREN, org, key, kgl.LINKS_MAX + 1)]
+            linked = [r["child_sk"] for r in await con.fetch(kgl.LINKED_CHILDREN, org, key, kgl.LINKS_MAX + 1, [])]
             for shaped, (flt, hid) in (("plain", ({}, [])), ("filtered", ({"search_query": "child", "updated_at": {"gte": 0}}, hide))):
                 def params(window: int, flt: dict = flt, hid: list = hid, key: int = key, linked: list = linked) -> tuple[kgl.Params, str, str | None]:
                     base, where = kh_listing.where_of(org, app_sk, {}, flt, hid)
@@ -436,7 +450,7 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
         q = kgl.Params([org, [sk, g1], hide])
         admit = kgl.class_admit("c", q, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()})
         arrows = kgl.arrows_sql(admit, kgl.undecided_child(q, [3], app_sk))      # as the listing asks it
-        statements += [("children_of", kgl.children_of_sql(""), [org, [sk, g1], 200, hide]), ("arrows", arrows, q.values), ("linked_children", kgl.LINKED_CHILDREN, [org, g1, 5001]),
+        statements += [("children_of", kgl.children_of_sql(""), [org, [sk, g1], 200, hide]), ("arrows", arrows, q.values), ("linked_children", kgl.LINKED_CHILDREN, [org, g1, 5001, hide]),
                        ("start", kgl.BROWSE_START, [org, "fold"]), ("start_connector", kh_browse.START_CONNECTOR, [org, "fold"]), ("up", kgl.BROWSE_UP, [org, [sk]]),
                        ("state", kgl.STATE, [org, "app1"]), ("hiders", kgl.HAS_HIDER, [org, app_sk]), ("hidden", kgl.HIDDEN, [org, app_sk]), ("classes", kgl.CLASSES, [org, app_sk, 50_001]),
                        ("links", kh_listing.LINKS, [org, [sk]]), ("keys", kh_listing.KEYS, [org, [sk]]), ("docs", kh_listing.DOCS, [org, ["records"], ["fold"]]),

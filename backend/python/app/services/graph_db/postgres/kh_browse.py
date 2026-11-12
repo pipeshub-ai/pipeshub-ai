@@ -89,7 +89,7 @@ class KhBrowseMixin(PgBase):
             if not at_app and (start is None or start["app_sk"] != app_sk or start["deleted"] or start["alien"] or start["sk"] in set(hidden)):
                 return "refused"
             key = app_sk if at_app else start["sk"]
-            links = [r["child_sk"] for r in await tx.fetch(kgl.LINKED_CHILDREN, org, key, kgl.LINKS_MAX + 1)]      # read once: every statement below is handed them
+            links = [r["child_sk"] for r in await tx.fetch(kgl.LINKED_CHILDREN, org, key, kgl.LINKS_MAX + 1, hidden)]      # read once: every statement below is handed them
             base, where = where_of(org, app_sk, app_doc, filters, hidden)
             where += "" if self._kh_lists_placeholders(flatten=False, filters=filters) else " AND NOT r.placeholder"
             p = kgl.Params(list(base.values))

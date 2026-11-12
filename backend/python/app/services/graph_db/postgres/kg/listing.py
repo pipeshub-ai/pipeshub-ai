@@ -171,6 +171,13 @@ def class_admit(alias: str, p: Params, viewer: dict[str, Any]) -> str:
 _FENCE = " OFFSET 0"
 
 
+def _linked(parent: str, cols: str, live: str, limit: str = "") -> str:
+    """The live children of ``parent`` by a hierarchy link, as rows ``c``: the parent's links by the key of kg.links, each child by its own key, filtered before any ``limit`` (so no
+    budget of links can stop short of a child that qualifies). OFFSET 0 keeps each read on its node."""
+    return (f"(SELECT c.* FROM (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = {parent} AND l.kind = 1 OFFSET 0) l "
+            f"CROSS JOIN LATERAL ({cols} WHERE {live} AND c.sk = l.child_sk OFFSET 0) c{limit})")
+
+
 def undecided_child(p: Params, unvouched: list[int], app_sk: int) -> str:
     """A child (a row ``c`` of :func:`arrows_sql`) that the classes do not decide: no stamp, a pending restamp, a placeholder, a class kg cannot vouch for, or another connector's."""
     return (f"NOT (c.r13 IS FALSE AND c.has_path AND c.class_id IS NOT NULL AND NOT c.fenced AND NOT c.placeholder AND NOT c.class_id = ANY({p.add(unvouched)}::bigint[]) "
@@ -184,12 +191,9 @@ def arrows_sql(admit: str, undecided: str = "false", sample: int = 200) -> str:
     the classes do not decide among its first ``sample`` children (``undecided``: the rows whose sample the access check has to be asked about)."""
     live = "c.org_id = $1 AND c.kind IN (2, 3) AND NOT c.deleted AND NOT c.alien AND c.sk <> ALL($3::bigint[])"
     cols = "SELECT c.sk, c.id, c.placeholder, c.app_sk, c.r13, c.path IS NOT NULL AS has_path, c.class_id, c.fence_job IS NOT NULL AS fenced FROM kg.records c"
-    # the linked children by their keys, read from the row's links first (an array, so the planner cannot turn it into a pass over every row the classes open)
-    linked = f"c.sk = ANY (ARRAY(SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = p.sk AND l.kind = 1 LIMIT {LINKS_MAX}))"
-
     def some(cond: str, limit: str = _FENCE) -> str:      # the row's children first, the condition on them after (never a class read of the organisation)
         return (f"EXISTS (SELECT 1 FROM ({cols} WHERE {live} AND c.parent_sk = p.sk{limit}) c WHERE {cond}) "
-                f"OR EXISTS (SELECT 1 FROM ({cols} WHERE {live} AND {linked}{limit}) c WHERE {cond})")
+                f"OR EXISTS (SELECT 1 FROM {_linked('p.sk', cols, live, limit)} c WHERE {cond} OFFSET 0)")
     return (f"/* pipeshub:kg.listing_arrows */ SELECT p.sk, {some(f'NOT c.placeholder AND {admit}')} AS lists, {some(undecided, f' LIMIT {int(sample)}')} AS undecided "
             "FROM unnest($2::bigint[]) AS p(sk)")
 
@@ -200,9 +204,10 @@ BROWSE_START = f"""/* pipeshub:kg.browse_start */ SELECT {COLS}, a.id AS app_id 
 BROWSE_UP = f"/* pipeshub:kg.browse_up */ SELECT {COLS} FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[])"
 BROWSE_LIVE = "r.kind IN (2, 3) AND NOT r.deleted AND NOT r.alien"        # what a browse reads: placeholders too, for the way they hold to something readable
 LINKS_MAX = 5_000       # the linked children of one node a request reads (kg.links rows: a node's non-primary children); past it a browse is refused as too large
-# The linked children of the start ``$2`` (by the key of kg.links), read once per request and handed to its statements: ``LINKS_MAX + 1`` at most (``$3``).
-# (OFFSET 0: planned as the parent's links, the LIMIT only stops the read; with it inside, the planner may walk the organisation's links hoping to meet the parent's early)
-LINKED_CHILDREN = "/* pipeshub:kg.browse_linked */ SELECT child_sk FROM (SELECT child_sk FROM kg.links WHERE org_id = $1 AND parent_sk = $2 AND kind = 1 OFFSET 0) l LIMIT $3"
+# The live linked children of the start ``$2`` outside the hidden rows ``$4``, read once per request and handed to its statements: ``LINKS_MAX + 1`` at most (``$3``), counted
+# among the children that qualify (a link to a deleted or hidden row takes nothing from the budget).
+LINKED_CHILDREN = ("/* pipeshub:kg.browse_linked */ SELECT c.sk AS child_sk FROM "
+                   + _linked("$2", "SELECT c.sk FROM kg.records c", "c.org_id = $1 AND c.kind IN (2, 3) AND NOT c.deleted AND NOT c.alien AND c.sk <> ALL($4::bigint[])", " LIMIT $3") + " c")
 
 
 def browse_scopes(links: str | None) -> list[str]:
@@ -251,5 +256,4 @@ def children_of_sql(only: str = "") -> str:
     live = f"r.org_id = $1 AND {BROWSE_LIVE} AND r.sk <> ALL($4::bigint[]){only}"
     return ("/* pipeshub:kg.browse_children_of */ SELECT p.sk AS parent, c.* FROM unnest($2::bigint[]) AS p(sk) CROSS JOIN LATERAL ("
             f"SELECT * FROM (SELECT {COLS} FROM kg.records r WHERE {live} AND r.parent_sk = p.sk LIMIT $3) a "
-            f"UNION (SELECT {COLS} FROM kg.records r WHERE {live} AND r.sk = ANY (ARRAY(SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = p.sk AND l.kind = 1 LIMIT $3)) "
-            "LIMIT $3)) c")
+            f"UNION {_linked('p.sk', 'SELECT ' + COLS.replace('r.', 'c.') + ' FROM kg.records c', live.replace('r.', 'c.'), ' LIMIT $3')}) c")
