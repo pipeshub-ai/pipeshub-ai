@@ -594,11 +594,23 @@ class Heard:
         self.names.append(event)
 
 
-def crash_next(pool: M.Materialiser, sig: int = 11) -> Callable[[dict], Awaitable[None]]:
-    """A ``before_task`` that kills the child the task was just handed to, with a real signal."""
+def kill_on_download(store: FakeStorage, pid: int, sig: int, only: str | None = None) -> None:
+    """Kill ``pid`` with a real signal when its storage request arrives, so the child dies while it runs the task.
+
+    A kill before the task is sent races the send: once the dead child's end of the pipe is closed the send fails,
+    and that is a death before the task, not one caused by it.
+    """
+    async def kill(doc: str) -> None:
+        if only is None or doc == only:
+            store.on_download = None
+            os.kill(pid, sig)
+    store.on_download = kill
+
+
+def crash_next(pool: M.Materialiser, store: FakeStorage, sig: int = 11) -> Callable[[dict], Awaitable[None]]:
+    """A ``before_task`` that kills the child the task was just handed to, with a real signal, while it runs it."""
     async def hook(_task) -> None:
-        os.kill(pool._slots[0].proc.pid, sig)
-        await asyncio.sleep(0.2)
+        kill_on_download(store, pool._slots[0].proc.pid, sig)
     return hook
 
 
@@ -606,7 +618,7 @@ class TestAccounting:
     async def test_a_real_crash_on_a_fresh_child_is_a_strike_and_a_replaced_child_serves_next(self, tmp_path, store) -> None:
         ends, heard = [], Heard()
         pool = M.Materialiser(pool_size=1, allow_loopback=True, on_task_end=lambda o, c: ends.append(o))
-        pool.before_task = crash_next(pool)
+        pool.before_task = crash_next(pool, store)
         try:
             with pytest.raises(PushRefusal) as e:
                 await pool.run(make_task(tmp_path, store, [ref_for(store, 1, PNG)]), account=heard)
@@ -620,7 +632,7 @@ class TestAccounting:
     async def test_every_crash_signal_counts(self, tmp_path, store, sig) -> None:
         heard = Heard()
         pool = M.Materialiser(pool_size=1, allow_loopback=True)
-        pool.before_task = crash_next(pool, sig)
+        pool.before_task = crash_next(pool, store, sig)
         try:
             with pytest.raises(PushRefusal):
                 await pool.run(make_task(tmp_path, store, [ref_for(store, 1, PNG)]), account=heard)
@@ -631,7 +643,7 @@ class TestAccounting:
     async def test_an_external_sigkill_is_nothing(self, tmp_path, store) -> None:
         heard = Heard()
         pool = M.Materialiser(pool_size=1, allow_loopback=True)
-        pool.before_task = crash_next(pool, 9)
+        pool.before_task = crash_next(pool, store, 9)
         try:
             with pytest.raises(PushRefusal):
                 await pool.run(make_task(tmp_path, store, [ref_for(store, 1, PNG)]), account=heard)
@@ -644,7 +656,7 @@ class TestAccounting:
         pool = M.Materialiser(pool_size=1, allow_loopback=True)
         try:
             await pool.run(make_task(tmp_path, store, [ref_for(store, 1, PNG)]))  # another caller's push: index 0
-            pool.before_task = crash_next(pool)
+            pool.before_task = crash_next(pool, store)
             with pytest.raises(PushRefusal):
                 await pool.run(make_task(tmp_path, store, [ref_for(store, 2, PNG)]), account=heard)
             assert heard.names == ["suspect"]
@@ -671,7 +683,7 @@ class TestAccounting:
             for i in range(4):
                 pool.before_task = None
                 await pool.run(make_task(tmp_path, store, [ref_for(store, 1, PNG)]), account=ledger.accountant(user, f"r:warm{i}", L.IMAGE))
-                pool.before_task = crash_next(pool)
+                pool.before_task = crash_next(pool, store)
                 with pytest.raises(PushRefusal):
                     await pool.run(make_task(tmp_path, store, [ref_for(store, 2, PNG)]), account=ledger.accountant(user, f"r:crash{i}", L.IMAGE))
             with pytest.raises(PushRefusal) as e:
@@ -688,7 +700,7 @@ class TestAccounting:
         pool = M.Materialiser(pool_size=1, allow_loopback=True)
         try:
             await pool.run(make_task(tmp_path, store, [ref_for(store, 1, PNG)]))  # someone else warmed the child
-            pool.before_task = crash_next(pool)
+            pool.before_task = crash_next(pool, store)
             with pytest.raises(PushRefusal):
                 await pool.run(make_task(tmp_path, store, [ref_for(store, 2, PNG)]), account=ledger.accountant(honest, "r:mine", L.IMAGE))
             assert not ledger._rows[honest].strikes and len(ledger._rows[honest].suspects) == 1
@@ -795,7 +807,7 @@ class TestAccounting:
 
         async def hook(task) -> None:
             if task["work_dir"].endswith("crash/work"):
-                os.kill(pool._slots[0].proc.pid, 11)  # the crashing task took the first slot
+                kill_on_download(store, pool._slots[0].proc.pid, 11, only=doc_id(1))  # the crashing task took the first slot
                 await asyncio.sleep(0.3)
 
         pool.before_task = hook
