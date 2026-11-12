@@ -122,7 +122,8 @@ async def test_upload_records_without_a_connector_name_cannot_hide_the_kb_upload
         pytest.skip("ArangoDB's record schema requires connectorName, and its == on a missing field is false")
     _record_id, own_doc = await pushed_document(env)
     rows = [{"id": f"noname-{i}-{uuid.uuid4().hex[:6]}", "orgId": env.org_id, "externalRecordId": own_doc, "origin": "UPLOAD",
-             "recordName": "noname", "recordType": "FILE", "createdAtTimestamp": 1} for i in range(REF_LINKS_PER_DOC)]
+             "recordName": "noname", "recordType": "FILE", "createdAtTimestamp": 1,
+             "connectorId": f"other-{env.kb_id}"} for i in range(REF_LINKS_PER_DOC)]
     env.seeded[CollectionNames.RECORDS.value].extend(r["id"] for r in rows)
     assert await env.graph.batch_upsert_nodes(rows, CollectionNames.RECORDS.value)
     got = await env.graph.get_ref_access(env.user_id, env.org_id, [own_doc])
