@@ -692,13 +692,12 @@ async def test_the_sweep_keeps_a_merged_node_so_its_redirect_survives(graph) -> 
     assert await provider.resolve_named_entity_redirects(org_id, merged) == dict.fromkeys(merged, survivor)
 
 
+@pytest.mark.parametrize("graph", ["neo4j"], indirect=True)
 async def test_a_sweep_delete_waiting_on_a_writer_keeps_the_node_the_writer_linked(graph) -> None:
     """Neo4j: the delete matches the node as an orphan, then waits for the lock the
     writer's open transaction holds. Once the writer commits the link, the node has
     a mention and must stay, with its edge."""
     provider, org_id, backend = graph
-    if backend != "neo4j":
-        pytest.skip("Arango raises a write conflict on the stale snapshot instead")
     (record,) = await _records(provider, org_id, 1)
     acme = _org(org_id, "Acme")
     await provider.create_named_entities_if_absent([node_document(org_id, acme, 1)])
@@ -725,10 +724,9 @@ async def test_a_sweep_delete_waiting_on_a_writer_keeps_the_node_the_writer_link
     assert "_sweepLock" not in node
 
 
+@pytest.mark.parametrize("graph", ["neo4j"], indirect=True)
 async def test_an_orphan_delete_keeps_an_alias_another_entity_still_uses(graph) -> None:
     provider, org_id, backend = graph
-    if backend != "neo4j":
-        pytest.skip("ArangoDB keeps aliases on the node itself")
     (record,) = await _records(provider, org_id, 1)
     gone, kept = _org(org_id, "Acme Robotics"), _org(org_id, "Acme Foods")
     await provider.create_named_entities_if_absent([node_document(org_id, item, 1) for item in (gone, kept)])
