@@ -4154,6 +4154,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 raise removal_retry_error
 
             reseeded: dict[str, object] = {}
+            failures_before_reseed = self._sync_ledger.item_failures
             if sync_point.get(RESEED_SHARED_WITH_ME):
                 shared_failed = self._track_failed_items()
                 retry = [str(i) for i in sync_point.get(FAILED_ITEMS) or []]
@@ -4199,7 +4200,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                 else:
                     reseeded = {**({} if retry else holds.checkpoint_changes()), **self._reseed_fields(shared_failed, asked=True)}
 
-            if self._sync_ledger.item_failures > failures_before:
+            # The re-read's failures are carried by their ids, not by holding the feed: a hold would read the feed
+            # again on every run one of them keeps failing.
+            reseed_failures = self._sync_ledger.item_failures - failures_before_reseed
+            if self._sync_ledger.item_failures - reseed_failures > failures_before:
                 hold = hold_again(sync_point)
                 if hold is not None:
                     await self.drive_delta_sync_point.update_sync_point(sync_point_key, {**hold, **reseeded})
@@ -4738,6 +4742,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                             current_page_token = page_token
                             total_changes = 0
 
+                            failures_before_retry = self._sync_ledger.item_failures
                             if retry := [str(i) for i in sync_point.get(FAILED_ITEMS) or []]:
                                 again = [
                                     m for m in await self._fetch_failed_items(retry, user_drive_data_source)
@@ -4757,6 +4762,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                                         drive_data_source=user_drive_data_source,
                                         tracked_folder_ids=tracked_folder_ids
                                     )
+                            retry_failures = self._sync_ledger.item_failures - failures_before_retry
 
                             while True:
                                 try:
@@ -4872,10 +4878,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                             )
 
                             # Update sync point with latest page token, unless a change on it
-                            # could not be stored: then the feed is read again from where it was.
+                            # could not be stored: then the feed is read again from where it was. Items read
+                            # again by id are carried by their ids, so they hold nothing.
                             hold = (
                                 hold_again(sync_point)
-                                if self._sync_ledger.item_failures > drive_failures_before
+                                if self._sync_ledger.item_failures - retry_failures > drive_failures_before
                                 else None
                             )
                             if hold is not None:

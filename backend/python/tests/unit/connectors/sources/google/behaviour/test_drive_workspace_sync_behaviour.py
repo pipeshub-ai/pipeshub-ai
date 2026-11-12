@@ -2410,6 +2410,36 @@ async def test_a_drive_retry_list_never_stands_in_for_the_full_read_a_limit_chan
     assert PARTNER not in {who for who, _, _ in ws.grants("f2")}
 
 
+async def test_an_item_retried_by_id_that_fails_again_does_not_hold_the_users_feed(ws: Workspace) -> None:
+    await g1_left_to_retry(ws)  # past the hold: the token moved on, g1 left to retry
+    token = bob_checkpoint(ws)["pageToken"]
+
+    ws.world.add_item("g3", "later.txt", parent="sd-2", perms=[BOB_WRITES])  # a change in Bob's feed
+    await ws.sync()  # g1 fails once more, now as a retry
+    assert bob_checkpoint(ws)["pageToken"] != token
+    assert not bob_checkpoint(ws).get("heldFailedItemRuns")
+    assert bob_checkpoint(ws)["failed_items"] == ["g1"]
+    assert BOB in {who for who, _, _ in ws.grants("g3")}
+
+
+async def test_an_item_retried_by_id_that_fails_again_does_not_hold_the_drives_feed(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    restricted_drive(ws)
+    ws.http.fail("GET", "/drive/v3/files/f1/permissions", 500, "backendError")
+    for _ in range(MAX_HELD_RUNS):
+        await ws.sync()
+    key = f"/drives/{ws.world.users[ALICE].user_id}_sd-1"
+    token = ws.sync_points.value(key)["pageToken"]
+
+    ws.world.add_item("f3", "later.txt", parent="sd-1", perms=[reader(CAROL)])  # a change in the drive's feed
+    await ws.sync()  # f1 fails once more, now as a retry
+    assert ws.sync_points.value(key)["pageToken"] != token
+    assert not ws.sync_points.value(key).get("heldFailedItemRuns")
+    assert ws.sync_points.value(key)["failed_items"] == ["f1"]
+    assert CAROL in {who for who, _, _ in ws.grants("f3")}
+
+
 async def test_a_failed_item_trashed_before_it_could_be_read_again_is_not_written(ws: Workspace) -> None:
     await g1_left_to_retry(ws)
     assert "memo.txt" not in ws.names()  # never written: its read failed every time
