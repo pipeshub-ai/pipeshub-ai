@@ -142,7 +142,9 @@ export class MigrationService {
   }
 
   async webSearchDuckDuckGoDefaultMigration(): Promise<void> {
-    this.logger.info('Keeping web search on for organisations that relied on DuckDuckGo');
+    this.logger.info(
+      'Keeping web search on for organisations that relied on DuckDuckGo',
+    );
     try {
       const result = await new WebSearchDuckDuckGoDefaultMigration(
         this.logger,

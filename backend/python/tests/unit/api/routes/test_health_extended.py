@@ -105,7 +105,7 @@ class TestWebSearchHealthCheck:
         [(Blocked("x"), "blocked"), (RateLimited("x", status=429), "rate_limited"), (AuthFailed("x", status=401), None)],
         ids=["blocked", "rate-limited", "a-real-failure-has-none"],
     )
-    async def test_only_a_passing_refusal_is_typed(self, mock_request, error, error_type):
+    async def test_only_a_passing_refusal_is_typed(self, mock_request, error, error_type) -> None:
         """The Node API saves DuckDuckGo despite a refusal like this, never despite a real failure."""
         resp, _ = await self._check(mock_request, {"provider": "serper", "configuration": {"apiKey": "k"}}, error)
         assert json.loads(resp.body).get("errorType") == error_type

@@ -177,11 +177,15 @@ const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
 const DUCKDUCKGO_PROVIDER = 'duckduckgo';
 
 // Health-check refusals that do not stop an admin choosing DuckDuckGo (`errorType` from the AI service).
-const WEB_SEARCH_PASSING_REFUSALS: ReadonlySet<unknown> = new Set(['blocked', 'rate_limited']);
+const WEB_SEARCH_PASSING_REFUSALS: ReadonlySet<unknown> = new Set([
+  'blocked',
+  'rate_limited',
+]);
 
 // Whether web search is set up: a provider that can search is marked default.
-const isWebSearchConfigured = (providers: WebSearchProviderConfiguration[]) =>
-  providers.some((p) => p.isDefault && canSearch(p.provider));
+const isWebSearchConfigured = (
+  providers: WebSearchProviderConfiguration[],
+): boolean => providers.some((p) => p.isDefault && canSearch(p.provider));
 
 const normalizeWebSearchSettings = (
   settings?: Partial<{ includeImages: unknown; maxImages: unknown }>,
@@ -4964,28 +4968,35 @@ export const updateDefaultWebSearchProvider =
       // DuckDuckGo needs no settings, so choosing it is the one case where the key names a provider
       // that may not be stored yet: store it, then make it the default.
       if (providerKey === DUCKDUCKGO_PROVIDER) {
-        const duckduckgoCheck = new AIServiceCommand(<AICommandOptions>{
+        const duckduckgoCheckOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
           method: HttpMethod.POST,
           headers: req.headers as Record<string, string>,
           body: { provider: DUCKDUCKGO_PROVIDER, configuration: {} },
-        });
-        const duckduckgoHealth = (await duckduckgoCheck.execute()) as AIServiceResponse;
+        };
+        const duckduckgoHealth = (await new AIServiceCommand(
+          duckduckgoCheckOptions,
+        ).execute()) as AIServiceResponse;
         // Choosing DuckDuckGo stays possible while it refuses the test search (blocked, rate limited):
         // that is how a shared server looks, not a broken setup, and it often passes later. The admin
         // is told. Any other failure still refuses, as it does for every other provider.
         let warning: string | undefined;
-        if (!duckduckgoHealth?.data || duckduckgoHealth.statusCode !== 200) {
-          const errData: any = duckduckgoHealth?.data ?? {};
+        if (duckduckgoHealth.statusCode !== 200) {
+          const errData = (duckduckgoHealth.data ?? {}) as {
+            error?: string;
+            errorType?: string;
+          };
           if (!WEB_SEARCH_PASSING_REFUSALS.has(errData.errorType)) {
-            res.status(duckduckgoHealth?.statusCode ?? 500).json({
+            res.status(duckduckgoHealth.statusCode).json({
               status: 'error',
-              message: errData.error ?? 'Failed to validate web search provider configuration',
+              message:
+                errData.error ??
+                'Failed to validate web search provider configuration',
               details: errData,
             });
             return;
           }
-          warning = `${String(errData.error)} DuckDuckGo was saved anyway; if search keeps failing, add a provider that uses an API key.`;
+          warning = `${errData.error ?? 'DuckDuckGo refused the test search.'} DuckDuckGo was saved anyway; if search keeps failing, add a provider that uses an API key.`;
         }
 
         const encryption = EncryptionService.getInstance(
@@ -5001,7 +5012,9 @@ export const updateDefaultWebSearchProvider =
         for (const config of stored.providers) {
           config.isDefault = false;
         }
-        let duckduckgo = stored.providers.find((p) => p.provider === DUCKDUCKGO_PROVIDER);
+        let duckduckgo = stored.providers.find(
+          (p) => p.provider === DUCKDUCKGO_PROVIDER,
+        );
         if (!duckduckgo) {
           duckduckgo = {
             provider: DUCKDUCKGO_PROVIDER,
@@ -5029,7 +5042,7 @@ export const updateDefaultWebSearchProvider =
         res.status(200).json({
           status: 'success',
           message: 'Default web search provider updated successfully',
-          ...(warning ? { warning } : {}),
+          ...(warning !== undefined ? { warning } : {}),
           details: {
             providerKey: duckduckgo.providerKey,
             provider: DUCKDUCKGO_PROVIDER,
