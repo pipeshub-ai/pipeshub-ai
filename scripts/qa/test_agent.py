@@ -102,7 +102,11 @@ class TestRounds(AgentCase):
         inp = json.loads((self.out / "agent/input.json").read_text())
         self.assertEqual(inp["round0"]["other"][0]["id"], RETRIEVAL)
         self.assertIn("retrieval.py", inp["change"]["files"][0])
-        self.assertIn("run --ids", inp["commands"]["run"])
+        # Every command Claude is given must fall under one of its Bash allow rules, or each call is refused.
+        argv = json.loads(Path(str(self.scenario) + ".argv").read_text())
+        prefixes = [t[5:-3] for t in argv[argv.index("--allowedTools") + 1].split(",") if t.startswith("Bash(")]
+        for name, cmd in inp["commands"].items():
+            self.assertTrue(any(cmd.startswith(p + " ") for p in prefixes), f"{name}: {cmd}")
         self.assertEqual(doc["verdict"]["verdict"], "broken")
         self.assertEqual(doc["rounds"], 1)
 

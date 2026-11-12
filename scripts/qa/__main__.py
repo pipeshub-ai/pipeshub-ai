@@ -984,6 +984,8 @@ def parser() -> argparse.ArgumentParser:
     g.add_argument("--ids", nargs="+")
     run_args(s)
     s.add_argument("--session", metavar="FILE", help="run against the stack a `qa stack up` left running (its session.json)")
+    # Also after the subcommand, so an allow rule on "qa run" covers the QA agent's calls.
+    s.add_argument("--out", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     s.add_argument("--history", default=os.environ.get("QA_HISTORY"), metavar="DIR",
                    help="history directory to add this run to")
     s.set_defaults(fn=cmd_run)
@@ -1155,6 +1157,7 @@ def parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("prove", help="prove a test checks behavior: it passes on head and fails on a revert or a mutant")
     s.add_argument("id")
+    s.add_argument("--out", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     s.add_argument("--base", help="revert the covered files to this ref, and mutate only changed lines")
     s.add_argument("--repeat", type=int, help="head runs that must all pass (default 3, 1 for stack tests)")
     s.add_argument("--max-mutants", type=int, help="mutants to try (default 5, 1 for stack tests)")
