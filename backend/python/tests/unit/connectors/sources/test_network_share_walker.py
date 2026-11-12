@@ -194,6 +194,8 @@ async def _walk(
         upserts.append(list(batch))
 
     async def flush_moves(batch):
+        if any(record.external_record_id in (rejected_ids or set()) for _old, record, _perms in batch):
+            raise ValueError("store rejected the move")
         moves.append(list(batch))
 
     walker = ShareWalker(
@@ -733,6 +735,44 @@ class TestShareWalkerRejectedRecords:
         # Every record failing is the store, not one record: the walk must not end as if it had run.
         with pytest.raises(RuntimeError, match="store unavailable"):
             await _walk(self.share_of_five_files_and_a_folder(), batch_size=2, failing_writes=1000)
+
+    async def test_one_rejected_record_alone_in_its_batch_is_that_record(self):
+        # The tail batch holds only the rejected file, and the store has saved others: not a failing store.
+        ds = FakeNetworkShareDataSource(tree={(SHARE, ""): [_entry(f"f{i}.txt", file_id=i + 1) for i in range(3)]})
+
+        result, upserts, _ = await _walk(ds, batch_size=2, rejected_ids={f"{SHARE}/f2.txt"})
+
+        assert _ids(upserts) == {f"{SHARE}/f0.txt", f"{SHARE}/f1.txt"}
+        assert result.unread == {f"{SHARE}/f2.txt"}
+
+    async def test_a_lone_record_that_fails_before_anything_saved_fails_the_walk(self):
+        ds = FakeNetworkShareDataSource(tree={(SHARE, ""): [_entry("only.txt", file_id=1)]})
+
+        with pytest.raises(ValueError, match="rejected"):
+            await _walk(ds, rejected_ids={f"{SHARE}/only.txt"})
+
+    async def test_after_a_batch_that_saved_nothing_the_walk_reads_the_rest_and_fails_at_its_end(self):
+        ds = self.share_of_five_files_and_a_folder()
+
+        # The batch [f4.txt, sub] saves nothing; "sub" must still be walked.
+        with pytest.raises(ValueError, match="rejected"):
+            await _walk(ds, batch_size=2, rejected_ids={f"{SHARE}/f4.txt", f"{SHARE}/sub"})
+
+        assert (SHARE, "sub") in ds.list_calls
+
+    async def test_a_move_that_fails_keeps_the_record_at_its_old_path(self):
+        renamed = [_entry(f"new{i}.txt", file_id=i + 1) for i in range(2)]
+        stored = {
+            revision_id(SHARE, entry, entry.name): _stored(f"{SHARE}/old{i}.txt", revision_id(SHARE, entry, entry.name), f"r{i}")
+            for i, entry in enumerate(renamed)
+        }
+        ds = FakeNetworkShareDataSource(tree={(SHARE, ""): renamed})
+
+        result, _upserts, moves = await _walk(ds, existing_by_revision=stored, rejected_ids={f"{SHARE}/new0.txt"})
+
+        assert [record.external_record_id for batch in moves for _old, record, _p in batch] == [f"{SHARE}/new1.txt"]
+        # Without the old path, a full sync prunes the only stored copy.
+        assert result.unread == {f"{SHARE}/new0.txt", f"{SHARE}/old0.txt"}
 
     async def test_a_refused_sign_in_while_saving_still_stops_the_walk(self):
         ds = self.share_of_five_files_and_a_folder()
