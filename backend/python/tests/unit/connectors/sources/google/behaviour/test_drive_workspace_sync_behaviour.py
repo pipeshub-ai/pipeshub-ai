@@ -2533,12 +2533,15 @@ async def test_an_unreadable_item_that_is_not_limited_keeps_inheriting(ws: Works
 
 
 LABS = "zed@labs.example.org"
+XIA = "xia@labs.example.org"
+YAN = "yan@labs.example.org"
 
 
 def two_domains(ws: Workspace, *, reach_all: bool) -> None:
     """An account with a second verified domain, and a file each of Alice and Bob shares with their domain alone."""
     ws.world.other_domains = {"labs.example.org": []}
-    ws.world.add_user(LABS)
+    for email in (LABS, XIA, YAN):
+        ws.world.add_user(email)
     ws.world.domain_share_reaches_all = reach_all
     ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[discoverable("domain", domain="example.com")])
     ws.world.add_item("f2", "b.txt", parent="root-bob", owner=BOB, perms=[discoverable("domain", domain="example.com")])
@@ -2554,6 +2557,23 @@ def reach(ws: Workspace, domain: str = "example.com", other: str = "labs.example
     return (json.loads(stored["state"])["answers"].get(other) or [None])[0] if stored else None
 
 
+def yes_by(ws: Workspace, domain: str = "example.com", other: str = "labs.example.org") -> list[str]:
+    """The people whose yes is waiting for a later run to agree."""
+    stored = _reach_state(ws, domain)
+    return (json.loads(stored["state"])["answers"].get(other) or [None, 0, []])[2] if stored else []
+
+
+async def settle(ws: Workspace) -> None:
+    """Three runs: one that finds the files to ask with, one that asks, and one whose other people confirm a yes."""
+    for _ in range(3):
+        await ws.sync()
+
+
+def asked_by_labs(ws: Workspace, since: int = 0, ids: tuple[str, ...] = ("f", "f2")) -> list[str]:
+    return [f for r in ws.http.requests[since:] if (r.identity or "").endswith("@labs.example.org")
+            and (f := r.path.rsplit("/", 1)[-1]) in ids]
+
+
 def reach_domains(ws: Workspace, domain: str = "example.com") -> list[str]:
     return _reach_state(ws, domain)["domains"]
 
@@ -2565,13 +2585,13 @@ def domain_members(ws: Workspace, domain: str) -> set[str]:
 def age(ws: Workspace, domain: str = "example.com") -> None:
     stored = _reach_state(ws, domain)
     state = json.loads(stored["state"])
-    state["answers"] = {other: [answer, 0] for other, (answer, _) in state["answers"].items()}
+    state["answers"] = {other: [answer, 0, *rest] for other, (answer, _, *rest) in state["answers"].items()}
     stored["state"] = json.dumps(state)
 
 
 async def test_google_answers_that_a_share_with_a_domain_reaches_the_other_domains_and_its_group_holds_them(ws: Workspace) -> None:
     two_domains(ws, reach_all=True)
-    await ws.sync()
+    await settle(ws)
 
     assert ("domain-members:example.com", "GROUP", "READ") in ws.grants("f")
     assert LABS in domain_members(ws, "example.com")
@@ -2580,7 +2600,7 @@ async def test_google_answers_that_a_share_with_a_domain_reaches_the_other_domai
 
 async def test_google_answers_that_a_share_with_a_domain_reaches_its_own_people_only(ws: Workspace) -> None:
     two_domains(ws, reach_all=False)
-    await ws.sync()
+    await settle(ws)
 
     assert LABS not in domain_members(ws, "example.com")
     assert LABS in domain_members(ws, "labs.example.org")
@@ -2593,7 +2613,7 @@ async def test_each_domain_is_asked_on_its_own(ws: Workspace) -> None:
     ws.world.add_item("g", "g.txt", parent="root-alice", owner=ALICE, perms=[
         discoverable("domain", domain="labs.example.org"), reader(BOB),
     ])
-    await ws.sync()
+    await settle(ws)
 
     assert LABS in domain_members(ws, "example.com")
     assert ("domain-members:labs.example.org", "GROUP", "READ") in ws.grants("g")
@@ -2615,7 +2635,7 @@ async def test_an_alias_domain_share_grants_nobody_until_google_answers_for_it(w
 
 async def test_a_reach_answer_that_cannot_be_read_grants_the_named_domain_only(ws: Workspace) -> None:
     two_domains(ws, reach_all=True)
-    await ws.sync()
+    await settle(ws)
     assert LABS in domain_members(ws, "example.com")
 
     read = ws.sync_points.get_sync_point
@@ -2633,15 +2653,15 @@ async def test_a_reach_answer_that_cannot_be_read_grants_the_named_domain_only(w
 
 async def test_an_unknown_reach_grants_the_named_domain_only_and_is_asked_again(ws: Workspace) -> None:
     two_domains(ws, reach_all=True)
-    ws.http.fail("GET", "/drive/v3/files/f", 403, "forbidden", when=lambda r: r.identity == LABS)
-    await ws.sync()
+    ws.http.fail("GET", "/drive/v3/files/f", 403, "forbidden", when=lambda r: (r.identity or "").endswith("@labs.example.org"))
+    await settle(ws)
 
     assert LABS not in domain_members(ws, "example.com"), "a refusal is not an answer"
     assert reach(ws) is None
 
     ws.http.clear_faults()
     ws.world.rename("f", "y.txt")
-    await ws.sync()
+    await settle(ws)
     assert LABS in domain_members(ws, "example.com")
 
 
@@ -2663,7 +2683,7 @@ async def test_a_file_with_another_route_to_the_other_domain_cannot_ask(ws: Work
     ])
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", LABS: "reader"})
     ws.world.add_item("d", "d.txt", parent="sd-1", perms=[discoverable("domain", domain="example.com")])
-    await ws.sync()
+    await settle(ws)
 
     assert reach(ws) is None
     assert LABS not in domain_members(ws, "example.com")
@@ -2671,7 +2691,7 @@ async def test_a_file_with_another_route_to_the_other_domain_cannot_ask(ws: Work
 
 async def test_a_stale_answer_is_asked_again_and_a_narrower_one_takes_the_other_domains_out(ws: Workspace) -> None:
     two_domains(ws, reach_all=True)
-    await ws.sync()
+    await settle(ws)
     assert LABS in domain_members(ws, "example.com")
 
     ws.world.domain_share_reaches_all = False
@@ -2687,11 +2707,13 @@ async def test_a_stale_answer_is_asked_again_and_a_narrower_one_takes_the_other_
 
 async def test_a_wider_answer_lets_the_other_domains_in_without_reading_the_files_again(ws: Workspace) -> None:
     two_domains(ws, reach_all=False)
-    await ws.sync()
+    await settle(ws)
     assert LABS not in domain_members(ws, "example.com")
 
     ws.world.domain_share_reaches_all = True
     age(ws)
+    await ws.sync()
+    assert reach(ws) is None and LABS not in domain_members(ws, "example.com"), "a yes waits for a later run"
     await ws.sync()
     assert reach(ws) is True
     assert LABS in domain_members(ws, "example.com")
@@ -2702,13 +2724,13 @@ async def test_a_new_verified_domain_asks_again_and_reads_everything_again(ws: W
     ws.world.add_item("n", "n.txt", parent="root-alice", owner=ALICE, perms=[
         discoverable("domain", domain="new.example.net"), reader(BOB),
     ])
-    await ws.sync()
+    await settle(ws)
     assert reach(ws) is True
     assert {g[1] for g in ws.grants("n")} == {"USER"}, "not a verified domain yet: another organization's"
 
     ws.world.domain_share_reaches_all = False
     ws.world.other_domains["new.example.net"] = []
-    await ws.sync()
+    await settle(ws)
     assert reach(ws) is False and "new.example.net" in reach_domains(ws)
     assert LABS not in domain_members(ws, "example.com")
     assert ("domain-members:new.example.net", "GROUP", "READ") in ws.grants("n"), "read again though it did not change"
@@ -2723,7 +2745,8 @@ async def test_a_domain_no_longer_verified_grants_nobody(ws: Workspace) -> None:
     assert ("domain-members:labs.example.org", "GROUP", "READ") in ws.grants("g")
 
     ws.world.other_domains = {}
-    ws.world.users.pop(LABS)
+    for email in (LABS, XIA, YAN):
+        ws.world.users.pop(email)
     await ws.sync()
     assert domain_members(ws, "labs.example.org") == set()
 
@@ -2847,7 +2870,7 @@ async def test_one_owners_files_alone_do_not_widen_a_domain_share(ws: Workspace)
     two_domains(ws, reach_all=True)
     ws.world.add_item("f3", "c.txt", parent="root-alice", owner=ALICE, perms=[discoverable("domain", domain="example.com")])
     ws.world.files["f2"].perms = [reader(ALICE)]  # Bob's file can no longer ask
-    await ws.sync()
+    await settle(ws)
 
     assert reach(ws) is None, "one owner can open each of their files to the person asked"
     assert LABS not in domain_members(ws, "example.com")
@@ -2858,14 +2881,16 @@ async def test_a_share_given_to_the_person_asked_while_asking_is_not_an_answer(w
 
     def share_with_the_person(req: object) -> bool:
         file_id = req.path.rsplit("/", 1)[-1]
-        if req.identity == LABS and file_id in ("f", "f2") and not ws.world.can_open(file_id, LABS):
-            ws.world.files[file_id].perms.append(reader(LABS))
+        who = req.identity or ""
+        if who.endswith("@labs.example.org") and file_id in ("f", "f2") and not ws.world.can_open(file_id, who):
+            ws.world.files[file_id].perms.append(reader(who))
         return False
 
     ws.http.fail("GET", "/drive/v3/files/f2?$|/drive/v3/files/f$", 500, None, when=share_with_the_person)
-    await ws.sync()
+    await settle(ws)
 
     assert reach(ws) is None, "the owner reads the file again after the person, and it changed"
+    assert yes_by(ws) == [], "not even a yes waiting for another run"
     assert LABS not in domain_members(ws, "example.com")
 
 
@@ -2873,20 +2898,19 @@ async def test_a_file_at_the_top_of_its_owners_drive_is_asked_with_first(ws: Wor
     two_domains(ws, reach_all=True)
     ws.world.folder("dir", "Team", parent="root-alice", owner=ALICE)
     ws.world.add_item("e", "e.txt", parent="dir", owner=ALICE, perms=[discoverable("domain", domain="example.com")])
-    await ws.sync()
+    await settle(ws)
 
-    asked = [f for r in ws.http.requests if r.identity == LABS and (f := r.path.rsplit("/", 1)[-1]) in ("f", "f2", "e")]
+    asked = asked_by_labs(ws, ids=("f", "f2", "e"))
     assert asked[:2] == ["f", "f2"] or asked[:2] == ["f2", "f"], asked
     assert "e" not in asked, "two owners answered before it was needed"
 
 
-async def test_the_person_asked_is_picked_at_random_among_those_who_can_answer(
+async def test_the_person_asked_is_picked_at_random_and_a_yes_is_confirmed_by_someone_else(
     ws: Workspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import app.connectors.sources.google.drive.team.connector as drive_connector
 
     two_domains(ws, reach_all=True)
-    ws.world.add_user("yan@labs.example.org")
     offered: list[list[str]] = []
 
     def choice(people: list) -> object:
@@ -2894,9 +2918,10 @@ async def test_the_person_asked_is_picked_at_random_among_those_who_can_answer(
         return people[-1]
 
     monkeypatch.setattr(drive_connector.secrets, "choice", choice)
-    await ws.sync()
+    await settle(ws)
 
-    assert offered and all(o == ["yan@labs.example.org", LABS] for o in offered)
+    assert offered[0] == [XIA, YAN, LABS], "everyone on the other domain who can answer"
+    assert offered[-1] == [XIA, YAN], "the confirming run asks someone other than who said yes"
     assert reach(ws) is True
 
 
@@ -2906,13 +2931,13 @@ async def test_a_person_with_an_address_on_the_shared_domain_is_not_asked(
     import app.connectors.sources.google.drive.team.connector as drive_connector
 
     two_domains(ws, reach_all=False)
-    ws.world.add_user("yan@labs.example.org")
     ws.world.aliases["zed@example.com"] = LABS  # Zed reaches example.com shares through the alias
     monkeypatch.setattr(drive_connector.secrets, "choice", lambda people: people[-1])
     await ws.sync()
+    await ws.sync()
 
     assert reach(ws) is False, "Yan was asked, not Zed"
-    assert "yan@labs.example.org" not in domain_members(ws, "example.com")
+    assert YAN not in domain_members(ws, "example.com")
 
 
 async def test_an_answer_for_one_domain_widens_a_share_to_that_domain_only(ws: Workspace) -> None:
@@ -2920,7 +2945,7 @@ async def test_an_answer_for_one_domain_widens_a_share_to_that_domain_only(ws: W
     ws.world.other_domains["third.example.net"] = []
     ws.world.add_user("tom@third.example.net")
     ws.world.domain_share_reaches = {("example.com", "labs.example.org")}
-    await ws.sync()
+    await settle(ws)
 
     assert reach(ws) is True and reach(ws, other="third.example.net") is False
     assert LABS in domain_members(ws, "example.com")
@@ -2948,7 +2973,7 @@ async def test_an_audience_group_whose_people_did_not_change_is_not_written_agai
 
 async def test_a_group_written_part_way_is_written_again_when_the_answer_goes_back(ws: Workspace) -> None:
     two_domains(ws, reach_all=False)
-    await ws.sync()
+    await settle(ws)
     assert LABS not in domain_members(ws, "example.com")
     write = ws.records.on_new_user_groups
 
@@ -2960,7 +2985,8 @@ async def test_a_group_written_part_way_is_written_again_when_the_answer_goes_ba
     ws.world.domain_share_reaches_all = True
     age(ws)
     await ws.sync()
-    assert ws.incomplete is True
+    await ws.sync()  # the yes is confirmed, and the wider group stored before the write fails
+    assert ws.incomplete is True and LABS in domain_members(ws, "example.com")
 
     ws.records.on_new_user_groups = write
     ws.world.domain_share_reaches_all = False
@@ -2968,3 +2994,96 @@ async def test_a_group_written_part_way_is_written_again_when_the_answer_goes_ba
     await ws.sync()
     assert reach(ws) is False
     assert LABS not in domain_members(ws, "example.com"), "the narrow group is written though it was before"
+
+
+async def test_a_file_first_seen_this_run_is_not_asked_with(ws: Workspace) -> None:
+    two_domains(ws, reach_all=True)
+    await ws.sync()
+    assert asked_by_labs(ws) == [], "a file is asked with only once a later run finds it unchanged"
+    assert reach(ws) is None
+
+
+async def test_a_file_that_changed_since_the_earlier_run_is_not_asked_with(ws: Workspace) -> None:
+    two_domains(ws, reach_all=True)
+    await ws.sync()
+
+
+    def new_role() -> None:  # still the domain's alone
+        ws.world.files["f"].perms = [discoverable("domain", domain="example.com", role="commenter")]
+
+    ws.world._mutate("f", new_role)
+    before = len(ws.http.requests)
+    await ws.sync()
+    # Seen changed at the start of this run, and read again later in it: still not asked with until a later run.
+    assert "f" not in asked_by_labs(ws, before) and "f2" in asked_by_labs(ws, before)
+
+
+async def test_a_yes_that_another_person_does_not_repeat_on_a_later_run_does_not_widen(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+
+    two_domains(ws, reach_all=False)
+    monkeypatch.setattr(drive_connector.secrets, "choice", lambda people: people[-1])
+    await ws.sync()
+    # Someone briefly shares both files by link while Zed is asked, and takes it away before the owner looks again.
+    can_open = ws.world.can_open
+    ws.world.can_open = lambda file_id, email: email == LABS and file_id in ("f", "f2") or can_open(file_id, email)
+    await ws.sync()
+    assert yes_by(ws) == [LABS] and LABS not in domain_members(ws, "example.com"), "one run's yes is not enough"
+
+    ws.world.can_open = can_open
+    await ws.sync()
+    assert reach(ws) is False, "Yan, asked next, cannot open them"
+    assert LABS not in domain_members(ws, "example.com")
+
+
+async def test_audience_groups_are_all_written_again_after_a_day(ws: Workspace) -> None:
+    await ws.sync()
+    group, members = ws.records.user_groups["workspace-members"]
+    ws.records.user_groups["workspace-members"] = (group, [m for m in members if m.email != BOB])  # removed in the store only
+    await ws.sync()
+    assert BOB not in {m.email for m in ws.records.user_groups["workspace-members"][1]}, "unchanged at the source: skipped"
+
+    ws.sync_points.value("audience_group_digests")["written_at"] = 0
+    await ws.sync()
+    assert BOB in {m.email for m in ws.records.user_groups["workspace-members"][1]}
+
+
+async def test_the_audience_people_asked_are_picked_at_random(ws: Workspace, monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+
+    for email in ("a1@example.com", "a2@example.com", "a3@example.com", "a4@example.com"):
+        ws.world.add_user(email)
+        ws.records.active_users = [*ws.records.active_users, User(id=f"u-{email}", email=email, is_active=True)]
+    _audience_file_in_an_unwalked_drive(ws, discoverable("anyone"))
+    await ws.sync()
+    pools: list[list[str]] = []
+    chosen: set[str] = set()
+
+    class Picker:
+        def sample(self, pool: list, k: int) -> list:
+            pools.append(sorted(u.email for u in pool))
+            chosen.update(u.email for u in pool[-k:])
+            return pool[-k:]
+
+    monkeypatch.setattr(drive_connector.secrets, "SystemRandom", Picker)
+    ws.world.files["g1"].perms = [p for p in ws.world.files["g1"].perms if p.get("type") != "anyone"]
+    ws.world.unshare("g1", BOB)
+    before = len(ws.http.requests)
+    await ws.sync()
+
+    assert pools and BOB not in pools[0] and len(pools[0]) > 3
+    asked = {r.identity for r in ws.http.requests[before:] if r.path.endswith("/files/g1") and r.identity != BOB}
+    assert len(chosen) == 3 and asked == chosen, "only the people picked are asked"
+    assert "g1" not in ws.records.records
+
+
+async def test_a_refusal_from_every_audience_person_asked_is_not_a_no(ws: Workspace) -> None:
+    _audience_file_in_an_unwalked_drive(ws, discoverable("anyone"))
+    await ws.sync()
+    ws.world.unshare("g1", BOB)
+    # Still shared with everyone, but the people asked are refused (their own settings), not told it is not there.
+    ws.http.fail("GET", "/drive/v3/files/g1", 403, "insufficientFilePermissions", when=lambda r: r.identity != BOB)
+    await ws.sync()
+    assert "g1" in ws.records.records and ws.incomplete is True
