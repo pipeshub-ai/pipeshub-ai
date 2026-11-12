@@ -62,6 +62,7 @@ from app.edition_services import (
     get_data_entities_processor_cls,
     sync_executor_enabled,
 )
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.entities import FileRecord
 from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_state_rev
 from app.services.cache.invalidation_hooks import notify_principals_changed
@@ -526,38 +527,30 @@ class EventService:
 
     async def process_event(self, event_type: str, payload: dict[str, Any]) -> bool:
         """Handle connector-specific events - implementing abstract method"""
-        try:
-            parts = event_type.split(".")
-            # Exactly "<connector>.<action>": the action picks the handler, so a
-            # connector name carrying its own dot must not be able to choose it.
-            if len(parts) != 2:
-                self.logger.error(f"Invalid event type format (expected '<connector>.<action>'): {event_type}")
-                return False
-            connector_name = parts[0].replace(" ", "").lower()
-            action = parts[1].lower()
+        parts = event_type.split(".")
+        # Exactly "<connector>.<action>": the action picks the handler, so a
+        # connector name carrying its own dot must not be able to choose it.
+        if len(parts) != 2:
+            raise NonRetryableError(f"invalid sync event type (expected '<connector>.<action>'): {event_type}")
+        connector_name = parts[0].replace(" ", "").lower()
+        action = parts[1].lower()
 
-            # Every line of the event, and of the tasks it starts, names the instance.
-            # The event's name is only a fallback: the start path re-binds the stored type.
-            with log_fields(connector_id=payload.get("connectorId"), connector_type=connector_name):
-                self.logger.info(f"Handling {connector_name} connector event: {action}")
+        # Every line of the event, and of the tasks it starts, names the instance.
+        # The event's name is only a fallback: the start path re-binds the stored type.
+        with log_fields(connector_id=payload.get("connectorId"), connector_type=connector_name):
+            self.logger.info(f"Handling {connector_name} connector event: {action}")
 
-                if action == "init":
-                    return await self._handle_init(connector_name, payload)
-                elif action == "start":
-                    return await self._handle_start_sync(connector_name, payload)
-                elif action == "resync":
-                    return await self._handle_start_sync(connector_name, payload)
-                elif action == "reindex":
-                    return await self._handle_reindex(connector_name, payload)
-                elif action == "delete":
-                    return await self._handle_delete(connector_name, payload)
-                else:
-                    self.logger.error(f"Unknown {connector_name.capitalize()} connector event type: {action}")
-                    return False
-
-        except Exception as e:
-            self.logger.error(f"Error handling connector event {event_type}: {e}", exc_info=True)
-            return False
+            if action == "init":
+                return await self._handle_init(connector_name, payload)
+            elif action == "start":
+                return await self._handle_start_sync(connector_name, payload)
+            elif action == "resync":
+                return await self._handle_start_sync(connector_name, payload)
+            elif action == "reindex":
+                return await self._handle_reindex(connector_name, payload)
+            elif action == "delete":
+                return await self._handle_delete(connector_name, payload)
+            raise NonRetryableError(f"unknown {connector_name} connector event action: {action}")
 
     async def _handle_init(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Initializes the event service connector and its dependencies."""

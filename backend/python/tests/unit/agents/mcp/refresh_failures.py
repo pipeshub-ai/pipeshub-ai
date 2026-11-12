@@ -9,7 +9,7 @@ import pytest
 from app.agents.mcp import oauth_client as oauth_client_module
 from app.agents.mcp import token_refresh
 from app.agents.mcp.oauth_client import MCPOAuthError, refresh_access_token
-from tests.unit.agents.mcp.test_oauth_client import _json_response, _mock_async_client
+from tests.support.mcp_oauth_fakes import json_response, mock_async_client
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService
 
 # Planted in token-endpoint bodies: what nobody but the server log may see.
@@ -20,7 +20,7 @@ TOKEN_HOST = "auth.example.com"
 async def _refresh_raising(post: AsyncMock) -> BaseException:
     inner = MagicMock()
     inner.post = post
-    with _mock_async_client(inner), pytest.raises(Exception) as exc_info:
+    with mock_async_client(inner), pytest.raises(Exception) as exc_info:
         await refresh_access_token(
             allow_private=True, token_url=f"https://{TOKEN_HOST}/token",
             client_id="cid", client_secret="csec", refresh_token="r",
@@ -30,7 +30,7 @@ async def _refresh_raising(post: AsyncMock) -> BaseException:
 
 async def token_endpoint_error(status: int, body: dict[str, Any]) -> MCPOAuthError:
     """What `refresh_access_token` raises when the token endpoint answers `status` with `body`."""
-    error = await _refresh_raising(AsyncMock(return_value=_json_response(status, body)))
+    error = await _refresh_raising(AsyncMock(return_value=json_response(status, body)))
     assert isinstance(error, MCPOAuthError)
     return error
 

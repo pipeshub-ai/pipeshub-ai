@@ -2122,49 +2122,45 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             Optional[bool]: True if successful
         """
-        try:
-            if not nodes:
-                return True
-
-            label = collection_to_label(collection)
-
-            # The whole batch is checked before any statement. A payload that lacks required fields
-            # is only legal for a node that already exists, which one query for the batch decides.
-            incomplete: dict[str, list[str]] = {}
-            neo4j_nodes = self._nodes_for_upsert(nodes, collection, incomplete)
-            if incomplete:
-                found = await self.client.execute_query(
-                    f"UNWIND $ids AS id MATCH (n:{label} {{id: id}}) RETURN n.id AS id",
-                    parameters={"ids": list(incomplete)},
-                    txn_id=transaction,
-                )
-                existing = {row["id"] for row in found or []}
-                for node_id, missing in incomplete.items():
-                    if node_id not in existing:
-                        raise SchemaValidationError(
-                            collection, f"node '{node_id}' does not exist and is missing required fields: {missing}"
-                        )
-
-            # Use UNWIND for batch upsert
-            query = f"""
-            UNWIND $nodes AS node
-            MERGE (n:{label} {{id: node.id}})
-            SET n += node
-            {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
-            RETURN n.id
-            """
-
-            await self.client.execute_query(
-                query,
-                parameters={"nodes": _in_lock_order(neo4j_nodes, _by_id)},
-                txn_id=transaction
-            )
-
+        if not nodes:
             return True
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert nodes failed: {str(e)}")
-            raise
+        label = collection_to_label(collection)
+
+        # The whole batch is checked before any statement. A payload that lacks required fields
+        # is only legal for a node that already exists, which one query for the batch decides.
+        incomplete: dict[str, list[str]] = {}
+        neo4j_nodes = self._nodes_for_upsert(nodes, collection, incomplete)
+        if incomplete:
+            found = await self.client.execute_query(
+                f"UNWIND $ids AS id MATCH (n:{label} {{id: id}}) RETURN n.id AS id",
+                parameters={"ids": list(incomplete)},
+                txn_id=transaction,
+            )
+            existing = {row["id"] for row in found or []}
+            for node_id, missing in incomplete.items():
+                if node_id not in existing:
+                    raise SchemaValidationError(
+                        collection, f"node '{node_id}' does not exist and is missing required fields: {missing}"
+                    )
+
+        # Use UNWIND for batch upsert
+        query = f"""
+        UNWIND $nodes AS node
+        MERGE (n:{label} {{id: node.id}})
+        SET n += node
+        {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
+        RETURN n.id
+        """
+
+        await self.client.execute_query(
+            query,
+            parameters={"nodes": _in_lock_order(neo4j_nodes, _by_id)},
+            txn_id=transaction
+        )
+
+        return True
+
 
     def _nodes_for_upsert(
         self, nodes: list[dict], collection: str, incomplete: dict[str, list[str]] | None = None

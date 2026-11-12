@@ -469,11 +469,9 @@ class ConfigurationService:
         """Delete configuration value"""
         try:
             success = await self.store.delete_key(key)
+            self._evict(key)  # before the publish await below, so no read in between gets the deleted value
 
             if success:
-                # Remove from cache
-                with self._cache_lock:
-                    self.cache.pop(key, None)
                 self.logger.debug("✅ Successfully deleted config for key: %s", key)
 
                 # Publish cache invalidation for other processes (Redis only)
@@ -487,6 +485,14 @@ class ConfigurationService:
         except Exception as e:
             self._log_store_failure("config.delete.failed", e, key)
             return False
+        finally:
+            # Whatever the store answered, a copy cached here is not to be trusted: a False can follow a missed
+            # invalidation, and a raise can follow a delete whose reply was lost.
+            self._evict(key)
+
+    def _evict(self, key: str) -> None:
+        with self._cache_lock:
+            self.cache.pop(key, None)
 
     def _log_store_failure(self, event: str, error: Exception, key: str) -> None:
         """The one line for a store failure this service handles: the store and its wrappers raise without logging."""
@@ -581,3 +587,18 @@ class ConfigurationService:
     async def list_keys_in_directory(self, directory: str) -> list[str]:
         """List all keys in a directory"""
         return await self.store.list_keys_in_directory(directory)
+
+
+async def delete_config_confirmed(config_service: ConfigurationService, key: str) -> bool:
+    """Delete ``key``; True when it is gone afterwards, also when it was already gone.
+
+    ``delete_config`` answers False for a key that was not there and for a failed delete, and a
+    delete retried after its answer was lost (etcd re-login) finds nothing. So a False is checked
+    with a fresh read, which raises when the store can't answer.
+
+    A function rather than a method: it works on any service with these two calls, including one
+    that wraps this class.
+    """
+    if await config_service.delete_config(key):
+        return True
+    return await config_service.get_config(key, use_cache=False, keep_in_cache=False, raise_on_error=True) is None

@@ -68,7 +68,6 @@ class DbConfig:
     fence: bool = True  # write UoWs assert the deployment-profile epoch read at start
     want_extensions: tuple[str, ...] = ()
     app_version: str = "dev"
-    slow_statement_ms: int = 500
 
     def __post_init__(self) -> None:
         if not _SERVICE.fullmatch(self.service):
