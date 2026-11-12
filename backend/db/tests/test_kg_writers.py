@@ -42,8 +42,10 @@ CALLS = {   # name -> (arguments of one call, the table, a count query for one o
     "kg.w_r13_set": (([11], [3], ["rec"], [3], [True]), "kg.records"),
     "kg.w_scopes_set": (([11], [3], [5], [True], [True], [False], [False]), "kg.scopes"),
     "kg.w_scopes_delete": (([11],), "kg.scopes"),
+    "kg.w_listing_set": (([11], [3], ["rec"], [3], [True], [False], [False], [b"\x00r"]), "kg.records"),
 }
 CASTS = {   # the arguments psycopg cannot type from a list of Nones, or that are not what it sends
+    "kg.w_listing_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::bytea[]"],
     "kg.w_r13_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]"],
     "kg.w_scopes_set": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]"],
     "kg.w_fence_rows": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]"],
@@ -186,6 +188,9 @@ BAD = {
     "kg.w_scopes_set": [([11, 12], [3], [5], [True], [True], [False], [False]), ([11], [1], [5], [True], [True], [False], [False]), ([11], [3], [None], [True], [True], [False], [False]),
                         ([11], [3], [5], [None], [True], [False], [False]), ([11], [3], [5], [True], [True], [False], [None]), ([None], [3], [5], [True], [True], [False], [False])],
     "kg.w_scopes_delete": [(None,), ([None],)],
+    "kg.w_listing_set": [([11, 12], [3], ["s"], [3], [True], [False], [False], [None]), ([11], [4], ["s"], [3], [True], [False], [False], [None]), ([11], [3], [""], [3], [True], [False], [False], [None]),
+                         ([11], [3], ["s"], [3], [None], [False], [False], [None]), ([11], [3], ["s"], [3], [True], [None], [False], [None]), ([11], [3], ["s"], [3], [True], [False], [None], [None]),
+                         ([None], [3], ["s"], [3], [True], [False], [False], [None]), ([11], [3], ["s"], [3], [True], [False], [False], [None, None])],
     "kg.w_stamps_set": [([11, 12], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([None], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [4], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([11], [3], [""], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [9], [True]), ([11], [3], ["rec"], [3], [None], [None], [None], [False], [False], [False], [None], [True]),
@@ -483,6 +488,20 @@ def test_a_mark_is_set_and_lifted_on_a_row_of_the_session_org_only(pdb):
         assert c.execute("SELECT fence_job FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] == 9
         assert call(c, "kg.w_fence_rows", ORG_A, ([11], [3], ["rec-1"], [3], [None])) == [(1,)]
         assert c.execute("SELECT fence_job FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] is None
+        clean(c)
+
+
+def test_the_listing_columns_are_written_to_the_row_of_the_session_org_and_the_other_columns_stay(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values())))
+        before = c.execute("SELECT name, parent_sk, deleted FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
+        assert call(c, "kg.w_listing_set", ORG_A, ([11], [3], ["rec-1"], [3], [True], [True], [True], [b"\x00n"])) == [(1,)]
+        got = c.execute("SELECT folder, hide_children, alien, name, parent_sk, deleted FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
+        assert tuple(got) == (True, True, True, *before)
+        assert bytes(c.execute("SELECT name_sort FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0]) == b"\x00n"
+        call(c, "kg.w_listing_set", ORG_B, ([11], [3], ["rec-1"], [3], [False], [False], [False], [None]))                                # another org's call makes a row of its own
+        assert tuple(c.execute("SELECT folder, hide_children, alien FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (True, True, True)
         clean(c)
 
 

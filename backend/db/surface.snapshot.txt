@@ -459,6 +459,7 @@ column kg.records.legacy_reason type=smallint notnull=false identity= generated=
 column kg.records.model type=text notnull=false identity= generated= default=-
 column kg.records.name type=text notnull=false identity= generated= default=-
 column kg.records.name_key type=text notnull=false identity= generated= default=-
+column kg.records.name_sort type=bytea notnull=false identity= generated= default=-
 column kg.records.org_id type=text notnull=true identity= generated= default=-
 column kg.records.origin type=text notnull=false identity= generated= default=-
 column kg.records.own_grant type=boolean notnull=false identity= generated= default=-
@@ -1266,6 +1267,7 @@ func kg.w_grants_delete(bigint[],bigint[],text[]) owner=pipeshub_vetted_kg secde
 func kg.w_grants_set(bigint[],bigint[],text[],text[],bigint[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=50941828a352e2897b1745c35887af58 ext=-
 func kg.w_links_delete(bigint[],smallint[],bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=8441fd26e9f17ea5de39e4885f866a9c ext=-
 func kg.w_links_set(bigint[],smallint[],bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=1cf89a2450f67e278b51993be4f1ab8a ext=-
+func kg.w_listing_set(bigint[],smallint[],text[],smallint[],boolean[],boolean[],boolean[],bytea[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=58d45b7348cfb4f6dae5b61cd99c4a13 ext=-
 func kg.w_nodes_upsert(smallint[],text[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=0f381a3498555b22c046a4a923628dfd ext=-
 func kg.w_projection_set(bigint,integer,text,text,text,timestamp with time zone) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=2e71bdff7589756a237e177947d0fdcf ext=-
 func kg.w_queue_add(bigint,bigint,text,text,boolean) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=b05070a103e3b9bc5ebba0ff7a18b405 ext=-
@@ -1418,6 +1420,7 @@ funcacl kg.w_grants_delete(bigint[],bigint[],text[]) pipeshub_connectors EXECUTE
 funcacl kg.w_grants_set(bigint[],bigint[],text[],text[],bigint[],boolean[]) pipeshub_connectors EXECUTE
 funcacl kg.w_links_delete(bigint[],smallint[],bigint[]) pipeshub_connectors EXECUTE
 funcacl kg.w_links_set(bigint[],smallint[],bigint[]) pipeshub_connectors EXECUTE
+funcacl kg.w_listing_set(bigint[],smallint[],text[],smallint[],boolean[],boolean[],boolean[],bytea[]) pipeshub_connectors EXECUTE
 funcacl kg.w_nodes_upsert(smallint[],text[]) pipeshub_connectors EXECUTE
 funcacl kg.w_projection_set(bigint,integer,text,text,text,timestamp with time zone) pipeshub_connectors EXECUTE
 funcacl kg.w_queue_add(bigint,bigint,text,text,boolean) pipeshub_connectors EXECUTE
@@ -1571,6 +1574,15 @@ index kg.records_fence on kg.records unique=false exclusion=false valid=true def
 index kg.records_group on kg.records unique=false exclusion=false valid=true def=f09dd2a84fcfd376871782231a60ea03
 index kg.records_id on kg.records unique=true exclusion=false valid=true def=693cdabcd4f36aa85a094de23e6731e5
 index kg.records_legacy on kg.records unique=false exclusion=false valid=true def=f91fb6a2de384b64d3702199f91f5e80
+index kg.records_list_class on kg.records unique=false exclusion=false valid=true def=8088cbfc93fea30cd83c10df3971ff3a
+index kg.records_list_created_asc on kg.records unique=false exclusion=false valid=true def=c71fff5fe3d4201893824ee354a3d769
+index kg.records_list_created_desc on kg.records unique=false exclusion=false valid=true def=c413006c214e554087e6eeff11554dda
+index kg.records_list_name_asc on kg.records unique=false exclusion=false valid=true def=8c3fce46d6d0b92b6192b14040498990
+index kg.records_list_name_desc on kg.records unique=false exclusion=false valid=true def=c1454426050b27cf87c96ecffe7a0c3c
+index kg.records_list_size_asc on kg.records unique=false exclusion=false valid=true def=aab0eac05a50dc96148f10a60f45929b
+index kg.records_list_size_desc on kg.records unique=false exclusion=false valid=true def=c8e46afabf47f68af5b03866760d5fde
+index kg.records_list_updated_asc on kg.records unique=false exclusion=false valid=true def=6d3517893969d2a25708d7bb93f5a293
+index kg.records_list_updated_desc on kg.records unique=false exclusion=false valid=true def=ac110664c6a3a277b1c77fa7bb30a7f0
 index kg.records_parent on kg.records unique=false exclusion=false valid=true def=424b9285d5de30a86512e97ed1d0c3bc
 index kg.records_pkey on kg.records unique=true exclusion=false valid=true def=8f0f1990df7a2315c96effeb3b4dec8b
 index kg.restamp_queue_pkey on kg.restamp_queue unique=true exclusion=false valid=true def=71ae5c6cc52ed6d3af6c14276df32e01
@@ -1766,6 +1778,7 @@ pin kg.w_grants_delete(bigint[],bigint[],text[]) kg.scope_members delete key=pri
 pin kg.w_grants_set(bigint[],bigint[],text[],text[],bigint[],boolean[]) kg.scope_members upsert key=- set=role,app_sk,leaf txn=- max=5000
 pin kg.w_links_delete(bigint[],smallint[],bigint[]) kg.links delete key=parent_sk,kind,child_sk set=- txn=- max=5000
 pin kg.w_links_set(bigint[],smallint[],bigint[]) kg.links upsert key=- set= txn=- max=5000
+pin kg.w_listing_set(bigint[],smallint[],text[],smallint[],boolean[],boolean[],boolean[],bytea[]) kg.records upsert key=- set=folder,hide_children,alien,name_sort txn=- max=5000
 pin kg.w_nodes_upsert(smallint[],text[]) kg.node_keys upsert key=- set= txn=- max=5000
 pin kg.w_projection_set(bigint,integer,text,text,text,timestamp with time zone) kg.projection_state upsert key=- set=code_epoch,mode,verify_digest,backfill_cursor,verified_at txn=- max=5000
 pin kg.w_queue_add(bigint,bigint,text,text,boolean) kg.restamp_queue upsert key=- set= txn=- max=5000
