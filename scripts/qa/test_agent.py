@@ -307,6 +307,23 @@ class TestCommand(AgentCase):
         down.assert_called_once()
 
 
+class TestNestedArtifact(unittest.TestCase):
+    def test_the_report_finds_the_agent_files_one_level_down(self) -> None:
+        from qa import __main__ as qa_main
+        root, tmp = testing.make_repo()
+        self.addCleanup(tmp.cleanup)
+        out = root / "qa-out"
+        (out / "qa-out").mkdir(parents=True)
+        plan = {"edition": "all", "profile": "standard", "mode": "pr", "base": "a" * 40, "head": "b" * 40,
+                "tests": [{"id": RETRIEVAL, "source": "floor", "why": ["rule"]}]}
+        (out / "plan.json").write_text(json.dumps(plan))
+        (out / "qa-out" / "agent.json").write_text(json.dumps({"verdict": {"verdict": "works"}, "notes": ["agent unavailable: x"],
+                                                               "extra_tests": [{"id": PROVIDER, "source": "agent", "why": ["a"]}]}))
+        merged_plan, _ = qa_main._merged(out)
+        self.assertEqual(merged_plan["agent"]["notes"], ["agent unavailable: x"])
+        self.assertEqual([t["id"] for t in merged_plan["tests"]], [RETRIEVAL, PROVIDER])
+
+
 class TestCombineCommand(AgentCase):
     def pr_branch(self, number, rel, body):
         testing.git(self.root, "checkout", "-q", "-b", f"pr{number}", self.base)
