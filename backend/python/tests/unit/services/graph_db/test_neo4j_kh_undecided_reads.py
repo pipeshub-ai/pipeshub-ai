@@ -69,3 +69,12 @@ async def test_past_the_cap_the_browse_asks_about_the_first_children_and_logs_it
     await _browse(provider, "g1")
     assert len(provider.check_access.await_args_list[0].kwargs["node_ids"]) == cap
     assert any("more than %d children" in c.args[0] for c in provider.logger.warning.call_args_list)
+
+
+async def test_a_browse_walks_below_a_child_for_the_stub_test_only_when_the_child_is_a_stub() -> None:
+    """The stub test (is anything readable below a placeholder?) walks down from the node. Written as `NOT stub OR EXISTS {walk}` the planner
+    ran the walk for every child of every row (60k db hits per row of a 250-file folder); a CASE runs it for a stub alone."""
+    provider = _provider(_payload([]), admits=set())
+    await _browse(provider, "g1")
+    statement = provider._kh_query.await_args_list[0].args[0]
+    assert "THEN true ELSE EXISTS { WITH app, " in statement and " OR EXISTS { WITH app, " not in statement

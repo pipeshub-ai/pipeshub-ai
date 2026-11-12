@@ -21568,9 +21568,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # browse rule, ending at a node that is no stub. `reached` is read once, not at every hop.
             below = self._kh_v3_child_rule(
                 "kh_xs", "kh_xp", from_app="kh_xfa", opens=app_opens, state=state, grant_once=grant_once)
-            return (f"AND (NOT {self._kh_placeholder(v, state=state)} OR EXISTS {{ WITH app, {v} AS kh_xv, {reached} AS kh_xfa MATCH (kh_xv) "
+            return (f"AND CASE WHEN NOT {self._kh_placeholder(v, state=state)} THEN true ELSE EXISTS {{ WITH app, {v} AS kh_xv, {reached} AS kh_xfa MATCH (kh_xv) "
                     f"((kh_xp)-[kh_xr:NODE_RELATION]->(kh_xs) WHERE kh_xr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
-                    f"AND ({below})){{1,50}} (kh_xz) WHERE NOT {self._kh_placeholder('kh_xz', state=state)} }})")
+                    f"AND ({below})){{1,50}} (kh_xz) WHERE NOT {self._kh_placeholder('kh_xz', state=state)} }} END")
 
         def walked_from_app(v: str) -> str:
             """What a browse of ``v`` itself would start from (`fromApp`): a row below two parents may be reached from the App by one and not the
