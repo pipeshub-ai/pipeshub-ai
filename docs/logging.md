@@ -205,12 +205,13 @@ the auth middleware bound.
 
 | Event | Level | Fields |
 | --- | --- | --- |
-| `http.request.end` | INFO; DEBUG for a `/health*` answer below 400; INFO for a 4xx (WARNING for `reason=org_mismatch`); WARNING for a 5xx answered without an exception; an unhandled exception: ERROR with its stack (`internal`); an `HTTPException` of 500 or more that was raised: its class's level; WARNING at most, with no second stack, for an exception already logged; INFO with `error_class=cancelled reason=client_disconnect` when the client left first | `method`, `route`, `status`, `duration_ms`, `client_ip`, `outcome`, `error_class` (4xx, 5xx), `reason`, and for an exception the `log_failure` fields plus `cause_type` |
+| `http.request.end` | INFO; DEBUG for a `/health*` answer below 400; INFO for a 4xx (WARNING for `reason=org_mismatch`); WARNING for a 5xx answered without an exception; an unhandled exception: ERROR with its stack (`internal`); an `HTTPException` of 500 or more that was raised: its class's level; WARNING at most, with no second stack, for an exception already logged; INFO with `error_class=cancelled reason=client_disconnect` when the client left before the answer was complete (see "When the client leaves" below) | `method`, `route`, `status`, `duration_ms`, `client_ip`, `outcome`, `error_class` (4xx, 5xx), `reason`, and for an exception the `log_failure` fields plus `cause_type` |
 
 - `route` is the template (`/api/v1/kb/{kb_id}`), the same one `MetricsMiddleware` uses (`app/utils/route_template.py`); a request
   refused before routing gets the route it would have reached. `unmatched` when no route matches. The raw path and the query
   string are never logged.
-- `status` is what the client received, and the level follows it: an `HTTPException(500)` an edition handler answers with 402
+- `status` is what the client received (for a client that left before the answer, what the route answered), and the level
+  follows it: an `HTTPException(500)` an edition handler answers with 402
   is an INFO 4xx line. An unhandled exception before anything was sent is answered here with 500
   `{"detail": "Internal server error"}` (the same body in all three services) and the connection stays open. A stream that fails
   midway keeps the status already sent, with `outcome=failure`; the exception is re-raised, so uvicorn closes the connection.
@@ -250,16 +251,35 @@ the auth middleware bound.
   code there marks it with `reason=`.
 - `client_ip` is the peer as uvicorn resolves it (`FORWARDED_ALLOW_IPS`, default loopback), usually the Node API, and only when it
   parses as an IP address. The end user's address is on Node's `http.request.end` with the same `request_id`.
-- A client disconnect is seen two ways: the response never sent its last body message, or an `http.disconnect` was read before
-  it did (a `BaseHTTPMiddleware` below may end its own stream cleanly after the inner one was cut). An escaped `ClientDisconnect`
-  (a body read after the client left) is `cancelled reason=client_disconnect`; any other exception is still `internal`.
+- **When the client leaves.** The middleware reads `receive` itself, one message ahead of the app, so it sees an
+  `http.disconnect` whenever it arrives, even while a route is still working on a plain response (uvicorn drops that answer
+  silently). What the line says depends on when it saw the client leave (`_end_outcome`, in this order):
+
+  | Seen | Line |
+  | --- | --- |
+  | an exception escaped the route | the exception's line, whatever else: `ClientDisconnect` (a body read after the client left) is `cancelled reason=client_disconnect`, a cancelled request `cancelled`, anything else `internal` with its stack |
+  | after `http.response.start`, before the last body message; or the client was not seen leaving and the last body message never came | `cancelled`, whatever the status or a marked failure: the client never got the whole answer (a `BaseHTTPMiddleware` below may still send a last body message after the disconnect) |
+  | before `http.response.start` (the route answered after the client left) | a 4xx, a 5xx or a marked failure keeps its own line; a 2xx, a 3xx or no answer is `cancelled` |
+  | never, or after the last body message was handed over | the normal line |
+
+  "After the last body message was handed over" includes the time the server is still writing it: from this middleware that
+  cannot be told apart from uvicorn's `http.disconnect` for a complete response (measured: in the indexing layout it arrives
+  before `send` returns for every small answer), so a client that leaves while a large last message is being written is
+  logged by the normal line.
 - Limits: an org bound by a route dependency (not by the auth middleware) runs in a child task, so the line has no `org_id`
   from it (only the request context's org, without `user_id`). An exception raised by `MetricsMiddleware` or
   `RequestContextMiddleware` themselves gets uvicorn's line only. A middleware added before `install_request_logging` sits
   inside it, so the crash 500 sent here does not pass through it: an edition that adds `CORSMiddleware` adds it after
   `install_request_logging`, so that it wraps that 500 and the CORS headers stay. A mounted sub-app (`app.mount`) gets one line,
   but its `route` lacks the mount prefix and its own `HTTPException`s are not handed over: install on the sub-app too. None of
-  the three services mounts one.
+  the three services mounts one. Because the middleware reads `receive` first, uvicorn answers `Expect: 100-continue` as soon
+  as the request starts; in query and connectors that is before an auth refusal (`100 Continue`, then `401`). When a route
+  never reads a body larger than one message, or reads it only after its slow work, the line does not see the client leave
+  (the read-ahead holds one message and waits for the route). A client that leaves before its request reaches a route that
+  answers without awaiting anything can still be logged `success` when no `BaseHTTPMiddleware` sits below this middleware
+  (indexing): the last body message is handed over before the read-ahead has read the disconnect. `request.is_disconnected()` sees the disconnect in a route with
+  no `BaseHTTPMiddleware` between it and this middleware (indexing); behind the auth middleware (query, connectors) its poll
+  is still cancelled before it reads.
 - Node writes the same event and fields (`HttpAccess`, `access-log.middleware.ts`). Node also logs the error on its own
   `http.request.error` line; Python logs it on this one.
 - Node: a 401 for a credential the request submitted (a sign-in code, a password, a CAPTCHA, an identity-provider token) that

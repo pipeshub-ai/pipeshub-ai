@@ -195,12 +195,13 @@ def _build_app(clock: _Clock, *, before_install: Callable[[FastAPI], None] | Non
         return StreamingResponse(body(), media_type="text/event-stream")
 
     @app.get("/api/v1/stalled")
-    async def stalled() -> StreamingResponse:
+    @app.get("/api/v1/stalled/{code}")
+    async def stalled(code: int = 200) -> StreamingResponse:
         async def body() -> AsyncIterator[bytes]:
             yield b"data: one\n\n"
             await asyncio.Event().wait()
 
-        return StreamingResponse(body(), media_type="text/event-stream")
+        return StreamingResponse(body(), status_code=code, media_type="text/event-stream")
 
     @app.get("/api/v1/marked/conflict")
     async def marked_conflict(request: Request) -> None:
@@ -677,16 +678,19 @@ async def test_a_stream_that_fails_midway_keeps_its_status_and_is_re_raised(cloc
     assert not _uvicorn_keeps(record.exc_info[1])
 
 
-async def test_a_client_that_leaves_mid_stream_is_cancelled_not_success(clock: _Clock, capture) -> None:
-    """Starlette returns normally when the client goes; the last body message is never sent (review finding 3)."""
+@pytest.mark.parametrize(("path", "status"), [("/api/v1/stalled", 200), ("/api/v1/stalled/503", 503)])
+async def test_a_client_that_leaves_mid_stream_is_cancelled_not_success(clock: _Clock, capture, path: str,
+                                                                        status: int) -> None:
+    """Starlette returns normally when the client goes (review finding 3). The auth BaseHTTPMiddleware then ends its own
+    stream with a last body message after the disconnect, so a cut 503 must not read as an answered one (#5681)."""
     app = _build_app(clock)
 
-    await _drive(app, "/api/v1/stalled", Recorder(), disconnect=True)
+    await _drive(app, path, Recorder(), disconnect=True)
 
     record, fields = _one_end(capture)
     assert record.levelno == logging.INFO
     assert (fields["status"], fields["outcome"], fields["error_class"], fields["reason"]) == (
-        200, "failure", "cancelled", "client_disconnect")
+        status, "failure", "cancelled", "client_disconnect")
     assert not record.exc_text
 
 
@@ -702,9 +706,11 @@ async def _discard(_: dict) -> None:
     pass
 
 
-async def test_a_response_that_never_sends_its_last_body_message_is_cancelled(capture) -> None:
+@pytest.mark.parametrize("status", [200, 503])
+async def test_a_response_that_never_sends_its_last_body_message_is_cancelled(capture, status: int) -> None:
+    """A cut stream is cancelled whatever status it started with: the client never got the whole answer."""
     async def cut_short(scope, receive, send) -> None:
-        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.start", "status": status, "headers": []})
         await send({"type": "http.response.body", "body": b"part", "more_body": True})
 
     await RequestLogMiddleware(cut_short)(_raw_scope(), _disconnected, _discard)
@@ -714,12 +720,14 @@ async def test_a_response_that_never_sends_its_last_body_message_is_cancelled(ca
 
 
 async def test_control_a_disconnect_read_after_the_response_finished_is_success(capture) -> None:
+    """A server answers ``http.disconnect`` only once the client left or the response is complete (``_Server``)."""
     async def complete_then_listen(scope, receive, send) -> None:
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b"done"})
         await receive()
 
-    await RequestLogMiddleware(complete_then_listen)(_raw_scope(), _disconnected, _discard)
+    server = _Server()
+    await asyncio.wait_for(RequestLogMiddleware(complete_then_listen)(_raw_scope(), server.receive, server.send), 10)
 
     _, fields = _one_end(capture)
     assert fields["outcome"] == "success" and "reason" not in fields
@@ -1071,3 +1079,397 @@ async def test_unknown_ids_raise_and_event_fields_go_on_the_request_line_only(cl
     (inside,) = _inside(capture)
     assert end["oauth_error"] == "access_denied" and "unused" not in end
     assert "oauth_error" not in inside
+
+
+# --- a client that leaves before a plain response (F49) ----------------------------------------------------------
+
+
+class _Server:
+    """uvicorn's side of one request (h11_impl.py receive/send): the request body first, then ``http.disconnect`` only
+    once the client left or the response is complete. Counts ``receive`` calls."""
+
+    def __init__(self, *body: bytes) -> None:
+        self.body = [{"type": "http.request", "body": part, "more_body": i < len(body) - 1} for i, part in enumerate(body)]
+        self.calls = 0
+        self.second_read = asyncio.Event()
+        self.gone = asyncio.Event()  # the client left, or the response is complete
+        self.sent: list[dict] = []
+
+    async def receive(self) -> dict:
+        self.calls += 1
+        if self.calls == 2:
+            self.second_read.set()
+        if self.body:
+            return self.body.pop(0)
+        await self.gone.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(self, message: dict) -> None:
+        self.sent.append(message)
+        if message["type"] == "http.response.body" and not message.get("more_body", False):
+            self.gone.set()
+
+    def answer(self) -> object:
+        return json.loads(b"".join(m.get("body", b"") for m in self.sent if m["type"] == "http.response.body"))
+
+
+def _scope(method: str, path: str) -> dict:
+    return {
+        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1", "method": method,
+        "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"", "root_path": "",
+        "headers": [(b"host", b"testserver"), (b"content-type", b"application/json")],
+        "client": ("10.1.2.3", 50000), "server": ("testserver", 80),
+    }
+
+
+@pytest.fixture
+def disconnect_seen(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
+    """Set when the request's line observes ``http.disconnect``: the sync point between the client leaving and the route."""
+    seen = asyncio.Event()
+    observe = request_log._Request.observe
+
+    def spy(self: request_log._Request, message: dict) -> None:
+        observe(self, message)
+        if message["type"] == "http.disconnect":
+            seen.set()
+
+    monkeypatch.setattr(request_log._Request, "observe", spy)
+    return seen
+
+
+async def _within_a_second(event: asyncio.Event) -> None:
+    """Without the fix the line never sees the client leave: the route goes on after 1 s and the assertion fails."""
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(event.wait(), 1)
+
+
+async def _settle() -> None:
+    for _ in range(50):  # every runnable task runs; no I/O, so deterministic
+        await asyncio.sleep(0)
+
+
+def _indexing_app() -> FastAPI:
+    """indexing_main's shape: no auth middleware between the line and the routes."""
+    app = FastAPI()
+    install_request_logging(app)
+    app.add_middleware(MetricsMiddleware, service_name="test_service")
+    return app
+
+
+def _shaped_app(clock: _Clock, shape: str) -> FastAPI:
+    return _build_app(clock) if shape == "query" else _indexing_app()
+
+
+def _add_slow_routes(app: FastAPI, wait: Callable[[], Awaitable[None]]) -> None:
+    @app.get("/api/v1/slow")
+    async def slow() -> dict:
+        await wait()
+        return {"ok": True}
+
+    @app.post("/api/v1/slow")
+    async def slow_after_body(request: Request) -> dict:
+        await request.json()
+        await wait()
+        return {"ok": True}
+
+
+SHAPES = pytest.mark.parametrize("shape", ["query", "indexing"])
+METHODS = pytest.mark.parametrize("method", ["GET", "POST"])
+
+
+@SHAPES
+@METHODS
+async def test_a_client_that_leaves_before_a_plain_response_is_cancelled_not_success(
+        clock: _Clock, capture, disconnect_seen: asyncio.Event, shape: str, method: str) -> None:
+    """Nothing reads ``receive`` while the route works, and uvicorn's send drops the answer silently."""
+    app = _shaped_app(clock, shape)
+    _add_slow_routes(app, lambda: _within_a_second(disconnect_seen))
+    server = _Server(b'{"q": 1}')
+    server.gone.set()  # the client left while the route was working
+
+    await asyncio.wait_for(app(_scope(method, "/api/v1/slow"), server.receive, server.send), timeout=10)
+
+    record, fields = _one_end(capture)
+    assert record.levelno == logging.INFO
+    assert (fields["status"], fields["outcome"], fields["error_class"], fields["reason"]) == (
+        200, "failure", "cancelled", "client_disconnect")
+    assert not record.exc_text
+
+
+@SHAPES
+@METHODS
+async def test_control_a_client_that_stays_for_a_plain_response_is_success(clock: _Clock, capture, shape: str,
+                                                                           method: str) -> None:
+    app = _shaped_app(clock, shape)
+    _add_slow_routes(app, _settle)  # the read-ahead is parked in receive when the route answers
+    server = _Server(b'{"q": 1}')
+
+    await asyncio.wait_for(app(_scope(method, "/api/v1/slow"), server.receive, server.send), timeout=10)
+
+    assert server.answer() == {"ok": True}
+    record, fields = _one_end(capture)
+    assert record.levelno == logging.INFO
+    assert fields["outcome"] == "success" and "reason" not in fields
+
+
+@pytest.mark.parametrize(
+    ("kind", "level", "status", "cls", "reason"),
+    [
+        ("refused", logging.WARNING, 403, "forbidden", "org_mismatch"),
+        ("503", logging.WARNING, 503, "unavailable", None),
+        ("marked", logging.WARNING, 200, "unavailable", None),
+        ("302", logging.INFO, 302, "cancelled", "client_disconnect"),
+    ],
+)
+async def test_after_the_client_left_only_a_success_becomes_cancelled(
+        clock: _Clock, capture, disconnect_seen: asyncio.Event, kind: str, level: int, status: int, cls: str,
+        reason: str | None) -> None:
+    """A refusal, a 5xx or a marked failure is the better answer to "why"; org_mismatch stays WARNING."""
+    app = _build_app(clock)
+
+    @app.get("/api/v1/late/{kind}")
+    async def late(request: Request, kind: str) -> JSONResponse:
+        await _within_a_second(disconnect_seen)
+        if kind == "refused":
+            raise AuthRejected(403, "org_id does not match the service token", reason="org_mismatch")
+        if kind == "marked":
+            mark_request_failure(request, error_class="unavailable")
+            return JSONResponse({"ok": True})
+        return JSONResponse({}, status_code=int(kind))
+
+    server = _Server(b"")
+    server.gone.set()
+
+    await asyncio.wait_for(app(_scope("GET", f"/api/v1/late/{kind}"), server.receive, server.send), timeout=10)
+
+    assert disconnect_seen.is_set()  # the client's leaving was seen
+    record, fields = _one_end(capture)
+    assert record.levelno == level
+    assert (fields["status"], fields["outcome"], fields["error_class"], fields.get("reason")) == (
+        status, "failure", cls, reason)
+
+
+@SHAPES
+async def test_the_body_reaches_the_route_in_order_and_is_read_one_message_ahead(clock: _Clock, capture,
+                                                                                 shape: str) -> None:
+    app = _shaped_app(clock, shape)
+    gate = asyncio.Event()
+
+    @app.post("/api/v1/gated-body")
+    async def gated_body(request: Request) -> dict:
+        await gate.wait()
+        return {"body": (await request.body()).decode()}
+
+    server = _Server(b'{"a": ', b'"b"', b"}")
+    request = asyncio.create_task(app(_scope("POST", "/api/v1/gated-body"), server.receive, server.send))
+    await asyncio.wait_for(server.second_read.wait(), 1)
+    await _settle()
+    assert server.calls == 2  # one message in the slot, one in the read-ahead's hand: a body is not buffered
+    gate.set()
+    await asyncio.wait_for(request, timeout=10)
+
+    assert server.answer() == {"body": '{"a": "b"}'}
+
+
+async def test_after_a_disconnect_every_later_receive_is_a_disconnect(clock: _Clock, capture,
+                                                                      disconnect_seen: asyncio.Event) -> None:
+    app = _indexing_app()
+
+    @app.get("/api/v1/listen")
+    async def listen(request: Request) -> dict:
+        await _within_a_second(disconnect_seen)
+        types = [(await asyncio.wait_for(request.receive(), 2))["type"] for _ in range(4)]
+        return {"types": types}
+
+    server = _Server(b"")
+    server.gone.set()
+
+    await asyncio.wait_for(app(_scope("GET", "/api/v1/listen"), server.receive, server.send), timeout=10)
+
+    assert server.answer() == {"types": ["http.request"] + ["http.disconnect"] * 3}
+
+
+class _ReceiveBroke(Exception):
+    pass
+
+
+@pytest.mark.parametrize("error", [_ReceiveBroke("receive broke"), ExceptionGroup("receive broke", [OSError("reset")])])
+async def test_a_receive_that_raises_reaches_the_app_every_time(capture, error: Exception) -> None:
+    """Any Exception: through MetricsMiddleware's task group a receive error arrives as an ExceptionGroup."""
+    errors: list[Exception] = []
+    server = _Server()
+
+    async def reads_twice(scope, receive, send) -> None:
+        for _ in range(2):
+            try:
+                await asyncio.wait_for(receive(), 2)
+            except TimeoutError:
+                raise
+            except Exception as exc:
+                errors.append(exc)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    async def broken_receive() -> dict:
+        raise error
+
+    await asyncio.wait_for(RequestLogMiddleware(reads_twice)(_raw_scope(), broken_receive, server.send), 10)
+
+    assert errors == [error, error]
+
+
+@pytest.mark.parametrize("ending", ["answered", "crashed", "cancelled"])
+async def test_the_read_ahead_task_ends_with_the_request(clock: _Clock, capture, ending: str) -> None:
+    app = _build_app(clock)
+    pumps: list[asyncio.Task] = []
+    collected = asyncio.Event()
+
+    @app.get("/api/v1/ending")
+    async def ending_route() -> dict:
+        pumps.extend(t for t in asyncio.all_tasks() if t.get_coro().__qualname__ == "_Inbox._pump")
+        collected.set()
+        if ending == "crashed":
+            raise RuntimeError("route exploded")
+        if ending == "cancelled":
+            await asyncio.Event().wait()
+        return {"ok": True}
+
+    server = _Server(b"")  # the client stays: only the end of the request can stop the read-ahead
+    request = asyncio.create_task(app(_scope("GET", "/api/v1/ending"), server.receive, server.send))
+    await asyncio.wait_for(collected.wait(), 10)
+    if ending == "cancelled":
+        request.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(request, timeout=10)
+
+    assert pumps, "no read-ahead task ran"
+    await asyncio.wait_for(asyncio.gather(*pumps, return_exceptions=True), 10)
+    assert all(p.done() for p in pumps)
+
+
+@pytest.mark.parametrize(("shape", "polls"), [("indexing", [False, True]), ("query", [False, False])])
+async def test_request_is_disconnected_in_a_route(clock: _Clock, capture, disconnect_seen: asyncio.Event, shape: str,
+                                                  polls: list[bool]) -> None:
+    """Indexing now sees the disconnect (it reads the read-ahead's slot). Behind the auth BaseHTTPMiddleware the poll is
+    cancelled at its task group's exit, as on main (F9)."""
+    app = _shaped_app(clock, shape)
+    first_poll = asyncio.Event()
+    server = _Server(b'{"q": 1}')
+
+    @app.post("/api/v1/poll")
+    async def poll(request: Request) -> dict:
+        await request.json()
+        seen = [await request.is_disconnected()]
+        first_poll.set()
+        await _within_a_second(disconnect_seen)
+        seen.append(await request.is_disconnected())
+        return {"polls": seen}
+
+    request = asyncio.create_task(app(_scope("POST", "/api/v1/poll"), server.receive, server.send))
+    await asyncio.wait_for(first_poll.wait(), 10)
+    server.gone.set()
+    await asyncio.wait_for(request, timeout=10)
+
+    assert server.answer() == {"polls": polls}
+
+
+# --- the line's decision table (docs/logging.md, "When the client leaves") -------------------------------------------
+
+
+# (row, escaped, marked, status, final body handed over, client left) -> branch. One row per row of the table.
+END_TABLE = [
+    ("E1 escaped exception wins, whatever else", True, True, 503, False, "answering", "exception"),
+    ("E2 escaped exception, client never left", True, False, None, False, None, "exception"),
+    ("C1 left mid-answer, 2xx", False, False, 200, False, "answering", "cancelled"),
+    ("C2 left mid-answer, 5xx, last body sent later by a BaseHTTPMiddleware", False, False, 503, True, "answering", "cancelled"),
+    ("C3 left mid-answer, 4xx", False, False, 404, True, "answering", "cancelled"),
+    ("C4 left mid-answer, marked failure", False, True, 502, False, "answering", "cancelled"),
+    ("C5 no last body, no disconnect read", False, False, 200, False, None, "cancelled"),
+    ("C6 no last body, no disconnect read, marked", False, True, 503, False, None, "cancelled"),
+    ("L1 left before the answer, 2xx", False, False, 200, True, "before_answer", "cancelled"),
+    ("L2 left before the answer, 3xx", False, False, 302, True, "before_answer", "cancelled"),
+    ("L3 left before the answer, nothing answered", False, False, None, False, "before_answer", "cancelled"),
+    ("L4 left before the answer, 4xx", False, False, 403, True, "before_answer", "status"),
+    ("L5 left before the answer, 5xx", False, False, 503, True, "before_answer", "status"),
+    ("L6 left before the answer, 5xx stream with no last body", False, False, 503, False, "before_answer", "status"),
+    ("L7 left before the answer, marked 2xx", False, True, 200, True, "before_answer", "failure"),
+    ("L8 left before the answer, marked 5xx", False, True, 502, True, "before_answer", "failure"),
+    ("L9 left before the answer, marked 4xx", False, True, 409, True, "before_answer", "status"),
+    ("L10 left before the answer, marked, nothing answered", False, True, None, False, "before_answer", "failure"),
+    ("N1 complete, 2xx", False, False, 200, True, None, "success"),
+    ("N2 complete, 3xx", False, False, 302, True, None, "success"),
+    ("N3 complete, 4xx", False, False, 404, True, None, "status"),
+    ("N4 complete, 5xx", False, False, 503, True, None, "status"),
+    ("N5 complete, marked 2xx", False, True, 200, True, None, "failure"),
+    ("N6 complete, marked 5xx", False, True, 500, True, None, "failure"),
+    ("N7 complete, marked 4xx", False, True, 409, True, None, "status"),
+]
+
+
+@pytest.mark.parametrize(("row", "escaped", "marked", "status", "finished", "left", "branch"), END_TABLE,
+                         ids=[r[0].split()[0] for r in END_TABLE])
+def test_the_end_outcome_follows_the_table(row: str, escaped: bool, marked: bool, status: int | None, finished: bool,
+                                           left: str | None, branch: str) -> None:
+    assert request_log._end_outcome(escaped=escaped, marked=marked, status=status, finished=finished, left=left) == branch
+
+
+def _add_marked_stalled_route(app: FastAPI) -> None:
+    @app.get("/api/v1/marked-stalled/{code}")
+    async def marked_stalled(request: Request, code: int) -> StreamingResponse:
+        mark_request_failure(request, error_class="unavailable")
+
+        async def body() -> AsyncIterator[bytes]:
+            yield b"data: one\n\n"
+            await asyncio.Event().wait()
+
+        return StreamingResponse(body(), status_code=code, media_type="text/event-stream")
+
+
+@SHAPES
+@pytest.mark.parametrize("code", [200, 502])
+async def test_a_marked_failure_cut_mid_answer_is_cancelled(clock: _Clock, capture, shape: str, code: int) -> None:
+    """Row C4: the client never got the answer, so the cut wins over the mark (#5681 round 2)."""
+    app = _shaped_app(clock, shape)
+    _add_marked_stalled_route(app)
+
+    await _drive(app, f"/api/v1/marked-stalled/{code}", Recorder(), disconnect=True)
+
+    record, fields = _one_end(capture)
+    assert record.levelno == logging.INFO
+    assert (fields["status"], fields["outcome"], fields["error_class"], fields["reason"]) == (
+        code, "failure", "cancelled", "client_disconnect")
+
+
+@SHAPES
+@pytest.mark.parametrize(("code", "level", "cls", "reason"), [
+    (503, logging.WARNING, "unavailable", None),
+    (200, logging.INFO, "cancelled", "client_disconnect"),
+])
+async def test_a_stream_started_after_the_client_left_follows_the_late_answer_rule(
+        clock: _Clock, capture, disconnect_seen: asyncio.Event, shape: str, code: int, level: int, cls: str,
+        reason: str | None) -> None:
+    """Rows L5/L6 and L1: whether or not a last body message follows (the auth BaseHTTPMiddleware sends one; with no
+    middleware below, Starlette stops the stream without it), a 503 the route started after the client left keeps its
+    own line and a 200 is cancelled (#5681 round 2)."""
+    app = _shaped_app(clock, shape)
+
+    @app.get("/api/v1/late-stream/{code}")
+    async def late_stream(code: int) -> StreamingResponse:
+        await _within_a_second(disconnect_seen)
+
+        async def body() -> AsyncIterator[bytes]:
+            yield b"data: one\n\n"
+            await asyncio.Event().wait()
+
+        return StreamingResponse(body(), status_code=code, media_type="text/event-stream")
+
+    server = _Server(b"")
+    server.gone.set()
+
+    await asyncio.wait_for(app(_scope("GET", f"/api/v1/late-stream/{code}"), server.receive, server.send), timeout=10)
+
+    assert [m["status"] for m in server.sent if m["type"] == "http.response.start"] == [code]  # the answer did start
+    record, fields = _one_end(capture)
+    assert record.levelno == level
+    assert (fields["status"], fields["outcome"], fields["error_class"], fields.get("reason")) == (
+        code, "failure", cls, reason)
