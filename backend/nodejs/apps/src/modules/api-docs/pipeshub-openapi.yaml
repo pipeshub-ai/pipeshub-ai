@@ -1578,7 +1578,7 @@ components:
             when present, are strings; other fields of the object are passed through. An
             object without the field its method needs is refused later as a failed sign-in,
             not as a validation error: `microsoft` without `idToken` answers `400`, and a Google
-            token that is not a JWT answers `500`.
+            token that is not a JWT answers `401`.
         email:
           type: string
           format: email
@@ -29067,7 +29067,7 @@ paths:
             - No `x-session-token` header, or a session that is unknown, expired or already used to finish a sign-in; start again with `/initAuth`
             - Wrong, missing, expired or already used sign-in code (the same message for an email with no account and for a locked account)
             - CAPTCHA refused
-            - The identity provider rejected the sign-in, or a Microsoft `idToken` is not a valid token for the saved client ID
+            - The identity provider rejected the sign-in (for Google: an ID token with a bad signature, for another client, expired or malformed), or a Microsoft `idToken` is not a valid token for the saved client ID
           content:
             application/json:
               schema:
@@ -29081,10 +29081,18 @@ paths:
         '500':
           description: |
             Internal server error. Also returned for a password or code sign-in when neither
-            the session nor the body carries an email (the account lookup fails), for a
-            Google token that is not a JWT (the Google library's error is not mapped).
+            the session nor the body carries an email (the account lookup fails), or when
+            Google's signing-key endpoint answers with an error or without a usable key set.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The identity provider could not be reached: the connection to Google's
+            signing-key endpoint, or to Microsoft's, was refused or dropped. Safe to retry.
           content:
             application/json:
               schema:
