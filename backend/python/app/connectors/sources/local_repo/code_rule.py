@@ -6,8 +6,7 @@ no record would change, no build would be requested, and the repository would wa
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.modules.parsers.code_parser.file_role import (
     FileRole,
@@ -18,6 +17,10 @@ from app.modules.parsers.code_parser.file_role import (
     should_index_code_file,
 )
 from app.modules.parsers.code_parser.lang_config import detect_language
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
 
 HEAD_BYTES = 64 * 1024
 
