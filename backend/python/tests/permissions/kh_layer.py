@@ -23,6 +23,7 @@ holds them to the oracle:
 from __future__ import annotations
 
 import logging
+import zlib
 from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -36,8 +37,13 @@ if TYPE_CHECKING:
     from .model import Node, Parent, World
 
 HIERARCHY = ("PARENT_CHILD", "ATTACHMENT")  # the edges a folder lists; anything else is a link
-MAX_OPENS = 300  # nodes a viewer's browse opens in one world, at most
+MAX_OPENS = 300  # nodes a viewer's browse opens in one world, at most; past it the rows not opened are counted (`truncated`, reported)
 PAGE = 7  # small, so a world pages through several cursors and the carried total is exercised
+# The whole-tree browse opens every other node with one large page: each opened node is held to the same oracle, and only the sample pays for
+# the cursor walk (statements per node), which is what bounds the CI step.
+BIG_PAGE = 200
+SAMPLED_FIRST = 20  # the first nodes a viewer opens, and one node in SAMPLE_EVERY after, page by PAGE
+SAMPLE_EVERY = 4
 MAX_PAGES = 400
 
 
@@ -45,7 +51,7 @@ MAX_PAGES = 400
 class KhFinding:
     scenario: str
     viewer: str
-    kind: str  # over | under | gap | browse_gap | browse_extra | total | counts | facet | browse | arrow | stub
+    kind: str  # over | under | gap | browse_gap | browse_extra | total | counts | facet | browse | arrow | stub | truncated
     detail: str
 
 
@@ -181,9 +187,11 @@ async def children_of(layer: GraphCheckLayer, world: World, viewer: str, node: s
     return {ns.local(i.id): bool(i.hasChildren) for i in page.items} if page.success else None
 
 
-async def browse_pages(layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str) -> tuple[list[Any], list[int], list[int]] | None:
-    """Every page of opening ``node`` for the viewer, as the product pages it: the rows in order, and each page's ``totalItems`` and
-    ``counts.total``; None when the browse does not open it."""
+async def browse_pages(
+    layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str, page_size: int = PAGE,
+) -> tuple[list[Any], list[int], list[int]] | None:
+    """Every page of opening ``node`` for the viewer, as the product pages it (``page_size`` rows a page): the rows in order, and each page's
+    ``totalItems`` and ``counts.total``; None when the browse does not open it."""
     from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
         KnowledgeHubService,
     )
@@ -195,7 +203,7 @@ async def browse_pages(layer: GraphCheckLayer, world: World, viewer: str, node: 
     counted: list[int] = []
     cursor = None
     for _ in range(MAX_PAGES):
-        args = {"user_id": ns.id(viewer), "org_id": ns.org, "parent_id": ns.id(node), "parent_type": parent_type, "limit": PAGE,
+        args = {"user_id": ns.id(viewer), "org_id": ns.org, "parent_id": ns.id(node), "parent_type": parent_type, "limit": page_size,
                 "sort_by": "name", "sort_order": "asc", "include": ["counts"]}
         if cursor:
             args["cursor"] = cursor
@@ -238,7 +246,8 @@ async def _browse(
         """What opening ``node`` lists, {id: row} (once per node), checked when first opened."""
         if node in opened:
             return opened[node]
-        result = await browse_pages(layer, world, viewer, node, parent_type)
+        sampled = len(opened) < SAMPLED_FIRST or zlib.crc32(node.encode()) % SAMPLE_EVERY == 0
+        result = await browse_pages(layer, world, viewer, node, parent_type, PAGE if sampled else BIG_PAGE)
         if result is None:
             opened[node] = None
             if node in seen and seen[node].kind == "group":      # a group the viewer may open and the browse does not: an under-admit
@@ -266,6 +275,7 @@ async def _browse(
 
     queue = [(n.id, "app") for n in world.nodes if n.kind == "app"]
     expanded: set[str] = set()
+    unopened: set[str] = set()
     while queue:
         node, parent_type = queue.pop(0)
         if node in expanded:
@@ -274,11 +284,14 @@ async def _browse(
         for row, item in (await open_(node, parent_type) or {}).items():      # the expand arrow is on exactly when opening the row lists something
             row_type = str(getattr(item.nodeType, "value", item.nodeType))
             if row not in opened and len(opened) >= MAX_OPENS:
-                return found
+                unopened.add(row)
+                continue
             lists = bool(await open_(row, row_type))
             if bool(getattr(item, "hasChildren", False)) != lists:
                 add("arrow", f"{node}: {row} hasChildren {item.hasChildren}, opening it lists something: {lists}")
             if getattr(item, "isPlaceholder", False) and not lists:      # a stub is listed only as the way to something the viewer may open
                 add("stub", f"{node}: lists the stub {row}, and opening it lists nothing")
             queue.append((row, row_type))
+    if unopened:
+        add("truncated", f"opened {len(opened)} nodes (the cap); {len(unopened)} listed rows not opened")
     return found

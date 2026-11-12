@@ -24,6 +24,7 @@ from .kh_worlds import (
     SCOPEDTWO,
     TWOWAY,
     XDECL,
+    XGRANT,
 )
 from .runner import OracleLayer
 from .scenario import Scenario, load_all
@@ -36,8 +37,9 @@ CHUNK = 25
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 # `gap` is reported, never failed: the shapes the oracle cannot decide (an upload, which has its own surface, and a node under a group that hides its
 # children), and a row a browse lists that the oracle refuses only for its hop cap (`refused_by_cap`). A readable node the flatten listing or a browse
-# leaves out is `under` or `browse_gap` and fails, however deep it lies.
-GAPS = {"gap"}
+# leaves out is `under` or `browse_gap` and fails, however deep it lies. `truncated` counts the rows a viewer's whole-tree browse did not open
+# past `MAX_OPENS`.
+GAPS = {"gap", "truncated"}
 
 
 def _describe(found: list[KhFinding]) -> str:
@@ -145,6 +147,24 @@ async def test_the_declared_group_arm_lists_only_its_own_connectors_records(grap
             bad += _bad(await check_world(layer, world, f"declared-{i}"))
         await layer.release(worlds)
         assert not bad, f"{layer.name}\n{_describe(bad)}"
+
+
+async def test_a_grant_to_another_connectors_principal_lists_opens_and_passes_the_record_check(graph_layers) -> None:
+    """A record granted only to a role of another connector that the viewer holds: its folder lists it, opening it is admitted, and the record
+    check admits it, on both stores; a sibling with no grant is none of these."""
+    for layer in graph_layers:
+        await layer.preload([XGRANT])
+        try:
+            ns = await layer._ns(XGRANT)
+            assert await children_of(layer, XGRANT, "u", "f", "recordGroup") == {"m": False}, layer.name
+            assert await children_of(layer, XGRANT, "u", "m", "record") == {}, layer.name
+            assert await children_of(layer, XGRANT, "u", "n", "record") is None or not await children_of(layer, XGRANT, "u", "n", "record")
+            assert await layer._provider.check_record_access_with_details(ns.id("u"), ns.org, ns.id("m")), layer.name
+            assert await layer._provider.check_record_access_with_details(ns.id("u"), ns.org, ns.id("n")) is None, layer.name
+            bad = _bad(await check_world(layer, XGRANT, "xgrant"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([XGRANT])
 
 
 async def test_a_group_of_another_connector_under_a_declared_group_is_not_listed_there(graph_layers) -> None:

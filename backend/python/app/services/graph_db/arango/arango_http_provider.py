@@ -615,17 +615,19 @@ def _aql_in_hidden_group(v: str, tag: str) -> str:
 def _aql_undecided(v: str, *, decided: str | None = None) -> str:
     """The handles of the children of ``v`` a browse of it asks the batch check about, as Neo4j's ``_kh_v3_undecided``: hierarchy children of
     this App, live, of the organisation, no stub, in no group that hides its children, none when one lies above ``v``, and not ``decided`` (a
-    list of handles the browse's rules already select); the first ``_KH_UNDECIDED_MAX`` by key."""
+    list of handles the browse's rules already select); the first ``_KH_UNDECIDED_MAX`` by key, and one more for a browse (``decided`` given), which
+    tells it the cap left some out (`_kh_v3_capped`)."""
     records, groups = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
     return f"""({_aql_hidden_above(v, "ku", from_depth=0)} ? [] : (
         FOR kh_uc, kh_ue IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}
             FILTER kh_ue.relationshipType IN {_HIERARCHY_AQL}
             FILTER IS_SAME_COLLECTION("{records}", kh_uc) OR IS_SAME_COLLECTION("{groups}", kh_uc)
             FILTER kh_uc.orgId == @org_id AND kh_uc.connectorId == @app_id AND kh_uc.isDeleted != true AND kh_uc.isPlaceholder != true
-            FILTER NOT {_aql_in_hidden_group("kh_uc", "kv")}{f" AND kh_uc._id NOT IN {decided}" if decided else ""}
+            {f"FILTER kh_uc._id NOT IN {decided}" if decided else ""}
+            FILTER NOT {_aql_in_hidden_group("kh_uc", "kv")}
             COLLECT kh_uk = kh_uc._key, kh_uh = kh_uc._id
             SORT kh_uk
-            LIMIT {IGraphDBProvider._KH_UNDECIDED_MAX}
+            LIMIT {IGraphDBProvider._KH_UNDECIDED_MAX + (1 if decided else 0)}
             RETURN kh_uh))"""
 
 
@@ -20114,7 +20116,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """The arms that walk, cheapest first, each run only for the nodes the
         ones before it left undecided: from the App, the declared scope, then
         below a seed."""
-        if 0 < len(ids) <= self._KH_CHECK_CONCURRENT_MAX:
+        # Requests on one stream transaction must not run concurrently, so a check inside one takes the staged path.
+        if transaction is None and 0 < len(ids) <= self._KH_CHECK_CONCURRENT_MAX:
             return await self._kh_v3_admitted_by_walks_at_once(ids, bind, transaction)
         admitted: set[str] = set()
         pending = ids
@@ -20523,7 +20526,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         the check. The rules and the undecided children are read in one statement."""
         found = (await self._kh_v3_run(f"{step}_undecided", {**bind, "kh_frontier": [start], "kh_placed": placed, "org_id": org_id}, transaction)
                  or [{"walked": [], "undecided": []}])[0]
-        undecided = found["undecided"]
+        undecided = self._kh_v3_capped(found["undecided"], start.split("/", 1)[1])
         admitted = await self._kh_v3_admitted([h.split("/", 1)[1] for h in undecided], org_id=org_id, access=access, transaction=transaction)
         return list(dict.fromkeys([*(h for h in found["walked"] if h != start), *placed, *(h for h in undecided if h.split("/", 1)[1] in admitted)]))
 
@@ -21498,9 +21501,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                       f' OR LENGTH(FOR kh_sf IN 1..1 INBOUND node {belongs}'
                       f' FILTER kh_sf.isPlaceholder == true LIMIT 1 RETURN 1) > 0')
         exact_row = exact_row.replace("KH_STUB", stub_child)
-        # A row's children the check is asked about where its arrow is not settled by the rules alone (`_kh_v3_settle_held_arrows`).
+        # A row's children the check is asked about where its rules select none (`_kh_v3_settle_held_arrows`); a row asked again for its stub
+        # child (`khStub`) may lose its arrow, so it reads them too.
         exact_row = exact_row.replace(
-            "KH_KIDS", f"(kh_row.hasChildren AND kh_opened AND NOT kh_stub) ? [] : {_aql_undecided('node')}[* RETURN PARSE_IDENTIFIER(CURRENT).key]")
+            "KH_KIDS", f"(kh_row.hasChildren AND NOT kh_stub) ? [] : {_aql_undecided('node')}[* RETURN PARSE_IDENTIFIER(CURRENT).key]")
         # The second pass returns the arrow alone.
         stubs_pass = f"""
             LET kh_app = DOCUMENT("{apps}", @app_id)

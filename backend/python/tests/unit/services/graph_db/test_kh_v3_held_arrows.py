@@ -77,13 +77,18 @@ async def test_a_row_the_walk_from_the_app_does_not_reach_has_an_arrow_only_if_t
     assert provider.check_access.await_count == 1
 
 
-async def test_a_row_the_check_refuses_keeps_its_arrow_when_the_check_admits_a_child_of_it() -> None:
+async def test_a_row_the_check_refuses_has_no_arrow_and_its_children_are_asked_only_once_it_is_admitted() -> None:
+    """A browse of a start the check refuses lists nothing, so a row the walk from the App does not reach opens only if the check admits it;
+    the children of such a row with no child the rules select are asked in a second round, for the rows the first one admits."""
     provider = _provider({})
-    rows = await _settle(provider, [_row("closed-kids", held=False, arrow=True, reached=False, kids=["open-kid"]),
-                                    _row("closed", held=False, arrow=True, reached=False, kids=["shut-kid"])])
-    assert [r["hasChildren"] for r in rows] == [True, False] and all("khKids" not in r for r in rows)
-    assert set(provider.check_access.await_args.kwargs["node_ids"]) == {"closed-kids", "closed", "open-kid", "shut-kid"}
-    assert provider.check_access.await_count == 1      # one check for the rows and their children
+    rows = [_row("open-bare", held=False, arrow=False, reached=False, kids=["open-k1", "k2"]),
+            _row("shut-bare", held=False, arrow=False, reached=False, kids=["open-k3"]),
+            _row("closed", held=False, arrow=True, reached=False),
+            _row("open-arrow", held=False, arrow=True, reached=False, kids=["open-k4"])]
+    await provider._kh_v3_settle_held_arrows(rows, app_id=APP, org_id="org", access=ACCESS, transaction=None, listed_under="p")
+    assert [r["hasChildren"] for r in rows] == [True, False, False, True] and all("khKids" not in r for r in rows)
+    assert [set(c.kwargs["node_ids"]) for c in provider.check_access.await_args_list] == [
+        {"open-bare", "shut-bare", "closed", "open-arrow"}, {"open-k1", "k2"}]
 
 
 async def test_a_row_with_no_child_the_rules_select_has_an_arrow_when_the_check_admits_a_child() -> None:
@@ -93,8 +98,17 @@ async def test_a_row_with_no_child_the_rules_select_has_an_arrow_when_the_check_
             _row("r", held=False, arrow=True, reached=False, kids=["r1"])]
     await provider._kh_v3_settle_held_arrows(rows, app_id=APP, org_id="org", access=ACCESS, transaction=None, listed_under="p")
     assert [r["hasChildren"] for r in rows] == [True, False, False, False, False]
-    assert set(provider.check_access.await_args.kwargs["node_ids"]) == {"open-a1", "a2", "b1", "r", "r1"}
+    assert set(provider.check_access.await_args.kwargs["node_ids"]) == {"open-a1", "a2", "b1", "r"}
     assert provider.check_access.await_count == 1
+
+
+async def test_the_children_of_a_row_the_rules_give_an_arrow_are_never_asked() -> None:
+    """Below a shared folder every row is unreached: a row with an arrow is asked about itself alone, however many children it has."""
+    provider = _provider({})
+    rows = [_row(f"open-s{i}", held=False, arrow=True, reached=False, kids=[f"open-s{i}-{k}" for k in range(200)]) for i in range(50)]
+    await provider._kh_v3_settle_held_arrows(rows, app_id=APP, org_id="org", access=ACCESS, transaction=None, listed_under="p")
+    assert all(r["hasChildren"] for r in rows)
+    assert provider.check_access.await_count == 1 and len(provider.check_access.await_args.kwargs["node_ids"]) == 50
 
 
 async def test_a_page_whose_arrows_the_rules_settle_asks_no_check() -> None:
@@ -104,19 +118,31 @@ async def test_a_page_whose_arrows_the_rules_settle_asks_no_check() -> None:
     provider.check_access.assert_not_awaited()
 
 
-async def test_the_check_of_undecided_children_reads_the_probe_grantees_and_every_other_grantee_the_viewer_holds() -> None:
+async def test_the_check_of_undecided_children_reads_the_viewers_access_as_given() -> None:
+    """The probe's grantees are every principal the viewer holds (`_kh_v3_connector_grantees`), so the check reads them unchanged."""
     provider = _provider({})
     provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"c"})))
-    access = {**ACCESS, "grantee_ids": ["role"], "probe": {"connector_id": APP, "grantees": ["grp"]}}
+    access = {**ACCESS, "probe": {"connector_id": APP, "grantees": ["u", "grp"]}}
     assert await provider._kh_v3_admitted(["c", "d"], org_id="org", access=access, transaction=None) == {"c"}
-    assert provider.check_access.await_args.kwargs["access"]["probe"]["grantees"] == ["grp", "role"]
+    assert provider.check_access.await_args.kwargs["access"] is access
     assert await provider._kh_v3_admitted([], org_id="org", access=access, transaction=None) == frozenset()
     assert provider.check_access.await_count == 1
 
 
+def test_past_the_cap_a_browse_asks_about_the_first_children_and_logs_that_it_left_some_out() -> None:
+    provider = _provider({})
+    cap = provider._KH_UNDECIDED_MAX
+    assert provider._kh_v3_capped([f"k{i}" for i in range(cap)], "n") == [f"k{i}" for i in range(cap)]
+    provider.logger.warning.assert_not_called()
+    assert provider._kh_v3_capped([f"k{i:04d}" for i in range(cap + 1)], "n") == [f"k{i:04d}" for i in range(cap)]
+    provider.logger.warning.assert_called_once()
+    assert provider.logger.warning.call_args.args[1:] == ("n", cap, cap)
+
+
 def test_a_browse_and_a_row_s_arrow_ask_about_the_same_children() -> None:
     """The undecided children of a node, read by its browse (beside what its rules select) and by its arrow (when its rules select none):
-    one expression on each backend, the first ones by id, so the arrow is on exactly when the browse of the row lists one."""
+    one expression on each backend, the first ones by id, so the arrow is on exactly when the browse of the row lists one. A browse reads one
+    more, to tell when the cap leaves some out."""
     from app.services.graph_db.arango.arango_http_provider import (
         ArangoHTTPProvider,
         _aql_undecided,
@@ -125,10 +151,16 @@ def test_a_browse_and_a_row_s_arrow_ask_about_the_same_children() -> None:
     neo = Neo4jProvider.__new__(Neo4jProvider)
     kids = neo._kh_v3_undecided("node")
     assert "ORDER BY kh_uid LIMIT 200" in kids and "isPlaceholder" in kids and "kh_hidku" in kids
-    assert neo._kh_v3_undecided("start", decided="RULE").replace("start", "node").replace(" AND NOT coalesce((RULE), false)", "") == kids
+    browse = neo._kh_v3_undecided("start", decided="RULE")
+    assert "LIMIT 201" in browse
+    assert browse.replace("start", "node").replace("AND NOT coalesce((RULE), false)", "").replace("LIMIT 201", "LIMIT 200") == kids
     aql = _aql_undecided("node")
-    assert "SORT kh_uk" in aql and "LIMIT 200" in aql and _aql_undecided("node", decided="@d").replace(" AND kh_uc._id NOT IN @d", "") == aql
-    assert aql in ArangoHTTPProvider._kh_v3_listing_aql()["enrich_exact"] and "khKids: []" in ArangoHTTPProvider._kh_v3_listing_aql()["enrich"]
+    assert "SORT kh_uk" in aql and "LIMIT 200" in aql
+    assert _aql_undecided("node", decided="@d").replace("FILTER kh_uc._id NOT IN @d", "").replace("LIMIT 201", "LIMIT 200") == aql
+    queries = ArangoHTTPProvider._kh_v3_listing_aql()
+    assert aql in queries["enrich_exact"] and "khKids: []" in queries["enrich"]
+    # the children are read only for a row whose rules select none, or that is asked again for its stub child
+    assert "(kh_row.hasChildren AND NOT kh_stub) ? [] :" in queries["enrich_exact"]
 
 
 async def test_no_check_is_made_when_every_row_is_reached() -> None:

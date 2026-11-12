@@ -423,6 +423,22 @@ grants: []
 gates: [[u, A]]
 """))
 
+# A grant to a principal of another connector opens the node as any grant does: a record of App B granted only to a role of App A (a role
+# belongs to the first App) that the viewer holds is listed in its folder, opens, and passes the record check (XGRANT). Every principal's grants
+# count, as in the oracle and the batch check.
+XGRANT = world_from_data(yaml.safe_load("""
+principals: [{id: u}, {id: r, kind: role}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: B, kind: app, app_type: GMAIL}
+  - {id: f, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B]}
+  - {id: m, kind: record, connector: B, rule: OPEN, parents: [f], belongs: [f]}
+  - {id: n, kind: record, connector: B, rule: OPEN, parents: [f], belongs: [f]}
+grants: [[u, f], [r, m]]
+memberships: [[u, r]]
+gates: [[u, A], [u, B]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
-             SECOND, APPMEMBER]
+             SECOND, APPMEMBER, XGRANT]

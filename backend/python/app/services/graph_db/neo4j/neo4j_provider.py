@@ -20507,17 +20507,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     @staticmethod
     def _kh_v3_connector_grants_cypher() -> str:
         """From ``$user_key`` to ``kh_all``: the Record and RecordGroup nodes of
-        ``$connector_id`` granted to the user directly. Only this connector's
-        grantees are expanded: the user, its organization and teams, and the groups
-        and roles of the connector (a group or role is a connector's own entity, so
-        another connector's hold no grant here). The source account the user
-        authenticated this connector as adds its grants the same way."""
-        mine = "(kh_b.connectorId IS NULL OR kh_b.connectorId = $connector_id)"
+        ``$connector_id`` granted to the user directly. Every grantee is expanded:
+        the user, its organization, and each group, role and team it belongs to,
+        whatever connector that principal came from (a grant to another
+        connector's group opens the node too, as ``get_knowledge_hub_access_v3``
+        and the batch check read it). The source account the user authenticated
+        this connector as adds its grants the same way."""
         granted = "{v}.connectorId = $connector_id AND NOT coalesce({v}.isDeleted, false)"
         return f"""
             MATCH (u:User {{id: $user_key}})
             OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(kh_b:Group|Role|Teams)
-            WHERE {mine}
             WITH u, collect(DISTINCT kh_b) AS kh_badges
             OPTIONAL MATCH (u)-[:BELONGS_TO]->(kh_org:Organization)
             WITH u, kh_badges, collect(DISTINCT kh_org) AS kh_orgs
@@ -20532,7 +20531,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 // One pass over the source account's edges gives its badges and its own grants.
                 OPTIONAL MATCH (kh_src)-[kh_e:PERMISSION]->(kh_b)
                 WITH collect(DISTINCT CASE WHEN kh_e.type = 'USER'
-                                            AND (kh_b:Group OR kh_b:Role OR kh_b:Teams) AND {mine}
+                                            AND (kh_b:Group OR kh_b:Role OR kh_b:Teams)
                                            THEN kh_b END) AS kh_badges,
                      collect(DISTINCT CASE WHEN (kh_b:Record OR kh_b:RecordGroup)
                                             AND {granted.format(v="kh_b")}
@@ -20734,24 +20733,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> list[str]:
         """Who holds grants for this user in ``connector_id``: the grantees of
         ``_kh_v3_connector_grants_cypher``, without their grants. The user, its
-        organizations, its groups, roles and teams of this connector (or of none),
-        and the source account authenticated for this connector with its own."""
-        mine = "(kh_b.connectorId IS NULL OR kh_b.connectorId = $connector_id)"
+        organizations, its groups, roles and teams of any connector, and the source
+        account authenticated for this connector with its own."""
         rows = await self.client.execute_query(
-            f"""
-            MATCH (u:User {{id: $user_key}})
-            OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(kh_b:Group|Role|Teams)
-            WHERE {mine}
+            """
+            MATCH (u:User {id: $user_key})
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(kh_b:Group|Role|Teams)
             WITH u, collect(DISTINCT kh_b.id) AS kh_badges
             OPTIONAL MATCH (u)-[:BELONGS_TO]->(kh_org:Organization)
             WITH u, kh_badges, collect(DISTINCT kh_org.id) AS kh_orgs
-            CALL (u) {{
+            CALL (u) {
                 OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User)
                 WHERE kh_link.connectorId = $connector_id
                 OPTIONAL MATCH (kh_src)-[kh_e:PERMISSION]->(kh_b)
-                WHERE (kh_b:Group OR kh_b:Role OR kh_b:Teams) AND kh_e.type = 'USER' AND {mine}
+                WHERE (kh_b:Group OR kh_b:Role OR kh_b:Teams) AND kh_e.type = 'USER'
                 RETURN collect(DISTINCT kh_src.id) + collect(DISTINCT kh_b.id) AS kh_linked
-            }}
+            }
             RETURN [u.id] + kh_badges + kh_orgs + kh_linked AS grantees
             """,
             parameters={"user_key": user_key, "connector_id": connector_id},
@@ -20844,8 +20841,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _kh_v3_undecided(self, v: str, *, decided: str | None = None) -> str:
         """The children of ``v`` a browse of it asks the batch check about: hierarchy children of this App, live, of the organisation, no stub, in
         no group that hides its children, none when one lies above ``v``, and not ``decided`` (what the browse's rules already select); the first
-        ``_KH_UNDECIDED_MAX`` by id. The browse of ``v`` and ``v``'s arrow read the same list (a group that hides its children is a display flag:
-        it hides everything below it, whatever the check says)."""
+        ``_KH_UNDECIDED_MAX`` by id, and one more for a browse (``decided`` given), which tells it the cap left some out (`_kh_v3_capped`). The
+        browse of ``v`` and ``v``'s arrow read the same list (a group that hides its children is a display flag: it hides everything below it,
+        whatever the check says)."""
         # The walk up for a hiding group runs only for a node with a child to ask about.
         return f"""CASE WHEN NOT EXISTS {{ ({v})-[kh_ue:NODE_RELATION]->(kh_ux:Record|RecordGroup)
               WHERE kh_ue.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND NOT coalesce(kh_ux.isPlaceholder, false) }} THEN []
@@ -20853,8 +20851,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH ({v})-[kh_ur:NODE_RELATION]->(kh_u:Record|RecordGroup)
             WHERE kh_ur.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND kh_u.orgId = $org_id AND kh_u.connectorId = $app_id
               AND kh_u.id IS NOT NULL AND NOT coalesce(kh_u.isDeleted, false) AND NOT coalesce(kh_u.isPlaceholder, false)
-              AND NOT {self._kh_v3_in_hidden_group("kh_u", "kv")}{f" AND NOT coalesce(({decided}), false)" if decided else ""}
-            WITH DISTINCT kh_u.id AS kh_uid ORDER BY kh_uid LIMIT {self._KH_UNDECIDED_MAX}
+              {f"AND NOT coalesce(({decided}), false)" if decided else ""} AND NOT {self._kh_v3_in_hidden_group("kh_u", "kv")}
+            WITH DISTINCT kh_u.id AS kh_uid ORDER BY kh_uid LIMIT {self._KH_UNDECIDED_MAX + (1 if decided else 0)}
             RETURN kh_uid }} END"""
 
     async def _kh_v3_declared_scope(
@@ -22119,7 +22117,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
              // as a scoped browse's rows: the chain-top question and the row's own reach, settled by the page (`_kh_v3_settle_held_arrows`)
              {"false" if flatten else held_by_row()} AS khHeld, {"true" if flatten else opened_row()} AS khFromApp
         WITH built AS node, sortKey, nullRank, idx, total, nRecord, nFolder, nGroup, parentOptions, khHeld, khFromApp,
-             {"[]" if flatten else f"CASE WHEN built.hasChildren AND khFromApp THEN [] ELSE {self._kh_v3_undecided('kh_node')} END"} AS khKids
+             {"[]" if flatten else f"CASE WHEN built.hasChildren THEN [] ELSE {self._kh_v3_undecided('kh_node')} END"} AS khKids
         ORDER BY idx
         RETURN collect(node{{.*, sortKey: sortKey, nullRank: nullRank,
                              parentOptions: parentOptions, khHeld: khHeld, khFromApp: khFromApp, khKids: khKids}}) AS rows,
@@ -22242,7 +22240,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  CASE WHEN item IS NULL THEN null ELSE item.nullRank END AS nullRank,
                  total, nRecord, nFolder, nGroup, parentOptions, node, khUndecided
             WITH khUndecided, built, khHeld, khFromApp, sortKey, nullRank, total, nRecord, nFolder, nGroup, parentOptions,
-                 {"[]" if flatten else f"CASE WHEN built IS NULL OR (built.hasChildren AND khFromApp) THEN [] ELSE {self._kh_v3_undecided('node')} END"} AS khKids
+                 {"[]" if flatten else f"CASE WHEN built IS NULL OR built.hasChildren THEN [] ELSE {self._kh_v3_undecided('node')} END"} AS khKids
             RETURN [x IN collect(CASE WHEN built IS NULL THEN null
                     ELSE built{{.*, sortKey: sortKey, nullRank: nullRank,
                                 parentOptions: parentOptions, khHeld: khHeld, khFromApp: khFromApp, khKids: khKids}} END)
@@ -22255,6 +22253,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }}
         RETURN rows, total, nRecord, nFolder, nGroup,
                crumbNodes, crumbEdges, true AS admitted, khUndecided
+            """
+        elif not flatten:
+            # As below a start, the browse of the App lists every child of it the batch check admits: the statement hands back the children its
+            # rules leave undecided beside the page, and the page is read again with those the check admits (`_kh_v3_undecided`).
+            query = f"""
+        MATCH (app:App {{id: $app_id}})
+        WHERE app.orgId = $org_id AND app.id IN $gatedAppIds
+        WITH app,
+             (coalesce(app.permissionModel, '') = 'APP_LEVEL'
+              OR app.type = 'KB') AS appOpensEverything
+        {scope}
+        WITH app, allNodes, {self._kh_v3_undecided("app", decided="kh_u IN allNodes")} AS khUndecided
+        CALL (app, allNodes) {{
+        {listing}
+        }}
+        RETURN rows, total, nRecord, nFolder, nGroup, khUndecided
             """
         else:
             query = f"""
@@ -22285,20 +22299,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if probe and listing_by_probe:
             del params["grantedIds"]
             query = self._kh_grants_by_probe(query)
-        if start_is_app and not flatten:
-            # As below a start, the browse of the App lists every child of it the batch check admits: the children its rules leave undecided are
-            # asked of the check first, and those it admits are listed beside the chain-tops.
-            ask = f"""
-        MATCH (app:App {{id: $app_id}})
-        WHERE app.orgId = $org_id AND app.id IN $gatedAppIds
-        WITH app, (coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.type = 'KB') AS appOpensEverything
-        {scope}
-        RETURN {self._kh_v3_undecided("app", decided="kh_u IN allNodes")} AS khUndecided"""
-            asked = await self._kh_query(self._kh_grants_by_probe(ask) if probe and listing_by_probe else ask, parameters=params, txn_id=transaction)
-            undecided = (asked or [{}])[0].get("khUndecided") or []
-            admitted = await self._kh_v3_admitted(undecided, org_id=org_id, transaction=transaction, access={
-                "grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted_ids}, "probe": probe})
-            params["kh_placed"] = [*placed_ids, *(i for i in undecided if i in admitted)]
         # The global listing from the App can be read from precomputed scopes (kh_scope) instead of walking the whole
         # tree, behind the ENABLE_KH_SCOPE_LISTING flag. Only where it gives exactly this query's answer: a sort
         # kh_scope keeps an index for, filters that keep a connector all or none (origin, connector), listing state
@@ -22374,10 +22374,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         payload = rows[0] if rows else {}
         if payload.get("khUndecided"):
             # The second read lists them beside what the rules select; nothing the check refuses is listed.
-            admitted = await self._kh_v3_admitted(payload["khUndecided"], org_id=org_id, transaction=transaction,
+            undecided = self._kh_v3_capped(payload["khUndecided"], start_id)
+            admitted = await self._kh_v3_admitted(undecided, org_id=org_id, transaction=transaction,
                                                   access={"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted_ids}, "probe": probe})
             if admitted:
-                params["kh_placed"] = [*placed_ids, *(i for i in payload["khUndecided"] if i in admitted)]
+                params["kh_placed"] = [*placed_ids, *(i for i in undecided if i in admitted)]
                 rows = await self._kh_query(query, parameters=params, txn_id=transaction)
                 payload = rows[0] if rows else {}
         payload.pop("khUndecided", None)
