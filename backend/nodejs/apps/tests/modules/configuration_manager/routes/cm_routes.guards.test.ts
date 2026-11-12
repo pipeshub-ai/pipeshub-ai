@@ -293,7 +293,7 @@ describe('GET /configurationManager/web-search over HTTP', () => {
     const asAdmin = await listProviders(sessionFor(admin));
 
     expect(asAdmin.status).to.equal(200);
-    expect(asAdmin.providers.slice(1).map((p) => p.configuration.apiKey)).to.deep.equal([
+    expect(asAdmin.providers.map((p) => p.configuration.apiKey)).to.deep.equal([
       'serper-real-key',
       'tavily-real-key',
     ]);
