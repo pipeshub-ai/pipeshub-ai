@@ -14,8 +14,10 @@ holds them to the oracle:
 * beyond the cap: a row the browse lists that the oracle refuses only because its walk from the App passes the hop cap (`refused_by_cap`, the
   verdict `R7:depth-cap`) is a `gap`: a browse reads one hop from the node it opens. An admitted node a browse leaves out is a `browse_gap` however
   deep it lies (a seed or an open App's member is admitted with no hop cap);
-* browse: the service path (`totalItems`, `counts`, the rows of a folder) against the oracle, every row it lists opened in turn and held to the
-  same (one row per node over every page, a total that counts each once), and each row's expand arrow against opening that row: it is on exactly when the browse of the row lists something, and a stub is listed exactly where opening it lists something.
+* browse: the service path from each App down, every node it lists opened in turn (groups, folders, records, stubs), each held to the oracle's
+  children of it (one row per node over every page, `totalItems` and `counts` that count each once, no row the oracle refuses, no child it admits
+  left out), and each row's expand arrow against opening that row: it is on exactly when the browse of the row lists something, and a stub is
+  listed exactly where opening it lists something.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ if TYPE_CHECKING:
     from .model import Node, Parent, World
 
 HIERARCHY = ("PARENT_CHILD", "ATTACHMENT")  # the edges a folder lists; anything else is a link
-BROWSE_FOLDERS = 2  # folders of a world the browse path is checked on, per viewer
+MAX_OPENS = 300  # nodes a viewer's browse opens in one world, at most
 PAGE = 7  # small, so a world pages through several cursors and the carried total is exercised
 MAX_PAGES = 400
 
@@ -212,8 +214,8 @@ async def browse_pages(layer: GraphCheckLayer, world: World, viewer: str, node: 
 async def _browse(
     layer: GraphCheckLayer, reference: OracleLayer, world: World, viewer: str, seen: dict[str, Any], scenario_id: str,
 ) -> list[KhFinding]:
-    """The service path: browse a few folders the viewer may open, page by page, against the oracle's children of each, and open every row they
-    list (a group, a folder, a record, a stub), held to one row per node over its pages and to its arrow."""
+    """The service path: the viewer's browse from each App down, every node it lists opened in turn (groups, folders, records, stubs), each held
+    to the oracle's children of it, its pages to one row per node, and each row's arrow to what opening the row lists."""
     ns = await layer._ns(world)
     found: list[KhFinding] = []
 
@@ -230,14 +232,22 @@ async def _browse(
     def children(node: str) -> list[Node]:
         return [n for n in world.nodes if not n.deleted and any(p.id == node and p.rel in HIERARCHY for p in n.parents)]
 
+    opened: dict[str, dict[str, Any] | None] = {}
+
     async def open_(node: str, parent_type: str) -> dict[str, Any] | None:
-        """What opening ``node`` lists, {id: row}, held to one row per node over every page and a total that counts each once."""
+        """What opening ``node`` lists, {id: row} (once per node), checked when first opened."""
+        if node in opened:
+            return opened[node]
         result = await browse_pages(layer, world, viewer, node, parent_type)
         if result is None:
+            opened[node] = None
+            if node in seen and seen[node].kind == "group":      # a group the viewer may open and the browse does not: an under-admit
+                add("browse_gap", f"{node}: the browse does not open it")
             return None
         items, totals, counted = result
         ids = [ns.local(item.id) for item in items]
-        got = {ns.local(item.id): item for item in items}
+        got = opened[node] = {ns.local(item.id): item for item in items}
+        # one row per node over every page, and a total that counts each once
         for twice in sorted({i for i in ids if ids.count(i) > 1}):
             add("browse", f"{node}: lists {twice} more than once")
         if set(totals) != {len(got)} or set(counted) != {len(got)}:
@@ -248,23 +258,27 @@ async def _browse(
         for missing in sorted(n.id for n in children(node) if n.id in seen and n.id not in got):
             if not hidden_by_navigation(world, world.node(missing)):
                 add("browse_gap", f"{node}: the browse leaves out {missing}, which the viewer may open")
+        # A stub is no content the oracle judges: it is listed exactly where opening it lists something.
+        for stub in sorted(n.id for n in children(node) if n.placeholder and n.id not in got):
+            if await open_(stub, "record"):
+                add("browse_gap", f"{node}: the browse leaves out the stub {stub}, and opening it lists something")
         return got
 
-    folders = [i for i, n in seen.items() if n.kind == "group"][:BROWSE_FOLDERS]
-    for folder in folders:
-        got = await open_(folder, "recordGroup")
-        if got is None:      # a folder the viewer may open and the browse does not: an under-admit
-            add("browse_gap", f"{folder}: the browse does not open it")
+    queue = [(n.id, "app") for n in world.nodes if n.kind == "app"]
+    expanded: set[str] = set()
+    while queue:
+        node, parent_type = queue.pop(0)
+        if node in expanded:
             continue
-        # A stub is no content the oracle judges: it is listed exactly where opening it lists something.
-        for stub in sorted(n.id for n in children(folder) if n.placeholder and n.id not in got):
-            if (await browse_pages(layer, world, viewer, stub, "record") or [[]])[0]:
-                add("browse_gap", f"{folder}: the browse leaves out the stub {stub}, and opening it lists something")
-        for item_id, item in got.items():      # the expand arrow is on exactly when opening the row lists something
-            below = await open_(item_id, str(getattr(item.nodeType, "value", item.nodeType)))
-            lists = bool(below)
+        expanded.add(node)
+        for row, item in (await open_(node, parent_type) or {}).items():      # the expand arrow is on exactly when opening the row lists something
+            row_type = str(getattr(item.nodeType, "value", item.nodeType))
+            if row not in opened and len(opened) >= MAX_OPENS:
+                return found
+            lists = bool(await open_(row, row_type))
             if bool(getattr(item, "hasChildren", False)) != lists:
-                add("arrow", f"{folder}: {item_id} hasChildren {item.hasChildren}, opening it lists something: {lists}")
+                add("arrow", f"{node}: {row} hasChildren {item.hasChildren}, opening it lists something: {lists}")
             if getattr(item, "isPlaceholder", False) and not lists:      # a stub is listed only as the way to something the viewer may open
-                add("stub", f"{folder}: lists the stub {item_id}, and opening it lists nothing")
+                add("stub", f"{node}: lists the stub {row}, and opening it lists nothing")
+            queue.append((row, row_type))
     return found
