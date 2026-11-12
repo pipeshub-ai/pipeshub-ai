@@ -2001,6 +2001,19 @@ async def test_an_unrestricted_drive_read_as_restricted_for_one_run_gets_every_g
     assert all_grants(ws) == {**before, "f1": before["f1"] | {("late@example.com", "USER", "READ")}}
 
 
+async def test_a_file_shared_out_of_a_drive_with_no_synced_member_gets_its_grant_back(ws: Workspace) -> None:
+    # Only Bob's own listing (files shared with him) reaches this file, and his checkpoint moves on after the run.
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"})
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[reader(BOB)])
+    restrictions_left_out(ws, True)
+    await ws.sync()
+    assert BOB not in {who for who, _, _ in ws.grants("g1")}
+
+    restrictions_left_out(ws, False)
+    await ws.sync()
+    assert BOB in {who for who, _, _ in ws.grants("g1")}
+
+
 async def test_an_unreadable_answer_for_a_new_drive_shares_nothing(ws: Workspace) -> None:
     restricted_drive(ws)
     ws.world.restrictions_unlisted = ws.world.restrictions_unreadable = True

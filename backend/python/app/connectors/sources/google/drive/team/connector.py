@@ -1500,8 +1500,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         An answer with no restrictions object is unknown, never unrestricted, and the run is reported incomplete. A
         drive with flags stored keeps them. A drive with none is read as restricted in every way that only narrows
-        access, for this run alone: only a mark is saved, so the next answer that has the object lists the drive in
-        full and rebuilds every grant this run cut."""
+        access, for this run alone: only a mark is saved, so the next answer that has the object lists the drive, and
+        every synced user's own files and files shared with them, in full, rebuilding every grant this run cut."""
         if drive_id not in self._drive_restrictions:
             got = await self.drive_data_source.drives_get(
                 driveId=drive_id, useDomainAdminAccess=True, fields="id,restrictions"
@@ -1665,7 +1665,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         stored = await self.drive_delta_sync_point.read_sync_point(key)
         hidden = [str(g) for g in ((stored or {}).get("hidden_groups") or [])]
         seen = dict(str(e).rpartition("|")[::2] for e in ((stored or {}).get("group_hashes") or []))
-        relist = now != self._restriction_flags(stored) or bool((stored or {}).get(DRIVE_RESTRICTIONS_ASSUMED))
+        assumed = bool((stored or {}).get(DRIVE_RESTRICTIONS_ASSUMED))
+        relist = assumed or now != self._restriction_flags(stored)
         for group in hidden:
             if relist:
                 break
@@ -1683,9 +1684,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._group_digests[drive_id] = seen
             return
         for user in self.synced_users:
-            await self.drive_delta_sync_point.delete_sync_point(
-                generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
-            )
+            keys = [generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")]
+            if assumed:
+                # The drive's items shared with someone outside it came through that person's own listing.
+                keys.append(generate_record_sync_point_key(RecordType.DRIVE.value, "users", user.source_user_id))
+            for user_key in keys:
+                await self.drive_delta_sync_point.delete_sync_point(user_key)
         await self.drive_delta_sync_point.update_sync_point(
             key, {**now, "hidden_groups": [], "group_hashes": [], DRIVE_RESTRICTIONS_ASSUMED: False}
         )

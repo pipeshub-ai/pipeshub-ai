@@ -575,7 +575,9 @@ class TestFetchPermissions:
 
         await connector._reconcile_drive_restrictions({"id": "sd-1", "restrictions": {}})
 
-        connector.drive_delta_sync_point.delete_sync_point.assert_awaited_once()
+        # The drive and the user's own listing (files shared with them out of the drive) are both read from the start.
+        deleted = [c.args[0] for c in connector.drive_delta_sync_point.delete_sync_point.await_args_list]
+        assert sorted(k.split("/", 1)[1] for k in deleted) == ["drives/u1_sd-1", "users/u1"]
         connector.drive_delta_sync_point.update_sync_point.assert_awaited_once_with(
             "shared_drive_restrictions_sd-1",
             {"driveMembersOnly": False, "domainUsersOnly": False, "hidden_groups": [], "group_hashes": [], "assumed": False},
