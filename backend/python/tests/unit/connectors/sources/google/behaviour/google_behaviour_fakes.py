@@ -299,6 +299,7 @@ class FakeEntitiesProcessor:
         self.app_users: dict[str, Any] = {}
         self.user_groups: dict[str, tuple[Any, list[Any]]] = {}
         self.kept_user_groups: list[str] = []
+        self.external_app_users: set[str] = set()
         self.active_users: list[Any] = []
         self.deleted: list[str] = []
         self.metadata_updates: list[Any] = []
@@ -659,6 +660,16 @@ class FakeEntitiesProcessor:
             removed += len(members) - len(kept_members)
             self.user_groups[key] = (group, kept_members)
         return removed
+
+    async def on_external_app_users(self, emails: list[str], connector_id: str) -> None:
+        self.external_app_users.update(e.lower() for e in emails)
+
+    async def reap_external_app_users(self, connector_id: str) -> int:
+        """Drop the collaborators no stored grant names any more, as the real processor does."""
+        granted = {(p.email or "").lower() for perms in self.permissions.values() for p in perms if p.email}
+        gone = self.external_app_users - granted
+        self.external_app_users -= gone
+        return len(gone)
 
     async def reindex_existing_records(self, records: list[Any]) -> None:
         self.reindexed.extend(records)

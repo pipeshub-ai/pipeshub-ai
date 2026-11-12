@@ -3127,7 +3127,14 @@ async def test_a_cut_user_listing_that_shows_someone_suspended_takes_them_out_of
     assert ALICE in audience_members(ws, "workspace-members")
 
 
-async def test_a_reach_answer_that_narrows_on_a_cut_listing_takes_the_other_domains_out(ws: Workspace) -> None:
+async def test_a_reach_answer_that_narrows_on_a_cut_listing_takes_the_other_domains_out(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+
+    # Fixed picks, so someone the cut listing shows and who did not say yes is left to ask: random ones could leave
+    # nobody, and a check that learns nothing gives no "no" (the group narrows all the same).
+    monkeypatch.setattr(drive_connector.secrets, "choice", lambda people: people[-1])
     two_domains(ws, reach_all=True)
     await settle(ws)
     assert {LABS, XIA, YAN} <= domain_members(ws, "example.com")
@@ -3349,3 +3356,45 @@ async def test_a_shared_drive_removal_on_a_cut_listing_takes_the_reporters_grant
 
     await ws.sync()
     assert "d" not in ws.records.records, "the next complete listing settles it"
+
+
+async def test_a_shared_drive_removal_keeps_a_file_a_member_group_nobody_can_list_may_still_open(ws: Workspace) -> None:
+    ws.world.add_group("team@example.com", [CAROL])
+    ws.world.add_drive("sd-1", "Team", {BOB: "writer", "team@example.com": "reader"})
+    ws.world.add_item("d", "d.txt", parent="sd-1", perms=[{**reader(BOB), "role": "writer"}])
+    await ws.sync()
+    assert BOB in {g[0] for g in ws.grants("d")}
+
+    # Bob leaves the drive, so its feed reports the file removed for him; team@'s members still open it, but the
+    # directory will not list them.
+    connector = await ws.connector_()
+    ws.world.drives["sd-1"]["members"].pop(BOB)
+    ws.world.files["d"].perms = []
+    ws.world.unlistable_groups["team@example.com"] = 403
+    connector._drive_member_emails, connector._group_members_cache = {}, {}
+    bob = next(u for u in connector.synced_users if u.email == BOB)
+    await connector._apply_shared_drive_removal("d", bob, "sd-1", await connector._build_user_drive_data_source(bob))
+
+    assert "d" in ws.records.records, "members that cannot be listed are not nobody"
+    assert BOB not in {g[0] for g in ws.grants("d")}, "Bob's own grant goes"
+
+
+async def test_a_not_found_from_another_domain_on_a_cut_listing_still_counts_the_people_it_left_out(ws: Workspace) -> None:
+    tom = "tom@third.example.net"
+    two_domains(ws, reach_all=False)
+    ws.world.other_domains["third.example.net"] = []
+    ws.world.add_user(tom)
+    ws.world.domain_share_reaches = {("example.com", "labs.example.org")}
+    ws.world.add_item("g", "g.txt", parent="root-admin", owner=ADMIN, perms=[discoverable("domain", domain="example.com"), reader(tom)])
+    ws.records.active_users = [*ws.records.active_users, *(User(id=f"u-{e}", email=e, is_active=True) for e in (tom, LABS, XIA))]
+    await settle(ws)
+    assert reach(ws) is True and {ALICE, BOB, LABS} <= domain_members(ws, "example.com")
+
+    # The listing leaves out everyone on example.com, who can still open the file; the labs people asked say
+    # "not found" (the reach changed, which the stored answer does not know yet).
+    ws.world.cut_user_listing = {ADMIN, ALICE, BOB}
+    ws.world.domain_share_reaches = set()
+    ws.world.unshare("g", tom)
+    await ws.sync()
+    assert "g" in ws.records.records, "Alice and Bob were not asked"
+    assert ws.incomplete is True and (tom, "USER", "READ") not in ws.grants("g")

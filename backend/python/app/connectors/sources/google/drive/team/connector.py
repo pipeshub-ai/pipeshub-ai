@@ -471,6 +471,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._synced_drive_ids: set = set()
         self._drive_has_member_cache: dict[str, bool] = {}
         self._drive_member_emails: dict[str, list[str]] = {}
+        # Drives with a member group the directory will not list: who else can open their files is unknown.
+        self._drive_members_unread: set[str] = set()
         # Per shared drive, this run: its restrictions, and the people and groups that are members.
         self._drive_restrictions: dict[str, dict[str, bool]] = {}
         self._drive_principals: dict[str, tuple[set[str], set[str]]] = {}
@@ -726,6 +728,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._synced_drive_ids = set()
             self._drive_has_member_cache = {}
             self._drive_member_emails = {}
+            self._drive_members_unread = set()
             self._drive_restrictions = {}
             self._drive_principals = {}
             self._group_people = {}
@@ -1151,6 +1154,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         if len(domains) < 2:
             return {}
         now = get_epoch_timestamp_in_ms()
+        # Stamped with the run's start, so "from an earlier run" is exact: two runs never start in the same millisecond,
+        # but one may start in the millisecond the last one wrote its answers.
+        stamp = self._run_started_at or now
         reach: dict[str, set[str]] = {}
         for domain in sorted(domains):
             key = f"{DOMAIN_REACH_SYNC_POINT_PREFIX}{domain}"
@@ -1176,15 +1182,15 @@ class GoogleDriveTeamConnector(BaseConnector):
                         # Someone who can briefly share each file with the person asked could make one run say yes.
                         confirmed = bool(yes_at) and int(yes_at) < self._run_started_at and not people & set(yes_by)
                         covered = True if confirmed else None
-                        answers[other] = [covered, now, sorted(people), now]
+                        answers[other] = [covered, stamp, sorted(people), stamp]
                     elif result is False:
                         covered = False
-                        answers[other] = [False, now, [], 0]
+                        answers[other] = [False, stamp, [], 0]
                     elif covered is None:
-                        answers[other] = [None, now, yes_by, yes_at]
+                        answers[other] = [None, stamp, yes_by, yes_at]
                     elif covered and now - int(checked_at) >= DOMAIN_REACH_KEEP_MAX_MS:
                         covered = None
-                        answers[other] = [None, now, [], 0]
+                        answers[other] = [None, stamp, [], 0]
                         self.logger.warning(
                             f"Could not check again for {DOMAIN_REACH_KEEP_MAX_MS // 86_400_000} days whether a share "
                             f"with {domain} reaches the people of {other}; it reaches {domain} only until it is"
@@ -1247,7 +1253,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 continue
             if candidate.get("view") != view[0]:
                 # New, or changed since: asked with only once a later run finds it the same.
-                keep.append({**candidate, "view": view[0], "seen_at": get_epoch_timestamp_in_ms()})
+                keep.append({**candidate, "view": view[0], "seen_at": self._run_started_at or get_epoch_timestamp_in_ms()})
                 continue
             keep.append(candidate)
             if int(candidate.get("seen_at") or 0) < self._run_started_at:
@@ -2953,6 +2959,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                     return False
                 self.logger.info(f"Keeping {item.record_name}: {candidate.email} can still open it")
                 return True
+            if drive_id in self._drive_members_unread:
+                # Unknown is not empty: a member of that group may still open it. Kept, as for a group grant whose
+                # members cannot be read, so a refusal that does not clear does not hold the drive's changes.
+                self.logger.info(f"Keeping {item.record_name}: a member group of its drive could not be read")
+                await self._drop_reporters_grant(item, user)
+                return True
             holders = await self.data_entities_processor.get_users_with_permission_to_node(
                 item.id, CollectionNames.RECORDS.value, raise_on_error=True
             )
@@ -2987,7 +2999,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                         members.append(permission.email.lower())
                     elif permission.entity_type == EntityType.GROUP and permission.external_id:
                         # Everyone in it, synced or not: only synced users are asked, and the rest can keep a file.
-                        members.extend(sorted(await self._group_member_emails(permission.external_id) or ()))
+                        people = await self._group_member_emails(permission.external_id)
+                        if people is None:
+                            self._drive_members_unread.add(drive_id)
+                        members.extend(sorted(people or ()))
                 self._drive_member_emails[drive_id] = members
             wanted.extend(self._drive_member_emails[drive_id])
         holders = await self.data_entities_processor.get_users_with_permission_to_node(
@@ -3141,12 +3156,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                 refused |= answer is False
             if asked and not refused:
                 unanswered.append(group_id)
-            elif not refused:
-                # Nobody else to ask. Who the group holds is unknown when its write failed; a person a cut listing
-                # left out may still be in it.
-                if group_id not in self._audience_members:
-                    unanswered.append(group_id)
-                may_open |= self._audience_members.get(group_id, set())
+            elif group_id not in self._audience_members and (not refused or self._listing_cut):
+                # Who the group holds is unknown (its write failed): nobody else asked is not nobody.
+                unanswered.append(group_id)
+            # Whatever the people asked said: one "not found" speaks for its own domain's people, and a cut listing
+            # does not show all of them, so the people it left out still make the answer unknown.
+            may_open |= self._audience_members.get(group_id, set())
         if unanswered:
             raise _RemovalUndecided(
                 f"No one asked of {', '.join(unanswered)} answered whether {record.record_name} can still be opened"
