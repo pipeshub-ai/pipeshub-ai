@@ -2004,7 +2004,7 @@ async def test_an_unrestricted_drive_read_as_restricted_for_one_run_gets_every_g
 async def test_a_file_shared_out_of_a_drive_with_no_synced_member_gets_its_grant_back(ws: Workspace) -> None:
     # Only Bob's own listing (files shared with him) reaches this file, and his checkpoint moves on after the run.
     ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"})
-    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[reader(BOB)])
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[BOB_WRITES])
     restrictions_left_out(ws, True)
     await ws.sync()
     assert BOB not in {who for who, _, _ in ws.grants("g1")}
@@ -2012,6 +2012,98 @@ async def test_a_file_shared_out_of_a_drive_with_no_synced_member_gets_its_grant
     restrictions_left_out(ws, False)
     await ws.sync()
     assert BOB in {who for who, _, _ in ws.grants("g1")}
+
+
+async def stored_as_unrestricted(ws: Workspace) -> None:
+    """sd-1 (members Alice and eng) and sd-2 (no synced member; g1 shared with Bob), both with unrestricted flags
+    stored: each was members-only, then lifted."""
+    restricted_drive(ws, MEMBERS_ONLY)
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[BOB_WRITES])
+    await ws.sync()
+    for drive in ("sd-1", "sd-2"):
+        ws.world.drives[drive]["restrictions"] = {}
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE and BOB in g1_people(ws)
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["driveMembersOnly"] is False
+
+
+async def test_stored_unrestricted_flags_are_not_trusted_when_a_tightened_drive_answers_without_them(
+    ws: Workspace,
+) -> None:
+    await stored_as_unrestricted(ws)
+    for drive in ("sd-1", "sd-2"):
+        ws.world.drives[drive]["restrictions"] = MEMBERS_ONLY
+    restrictions_left_out(ws, True)
+    await ws.sync()
+
+    # Neither file changed, so no feed reports them: the stored, looser flags must not keep their outsiders.
+    assert ws.incomplete is True
+    assert f1_people(ws) == MEMBERS and BOB not in g1_people(ws)
+    restrictions_left_out(ws, False)
+    await ws.sync()
+    assert f1_people(ws) == MEMBERS and BOB not in g1_people(ws)
+
+
+async def test_a_drive_stored_as_unrestricted_answering_without_restrictions_heals_fully(ws: Workspace) -> None:
+    await stored_as_unrestricted(ws)
+    before = all_grants(ws)
+
+    restrictions_left_out(ws, True)
+    ws.world.share("f1", reader("late@example.com"))
+    ws.world.share("g1", reader("erin@partner.org"))  # g1 is read again, through Bob's feed only
+    await ws.sync()
+    assert ws.incomplete is True
+    assert f1_people(ws) == MEMBERS and BOB not in g1_people(ws)  # one run under the assumed limits
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["driveMembersOnly"] is False  # left as stored
+
+    await ws.sync()  # still left out: the mark is kept and the drive is not read again
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["assumed"] is True
+
+    restrictions_left_out(ws, False)
+    await ws.sync()
+    assert ws.incomplete is False
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["assumed"] is False
+    assert all_grants(ws) == {
+        **before,
+        "f1": before["f1"] | {("late@example.com", "USER", "READ")},
+        "g1": before["g1"] | {("erin@partner.org", "USER", "READ")},
+    }
+
+
+# A writer reads the item's sharing; a reader is answered an empty list and synced with their own grant only.
+BOB_WRITES = {"type": "user", "role": "writer", "emailAddress": BOB}
+
+
+def g1_people(ws: Workspace) -> set[str]:
+    return {who for who, _, _ in ws.grants("g1")}
+
+
+@pytest.mark.parametrize(("limit", "outsider"), [(MEMBERS_ONLY, BOB), (DOMAIN_ONLY, "erin@partner.org")])
+async def test_a_file_shared_out_of_a_drive_with_no_synced_member_comes_back_when_its_limit_is_lifted(
+    ws: Workspace, limit: dict[str, bool], outsider: str
+) -> None:
+    # Only Bob's own listing (files shared with him) reaches this file; lifting the limit changes nothing in his feed.
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"}, limit)
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[BOB_WRITES, reader("erin@partner.org")])
+    await ws.sync()
+    assert outsider not in g1_people(ws)
+
+    ws.world.drives["sd-2"]["restrictions"] = {}
+    await ws.sync()
+    assert ws.incomplete is False
+    assert {BOB, "erin@partner.org"} <= g1_people(ws)
+
+
+async def test_a_file_shared_out_of_a_drive_with_no_synced_member_is_cut_when_a_limit_is_set(ws: Workspace) -> None:
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"})
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[BOB_WRITES])
+    await ws.sync()
+    assert BOB in g1_people(ws)
+
+    ws.world.drives["sd-2"]["restrictions"] = MEMBERS_ONLY
+    await ws.sync()
+    assert BOB not in g1_people(ws)
 
 
 async def test_an_unreadable_answer_for_a_new_drive_shares_nothing(ws: Workspace) -> None:
