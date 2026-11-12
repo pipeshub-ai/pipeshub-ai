@@ -1,4 +1,5 @@
 from app.connectors.core.base.event_service.event_service import BaseEventService
+from app.exceptions.non_retryable import NonRetryableError
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.utils import error_class
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
@@ -16,18 +17,11 @@ class AiConfigEventService(BaseEventService):
 
     async def process_event(self, event_type: str, payload: dict) -> bool:
         """Handle AI configuration events by calling appropriate handlers"""
-        try:
-            if event_type == "llmConfigured":
-                return await self.__handle_llm_configured(payload)
-            elif event_type == "embeddingModelConfigured":
-                return await self.__handle_embedding_configured(payload)
-            else:
-                self.logger.error("Unknown AI config event type")
-                return False
-
-        except Exception as e:
-            error_class.log_failure(self.logger, "message.handler_failed", e)
-            return False
+        if event_type == "llmConfigured":
+            return await self.__handle_llm_configured(payload)
+        if event_type == "embeddingModelConfigured":
+            return await self.__handle_embedding_configured(payload)
+        raise NonRetryableError(f"unknown AI config event type {event_type}")
 
     async def __handle_llm_configured(self, payload: dict) -> bool:
         """Handle LLM configuration update
@@ -36,7 +30,7 @@ class AiConfigEventService(BaseEventService):
             payload (dict): Event payload containing configuration details
 
         Returns:
-            bool: True if successful, False otherwise
+            bool: True if successful; a failure raises
         """
         try:
             self.logger.debug("Processing LLM configured event")
@@ -67,7 +61,7 @@ class AiConfigEventService(BaseEventService):
 
         except Exception as e:
             error_class.log_failure(self.logger, "ai_config.refresh_failed", e)
-            return False
+            raise
 
     async def __handle_embedding_configured(self, payload: dict) -> bool:
         """Handle embedding model configuration update
@@ -76,7 +70,7 @@ class AiConfigEventService(BaseEventService):
             payload (dict): Event payload containing configuration details
 
         Returns:
-            bool: True if successful, False otherwise
+            bool: True if successful; a failure raises
         """
         try:
             self.logger.debug("Processing embedding model configured event")
@@ -89,4 +83,4 @@ class AiConfigEventService(BaseEventService):
 
         except Exception as e:
             error_class.log_failure(self.logger, "ai_config.refresh_failed", e)
-            return False
+            raise

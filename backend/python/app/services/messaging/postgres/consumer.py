@@ -48,6 +48,7 @@ from app.services.messaging.error_classifier import (
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.postgres.queue import Delivery, PgQueue
 from app.services.pg_runtime import QUEUE_CHANNEL, PgListener, listen_dsn
+from app.utils import error_class
 from app.utils.request_context import bind_context, context_from_envelope, reset_context
 
 if TYPE_CHECKING:
@@ -509,8 +510,9 @@ class PgMessagingConsumer(IMessagingConsumer):
                     "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
                 )
             else:
-                self.logger.error(
-                    "Error in message handler for %s: %s", d.message_id, e, exc_info=True
+                # No error text: a pydantic ValidationError quotes the payload, and the handler's own line names the failure.
+                error_class.log_failure(
+                    self.logger, "message.handler_failed", e, include_error_text=False, message_id=d.message_id
                 )
             terminal = (
                 MessageErrorClassifier.classify_by_exception(e)
@@ -518,7 +520,7 @@ class PgMessagingConsumer(IMessagingConsumer):
             )
             if terminal and parsed is not None:
                 parsed.is_final_failure = True
-            reason = f"{type(e).__name__}: {e}"
+            reason = f"{error_class.classify_error(e)}: {type(e).__name__}"  # kept in last_error: no text, as above
             return False, terminal, parsed, _ExpectedOutcome(reason) if expected else reason
         finally:
             reset_context(token)

@@ -332,12 +332,15 @@ carries them: the handler's own, and the ack, retry or dead-letter decision. Bef
   delivery count (`times_delivered`) without one.
 - Kafka with no retry tracker commits a failed message: `disposition=dead_letter`. Redis with none leaves it pending: `retry`.
 - `reason`: `duplicate` (the envelope was already handled), `already_settled` (Kafka: the offset was settled before), `no_value`,
-  `handler_false` (the handler returned false; it logged why), `exception`, `unparseable` (not JSON, not an envelope, or not a valid
+  `handler_false` (the handler asked for the message again, e.g. a user whose org does not exist yet), `exception`, `unparseable` (not JSON, not an envelope, or not a valid
   message), `envelope_rejected` with `code` (`bad_signature`, `stale`, `malformed`, `org_mismatch`, `no_key`, …),
   `attempts_exhausted` (dead-lettered before running again), `no_handler`, `cancelled`. A rejected envelope is ERROR with no stack:
   most codes are our own configuration (a key rotation, a backlog older than the age limit), and each drops every message on the topic.
 - A handler logs its own failure once (`entity_event.failed`, `entity_event.step_failed` with `step`, `message.handler_failed`,
-  `ai_config.refresh_failed`) and returns false or raises; `message.end` does not repeat its text. A user event's failure carries
+  `ai_config.refresh_failed`) and raises; `message.end` does not repeat its text. A handler returns true when done or when the
+  message is not for it (skipped at DEBUG), false only to ask for it again, and raises on failure, so the consumer's classifier
+  decides: a terminal error (4xx, validation, `NonRetryableError` for a malformed message) is dead-lettered on its first delivery,
+  a transient one is retried. A user event's failure carries
   `target_user_id`, the user the event is about (`user_id` is who sent it). `target_user_id` is not passed through the provider's
   `log_identity`.
 - The message value and its payload are never logged whole. Lines carry only the ids taken from it (`record_id`, `connector_id`,

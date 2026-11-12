@@ -24,6 +24,7 @@ from app.connectors.core.sync.sync_coordinator import LocalSyncCoordinator
 from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.connectors.services import event_service as event_service_module
 from app.connectors.services.event_service import EventService, evict_cached_connector
+from app.exceptions.non_retryable import NonRetryableError
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
@@ -599,8 +600,8 @@ class TestGetOrInitConnector:
 class TestProcessEvent:
     @pytest.mark.asyncio
     async def test_invalid_format(self, service):
-        result = await service.process_event("nodotshere", {})
-        assert result is False
+        with pytest.raises(NonRetryableError, match="nodotshere"):
+            await service.process_event("nodotshere", {})
 
     @pytest.mark.asyncio
     async def test_init_event(self, service):
@@ -635,23 +636,23 @@ class TestProcessEvent:
 
     @pytest.mark.asyncio
     async def test_unknown_action(self, service):
-        result = await service.process_event("gmail.unknown_action", {})
-        assert result is False
+        with pytest.raises(NonRetryableError, match="unknown_action"):
+            await service.process_event("gmail.unknown_action", {})
 
     @pytest.mark.asyncio
     async def test_extra_segment_cannot_pick_the_action(self, service):
         with patch.object(service, "_handle_delete", new_callable=AsyncMock) as mock_delete, \
              patch.object(service, "_handle_start_sync", new_callable=AsyncMock) as mock_sync:
-            result = await service.process_event("web.delete.resync", {"orgId": "org1", "connectorId": "c1"})
-        assert result is False
+            with pytest.raises(NonRetryableError):
+                await service.process_event("web.delete.resync", {"orgId": "org1", "connectorId": "c1"})
         mock_delete.assert_not_awaited()
         mock_sync.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception(self, service):
         with patch.object(service, "_handle_init", new_callable=AsyncMock, side_effect=Exception("boom")):
-            result = await service.process_event("gmail.init", {})
-            assert result is False
+            with pytest.raises(Exception, match="boom"):
+                await service.process_event("gmail.init", {})
 
     @pytest.mark.asyncio
     async def test_connector_name_with_spaces(self, service):
