@@ -21,8 +21,10 @@ from fastapi.responses import Response
 from mcp.shared.exceptions import MCPError
 
 from app.agents.constants.mcp_server_constants import (
+    get_mcp_credentials_path,
     get_mcp_oauth_state_claim_path,
     get_mcp_oauth_state_path,
+    get_mcp_shared_dcr_client_path,
 )
 from app.agents.mcp import dcr as dcr_module
 from app.agents.mcp.dcr import DiscoveredOAuthMetadata
@@ -37,6 +39,12 @@ from app.api.routes import mcp_servers
 from app.utils.logger import log_record_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
+from tests.support.refresh_log_fakes import (
+    SEEDED_RT,
+    SEEDED_SECRET,
+    TOKEN_URL,
+    assert_no_secrets,
+)
 from tests.unit.agents.mcp.test_dcr import (
     _allow_all_discovery_targets,
     _mock_async_client,
@@ -181,17 +189,86 @@ async def test_an_oauth_refresh_failure_is_one_line_at_its_class(capture, error,
         patch.object(mcp_servers, "_get_org_instance", new=AsyncMock(return_value=_instance())),
         patch.object(mcp_servers.mcp_token_refresh, "refresh_credential_record", new=AsyncMock(side_effect=error())),
     ):
-        response = await _call(_app(FakeConfigService()), "POST", f"{BASE}/instances/inst-1/oauth/refresh")
+        store = FakeConfigService({get_mcp_credentials_path("inst-1", USER): {"isAuthenticated": True}})
+        response = await _call(_app(store), "POST", f"{BASE}/instances/inst-1/oauth/refresh")
 
     assert response.status_code == status
     record, fields = _end(capture)
     assert record.levelno == level
-    assert _loud(capture) == ([record] if level >= logging.WARNING else [])
+    # A rejected refresh token signs the credential out, and says so: the request's own line stays the only other one.
+    deauthenticated = [r for r in capture.records if r.getMessage() == "credential_refresh.deauthenticated"]
+    assert len(deauthenticated) == (status == 409)
+    assert _loud(capture) == ([record] if level >= logging.WARNING else []) + deauthenticated
     assert (fields["error_class"], fields["reason"], fields["mcp_server_id"]) == (cls, reason, "inst-1")
     assert "error_message" not in fields
     # ERROR keeps the stack's frames, each exception's text omitted.
     assert ("<message omitted>" in (record.exc_text or "")) is (level >= logging.ERROR)
     assert SENTINEL not in _all_text(capture)
+
+
+class _SaveFails(FakeConfigService):
+    """`result`: what the write returns (None: it raises). `gone`: the credential is removed after the refresh read it."""
+
+    def __init__(self, data: dict[str, Any], result: bool | None, *, gone: bool = False) -> None:
+        super().__init__(data)
+        self.result = result
+        self.reads_left = 1 if gone else None
+
+    async def get_config(self, key: str, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if self.reads_left is not None and key == get_mcp_credentials_path("inst-1", USER):
+            if self.reads_left == 0:
+                return None
+            self.reads_left -= 1
+        return await super().get_config(key, *args, **kwargs)
+
+    async def set_config(self, key: str, value: Any, **_: object) -> bool:  # noqa: ANN401
+        if self.result is None:
+            raise ConnectionError("the store is read-only")
+        return self.result
+
+
+@pytest.mark.parametrize(("saved", "gone", "status", "line"), [
+    (True, False, 409, "credential_refresh.deauthenticated"),
+    (False, False, 409, "credential_refresh.deauthenticate_failed"),
+    (True, True, 409, "credential_refresh.deauthenticate_failed"),  # removed (Disconnect) before the route's write
+    (None, False, 500, None),  # the write raises: a 500, as before
+], ids=["deauthenticated", "not-updated", "not-found", "write-raises"])
+async def test_a_rejected_refresh_through_the_real_route_is_one_end_and_its_deauth(capture, saved, gone, status, line) -> None:
+    store = _SaveFails({
+        get_mcp_credentials_path("inst-1", USER): {"isAuthenticated": True, "oauthTokens": {
+            "accessToken": "at-old", "refreshToken": SEEDED_RT, "tokenUrl": f"{TOKEN_URL}?tenant={SEEDED_RT}",
+        }},
+        get_mcp_shared_dcr_client_path("inst-1"): {"clientId": "client-1", "clientSecret": SEEDED_SECRET},
+    }, saved, gone=gone)
+    rejected = httpx.Response(400, json={"error": "invalid_grant", "error_description": f"refresh token {SEEDED_RT} is not active"})
+    # The real token client over a scripted transport (patching httpx.AsyncClient would patch this test's client too).
+    endpoint = httpx.MockTransport(lambda _request: rejected)
+    with (
+        patch.object(mcp_servers, "_get_org_instance", new=AsyncMock(return_value=_instance())),
+        patch("app.agents.mcp.oauth_client.GuardedTransport", return_value=endpoint),
+    ):
+        response = await _call(_app(store), "POST", f"{BASE}/instances/inst-1/oauth/refresh")
+
+    assert response.status_code == status
+    [end] = [r for r in capture.records if r.getMessage() == "credential_refresh.end"]
+    assert end.levelno == logging.WARNING
+    assert log_record_fields(end).items() >= {"error_class": "auth_expired", "reason": "invalid_grant"}.items()
+    deauth = [r for r in capture.records if r.getMessage().startswith("credential_refresh.deauth")]
+    assert [r.getMessage() for r in deauth] == ([line] if line else [])
+    if gone:
+        assert (deauth[0].levelno, log_record_fields(deauth[0])["reason"]) == (logging.ERROR, "not_found")
+    elif saved is True:
+        assert log_record_fields(deauth[0]).items() >= {
+            "reason": "refresh_token_invalid", "strikes": 1, "path": "route", "trigger": "on_demand",
+            "mcp_server_id": "inst-1", "owner_id": USER,
+        }.items()
+    if saved is False:
+        assert (deauth[0].levelno, log_record_fields(deauth[0])["reason"]) == (logging.ERROR, "not_updated")
+    request_end, request_fields = _end(capture)
+    assert request_fields["status"] == status
+    assert "error_message" not in request_fields or saved is None
+    # The write's own error escapes without the provider's answer as its context: nothing of it in any record.
+    assert_no_secrets(capture)
 
 
 # --- dynamic client registration -------------------------------------------------------------------------------------

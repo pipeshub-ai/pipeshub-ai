@@ -32,6 +32,7 @@ from app.containers.connector import (
 )
 from app.core import org_context
 from app.edition_services import get_data_entities_processor_cls
+from app.exceptions.non_retryable import NonRetryableError
 from app.modules.indexing.record_republish import record_event
 from app.schema.node_validator import SchemaValidationError
 from app.services.cache.invalidation_hooks import notify_principals_changed
@@ -103,14 +104,11 @@ class EntityEventService(BaseEventService):
     async def process_event(self, event_type: str, payload: dict) -> bool:
         """Handle entity-related events by calling appropriate handlers"""
         try:
-            handled = await self._dispatch(event_type, payload)
+            return await self._dispatch(event_type, payload)
+        finally:
             if event_type in PRINCIPAL_EVENTS:
                 # Success or not: a handler that failed half way may have changed edges. Nothing here widens access.
                 await notify_principals_changed(payload.get("orgId") if isinstance(payload, dict) else None)
-            return handled
-        except Exception as e:
-            error_class.log_failure(self.logger, "entity_event.failed", e)
-            return False
 
     async def _dispatch(self, event_type: str, payload: dict) -> bool:
         try:
@@ -131,8 +129,7 @@ class EntityEventService(BaseEventService):
             elif event_type == "appDisabled":
                 return await self._handle_app_disabled(payload)
             else:
-                self.logger.error(f"Unknown entity event type: {event_type}")
-                return False
+                raise NonRetryableError(f"unknown entity event type {event_type}")
         except SchemaValidationError as e:
             # Permanent: redelivering the event cannot make the payload valid. Handled, not retried.
             # The data processor marks an error it already logged and counted: report it once.
@@ -145,9 +142,6 @@ class EntityEventService(BaseEventService):
                 )
                 record_schema_rejection(e.collection)
             return True
-        except Exception as e:
-            error_class.log_failure(self.logger, "entity_event.failed", e)
-            return False
 
     async def _handle_sync_event(self,event_type: str, value: dict) -> bool:
         """Handle sync-related events by sending them to the sync-events topic"""
@@ -246,7 +240,7 @@ class EntityEventService(BaseEventService):
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.failed", e)
-            return False
+            raise
 
     async def _handle_org_updated(self, payload: dict) -> bool:
         """Handle organization update event"""
@@ -273,7 +267,7 @@ class EntityEventService(BaseEventService):
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.failed", e)
-            return False
+            raise
 
     async def _handle_org_deleted(self, payload: dict) -> bool:
         """Handle organization deletion event"""
@@ -305,7 +299,7 @@ class EntityEventService(BaseEventService):
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.failed", e)
-            return False
+            raise
 
     # USER EVENTS
     async def _handle_user_added(self, payload: dict) -> bool:
@@ -420,7 +414,7 @@ class EntityEventService(BaseEventService):
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.failed", e, target_user_id=payload.get("userId"))
-            return False
+            raise
 
     def _schedule_connector_link(self, org_id: str) -> None:
         """Ask the org's running connectors that link users to do so, without holding up the event.
@@ -576,7 +570,7 @@ class EntityEventService(BaseEventService):
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.failed", e, target_user_id=payload.get("userId"))
-            return False
+            raise
 
     async def _handle_user_deleted(self, payload: dict) -> bool:
         """Handle user deletion event"""
@@ -616,7 +610,7 @@ class EntityEventService(BaseEventService):
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.failed", e, target_user_id=payload.get("userId"))
-            return False
+            raise
 
     async def _remove_mcp_data(self, owner_kind: str, org_id: str, user_id: str | None = None) -> None:
         """MCP servers and credentials go with their user or org, so nothing keeps refreshing
@@ -706,7 +700,7 @@ class EntityEventService(BaseEventService):
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.failed", e)
-            return False
+            raise
 
     async def _write_app_disabled(self, payload: dict, app_doc: dict) -> bool | None:
         """Write isActive false, unless a newer toggle turned the connector back on.
@@ -852,7 +846,7 @@ class EntityEventService(BaseEventService):
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.failed", e)
-            return False
+            raise
 
     async def _adopt_existing_person(self, email: str, user_key: str, org_id: str) -> None:
         """Move a pre-existing Person's collaborator edges onto the new user.

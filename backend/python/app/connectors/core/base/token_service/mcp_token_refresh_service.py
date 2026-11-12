@@ -11,6 +11,7 @@ template — this is what makes refresh work for custom (non-catalog) MCP server
 import asyncio
 import logging
 import time
+from contextlib import AbstractContextManager
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
@@ -21,10 +22,23 @@ from app.agents.mcp import token_refresh as mcp_token_refresh
 from app.agents.mcp.models import OAuthTokens
 from app.config.configuration_service import ConfigurationService
 from app.core.org_context import spawn_detached
+from app.utils.credential_refresh_log import (
+    EVENT_DEAUTHENTICATE_FAILED,
+    Trigger,
+    fresh_root,
+    log_check_failed,
+    log_deauthenticated,
+    log_refresh_failure,
+    log_scheduled,
+    log_skipped,
+    log_strike,
+    org_of,
+)
+from app.utils.logging_fields import log_event
 from app.utils.request_context import new_system_root, reset_context, set_context
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-logger = logging.getLogger("connector_service")
+logger = logging.getLogger("connector_service.refresh")
 
 CREDENTIALS_PREFIX = "/services/mcp/credentials/"
 MIN_PATH_PARTS_COUNT = 5  # "", services, mcp, credentials, instanceId, userId
@@ -37,6 +51,22 @@ SHORT_LIVED_TOKEN_BUFFER_RATIO = 0.2
 MAX_REFRESH_TOKEN_INVALID_FAILURES = 3
 PERIODIC_CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 STATE_SWEEP_INTERVAL_SECONDS = 300
+
+
+def _ids(config_path: str) -> tuple[str, str]:
+    """(instance id, owner id) of `/services/mcp/credentials/{instanceId}/{ownerId}`."""
+    parts = config_path.strip("/").split("/")
+    return parts[-2], parts[-1]
+
+
+def _once_key(config_path: str) -> str:
+    return "mcp:{}/{}".format(*_ids(config_path))  # token_refresh's key: one hourly gate per credential
+
+
+def _scope(
+    config_path: str, *, trigger: Optional[Trigger] = None, org_id: Optional[str] = None,
+) -> AbstractContextManager[None]:
+    return mcp_token_refresh.credential_scope(*_ids(config_path), trigger=trigger, org_id=org_id)
 
 
 class MCPTokenRefreshService:
@@ -126,33 +156,41 @@ class MCPTokenRefreshService:
                 # A credential whose server is gone (deleted before cleanup existed, or a
                 # cleanup that failed) must not be renewed forever.
                 if await mcp_lifecycle.credential_has_instance(self.configuration_service, config_path) is False:
-                    self.logger.info(f"Removing MCP credential {config_path}: its server no longer exists")
+                    with _scope(config_path, trigger=Trigger.SCAN):
+                        self.logger.info("Removing an MCP credential whose server no longer exists")
                     await self.configuration_service.delete_config(config_path)
                     continue
 
-                record, has_oauth = await self._load_token_from_config(config_path)
+                record, has_oauth, org_id = await self._load_token_from_config(config_path)
                 if not has_oauth or record is None:
                     continue
 
-                await self._refresh_credential(config_path)
+                with _scope(config_path, trigger=Trigger.SCAN, org_id=org_id):
+                    try:
+                        await self._refresh_credential(config_path)
+                    except Exception as e:
+                        log_check_failed(self.logger, e, once_key=_once_key(config_path))
             except Exception as e:
-                self.logger.warning(f"Error processing MCP credential {config_path}: {e}")
+                with _scope(config_path, trigger=Trigger.SCAN):
+                    log_check_failed(self.logger, e, once_key=_once_key(config_path))
 
-    async def _load_token_from_config(self, config_path: str) -> tuple[Optional[OAuthTokens], bool]:
+    async def _load_token_from_config(self, config_path: str) -> tuple[Optional[OAuthTokens], bool, Optional[str]]:
+        """(tokens, whether they can be refreshed, the record's org)."""
         record = await self.configuration_service.get_config(config_path, default=None, use_cache=False)
         if not isinstance(record, dict):
-            return None, False
+            return None, False, None
+        org_id = org_of(record)
         if not record.get("isAuthenticated"):
-            return None, False
+            return None, False, org_id
         tokens_dict = record.get("oauthTokens")
         if not isinstance(tokens_dict, dict) or not tokens_dict.get("refreshToken"):
-            return None, False
+            return None, False, org_id
         try:
             token = OAuthTokens(**tokens_dict)
         except Exception as e:
-            self.logger.debug(f"Could not parse OAuth tokens for {config_path}: {e}")
-            return None, False
-        return token, True
+            self.logger.debug("Could not parse the stored OAuth tokens", extra={"error_type": type(e).__name__})
+            return None, False, org_id
+        return token, True, org_id
 
     # ------------------------------------------------------------------
     # Refresh execution
@@ -167,8 +205,7 @@ class MCPTokenRefreshService:
         OAuth client, by the shared `app.agents.mcp.token_refresh.refresh_credential_record`
         (also used by the `/oauth/refresh` route and, on-demand, the agent-loop runtime).
         """
-        path_parts = config_path.strip("/").split("/")
-        instance_id, user_id = path_parts[-2], path_parts[-1]
+        instance_id, user_id = _ids(config_path)
 
         # Every replica schedules every credential; the token it loaded tells the shared
         # refresh whether another replica already rotated it.
@@ -183,35 +220,38 @@ class MCPTokenRefreshService:
     async def _handle_refresh_token_invalid(self, config_path: str, error: Exception) -> None:
         failures = self._invalid_refresh_failures.get(config_path, 0) + 1
         self._invalid_refresh_failures[config_path] = failures
-
+        # The full cause is on the attempt's credential_refresh.end line; the strike carries only its class and OAuth code.
+        log_strike(self.logger, strike=failures, max_strikes=MAX_REFRESH_TOKEN_INVALID_FAILURES, cause=error)
         if failures < MAX_REFRESH_TOKEN_INVALID_FAILURES:
-            self.logger.error(
-                f"MCP refresh token rejected for {config_path} (failure {failures}/{MAX_REFRESH_TOKEN_INVALID_FAILURES}): {error}"
-            )
             return
 
-        self.logger.error(f"MCP refresh token rejected for {config_path} {failures} times, deactivating: {error}")
         self._invalid_refresh_failures.pop(config_path, None)
         try:
             record = await self.configuration_service.get_config(config_path, default=None, use_cache=False)
-            if isinstance(record, dict):
-                record["isAuthenticated"] = False
-                record["deauthReason"] = "refresh_token_invalid"
-                record["updatedAt"] = get_epoch_timestamp_in_ms()
-                await self.configuration_service.set_config(config_path, record)
+            if not isinstance(record, dict):
+                log_event(self.logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure", reason="not_found")
+                return
+            record["isAuthenticated"] = False
+            record["deauthReason"] = "refresh_token_invalid"
+            record["updatedAt"] = get_epoch_timestamp_in_ms()
+            if await self.configuration_service.set_config(config_path, record):
+                log_deauthenticated(self.logger, reason="refresh_token_invalid", strikes=failures, path="background")
+            else:
+                log_event(self.logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure", reason="not_updated")
         except Exception as e:
-            self.logger.error(f"Error marking MCP credential {config_path} unauthenticated: {e}")
+            log_refresh_failure(self.logger, EVENT_DEAUTHENTICATE_FAILED, e, level=logging.ERROR)
 
     async def _refresh_credential(self, config_path: str) -> None:
         lock = self._get_credential_lock(config_path)
         try:
             await asyncio.wait_for(lock.acquire(), timeout=LOCK_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
-            self.logger.error(f"Timeout waiting for MCP refresh lock for {config_path}")
+            # Another refresh of this sign-in holds the lock; it releases it when it completes.
+            log_skipped(self.logger, reason="lock_wait_timeout")
             return
 
         try:
-            token, has_oauth = await self._load_token_from_config(config_path)
+            token, has_oauth, _ = await self._load_token_from_config(config_path)
             if not has_oauth or token is None:
                 return
             if not token.expires_in:
@@ -221,15 +261,20 @@ class MCPTokenRefreshService:
 
             delay, refresh_time = self._calculate_refresh_delay(token)
             if delay <= 0:
+                rejected = None
                 try:
                     new_token = await self._perform_token_refresh(
                         config_path, token.refresh_token, stale_access_token=token.access_token,
                     )
                     await self.schedule_token_refresh(config_path, new_token)
                 except oauth_client_module.MCPRefreshTokenInvalidError as e:
-                    await self._handle_refresh_token_invalid(config_path, e)
+                    rejected = e
                 except Exception as e:
-                    self.logger.error(f"Error refreshing MCP token for {config_path}: {e}", exc_info=True)
+                    log_check_failed(self.logger, e, once_key=_once_key(config_path))
+                if rejected is not None:
+                    # After the except block, so an error the strike handler raises is not chained to the rejection;
+                    # still under the credential lock, so strikes stay serialised.
+                    await self._handle_refresh_token_invalid(config_path, rejected)
             else:
                 await self.schedule_token_refresh(config_path, token)
         finally:
@@ -290,16 +335,25 @@ class MCPTokenRefreshService:
 
             task = asyncio.create_task(self._delayed_refresh(config_path, delay))
             self._refresh_tasks[config_path] = task
-            self.logger.info(f"Scheduled MCP token refresh for {config_path} in {delay:.0f}s (at {refresh_time})")
+            with _scope(config_path):
+                # A live timer returned above, so every call that gets here arms a new time.
+                log_scheduled(self.logger, next_refresh_at=refresh_time, delay_s=delay, changed=True)
 
     async def _delayed_refresh(self, config_path: str, delay: float) -> None:
         try:
             await asyncio.sleep(delay)
-            await self._refresh_credential(config_path)
+            with fresh_root(), _scope(config_path, trigger=Trigger.SCHEDULED):
+                try:
+                    await self._refresh_credential(config_path)
+                except Exception as e:
+                    # What _refresh_credential lets through (a failing strike handler), on the timer's own root.
+                    log_check_failed(self.logger, e, once_key=_once_key(config_path))
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            self.logger.error(f"Error in delayed MCP token refresh for {config_path}: {e}", exc_info=True)
+            # fresh_root or the scope failed to enter or exit.
+            with _scope(config_path, trigger=Trigger.SCHEDULED):
+                log_check_failed(self.logger, e, once_key=_once_key(config_path))
         finally:
             schedule_lock = self._get_schedule_lock(config_path)
             async with schedule_lock:

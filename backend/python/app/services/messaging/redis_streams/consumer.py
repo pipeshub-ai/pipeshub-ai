@@ -11,7 +11,7 @@ from app.services.messaging.config import (
     StreamMessage,
     messaging_env,
 )
-from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, open_configured
+from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, decode_message, open_configured
 from app.core.org_context import spawn_detached
 from app.services.messaging import message_log
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
@@ -555,9 +555,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
 
             value_str = fields[_MESSAGE_VALUE_FIELD]
             try:
-                raw = json.loads(value_str)
-                if isinstance(raw, str):
-                    raw = json.loads(raw)
+                raw = decode_message(value_str)
             except json.JSONDecodeError:
                 message_log.note(reason="unparseable", size_bytes=len(value_str))
                 # JSON decode error is terminal

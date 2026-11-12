@@ -20,6 +20,7 @@ import pytest
 from app.core import envelope, org_context
 from app.services.messaging.config import RedisStreamsConfig, StreamMessage
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
+from tests.support.undecodable_json import UNDECODABLE
 from tests.unit.services.messaging.message_log_helpers import in_delivery
 
 
@@ -242,10 +243,11 @@ class TestProcessMessage:
         assert called_msg.payload == {"key": "val"}
 
     @pytest.mark.asyncio
-    async def test_returns_false_for_invalid_json(self, consumer):
+    @pytest.mark.parametrize("value", ["not-json{{{", *UNDECODABLE.values()], ids=["syntax", *UNDECODABLE])
+    async def test_returns_false_for_invalid_json(self, consumer, value):
         consumer.message_handler = AsyncMock()
         result = await in_delivery(consumer._process_message_with_classification(
-            "s", "1-0", {"value": "not-json{{{"}
+            "s", "1-0", {"value": value}
         ))
         assert result == (False, True)
 
