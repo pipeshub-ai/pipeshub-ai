@@ -741,6 +741,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             all_users: List[AppUser] = []
             page_token: Optional[str] = None
             listing_complete = True
+            pages_read = 0
 
             while True:
                 try:
@@ -755,9 +756,11 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                     # Paging follows the token alone: an empty page is not the end of the listing.
                     users_data = result.get("users", [])
-                    if not users_data and result.get("nextPageToken"):
-                        # More follows an empty page: users may be missing, so no one's status is judged from this listing.
+                    if not users_data and (result.get("nextPageToken") or pages_read):
+                        # An empty page after the first, or one with more behind it: Google ends a listing with a
+                        # page that has users, so users may be missing and no one's status is judged from this listing.
                         listing_complete = False
+                    pages_read += 1
 
                     # Transform Google user dictionaries to AppUser objects
                     for user in users_data:

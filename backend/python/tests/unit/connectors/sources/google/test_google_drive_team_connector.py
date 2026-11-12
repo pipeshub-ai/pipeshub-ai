@@ -505,8 +505,8 @@ class TestSyncUsers:
         assert conn.admin_data_source.users_list.call_count == 2
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("empty_page_with_token", [True, False])
-    async def test_sync_users_empty_page_before_the_end_changes_no_account_status(self, empty_page_with_token: bool) -> None:
+    @pytest.mark.parametrize("empty_page_has_a_token", [True, False])
+    async def test_sync_users_empty_page_before_the_end_changes_no_account_status(self, empty_page_has_a_token: bool) -> None:
         conn = _make_connector()
         sync_point = MagicMock()
         sync_point.read_sync_point = AsyncMock(return_value={
@@ -524,25 +524,20 @@ class TestSyncUsers:
         suspended["suspended"] = True
         pages = [
             {"users": [_make_google_user("a@x.com", "u1")], "nextPageToken": "p2"},
-            {"users": [], "nextPageToken": "p3"} if empty_page_with_token else {"users": []},
+            {"users": [], "nextPageToken": "p3"} if empty_page_has_a_token else {"users": []},
             {"users": [returning, suspended]},
         ]
-        conn.admin_data_source.users_list = AsyncMock(side_effect=pages[:3] if empty_page_with_token else [pages[0], pages[1]])
+        conn.admin_data_source.users_list = AsyncMock(side_effect=pages[:3] if empty_page_has_a_token else [pages[0], pages[1]])
 
         await conn._sync_users()
 
-        if empty_page_with_token:
-            # no one is withdrawn or restored, the account that was away stays away, and nothing is saved
-            conn.data_entities_processor.remove_user_access_to_connector.assert_not_awaited()
-            assert conn._returning_emails == set()
-            # the last complete listing's away set, the account suspended now, and every account known or linked
-            # before that this listing does not show
-            assert conn._inactive_emails == {"gone@x.com", "b@x.com", "lost@x.com", "linked@x.com"}
-            sync_point.update_sync_point.assert_not_awaited()
-            assert conn._sync_ledger.has_gaps
-        else:
-            # a short listing with no token looks complete: lost@x.com is judged gone (the known limit)
-            conn.data_entities_processor.remove_user_access_to_connector.assert_awaited()
+        # no one is withdrawn or restored, the account that was away stays away, and nothing is saved
+        conn.data_entities_processor.remove_user_access_to_connector.assert_not_awaited()
+        assert conn._returning_emails == set()
+        # the last complete listing's away set, and every account known or linked before that this listing does not show
+        assert conn._inactive_emails == {"gone@x.com", "b@x.com", "lost@x.com", "linked@x.com"}
+        sync_point.update_sync_point.assert_not_awaited()
+        assert conn._sync_ledger.has_gaps
 
     @pytest.mark.asyncio
     async def test_sync_users_empty(self):
