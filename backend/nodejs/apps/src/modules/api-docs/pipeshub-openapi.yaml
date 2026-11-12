@@ -8337,6 +8337,11 @@ components:
         maxFolderDepth:
           type: integer
           description: Deepest a collection folder may be nested; a folder directly in the collection is depth 1.
+        notReady:
+          type: array
+          items:
+            type: string
+          description: Ids of the sources left out of this listing because their copy is not made yet (just connected, or right after an upgrade); the others are listed. Ask again in a moment. Absent when none.
         success:
           type: boolean
           enum: [true]

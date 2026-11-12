@@ -18,12 +18,17 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.connectors.sources.localKB.handlers.kh_merge import PartitionFeed, merge_pages
+from app.connectors.sources.localKB.handlers.kh_merge import (
+    PartitionFeed,
+    key_for,
+    merge_pages,
+)
 from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingBusy,
+    KnowledgeHubListingNotReady,
     KnowledgeHubListingTooLarge,
 )
 from app.utils.kh_cursor import (
@@ -54,6 +59,10 @@ class SearchPage:
     prev_cursor: str | None
     # ``total`` stopped at the provider's cap: it is a lower bound, not the exact count.
     total_capped: bool = False
+    # Connectors left out of this page because their copy in the typed graph is not made yet (the others are listed).
+    not_ready: list[str] = field(default_factory=list)
+    # The cursor to go on with when this page has no rows because the scan stopped at a bound; None on every other page.
+    scan_cursor: str | None = None
 
 
 def _connector_key(app_id: str) -> str:
@@ -135,6 +144,16 @@ async def search_page(
     )
     if grants_read is not None:
         access = {**access, "by_connector": grants_read}
+    not_ready = [app_id for app_id, payload in zip(targets, results) if payload.get("notReady")]
+    if targets and len(not_ready) == len(targets):
+        raise KnowledgeHubListingNotReady            # nothing to list at all: say so instead of an empty page
+
+    # A connector that stopped looking before it had a page (a bound on its scan) says where it got to (``resume``). Its rows are complete up to there and nothing is known past it, so the
+    # page holds no row beyond the nearest such position: the next page starts there, and a page with no rows still has somewhere to go.
+    stalled = resume_boundary(results, descending=descending, reverse=direction == "prev")
+    if stalled is not None:
+        kept = [[r for r in p["rows"] if not _past(r, stalled, descending=descending, reverse=direction == "prev")] for p in results]
+        results = [{**p, "rows": k, "hasMore": bool(p["hasMore"] or p.get("resume") or len(k) < len(p["rows"]))} for p, k in zip(results, kept, strict=True)]
 
     merged = merge_pages(
         [
@@ -164,7 +183,7 @@ async def search_page(
     live = {
         _connector_key(app_id)
         for app_id, payload in zip(targets, results)
-        if payload["hasMore"] or _connector_key(app_id) not in merged.exhausted
+        if payload["hasMore"] or _connector_key(app_id) not in merged.exhausted or payload.get("notReady")      # a connector not ready is asked again, to be reported on every page it is left out of
     }
 
     if reuse_total:
@@ -214,19 +233,19 @@ async def search_page(
     has_prev = (cursor is not None) if direction == "next" else more_beyond
 
     next_cursor = prev_cursor = None
-    if merged.rows:
+    if merged.rows or stalled is not None:
         if has_next:
             # A page reached by going back knows nothing about which connectors
             # still hold rows *ahead* of it, so it carries no live set and the
             # next page queries them all — correct, only less selective.
             next_cursor = issue(
-                merged.last, "next", seen_before + len(merged.rows),
+                merged.last or Boundary.of(stalled), "next", seen_before + len(merged.rows),
                 live if direction == "next" else None,
             )
         if has_prev:
             # Going back never carries a live set: a connector that ran out
             # going forward can still hold rows behind the boundary.
-            prev_cursor = issue(merged.first, "prev", seen_before, None)
+            prev_cursor = issue(merged.first or Boundary.of(stalled), "prev", seen_before, None)
 
     return SearchPage(
         rows=merged.rows,
@@ -237,7 +256,24 @@ async def search_page(
         next_cursor=next_cursor,
         prev_cursor=prev_cursor,
         total_capped=total_capped,
+        not_ready=not_ready,
+        scan_cursor=(next_cursor if direction == "next" else prev_cursor) if not merged.rows and stalled is not None else None,
     )
+
+
+def resume_boundary(results: list[dict[str, Any]], *, descending: bool, reverse: bool) -> dict[str, Any] | None:
+    """The nearest position a connector stopped scanning at, or None when every connector gave all it had asked for."""
+    stops = [p["resume"] for p in results if p.get("resume")]
+    if not stops:
+        return None
+    keyed = [(key_for(s, descending=descending), s) for s in stops]
+    return (max if reverse else min)(keyed, key=lambda k: k[0])[1]
+
+
+def _past(row: dict[str, Any], stop: dict[str, Any], *, descending: bool, reverse: bool) -> bool:
+    """Whether the row lies beyond the stop in the direction of the page."""
+    a, b = key_for(row, descending=descending), key_for(stop, descending=descending)
+    return a < b if reverse else b < a
 
 
 def _targets(
@@ -309,10 +345,13 @@ async def _run(
                 **own_grants,
             )
 
-        if gate is None:
-            return await call()
-        async with gate:
-            return await call()
+        try:
+            if gate is None:
+                return await call()
+            async with gate:
+                return await call()
+        except KnowledgeHubListingNotReady:
+            return {"rows": [], "hasMore": False, "total": 0, "counts": {}, "notReady": True}
 
     # A TaskGroup cancels its siblings when one raises, so a failed connector
     # does not leave the rest querying for a page nobody will return.
@@ -321,7 +360,7 @@ async def _run(
             tasks = [group.create_task(run(app_id)) for app_id in targets]
     except ExceptionGroup as failures:
         # A connector too large to list (or busy) fails the page as itself, not as a group nobody maps to a message.
-        refused = failures.subgroup(lambda e: isinstance(e, (KnowledgeHubListingTooLarge, KnowledgeHubListingBusy)))
+        refused = failures.subgroup(lambda e: isinstance(e, (KnowledgeHubListingTooLarge, KnowledgeHubListingBusy, KnowledgeHubListingNotReady)))
         if refused is not None:
             raise refused.exceptions[0] from None
         raise

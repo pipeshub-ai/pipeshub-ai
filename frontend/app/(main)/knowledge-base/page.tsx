@@ -124,6 +124,9 @@ import { useUserPermission } from '@/config';
 import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
 import { canOpenRecentlyDeleted } from './recently-deleted/utils';
 
+/** Empty pages in a row that All Records goes on from before it shows the empty state (a page the server stopped scanning early has no rows and a cursor to go on with). */
+const MAX_EMPTY_ALL_RECORDS_PAGES = 20;
+
 // Outlives a remount. The abort ref does not, so an older request's finally
 // would otherwise clear the loading flag a newer fetch just set.
 let allRecordsFetchGeneration = 0;
@@ -603,6 +606,7 @@ function KnowledgeBasePageContent() {
   // A busy answer (503) is retried by itself, a few times, after the seconds the server asked for.
   const allRecordsBusyTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const allRecordsBusyTries = useRef(0);
+  const allRecordsEmptyHops = useRef(0);
   const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean) => Promise<void>) | null>(null);
   const collectionsFetchRef = useRef<AbortController | null>(null);
 
@@ -664,6 +668,16 @@ function KnowledgeBasePageContent() {
         data = await KnowledgeHubApi.getAllRootItems(params, { signal: controller.signal });
       }
       if (controller.signal.aborted || !stillSignedIn()) return;
+      // A page with no rows that says more follows is the server having stopped looking for the moment, not the end: go on from where it got to. A cursor that did not move, or
+      // too many such pages in a row, is the end (the empty state shows), never a silent stall. The cursors this page carries are kept, so the way back is not lost.
+      const emptyThenMore = data.items?.length === 0 && data.pagination?.hasNext && data.pagination.nextCursor;
+      if (emptyThenMore && data.pagination?.nextCursor !== currentPagination.cursor && allRecordsEmptyHops.current < MAX_EMPTY_ALL_RECORDS_PAGES) {
+        allRecordsEmptyHops.current += 1;
+        syncAllRecordsPaginationMeta(toTablePagination(data.pagination!, currentPagination.cursor));
+        useKnowledgeBaseStore.getState().setAllRecordsCursor(data.pagination!.nextCursor!);
+        return;
+      }
+      allRecordsEmptyHops.current = 0;
       setAllRecordsTableData(data);
       // An app's tree lives in the app children cache, which this does not fill.
       if (nodeType && nodeId && nodeType !== 'app') {

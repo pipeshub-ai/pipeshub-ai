@@ -1622,6 +1622,68 @@ describe('Knowledge base page — All Records', () => {
     );
   });
 
+  it('goes on from an empty page that says more follows instead of showing no records', async () => {
+    withCollections();
+    const later = hubNode({ id: 'rec-later', name: 'Later.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) => {
+      const second = params?.cursor === 'scan2';
+      return hubResponse(second ? [later] : [], {
+        pagination: {
+          page: 1,
+          limit: 50,
+          totalItems: 1,
+          totalPages: 1,
+          hasNext: !second,
+          hasPrev: false,
+          nextCursor: second ? null : 'scan2',
+          prevCursor: null,
+        },
+      });
+    });
+    openAt('/knowledge-base?view=all-records');
+
+    expect(await screen.findByRole('row', { name: 'Later.xlsx' })).toBeTruthy();
+    expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'scan2' }), expect.anything());
+  });
+
+  const emptyPage = (nextCursor: string | null, extra: Record<string, unknown> = {}) =>
+    hubResponse([], {
+      pagination: { page: 1, limit: 50, totalItems: 0, totalPages: 0, hasNext: nextCursor !== null, hasPrev: false, nextCursor, prevCursor: null, ...extra },
+    });
+
+  it('treats an empty page that hands back the cursor it was asked with as the end, not a stall', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) => (params?.cursor === 'same' ? emptyPage('same') : emptyPage('same')));
+    openAt('/knowledge-base?view=all-records');
+    await waitFor(() => expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'same' }), expect.anything()));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(api.hub.getAllRootItems.mock.calls.length).toBeLessThanOrEqual(3);      // the first page, the page of 'same', and no more
+  });
+
+  it('stops going on from empty pages after a bounded number of them', async () => {
+    withCollections();
+    let n = 0;
+    api.hub.getAllRootItems.mockImplementation(async () => emptyPage(`c${++n}`));
+    openAt('/knowledge-base?view=all-records');
+    await waitFor(() => expect(api.hub.getAllRootItems.mock.calls.length).toBeGreaterThan(5));
+    await new Promise((r) => setTimeout(r, 300));
+    const calls = api.hub.getAllRootItems.mock.calls.length;
+    expect(calls).toBeLessThanOrEqual(25);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(api.hub.getAllRootItems.mock.calls.length).toBe(calls);
+  });
+
+  it('keeps the cursors of an empty page it goes on from', async () => {
+    withCollections();
+    let release: (v: unknown) => void = () => {};
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) =>
+      params?.cursor === 'ahead' ? new Promise((r) => { release = r; }) : emptyPage('ahead', { hasPrev: true, prevCursor: 'back1' }));
+    openAt('/knowledge-base?view=all-records');
+    await waitFor(() => expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'ahead' }), expect.anything()));
+    expect(useKnowledgeBaseStore.getState().allRecordsPagination.prevCursor).toBe('back1');
+    release(hubResponse([CONNECTOR_FILE]));
+  });
+
   it('requests the next page number when the response has no cursor', async () => {
     withCollections();
     const later = hubNode({ id: 'rec-later', name: 'Later.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
