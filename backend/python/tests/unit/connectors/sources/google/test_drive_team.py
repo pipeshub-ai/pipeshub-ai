@@ -165,6 +165,7 @@ def connector():
         conn.admin_data_source = AsyncMock()
         conn.drive_data_source = AsyncMock()
         conn.config = {"credentials": {}}
+        conn._shared_drives_listed = True  # as after a run's listing; tests set the drives listed
         yield conn
 
 

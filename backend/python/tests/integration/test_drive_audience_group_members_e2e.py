@@ -193,20 +193,31 @@ async def test_a_groups_members_are_read_back_exactly(env: _Env) -> None:
     assert await _members(env, ALL_MEMBERS_GROUP_ID) == _emails(env, "owner", "colleague")
 
 
-async def test_a_cut_listing_keeps_a_member_it_leaves_out_and_removes_one_it_shows_suspended(env: _Env) -> None:
+def _connector(env: _Env) -> GoogleDriveTeamConnector:
+    """Just what writing the audience groups needs, with sync points kept in memory."""
     connector = object.__new__(GoogleDriveTeamConnector)
     connector.logger = logger
     connector.data_entities_processor = env.processor
     connector.connector_id = env.connector_id
     connector.connector_name = Connectors.GOOGLE_DRIVE_WORKSPACE
+    saved: dict[str, dict] = {}
+
+    async def update(key: str, data: dict) -> None:
+        saved[key] = {**saved.get(key, {}), **data}
+
     connector.drive_delta_sync_point = MagicMock()
-    connector.drive_delta_sync_point.read_sync_point = AsyncMock(return_value={})
-    connector.drive_delta_sync_point.update_sync_point = AsyncMock()
+    connector.drive_delta_sync_point.read_sync_point = AsyncMock(side_effect=saved.get)
+    connector.drive_delta_sync_point.update_sync_point = AsyncMock(side_effect=update)
     connector._sync_ledger = MagicMock()
     connector._account_domains = {DOMAIN}
     connector._reach_candidates = {}
     connector._run_started_at = get_epoch_timestamp_in_ms()
     connector._alias_domains = {}
+    return connector
+
+
+async def test_a_cut_listing_keeps_a_member_it_leaves_out_and_removes_one_it_shows_suspended(env: _Env) -> None:
+    connector = _connector(env)
 
     # A complete listing writes the groups exactly.
     connector.synced_users = [_app_user(env, n) for n in ("owner", "colleague", "suspended")]
@@ -224,3 +235,26 @@ async def test_a_cut_listing_keeps_a_member_it_leaves_out_and_removes_one_it_sho
     assert not connector._sync_ledger.note_incomplete.called
     for group_id in (ALL_MEMBERS_GROUP_ID, DOMAIN_MEMBERS_GROUP_PREFIX + DOMAIN):
         assert await _members(env, group_id) == _emails(env, "owner", "colleague"), group_id
+
+
+async def test_a_full_sync_keeps_the_members_and_grants_of_audience_groups_it_does_not_write_again(env: _Env) -> None:
+    connector = _connector(env)
+    connector.synced_users = [_app_user(env, n) for n in ("owner", "colleague")]
+    connector._inactive_emails, connector._listing_cut = set(), False
+    await connector._write_audience_groups()
+    file = _file(env, "file.txt")
+
+    run = env.processor.begin_full_sync_run(env.connector_id)
+    try:
+        await env.processor.on_new_records([
+            (file, [Permission(type=PermissionType.READ, entity_type=EntityType.GROUP, external_id=ALL_MEMBERS_GROUP_ID)]),
+        ])
+        await connector._write_audience_groups()  # the same people: not written again
+        _, ok = await env.graph.unlink_nodes_missed_by_full_sync(env.connector_id, run.by_collection)
+    finally:
+        env.processor.end_full_sync_run(env.connector_id, run)
+
+    assert ok
+    assert await _members(env, ALL_MEMBERS_GROUP_ID) == _emails(env, "owner", "colleague")
+    granted = await env.processor.get_groups_with_permission_to_node(file.id, CollectionNames.RECORDS.value, raise_on_error=True)
+    assert ALL_MEMBERS_GROUP_ID in {g.source_user_group_id for g in granted}

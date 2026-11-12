@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Optional
 
@@ -2547,6 +2548,10 @@ def two_domains(ws: Workspace, *, reach_all: bool) -> None:
     ws.world.add_item("f2", "b.txt", parent="root-bob", owner=BOB, perms=[discoverable("domain", domain="example.com")])
 
 
+def on_labs(email: str | None) -> bool:
+    return (email or "").rpartition("@")[2] == "labs.example.org"
+
+
 def _reach_state(ws: Workspace, domain: str) -> dict | None:
     return ws.sync_points.value(f"domain_share_reach_{domain}")
 
@@ -2570,7 +2575,7 @@ async def settle(ws: Workspace) -> None:
 
 
 def asked_by_labs(ws: Workspace, since: int = 0, ids: tuple[str, ...] = ("f", "f2")) -> list[str]:
-    return [f for r in ws.http.requests[since:] if (r.identity or "").endswith("@labs.example.org")
+    return [f for r in ws.http.requests[since:] if on_labs(r.identity)
             and (f := r.path.rsplit("/", 1)[-1]) in ids]
 
 
@@ -2582,10 +2587,12 @@ def domain_members(ws: Workspace, domain: str) -> set[str]:
     return {m.email for m in ws.records.user_groups[f"domain-members:{domain}"][1]}
 
 
-def age(ws: Workspace, domain: str = "example.com") -> None:
+def age(ws: Workspace, domain: str = "example.com", *, days: int | None = None) -> None:
+    """Make the stored answers due to be asked again: answered `days` ago, or at the epoch."""
     stored = _reach_state(ws, domain)
     state = json.loads(stored["state"])
-    state["answers"] = {other: [answer, 0, *rest] for other, (answer, _, *rest) in state["answers"].items()}
+    at = 0 if days is None else int(time.time() * 1000) - days * 24 * 60 * 60 * 1000
+    state["answers"] = {other: [answer, at, *rest] for other, (answer, _, *rest) in state["answers"].items()}
     stored["state"] = json.dumps(state)
 
 
@@ -2653,7 +2660,7 @@ async def test_a_reach_answer_that_cannot_be_read_grants_the_named_domain_only(w
 
 async def test_an_unknown_reach_grants_the_named_domain_only_and_is_asked_again(ws: Workspace) -> None:
     two_domains(ws, reach_all=True)
-    ws.http.fail("GET", "/drive/v3/files/f", 403, "forbidden", when=lambda r: (r.identity or "").endswith("@labs.example.org"))
+    ws.http.fail("GET", "/drive/v3/files/f", 403, "forbidden", when=lambda r: on_labs(r.identity))
     await settle(ws)
 
     assert LABS not in domain_members(ws, "example.com"), "a refusal is not an answer"
@@ -2731,7 +2738,7 @@ async def test_a_new_verified_domain_asks_again_and_reads_everything_again(ws: W
     ws.world.domain_share_reaches_all = False
     ws.world.other_domains["new.example.net"] = []
     await settle(ws)
-    assert reach(ws) is False and "new.example.net" in reach_domains(ws)
+    assert reach(ws) is False and reach_domains(ws) == ["example.com", "labs.example.org", "new.example.net"]
     assert LABS not in domain_members(ws, "example.com")
     assert ("domain-members:new.example.net", "GROUP", "READ") in ws.grants("n"), "read again though it did not change"
 
@@ -2882,7 +2889,7 @@ async def test_a_share_given_to_the_person_asked_while_asking_is_not_an_answer(w
     def share_with_the_person(req: object) -> bool:
         file_id = req.path.rsplit("/", 1)[-1]
         who = req.identity or ""
-        if who.endswith("@labs.example.org") and file_id in ("f", "f2") and not ws.world.can_open(file_id, who):
+        if on_labs(who) and file_id in ("f", "f2") and not ws.world.can_open(file_id, who):
             ws.world.files[file_id].perms.append(reader(who))
         return False
 
@@ -3132,3 +3139,130 @@ async def test_a_reach_answer_that_narrows_on_a_cut_listing_takes_the_other_doma
     assert reach(ws) is False
     assert not {LABS, XIA, YAN} & domain_members(ws, "example.com"), "Xia too, though the cut listing left her out"
     assert ALICE in domain_members(ws, "example.com")
+
+
+def _probe_files(ws: Workspace, domain: str = "example.com") -> list[str]:
+    return [c["file_id"] for c in json.loads(_reach_state(ws, domain)["state"])["candidates"]]
+
+
+async def test_a_recheck_that_learns_nothing_keeps_a_yes_until_it_is_too_old(ws: Workspace) -> None:
+    two_domains(ws, reach_all=True)
+    await settle(ws)
+    assert reach(ws) is True and LABS in domain_members(ws, "example.com")
+    said_yes = yes_by(ws)
+
+    # Every person asked times out: nothing is learned, so the yes and who said it stay, and it is asked again.
+    ws.http.fail("GET", "/drive/v3/files/f2?$|/drive/v3/files/f$", 500, "backendError",
+                 when=lambda r: on_labs(r.identity))
+    age(ws, days=8)
+    await ws.sync()
+    assert reach(ws) is True and yes_by(ws) == said_yes
+    assert LABS in domain_members(ws, "example.com"), "a timeout is not a no"
+
+    age(ws, days=31)
+    await ws.sync()
+    assert reach(ws) is None and yes_by(ws) == []
+    assert LABS not in domain_members(ws, "example.com"), "a yes that could not be asked again for a month narrows"
+    assert ("domain-members:example.com", "GROUP", "READ") in ws.grants("f")
+
+    ws.http.clear_faults()
+    await ws.sync()
+    await ws.sync()
+    assert reach(ws) is True and LABS in domain_members(ws, "example.com")
+
+
+async def test_probe_files_that_are_gone_make_room_for_new_ones(ws: Workspace) -> None:
+    two_domains(ws, reach_all=True)
+    for email in (CAROL, "dave@example.com"):  # people whose Drive is synced
+        ws.world.add_user(email)
+        ws.records.active_users = [*ws.records.active_users, User(id=f"u-{email}", email=email, is_active=True)]
+    for file_id, owner in (("f3", ALICE), ("f4", BOB), ("f5", CAROL), ("f6", CAROL)):
+        root = f"root-{owner.split('@')[0]}"
+        ws.world.add_item(file_id, f"{file_id}.txt", parent=root, owner=owner, perms=[discoverable("domain", domain="example.com")])
+    await settle(ws)
+    assert reach(ws) is True and sorted(_probe_files(ws)) == ["f", "f2", "f3", "f4", "f5", "f6"]
+
+    for file_id in ("f", "f2", "f3", "f4", "f5"):
+        ws.world.delete(file_id)
+    ws.world.trash("f6")
+    ws.world.add_item("n", "n.txt", parent="root-dave", owner="dave@example.com", perms=[discoverable("domain", domain="example.com")])
+    age(ws, days=8)
+    await ws.sync()
+    assert LABS in domain_members(ws, "example.com"), "no file left to ask with is not a no"
+    assert _probe_files(ws) == ["n"], "files deleted or in the trash are dropped, and the new one is kept"
+
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert asked_by_labs(ws, before, ids=("n",)), "the weekly check asks with the new file"
+    assert reach(ws) is True
+
+
+async def test_unchanged_audience_groups_are_noted_as_kept_so_a_full_sync_keeps_their_members(ws: Workspace) -> None:
+    ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[discoverable("anyone")])
+    await ws.sync()
+    ws.records.kept_user_groups.clear()
+
+    await ws.sync()
+    assert {"workspace-members", "domain-members:example.com"} <= set(ws.records.kept_user_groups)
+
+
+async def test_a_reindex_on_a_fresh_instance_keeps_a_shared_drive_items_audience_grant(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer"})
+    ws.world.add_item("d", "d.txt", parent="sd-1", perms=[{**reader(ALICE), "role": "writer"}, discoverable("domain", domain="example.com")])
+    await ws.sync()
+    assert ("domain-members:example.com", "GROUP", "READ") in ws.grants("d")
+    old = ws.connector
+    ws.connector = None
+    fresh = await ws.connector_()
+    ws.world.share("d", reader(BOB))
+
+    ws.http.fail("GET", "/drive/v3/drives", 500, "backendError")
+    await fresh.reindex_records([ws.records.records["d"]])
+    assert ("domain-members:example.com", "GROUP", "READ") in ws.grants("d"), "an unlisted drive is not another organization's"
+    assert (BOB, "USER", "READ") not in ws.grants("d"), "the stored grants stay until the item can be read"
+    assert ws.sync_points.status_changes[-1][0] == [ws.records.records["d"].id], "left to be retried"
+
+    ws.http.clear_faults()
+    await fresh.reindex_records([ws.records.records["d"]])
+    assert {("domain-members:example.com", "GROUP", "READ"), (BOB, "USER", "READ")} <= ws.grants("d")
+    await old.cleanup()
+
+
+async def test_a_reindex_on_a_fresh_instance_keeps_a_members_only_drive_to_its_members(ws: Workspace) -> None:
+    ws.world.add_drive("sd-m", "Members", {ALICE: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("m", "m.txt", parent="sd-m", perms=[{**reader(ALICE), "role": "writer"}])
+    await ws.sync()
+    old = ws.connector
+    ws.connector = None
+    fresh = await ws.connector_()
+    ws.world.share("m", reader(BOB))  # Bob is not a member: the drive's restriction keeps him out
+
+    await fresh.reindex_records([ws.records.records["m"]])
+
+    assert (BOB, "USER", "READ") not in ws.grants("m")
+    assert (ALICE, "USER", "WRITE") in ws.grants("m")
+    await old.cleanup()
+
+
+async def test_an_unreadable_domain_list_keeps_a_domain_groups_stored_people_until_it_is_read(ws: Workspace) -> None:
+    ws.world.other_domains = {"labs.example.org": ["alias.example.net"]}
+    for email in (LABS, XIA, YAN):
+        ws.world.add_user(email)
+    ws.records.active_users = [*ws.records.active_users, *(User(id=f"u-{e}", email=e, is_active=True) for e in (LABS, XIA))]
+    # Nobody's address is on the alias: its group holds only the people a share with it reaches.
+    ws.world.domain_share_reaches = {("alias.example.net", "example.com")}
+    ws.world.add_item("a1", "a1.txt", parent="root-zed", owner=LABS, perms=[discoverable("domain", domain="alias.example.net")])
+    ws.world.add_item("a2", "a2.txt", parent="root-xia", owner=XIA, perms=[discoverable("domain", domain="alias.example.net")])
+    await settle(ws)
+    assert domain_members(ws, "alias.example.net") == {ADMIN, ALICE, BOB}
+
+    ws.world.domains_unreadable = True
+    ws.world.users[BOB].suspended = True
+    ws.world.add_user("dave@example.com")
+    await ws.sync()
+    assert ws.incomplete is True
+    assert domain_members(ws, "alias.example.net") == {ADMIN, ALICE}, "unknown is not empty; Bob, shown suspended, goes"
+
+    ws.world.domains_unreadable = False
+    await ws.sync()
+    assert domain_members(ws, "alias.example.net") == {ADMIN, ALICE, "dave@example.com"}, "written exactly again"

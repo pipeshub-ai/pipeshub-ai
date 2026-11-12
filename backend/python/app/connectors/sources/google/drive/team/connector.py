@@ -214,6 +214,8 @@ DOMAIN_MEMBERS_GROUP_PREFIX = "domain-members:"
 # people of E, and how long one is trusted before it is asked again.
 DOMAIN_REACH_SYNC_POINT_PREFIX = "domain_share_reach_"
 DOMAIN_REACH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+# A check that learns nothing keeps the last answer; a yes not answered again for this long reaches D's own people only.
+DOMAIN_REACH_KEEP_MAX_MS = 30 * 24 * 60 * 60 * 1000
 # Files kept per domain to ask that with, and at most this many with the same owners.
 REACH_CANDIDATES = 6
 REACH_CANDIDATES_PER_OWNER = 2
@@ -479,6 +481,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Every shared drive in the domain before the DRIVE_IDS filter, to tell a shared
         # drive's records from My Drive ones when that filter is checked.
         self._listed_shared_drive_ids: set = set()
+        self._shared_drives_listed = False
 
         # Collaborators granted access to a file but outside this Workspace domain.
         # Accumulated across the run and flushed once at the end, so an email repeated
@@ -515,8 +518,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Who is in each audience group as last written, and the domains of each person's alias addresses.
         self._audience_members: dict[str, set[str]] = {}
         self._alias_domains: dict[str, set[str]] = {}
-        # Domains this run has no answer for on how far their share reaches, and files that can ask it, by domain.
-        self._reach_unknown: set[str] = set()
+        # Files that can ask how far a domain's share reaches, by domain.
         self._reach_candidates: dict[str, list[dict]] = {}
         # When this run began: an answer or a look at a file from before it is from an earlier run.
         self._run_started_at = 0
@@ -730,7 +732,6 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._audience_groups = set()
             self._audience_loaded = False
             self._audience_members = {}
-            self._reach_unknown = set()
             self._reach_candidates = {}
             self._run_started_at = get_epoch_timestamp_in_ms()
             self._refreshed_folders = set()
@@ -772,8 +773,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info("Processing user drives in batches...")
             # Use users synced in Step 1
             await self._process_users_in_batches(self.synced_users)
-            if self._reach_unknown & set(self._reach_candidates):
-                # Files read this run can ask Google how far a domain share reaches; the groups follow its answer.
+            if self._reach_candidates and len(self._account_domains or ()) > 1:
+                # Files read this run can ask Google how far a domain share reaches, now or when it is asked again
+                # (so they are kept); the groups follow its answer.
                 await self._write_audience_groups()
             if self._folder_seed_ids and self._unresolved_filter_folders():
                 # Files under a selected folder nobody could list fail the folder
@@ -1006,7 +1008,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         try:
             domains = await self._workspace_domains()
         except Exception as e:
-            self.logger.warning(f"Workspace domains could not be read; domain shares reach their own domain only: {e}")
+            self.logger.warning(f"Workspace domains could not be read; the domain groups only narrow this run: {e}")
             domains, domains_read = set(), False
         try:
             reach = await self._domain_reach(domains, enabled)
@@ -1025,14 +1027,19 @@ class GoogleDriveTeamConnector(BaseConnector):
         allowed.update({DOMAIN_MEMBERS_GROUP_PREFIX + d: {d, *reach.get(d, ())} for d in set(by_domain) | domains})
         try:
             stored_groups = {}
-            for stored in await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True):
+            all_stored = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
+            for stored in all_stored:
                 gone = stored.source_user_group_id or ""
                 stored_groups[gone] = stored
                 if gone.startswith(DOMAIN_MEMBERS_GROUP_PREFIX) and gone not in audiences:
                     audiences[gone] = (stored.name, [])
-                    # No longer a verified domain: nobody. Unless the domains could not be read: its own people.
-                    allowed[gone] = set() if domains_read else {gone.removeprefix(DOMAIN_MEMBERS_GROUP_PREFIX)}
-            if self._listing_cut:
+                    allowed[gone] = set()  # no longer a verified domain: nobody
+            if not domains_read:
+                # Unknown is not empty: who a domain's group reaches cannot be worked out without the domains, so
+                # each keeps its stored people, less those who cannot sign in, until they are read.
+                allowed.update({g: None for g in audiences if g.startswith(DOMAIN_MEMBERS_GROUP_PREFIX)})
+                self._sync_ledger.note_incomplete()
+            if self._listing_cut or not domains_read:
                 await self._write_audience_groups_on_cut_listing(audiences, allowed, stored_groups)
                 self._audience_groups = set(audiences)
                 self._audience_loaded = True
@@ -1049,7 +1056,13 @@ class GoogleDriveTeamConnector(BaseConnector):
             now = get_epoch_timestamp_in_ms()
             full = now - int(saved.get("written_at") or 0) >= AUDIENCE_REWRITE_MAX_AGE_MS
             written = set() if full else set(saved.get("digests") or [])
-            changed = sorted(g for g, digest in digests.items() if digest not in written)
+            changed = sorted(g for g, digest in digests.items() if digest not in written or g not in stored_groups)
+            # Not written, so a full sync in progress must be told they are kept, or the unlink after it removes
+            # their members and every grant made to them.
+            unchanged = set(digests) - set(changed)
+            self.data_entities_processor.note_kept_user_groups(
+                self.connector_id, [g for g in all_stored if g.source_user_group_id in unchanged]
+            )
             if changed:
                 # Forgotten first: a write that fails part way may have stored some of them, and none may then be
                 # skipped as unchanged while the store holds other people than they should.
@@ -1086,7 +1099,8 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def _write_audience_groups_on_cut_listing(
         self, audiences: dict[str, tuple[str, list[AppUser]]], allowed: dict[str, set[str] | None], stored_groups: dict
     ) -> None:
-        """A cut user listing may only narrow: a person it leaves out is unknown and keeps their place. Each group
+        """A cut user listing, or one read without the verified domains, may only narrow: a person it leaves out (or
+        a domain group's person whose reach cannot be worked out) is unknown and keeps their place. Each group
         keeps its stored people, less those the listing shows unable to sign in and those on a domain the group may no
         longer hold (a narrower answer from Google applies at once), plus the listed people it should hold. Each group is
         then written in full again on the next complete listing."""
@@ -1127,9 +1141,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         another. A yes counts only once a later run, asking other people, says yes too; a no counts at once. An answer
         is kept with the domains it was asked for, until it is DOMAIN_REACH_MAX_AGE_MS old or the domains change; a
         pair without one is asked again on the next run that has a file to ask with. Until then the share reaches D's
-        own people only.
+        own people only. A check that learns nothing (an error, or no file or person to ask) leaves the stored answer
+        as it is and asks again next run, but a yes not answered again within DOMAIN_REACH_KEEP_MAX_MS is dropped.
         """
-        self._reach_unknown = set()
         if len(domains) < 2:
             return {}
         now = get_epoch_timestamp_in_ms()
@@ -1158,12 +1172,20 @@ class GoogleDriveTeamConnector(BaseConnector):
                         # Someone who can briefly share each file with the person asked could make one run say yes.
                         confirmed = bool(yes_at) and int(yes_at) < self._run_started_at and not people & set(yes_by)
                         covered = True if confirmed else None
-                        yes_by, yes_at = sorted(people), now
+                        answers[other] = [covered, now, sorted(people), now]
                     elif result is False:
-                        covered, yes_by, yes_at = False, [], 0
-                    else:
+                        covered = False
+                        answers[other] = [False, now, [], 0]
+                    elif covered is None:
+                        answers[other] = [None, now, yes_by, yes_at]
+                    elif covered and now - int(checked_at) >= DOMAIN_REACH_KEEP_MAX_MS:
                         covered = None
-                    answers[other] = [covered, now, yes_by, yes_at]
+                        answers[other] = [None, now, [], 0]
+                        self.logger.warning(
+                            f"Could not check again for {DOMAIN_REACH_KEEP_MAX_MS // 86_400_000} days whether a share "
+                            f"with {domain} reaches the people of {other}; it reaches {domain} only until it is"
+                        )
+                    # Otherwise nothing was learned: the stored answer stands and is asked again next run.
                     if result is not None:
                         self.logger.info(
                             f"A share with {domain} {'does not reach' if result is False else 'reaches'} the people of "
@@ -1171,9 +1193,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                         )
                 if covered:
                     reach.setdefault(domain, set()).add(other)
-                elif covered is None:
-                    self._reach_unknown.add(domain)
-            if ordered is not None:
+            if ordered is not None or candidates != list(state.get("candidates") or []):
                 await self.drive_delta_sync_point.update_sync_point(key, {
                     "domains": sorted(domains), "state": json.dumps({"answers": answers, "candidates": candidates}),
                 })
@@ -1183,12 +1203,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         """A My Drive file as its owner reads it now: a digest of everything the check depends on (its folder and
         every permission), its sole domain share as (domain, owners), and its folders. None in a shared drive or with
         more permissions than one page holds."""
-        meta = await source.files_get(fileId=file_id, fields="id, driveId, parents", supportsAllDrives=True)
+        meta = await source.files_get(fileId=file_id, fields="id, driveId, parents, trashed", supportsAllDrives=True)
         listed = await source.permissions_list(
             fileId=file_id, supportsAllDrives=True, pageSize=100,
             fields="nextPageToken, permissions(id, type, role, domain, emailAddress, deleted, allowFileDiscovery)",
         )
-        if meta.get("driveId") or listed.get("nextPageToken"):
+        if meta.get("driveId") or meta.get("trashed") or listed.get("nextPageToken"):
             return None
         permissions = listed.get("permissions") or []
         sole = _sole_domain_share(permissions)
@@ -1201,7 +1221,8 @@ class GoogleDriveTeamConnector(BaseConnector):
     ) -> tuple[list[dict], list[dict]]:
         """The candidates to ask with: still shared with the domain alone, outside a shared drive, and looking as
         they did on an earlier run, those at the top of the owner's My Drive first. And the candidates to keep, with
-        how each looks now; only those found no longer fit to ask with are left out."""
+        how each looks now; only those found no longer fit to ask with (deleted, in the trash, shared otherwise) are
+        left out, and one that could not be read for another reason is kept."""
         ranked: list[tuple[bool, dict]] = []
         keep: list[dict] = []
         for candidate in candidates:
@@ -1215,6 +1236,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                     continue
                 root = (await source.files_get(fileId="root", fields="id")).get("id")
             except Exception as e:
+                if isinstance(e, HttpError) and e.resp.status == HttpStatusCode.NOT_FOUND.value:
+                    continue  # deleted, or no longer the owner's: it makes room for another file
                 self.logger.warning(f"Could not read file {candidate['file_id']} to check how far a share with {domain} reaches: {e}")
                 keep.append(candidate)
                 continue
@@ -1721,6 +1744,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         # Use provided drive_data_source or fall back to service account's data source
         data_source = drive_data_source if drive_data_source else self.drive_data_source
+        if item_drive_id and not is_drive:
+            await self._load_listed_shared_drives()
         # Read before any grant is, so an unreadable restriction fails the item and keeps what is stored.
         restrict, allowed_email = await self._restriction_filter(
             resource_id if is_drive else item_drive_id, is_drive=is_drive
@@ -2120,6 +2145,15 @@ class GoogleDriveTeamConnector(BaseConnector):
     def _people_digest(people: set[str]) -> str:
         return hashlib.sha256("\n".join(sorted(people)).encode()).hexdigest()[:16]
 
+    async def _load_group_marks(self, drive_id: str) -> None:
+        """The marks stored for a drive this run has not read them for (a reindex on a fresh instance), so saving
+        one keeps the others."""
+        if drive_id in self._group_digests:
+            return
+        stored = await self.drive_delta_sync_point.read_sync_point(f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}") or {}
+        self._hidden_groups[drive_id] = {*self._hidden_groups.get(drive_id, ()), *map(str, stored.get("hidden_groups") or [])}
+        self._group_digests[drive_id] = dict(str(e).rpartition("|")[::2] for e in stored.get("group_hashes") or [])
+
     async def _save_group_marks(self, drive_id: str) -> None:
         # Flat lists of strings: the graph stores refuse nested maps.
         await self.drive_delta_sync_point.update_sync_point(
@@ -2134,6 +2168,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Grants were written with a group the directory could not list hidden. The change feed will not
         report those items again once it can, so the group is remembered and the drive is listed in full on
         the run that finds it readable."""
+        await self._load_group_marks(drive_id)
         hidden = self._hidden_groups.setdefault(drive_id, set())
         if group not in hidden:
             hidden.add(group)
@@ -2143,6 +2178,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         """The grants written for a restricted drive depend on who is in the groups consulted. The change
         feed reports nothing when a group changes, so the people are remembered and the drive is listed in
         full on the run that finds them different."""
+        await self._load_group_marks(drive_id)
         digests = self._group_digests.setdefault(drive_id, {})
         digest = self._people_digest(people)
         if digests.get(group) != digest:
@@ -2204,6 +2240,54 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
             raise
 
+    async def _list_shared_drives(self) -> list[dict]:
+        """Every shared drive of this domain, before the DRIVE_IDS filter. Kept as the drives listed."""
+        self.logger.info("Fetching all shared drives from Google Drive...")
+        all_drives: list[dict] = []
+        page_token: str | None = None
+
+        while True:
+            try:
+                # Fetch shared drives with pagination
+                result = await self.drive_data_source.drives_list(
+                    pageSize=100,  # Maximum allowed by Google Drive API
+                    pageToken=page_token,
+                    useDomainAdminAccess=True,
+                    # Without a field mask the restrictions that narrow every grant in the drive are left out.
+                    fields="nextPageToken,drives(id,name,createdTime,restrictions)",
+                )
+
+                drives_data = result.get("drives", [])
+
+                all_drives.extend(drives_data)
+
+                # Check for next page
+                page_token = result.get("nextPageToken")
+                if not page_token:
+                    break
+
+                self.logger.info(f"Fetched {len(drives_data)} shared drives (total so far: {len(all_drives)})")
+
+            except Exception as e:
+                self.logger.error(f"Error fetching shared drives page: {e}", exc_info=True)
+                raise
+
+        self.logger.info(f"Fetched {len(all_drives)} total shared drives")
+        self._listed_shared_drive_ids = {d["id"] for d in all_drives if d.get("id")}
+        self._shared_drives_listed = True
+        return all_drives
+
+    async def _load_listed_shared_drives(self) -> None:
+        """The domain's shared drives, when this process has not listed them (a reindex on a fresh instance). Not
+        listed, every shared drive reads as another organization's, and its items lose their audience grants and
+        restrictions. A failed listing fails the item, which keeps its stored grants and is retried."""
+        if self._shared_drives_listed:
+            return
+        try:
+            await self._list_shared_drives()
+        except Exception as e:
+            raise _ItemReadFailed(f"The shared drives could not be listed: {e}") from e
+
     async def _sync_record_groups(self) -> List[Dict]:
         """Sync record groups (drives) for all users.
 
@@ -2216,38 +2300,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 raise ValueError("Drive data source not initialized")
 
             # Step 1: Sync shared drives
-            self.logger.info("Fetching all shared drives from Google Drive...")
-            all_drives: List[Dict] = []
-            page_token: Optional[str] = None
-
-            while True:
-                try:
-                    # Fetch shared drives with pagination
-                    result = await self.drive_data_source.drives_list(
-                        pageSize=100,  # Maximum allowed by Google Drive API
-                        pageToken=page_token,
-                        useDomainAdminAccess=True,
-                        # Without a field mask the restrictions that narrow every grant in the drive are left out.
-                        fields="nextPageToken,drives(id,name,createdTime,restrictions)",
-                    )
-
-                    drives_data = result.get("drives", [])
-
-                    all_drives.extend(drives_data)
-
-                    # Check for next page
-                    page_token = result.get("nextPageToken")
-                    if not page_token:
-                        break
-
-                    self.logger.info(f"Fetched {len(drives_data)} shared drives (total so far: {len(all_drives)})")
-
-                except Exception as e:
-                    self.logger.error(f"Error fetching shared drives page: {e}", exc_info=True)
-                    raise
-
-            self.logger.info(f"Fetched {len(all_drives)} total shared drives")
-            self._listed_shared_drive_ids = {d["id"] for d in all_drives if d.get("id")}
+            all_drives = await self._list_shared_drives()
 
             all_drives = [d for d in all_drives if self._pass_drive_ids_filter(d.get("id", ""))]
             self.logger.info(f"Processing {len(all_drives)} shared drives after DRIVE_IDS filter")

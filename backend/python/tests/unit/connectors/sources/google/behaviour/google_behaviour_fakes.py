@@ -615,6 +615,9 @@ class FakeEntitiesProcessor:
     async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
         self.kept_user_groups.append(external_group_id)
 
+    def note_kept_user_groups(self, connector_id: str, groups: list[Any]) -> None:
+        self.kept_user_groups.extend(g.source_user_group_id for g in groups)
+
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]], *, replace_members: bool = True) -> None:
         for group, members in groups:
             stored = self.user_groups.get(group.source_user_group_id)
@@ -676,6 +679,7 @@ class FakeSyncPointStore:
     def __init__(self) -> None:
         self.sync_points: dict[str, dict[str, Any]] = {}
         self.writes: list[tuple[str, dict[str, Any]]] = []
+        self.status_changes: list[tuple[list[str], str, str]] = []
 
     async def get_sync_point(self, key: str, raise_on_error: bool = False) -> dict[str, Any] | None:
         return self.sync_points.get(key)
@@ -693,6 +697,9 @@ class FakeSyncPointStore:
         matches = [v for k, v in self.sync_points.items() if k.endswith(key_suffix)]
         assert len(matches) <= 1, f"ambiguous sync point suffix {key_suffix}: {list(self.sync_points)}"
         return matches[0] if matches else None
+
+    async def compare_and_set_indexing_status(self, record_ids: list[str], expected: str, new: str) -> None:
+        self.status_changes.append((list(record_ids), expected, new))
 
     @asynccontextmanager
     async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeSyncPointStore"]:
