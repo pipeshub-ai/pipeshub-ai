@@ -124,6 +124,28 @@ describe('OAuthDcrService', () => {
     expect(mockOAuthAppService.createDynamicClient.firstCall.args[0].isConfidential).to.be.false
   })
 
+  it('offers a client that names no scope the agent preset as far as MCP_SCOPES allows, leaving out code:write when it is not enabled', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    mockScopeValidatorService.getAllowedScopeNamesForRole.returns(['conversation:chat', 'kb:read', 'code:write'])
+    ;(service as any).appConfig.mcpScopes = ['conversation:chat', 'kb:read']
+    const result = await service.register({
+      client_name: 'Cursor',
+      redirect_uris: ['http://127.0.0.1/cb'],
+      token_endpoint_auth_method: 'none',
+    })
+    expect(result.client_id).to.equal('cid')
+    const granted = mockOAuthAppService.createDynamicClient.firstCall.args[0].allowedScopes
+    expect(granted).to.not.include('code:write')
+    expect(granted).to.include.members(['conversation:chat', 'kb:read'])
+    // asked for by name and not enabled: still refused
+    try {
+      await service.register({ client_name: 'x', redirect_uris: ['http://127.0.0.1/cb'], token_endpoint_auth_method: 'none', scope: 'code:write' })
+      expect.fail('should have thrown')
+    } catch (e) {
+      expect((e as Error).message).to.contain('not in MCP_SCOPES')
+    }
+  })
+
   it('should omit response_types code when authorization_code is not granted', async () => {
     process.env.PIPESHUB_ENABLE_DCR = 'true'
     mockOAuthAppService.createDynamicClient.resolves({

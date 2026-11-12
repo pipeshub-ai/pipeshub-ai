@@ -114,6 +114,7 @@ from app.telemetry.modules.record_storage_metrics import record_recovery_org_pas
 from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+from app.utils.indexing_workers import indexing_worker_count
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.logger import install_log_redaction
 from app.utils.loop_lag_monitor import LoopLagMonitor
@@ -1337,7 +1338,7 @@ async def _sweep_queued_records_for_inactive_connectors(
 
     IN_PROGRESS rows are included past a short grace period. The main scan waits
     for `is_stale`'s cutoff — one lease interval with a concurrency manager,
-    else stale_recovery_after_seconds (~122 min) — which is right for a
+    else stale_recovery_after_seconds (~182 min) — which is right for a
     pipeline that might still finish and wrong here: the connector has already
     been popped from connectors_map, so nothing in flight can succeed. One lease
     interval is enough to be sure no worker still owns the row.
@@ -2178,7 +2179,7 @@ async def _ensure_pipeline_schema(graph_provider: IGraphDBProvider, logger: logg
 
 def _indexing_worker_count() -> int:
     """Uvicorn worker processes running this service side by side (each with its own consumers)."""
-    return max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1")))
+    return indexing_worker_count()
 
 
 def _distributed_leases_wanted() -> bool:
@@ -3085,7 +3086,7 @@ async def health_check(request: Request) -> JSONResponse:
 def run(host: str = "0.0.0.0", port: int = 8091, workers: int | None = None, *, reload: bool = True) -> None:
     """Run the application"""
     import warnings
-    workers = workers or max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1")))
+    workers = workers or indexing_worker_count()
     if reload and workers > 1:
         warnings.warn(
             "INDEXING_UVICORN_WORKERS>1 is not compatible with reload=True; falling back to 1 worker.",

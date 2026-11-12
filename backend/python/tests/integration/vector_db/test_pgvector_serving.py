@@ -10,7 +10,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from app.services.permissions.scope_fields import set_resolved_generation
+from app.services.permissions.scope_fields import (
+    ScopeFields,
+    set_resolved_generation,
+)
 from app.services.vector_db import scope_expr as sx
 from app.services.vector_db.models import (
     FieldCondition,
@@ -148,6 +151,29 @@ async def test_the_corpus_has_no_over_admit_and_no_recall_loss_on_real_rows(stor
         unreached += [(scenario.id, *p) for p in verdict.unreached]
     print(f"corpus on pgvector: pairs={pairs} decided={decided} over_admit={len(over)} recall_loss={len(lost)} unreached={len(unreached)}")
     assert pairs > 3000 and over == [] and lost == [] and unreached == []
+
+
+async def test_k_answers_come_back_when_most_of_the_nearest_points_are_restricted(store) -> None:
+    """15 of the 20 nearest points are in a group the viewer cannot read. A request for k with the viewer's filter holds k readable points in rank
+    order, in one query; the unchanged request fetches the same k and holds only the readable ones among them, which is the shortfall serving removes."""
+    k, org = 10, hashlib.sha1(b"starvation").hexdigest()[:24]
+    readable = {3, 7, 11, 15, 19} | set(range(20, 80))
+    await store.upsert_points("records", [
+        VectorPoint(id=hashlib.md5(f"starve/{i}".encode()).hexdigest(), dense_vector=[1.0, i / 100, 0.0, 0.0], payload={
+            "page_content": f"c{i}", "metadata": {"orgId": org, "virtualRecordId": f"v{i}", "blockId": f"b{i}", "embeddingModel": "p:m:4"},
+            "connectorIds": ["c1"], "recordGroupIds": ["open" if i in readable else "closed"], "rootRecordGroupIds": [], **ScopeFields.container().to_payload()})
+        for i in range(80)])
+    arms = [FieldCondition(key="connectorIds", values=["c1"])]
+
+    async def nearest(flt) -> list[int]:
+        req = HybridSearchRequest(dense_query=Q, filter=FilterExpression(must=[FieldCondition(key="metadata.orgId", value=org)], should=arms), limit=k, scope_filter=flt)
+        [hits] = await store.query_nearest_points("records", [req])
+        return [int(h.payload["metadata"]["virtualRecordId"][1:]) for h in hits]
+
+    unchanged = await nearest(None)
+    assert unchanged == list(range(k)) and len([i for i in unchanged if i in readable]) < k      # the premise: the nearest k are mostly restricted
+    served = await nearest(f(current=frozenset({"c1"}), readable_groups=frozenset({"open"}), defer=True))
+    assert served == sorted(readable)[:k]
 
 
 @pytest.fixture(autouse=True)

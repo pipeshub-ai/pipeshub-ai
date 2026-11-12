@@ -236,6 +236,8 @@ app_schema = {
             "scopeBackfillRecords": {"type": ["integer", "null"]},
             "scopeBackfillStale": {"type": ["integer", "null"]},
             "scopeBackfillError": {"type": ["string", "null"]},
+            "scopeBackfillLegacy": {"type": ["integer", "null"]},
+            "scopeBackfillExact": {"type": ["boolean", "null"]},  # the pass ended with no stale or legacy point (see currency.app_is_exact)
             # app.modules.indexing.entity_index_rebuild
             "entityIndexState": {"type": ["string", "null"]},
             "entityIndexPhase": {"type": ["string", "null"]},

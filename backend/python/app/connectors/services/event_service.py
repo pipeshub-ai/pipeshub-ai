@@ -26,6 +26,8 @@ from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.sources.local_repo.cleanup import remove_mirror
+from app.connectors.sources.local_repo.store import LOCAL_REPO_CONNECTOR_NAME
 from app.connectors.core.sync.sync_dispatcher import SyncSpec
 from app.connectors.core.sync.sync_coordinator import (
     Admission,
@@ -1664,6 +1666,7 @@ class EventService:
         self.logger.info(f"Processing async deletion for {connector_name} connector {connector_id}")
 
         graph_deleted = False
+        owner_id: str | None = None
         try:
             # Stop any sync before deleting the data underneath it.
             #
@@ -1685,6 +1688,7 @@ class EventService:
                 current = await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value
                 )
+                owner_id = (current or {}).get("createdBy")
                 if (current or {}).get(ConnectorStateKeys.PENDING_RESYNC):
                     await self.graph_provider.update_node(
                         connector_id,
@@ -1702,6 +1706,17 @@ class EventService:
                 await coordinator.cancel_and_wait(connector_id)
             await reindex_task_manager.cancel_by_prefix(f"reindex:{connector_id}:")
             await self._await_remote_sync_stop(connector_id)
+
+            # The pushed files are the connector's own data and go with it, BEFORE the graph rows: once those are gone nothing could say
+            # whose files they were. A removal that fails fails the delete here (logged), which puts the connector back from DELETING so the
+            # delete can be asked for again, instead of leaving files on the server that no connector owns.
+            if payload.get("connectorType") == LOCAL_REPO_CONNECTOR_NAME:
+                if owner_id is None:
+                    # The read above may have failed (it is only a convenience for other connectors): here a failed read aborts the delete, since
+                    # without the owner the files cannot be found. A record that really has no owner is answered by a search on the connector id.
+                    owner_id = ((await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)) or {}).get("createdBy")
+                if not await remove_mirror(self.app_container.config_service(), self.logger, org_id, owner_id, connector_id):
+                    raise RuntimeError(f"the pushed files of connector {connector_id} could not be removed")
 
             # Recorded before the graph rows go: a lost deleteConnectorEntities
             # is then still reconciled by the indexing service, and an unfinished

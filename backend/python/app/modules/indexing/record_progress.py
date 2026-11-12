@@ -28,6 +28,7 @@ Every other case is counted as before.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import threading
@@ -36,7 +37,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,10 @@ HISTORY_WINDOW = 50
 HISTORY_MIN_SAMPLES = 10
 #: Most seconds per attempt the stall timer is paused for while the embedding service is failing.
 PAUSE_LIMIT_SECONDS = 1800.0
+#: Most seconds per record the budget is paused for while a batch waits its turn at the embedding
+#: server's gate. Nine in-flight records times the slowest measured batch is under this; past it the wait
+#: counts against the budget again, so a gate that never opens still ends the attempt.
+GATE_PAUSE_LIMIT_SECONDS = 1800.0
 #: Display progress is written at most this often (seconds, or batches), never read to decide anything.
 REPORT_EVERY_SECONDS = 15.0
 REPORT_EVERY_BATCHES = 5
@@ -115,6 +120,7 @@ class RecordProgress:
         history: StallHistory | None = None,
         clock: Callable[[], float] = _loop_time,
         pause_limit_seconds: float = PAUSE_LIMIT_SECONDS,
+        gate_pause_limit_seconds: float = GATE_PAUSE_LIMIT_SECONDS,
     ) -> None:
         self.floor_seconds = floor_seconds
         self.ceiling_seconds = ceiling_seconds
@@ -122,6 +128,7 @@ class RecordProgress:
         self.history = PROCESS_HISTORY if history is None else history
         self._clock = clock
         self._pause_limit = pause_limit_seconds
+        self._gate_pause_limit = gate_pause_limit_seconds
 
         # Set by the consumer.
         self.budget: asyncio.Timeout | None = None
@@ -147,6 +154,11 @@ class RecordProgress:
         self._calls = 0
         self._pause_started = 0.0
         self._paused_total = 0.0
+        self._gate_paused = 0.0
+        self._gate_deadline: float | None = None
+        self._gate_waits = 0
+        self._gate_started = 0.0
+        self._gate_allowance = 0.0
         self._reported_at = 0.0
         self._reported_units = 0
 
@@ -267,6 +279,17 @@ class RecordProgress:
         self.finished = True
         self._arm()
 
+    def unfinish(self) -> None:
+        """Another embed section follows a ``finish()``: the stall timer counts again, from now.
+
+        The cap is what ``finish()`` left it (every gate pause included), so nothing is re-read from the budget.
+        """
+        if not self.planned or not self.finished:
+            return
+        self.finished = False
+        self._last_beat = self._clock()
+        self._arm()
+
     def pause(self) -> None:
         """The embedding service is failing and the caller is waiting to retry: do not call that a stall."""
         if not self.planned:
@@ -303,6 +326,43 @@ class RecordProgress:
             self._last_beat = self._clock()
             self._arm()
 
+    @contextlib.asynccontextmanager
+    async def gate_wait(self) -> AsyncIterator[None]:
+        """A batch waits its turn at the embedding server: that is queueing, not embedding, so the budget stops.
+
+        The cap and the plan's start move with the budget. ``_arm`` rebuilds the deadline from the cap on
+        every beat, so a pause that moved only the timeout would be undone by the next batch and cut a
+        record that had embedded every point. Pausing is bounded per record; once the allowance is used
+        the wait counts against the budget as any other time does. With no budget to move, nothing is paused.
+        """
+        if not self.planned or self._cap is None or self.budget is None:
+            yield
+            return
+        if self._gate_waits == 0:
+            allowance = self._gate_pause_limit - self._gate_paused
+            if allowance <= 0:
+                yield
+                return
+            self._gate_started = self._clock()
+            # Until the allowance runs out the budget is held where it is, then it counts down again.
+            self._gate_deadline = self._cap + allowance
+            self._gate_allowance = allowance
+        # Waits that overlap are one pause: it starts with the first and ends with the last.
+        self._gate_waits += 1
+        self.call_start()
+        try:
+            yield
+        finally:
+            self._gate_waits -= 1
+            if self._gate_waits == 0:
+                waited = min(max(0.0, self._clock() - self._gate_started), self._gate_allowance)
+                self._gate_paused += waited
+                self._cap += waited
+                self._planned_at += waited
+                self._gate_deadline = None
+            self.call_end()
+            self._arm()
+
     async def report(self, *, force: bool = False) -> None:
         """Write the display count, at most every few batches or seconds. A failure is logged and ignored."""
         if not self.planned or self._display is None:
@@ -323,6 +383,8 @@ class RecordProgress:
 
     # ---- the deadline -----------------------------------------------------------------------------------------------------------
     def _deadline(self) -> float | None:
+        if self._gate_deadline is not None:
+            return self._gate_deadline
         if self._cap is None or self.finished or self._calls:
             return self._cap
         stall = self.stall_seconds()

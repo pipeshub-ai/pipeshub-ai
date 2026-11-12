@@ -21,7 +21,9 @@ from app.services.vector_db.scope_backfill import BACKFILL_KEYS
 from app.services.vector_db.scope_view import connector_view
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
+
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 #: Written by a connector at the end of a sync: `[{code, items, container?, fix?}]`. No connector writes it yet; absent reads as none.
 WARNINGS_KEY = "permissionWarnings"
@@ -89,3 +91,37 @@ def status(app: Mapping[str, Any], *, reach_minutes: int | None = None, now: dat
         "attention": [c for c in codes if c not in _NOT_LISTED],
         "warnings": _warnings(app.get(WARNINGS_KEY)),
     }
+
+
+def notices(apps: Iterable[Mapping[str, Any]], *, empty: bool = False) -> list[dict[str, Any]]:
+    """What a search tells the person who ran it, as codes (the client words them): `permissions_updating` while subtrees of a connector await a
+    rewrite (or the list of them cannot be read), `connector_syncing` while it syncs and either it has never finished a sync (its content is
+    still arriving) or the search found nothing (`empty`): a routine resync of an established connector changes nothing the person sees. The
+    caller passes only the connectors that person is gated into, so nothing here names a connector they cannot already see, and nothing names a
+    record, container or person."""
+    out: list[dict[str, str]] = []
+    for app in apps:
+        cid = str(app.get("id") or app.get("_key") or "")
+        label = {"connectorName": str(app["name"])} if app.get("name") else {}
+        try:
+            updating = bool(parse(app.get(PENDING_KEY)))
+        except PendingUnreadable:
+            updating = True
+        if updating:
+            out.append({"code": "permissions_updating", "connectorId": cid, **label})
+        first = not app.get(K.LAST_SYNC_FINISHED_AT)
+        if app.get("status") in RUNNING and (empty or first):
+            # `firstSync`: it has never finished a sync, so there is nothing to search yet (a resync of an established connector has).
+            out.append({"code": "connector_syncing", "connectorId": cid, **label, **({"firstSync": True} if first else {})})
+    return out
+
+
+async def read_apps(graph: IGraphDBProvider, connector_ids: Iterable[str]) -> list[dict[str, Any]]:
+    """One batched read of the connectors' app documents. A failed read gives no notices: it must not fail the search."""
+    ids = sorted(set(connector_ids))
+    if not ids:
+        return []
+    try:
+        return list(await graph.get_nodes_by_field_in("apps", "id", ids, raise_on_error=True) or [])
+    except Exception:
+        return []

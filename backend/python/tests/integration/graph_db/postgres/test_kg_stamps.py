@@ -463,3 +463,20 @@ async def test_r13_follows_the_origin_in_the_graph_not_the_one_kg_held_before(pg
     with ctx(org):
         await pg_db.run(restamp_only, write=True)
     assert (await held_stamps(p, org))["own"][8] is False
+
+
+async def test_a_restamp_page_counts_a_write_for_every_connector_it_rewrites(pg_db) -> None:
+    from app.services.graph_db.postgres.kg import locks
+
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+    await add_edge(p, org, ("records", "f2"), ("records", "x1"), "nodeRelations", relationshipType="PARENT_CHILD")      # x1 (app2) hangs under f2 (app1)
+    await drain_org(pg_db, org)
+    before = locks.written(org, "app1")
+
+    async def page(tx) -> None:
+        await stamp_app(tx, org, "app2", None, 100, locked={"app1", "app2"})
+    with ctx(org):
+        await pg_db.run(page, write=True)
+    assert locks.written(org, "app1") > before                                # the parent of the page's child is app1's row
