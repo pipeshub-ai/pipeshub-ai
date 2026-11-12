@@ -295,6 +295,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._partition_lock = threading.Lock()
         self._in_flight_partitions: set[TopicPartition] = set()
         self._deferred_partition_offsets: dict[TopicPartition, int] = {}
+        # FIFO: partitions a finish rewound since the last poll; the rest of their batch is stale.
+        self._rewound_since_poll: set[TopicPartition] = set()
 
         # Absent config disables fair scheduling and keeps this consumer on
         # the exact pre-existing FIFO code path -- only MessagingFactory
@@ -1027,17 +1029,32 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         topic_partition = TopicPartition(message.topic, message.partition)
         with self._partition_lock:
             if topic_partition in self._in_flight_partitions:
-                current = self._deferred_partition_offsets.get(topic_partition)
-                self._deferred_partition_offsets[topic_partition] = (
-                    message.offset
-                    if current is None
-                    else min(current, message.offset)
-                )
+                self.__defer_offset(topic_partition, message.offset)
                 return False
-            self._in_flight_partitions.add(topic_partition)
-
+        # Pause first: it raises for a partition a rebalance revoked during the parse, and nothing is reserved yet.
         self.consumer.pause(topic_partition)
+        with self._partition_lock:
+            self._in_flight_partitions.add(topic_partition)
         return True
+
+    def __defer_offset(self, topic_partition: TopicPartition, offset: int) -> None:
+        """Remember the lowest offset to re-read once the partition's in-flight message ends. Hold ``_partition_lock``."""
+        current = self._deferred_partition_offsets.get(topic_partition)
+        self._deferred_partition_offsets[topic_partition] = offset if current is None else min(current, offset)
+
+    def __redeliver_from(self, message: ConsumerRecord) -> None:
+        """Re-read this partition from ``message`` on: now if nothing is in flight, else when the in-flight one ends.
+
+        For a message that never reserved the partition. Releasing another message's reservation here would let a later
+        offset run and commit beside it, and its finish would seek over this offset.
+        """
+        topic_partition = TopicPartition(message.topic, message.partition)
+        with self._partition_lock:
+            if topic_partition in self._in_flight_partitions:
+                self.__defer_offset(topic_partition, message.offset)
+                return
+        if topic_partition not in self._rewound_since_poll:  # a finish already seeked lower
+            self.__seek_back(topic_partition, message.offset)
 
     def __finish_partition(
         self,
@@ -1079,6 +1096,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # solely to the read phase.
         if retry_offset is not None and self._scheduler is None:
             self.consumer.seek(topic_partition, retry_offset)
+            self._rewound_since_poll.add(topic_partition)
         downstream_paused = (
             self.backpressure_coordinator is not None
             and self.backpressure_coordinator.is_paused()
@@ -1116,6 +1134,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                             available_capacity,
                         ),
                     )  # type: ignore
+                    self._rewound_since_poll.clear()
 
                     if not message_batch:
                         continue
@@ -1127,6 +1146,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                 self.logger.info("Consumer stopping, skipping remaining messages in batch")
                                 break
 
+                            reserved = False
                             try:
                                 self.logger.debug(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
                                 deferred, parsed_message = (
@@ -1143,22 +1163,25 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     # worker-thread/active-task slot on a
                                     # multi-minute sleep in the meantime.
                                     break
+                                # One message per partition in flight: the rest of the batch is re-read
+                                # from here when it ends, so nothing behind it may run or commit first.
                                 if not self.__reserve_partition(message):
-                                    continue
+                                    break
+                                reserved = True
                                 await self.__start_processing_task(
                                     message, parsed_message
                                 )
                             except Exception as e:
-                                self.__finish_partition(
-                                    message,
-                                    retry_current=True,
-                                )
+                                if reserved:
+                                    self.__finish_partition(message, retry_current=True)
+                                else:
+                                    self.__redeliver_from(message)
                                 # The type only: a parse error's text can quote the payload's values.
                                 self.logger.error(
                                     f"Error processing message {message.topic}-{message.partition}-{message.offset}",
                                     extra={"error_type": type(e).__name__},
                                 )
-                                continue
+                                break
 
                 except asyncio.CancelledError:
                     self.logger.info("Kafka consumer task cancelled")
@@ -1545,7 +1568,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """Rewind a partition to ``offset`` so it and everything after it in
         this batch is read again. The scheduler buffer only ever holds
         offsets below this one, so the re-read cannot duplicate buffered
-        work."""
+        work. FIFO uses it too: a rebalance during a parse can revoke the
+        partition, and a seek that raises there would drop the whole batch."""
         if self.consumer is None:
             return
         try:
@@ -2076,7 +2100,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """Return ``(defer, parsed)``: whether to seek back because this
         message's retry backoff (``_retry_not_before``, stamped by
         ``_requeue_message``) hasn't elapsed, and the parse it did to find
-        out.
+        out. Also defers, without a seek of its own, when the in-flight
+        message's finish rewound the partition during the parse: that
+        rewind is below this message and must not be overtaken.
 
         The parse is handed back rather than dropped because the wrapper needs
         the same envelope moments later. Re-parsing it there costs a second
@@ -2092,6 +2118,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         at least the wait no longer consumes real processing resources.
         """
         parsed = await self.__parse_message(message)
+        if TopicPartition(message.topic, message.partition) in self._rewound_since_poll:
+            return True, parsed  # a finish rewound below this message during the parse
         if parsed is None:
             return False, None
         not_before = parsed.payload.get("_retry_not_before")
