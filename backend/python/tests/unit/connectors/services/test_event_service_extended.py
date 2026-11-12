@@ -472,6 +472,43 @@ class TestHandleDelete:
         assert repo.exists()
 
     @pytest.mark.asyncio
+    async def test_a_delete_whose_owner_cannot_be_read_is_aborted_and_the_connector_put_back(self, service, tmp_path, monkeypatch) -> None:
+        from app.connectors.sources.local_repo import store
+
+        monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
+        repo = store.Repo("org1", "u1", "repo-key-0001")
+        repo.save_meta(name="shop", connectorId="c1")
+        service.graph_provider.get_document = AsyncMock(side_effect=RuntimeError("graph down"))
+        service.graph_provider.batch_upsert_nodes = AsyncMock()
+        service.app_container.config_service.return_value.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {store.REPO_KEY: "repo-key-0001"}}})
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            result = await service._handle_delete("localrepository", {"orgId": "org1", "connectorId": "c1", "connectorType": "Local Repository"})
+        assert result is False and repo.exists()
+        service.graph_provider.delete_connector_instance.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("config", [{"sync": {"customValues": {}}}, None])
+    async def test_a_connector_with_no_owner_or_no_key_on_record_has_its_mirror_found_by_connector_id(self, service, tmp_path, monkeypatch, config) -> None:
+        from app.connectors.sources.local_repo import store
+
+        monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
+        mine = store.Repo("org1", "u1", "repo-key-0001")
+        mine.save_meta(name="shop", connectorId="c1")
+        theirs = store.Repo("org1", "u2", "repo-key-0001")  # the same key under another user, another connector
+        theirs.save_meta(name="shop", connectorId="c2")
+        elsewhere = store.Repo("org2", "u1", "repo-key-0001")  # another org
+        elsewhere.save_meta(name="shop", connectorId="c1")
+        service.graph_provider.get_document = AsyncMock(return_value={})  # an old record: no createdBy
+        service.app_container.config_service.return_value.get_config = AsyncMock(return_value=config)
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            assert await service._handle_delete("localrepository", {"orgId": "org1", "connectorId": "c1", "connectorType": "Local Repository"}) is True
+        assert not mine.exists() and theirs.exists() and elsewhere.exists()
+
+    @pytest.mark.asyncio
     async def test_a_connector_of_another_type_never_touches_a_mirror(self, service, tmp_path, monkeypatch) -> None:
         from app.connectors.sources.local_repo import store
 

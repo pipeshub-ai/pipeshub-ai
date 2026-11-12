@@ -1717,10 +1717,13 @@ class EventService:
             # The pushed files are the connector's own data and go with it, BEFORE the graph rows: once those are gone nothing could say
             # whose files they were. A removal that fails fails the delete here (logged), which puts the connector back from DELETING so the
             # delete can be asked for again, instead of leaving files on the server that no connector owns.
-            if payload.get("connectorType") == LOCAL_REPO_CONNECTOR_NAME and not await remove_mirror(
-                self.app_container.config_service(), self.logger, org_id, owner_id, connector_id
-            ):
-                raise RuntimeError(f"the pushed files of connector {connector_id} could not be removed")
+            if payload.get("connectorType") == LOCAL_REPO_CONNECTOR_NAME:
+                if owner_id is None:
+                    # The read above may have failed (it is only a convenience for other connectors): here a failed read aborts the delete, since
+                    # without the owner the files cannot be found. A record that really has no owner is answered by a search on the connector id.
+                    owner_id = ((await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)) or {}).get("createdBy")
+                if not await remove_mirror(self.app_container.config_service(), self.logger, org_id, owner_id, connector_id):
+                    raise RuntimeError(f"the pushed files of connector {connector_id} could not be removed")
 
             # Recorded before the graph rows go: a lost deleteConnectorEntities
             # is then still reconciled by the indexing service, and an unfinished

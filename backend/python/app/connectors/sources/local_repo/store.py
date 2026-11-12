@@ -136,6 +136,23 @@ def repo_dir(org_id: str, user_id: str, repo_key: str, base: Path | None = None)
     return (base or store_base()) / _segment(org_id) / _segment(user_id) / hashlib.sha256(repo_key.encode()).hexdigest()[:32]
 
 
+def find_by_connector(org_id: str, connector_id: str, base: Path | None = None) -> list[Repo]:
+    """The mirrors in ``org_id`` that belong to ``connector_id``, found by the connector id each repo.json records.
+
+    For a connector whose owner or repository key cannot be read from its own record: the org is a path segment, so no other org's files are
+    looked at. A repo.json that cannot be read is skipped with a log line (it cannot be said to belong to anyone)."""
+    org_dir = (base or store_base()) / _segment(org_id)
+    found: list[Repo] = []
+    for meta_file in org_dir.glob("*/*/repo.json") if org_dir.is_dir() else ():
+        try:
+            meta = read_json_object(meta_file)
+        except StoreError:
+            continue
+        if meta.get("connectorId") == connector_id and isinstance(meta.get("repoKey"), str):
+            found.append(Repo(org_id, meta_file.parent.parent.name, meta["repoKey"], base))
+    return found
+
+
 def tree_of(org_id: str, user_id: str, repo_key: str, base: Path | None = None) -> Path:
     return repo_dir(org_id, user_id, repo_key, base) / "tree"
 

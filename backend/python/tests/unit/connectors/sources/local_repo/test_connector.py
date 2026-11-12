@@ -271,3 +271,14 @@ async def test_classifying_a_file_reads_it_off_the_event_loop(env):
     push(env.repo, **{"a.py": "a = 1\n", "gen.py": "# @generated\nx = 1\n"})
     await env.c.run_sync()
     assert seen and all(t != main for t in seen)
+
+
+async def test_a_content_read_returns_the_committed_bytes_while_a_replacement_waits_for_its_commit(env):
+    push(env.repo, **{"a.py": "v = 1\n"})
+    await env.c.run_sync()
+    record = env.graph.records["a.py"]
+    push_uncommitted(env.repo, **{"a.py": "v = 2\n"})  # staged: the upload has landed, the commit has not
+    response = await env.c.stream_record(record)
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    assert body == b"v = 1\n"  # what the record was indexed from, not the upload
+    assert (env.repo.staging / "a.py").read_text() == "v = 2\n"
