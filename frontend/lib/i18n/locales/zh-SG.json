@@ -1606,6 +1606,15 @@
         "done": "已完成",
         "error": "失败"
       }
+    },
+    "webSearchSetup": {
+      "title": "网页搜索尚未设置",
+      "adminBody": "您的组织尚未配置搜索提供商。请在 Workspace → 网页搜索 中选择一个，为所有人开启网页搜索。",
+      "memberBody": "您的组织尚未设置网页搜索提供商，因此回答无法使用网络。",
+      "memberHint": "请联系管理员在 Workspace → 网页搜索 中进行配置。",
+      "setUp": "设置网页搜索",
+      "notNow": "暂不",
+      "gotIt": "知道了"
     }
   },
   "workspaceMenu": {
@@ -4151,6 +4160,11 @@
         "settingDefault": "正在设置…",
         "editConfiguration": "编辑配置",
         "deleteConfiguration": "删除配置"
+      },
+      "duckduckgoWarning": "非官方抓取：在共享服务器上可能被封锁或限速，不建议团队使用。",
+      "notSetUp": {
+        "title": "网页搜索已关闭。",
+        "description": "请在下方选择一个搜索提供商。在此之前，组织中的任何人都无法在聊天中使用网页搜索。"
       }
     },
     "profile": {

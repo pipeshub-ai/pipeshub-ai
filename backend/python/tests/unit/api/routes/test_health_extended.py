@@ -4,6 +4,7 @@
 - perform_stt_health_check (lines 1040-1186)
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -97,6 +98,17 @@ class TestWebSearchHealthCheck:
         body = resp.body.decode()
         assert text in body
         assert "boom" not in body  # exception text never reaches the response
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("error", "error_type"),
+        [(Blocked("x"), "blocked"), (RateLimited("x", status=429), "rate_limited"), (AuthFailed("x", status=401), None)],
+        ids=["blocked", "rate-limited", "a-real-failure-has-none"],
+    )
+    async def test_only_a_passing_refusal_is_typed(self, mock_request, error, error_type):
+        """The Node API saves DuckDuckGo despite a refusal like this, never despite a real failure."""
+        resp, _ = await self._check(mock_request, {"provider": "serper", "configuration": {"apiKey": "k"}}, error)
+        assert json.loads(resp.body).get("errorType") == error_type
 
     @pytest.mark.asyncio
     async def test_blocked_duckduckgo_is_not_reported_healthy(self, mock_request):

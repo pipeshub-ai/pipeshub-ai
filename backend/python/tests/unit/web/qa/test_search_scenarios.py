@@ -66,12 +66,19 @@ class TestConfiguredProviders:
     async def test_a_rejected_key_falls_back_and_says_so(self, lab: WebLab) -> None:  # WP-1-CHAIN-01
         lab.engines.serper(status=401)
         lab.engines.set_ddgs(DOCS)
-        agent = lab.agent("serper", {"apiKey": "bad"})
+        agent = lab.agent("serper", {"apiKey": "bad"}, others=[{"provider": "duckduckgo", "configuration": {}}])
         call = await agent.search("q")
         assert len(call.output.sources) == 2
         await agent.search("again")
         # WP-1-CHAIN-02: the rejected key is not tried again for a while.
         assert len(lab.engines.requests_to("google.serper.dev")) == 1
+
+    async def test_a_rejected_key_is_reported_when_no_free_engine_is_stored(self, lab: WebLab) -> None:
+        lab.engines.serper(status=401)
+        lab.engines.set_ddgs(DOCS)
+        call = await lab.agent("serper", {"apiKey": "bad"}).search("q")
+        assert call.payload["error_type"] == "auth_failed"
+        assert lab.engines.ddgs_queries == [] and lab.engines.duckduckgo_queries == []
 
     async def test_stored_providers_back_each_other_up_in_order(self, lab: WebLab) -> None:
         lab.engines.serper(status=500)
@@ -93,10 +100,16 @@ class TestConfiguredProviders:
         assert call.payload["error_type"] == "unknown_provider"
         assert lab.engines.ddgs_queries == []
 
-    async def test_a_page_reader_as_the_choice_still_searches_with_the_free_engines(self, lab: WebLab) -> None:
+    async def test_a_page_reader_alone_has_nothing_to_search_with(self, lab: WebLab) -> None:
         lab.engines.set_ddgs(DOCS)
         call = await lab.agent("crawl4ai", {"baseUrl": "http://crawl4ai:11235"}).search("q")
-        assert len(call.output.sources) == 2
+        assert call.payload["error_type"] == "not_configured"
+        assert lab.engines.ddgs_queries == []
+
+    async def test_a_page_reader_as_the_choice_searches_with_a_stored_free_engine(self, lab: WebLab) -> None:
+        lab.engines.set_ddgs(DOCS)
+        agent = lab.agent("crawl4ai", {"baseUrl": "http://crawl4ai:11235"}, others=[{"provider": "duckduckgo", "configuration": {}}])
+        assert len((await agent.search("q")).output.sources) == 2
 
 
 class TestWhatTheModelReads:

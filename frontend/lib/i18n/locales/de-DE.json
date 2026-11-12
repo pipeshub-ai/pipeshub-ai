@@ -1521,6 +1521,15 @@
         "done": "Fertig",
         "error": "Fehlgeschlagen"
       }
+    },
+    "webSearchSetup": {
+      "title": "Die Websuche ist noch nicht eingerichtet",
+      "adminBody": "Für Ihre Organisation ist kein Suchanbieter konfiguriert. Wählen Sie unter Workspace → Websuche einen aus, um die Websuche für alle zu aktivieren.",
+      "memberBody": "Ihre Organisation hat noch keinen Anbieter für die Websuche eingerichtet, daher können Antworten das Web nicht nutzen.",
+      "memberHint": "Bitten Sie Ihren Admin, ihn unter Workspace → Websuche zu konfigurieren.",
+      "setUp": "Websuche einrichten",
+      "notNow": "Jetzt nicht",
+      "gotIt": "Verstanden"
     }
   },
   "workspaceMenu": {
@@ -3860,6 +3869,11 @@
         "settingDefault": "Wird festgelegt…",
         "editConfiguration": "Konfiguration bearbeiten",
         "deleteConfiguration": "Konfiguration löschen"
+      },
+      "duckduckgoWarning": "Inoffizielles Scraping: Kann auf gemeinsam genutzten Servern blockiert oder gedrosselt werden. Für Teams nicht empfohlen.",
+      "notSetUp": {
+        "title": "Die Websuche ist deaktiviert.",
+        "description": "Wählen Sie unten einen Suchanbieter. Bis dahin kann niemand in Ihrer Organisation die Websuche im Chat nutzen."
       }
     },
     "profile": {

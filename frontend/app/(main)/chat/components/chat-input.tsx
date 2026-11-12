@@ -35,6 +35,8 @@ import {
   hasNonDefaultSearchCapabilities,
 } from '@/chat/components/chat-panel';
 import { MobileQueryOptionsSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-options-sheet';
+import { WebSearchSetupDialog } from '@/chat/components/chat-panel/web-search-setup-dialog';
+import { useWebSearchConfigured } from '@/chat/hooks/use-web-search-configured';
 import { getQueryModeConfig } from '@/chat/constants';
 import {
   useChatStore,
@@ -290,6 +292,10 @@ export function ChatInput({
   /** "+" menu — Attach files & Internal Search / Web Search capability toggles. */
   const [isPlusMenuOpen, setIsPlusMenuOpen] = useState(false);
   const [isMobilePlusMenuOpen, setIsMobilePlusMenuOpen] = useState(false);
+  const [isWebSearchSetupOpen, setIsWebSearchSetupOpen] = useState(false);
+  // Only an unconfigured org (known, not merely loading) blocks the switch. A chat with its own agent
+  // searches with the provider that agent was built with, whatever the org default is.
+  const webSearchNotSetUp = useWebSearchConfigured() === false && !isAgentChat;
   const [isCompactToolbar, setIsCompactToolbar] = useState(false);
   const [isCompactMenuOpen, setIsCompactMenuOpen] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
@@ -470,13 +476,19 @@ export function ChatInput({
       : settings.agentCapabilities;
     return {
       internalSearch: isAgentChat ? scopedInternalSearch : ownCaps.internalSearch,
-      webSearch: isAgentChat ? scopedWebSearch : ownCaps.webSearch,
+      webSearch: isAgentChat ? scopedWebSearch : ownCaps.webSearch && !webSearchNotSetUp,
       onToggleInternalSearch: (enabled: boolean) => {
         if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { internalSearch: enabled });
         else if (projectCapsKey) setScopedAgentCapabilities(projectCapsKey, { internalSearch: enabled });
         else if (!isAgentChat) setAgentCapabilities({ internalSearch: enabled });
       },
       onToggleWebSearch: (enabled: boolean) => {
+        if (enabled && webSearchNotSetUp) {
+          setIsPlusMenuOpen(false);
+          setIsMobilePlusMenuOpen(false);
+          setIsWebSearchSetupOpen(true);
+          return;
+        }
         if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { webSearch: enabled });
         else if (projectCapsKey) setScopedAgentCapabilities(projectCapsKey, { webSearch: enabled });
         else if (!isAgentChat) setAgentCapabilities({ webSearch: enabled });
@@ -487,6 +499,7 @@ export function ChatInput({
       agentHasWebSearch: isAgentChat
         ? (agentHasWebSearch && canPersistScoped ? undefined : false)
         : undefined,
+      webSearchNotSetUp,
     };
   }, [
     isAgentChat,
@@ -500,10 +513,12 @@ export function ChatInput({
     setAgentCapabilities,
     agentHasInternalSearch,
     agentHasWebSearch,
+    webSearchNotSetUp,
   ]);
+  // Web search that is off only because nobody set it up is not a filter the user chose.
   const showPlusMenuFilterBadge = hasNonDefaultSearchCapabilities(
     plusMenuCapabilities.internalSearch,
-    plusMenuCapabilities.webSearch,
+    plusMenuCapabilities.webSearch || webSearchNotSetUp,
   );
 
   // Context key for the active (agent-scoped or assistant) chat. All
@@ -3136,6 +3151,8 @@ export function ChatInput({
       isAgentChat={isAgentChat}
       agentId={agentId}
     />
+
+    <WebSearchSetupDialog open={isWebSearchSetupOpen} onOpenChange={setIsWebSearchSetupOpen} />
 
     {/* Mobile "+" menu sheet — attach files & Internal Search / Web Search toggles */}
     <PlusMenuSheet

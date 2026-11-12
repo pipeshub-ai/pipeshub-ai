@@ -21,6 +21,7 @@ import { getOrgRepository } from '../../../libs/repositories/org';
 import { SignInMethodsRemovalMigration } from './migrations/sign_in_methods_removal.migration';
 import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
 import { ServiceAccountKindBackfillMigration } from './migrations/service_account_kind_backfill.migration';
+import { WebSearchDuckDuckGoDefaultMigration } from './migrations/web_search_duckduckgo_default.migration';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
 
@@ -55,6 +56,9 @@ export class MigrationService {
     await this.serviceAccountKindBackfillMigration();
     // Until it runs, a policy may still name a removed sign-in method.
     await this.signInMethodsRemovalMigration();
+    // Before anyone can use the upgraded server, so an organisation that relied on the old
+    // implicit DuckDuckGo default never sees web search switch off.
+    await this.webSearchDuckDuckGoDefaultMigration();
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
     await this.chatKbFiltersMigration();
     await this.chatSessionsMigration();
@@ -132,6 +136,29 @@ export class MigrationService {
       }
     } catch (error) {
       this.logger.error('Sign-in methods removal failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async webSearchDuckDuckGoDefaultMigration(): Promise<void> {
+    this.logger.info('Keeping web search on for organisations that relied on DuckDuckGo');
+    try {
+      const result = await new WebSearchDuckDuckGoDefaultMigration(
+        this.logger,
+        this.keyValueStoreService,
+      ).run();
+
+      if (result.errored > 0) {
+        this.logger.warn(
+          '⚠️  Web search default migration finished with errors — will retry on next boot',
+          result,
+        );
+      } else {
+        this.logger.info('✅ Web search default handled', result);
+      }
+    } catch (error) {
+      this.logger.error('Web search default migration failed', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }

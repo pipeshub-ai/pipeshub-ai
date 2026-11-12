@@ -1606,6 +1606,15 @@
         "done": "已完成",
         "error": "失敗"
       }
+    },
+    "webSearchSetup": {
+      "title": "網頁搜尋尚未設定",
+      "adminBody": "您的組織尚未設定搜尋供應商。請在 Workspace → 網頁搜尋 中選擇一個，為所有人開啟網頁搜尋。",
+      "memberBody": "您的組織尚未設定網頁搜尋供應商，因此回答無法使用網路。",
+      "memberHint": "請聯絡管理員在 Workspace → 網頁搜尋 中進行設定。",
+      "setUp": "設定網頁搜尋",
+      "notNow": "暫時不要",
+      "gotIt": "知道了"
     }
   },
   "workspaceMenu": {
@@ -4151,6 +4160,11 @@
         "settingDefault": "正在設定…",
         "editConfiguration": "編輯設定",
         "deleteConfiguration": "刪除設定"
+      },
+      "duckduckgoWarning": "非官方擷取：在共用伺服器上可能被封鎖或限速，不建議團隊使用。",
+      "notSetUp": {
+        "title": "網頁搜尋已關閉。",
+        "description": "請在下方選擇一個搜尋供應商。在此之前，組織中的任何人都無法在聊天中使用網頁搜尋。"
       }
     },
     "profile": {
