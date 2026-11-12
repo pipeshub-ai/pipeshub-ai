@@ -1714,12 +1714,13 @@ class EventService:
             await reindex_task_manager.cancel_by_prefix(f"reindex:{connector_id}:")
             await self._await_remote_sync_stop(connector_id)
 
-            if payload.get("connectorType") == LOCAL_REPO_CONNECTOR_NAME:
-                # The pushed files are the connector's own data and go with it, BEFORE the graph rows: once those are gone nothing could say
-                # whose files they were. A removal that fails fails the delete here (logged), which puts the connector back from DELETING so the
-                # delete can be asked for again, instead of leaving files on the server that no connector owns.
-                if not await remove_mirror(self.app_container.config_service(), self.logger, org_id, owner_id, connector_id):
-                    raise RuntimeError(f"the pushed files of connector {connector_id} could not be removed")
+            # The pushed files are the connector's own data and go with it, BEFORE the graph rows: once those are gone nothing could say
+            # whose files they were. A removal that fails fails the delete here (logged), which puts the connector back from DELETING so the
+            # delete can be asked for again, instead of leaving files on the server that no connector owns.
+            if payload.get("connectorType") == LOCAL_REPO_CONNECTOR_NAME and not await remove_mirror(
+                self.app_container.config_service(), self.logger, org_id, owner_id, connector_id
+            ):
+                raise RuntimeError(f"the pushed files of connector {connector_id} could not be removed")
 
             # Recorded before the graph rows go: a lost deleteConnectorEntities
             # is then still reconciled by the indexing service, and an unfinished

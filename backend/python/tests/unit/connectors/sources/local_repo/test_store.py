@@ -279,14 +279,14 @@ def test_concurrent_uploads_into_two_repositories_cannot_both_spend_the_last_of_
         r.save_meta(name="x")
     real_write = store.Repo._write_file
 
-    def slow_write(self, *a, **k):  # the quota was read before this write lands: without the user lock both uploads pass it
+    def slow_write(self, *a, **k):  # noqa: ANN202 - the quota was read before this write lands: without the user lock both uploads pass it
         time.sleep(0.2)
         return real_write(self, *a, **k)
 
     monkeypatch.setattr(store.Repo, "_write_file", slow_write)
     go = threading.Barrier(2)
 
-    def up(repo, path):
+    def up(repo, path):  # noqa: ANN202
         go.wait()
         return push(repo, **{path: "x" * 6})
 
