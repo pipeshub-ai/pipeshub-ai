@@ -357,6 +357,8 @@ export interface AppliedFilters {
  */
 export interface KnowledgeHubApiResponse {
   success: boolean;
+  /** Sources left out of this page because they are still being prepared; they are asked again on the next page. */
+  notReady?: string[];
   error: string | null;
   id: string | null;
   currentNode: {
