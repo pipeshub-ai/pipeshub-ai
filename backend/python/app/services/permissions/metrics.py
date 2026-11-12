@@ -71,3 +71,8 @@ SERVING_UNREADABLE_ROWS = METRICS_BACKEND.gauge(
     "pgvector group rows that carry a trusted stamp but a NULL list the stamp's rule needs: a served search hides their points (a data fault; the operator view reports it)",
     ["store", "org"],
 )
+EXPLAIN_MISMATCH = METRICS_BACKEND.counter(
+    "pipeshub_explain_mismatch_total",
+    "Admin access explanations whose reference walk disagreed with the graph check (the answer keeps the graph's verdict and says unexplained), by the graph's verdict",
+    ["graph"],
+)

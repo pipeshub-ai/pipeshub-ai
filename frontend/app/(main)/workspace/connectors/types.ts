@@ -669,6 +669,34 @@ export interface LastSyncSummary {
   resumed?: boolean;
 }
 
+/** A container in an access explanation; a null name is one the admin asking cannot read. */
+export interface AccessExplanationContainer {
+  name: string | null;
+  restricted: boolean;
+}
+
+export type AccessExplanationCode =
+  | 'granted'
+  | 'not_linked'
+  | 'no_grant'
+  | 'restricted_container'
+  | 'item_restricted'
+  | 'parent_not_readable'
+  | 'pending_rewrite'
+  | 'syncing'
+  | 'scheme_unreadable'
+  | 'deleted_at_source'
+  | 'unexplained';
+
+/** GET /connectors/{connectorId}/permissions/explain */
+export interface AccessExplanation {
+  admitted: boolean;
+  code: AccessExplanationCode;
+  container: AccessExplanationContainer | null;
+  path: AccessExplanationContainer[];
+  reference: string;
+}
+
 /** What the card shows first; the server picks it (see GET /connectors/:id/permissions/status). */
 export type PermissionState = 'healthy' | 'running' | 'failed' | 'pending' | 'overflow' | 'never';
 

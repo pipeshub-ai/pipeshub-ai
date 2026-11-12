@@ -3562,6 +3562,61 @@
         "continueTeam": "Pokračovat s týmovým konektorem",
         "goToPersonal": "Nastavit osobní konektor"
       },
+      "accessCheck": {
+        "open": "Zkontrolovat přístup osoby",
+        "title": "Zkontrolovat přístup osoby",
+        "description": "Zjistěte, zda osoba může číst záznam z tohoto konektoru, a proč ne.",
+        "personLabel": "Osoba",
+        "personPlaceholder": "Vyberte osobu",
+        "peopleLoading": "Načítání osob...",
+        "peopleFailed": "Seznam osob se nepodařilo načíst.",
+        "recordLabel": "ID záznamu",
+        "recordHint": "Otevřete záznam a zkopírujte jeho ID.",
+        "check": "Zkontrolovat",
+        "checking": "Kontroluje se...",
+        "close": "Zavřít",
+        "resultHeading": "Výsledek",
+        "restrictedArea": "omezená oblast",
+        "theyFallback": "Tato osoba",
+        "pathLabel": "Umístění: {{path}}",
+        "reference": "Reference: {{ref}} (předejte ji podpoře, pokud se důvod zdá chybný)",
+        "verdict": {
+          "granted": "{{name}} tento záznam vidí.",
+          "denied": "{{name}} tento záznam nevidí."
+        },
+        "reason": {
+          "granted": "Pokud ve vyhledávání chybí, možná ještě není indexován nebo konektor stále synchronizuje.",
+          "not_linked": "{{name}} nemá k tomuto konektoru propojený účet.",
+          "no_grant": "Nic v {{container}} nedává osobě {{name}} přístup.",
+          "restricted_container": "{{container}} je omezeno na jiné osoby.",
+          "item_restricted": "Tento záznam má vlastní omezení a {{name}} v něm není.",
+          "parent_not_readable": "{{name}} nemůže otevřít nadřazenou položku, kterou tento záznam potřebuje.",
+          "pending_rewrite": "Složka tohoto záznamu se právě aktualizuje.",
+          "syncing": "Konektor ještě nedokončil synchronizaci této části.",
+          "scheme_unreadable": "Konektor nemůže přečíst pravidla přístupu pro tuto oblast, proto je skrytá pro všechny.",
+          "deleted_at_source": "Tento záznam byl smazán ve zdroji.",
+          "unexplained": "Důvod nelze zobrazit."
+        },
+        "next": {
+          "not_linked": "Opravte účet ve zdroji a poté synchronizujte.",
+          "no_grant": "Přidejte osobu {{name}} ve zdroji.",
+          "restricted_container": "Požádejte vlastníka, aby přidal osobu {{name}}.",
+          "item_restricted": "Požádejte vlastníka, aby přidal osobu {{name}}.",
+          "parent_not_readable": "Sdílejte nadřazenou položku s osobou {{name}}.",
+          "pending_rewrite": "Počkejte několik minut a pak zkontrolujte znovu.",
+          "syncing": "Počkejte na dokončení synchronizace.",
+          "scheme_unreadable": "Opravte oprávnění synchronizačního účtu ve zdroji.",
+          "deleted_at_source": "Není co dělat.",
+          "unexplained": "Obraťte se na podporu a sdělte jí referenci."
+        },
+        "errors": {
+          "failed": "Kontrolu se nepodařilo provést. Zkuste to znovu.",
+          "notFound": "Tato osoba nebo záznam v tomto konektoru nebyl nalezen.",
+          "rateLimited": "Příliš mnoho kontrol. Zkuste to znovu za minutu."
+        },
+        "peopleRetry": "Zkusit znovu",
+        "askedAbout": "K záznamu {{record}}"
+      },
       "access": {
         "title": "Přístup",
         "loading": "Načítání podrobností o přístupu…",
