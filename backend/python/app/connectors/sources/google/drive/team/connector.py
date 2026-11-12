@@ -272,6 +272,10 @@ class _ItemReadFailed(Exception):
     """An item's permissions could not be read: it is neither changed nor unchanged."""
 
 
+class _RemovalUndecided(RuntimeError):
+    """Whether anyone but the user who lost a file can still open it is not known yet."""
+
+
 @ConnectorBuilder("Drive Workspace")\
     .in_group("Google Workspace")\
     .with_description("Sync files and folders from Google Drive")\
@@ -2799,7 +2803,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         this user's access here.
         Any failed read or delete raises, so the user's checkpoint stays put and the
         change is read again next sync; ``_apply_removed_change`` bounds how long an
-        unrecognised 403 can do that.
+        unrecognised 403 can do that. When whether others can still open it is not
+        known yet, this user's own grant is removed before that.
         """
         if not file_id:
             return
@@ -2808,6 +2813,26 @@ class GoogleDriveTeamConnector(BaseConnector):
         )
         if record is None:
             return
+        try:
+            await self._decide_removed_change(record, user, owner_sources, drive_id)
+        except _RemovalUndecided:
+            await self._drop_reporters_grant(record, user)
+            raise
+
+    async def _drop_reporters_grant(self, record: Record, user: AppUser) -> None:
+        """The user who reported a file removed can no longer open it, whatever the others can: their own grant goes
+        now, and the rest waits for the change to be read again. A failure here is logged; the change is read again
+        anyway."""
+        try:
+            await self.data_entities_processor.delete_permission_from_record(
+                record_id=record.id, user_email=user.email, connector_id=record.connector_id
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not remove the reporting user's grant on {record.record_name}: {e}")
+
+    async def _decide_removed_change(
+        self, record: Record, user: AppUser, owner_sources: dict[str, GoogleDriveDataSource], drive_id: str | None
+    ) -> None:
         # A shared drive file's OWNER edges are its organizers, and an organizer who
         # left the drive gets "not found" too, so the owner is never asked for one.
         if drive_id and (
@@ -2936,14 +2961,18 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
             return False
 
-        if await still_open(record):
-            return
-        if record.mime_type in FOLDER_MIME_TYPES:
-            await remove_folder_confirming_contents(
-                self.data_entities_processor, self.connector_id, record, still_open, self.logger
-            )
-        else:
-            await self.data_entities_processor.on_record_deleted(record_id=record.id)
+        try:
+            if await still_open(record):
+                return
+            if record.mime_type in FOLDER_MIME_TYPES:
+                await remove_folder_confirming_contents(
+                    self.data_entities_processor, self.connector_id, record, still_open, self.logger
+                )
+            else:
+                await self.data_entities_processor.on_record_deleted(record_id=record.id)
+        except _RemovalUndecided:
+            await self._drop_reporters_grant(record, user)
+            raise
 
     async def _removal_candidates(self, record: Record, user: AppUser, drive_id: str) -> list[AppUser]:
         """Synced users who could still open a file a drive feed reported removed: the reporting user, the
@@ -3119,7 +3148,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     unanswered.append(group_id)
                 may_open |= self._audience_members.get(group_id, set())
         if unanswered:
-            raise RuntimeError(
+            raise _RemovalUndecided(
                 f"No one asked of {', '.join(unanswered)} answered whether {record.record_name} can still be opened"
             )
         self._raise_if_cut_listing_left_out(record, may_open, removed_for)
@@ -3138,7 +3167,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             and not self._is_inactive_email(e) and (domains is None or _email_domain(e) in domains)
         )
         if left_out:
-            raise RuntimeError(
+            raise _RemovalUndecided(
                 f"The user listing was cut, and {len(left_out)} people it left out may still open {record.record_name}"
             )
 

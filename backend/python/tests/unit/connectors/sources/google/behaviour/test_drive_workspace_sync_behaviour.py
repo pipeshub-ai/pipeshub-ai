@@ -3282,6 +3282,8 @@ async def test_a_removal_on_a_cut_listing_that_left_out_who_can_open_the_file_wa
     await ws.sync()
     assert "f" in ws.records.records, "people the listing left out were not asked"
     assert ws.incomplete is True and ws.user_checkpoint(LABS) == held, "the change is read again"
+    assert (LABS, "USER", "READ") not in ws.grants("f"), "Zed cannot open it: his own grant goes at once"
+    assert ("domain-members:example.com", "GROUP", "READ") in ws.grants("f")
 
     ws.world.cut_user_listing = None
     await ws.sync()
@@ -3308,3 +3310,42 @@ async def test_a_removal_asks_the_people_of_a_domain_a_share_reaches_when_its_ow
     await ws.sync()
     assert "g" in ws.records.records, "the people the share reaches were asked"
     assert (tom, "USER", "READ") not in ws.grants("g")
+
+
+async def test_a_removal_nobody_answers_for_takes_the_reporters_own_grant_at_once(ws: Workspace) -> None:
+    _audience_file_in_an_unwalked_drive(ws, discoverable("anyone"))
+    await ws.sync()
+    assert (BOB, "USER", "WRITE") in ws.grants("g1")
+    ws.world.unshare("g1", BOB)
+    ws.http.fail("GET", "/drive/v3/files/g1", 403, "insufficientFilePermissions", when=lambda r: r.identity != BOB)
+    await ws.sync()
+    assert "g1" in ws.records.records and ws.incomplete is True
+    assert (BOB, "USER", "WRITE") not in ws.grants("g1"), "Bob cannot open it, whatever the others can"
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("g1"), "the audience's grant waits"
+
+    ws.http.clear_faults()
+    await ws.sync()
+    assert "g1" in ws.records.records, "the audience still opens it"
+    assert (BOB, "USER", "WRITE") not in ws.grants("g1")
+
+
+async def test_a_shared_drive_removal_on_a_cut_listing_takes_the_reporters_grant_and_waits(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "writer"})
+    ws.world.add_item("d", "d.txt", parent="sd-1", perms=[{**reader(BOB), "role": "writer"}])
+    await ws.sync()
+    assert BOB in {g[0] for g in ws.grants("d")}
+
+    # The drive's feed, read by Bob on a run whose listing left out Alice, a member, reports the file removed.
+    connector = await ws.connector_()
+    connector._listing_cut = True
+    connector.synced_users = [u for u in connector.synced_users if u.email == BOB]
+    connector.synced_user_emails, connector._deployment_emails = {BOB}, None
+    ws.world.delete("d")
+    bob = connector.synced_users[0]
+    with pytest.raises(RuntimeError, match="left out"):
+        await connector._apply_shared_drive_removal("d", bob, "sd-1", await connector._build_user_drive_data_source(bob))
+    assert "d" in ws.records.records, "Alice was not asked"
+    assert BOB not in {g[0] for g in ws.grants("d")}, "Bob's own grant goes at once"
+
+    await ws.sync()
+    assert "d" not in ws.records.records, "the next complete listing settles it"
