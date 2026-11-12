@@ -1383,7 +1383,7 @@ class TestRequestLogging:
         from app.api.middlewares.request_log import install_request_logging
 
         mini = FastAPI()
-        mini.middleware("http")(qm.authenticate_requests)
+        mini.add_middleware(qm.AuthenticateRequests)
         install_request_logging(mini)  # same order as query_main
 
         @mini.get("/api/v1/kb/{kb_id}")
