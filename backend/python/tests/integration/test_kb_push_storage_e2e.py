@@ -35,7 +35,11 @@ from app.connectors.sources.localKB.push import worker as W
 from app.connectors.sources.localKB.push.contract import PushRefusal
 from app.connectors.sources.localKB.push.image_admission import ImageAdmission
 from app.connectors.sources.localKB.push.materialiser import Materialiser
-from app.connectors.sources.localKB.push.service import UNTRUSTED, KbPushService
+from app.connectors.sources.localKB.push.service import (
+    UNTRUSTED,
+    KbPushService,
+    push_record_key,
+)
 from app.connectors.sources.localKB.push.spool import Spool
 from app.services.graph_db.interface.graph_db_provider import RefAccess
 from app.services.storage_documents import StorageDocuments, StorageUploadError
@@ -74,7 +78,7 @@ def _config_service() -> MagicMock:
     return service
 
 
-async def upload_as(user_id: str | None, data: bytes, *, name: str | None = None, mime: str = "image/png") -> str:
+async def upload_as(user_id: str | None, data: bytes, *, name: str | None = None, mime: str = "image/png", tags: dict[str, str] | None = None) -> str:
     """Upload a document the way a user's session does: a service token that carries ``userId`` sets ``initiatorUserId``
     (``storage/utils/utils.ts:641-649``, ``storage.upload.service.ts:307-313``)."""
     claims = {"orgId": ORG_ID, "scopes": ["storage:token"], **({"userId": user_id} if user_id else {})}
@@ -85,6 +89,9 @@ async def upload_as(user_id: str | None, data: bytes, *, name: str | None = None
     form.add_field("documentName", name)
     form.add_field("documentPath", f"push-it/{name}")
     form.add_field("isVersionedFile", "false")
+    if tags:  # what any uploader can do: the push's own tag keys are not reserved
+        from app.modules.transformers.blob_storage import _add_custom_metadata_to_form
+        _add_custom_metadata_to_form(form, [{"key": k, "value": v} for k, v in tags.items()])
     async with aiohttp.ClientSession() as session, session.post(f"{API}/upload", data=form, headers={"Authorization": f"Bearer {token}"}, allow_redirects=False) as resp:
         doc_id = resp.headers.get("x-document-id")
         if resp.status in (301, 302, 307, 308):
@@ -300,3 +307,66 @@ async def test_signed_url_host_set_on_real_s3_and_azure(p: Pushes) -> None:
         # Real S3 URLs are https; the Azure leg runs Azurite, which serves plain http.
         assert urlsplit(info.object_url).scheme in {"s3": ("https",), "azureBlob": ("http", "https")}[STORAGE_TYPE]
     assert (await p.push(body_with([doc]))).status == "created"
+
+
+# ---- heal and R5 on real storage ----------------------------------------------------------------------------------
+
+def record_cleanups(p: Pushes) -> list[list[str]]:
+    published: list[list[str]] = []
+
+    async def cleanup(org_id, kb_id, ids) -> None:
+        published.append(list(ids))
+
+    p.svc._cleanup = cleanup
+    return published
+
+
+async def test_heal_on_real_storage(p: Pushes) -> None:
+    """Tags round-trip through the real storage service, and a leaked document is cleaned by the next content change."""
+    published = record_cleanups(p)
+    await p.push(body_with([], version=1, text="a"))
+    e1 = p.graph.record["externalRecordId"]
+    await p.push(body_with([], version=2, text="b"))
+    e2 = p.graph.record["externalRecordId"]
+    info = await p.docs.info(ORG_ID, e2)
+    assert info is not None and info.tags.get("previousDocumentId") == e1 and info.tags.get("connectorId") == KB
+    published.clear()  # the event for E1 never reached the consumer; E1 is still stored
+    await p.push(body_with([], version=3, text="c"))
+    assert published == [[e2, e1]]
+
+
+async def test_user_written_tags_cannot_steer_a_heal_delete(p: Pushes) -> None:
+    """A user uploads documents carrying the push's tag keys; the record names one of them; the heal still never reaches the other record's document."""
+    published = record_cleanups(p)
+    key = push_record_key(ORG_ID, KB, "it-1")
+    victim = await upload_as(USER_ID, b"victim", mime="application/octet-stream", tags={"connectorId": KB, "pushRecordKey": "another-records-key"})
+    forged = await upload_as(USER_ID, b"{}", mime="application/octet-stream",
+                             tags={"connectorId": KB, "pushRecordKey": key, "previousDocumentId": victim})
+    await p.push(body_with([], version=1, text="a"))
+    p.graph.record["externalRecordId"] = forged
+    published.clear()
+    r = await p.push(body_with([], version=2, text="b"))
+    assert r.status == "updated"
+    assert all(victim not in ids for ids in published) and await p.docs.exists(ORG_ID, victim)
+
+
+async def test_r5_an_image_replaced_in_flight_is_refused_and_the_next_push_stores_the_new_bytes_with_a_matching_fingerprint() -> None:
+    doc = await upload_as(USER_ID, PNG)
+
+    async def replace(_task) -> None:
+        await overwrite(doc, PNG + b"\x00replaced")
+
+    tmp = tempfile.mkdtemp(prefix="pb")
+    p = await build(tmp, before_task=replace)
+    try:
+        with pytest.raises(PushRefusal) as e:
+            await p.push(body_with([doc]))
+        assert (e.value.status, e.value.reason) == (422, "IMAGE_FETCH_FAILED") and not p.claims
+        p.mat.before_task = None
+        created = await p.push(body_with([doc]))
+        assert created.status == "created"
+        again = await p.push(body_with([doc]))
+        assert again.status == "unchanged", "the stored fingerprint is not newer than the stored bytes"
+    finally:
+        await p.mat.close()
+        shutil.rmtree(tmp, ignore_errors=True)

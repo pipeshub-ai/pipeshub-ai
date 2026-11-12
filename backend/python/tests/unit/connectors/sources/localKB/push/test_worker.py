@@ -400,14 +400,13 @@ async def test_a_sparse_cells_body_at_the_cap_is_accepted_inside_the_worker_boun
         await w.close()
 
 
-def test_a_spool_whose_directory_was_swept_while_idle_still_takes_a_body(tmp_path) -> None:
-    """A second process starting on the same root sweeps run directories idle past the limit."""
-    from app.connectors.sources.localKB.push import spool as spool_module
+def test_a_spool_whose_directory_disappeared_while_idle_still_takes_a_body(tmp_path) -> None:
+    """Something outside the process (a tmp cleaner, an operator) removed the run directory: the next body recreates it."""
+    import shutil
 
     idle = Spool(str(tmp_path))
     try:
-        assert spool_module.sweep(str(tmp_path), max_age_s=-1) == 1
-        assert not os.path.isdir(idle.dir)
+        shutil.rmtree(idle.dir)
 
         path = idle.write(b"body")
 
@@ -427,5 +426,232 @@ async def test_a_cancelled_validation_does_not_leave_its_result_for_the_next_pus
         v = await w.validate(spool.write(raw(envelope())), spool.new_path("out"), schema_id=None, schema=None)
 
         assert v.block_count == 1
+    finally:
+        await w.close()
+
+
+# ---- accounting: strikes, replays, overruns and shared-worker seconds -----------------------------
+
+class Events:
+    """Collects what a worker reports to the ledger."""
+
+    def __init__(self) -> None:
+        self.items: list[tuple[str, float]] = []
+
+    def __call__(self, event: str, value: float = 0.0) -> None:
+        self.items.append((event, value))
+
+    @property
+    def names(self) -> list[str]:
+        return [e for e, _ in self.items]
+
+    def lease_s(self) -> float:
+        return sum(v for e, v in self.items if e == "lease")
+
+
+async def start_accounted(worker: W.PushWorker, spool: Spool, body: bytes, events: Events) -> asyncio.Task:
+    task = asyncio.create_task(worker.validate(spool.write(body), spool.new_path("out"), schema_id=None, schema=None, account=events))
+    for _ in range(200):
+        await asyncio.sleep(0.05)
+        if worker._tasks >= 1 and worker._proc is not None:
+            break
+    return task
+
+
+async def push_small(w: W.PushWorker, spool: Spool, events: Events | None = None) -> W.Validated:
+    return await w.validate(spool.write(raw(envelope())), spool.new_path("out"), schema_id=None, schema=None, account=events)
+
+
+@pytest.mark.parametrize("sig", [signal.SIGABRT, signal.SIGSEGV, signal.SIGBUS])
+async def test_a_real_signal_death_on_a_fresh_worker_is_a_strike(spool, sig) -> None:
+    events, w = Events(), W.PushWorker()
+    try:
+        task = await start_accounted(w, spool, big_body(), events)
+        os.kill(w._proc.pid, sig)
+        with pytest.raises(PushRefusal) as e:
+            await task
+        assert e.value.status == 413
+        assert events.names == ["strike", "lease"]  # no replay: nothing ran on this worker before
+        assert w.deaths == 1
+    finally:
+        await w.close()
+
+
+async def test_an_external_sigkill_is_no_strike(spool) -> None:
+    events, w = Events(), W.PushWorker()
+    try:
+        task = await start_accounted(w, spool, big_body(), events)
+        os.kill(w._proc.pid, signal.SIGKILL)
+        with pytest.raises(PushRefusal) as e:
+            await task
+        assert e.value.status == 503 and events.names == ["lease"]
+    finally:
+        await w.close()
+
+
+async def test_a_reused_worker_death_is_replayed_once_and_a_surviving_replay_is_only_suspect(spool) -> None:
+    """The earlier push may have left the shared worker in a state that kills the next, harmless one."""
+    events, w = Events(), W.PushWorker()
+    try:
+        await push_small(w, spool)  # the worker has now served a task
+        task = await start_accounted(w, spool, big_body(), events)
+        os.kill(w._proc.pid, signal.SIGSEGV)
+        assert (await task).block_count == 60_000  # the replay on a fresh worker answered
+        assert events.names == ["suspect", "lease"] and w.deaths == 1
+    finally:
+        await w.close()
+
+
+async def test_a_replay_that_dies_too_is_a_strike(spool) -> None:
+    events, w = Events(), W.PushWorker()
+    try:
+        await push_small(w, spool)
+        task = await start_accounted(w, spool, big_body(), events)
+        first = w._proc.pid
+        os.kill(first, signal.SIGSEGV)
+        for _ in range(200):
+            await asyncio.sleep(0.05)
+            if w._proc is not None and w._proc.pid != first and w._tasks >= 1:
+                break
+        os.kill(w._proc.pid, signal.SIGSEGV)
+        with pytest.raises(PushRefusal) as e:
+            await task
+        assert e.value.status == 413 and events.names == ["strike", "lease"]
+    finally:
+        await w.close()
+
+
+async def test_a_reused_worker_death_after_a_long_run_is_the_bodys_own_and_is_not_replayed(spool, monkeypatch) -> None:
+    monkeypatch.setattr(W, "REPLAY_ONLY_BELOW_S", 0.0)
+    events, w = Events(), W.PushWorker()
+    try:
+        await push_small(w, spool)
+        task = await start_accounted(w, spool, big_body(), events)
+        os.kill(w._proc.pid, signal.SIGSEGV)
+        with pytest.raises(PushRefusal):
+            await task
+        assert events.names == ["strike", "lease"]
+    finally:
+        await w.close()
+
+
+async def test_a_replay_runs_inside_the_remaining_budget_not_a_fresh_one(spool) -> None:
+    events, w = Events(), W.PushWorker(kill_after_s=0.6)
+    try:
+        await push_small(w, spool)
+        task = await start_accounted(w, spool, big_body(150_000), events)
+        os.kill(w._proc.pid, signal.SIGSEGV)
+        started = time.monotonic()
+        with pytest.raises(PushRefusal) as e:
+            await task
+        assert e.value.reason == "PUSH_TIMEOUT"  # the replay hit the same 0.6 s wall budget
+        assert time.monotonic() - started < 2.0
+    finally:
+        await w.close()
+
+
+async def test_a_cpu_bound_overrun_is_a_strike(spool) -> None:
+    events, w = Events(), W.PushWorker(kill_after_s=0.5)
+    try:
+        with pytest.raises(PushRefusal) as e:
+            await w.validate(spool.write(big_body(150_000)), spool.new_path("out"), schema_id=None, schema=None, account=events)
+        assert e.value.reason == "PUSH_TIMEOUT" and events.names == ["strike", "lease"]
+    finally:
+        await w.close()
+
+
+async def test_an_idle_overrun_is_a_refusal_not_a_strike(spool) -> None:
+    """A worker that is stopped uses no CPU while it holds the lease: a slow host or dependency, not a hostile body."""
+    events, w = Events(), W.PushWorker(kill_after_s=0.6)
+    try:
+        await push_small(w, spool)
+        task = await start_accounted(w, spool, big_body(), events)
+        os.kill(w._proc.pid, signal.SIGSTOP)
+        with pytest.raises(PushRefusal) as e:
+            await task
+        assert e.value.reason == "PUSH_TIMEOUT" and events.names == ["overrun", "lease"]
+    finally:
+        await w.close()
+
+
+async def test_unreadable_cpu_is_not_counted(spool, monkeypatch) -> None:
+    monkeypatch.setattr(W.cpu, "read", lambda pid, proc_root="/proc": None)
+    events, w = Events(), W.PushWorker(kill_after_s=0.5)
+    try:
+        with pytest.raises(PushRefusal):
+            await w.validate(spool.write(big_body(150_000)), spool.new_path("out"), schema_id=None, schema=None, account=events)
+        assert events.names == ["overrun", "lease"]
+    finally:
+        await w.close()
+
+
+async def test_cpu_is_measured_per_task_not_as_the_workers_total(spool, monkeypatch) -> None:
+    """A worker that spent 40 s of CPU on earlier pushes is not struck for a short overrun."""
+    readings = iter([(4_000, 7), (4_010, 7)])  # ticks used so far, then 10 ticks later; same process
+    monkeypatch.setattr(W.cpu, "_TICKS", 100)
+    monkeypatch.setattr(W.cpu, "read", lambda pid, proc_root="/proc": next(readings))
+    events, w = Events(), W.PushWorker(kill_after_s=0.5)
+    try:
+        with pytest.raises(PushRefusal):
+            await w.validate(spool.write(big_body(150_000)), spool.new_path("out"), schema_id=None, schema=None, account=events)
+        assert events.names == ["overrun", "lease"]
+    finally:
+        await w.close()
+
+
+async def test_a_run_under_the_kill_is_still_charged_its_seconds(spool) -> None:
+    """A body that finishes just under the kill holds the shared worker all the same."""
+    events, w = Events(), W.PushWorker(kill_after_s=60)
+    try:
+        await push_small(w, spool)  # the worker is up: its start-up is not part of what is measured
+        started = time.monotonic()
+        v = await w.validate(spool.write(big_body()), spool.new_path("out"), schema_id=None, schema=None, account=events)
+        took = time.monotonic() - started
+        assert v.block_count == 60_000 and events.names == ["lease"]
+        assert events.lease_s() >= took * 0.9 and events.lease_s() > 0.2
+    finally:
+        await w.close()
+
+
+async def test_a_cancelled_task_is_charged_no_strike_and_no_overrun(spool) -> None:
+    events, w = Events(), W.PushWorker()
+    try:
+        task = await start_accounted(w, spool, big_body(), events)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert events.names == ["lease"]
+    finally:
+        await w.close()
+
+
+async def test_a_full_disk_at_the_out_write_is_spool_full_and_never_counted(spool) -> None:
+    if not os.path.exists("/dev/full"):
+        pytest.skip("not applicable on this platform: no /dev/full")
+    events, w = Events(), W.PushWorker()
+    try:
+        with pytest.raises(PushRefusal) as e:
+            await w.validate(spool.write(raw(envelope())), "/dev/full", schema_id=None, schema=None, account=events)
+        assert (e.value.status, e.value.reason) == (503, "SPOOL_FULL") and events.names == ["lease"]
+        assert (await push_small(w, spool)).block_count == 1  # the same worker went on
+    finally:
+        await w.close()
+
+
+async def test_a_workers_start_up_is_not_charged_to_the_caller_whose_push_started_it(spool, monkeypatch) -> None:
+    real_start = W.PushWorker._start
+
+    def slow_start(self) -> None:
+        time.sleep(0.7)  # a respawn after somebody else's crash
+        real_start(self)
+
+    monkeypatch.setattr(W.PushWorker, "_start", slow_start)
+    events, w = Events(), W.PushWorker()
+    try:
+        started = time.monotonic()
+        await push_small(w, spool, events)
+        took = time.monotonic() - started
+        assert took >= 0.7 and events.names == ["lease"]
+        assert events.lease_s() < took - 0.6, "the 0.7 s the worker took to start is not the caller's"
     finally:
         await w.close()
