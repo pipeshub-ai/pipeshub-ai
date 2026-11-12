@@ -338,7 +338,7 @@ def render_summary(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--docs", type=int, default=500)
     parser.add_argument("--seed", type=int, default=1337)
@@ -360,7 +360,11 @@ def main() -> None:
     parser.add_argument("--keep-kb", action="store_true", help="leave the benchmark KB in place afterwards")
     parser.add_argument("--output", type=Path, default=_IT_DIR / "reports" / "perf" / "indexing.json")
     parser.add_argument("--summary", type=Path, default=None, help="also write the Markdown summary here")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     load_env()
     result = run_benchmark(args)

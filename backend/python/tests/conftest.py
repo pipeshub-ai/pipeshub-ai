@@ -43,6 +43,12 @@ def _fresh_lane_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(assignment, "_shared", {})
 
 
+def pytest_itemcollected(item: pytest.Item) -> None:
+    """A ``planned`` test is a spec waiting for an implementation: never run it."""
+    if item.get_closest_marker("planned"):
+        item.add_marker(pytest.mark.skip(reason="planned: specified in the QA catalog, not implemented yet"))
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     # The forced exit below must report the run's own outcome.
     session.config._exitcode = int(exitstatus)

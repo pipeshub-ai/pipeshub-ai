@@ -16,7 +16,7 @@ RECOVERY_TIMEOUT = int(os.getenv("RESILIENCE_RECOVERY_TIMEOUT_SEC", "900"))
 POLL = 5
 # UNKNOWN: the record was read but carried no status yet, so it is still in flight.
 UNFINISHED = {"NOT_STARTED", "QUEUED", "IN_PROGRESS", "UNKNOWN"}
-EXTRACTION_FINISHED = frozenset({"COMPLETED", "FAILED"})
+EXTRACTION_FINISHED = frozenset({"COMPLETED", "FAILED", "SKIPPED"})
 
 
 def document(token: str) -> bytes:

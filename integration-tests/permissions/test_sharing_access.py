@@ -42,6 +42,7 @@ from helper.second_user import (
 logger = logging.getLogger("sharing-access")
 
 pytestmark = [
+    pytest.mark.live_model,
     pytest.mark.integration,
     pytest.mark.permissions,
     # The people and the knowledge base are shared by every test here.

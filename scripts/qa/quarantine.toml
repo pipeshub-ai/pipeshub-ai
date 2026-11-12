@@ -1,0 +1,10 @@
+# Flaky tests that still run but cannot block a merge.
+# Every entry needs an owner, an issue and an expiry date; `qa catalog lint`
+# fails once an entry expires, so quarantine cannot become permanent.
+#
+# [[test]]
+# id = "it:connectors/jira/jira_integration_test.py::TestJiraConnector::test_tc_incr_001_incremental_sync_new_issue"
+# owner = "@github-handle"
+# issue = "https://github.com/pipeshub-ai/pipeshub-ai/issues/123"
+# expires = 2026-11-01
+# reason = "Jira sandbox rate limit"

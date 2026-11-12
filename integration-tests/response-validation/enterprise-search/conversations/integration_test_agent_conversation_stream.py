@@ -51,6 +51,8 @@ from openapi_schema_validator import (
     assert_response_matches_openapi_ref,
 )
 
+pytestmark = pytest.mark.live_model
+
 SEARCH_QUERY = "every year asana undertakes which exercise?"
 
 # Lowercase keywords a KB-grounded answer to SEARCH_QUERY must contain.

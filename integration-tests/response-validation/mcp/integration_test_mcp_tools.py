@@ -33,7 +33,7 @@ from helper.indexing_progress import POLL, RECOVERY_TIMEOUT
 from helper.mcp_client import McpToolResult, call_mcp_tool
 from helper.stored_names import stored_name
 
-pytestmark = [pytest.mark.integration, pytest.mark.mcp]
+pytestmark = [pytest.mark.live_model, pytest.mark.integration, pytest.mark.mcp]
 
 CallTool = Callable[..., McpToolResult]
 

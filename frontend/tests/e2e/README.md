@@ -120,6 +120,10 @@ Playwright is configured with these projects:
 6. **unauthenticated** — Login page tests that run without saved auth.
 7. **first-run** — The first admin signing up on a fresh install and going through onboarding (AI model, embedding model, storage) into chat. It needs a stack with no organization, so it exists only when `E2E_FIRST_RUN=true` and runs with `--project=first-run`. It signs up with `TEST_USER_EMAIL` and `TEST_USER_PASSWORD`, so the other projects then sign in to the account it made. The smoke workflow runs it before it creates the org. Its models are "OpenAI Compatible" ones pointed at the stand-in served by the stack's `web-fixtures` service, so it needs no provider account.
 
+## Visual snapshots
+
+`--project=visual` (it exists only with `E2E_VISUAL=true` or `VISUAL_BASELINE_DIR` set) screenshots every screen of the responsive audit at 375x812 and 1440x900, in light and dark (the theme is set through `localStorage['pipeshub-theme-preference']`). Without `VISUAL_BASELINE_DIR` it only saves PNGs to `EVIDENCE_DIR`. With it, each screenshot is compared with the PNG of the same name in that folder (`maxDiffPixelRatio` 0.01), and a missing baseline is written only when you pass `--update-snapshots=missing` (the default mode fails on it). Shots are the size of the viewport, so a page whose data count changes does not change the image size. Pixels depend on the browser build, so take baselines and comparisons from the same Playwright image (`mcr.microsoft.com/playwright:v<version in package-lock.json>-noble`).
+
 ## Directory Structure
 
 ```

@@ -35,6 +35,7 @@ from helper.second_user import (
 )
 
 pytestmark = [
+    pytest.mark.live_model,
     pytest.mark.integration,
     pytest.mark.permissions,
     # One member and two knowledge bases shared by every test here.

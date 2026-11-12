@@ -53,7 +53,7 @@ from openapi_schema_validator import (
 
 # The Labs flag is org-wide, and one worker's teardown turning it off would
 # refuse another worker's projects mid-test, so the whole module runs on one.
-pytestmark = pytest.mark.xdist_group("projects")
+pytestmark = [pytest.mark.xdist_group("projects"), pytest.mark.live_model]
 
 PROJECTS_FLAG = "ENABLE_PROJECTS"
 # The API reads the flag through a cache of a few seconds (projects-feature.ts),

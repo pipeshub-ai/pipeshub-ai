@@ -121,6 +121,11 @@ def test_failed_enrichment_is_settled() -> None:
     assert _enriched(records) == "FAILED"
 
 
+def test_enrichment_skipped_by_configuration_is_settled() -> None:
+    records = _Records([{"indexingStatus": "COMPLETED", "extractionStatus": "SKIPPED"}])
+    assert _enriched(records) == "SKIPPED"
+
+
 def test_enrichment_that_never_finishes_fails_rather_than_returning() -> None:
     records = _Records(itertools.repeat({"extractionStatus": "IN_PROGRESS"}))
     with pytest.raises(AssertionError, match="still being enriched"):
