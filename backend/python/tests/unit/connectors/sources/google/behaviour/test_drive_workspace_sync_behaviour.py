@@ -3924,3 +3924,58 @@ async def test_a_not_found_from_another_domain_on_a_cut_listing_still_counts_the
     await ws.sync()
     assert "g" in ws.records.records, "Alice and Bob were not asked"
     assert ws.incomplete is True and (tom, "USER", "READ") not in ws.grants("g")
+
+
+def _grant_delete_fails_once(ws: Workspace) -> None:
+    delete = ws.records.delete_permission_from_record
+    failed: list[str] = []
+
+    async def flaky(record_id: str, user_email: str, connector_id: str | None = None) -> None:
+        if not failed:
+            failed.append(user_email)
+            raise RuntimeError("database unavailable while removing a grant")
+        await delete(record_id, user_email, connector_id)
+
+    ws.records.delete_permission_from_record = flaky
+
+
+async def test_a_failed_removal_of_the_reporters_grant_on_a_kept_shared_drive_file_is_tried_again(ws: Workspace) -> None:
+    ws.world.add_group("team@example.com", [CAROL])
+    ws.world.add_drive("sd-1", "Team", {BOB: "writer", "team@example.com": "reader"})
+    ws.world.add_item("d", "d.txt", parent="sd-1", perms=[{**reader(BOB), "role": "writer"}])
+    await ws.sync()
+    connector = await ws.connector_()
+    ws.world.drives["sd-1"]["members"].pop(BOB)
+    ws.world.files["d"].perms = []
+    ws.world.unlistable_groups["team@example.com"] = 403
+    connector._drive_member_emails, connector._group_members_cache = {}, {}
+    bob = next(u for u in connector.synced_users if u.email == BOB)
+    source = await connector._build_user_drive_data_source(bob)
+    _grant_delete_fails_once(ws)
+
+    # Raised, so the drive's checkpoint stays and the change is read again.
+    with pytest.raises(RuntimeError, match="removing a grant"):
+        await connector._apply_shared_drive_removal("d", bob, "sd-1", source)
+    assert "d" in ws.records.records and BOB in {g[0] for g in ws.grants("d")}
+
+    await connector._apply_shared_drive_removal("d", bob, "sd-1", source)
+    assert "d" in ws.records.records
+    assert BOB not in {g[0] for g in ws.grants("d")}
+
+
+async def test_a_failed_removal_of_the_reporters_grant_on_an_undecided_my_drive_removal_holds_the_change(ws: Workspace) -> None:
+    two_domains(ws, reach_all=False)
+    ws.records.active_users = [*ws.records.active_users, User(id="u-zed", email=LABS, is_active=True)]
+    ws.world.share("f", reader(LABS))
+    await ws.sync()
+    ws.world.cut_user_listing = {ADMIN, ALICE, BOB, XIA, YAN}
+    ws.world.unshare("f", LABS)
+    held = ws.user_checkpoint(LABS)
+    _grant_delete_fails_once(ws)
+    await ws.sync()
+    assert ws.user_checkpoint(LABS) == held and (LABS, "USER", "READ") in ws.grants("f")
+
+    ws.world.cut_user_listing = None
+    await ws.sync()
+    assert "f" in ws.records.records and (LABS, "USER", "READ") not in ws.grants("f")
+    assert ws.user_checkpoint(LABS) != held

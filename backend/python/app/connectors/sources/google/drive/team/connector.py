@@ -2943,14 +2943,11 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _drop_reporters_grant(self, record: Record, user: AppUser) -> None:
         """The user who reported a file removed can no longer open it, whatever the others can: their own grant goes
-        now, and the rest waits for the change to be read again. A failure here is logged; the change is read again
-        anyway."""
-        try:
-            await self.data_entities_processor.delete_permission_from_record(
-                record_id=record.id, user_email=user.email, connector_id=record.connector_id
-            )
-        except Exception as e:
-            self.logger.warning(f"Could not remove the reporting user's grant on {record.record_name}: {e}")
+        now. A failure raises, so the change is held and the grant is removed when it is read again, also when the
+        file itself is kept."""
+        await self.data_entities_processor.delete_permission_from_record(
+            record_id=record.id, user_email=user.email, connector_id=record.connector_id
+        )
 
     async def _decide_removed_change(
         self, record: Record, user: AppUser, owner_sources: dict[str, GoogleDriveDataSource], drive_id: str | None
