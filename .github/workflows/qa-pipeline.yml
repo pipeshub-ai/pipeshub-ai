@@ -48,6 +48,14 @@ on:
       requested_by:
         type: string
         default: ''
+      agent:
+        description: 'run the QA agent: Claude Code picks and judges the tests, the engine runs them, in one stack job'
+        type: boolean
+        default: false
+      combine:
+        description: 'agent only: pull requests to stack on the default branch first, as "NUMBER:SHA NUMBER:SHA ..."'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -205,7 +213,8 @@ jobs:
 
   run-unit:
     needs: plan
-    if: (vars.QA_ENFORCE == 'true' || github.event_name == 'schedule') && !inputs.plan_only && needs.plan.outputs.tests != '0'
+    # The QA agent runs the unit suites itself, in its stack job.
+    if: (vars.QA_ENFORCE == 'true' || github.event_name == 'schedule') && !inputs.plan_only && !inputs.agent && needs.plan.outputs.tests != '0'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -258,7 +267,7 @@ jobs:
 
   run-stack:
     needs: plan
-    if: (vars.QA_ENFORCE == 'true' || github.event_name == 'schedule') && !inputs.plan_only && needs.plan.outputs.needs_stack == 'true'
+    if: (vars.QA_ENFORCE == 'true' || github.event_name == 'schedule') && !inputs.plan_only && (needs.plan.outputs.needs_stack == 'true' || inputs.agent)
     # QA_STACK_RUNNER (repository variable) names a GitHub-hosted runner for repositories
     # without the RunsOn runners, such as a fork; the job then frees disk space first.
     runs-on: ${{ vars.QA_STACK_RUNNER || format('runs-on={0}/runner=4cpu-linux-x64/volume=100gb', github.run_id) }}
@@ -267,10 +276,11 @@ jobs:
       matrix:
         # The fallbacks are what a base engine that emits no such output implies:
         # one shard, on the standard profile's graph DB.
-        graph: ${{ fromJSON(needs.plan.outputs.graph_db || '["neo4j"]') }}
-        shard: ${{ fromJSON(needs.plan.outputs.shards || '[1]') }}
+        # The QA agent is one job: one Neo4j stack that every round of its tests reuses.
+        graph: ${{ inputs.agent && fromJSON('["neo4j"]') || fromJSON(needs.plan.outputs.graph_db || '["neo4j"]') }}
+        shard: ${{ inputs.agent && fromJSON('[1]') || fromJSON(needs.plan.outputs.shards || '[1]') }}
         # "" is the default stack; a variant is a stack of its own (qa run --stack-variant).
-        variant: ${{ fromJSON(needs.plan.outputs.variants || '[""]') }}
+        variant: ${{ inputs.agent && fromJSON('[""]') || fromJSON(needs.plan.outputs.variants || '[""]') }}
     environment:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
     # actions: read is for `gh run download` of the previous nightly's screenshots (schedule only).
@@ -536,7 +546,8 @@ jobs:
           persist-credentials: false
           # The upgrade variant finds the previous release with git describe --tags on HEAD^.
           # A string: the number 0 is falsy in an expression.
-          fetch-depth: ${{ matrix.variant == 'upgrade' && '0' || '1' }}
+          # The QA agent diffs against the default branch, and a combined run stacks pull requests on it.
+          fetch-depth: ${{ (matrix.variant == 'upgrade' || inputs.agent) && '0' || '1' }}
           fetch-tags: ${{ matrix.variant == 'upgrade' }}
       - uses: actions/download-artifact@v4
         with:
@@ -552,11 +563,11 @@ jobs:
           uv venv .venv --python 3.12
           VIRTUAL_ENV=.venv uv pip install -e .
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: contains(needs.plan.outputs.families, 'playwright')
+        if: contains(needs.plan.outputs.families, 'playwright') || inputs.agent
         with:
           node-version: '20'
       - name: Install frontend deps and Playwright browsers
-        if: contains(needs.plan.outputs.families, 'playwright')
+        if: contains(needs.plan.outputs.families, 'playwright') || inputs.agent
         working-directory: frontend
         run: |
           npm ci
@@ -582,14 +593,73 @@ jobs:
         run: |
           docker pull pipeshubai/pipeshub-ai-base:python-deps || true
           docker pull pipeshubai/pipeshub-ai-base:runtime || true
+      # The QA agent: the base branch's engine and prompt (the PR cannot change what Claude is told or
+      # allowed), the unit-test toolchains, the Claude Code CLI, and for a combined run the PR heads.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.agent
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: qa-engine
+          persist-credentials: false
+      - name: Install the unit-test toolchains and Claude Code for the QA agent
+        if: inputs.agent
+        run: |
+          sudo apt-get update && sudo apt-get install -y libmariadb-dev
+          uv venv "$RUNNER_TEMP/backend-venv" --python 3.12
+          VIRTUAL_ENV="$RUNNER_TEMP/backend-venv" uv pip install pytest pytest-asyncio pytest-timeout -e "backend/python[dev]"
+          echo "QA_PYTHON=$RUNNER_TEMP/backend-venv/bin/python" >> "$GITHUB_ENV"
+          (cd backend/nodejs/apps && npm ci)
+          npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 || echo "::warning::the claude CLI did not install; the floor alone will run"
+      - name: Fetch the pull requests to combine
+        if: inputs.agent && inputs.combine != ''
+        env:
+          COMBINE: ${{ inputs.combine }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          for pair in $COMBINE; do
+            [[ "$pair" =~ ^([0-9]{1,7}):([0-9a-f]{40})$ ]] || { echo "::error::bad combine entry"; exit 1; }
+            n=${BASH_REMATCH[1]} sha=${BASH_REMATCH[2]}
+            git -c "http.$GITHUB_SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" fetch -q --no-tags origin "+refs/pull/$n/head:refs/qa/pr-$n"
+            # The PR must still be at the commit the command checked.
+            [[ "$(git rev-parse "refs/qa/pr-$n")" == "$sha" ]] || { echo "::error::#$n moved since the command; run it again"; exit 1; }
+          done
       - name: Run the selected integration and e2e tests
         env:
+          AGENT: ${{ inputs.agent }}
+          COMBINE: ${{ inputs.combine }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # Only this step, and only for the QA agent: Claude Code's credential. A Claude subscription
+          # login (claude setup-token) or an API key.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.agent && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          ANTHROPIC_API_KEY: ${{ inputs.agent && secrets.ANTHROPIC_API_KEY || '' }}
+          QA_PLANNER: ${{ vars.QA_PLANNER || 'claude_code' }}
+          QA_PLANNER_MODEL: ${{ vars.QA_PLANNER_MODEL }}
+          QA_AGENT_MINUTES: ${{ vars.QA_AGENT_MINUTES }}
           GRAPH: ${{ matrix.graph }}
           SHARD: ${{ matrix.shard }}
           SHARD_TOTAL: ${{ needs.plan.outputs.shard_total || '1' }}
           VARIANT: ${{ matrix.variant }}
         # One shard passes no --shard, and the default stack no --stack-variant, so a PR tree whose engine predates them still runs.
         run: |
+          if [[ "$AGENT" == true ]]; then
+            engine=qa-engine/scripts/qa
+            if [[ ! -f qa-engine/scripts/qa/agent.py ]]; then
+              echo "::warning::The default branch's engine has no QA agent yet, so this run uses the PR's engine."
+              engine=scripts/qa
+            fi
+            if [[ -n "$COMBINE" ]]; then
+              args=(--stack managed --graph-db neo4j --combine-base "origin/$DEFAULT_BRANCH")
+              for pair in $COMBINE; do args+=(--combine "$pair"); done
+            else
+              args=(--stack managed --graph-db neo4j --target "$DEFAULT_BRANCH" --head "$HEAD_SHA")
+            fi
+            # The combine step commits; the gate is the report job's, so the agent's own exit code only goes to the log.
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            QA_ROOT="$GITHUB_WORKSPACE" python3 "$engine" --out qa-out agent "${args[@]}" || echo "qa agent exited $?"
+            exit 0
+          fi
           shard=()
           if [ "$SHARD_TOTAL" -gt 1 ]; then shard=(--shard "$SHARD/$SHARD_TOTAL"); fi
           if [ -n "$VARIANT" ]; then shard+=(--stack-variant "$VARIANT"); fi
@@ -603,6 +673,14 @@ jobs:
             qa-out/results-stack-*.json
             qa-out/logs/
             qa-out/junit-*.xml
+            qa-out/results-agent.json
+            qa-out/agent.json
+            qa-out/agent-plan.json
+            qa-out/agent-tests.patch
+            qa-out/combined.bundle
+            qa-out/agent/claude.log
+            qa-out/agent/rounds/*/logs/
+            !qa-out/stack/**
             frontend/test-results/**/*-diff.png
             integration-tests/reports/perf/smoke/summary.json
           retention-days: 14

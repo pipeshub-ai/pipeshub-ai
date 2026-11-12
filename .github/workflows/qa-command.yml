@@ -1,6 +1,7 @@
 name: QA command
 
 # `/qa` comments on a PR: plan | run | review | missing | since <sha> | range <a>[..<b>] | full
+# | agent | combine #a #b ... [--open-pr] (the QA agent; plain /qa too when vars.QA_AGENT is true)
 # | tests <module> | tests --implement <ids> (qa-tests.yml). `/qa` (run) on a same-repo PR also
 # sets improve: after the run, qa.yml strengthens and adds tests through qa-tests.yml.
 # The comment is untrusted: permission comes from the GitHub API and the
@@ -37,11 +38,13 @@ jobs:
           ACTOR: ${{ github.event.comment.user.login }}
           REPO: ${{ github.repository }}
           ADMIN_TEAM: ${{ vars.QA_ADMIN_TEAM }}
+          QA_AGENT: ${{ vars.QA_AGENT }}
         run: |
           perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission || echo none)
           team_flag=()
+          [[ "$QA_AGENT" == true ]] && team_flag+=(--agent-default)
           if [[ -n "$ADMIN_TEAM" ]] && gh api "orgs/${REPO%%/*}/teams/$ADMIN_TEAM/memberships/$ACTOR" --jq .state 2>/dev/null | grep -qx active; then
-            team_flag=(--admin-team)
+            team_flag+=(--admin-team)
           fi
           python3 scripts/qa command --body "$BODY" --permission "$perm" "${team_flag[@]}" > parsed.json || true
           jq -e . parsed.json >/dev/null 2>&1 || echo '{"ok":false,"error":"internal error"}' > parsed.json
@@ -97,6 +100,20 @@ jobs:
             gh api "repos/$REPO/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes >/dev/null
             exit 0
           fi
+          agent=$(jq -r '.agent // false' <<<"$PARSED")
+          combine="" open_pr=false
+          if [[ "$command" == combine ]]; then
+            open_pr=$(jq -r '.open_pr // false' <<<"$PARSED")
+            for n in $(jq -r .prs <<<"$PARSED"); do
+              read -r n_head n_fork n_state < <(gh pr view "$n" --repo "$REPO" --json headRefOid,isCrossRepository,state \
+                --jq '"\(.headRefOid) \(.isCrossRepository) \(.state)"' 2>/dev/null) || true
+              if [[ "$n_state" != OPEN || "$n_fork" != false || ! "$n_head" =~ ^[0-9a-f]{40}$ ]]; then
+                gh pr comment "$PR" --repo "$REPO" --body "QA command not run: #$n is not an open pull request from this repository."
+                exit 0
+              fi
+              combine+="${combine:+ }$n:$n_head"
+            done
+          fi
           mode=$(jq -r .mode <<<"$PARSED")
           base=$(jq -r '.base // ""' <<<"$PARSED")
           head_arg=$(jq -r --arg h "$head" '.head // $h' <<<"$PARSED")
@@ -107,10 +124,17 @@ jobs:
           [[ "$profile" == full ]] && profile=standard
           # The header of the run's PR comment; the parser checked every part against fixed patterns.
           display="/qa $command${base:+ ${base:0:12}}"
+          [[ "$command" == combine ]] && display+=" $(jq -r .prs <<<"$PARSED" | sed -E 's/([0-9]+)/#\1/g')"
+          [[ "$command" == run && "$agent" == true ]] && display="/qa (agent)"
           [[ "$command" == commit || -n "$base" && -n "$(jq -r '.head // ""' <<<"$PARSED")" ]] && display+=" ${head_arg:0:12}"
           [[ "$(jq -r .profile <<<"$PARSED")" =~ ^(fast|conservative|weekly)$ ]] && display+=" --profile $(jq -r .profile <<<"$PARSED")"
           improve=false
-          if [[ "$command" == run && "$fork" == false ]]; then
+          if [[ -n "$combine" ]]; then
+            # qa.yml reads the QA agent's settings from improve (a dispatch takes at most ten inputs).
+            improve="combine$([[ "$open_pr" == true ]] && echo -open) $combine"
+          elif [[ "$agent" == true ]]; then
+            improve="agent"  # the agent writes and proves its own tests
+          elif [[ "$command" == run && "$fork" == false ]]; then
             improve=true
           elif [[ "$command" == run && "$ENFORCE" == true ]]; then
             gh pr comment "$PR" --repo "$REPO" --body "QA improvements: improve skipped on fork PRs. \`/qa\` strengthens and adds tests only on PRs from this repository, because it pushes them to the PR branch."
@@ -124,6 +148,7 @@ jobs:
             gh workflow run "$name" --repo "$REPO" --ref "${{ github.event.repository.default_branch }}" \
               -f mode="$mode" -f pr="$PR" -f base_sha="$base" -f head_sha="$head_arg" \
               -f profile="$profile" -f plan_only="$plan_only" -f review="$review" -f improve="$improve" -f command="$display" -f requested_by="$ACTOR"
+
             echo "dispatched $name"
           done
           gh api "repos/$REPO/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes >/dev/null

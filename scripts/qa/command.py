@@ -24,6 +24,9 @@ COMMANDS: dict[str, dict[str, Any]] = {
     "since": {"min": "write", "mode": "since", "args": rf"(?P<base>{SHA})"},
     "range": {"min": "write", "mode": "range", "args": rf"(?P<base>{SHA})(?:\.\.(?P<head>{SHA}))?"},
     "full": {"min": "write", "mode": "full", "args": r""},
+    "agent": {"min": "write", "mode": "pr", "args": r""},
+    # Pull requests to stack on the default branch and test together, in this order.
+    "combine": {"min": "write", "mode": "pr", "args": r"(?P<prs>#?\d{1,7}(?:\s+#?\d{1,7}){1,7})(?P<open_pr>\s+--open-pr)?"},
     "tests": {"min": "write", "mode": "tests",
               "args": rf"(?P<module>[a-z][a-z0-9-]{{0,63}})|--implement\s+(?P<implement>{TEST_ID}(?:,{TEST_ID}){{0,9}})"},
 }
@@ -35,7 +38,8 @@ class CommandError(ValueError):
     pass
 
 
-def parse(body: str, permission: str, is_admin_team: bool = False) -> dict[str, Any]:
+def parse(body: str, permission: str, is_admin_team: bool = False, agent_default: bool = False) -> dict[str, Any]:
+    """agent_default (the repository variable QA_AGENT): plain /qa runs the QA agent instead of the plan."""
     first = (body or "").strip().splitlines()[0] if (body or "").strip() else ""
     if not first.startswith("/qa"):
         raise CommandError("not a /qa command")
@@ -55,8 +59,10 @@ def parse(body: str, permission: str, is_admin_team: bool = False) -> dict[str, 
         # Never echo the comment back: the reply is posted on the PR.
         raise CommandError(f"unknown command; use one of: {', '.join(COMMANDS)}")
     spec = COMMANDS[name]
-    if profile and name == "tests":
-        raise CommandError("/qa tests takes no --profile")
+    if profile and name in ("tests", "agent", "combine"):
+        raise CommandError(f"/qa {name} takes no --profile")
+    if trusted and name == "combine":
+        raise CommandError("/qa combine runs pull requests from this repository only; it takes no --trusted")
     m = re.fullmatch(spec["args"], rest.strip())
     if not m:
         raise CommandError(f"/qa {name} takes {_usage(name)}")
@@ -67,6 +73,13 @@ def parse(body: str, permission: str, is_admin_team: bool = False) -> dict[str, 
     out = {"command": name, "mode": spec["mode"], "profile": profile or ("full" if name == "full" else "standard"), "trusted": trusted,
            "plan_only": name in ("plan", "missing"), "review": name == "review"}
     out.update({k: v for k, v in m.groupdict().items() if v})
+    out["agent"] = name in ("agent", "combine") or (name == "run" and agent_default and not profile)
+    if name == "combine":
+        prs = [int(x) for x in re.findall(r"\d+", out["prs"])]
+        if len(set(prs)) != len(prs):
+            raise CommandError("/qa combine lists a pull request twice")
+        out["prs"] = " ".join(map(str, prs))
+        out["open_pr"] = bool(out.get("open_pr"))
     if tm:
         out["trusted_head"] = tm.group("sha")
     return out
@@ -78,4 +91,5 @@ def _usage(name: str) -> str:
         "since": "one commit sha: /qa since <sha>",
         "range": "a range: /qa range <sha> or /qa range <sha>..<sha>",
         "tests": "a module id or test ids: /qa tests <module> or /qa tests --implement <ID[,ID...]>",
+        "combine": "2 to 8 pull request numbers, in stacking order: /qa combine #12 #15 [--open-pr]",
     }.get(name, "no arguments")

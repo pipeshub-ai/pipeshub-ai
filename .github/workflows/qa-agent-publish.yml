@@ -1,0 +1,200 @@
+name: QA agent publish
+
+# Pushes what the QA agent produced (qa-pipeline.yml, agent mode), called by qa.yml after the run:
+#   a /qa run on a same-repo PR: the agent's test files, as one signed-off commit on the PR branch;
+#   /qa combine --open-pr: the combined commits plus those tests on a new branch qa-combined/<run id>,
+#   and a draft PR for it, linked from every combined PR.
+# The agent job ran PR code with Claude's credential, so nothing it uploaded is trusted: only test
+# files the default branch's engine recognises, no secret, and for a combined branch only files the
+# combined PRs touch. No force push, no merge commit. This job holds no secrets.
+
+on:
+  workflow_call:
+    inputs:
+      edition:
+        type: string
+        default: oss
+      pr:
+        type: string
+        required: true
+      head_sha:
+        type: string
+        required: true
+      combine:
+        type: string
+        default: ''
+      requested_by:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.combine != '' && github.event.repository.default_branch || inputs.head_sha }}
+          fetch-depth: 0
+          # The token goes to the push alone, not into .git/config while the engine reads the tree.
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: qa-engine
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: qa-results-stack-neo4j-1-${{ inputs.edition }}
+          # Outside the checkout: it holds test files.
+          path: ${{ runner.temp }}/agent
+
+      - name: Check and push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          COMBINE: ${{ inputs.combine }}
+          ACTOR: ${{ inputs.requested_by }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          # Failures are handled below, so the PR always gets its comment.
+          set +e -uo pipefail
+          [[ "$PR" =~ ^[0-9]+$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::pr, head_sha or run id is malformed"; exit 1; }
+          [[ "$ACTOR" =~ ^[A-Za-z0-9-]{1,39}$ ]] || ACTOR="$GITHUB_ACTOR"
+          agent="$RUNNER_TEMP/agent"
+          patch=$(find "$agent" -name agent-tests.patch -print -quit 2>/dev/null)
+          bundle=$(find "$agent" -name combined.bundle -print -quit 2>/dev/null)
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # Every path a test file the default branch's engine recognises, inside the checkout, through no symlink.
+          tests_only() {
+            local f
+            for f in "$@"; do
+              [[ "$f" != *..* && "$f" != .github/* && "$f" != qa-engine/* && ! -L "$f" ]] || return 1
+              [[ "$(realpath -m -- "$f")" == "$GITHUB_WORKSPACE/$f" ]] || return 1
+            done
+            QA_ROOT="$GITHUB_WORKSPACE" python3 -I - "$@" <<'PY'
+          import sys
+          sys.path.insert(0, "qa-engine/scripts")
+          from qa import agent, config
+          cfg = config.load()
+          bad = [p for p in sys.argv[1:] if not agent.is_test_path(cfg, p)]
+          print("\n".join(bad), file=sys.stderr)
+          sys.exit(1 if bad else 0)
+          PY
+          }
+          changed_files() { git status --porcelain --untracked-files=all | cut -c4- | grep -v '^qa-engine/'; }
+          # Apply the agent's test patch on HEAD and commit it; prints why not, or nothing when committed.
+          commit_tests() {
+            if [[ -z "$patch" || ! -s "$patch" ]]; then echo "the agent kept no test changes"; return; fi
+            if ! git apply --check "$patch" 2>/dev/null; then echo "the agent's test changes do not apply"; return; fi
+            git apply "$patch"
+            local files
+            mapfile -t files < <(changed_files)
+            if [[ ${#files[@]} -eq 0 ]] || ! tests_only "${files[@]}"; then
+              git checkout -q -- . && git clean -fdq -e qa-engine
+              echo "the agent's changes include files that are not tests"; return
+            fi
+            git add -A -- "${files[@]}"
+            if git diff --cached | grep -qF -- "$GH_TOKEN"; then
+              git reset -q --hard && git clean -fdq -e qa-engine
+              echo "the change holds a secret"; return
+            fi
+            git commit -q -s -m "qa: tests from the QA agent" -m "Requested by $ACTOR on PR $PR. Run: $RUN_URL"
+          }
+
+          status=""
+          if [[ -z "$COMBINE" ]]; then
+            head="" fork="" state="" branch="" decision="" automerge=""
+            read -r head fork state branch decision automerge < <(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+              --json headRefOid,isCrossRepository,state,headRefName,reviewDecision,autoMergeRequest \
+              --jq '"\(.headRefOid) \(.isCrossRepository) \(.state) \(.headRefName) \(.reviewDecision // "" | if . == "" then "NONE" else . end) \(.autoMergeRequest != null)"') || true
+            shown_branch=${branch//[\`@]/}
+            if [[ -z "$head" ]]; then status="Not pushed: the PR could not be read."
+            elif [[ "$state" != OPEN ]]; then status="Not pushed: this PR is not open."
+            elif [[ "$fork" != false ]]; then status="Not pushed: this PR is from a fork, and this workflow cannot push to it."
+            elif [[ "$head" != "$HEAD_SHA" ]]; then status="Not pushed: the PR moved from \`${HEAD_SHA:0:10}\` to \`${head:0:10}\` during the run. Run the command again."
+            elif [[ -z "$patch" || ! -s "$patch" ]]; then status="Nothing to push: the agent added no tests."
+            elif ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then status="Not pushed: the PR branch name is not a valid ref."
+            elif [[ "$decision" != NONE && "$decision" != REVIEW_REQUIRED && "$decision" != CHANGES_REQUESTED || "$automerge" != false ]]; then
+              # A workflow-token push starts no checks, and no reviewer would see it before the merge.
+              status="Not pushed: the PR is approved or set to auto-merge, so a bot commit would land unreviewed. The tests are in the run's artifact."
+            elif [[ "$(gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .protected 2>/dev/null)" != false ]]; then
+              status="Not pushed: \`$shown_branch\` is protected, or its protection could not be read."
+            else
+              why=$(commit_tests)
+              if [[ -n "$why" ]]; then status="Not pushed: $why."
+              # Never forced: a branch that moved since the checkout rejects the push.
+              elif git -c "http.$GITHUB_SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" push -q origin "HEAD:refs/heads/$branch"; then
+                status="Pushed \`$(git rev-parse --short=10 HEAD)\` to \`$shown_branch\`: the agent's tests as one signed-off commit. A push made with the workflow token starts no other workflows; push a commit or re-run the checks."
+              else status="Not pushed: \`$shown_branch\` moved during the run. Run the command again."
+              fi
+            fi
+            gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "QA agent ([run]($RUN_URL)): $status" >/dev/null
+            echo "$status"
+            exit 0
+          fi
+
+          # /qa combine --open-pr
+          numbers=() allowed="$RUNNER_TEMP/allowed.txt"
+          : > "$allowed"
+          for pair in $COMBINE; do
+            [[ "$pair" =~ ^([0-9]{1,7}):[0-9a-f]{40}$ ]] || { echo "::error::bad combine entry"; exit 1; }
+            n=${BASH_REMATCH[1]}
+            numbers+=("$n")
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$n/files" --paginate --jq '.[].filename' >> "$allowed" || status="Not pushed: the files of #$n could not be read."
+          done
+          list=$(printf '#%s, ' "${numbers[@]}"); list=${list%, }
+          base=$(git rev-parse HEAD)
+          new_branch="qa-combined/$RUN_ID"
+          if [[ -n "$status" ]]; then :
+          elif [[ -z "$bundle" ]] || ! git bundle verify -q "$bundle" >/dev/null 2>&1; then
+            status="Not pushed: there are no combined commits (the combine stopped, or the run failed before it)."
+          elif ! git fetch -q "$bundle" "refs/qa/combined:refs/qa/combined"; then
+            status="Not pushed: the combined commits could not be read."
+          elif [[ -n "$(git rev-list --merges "$base..refs/qa/combined")" ]]; then
+            status="Not pushed: the combined branch holds a merge commit."
+          else
+            mapfile -t files < <(git diff --name-only "$base" refs/qa/combined)
+            extra=()
+            for f in "${files[@]}"; do grep -qxF -- "$f" "$allowed" || extra+=("$f"); done
+            if [[ ${#extra[@]} -gt 0 ]] && ! tests_only "${extra[@]}"; then
+              status="Not pushed: the combined commits change files none of $list touches."
+            else
+              git switch -q -c "$new_branch" refs/qa/combined
+              why=$(commit_tests)
+              note=""
+              [[ -n "$why" && "$why" != "the agent kept no test changes" ]] && note=" The agent's tests were left out: $why."
+              if git -c "http.$GITHUB_SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" push -q origin "HEAD:refs/heads/$new_branch"; then
+                url=$(gh pr create --repo "$GITHUB_REPOSITORY" --draft --base "$DEFAULT_BRANCH" --head "$new_branch" \
+                  --title "Combined: $list" \
+                  --body "$list stacked on \`$DEFAULT_BRANCH\` by \`/qa combine\` ([run]($RUN_URL)), one commit per pull request; any conflict resolution is a commit of its own. Review the resolutions before merging this, or merge the pull requests themselves.") || url=""
+                status="Pushed \`$new_branch\`${url:+ and opened the draft PR $url}.$note"
+              else
+                status="Not pushed: \`$new_branch\` could not be pushed."
+              fi
+            fi
+          fi
+          for n in "${numbers[@]}"; do
+            gh pr comment "$n" --repo "$GITHUB_REPOSITORY" --body "QA combined run of $list ([run]($RUN_URL)): $status" >/dev/null
+          done
+          [[ " ${numbers[*]} " == *" $PR "* ]] || gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "QA combined run of $list ([run]($RUN_URL)): $status" >/dev/null
+          echo "$status"
