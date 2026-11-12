@@ -3266,3 +3266,45 @@ async def test_an_unreadable_domain_list_keeps_a_domain_groups_stored_people_unt
     ws.world.domains_unreadable = False
     await ws.sync()
     assert domain_members(ws, "alias.example.net") == {ADMIN, ALICE, "dave@example.com"}, "written exactly again"
+
+
+async def test_a_removal_on_a_cut_listing_that_left_out_who_can_open_the_file_waits_for_a_complete_one(ws: Workspace) -> None:
+    two_domains(ws, reach_all=False)
+    ws.records.active_users = [*ws.records.active_users, User(id="u-zed", email=LABS, is_active=True)]
+    ws.world.share("f", reader(LABS))
+    await ws.sync()
+    assert ("domain-members:example.com", "GROUP", "READ") in ws.grants("f") and (LABS, "USER", "READ") in ws.grants("f")
+
+    # Only Zed is listed; the domain share stays, so Alice and everyone on example.com can still open the file.
+    ws.world.cut_user_listing = {ADMIN, ALICE, BOB, XIA, YAN}
+    ws.world.unshare("f", LABS)
+    held = ws.user_checkpoint(LABS)
+    await ws.sync()
+    assert "f" in ws.records.records, "people the listing left out were not asked"
+    assert ws.incomplete is True and ws.user_checkpoint(LABS) == held, "the change is read again"
+
+    ws.world.cut_user_listing = None
+    await ws.sync()
+    assert "f" in ws.records.records
+    assert (LABS, "USER", "READ") not in ws.grants("f")
+    assert ("domain-members:example.com", "GROUP", "READ") in ws.grants("f")
+    assert ws.user_checkpoint(LABS) != held
+
+
+async def test_a_removal_asks_the_people_of_a_domain_a_share_reaches_when_its_own_have_run_out(ws: Workspace) -> None:
+    tom = "tom@third.example.net"
+    two_domains(ws, reach_all=False)
+    ws.world.other_domains["third.example.net"] = []
+    ws.world.add_user(tom)
+    ws.world.domain_share_reaches = {("example.com", "labs.example.org")}
+    ws.world.add_item("g", "g.txt", parent="root-admin", owner=ADMIN, perms=[discoverable("domain", domain="example.com"), reader(tom)])
+    ws.records.active_users = [*ws.records.active_users, *(User(id=f"u-{e}", email=e, is_active=True) for e in (tom, LABS, XIA))]
+    await settle(ws)
+    assert reach(ws) is True and {LABS, XIA} <= domain_members(ws, "example.com")
+
+    # Nobody on example.com uses this deployment any more; the people of labs.example.org still open the file.
+    ws.records.active_users = [u for u in ws.records.active_users if u.email in (tom, LABS, XIA)]
+    ws.world.unshare("g", tom)
+    await ws.sync()
+    assert "g" in ws.records.records, "the people the share reaches were asked"
+    assert (tom, "USER", "READ") not in ws.grants("g")

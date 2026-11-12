@@ -2928,6 +2928,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                     return False
                 self.logger.info(f"Keeping {item.record_name}: {candidate.email} can still open it")
                 return True
+            holders = await self.data_entities_processor.get_users_with_permission_to_node(
+                item.id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            self._raise_if_cut_listing_left_out(
+                item, {*self._drive_member_emails.get(drive_id, ()), *((u.email or "").lower() for u in holders)}, user
+            )
             return False
 
         if await still_open(record):
@@ -2951,7 +2957,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                     if permission.entity_type == EntityType.USER and permission.email:
                         members.append(permission.email.lower())
                     elif permission.entity_type == EntityType.GROUP and permission.external_id:
-                        members.extend(sorted(await self._synced_group_members(permission.external_id) or ()))
+                        # Everyone in it, synced or not: only synced users are asked, and the rest can keep a file.
+                        members.extend(sorted(await self._group_member_emails(permission.external_id) or ()))
                 self._drive_member_emails[drive_id] = members
             wanted.extend(self._drive_member_emails[drive_id])
         holders = await self.data_entities_processor.get_users_with_permission_to_node(
@@ -3053,7 +3060,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         unable; for an audience, only "not found" or the trash. A group whose members the
         directory won't list counts as able, so the file is kept; any other failure, and
         an audience none of whose people asked said "not found", raises, so the change is
-        read again next sync.
+        read again next sync. So does a cut user listing that left out someone who may
+        still open it: an empty pool of people to ask is not "nobody can".
         """
         holders = await self.data_entities_processor.get_users_with_permission_to_node(
             record.id, CollectionNames.RECORDS.value, raise_on_error=True
@@ -3062,6 +3070,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             record.id, CollectionNames.RECORDS.value, raise_on_error=True
         )
         holder_emails = {(u.email or "").lower() for u in holders} & await self._synced_user_emails()
+        # Everyone who may open it, listed or not: a cut user listing leaves some of them out of the people asked.
+        may_open = {(u.email or "").lower() for u in holders}
         audiences: list[str] = []
         for group in groups:
             if _is_audience_group(group.source_user_group_id):
@@ -3075,6 +3085,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
                 return True
             holder_emails |= members
+            may_open |= self._group_people.get(group.source_user_group_id) or set()
 
         by_email = {u.email.lower(): u for u in self.synced_users if u.email}
         others = {e: u for e, u in by_email.items() if e != removed_for.email.lower()}
@@ -3087,30 +3098,60 @@ class GoogleDriveTeamConnector(BaseConnector):
         synced = await self._synced_user_emails()
         unanswered: list[str] = []
         for group_id in dict.fromkeys(audiences):
-            pool = [others[e] for e in self._audience_people(group_id) if e in synced and e in others and e not in holder_emails]
+            # The people it always holds first; then those it holds by Google's answer (another domain a share
+            # with this one reaches), when they run out.
+            asked: list[AppUser] = []
+            for people in self._audience_people(group_id):
+                pool = [others[e] for e in people if e in synced and e in others and e not in holder_emails]
+                asked += secrets.SystemRandom().sample(pool, min(AUDIENCE_PROBES - len(asked), len(pool)))
             refused = False
-            for other in secrets.SystemRandom().sample(pool, min(AUDIENCE_PROBES, len(pool))):
+            for other in asked:
                 answer = await self._audience_member_can_open(record, other, owner_sources)
                 if answer:
                     return True
                 refused |= answer is False
-            if pool and not refused:
+            if asked and not refused:
                 unanswered.append(group_id)
+            elif not refused:
+                # Nobody else to ask. Who the group holds is unknown when its write failed; a person a cut listing
+                # left out may still be in it.
+                if group_id not in self._audience_members:
+                    unanswered.append(group_id)
+                may_open |= self._audience_members.get(group_id, set())
         if unanswered:
             raise RuntimeError(
                 f"No one asked of {', '.join(unanswered)} answered whether {record.record_name} can still be opened"
             )
+        self._raise_if_cut_listing_left_out(record, may_open, removed_for)
         return False
 
-    def _audience_people(self, group_id: str) -> list[str]:
-        """The people an audience group always holds: everyone for "anyone" shares, and the people on a domain for
-        its shares. When there are none, the people it holds as last written."""
+    def _raise_if_cut_listing_left_out(self, record: Record, may_open: set[str], removed_for: AppUser) -> None:
+        """On a cut user listing, people it left out were not asked whether they can open the file, so "nobody can"
+        is not known: raise, and the change is read again on a complete listing. Only the account's own people who
+        are not known to be unable to sign in count."""
+        if not self._listing_cut:
+            return
+        domains = self._account_domains
+        left_out = sorted(
+            e for e in may_open
+            if e and e not in self.synced_user_emails and e != (removed_for.email or "").lower()
+            and not self._is_inactive_email(e) and (domains is None or _email_domain(e) in domains)
+        )
+        if left_out:
+            raise RuntimeError(
+                f"The user listing was cut, and {len(left_out)} people it left out may still open {record.record_name}"
+            )
+
+    def _audience_people(self, group_id: str) -> tuple[list[str], list[str]]:
+        """The people an audience group holds, as (those it always holds: everyone listed for "anyone" shares, the
+        listed people on a domain for its shares; the others it holds as last written, such as the people of each
+        domain Google showed a share with it reaches)."""
         domain = group_id.removeprefix(DOMAIN_MEMBERS_GROUP_PREFIX) if group_id != ALL_MEMBERS_GROUP_ID else None
-        base = sorted(
+        own = sorted(
             e for u in self.synced_users
             if (e := (u.email or "").lower()) and (domain is None or _email_domain(e) == domain)
         )
-        return base or sorted(self._audience_members.get(group_id, set()))
+        return own, sorted(self._audience_members.get(group_id, set()) - set(own))
 
     async def _audience_member_can_open(
         self, record: Record, user: AppUser, sources: dict[str, GoogleDriveDataSource]
