@@ -5258,7 +5258,7 @@ class TestExternalCollaboratorBrowse:
         )
 
         call = provider.client.execute_query.await_args
-        assert "WITH app, allNodes + kh_placed AS allNodes" in call.args[0]
+        assert "WITH app, allNodes + [kh_x IN kh_placed WHERE NOT kh_x IN allNodes] AS allNodes" in call.args[0]      # each once
         assert call.kwargs["parameters"]["kh_lists"]["kh_placed"] == ["r9", "g9"]
 
 

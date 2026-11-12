@@ -12,8 +12,8 @@ import logging
 import pytest
 
 from . import gen
-from .kh_layer import KhFinding, check_world, children_of
-from .kh_worlds import DECLSTUB, KH_WORLDS, OPENSTUB, SCOPEDTWO, TWOWAY
+from .kh_layer import KhFinding, browse_pages, check_world, children_of
+from .kh_worlds import DECLSTUB, FOLDERSTUB, KH_WORLDS, OPENSTUB, SCOPEDTWO, TWOWAY
 from .scenario import Scenario, load_all
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(0)]  # sized by the scenario set and PERM_GEN_WORLDS
@@ -104,6 +104,22 @@ async def test_a_stub_is_listed_where_a_browse_of_the_stub_itself_lists_somethin
                 assert not bad, f"{layer.name}\n{_describe(bad)}"
             finally:
                 await layer.release([world])
+
+
+async def test_a_folder_lists_each_stub_once_over_its_pages(graph_layers) -> None:
+    """A stub the folder's rule lists and its reach reaches is one row: once over every page, and counted once in the total."""
+    for layer in graph_layers:
+        await layer.preload([FOLDERSTUB])
+        try:
+            items, totals, counted = await browse_pages(layer, FOLDERSTUB, "u", "f", "folder")
+            ns = await layer._ns(FOLDERSTUB)
+            ids = [ns.local(item.id) for item in items]
+            assert sorted(ids) == sorted(["s", *(f"f{i}" for i in range(8))]), layer.name
+            assert set(totals) == set(counted) == {9}, (layer.name, totals, counted)
+            bad = _bad(await check_world(layer, FOLDERSTUB, "folderstub"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([FOLDERSTUB])
 
 
 async def test_the_declared_group_arm_lists_only_its_own_connectors_records(graph_layers) -> None:

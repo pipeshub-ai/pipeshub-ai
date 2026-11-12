@@ -344,5 +344,19 @@ grants: [[u, d], [u, p], [u, q], [u, s]]
 gates: [[u, A]]
 """))
 
+# FOLDERSTUB: a folder (a record) holding a stub its rule lists and its reach reaches, beside more records than one page holds: the stub is one row
+FOLDERSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: f, kind: record, connector: A, rule: OPEN, parents: [g], inherits: [g], belongs: [g]}
+  - {id: s, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [f], inherits: [f]}
+  - {id: r, kind: record, connector: A, rule: OPEN, parents: [s], inherits: [s]}
+""" + "".join(f"  - {{id: f{i}, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]}}\n" for i in range(8)) + """
+grants: [[u, g]]
+gates: [[u, A]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
-             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO]
+             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB]

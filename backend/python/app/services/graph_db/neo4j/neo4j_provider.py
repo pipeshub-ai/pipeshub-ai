@@ -21618,15 +21618,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """The row's own `fromApp` (`walked_from_app`), the one value the row's arrow and its openable test read."""
             return by_probe(walked_from_app("node"))
 
-        def reached_stubs(start: str) -> str:
-            """Beside the stubs the rule selects, a stub child of ``start`` that a browse of it reaches from the App: opening it lists what its own reach
-            reads, whatever the hop from ``start`` says."""
+        def reached_stubs(start: str, ruled: str) -> str:
+            """Beside the stubs the rule selects (``ruled``, the rule's test written over ``kh_sn``), each stub child of ``start`` that a browse of it
+            reaches from the App, once: opening it lists what its own reach reads, whatever the hop from ``start`` says. None the rule selects, so the
+            two lists join without a repeat."""
             if not lists_placeholders:
                 return "[]"
-            # The stubs are picked first, so that only a stub makes the walk (the planner would otherwise walk from every child).
-            return by_probe(f"[kh_sn IN [({start})-[kh_sr:NODE_RELATION]->(kh_sx) WHERE kh_sr.relationshipType {hierarchy}"
-                            f" AND NOT coalesce({start}.hideChildren, false) AND {self._kh_placeholder('kh_sx', state=state)} | kh_sx]"
-                            f" WHERE {walked_from_app('kh_sn')}]")
+            # The stubs are picked first, and once each (two edges may join the same pair), so that only a stub makes the walk (the planner would
+            # otherwise walk from every child).
+            stubs = (f"reduce(kh_sa = [], kh_sx IN [({start})-[kh_sr:NODE_RELATION]->(kh_sy) WHERE kh_sr.relationshipType {hierarchy}"
+                     f" AND NOT coalesce({start}.hideChildren, false) AND {self._kh_placeholder('kh_sy', state=state)} | kh_sy]"
+                     f" | CASE WHEN kh_sx IN kh_sa THEN kh_sa ELSE kh_sa + kh_sx END)")
+            return by_probe(f"[kh_sn IN {stubs} WHERE NOT ({ruled}) AND {walked_from_app('kh_sn')}]")
 
         def held_by_row() -> str:
             container = ("(node:RecordGroup OR node:KhFolder)" if state else
@@ -21828,11 +21831,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             scope = f"""
         {"OPTIONAL MATCH" if wants_chain_tops or lists_placeholders else "MATCH"} (app)-[kh_ra:NODE_RELATION]->(ca)
         WHERE kh_ra.relationshipType {hierarchy} AND {direct_hop} AND {_cypher_read_by_app("ca")}
-        WITH app, collect(DISTINCT ca) + {reached_stubs("app")} AS allNodes
+        WITH app, collect(DISTINCT ca) AS allNodes
+        WITH app, allNodes + {reached_stubs("app", f"{self._kh_v3_granted_hop('kh_sn', 'app', state=state, grant_once=probe is not None and listing_by_probe, opens=app_opens)} AND {_cypher_read_by_app('kh_sn')}")} AS allNodes
             """
             if wants_chain_tops:
                 scope += f"""{placed_nodes}
-        WITH app, allNodes + kh_placed AS allNodes
+        WITH app, allNodes + [kh_x IN kh_placed WHERE NOT kh_x IN allNodes] AS allNodes
             """
         else:
             scope = f"""
@@ -22095,10 +22099,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
              // _kh_v3_name_parents picks among these with the access check.
              {parent_options} AS parentOptions, {"false" if flatten else own_from_app()} AS kh_row_from_app
         WITH {row} AS node, item.sortKey AS sortKey, item.nullRank AS nullRank,
-             idx, total, nRecord, nFolder, nGroup, parentOptions
+             idx, total, nRecord, nFolder, nGroup, parentOptions,
+             // as a scoped browse's rows: the chain-top question and the row's own reach, settled by the page (`_kh_v3_settle_held_arrows`)
+             {"false" if flatten else held_by_row()} AS khHeld, {"true" if flatten else "kh_row_from_app"} AS khFromApp
         ORDER BY idx
         RETURN collect(node{{.*, sortKey: sortKey, nullRank: nullRank,
-                             parentOptions: parentOptions}}) AS rows,
+                             parentOptions: parentOptions, khHeld: khHeld, khFromApp: khFromApp}}) AS rows,
                head(collect(total)) AS total,
                head(collect(nRecord)) AS nRecord,
                head(collect(nFolder)) AS nFolder,
@@ -22124,6 +22130,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             placed_below_start = f"""{placed_nodes}
             UNWIND rawNodes + kh_placed + [null] AS kh_n
             WITH app, start, collect(DISTINCT kh_n) AS rawNodes""" if wants_chain_tops else ""
+            def child_rule(c: str, p: str) -> str:
+                """What lists ``c`` under ``p`` below the start: the same test for the walk and for keeping the stubs it lists out of `reached_stubs`."""
+                return self._kh_v3_child_rule(c, p, from_app="fromApp", opens="appOpensEverything", state=state, grant_once=grant_once)
+
             # An admitted start with no children must still return one row, or
             # the breadcrumb scope disappears with the empty unwind.
             # The walk runs inside the CALL and hands on nodes: an id list imported
@@ -22143,9 +22153,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             OPTIONAL MATCH (start)
                   ((pa)-[kh_rd:NODE_RELATION]->(ca)
                    WHERE kh_rd.relationshipType {hierarchy}
-                     AND ({self._kh_v3_child_rule("ca", "pa", from_app="fromApp", opens="appOpensEverything", state=state, grant_once=grant_once)})
+                     AND ({child_rule("ca", "pa")})
                   ){depth} (na)
-            WITH app, start, collect(DISTINCT na) + {reached_stubs("start")} AS rawNodes{placed_below_start}
+            WITH app, start, fromApp, appOpensEverything, collect(DISTINCT na) AS rawNodes
+            WITH app, start, rawNodes + {reached_stubs("start", child_rule("kh_sn", "start"))} AS rawNodes{placed_below_start}
             // What the seek by id enforced; the hop already drops deleted nodes.
             // Only nodes of the request's org.
             // The start is not its own descendant, even on a cycle.
