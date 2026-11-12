@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import secrets
 import shutil
 import tempfile
 import uuid
@@ -209,10 +210,18 @@ DISCOVERABLE_SHARES_SYNC_POINT_KEY = "discoverable_shares_read"
 # verified domain (domain shares). Ids have no "@", so they are never mistaken for a Workspace group.
 ALL_MEMBERS_GROUP_ID = "workspace-members"
 DOMAIN_MEMBERS_GROUP_PREFIX = "domain-members:"
-# Google's answer, per verified domain, to whether a share with that domain reaches the people of the account's
-# other verified domains, and how long it is trusted before it is asked again.
+# Google's answers, per verified domain D and each other verified domain E, to whether a share with D reaches the
+# people of E, and how long one is trusted before it is asked again.
 DOMAIN_REACH_SYNC_POINT_PREFIX = "domain_share_reach_"
 DOMAIN_REACH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+# Files kept per domain to ask that with, and at most this many with the same owners.
+REACH_CANDIDATES = 6
+REACH_CANDIDATES_PER_OWNER = 2
+# The membership digests of the audience groups as last written, so an unchanged group is not written again.
+AUDIENCE_DIGESTS_SYNC_POINT_KEY = "audience_group_digests"
+# People of an audience asked whether they can still open a file. Everyone in an audience has the same access, so
+# a clean "no" from each of them shows the share is gone; more than one allows for a person who cannot use Drive.
+AUDIENCE_PROBES = 3
 FILTER_CLEANUP_PAGE_SIZE = 500
 
 
@@ -237,6 +246,15 @@ def _sole_domain_share(permissions: list[dict]) -> tuple[str, list[str]] | None:
     if share.get("type") != "domain" or share.get("allowFileDiscovery") is not True or not share.get("domain"):
         return None
     return share["domain"].lower(), [p["emailAddress"].lower() for p in owners]
+
+
+def _add_reach_candidate(candidates: list[dict], candidate: dict) -> None:
+    if (
+        len(candidates) < REACH_CANDIDATES
+        and all(c["file_id"] != candidate["file_id"] for c in candidates)
+        and sum(c["owners"] == candidate["owners"] for c in candidates) < REACH_CANDIDATES_PER_OWNER
+    ):
+        candidates.append(candidate)
 
 
 def _delegated_scopes() -> list[str]:
@@ -489,9 +507,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Audience groups written by the last user listing; a discoverable share grants only these.
         self._audience_groups: set[str] = set()
         self._audience_loaded = False
+        # Who is in each audience group as last written, and the domains of each person's alias addresses.
+        self._audience_members: dict[str, set[str]] = {}
+        self._alias_domains: dict[str, set[str]] = {}
         # Domains this run has no answer for on how far their share reaches, and files that can ask it, by domain.
         self._reach_unknown: set[str] = set()
-        self._reach_candidates: dict[str, dict] = {}
+        self._reach_candidates: dict[str, list[dict]] = {}
 
     async def init(self) -> bool:
         """Initialize the Google Drive enterprise connector with service account credentials and services."""
@@ -701,6 +722,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._account_domains = None
             self._audience_groups = set()
             self._audience_loaded = False
+            self._audience_members = {}
             self._reach_unknown = set()
             self._reach_candidates = {}
             self._refreshed_folders = set()
@@ -784,6 +806,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             self.logger.info("Fetching all users from Google Workspace Admin API...")
             all_users: List[AppUser] = []
+            alias_domains: dict[str, set[str]] = {}
             page_token: Optional[str] = None
 
             while True:
@@ -848,6 +871,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 source_created_at=source_created_at
                             )
                             all_users.append(app_user)
+                            alias_domains[email.lower()] = {
+                                _email_domain(a) for a in [*(user.get("aliases") or []), *(user.get("nonEditableAliases") or [])]
+                            }
 
                         except Exception as e:
                             self.logger.error(f"Error processing user {user.get('id', 'unknown')}: {e}", exc_info=True)
@@ -877,6 +903,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Store users for use in batch processing
             self.synced_users = all_users
             self.synced_user_emails = {user.email.lower() for user in all_users if user.email}
+            self._alias_domains = alias_domains
             await self._apply_user_status(all_users)
             await self._write_audience_groups()
 
@@ -903,12 +930,13 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _write_audience_groups(self) -> None:
         """The groups a discoverable share grants: every enabled person ("anyone" shares), and one group per domain
-        (domain shares) holding the enabled people whose address is on that domain, or every enabled person once
-        Google has shown that a share with that domain reaches them all (`_domain_reach`).
+        (domain shares) holding the enabled people whose address is on that domain, and those of each other domain
+        that Google has shown a share with it reaches (`_domain_reach`).
 
         Groups, not an organization grant, because an organization grant also reaches guests and accounts
         that cannot sign in. A domain whose people are all gone is written empty, so no one keeps its access, and
-        a change in Google's answer changes who is in the groups, not the grants on each file.
+        a change in Google's answer changes who is in the groups, not the grants on each file. A group whose people
+        are the same as when it was last written is not written again.
         """
         enabled = [u for u in self.synced_users if u.is_active and not self._is_inactive_email(u.email)]
         by_domain: dict[str, list[AppUser]] = {}
@@ -923,10 +951,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             reach = await self._domain_reach(domains, enabled)
         except Exception as e:
             self.logger.warning(f"Could not settle how far domain shares reach; each reaches its own domain only: {e}")
-            reach = set()
+            reach = {}
         audiences = {ALL_MEMBERS_GROUP_ID: ("Workspace members", enabled)}
         audiences.update({
-            DOMAIN_MEMBERS_GROUP_PREFIX + d: (f"Members of {d}", enabled if d in reach else by_domain.get(d, []))
+            DOMAIN_MEMBERS_GROUP_PREFIX + d: (
+                f"Members of {d}", [u for e in sorted({d, *reach.get(d, ())}) for u in by_domain.get(e, [])]
+            )
             for d in set(by_domain) | domains
         })
         try:
@@ -934,19 +964,38 @@ class GoogleDriveTeamConnector(BaseConnector):
                 gone = stored.source_user_group_id or ""
                 if gone.startswith(DOMAIN_MEMBERS_GROUP_PREFIX) and gone not in audiences:
                     audiences[gone] = (stored.name, [])
-            await self.data_entities_processor.on_new_user_groups([
-                (
-                    AppUserGroup(
-                        source_user_group_id=group_id,
-                        app_name=self.connector_name,
-                        connector_id=self.connector_id,
-                        name=name,
-                        description="Enabled people a discoverable share is open to",
-                    ),
-                    members,
+            digests: dict[str, str] = {}
+            for group_id, (_, members) in audiences.items():
+                people = {f"{(u.email or '').lower()}|{u.source_user_id}" for u in members}
+                digests[group_id] = f"{group_id}|{self._people_digest(people)}"
+            try:
+                written = set((await self.drive_delta_sync_point.read_sync_point(AUDIENCE_DIGESTS_SYNC_POINT_KEY) or {}).get("digests") or [])
+            except Exception as e:
+                self.logger.warning(f"Could not read which discoverable-share groups are up to date; writing them all: {e}")
+                written = set()
+            changed = sorted(g for g, digest in digests.items() if digest not in written)
+            if changed:
+                # Forgotten first: a write that fails part way may have stored some of them, and none may then be
+                # skipped as unchanged while the store holds other people than they should.
+                await self.drive_delta_sync_point.update_sync_point(AUDIENCE_DIGESTS_SYNC_POINT_KEY, {
+                    "digests": sorted(written - {e for e in written if e.rpartition("|")[0] in changed}),
+                })
+                await self.data_entities_processor.on_new_user_groups([
+                    (
+                        AppUserGroup(
+                            source_user_group_id=group_id,
+                            app_name=self.connector_name,
+                            connector_id=self.connector_id,
+                            name=audiences[group_id][0],
+                            description="Enabled people a discoverable share is open to",
+                        ),
+                        audiences[group_id][1],
+                    )
+                    for group_id in changed
+                ])
+                await self.drive_delta_sync_point.update_sync_point(
+                    AUDIENCE_DIGESTS_SYNC_POINT_KEY, {"digests": sorted(digests.values())}
                 )
-                for group_id, (name, members) in audiences.items()
-            ])
         except Exception as e:
             # Like a group that failed in the listing: the stored groups stay as they were, grants are still
             # written to them, and the run is reported incomplete so the write is tried again.
@@ -954,84 +1003,149 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"Error writing the discoverable-share groups; the stored ones are kept: {e}", exc_info=True)
             return
         self._audience_groups = set(audiences)
+        self._audience_members = {g: {(u.email or "").lower() for u in members} for g, (_, members) in audiences.items()}
         self._audience_loaded = True
 
-    async def _domain_reach(self, domains: set[str], enabled: list[AppUser]) -> set[str]:
-        """The verified domains a share with which Google has shown to reach the people of every verified domain.
+    async def _domain_reach(self, domains: set[str], enabled: list[AppUser]) -> dict[str, set[str]]:
+        """For each verified domain D, the other verified domains whose people Google has shown a share with D reaches.
 
         Google documents only that a domain permission refers to its domain, not whether it reaches the account's
-        other domains, so it is asked for each domain on its own (`_probe_domain_reach`): one answer says nothing
-        of another. An answer is kept with the domains it was asked for, until it is DOMAIN_REACH_MAX_AGE_MS old
-        or the domains change. A domain without an answer is left out: its share reaches its own people only.
+        other domains, so each pair of domains is asked on its own (`_reach_pair`): one answer says nothing of
+        another. An answer is kept with the domains it was asked for, until it is DOMAIN_REACH_MAX_AGE_MS old or the
+        domains change; a pair Google gave no answer for is asked again when a run reads a file that can ask it. A
+        pair without an answer is left out: the share reaches D's own people only.
         """
         self._reach_unknown = set()
         if len(domains) < 2:
-            return set()
+            return {}
         now = get_epoch_timestamp_in_ms()
-        reach: set[str] = set()
+        reach: dict[str, set[str]] = {}
         for domain in sorted(domains):
             key = f"{DOMAIN_REACH_SYNC_POINT_PREFIX}{domain}"
             stored = await self.drive_delta_sync_point.read_sync_point(key) or {}
-            answer = stored.get("covered") if (
-                stored.get("domains") == sorted(domains) and now - int(stored.get("checked_at") or 0) < DOMAIN_REACH_MAX_AGE_MS
-            ) else None
-            if answer is None:
-                candidates = [{"file_id": stored["file_id"], "domain": domain, "owners": stored.get("owners") or []}] \
-                    if stored.get("file_id") else []
-                if (found := self._reach_candidates.get(domain)) and found not in candidates:
-                    candidates.append(found)
-                for candidate in candidates:
-                    answer = await self._probe_domain_reach(candidate, domains, enabled)
-                    if answer is not None:
-                        await self.drive_delta_sync_point.update_sync_point(key, {
-                            "covered": answer, "domains": sorted(domains), "checked_at": now, **candidate,
-                        })
-                        self.logger.info(f"A share with {domain} {'reaches' if answer else 'does not reach'} the account's other domains")
-                        break
-            if answer is None:
-                self._reach_unknown.add(domain)
-            elif answer:
-                reach.add(domain)
+            # JSON text: the graph stores refuse nested maps.
+            state = json.loads(stored.get("state") or "{}") if stored.get("domains") == sorted(domains) else {}
+            answers: dict[str, list] = state.get("answers") or {}
+            found = self._reach_candidates.get(domain) or []
+            candidates: list[dict] = list(state.get("candidates") or [])
+            for candidate in found:
+                _add_reach_candidate(candidates, candidate)
+            ordered: list[dict] | None = None
+            for other in sorted(domains - {domain}):
+                covered, checked_at = answers.get(other) or (None, 0)
+                if now - int(checked_at) >= DOMAIN_REACH_MAX_AGE_MS or (covered is None and found):
+                    if ordered is None:
+                        ordered, candidates = await self._reach_candidates_in_order(domain, candidates, enabled)
+                    covered = await self._reach_pair(domain, other, ordered, enabled)
+                    answers[other] = [covered, now]
+                    if covered is not None:
+                        self.logger.info(f"A share with {domain} {'reaches' if covered else 'does not reach'} the people of {other}")
+                if covered:
+                    reach.setdefault(domain, set()).add(other)
+                elif covered is None:
+                    self._reach_unknown.add(domain)
+            if ordered is not None:
+                await self.drive_delta_sync_point.update_sync_point(key, {
+                    "domains": sorted(domains), "state": json.dumps({"answers": answers, "candidates": candidates}),
+                })
         return reach
 
-    async def _probe_domain_reach(self, candidate: dict, domains: set[str], enabled: list[AppUser]) -> bool | None:
-        """Open, as an enabled person of another verified domain, a My Drive file whose only permissions are its
-        owners and one discoverable share with a verified domain: found means the share reaches them, "not found"
-        that it does not. None (unknown) for anything else: no such file or person any more, or another error."""
-        file_id, domain, owners = candidate.get("file_id"), candidate.get("domain"), candidate.get("owners") or []
-        owner = next((u for u in enabled if (u.email or "").lower() in owners), None)
-        person = next((
-            u for u in enabled
-            if _email_domain(u.email) in domains and _email_domain(u.email) != domain and (u.email or "").lower() not in owners
-        ), None)
-        if not (file_id and domain in domains and owner and person):
+    async def _owner_view(self, source: GoogleDriveDataSource, file_id: str) -> tuple[str, tuple | None, list[str]] | None:
+        """A My Drive file as its owner reads it now: everything the check depends on (its folder and every
+        permission), its sole domain share as (domain, owners), and its folders. None in a shared drive or with
+        more permissions than one page holds."""
+        meta = await source.files_get(fileId=file_id, fields="id, driveId, parents", supportsAllDrives=True)
+        listed = await source.permissions_list(
+            fileId=file_id, supportsAllDrives=True, pageSize=100,
+            fields="nextPageToken, permissions(id, type, role, domain, emailAddress, deleted, allowFileDiscovery)",
+        )
+        if meta.get("driveId") or listed.get("nextPageToken"):
             return None
+        permissions = listed.get("permissions") or []
+        sole = _sole_domain_share(permissions)
+        parents = sorted(meta.get("parents") or [])
+        state = json.dumps([parents, sorted(json.dumps(p, sort_keys=True) for p in permissions)])
+        return state, (sole[0], sorted(sole[1])) if sole else None, parents
+
+    async def _reach_candidates_in_order(
+        self, domain: str, candidates: list[dict], enabled: list[AppUser]
+    ) -> tuple[list[dict], list[dict]]:
+        """The candidates still shared with the domain alone, outside a shared drive, as their owners read them now,
+        those at the top of the owner's My Drive first; and the ones to keep for later, which leaves out only those
+        found no longer fit to ask with."""
+        ranked: list[tuple[bool, dict]] = []
+        keep: list[dict] = []
+        for candidate in candidates:
+            owner = next((u for u in enabled if (u.email or "").lower() in candidate["owners"]), None)
+            if owner is None:
+                continue
+            try:
+                source = await self._build_user_drive_data_source(owner)
+                view = await self._owner_view(source, candidate["file_id"])
+                if view is None or view[1] != (domain, candidate["owners"]):
+                    continue
+                root = (await source.files_get(fileId="root", fields="id")).get("id")
+            except Exception as e:
+                self.logger.warning(f"Could not read file {candidate['file_id']} to check how far a share with {domain} reaches: {e}")
+                keep.append(candidate)
+                continue
+            keep.append(candidate)
+            ranked.append((root not in view[2], candidate))
+        return [c for _, c in sorted(ranked, key=lambda r: r[0])], keep
+
+    async def _reach_pair(self, domain: str, other: str, ordered: list[dict], enabled: list[AppUser]) -> bool | None:
+        """Whether a share with `domain` reaches the people of `other`: no as soon as a file says so, yes only once
+        files of two different owners say so, as one owner can open a single file to the person being asked. None
+        (unknown) otherwise."""
+        covered_by: list[set[str]] = []
+        for candidate in ordered:
+            answer = await self._probe_domain_reach(candidate, domain, other, enabled)
+            if answer is False:
+                return False
+            if answer and all(owners.isdisjoint(candidate["owners"]) for owners in covered_by):
+                covered_by.append(set(candidate["owners"]))
+                if len(covered_by) == 2:
+                    return True
+        return None
+
+    async def _probe_domain_reach(
+        self, candidate: dict, domain: str, other: str, enabled: list[AppUser]
+    ) -> bool | None:
+        """Open a My Drive file whose only permissions are its owners and one discoverable share with `domain`, as an
+        enabled person of `other` with no address on `domain`, picked at random each time: found means the share
+        reaches them, "not found" that it does not. The owner reads the file before and after, and it must be the same
+        both times, or a share or move made in between could answer. None (unknown) for anything else: no such file
+        or person any more, a change in between, or another error."""
+        file_id, owners = candidate["file_id"], candidate["owners"]
+        owner = next((u for u in enabled if (u.email or "").lower() in owners), None)
+        people = [
+            u for u in enabled
+            if _email_domain(u.email) == other and (u.email or "").lower() not in owners
+            and domain not in self._alias_domains.get((u.email or "").lower(), set())
+        ]
+        if owner is None or not people:
+            return None
+        person = secrets.choice(people)
         try:
-            # Read again as the owner: the file must still be shared with that domain alone, outside a shared drive.
             owner_source = await self._build_user_drive_data_source(owner)
-            meta = await owner_source.files_get(fileId=file_id, fields="id, driveId", supportsAllDrives=True)
-            listed = await owner_source.permissions_list(
-                fileId=file_id, supportsAllDrives=True, pageSize=100,
-                fields="nextPageToken, permissions(type, role, domain, emailAddress, deleted, allowFileDiscovery)",
-            )
-            found = _sole_domain_share(listed.get("permissions") or [])
-            if meta.get("driveId") or listed.get("nextPageToken") or not found or (found[0], sorted(found[1])) != (domain, sorted(owners)):
+            before = await self._owner_view(owner_source, file_id)
+            if before is None or before[1] != (domain, owners):
                 return None
             source = await self._build_user_drive_data_source(person)
+            try:
+                await source.files_get(fileId=file_id, fields="id", supportsAllDrives=True)
+                answer = True
+            except HttpError as e:
+                if e.resp.status != HttpStatusCode.NOT_FOUND.value:
+                    raise
+                answer = False
+            if await self._owner_view(owner_source, file_id) != before:
+                self.logger.info(f"File {file_id} changed while checking how far a share with {domain} reaches; asked again later")
+                return None
         except Exception as e:
-            self.logger.warning(f"Could not check how far a domain share reaches with file {file_id}: {e}")
+            self.logger.warning(f"Could not check how far a share with {domain} reaches with file {file_id}: {e}")
             return None
-        try:
-            await source.files_get(fileId=file_id, fields="id", supportsAllDrives=True)
-        except HttpError as e:
-            if e.resp.status == HttpStatusCode.NOT_FOUND.value:
-                return False
-            self.logger.warning(f"Could not check how far a domain share reaches with file {file_id}: {e}")
-            return None
-        except Exception as e:
-            self.logger.warning(f"Could not check how far a domain share reaches with file {file_id}: {e}")
-            return None
-        return True
+        return answer
 
     async def _load_audience_groups(self) -> None:
         """The audience groups the store holds, when this process has not written them (a reindex or a failed
@@ -1494,7 +1608,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                     sole = None if item_drive_id or page_token or result.get("nextPageToken") else _sole_domain_share(permissions_data)
                     if sole and sole[0] in self._account_domains:
                         # A file that can ask Google how far a share with its domain reaches (`_domain_reach`).
-                        self._reach_candidates.setdefault(sole[0], {"file_id": resource_id, "domain": sole[0], "owners": sorted(sole[1])})
+                        _add_reach_candidate(
+                            self._reach_candidates.setdefault(sole[0], []), {"file_id": resource_id, "owners": sorted(sole[1])}
+                        )
                 if audiences_apply and (missing := {
                     g for p in permissions_data if not p.get("deleted") and (g := self._discoverable_audience(p))
                 } - self._audience_groups):
@@ -2685,10 +2801,6 @@ class GoogleDriveTeamConnector(BaseConnector):
         caller can tell "nobody synced is in it" from "can't say". Read once per run;
         any other failed read raises, so the change is read again next sync.
         """
-        if _is_audience_group(group_email):
-            # Known here, not in the directory. Everyone synced: the callers only ask Google, as each of them, whether
-            # they can open a file, so a wider list asks more people and never grants more.
-            return set(await self._synced_user_emails())
         if group_email in self._group_members_cache:
             return self._group_members_cache[group_email]
         try:
@@ -2729,10 +2841,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Whether a synced user other than ``removed_for`` can still open the record's file.
 
         Asks each active synced user the graph holds a permission for, directly or
-        through a group grant. "Not found", a known permission refusal, or the trash
-        count as unable. A group whose members the directory won't list counts as
-        able, so the file is kept; any other failure raises, so the change is read
-        again next sync.
+        through a group grant, then up to AUDIENCE_PROBES people of each audience group
+        granted on it. "Not found", a known permission refusal, or the trash count as
+        unable. A group whose members the directory won't list counts as able, so the
+        file is kept; any other failure raises (for an audience, only when none of the
+        people asked answered), so the change is read again next sync.
         """
         holders = await self.data_entities_processor.get_users_with_permission_to_node(
             record.id, CollectionNames.RECORDS.value, raise_on_error=True
@@ -2741,12 +2854,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             record.id, CollectionNames.RECORDS.value, raise_on_error=True
         )
         holder_emails = {(u.email or "").lower() for u in holders} & await self._synced_user_emails()
-        audience: set[str] = set()
+        audience: list[str] = []
         for group in groups:
             if _is_audience_group(group.source_user_group_id):
-                # Asked after everyone else, and at most MAX_IMPERSONATION_CANDIDATES of them: an audience can be
-                # the whole account.
-                audience |= await self._synced_group_members(group.source_user_group_id) or set()
+                audience += self._audience_people(group.source_user_group_id)
                 continue
             members = await self._synced_group_members(group.source_user_group_id)
             if members is None:
@@ -2757,25 +2868,45 @@ class GoogleDriveTeamConnector(BaseConnector):
                 return True
             holder_emails |= members
 
-        def askable(emails: set[str]) -> list[AppUser]:
+        def askable(emails: list[str]) -> list[AppUser]:
+            by_email = {u.email.lower(): u for u in self.synced_users if u.email}
             return [
-                u for u in self.synced_users
-                if u.email and u.email.lower() in emails and u.email.lower() != removed_for.email.lower()
+                by_email[e] for e in dict.fromkeys(emails)
+                if e in by_email and e != removed_for.email.lower()
             ]
 
-        for other in askable(holder_emails):
+        for other in askable(sorted(holder_emails)):
             if await self._user_can_open(record, other, owner_sources):
                 return True
-        rest = askable(audience - holder_emails)
-        for other in rest[:MAX_IMPERSONATION_CANDIDATES]:
-            if await self._user_can_open(record, other, owner_sources):
-                return True
-        if len(rest) > MAX_IMPERSONATION_CANDIDATES:
-            self.logger.info(
-                f"Keeping {record.record_name}: its audience is larger than the {MAX_IMPERSONATION_CANDIDATES} people asked"
-            )
-            return True
+        # Everyone in an audience has the same access, so a few of them answer for all: a clean "no" from each says
+        # its share is gone. Never kept only because the audience is large, which would keep its grant for good.
+        synced = await self._synced_user_emails()
+        answered = 0
+        error: Exception | None = None
+        for other in askable([e for e in audience if e in synced and e not in holder_emails])[:2 * AUDIENCE_PROBES]:
+            try:
+                if await self._user_can_open(record, other, owner_sources):
+                    return True
+            except Exception as e:
+                self.logger.warning(f"Could not ask a person of its audience whether they can open {record.record_name}: {e}")
+                error = e
+                continue
+            answered += 1
+            if answered == AUDIENCE_PROBES:
+                break
+        if error is not None and not answered:
+            raise error
         return False
+
+    def _audience_people(self, group_id: str) -> list[str]:
+        """The people of an audience group, those every version of it holds first: everyone for "anyone" shares, and
+        the people on a domain for its shares. Then the people it holds as last written."""
+        domain = group_id.removeprefix(DOMAIN_MEMBERS_GROUP_PREFIX) if group_id != ALL_MEMBERS_GROUP_ID else None
+        base = sorted(
+            e for u in self.synced_users
+            if (e := (u.email or "").lower()) and (domain is None or _email_domain(e) == domain)
+        )
+        return base + sorted(self._audience_members.get(group_id, set()) - set(base))
 
     async def _user_can_open(
         self, record: Record, user: AppUser, sources: dict[str, GoogleDriveDataSource]

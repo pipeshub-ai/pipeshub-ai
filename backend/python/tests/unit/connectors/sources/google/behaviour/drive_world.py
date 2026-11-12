@@ -191,6 +191,8 @@ class DriveWorld:
         self.domains_unreadable = False
         # Whether a domain share reaches the people of the account's other domains, which Google does not document.
         self.domain_share_reaches_all = False
+        # Or only from one domain to another: {("example.com", "labs.example.org")}.
+        self.domain_share_reaches: set[tuple[str, str]] = set()
         self.restrictions_unreadable = False
         self.hide_unreadable_parents = False
         self.files: dict[str, FileState] = {}
@@ -438,11 +440,15 @@ class DriveWorld:
             for perm in node.perms:
                 if perm.get("type") == "anyone":
                     return True
-                if perm.get("type") == "domain" and email.rpartition("@")[2] == perm.get("domain"):
-                    return True
+                if perm.get("type") == "domain" and perm.get("domain") in {
+                    a.rpartition("@")[2] for a in (email, *(a for a, e in self.aliases.items() if e == email))
+                }:
+                    return True  # an alias address on the domain counts too
                 if perm.get("type") == "domain" and self.domain_share_reaches_all and {
                     perm.get("domain"), email.rpartition("@")[2]
                 } <= self.account_domains():
+                    return True
+                if perm.get("type") == "domain" and (perm.get("domain"), email.rpartition("@")[2]) in self.domain_share_reaches:
                     return True
         return False
 
@@ -724,9 +730,11 @@ class DriveWorld:
             return google_error(403, "forbidden", "Not Authorized to access this resource/api")
         return None
 
-    @staticmethod
-    def _directory_user(u: DriveUser) -> dict[str, Any]:
-        return {"id": u.user_id, "primaryEmail": u.email, "name": {"fullName": u.name}, "suspended": u.suspended, "creationTime": "2023-01-01T00:00:00.000Z"}
+    def _directory_user(self, u: DriveUser) -> dict[str, Any]:
+        return {
+            "id": u.user_id, "primaryEmail": u.email, "name": {"fullName": u.name}, "suspended": u.suspended,
+            "creationTime": "2023-01-01T00:00:00.000Z", "aliases": sorted(a for a, e in self.aliases.items() if e == u.email),
+        }
 
     def _admin_users(self, req: ApiRequest) -> object:
         if denied := self._admin_guard(req):
