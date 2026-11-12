@@ -77,7 +77,7 @@ async def _walk(db, org: str, sql_new: bool, anchors: list[str], types: list[str
     for _ in range(2000):
         async def go(tx, after=after) -> list:
             if sql_new:
-                return await cg._hop_page(tx, org, "blocks", anchors, types, limit, out_f, in_f, both, after)
+                return await cg._hop_page(tx, org, "blocks", anchors, types, limit, out=out_f, inn=in_f, both=both, after=after)
             return list(await tx.fetch(LEGACY, org, ["nodeRelations", "recordLinks"], "blocks", anchors, types, limit, out_f, in_f, both, after))
         with _bound(org):
             rows = await db.run(go)
@@ -91,7 +91,7 @@ async def _walk(db, org: str, sql_new: bool, anchors: list[str], types: list[str
 async def test_every_page_is_the_page_the_old_statement_returned(pg_db) -> None:
     org = new_org()
     await _seed(org)
-    shapes = [(IDS, ["CALLS"], "outbound"), (IDS, ["CALLS", "IMPORTS_FROM"], "inbound"), (IDS, TYPES + ["fk"], "any"), (["a1", "B1", "_x"], ["CALLS", "calls"], "any"),
+    shapes = [(IDS, ["CALLS"], "outbound"), (IDS, ["CALLS", "IMPORTS_FROM"], "inbound"), (IDS, [*TYPES, "fk"], "any"), (["a1", "B1", "_x"], ["CALLS", "calls"], "any"),
               (["a1"], ["CALLS"], "inbound"), (["a1"], ["CALLS", "fk"], "outbound"), (["nothing"], ["CALLS"], "any"), ([*IDS, "a1"], ["IMPORTS_FROM"], "any")]
     pages = 0
     for anchors, types, direction in shapes:
@@ -117,7 +117,7 @@ async def test_a_cursor_in_the_middle_of_a_page_resumes_after_exactly_that_row(p
     whole = [r for page in await _walk(pg_db, org, True, IDS, TYPES, "any", 1000) for r in page]
     for i in (0, 1, len(whole) // 2, len(whole) - 2):
         async def go(tx, after=whole[i][5]) -> list:
-            return await cg._hop_page(tx, org, "blocks", IDS, TYPES, 3, True, True, True, after)
+            return await cg._hop_page(tx, org, "blocks", IDS, TYPES, 3, out=True, inn=True, both=True, after=after)
         with _bound(org):
             got = [(r["anchor"], r["dir"], r["coll"], r["key"], r["rel"], r["page_key"]) for r in await pg_db.run(go)]
         assert got == whole[i + 1:i + 4]
@@ -168,7 +168,7 @@ async def test_a_page_of_a_node_of_any_degree_reads_about_a_page_of_its_edges(pg
             await _admin("ANALYZE graph.edges")
         for after in ("", far):
             async def go(tx, after=after) -> str:
-                args = cg._hop_args(org, "blocks", ["hub"], ["CALLS"], 200, False, True, False, after)
+                args = cg._hop_args(org, "blocks", ["hub"], ["CALLS"], 200, out=False, inn=True, both=False, after=after)
                 await tx.fetchval(cg._HOP_PROFILE)
                 return "\n".join(r[0] for r in await tx.fetch("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) " + cg._HOP_PAGE_SQL, *args))
             with _bound(org):

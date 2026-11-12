@@ -124,7 +124,7 @@ _NO_AFTER = ("", "", "", "", "")
 _HOP_PROFILE = "/* pipeshub:graph.hop_page_profile */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('enable_seqscan', 'off', true), set_config('max_parallel_workers_per_gather', '0', true)"
 
 
-def _hop_args(org: str, node_collection: str, node_keys: list[str], types: list[str], limit: int, out: bool, inn: bool, both: bool, after: str) -> list[Any]:
+def _hop_args(org: str, node_collection: str, node_keys: list[str], types: list[str], limit: int, *, out: bool, inn: bool, both: bool, after: str) -> list[Any]:
     """The parameters of ``_HOP_PAGE_SQL`` for the page after cursor ``after`` (empty: the first page). A cursor is what a page returned, so a malformed one is an error."""
     anchors = sorted(set(node_keys))
     if after == "":
@@ -142,9 +142,9 @@ def _hop_args(org: str, node_collection: str, node_keys: list[str], types: list[
     return [org, node_collection, types, limit, out, inn, both, out and eq_out, a, *o_after, gt, inn and eq_in, a, *i_after, gt]
 
 
-async def _hop_page(tx: Tx, org: str, node_collection: str, node_keys: list[str], types: list[str], limit: int, out: bool, inn: bool, both: bool, after: str) -> list[Any]:
+async def _hop_page(tx: Tx, org: str, node_collection: str, node_keys: list[str], types: list[str], limit: int, *, out: bool, inn: bool, both: bool, after: str) -> list[Any]:
     await tx.fetchval(_HOP_PROFILE)
-    return list(await tx.fetch(_HOP_PAGE_SQL, *_hop_args(org, node_collection, node_keys, types, limit, out, inn, both, after)))
+    return list(await tx.fetch(_HOP_PAGE_SQL, *_hop_args(org, node_collection, node_keys, types, limit, out=out, inn=inn, both=both, after=after)))
 
 
 def _page_whole_ids(pointers: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -403,7 +403,7 @@ class CodeGraphMixin(PgBase):
         paged = after is not None
         try:
             if paged:
-                rows = await self._q(lambda tx: _hop_page(tx, org, node_collection, node_keys, relationship_types, limit, out, inn, both, after), transaction)
+                rows = await self._q(lambda tx: _hop_page(tx, org, node_collection, node_keys, relationship_types, limit, out=out, inn=inn, both=both, after=after), transaction)
             else:
                 rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT e.anchor, e.coll, e.key, e.dir,
                     coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.doc FROM (

@@ -60,6 +60,9 @@ async def test_the_postgres_cursor_ends_with_the_edge_key() -> None:
     seen: list[str] = []
 
     class Tx:
+        async def fetchval(self, sql: str, *args: object) -> None:
+            return None
+
         async def fetch(self, sql: str, *args: object) -> list:
             seen.append(sql)
             return []
@@ -73,7 +76,7 @@ async def test_the_postgres_cursor_ends_with_the_edge_key() -> None:
 
     with bind(OrgContext("org-1", None, "job", "job:test", "t")):
         await P().get_neighbors_for_nodes_by_relationship_types(["a"], "blocks", ["CALLS"], "outbound", after="")
-    assert "e.edge_coll, e.ekey) COLLATE" in seen[0]
+    assert 'x.edge_coll COLLATE "C", x.ekey COLLATE "C"' in seen[0]      # the order ends in the edge's own key
 
 
 # labels() has no order: a record that also carries an auxiliary label (KhInherits) must still read as a record.

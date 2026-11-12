@@ -6,8 +6,8 @@ from app.services.graph_db.postgres.codegraph import _hop_args
 SEP = "\x01"
 
 
-def args(anchors, after, *, out=True, inn=True, both=False):
-    return _hop_args("o", "blocks", anchors, ["CALLS"], 200, out, inn, both, after)
+def args(anchors: list[str], after: str, *, out: bool = True, inn: bool = True, both: bool = False) -> list:
+    return _hop_args("o", "blocks", anchors, ["CALLS"], 200, out=out, inn=inn, both=both, after=after)
 
 
 def test_the_first_page_reads_every_anchor_from_its_start() -> None:
@@ -48,11 +48,11 @@ async def test_a_page_sets_the_planner_profile_before_it_reads() -> None:
     seen: list[str] = []
 
     class Tx:
-        async def fetchval(self, sql, *a):
+        async def fetchval(self, sql: str, *a: object) -> None:
             seen.append(sql)
 
-        async def fetch(self, sql, *a):
+        async def fetch(self, sql: str, *a: object) -> list:
             seen.append(sql)
             return []
-    await cg._hop_page(Tx(), "o", "blocks", ["a"], ["CALLS"], 5, True, True, False, "")
+    await cg._hop_page(Tx(), "o", "blocks", ["a"], ["CALLS"], 5, out=True, inn=True, both=False, after="")
     assert seen == [cg._HOP_PROFILE, cg._HOP_PAGE_SQL]
