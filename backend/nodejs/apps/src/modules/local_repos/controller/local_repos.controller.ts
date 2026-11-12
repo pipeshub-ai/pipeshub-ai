@@ -89,8 +89,8 @@ function proxy(
         );
         // The connectors service answers a refusal with a body the client is meant to read ({ detail }; a quota refusal of an upload also says
         // which files were stored). Passed on as it is, with its status: the generic error mapping would turn a 413 into a 500 and drop it.
-        const status = connectorResponse?.statusCode;
-        const refusal = connectorResponse?.data as unknown;
+        const status = connectorResponse.statusCode;
+        const refusal: unknown = connectorResponse.data;
         if (
           typeof status === 'number' &&
           status >= 400 &&
