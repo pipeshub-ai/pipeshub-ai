@@ -111,6 +111,9 @@ def innermost_type(exc: BaseException) -> str:
 
 
 def _classify_link(link: BaseException) -> str | None:
+    stamped = getattr(link, "log_error_class", None)  # set by mark_error, or declared by an exception type
+    if stamped in ERROR_CLASSES:
+        return stamped
     if isinstance(link, (asyncio.CancelledError, concurrent.futures.CancelledError, RunCancelled)):
         return "cancelled"
     if (
@@ -162,6 +165,35 @@ def classify_error(exc_or_status: BaseException | int) -> str:
     except Exception:
         pass
     return "internal"
+
+
+def mark_error(exc: BaseException, error_class: str | None = None, *, hide_text: bool = False) -> None:
+    """Record on ``exc`` the class a lower layer (a database client) found, and whether its text can quote what was sent.
+    :func:`classify_error` then answers that class and :func:`log_failure` leaves the text out, for every handler that logs the
+    chain. Sets only ``log_error_class`` and ``log_hide_text``. Without ``error_class`` the class is left to
+    :func:`classify_error` and only ``hide_text`` is stamped. The first class stamped wins; hiding can be added later. Never raises."""
+    with contextlib.suppress(AttributeError, TypeError):
+        if error_class is not None and not is_stamped(exc):
+            exc.log_error_class = error_class  # type: ignore[attr-defined]
+        if hide_text:
+            exc.log_hide_text = True  # type: ignore[attr-defined]
+
+
+def is_stamped(exc: BaseException) -> bool:
+    """:func:`mark_error` already gave this instance a class: a lower layer recorded it (a class-level ``log_error_class``,
+    declared by an exception type, does not count)."""
+    return "log_error_class" in getattr(exc, "__dict__", {})
+
+
+def _hides_text(exc: BaseException) -> bool:
+    """A link of the chain, or a member of an exception group in it, was stamped as able to quote sent values."""
+    for link in _chain(exc):
+        if getattr(link, "log_hide_text", False) is True:
+            return True
+        # every member, not only the first (first_leaf): the stamped one may be any of them
+        if isinstance(link, BaseExceptionGroup) and any(_hides_text(member) for member in link.exceptions):
+            return True
+    return False
 
 
 def _chain_text(exc: BaseException) -> str:
@@ -227,9 +259,11 @@ def log_failure(
     the one already written. ``include_error_text=False`` leaves ``error_message`` out, for errors
     whose text can echo what was sent (tool arguments in an MCP or OpenAPI server's answer); the
     stack written at ERROR then keeps its frames but shows each exception as ``Type: <message omitted>``, and the record
-    carries that stack as ``exc_text`` only, with no ``exc_info``. Never raises: it runs inside ``except`` blocks.
+    carries that stack as ``exc_text`` only, with no ``exc_info``. A chain that :func:`mark_error` stamped with
+    ``hide_text`` (a database driver's error) is always logged that way. Never raises: it runs inside ``except`` blocks.
     """
     try:
+        include_error_text = include_error_text and not _hides_text(exc)
         cls = error_class or classify_error(exc)
         want = level if level is not None else level_for(cls)
         prior = _prior_level(exc)

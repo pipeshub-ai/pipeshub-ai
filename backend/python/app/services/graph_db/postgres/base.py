@@ -7,8 +7,10 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.core.db.uow import QUERY_LOG_SKIP
 from app.core.org_context import current_or_system, current_org_id, spawn_in_request
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+from app.utils.db_query_log import CALLER_FRAME, caller_origin
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -104,6 +106,7 @@ class _Txn:
         self._q: asyncio.Queue | None = None
         self._task: asyncio.Task | None = None
         self._ended: BaseException | None = None
+        self._commit_origin = None  # the frame that asked for the commit, for its db.query record
 
     async def _main(self) -> None:
         try:
@@ -113,6 +116,7 @@ class _Txn:
                     if item in ("commit", "rollback"):
                         if item == "rollback":
                             raise _Rollback
+                        CALLER_FRAME.set(self._commit_origin)  # this task's own context: the COMMIT below names its caller
                         break
                     fn, fut = item
                     try:
@@ -153,12 +157,16 @@ class _Txn:
         fut = asyncio.get_running_loop().create_future()
         from app.services.graph_db.postgres.kg.guard import current_writer
         writers = current_writer.get()      # the task keeps the context of the call that opened it: each call brings its own writer along
+        # A task that fn spawns inherits the origin, keeping that frame and its locals alive while it runs.
+        origin = caller_origin(QUERY_LOG_SKIP)
 
         async def as_this_caller(tx: Tx) -> Any:  # noqa: ANN401
             token = current_writer.set(writers)
+            caller = CALLER_FRAME.set(origin)
             try:
                 return await fn(tx)
             finally:
+                CALLER_FRAME.reset(caller)
                 current_writer.reset(token)
         await self._q.put((as_this_caller, fut))
         try:
@@ -183,6 +191,8 @@ class _Txn:
             if how == "commit" and self._ended is not None and not isinstance(self._ended, TransactionClosed):
                 raise self._ended      # a commit on a transaction that was lost is not a commit
             return
+        if how == "commit":
+            self._commit_origin = caller_origin(QUERY_LOG_SKIP)
         await self._q.put(how)
         await asyncio.wait({self._task})
         if how == "commit" and self._ended is not None and not isinstance(self._ended, TransactionClosed):

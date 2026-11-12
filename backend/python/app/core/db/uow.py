@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import functools
 import hashlib
 import logging
 import random
@@ -48,6 +49,7 @@ from app.core.db.errors import (
 )
 from app.core.db.pool import create_pool
 from app.telemetry.backend import METRICS_BACKEND
+from app.utils import db_query_log, error_class
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -61,6 +63,8 @@ RETRIES = METRICS_BACKEND.counter("pipeshub_pg_retries_total", "Unit-of-work ret
 ROLE_LEAKS = METRICS_BACKEND.counter("pipeshub_pg_session_role_leak_total", "Session-level SET ROLE found on a pooled connection", ["service"])
 ORG_MISSING = METRICS_BACKEND.counter("pipeshub_org_context_missing_total", "Unit of work started without a usable org context", ["service"])
 
+# Frames the db.query records skip to find the caller: this runtime and the graph provider's plumbing.
+QUERY_LOG_SKIP = ("app.core.db", "app.services.graph_db.postgres.base")
 _SITE = re.compile(r"/\*\s*pipeshub:([A-Za-z0-9_.]{1,80})\s*\*/")
 _REQUEST_ID = re.compile(r"[A-Za-z0-9._:-]{1,64}")
 _IDENT = re.compile(r"[a-z_][a-z0-9_]{0,62}")
@@ -153,6 +157,11 @@ class Tx:
         if any(_TXN_CONTROL.match(" ".join(st.lower().split())) for st in _SQL_NOISE.sub(" ", sql).split(";")):
             raise UowUsageError("transaction control statements are not allowed inside a unit; use tx.savepoint()")
 
+    def _record(self, op: str, site: str | None, started: float, error: Exception | None = None, sqlstate: str | None = None) -> None:
+        """The statement's db.query record: failed, or slow (the caller has checked the threshold)."""
+        db_query_log.query_ended(logger, "postgres", op, started, error, describe=functools.partial(describe_pg_error, sqlstate=sqlstate),
+                                 skip=QUERY_LOG_SKIP, site=site, db_request_id=self.request_id)
+
     async def _run(self, op: str, sql: str, *args: object, internal: bool = False) -> Any:  # noqa: ANN401
         if not self._open:
             raise RuntimeError("transaction handle used outside its unit of work")
@@ -166,16 +175,18 @@ class Tx:
         t0 = time.perf_counter()
         try:
             result = await getattr(self._con, op)(sql, *args)
-        except BaseException as e:  # a cancelled statement also aborts the transaction
+        except BaseException as e:  # a cancelled statement also aborts the transaction; it is no failed query and writes nothing
             self.failed = True
             if isinstance(e, Exception):
-                raise self._db.map_error(e, self) from e
+                mapped = self._db.map_error(e, self)
+                self._record(op, site, t0, mapped, getattr(e, "sqlstate", None))
+                raise mapped from e
             raise
         finally:
-            dt = time.perf_counter() - t0
-            QUERY_SECONDS.observe(self._db.cfg.service, site, self._class, value=dt)
-            if dt * 1000 >= self._db.cfg.slow_statement_ms:
-                logger.warning("slow statement site=%s ms=%d request_id=%s", site, dt * 1000, self.request_id)
+            QUERY_SECONDS.observe(self._db.cfg.service, site, self._class, value=time.perf_counter() - t0)
+        threshold = db_query_log.slow_query_ms()
+        if threshold and (time.perf_counter() - t0) * 1000 >= threshold:
+            self._record(op, site, t0)
         self._verify_in_transaction()
         self.completed += 1
         return result
@@ -218,15 +229,21 @@ class Tx:
                 raise ValueError(f"invalid staging column {name!r} {typ!r}")
         ddl = ", ".join(f"{n} {t}" for n, t in columns.items())
         await self._run("execute", f"/* pipeshub:kernel.stage */ CREATE TEMP TABLE {table} ({ddl}) ON COMMIT DROP")
+        t0 = time.perf_counter()
         try:
             await self._con.copy_records_to_table(table, records=records, columns=list(columns))
             self._verify_in_transaction()
+            threshold = db_query_log.slow_query_ms()
+            if threshold and (time.perf_counter() - t0) * 1000 >= threshold:
+                self._record("copy", None, t0)
         except UowUsageError:
             raise
         except BaseException as e:
             self.failed = True
             if isinstance(e, Exception):
-                raise self._db.map_error(e, self) from e
+                mapped = self._db.map_error(e, self)
+                self._record("copy", None, t0, mapped, getattr(e, "sqlstate", None))
+                raise mapped from e
             raise
 
     @asynccontextmanager
@@ -242,12 +259,15 @@ class Tx:
         try:
             yield
         except Exception:
+            t0 = time.perf_counter()
             try:
                 await self._con.execute(f"ROLLBACK TO SAVEPOINT {name}")
                 await self._con.execute(f"RELEASE SAVEPOINT {name}")
             except Exception as e:
                 self.failed = True
-                raise self._db.map_error(e, self) from e
+                mapped = self._db.map_error(e, self)
+                self._record("rollback_to", "kernel.savepoint", t0, mapped, getattr(e, "sqlstate", None))
+                raise mapped from e
             self.failed = False
             raise
         else:
@@ -511,10 +531,13 @@ class KernelDB:
         txn = con.transaction(isolation=isolation, readonly=not write)
         outcome = "rollback"
         try:
+            t_begin = time.perf_counter()
             try:
                 await txn.start()
             except Exception as e:
-                raise self.map_error(e, tx) from e
+                mapped = self.map_error(e, tx)
+                tx._record("begin", None, t_begin, mapped, getattr(e, "sqlstate", None))
+                raise mapped from e
             await self._prologue(con, tx, role, org_id, request_id, statement_ms, tc.lock_ms, work_kb, write=write, custom_plan=custom_plan)
             if lineage:
                 await tx._run("execute", "/* pipeshub:kernel.lineage */ SELECT set_config('app.org_lineage', "
@@ -524,11 +547,14 @@ class KernelDB:
                 await self.pre_commit_hook(tx)
             await self._check_alive(con, tx, write=write)
             tx.commit_sent = True
+            t_commit = time.perf_counter()
             try:
                 await txn.commit()
             except Exception as e:
                 mapped = self.map_error(e, tx)
-                raise (CommitOutcomeUnknown("connection lost after COMMIT was sent") if isinstance(mapped, ConnectionLost) else mapped) from e
+                failure = CommitOutcomeUnknown("connection lost after COMMIT was sent") if isinstance(mapped, ConnectionLost) else mapped
+                tx._record("commit", None, t_commit, failure, getattr(e, "sqlstate", None))
+                raise failure from e
             outcome = "commit"
             if write and self.post_commit_hook is not None:
                 try:
@@ -550,14 +576,17 @@ class KernelDB:
         if tx.failed or (task is not None and task.cancelling() > tx.cancelling_at_start):
             raise FailedTransaction("a statement failed or the task was cancelled inside the unit; the unit was rolled back")
         if write and COMMIT_PROBE:
+            t0 = time.perf_counter()
             try:
                 # One round trip: also proves it is still the same transaction (COMMIT; BEGIN in one string would not show
                 # in the connection's status, but starts a new transaction with a new timestamp).
                 now = await con.fetchval("SELECT now()")
-            except asyncpg.InFailedSQLTransactionError as e:
+            except asyncpg.InFailedSQLTransactionError as e:  # an earlier failure, already recorded or swallowed: no new record
                 raise FailedTransaction("the transaction is aborted (a statement error was swallowed); the unit was rolled back") from e
             except Exception as e:
-                raise self.map_error(e, tx) from e
+                mapped = self.map_error(e, tx)
+                tx._record("check_alive", None, t0, mapped, getattr(e, "sqlstate", None))
+                raise mapped from e
             if tx.started is not None and now != tx.started:
                 tx.discard = True
                 raise FailedTransaction("the unit's transaction ended and another began; the unit was rolled back")
@@ -567,10 +596,13 @@ class KernelDB:
         args = [role, org_id, request_id, f"{statement_ms}ms", f"{lock_ms}ms",
                 "force_custom_plan" if custom_plan else "auto", f"{work_kb}kB" if work_kb else ""]
         fenced = write and self.profile_epoch is not None
+        t0 = time.perf_counter()
         try:
             row = await con.fetchrow(PROLOGUE_WRITE if fenced else PROLOGUE_READ, *args, *([self.profile_epoch] if fenced else []))
         except Exception as e:
-            raise self.map_error(e, tx, prologue=True) from e
+            mapped = self.map_error(e, tx, prologue=True)
+            tx._record("prologue", None, t0, mapped, getattr(e, "sqlstate", None))
+            raise mapped from e
         pre = row["r"] if row else None
         if row:
             tx.started = row["started"]
@@ -628,6 +660,40 @@ class KernelDB:
         if prologue:
             return PrologueFailed(f"{type(e).__name__}: {e}")
         return e
+
+
+def _class_of_state(state: str) -> str:
+    """The log class of a SQLSTATE: only our bugs and our configuration are ERROR classes. Integrity, data and limit errors are
+    inputs a caller handles on purpose (a stale cache, a batch halved because the answer was too big)."""
+    if state in ("23502", "23514"):
+        return "bad_request"
+    if state.startswith("23"):
+        return "conflict"
+    if state.startswith(("22", "54")):
+        return "bad_request"
+    if state.startswith("28") or state == "42501":
+        return "misconfigured"
+    if state.startswith(("08", "53")) or state in ("57P01", "57P02", "57P03"):
+        return "unavailable"
+    if state in ("40001", "40P01"):
+        return "conflict"
+    if state in ("57014", "55P03"):
+        return "timeout"
+    return "internal"
+
+
+def describe_pg_error(error: Exception, sqlstate: str | None = None) -> tuple[str | None, str, dict[str, object], bool]:
+    """(SQLSTATE, error_class, {}, hide_text) of a failed statement. Our typed errors declare their class; a driver error's text
+    can quote a bound value (22P02, asyncpg's client-side encoding errors), so it is hidden."""
+    state = sqlstate or getattr(error, "sqlstate", None)
+    declared = getattr(error, "log_error_class", None)
+    if isinstance(declared, str):
+        cls = declared
+    elif isinstance(state, str):
+        cls = _class_of_state(state)
+    else:
+        cls = error_class.classify_error(error)
+    return state, cls, {}, True
 
 
 def connection_closed(con: asyncpg.Connection) -> bool:
