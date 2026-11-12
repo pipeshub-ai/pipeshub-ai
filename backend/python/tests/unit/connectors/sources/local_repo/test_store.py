@@ -241,7 +241,7 @@ def test_a_commit_that_was_interrupted_can_be_repeated(repo, monkeypatch):
     real = os.replace
     calls = []
 
-    def flaky(src, dst):  # the second rename fails: the first file is already published
+    def flaky(src, dst):  # noqa: ANN202 - the second rename fails: the first file is already published
         calls.append(dst)
         if len(calls) == 2:
             raise OSError("disk went away")

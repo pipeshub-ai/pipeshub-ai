@@ -263,7 +263,7 @@ async def test_classifying_a_file_reads_it_off_the_event_loop(env):
     seen = []
     real = env.c._file_record
 
-    def spy(*a, **k):  # noqa: ANN202
+    def spy(*a, **k):
         seen.append(threading.get_ident())
         return real(*a, **k)
 

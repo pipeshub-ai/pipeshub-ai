@@ -246,7 +246,7 @@ class _Glob:
         states = self._close({(0, False)})
         for ch in name:
             nxt: set[tuple[int, bool]] = set()
-            for i, inside in states:
+            for i, _inside in states:
                 if i >= len(toks):
                     continue
                 kind, arg = toks[i]
