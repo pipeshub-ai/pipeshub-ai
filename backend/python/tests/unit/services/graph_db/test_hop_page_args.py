@@ -53,21 +53,38 @@ def test_the_directions_asked_for_switch_the_branches() -> None:
     assert args(["a"], "", out=False)[4:6] == [False, True] and args(["a"], "", inn=False)[4:6] == [True, False]
 
 
-async def test_a_page_sets_the_planner_profile_and_is_planned_for_its_arguments() -> None:
+@pytest.mark.parametrize("restore", [False, True])
+async def test_a_page_sets_the_planner_profile_before_it_reads_and_a_callers_transaction_gets_its_settings_back(restore: bool) -> None:
     from app.services.graph_db.postgres import codegraph as cg
 
-    seen: list[str] = []
+    seen: list[tuple] = []
 
     class Tx:
+        async def fetchrow(self, sql: str, *a: object) -> dict:
+            seen.append((sql,))
+            return {"b": "on", "s": "on", "p": "2", "m": "auto"}
+
         async def fetchval(self, sql: str, *a: object) -> None:
-            seen.append(sql)
+            seen.append((sql, *a))
 
         async def fetch(self, sql: str, *a: object) -> list:
-            seen.append("generic:" + sql)
+            seen.append((sql,))
             return []
+    await cg._hop_page(Tx(), "o", "blocks", ["a"], ["CALLS"], 5, out=True, inn=True, both=False, after="", restore=restore)
+    assert seen == [(cg._HOP_PROFILE,), (cg._HOP_FIRST_ANY_SQL,), *([(cg._HOP_RESTORE, "on", "on", "2", "auto")] if restore else [])]
 
-        async def fetch_custom_plan(self, sql: str, *a: object) -> list:
-            seen.append(sql)
-            return []
-    await cg._hop_page(Tx(), "o", "blocks", ["a"], ["CALLS"], 5, out=True, inn=True, both=False, after="")
-    assert seen == [cg._HOP_PROFILE, cg._HOP_PAGE_SQL]      # a custom plan: the generic plan of a prepared statement cannot use the cursor bound
+
+@pytest.mark.parametrize(("out", "inn", "sql", "n"), [(True, False, "_HOP_FIRST_OUT_SQL", 5), (False, True, "_HOP_FIRST_IN_SQL", 6), (True, True, "_HOP_FIRST_ANY_SQL", 6)])
+def test_a_first_page_has_the_statement_of_its_directions_only(out: bool, inn: bool, sql: str, n: int) -> None:
+    from app.services.graph_db.postgres import codegraph as cg
+
+    text, args = cg._hop_statement("o", "blocks", ["b", "a", "a"], ["CALLS"], 7, out=out, inn=inn, both=out and inn, after="")
+    assert text is getattr(cg, sql) and len(args) == n and args[4] == ["a", "b"]
+    assert max(int(x[1:]) for x in __import__("re").findall(r"\$\d+", text)) == n                  # every parameter is used and none is missing: a gap is an error of the server
+
+
+def test_a_cursor_takes_the_statement_of_all_branches() -> None:
+    from app.services.graph_db.postgres import codegraph as cg
+
+    text, args = cg._hop_statement("o", "blocks", ["a"], ["CALLS"], 7, out=True, inn=True, both=False, after=cur("a", "outbound", "blocks", "k", "CALLS", "nodeRelations", "CALLS"))
+    assert text is cg._HOP_PAGE_SQL and len(args) == 23

@@ -165,58 +165,6 @@ async def test_the_provider_pages_through_the_same_rows_as_the_statement(pg_db) 
     assert got == [(r[0], r[1], r[2], r[3], r[4]) for r in old] and len(got) > 4
 
 
-async def test_a_page_of_a_node_of_any_degree_reads_about_a_page_of_its_edges(pg_db) -> None:
-    """A hub with 120,000 callers and as many edges elsewhere: the first page and a page far into it, never analysed and then analysed, each read by the order's index and not a sort of every edge."""
-    org = new_org()
-    await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'c' || lpad(g::text, 6, '0'), 'blocks', 'hub', 'CALLS', "
-                 "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 120000) g", org)
-    await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'x' || g, 'blocks', 'y' || ((g * 7) % 20000), 'CALLS', "
-                 "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 120000) g", org)
-    far = cg._cursor({"anchor": "hub", "dir": "inbound", "coll": "blocks", "key": "c090000", "rel": "CALLS", "edge_coll": "nodeRelations", "ekey": "CALLS"})
-    for state in ("fresh", "analysed"):
-        if state == "analysed":
-            await _admin("ANALYZE graph.edges")
-        for after in ("", far):
-            async def go(tx, after=after) -> str:
-                args = cg._hop_args(org, "blocks", ["hub"], ["CALLS"], 200, out=False, inn=True, both=False, after=after)
-                await tx.fetchval(cg._HOP_PROFILE)
-                return "\n".join(r[0] for r in await tx.fetch("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) " + cg._HOP_PAGE_SQL, *args))
-            with _bound(org):
-                plan = await pg_db.run(go)
-            assert "edges_by_neighbour_in" in plan and "Seq Scan on" not in plan and "Bitmap Heap Scan" not in plan, (state, after, plan)
-            root = next(line for line in plan.splitlines() if line.strip().startswith("Buffers:"))               # the whole statement's, hit and read (a cold cache reads)
-            touched = sum(int(part.split("=")[1]) for part in root.split() if part.startswith(("hit=", "read=")))
-            assert touched < 2500, (state, after, touched, plan)                                                         # a page's rows, not the 120,000 of the hub
-            if after:
-                assert re.search(r"Index Cond: .*ROW\(", plan), plan                                                  # the cursor is a bound of the index scan
-
-
-async def test_the_page_is_planned_for_its_arguments_in_every_run_of_a_unit(pg_db) -> None:
-    """Eight pages in the one unit (one connection, so the statement's counters add up): a prepared statement may take its generic plan from the sixth run, which reads every edge of a hub whatever the cursor."""
-    org = new_org()
-    await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'c' || lpad(g::text, 6, '0'), 'blocks', 'hub', 'CALLS', "
-                 "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 20000) g", org)
-    p = PostgresGraphProvider(logging.getLogger("hop"), pg_db)
-    with _bound(org):
-        t = await p.begin_transaction([], [])
-    try:
-        with _bound(org):
-            await p._txn(t).run(lambda tx: tx.fetchval("SELECT set_config('plan_cache_mode', 'force_generic_plan', true)"))      # the mode the unit would be in once a prepared statement went generic
-        after = ""
-        for _ in range(8):
-            with _bound(org):
-                rows = await p.get_neighbors_for_nodes_by_relationship_types(["hub"], "blocks", ["CALLS"], "inbound", limit=50, after=after, transaction=t)
-            assert len(rows) == 50
-            after = rows[-1]["cursor"]
-        with _bound(org):
-            counts = await p._txn(t).run(lambda tx: tx.fetch("SELECT generic_plans, custom_plans FROM pg_prepared_statements "
-                                                             "WHERE statement LIKE '%pipeshub:graph.get_neighbors_for_nodes_by_relationship_types%' AND statement NOT LIKE '%pg_prepared_statements%' AND statement LIKE '%UNION ALL%'"))
-        assert len(counts) == 1 and counts[0]["generic_plans"] == 0 and counts[0]["custom_plans"] == 8, [dict(c) for c in counts]
-    finally:
-        with _bound(org):
-            await p.rollback_transaction(t)
-
-
 SEPS = ["p", "p\x01A", "p\x01", "p\x01\x01", "q", "q\x01x", "p\\1", "é\x01", "p\x01A\x01", "a\\"]
 
 
@@ -292,3 +240,100 @@ async def test_a_walk_that_began_with_an_old_cursor_ends_in_the_order_it_began_i
         else:
             raise AssertionError("never ends")
         assert got == whole[start + 1:], start
+
+
+def _lit(v: object) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, list):
+        return "ARRAY[" + ", ".join(_lit(x) for x in v) + "]::text[]"
+    return "'" + str(v).replace("'", "''") + "'"
+
+
+async def _generic_plan(pg_db, org: str, anchors: list[str], types: list[str], limit: int, *, out: bool, inn: bool, after: str) -> str:
+    """The plan a prepared statement takes from its sixth run (forced here), under the page's planner profile, for these arguments."""
+    sql, args = cg._hop_statement(org, "blocks", anchors, types, limit, out=out, inn=inn, both=False, after=after)
+
+    async def go(tx) -> str:
+        await tx.fetchval(cg._HOP_PROFILE)
+        await tx._con.execute("PREPARE hop_generic AS " + sql.replace("/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */", ""))
+        await tx.fetchval("SELECT set_config('plan_cache_mode', 'force_generic_plan', true)")
+        rows = await tx._con.fetch("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) EXECUTE hop_generic(" + ", ".join(_lit(a) for a in args) + ")")
+        await tx._con.execute("DEALLOCATE hop_generic")
+        return "\n".join(r[0] for r in rows)
+    with _bound(org):
+        return await pg_db.run(go)
+
+
+async def test_the_generic_plan_of_the_page_reads_an_index_range_of_about_a_page_in_every_case(pg_db) -> None:
+    """The plan a prepared statement takes from its sixth run, forced: a hub, many anchors, a cursor in the middle, a direction with no edges, a first page."""
+    org = new_org()
+    await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'c' || lpad(g::text, 6, '0'), 'blocks', 'hub', 'CALLS', "
+                 "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 120000) g", org)
+    await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'x' || (g % 3000), 'blocks', 'y' || ((g * 7) % 20000), 'CALLS', "
+                 "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 120000) g ON CONFLICT DO NOTHING", org)
+    mid = cg._cursor({"anchor": "hub", "dir": "inbound", "coll": "blocks", "key": "c090000", "rel": "CALLS", "edge_coll": "nodeRelations", "ekey": "CALLS"})
+    many = [f"x{i}" for i in range(0, 3000, 150)]
+    mid_many = cg._cursor({"anchor": many[7], "dir": "outbound", "coll": "blocks", "key": "y100", "rel": "CALLS", "edge_coll": "nodeRelations", "ekey": "CALLS"})
+    cases = {"hub first page": (["hub"], False, True, ""), "hub mid-cursor": (["hub"], False, True, mid), "hub, both directions": (["hub"], True, True, ""),
+             "many anchors first page": (many, True, False, ""), "many anchors mid-cursor": (many, True, True, mid_many), "a direction with no edges": (["hub"], True, False, mid),
+             "anchors that have no edges": (["nothing", "nowhere"], True, True, "")}
+    for state in ("fresh", "analysed"):
+        if state == "analysed":
+            await _admin("ANALYZE graph.edges")
+        for name, (anchors, out, inn, after) in cases.items():
+            plan = await _generic_plan(pg_db, org, anchors, ["CALLS"], 200, out=out, inn=inn, after=after)
+            root = next(line for line in plan.splitlines() if line.strip().startswith("Buffers:"))
+            touched = sum(int(part.split("=")[1]) for part in root.split() if part.startswith(("hit=", "read=")))
+            assert "Seq Scan on" not in plan and "Bitmap Heap Scan" not in plan, (state, name, plan)
+            assert touched < 4000, (state, name, touched, plan)
+            if after:
+                assert re.search(r"Index Cond: .*ROW\(", plan), plan                                                  # the cursor is a bound of the index scan
+
+
+async def test_the_page_runs_on_its_generic_plan_from_the_first_run(pg_db) -> None:
+    """Eight pages in the one unit (one connection, so the statement's counters add up): none is planned for its values, so a page costs no planning after the first."""
+    org = new_org()
+    await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'c' || lpad(g::text, 6, '0'), 'blocks', 'hub', 'CALLS', "
+                 "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 5000) g", org)
+    p = PostgresGraphProvider(logging.getLogger("hop"), pg_db)
+    with _bound(org):
+        t = await p.begin_transaction([], [])
+    try:
+        after = ""
+        for _ in range(8):
+            with _bound(org):
+                rows = await p.get_neighbors_for_nodes_by_relationship_types(["hub"], "blocks", ["CALLS"], "inbound", limit=50, after=after, transaction=t)
+            assert len(rows) == 50
+            after = rows[-1]["cursor"]
+        with _bound(org):
+            counts = await p._txn(t).run(lambda tx: tx.fetch("SELECT generic_plans, custom_plans FROM pg_prepared_statements "
+                                                             "WHERE statement LIKE '%pipeshub:graph.get_neighbors_for_nodes_by_relationship_types%' AND statement NOT LIKE '%pg_prepared_statements%'"))
+        assert len(counts) == 2 and sum(c["custom_plans"] for c in counts) == 0 and sum(c["generic_plans"] for c in counts) == 8, [dict(c) for c in counts]      # the first page's statement and the cursor's
+    finally:
+        with _bound(org):
+            await p.rollback_transaction(t)
+
+
+async def test_a_page_read_in_a_callers_transaction_leaves_its_settings_as_they_were(pg_db) -> None:
+    org = new_org()
+    await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'c' || g, 'blocks', 'hub', 'CALLS', "
+                 "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 100) g", org)
+    p = PostgresGraphProvider(logging.getLogger("hop"), pg_db)
+    names = ("enable_bitmapscan", "enable_seqscan", "max_parallel_workers_per_gather", "plan_cache_mode")
+    with _bound(org):
+        t = await p.begin_transaction([], [])
+    try:
+        async def settings(tx) -> list[str]:
+            return [await tx.fetchval("SELECT current_setting($1)", n) for n in names]
+        with _bound(org):
+            before = await p._txn(t).run(settings)
+            rows = await p.get_neighbors_for_nodes_by_relationship_types(["hub"], "blocks", ["CALLS"], "inbound", limit=10, after="", transaction=t)
+            rows += await p.get_neighbors_for_nodes_by_relationship_types(["hub"], "blocks", ["CALLS"], "inbound", limit=10, after=rows[-1]["cursor"], transaction=t)
+            after = await p._txn(t).run(settings)
+        assert len(rows) == 20 and before == after and after[0] == "on" and after[3] != "force_generic_plan", (before, after)
+    finally:
+        with _bound(org):
+            await p.rollback_transaction(t)
