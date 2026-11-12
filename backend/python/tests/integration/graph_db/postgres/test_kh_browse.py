@@ -12,9 +12,19 @@ import pytest
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingTooLarge
 from app.services.graph_db.postgres import kh_browse, kh_listing
 from app.services.graph_db.postgres.kg import listing as kgl
+from app.services.graph_db.postgres.kg import net
 
 from .pg_support import new_org
-from .test_kh_listing_flat import _admin, _nodes, ctx, edge, flip, prov, seed_folder
+from .test_kh_listing_flat import (
+    _admin,
+    _nodes,
+    _open_to_all,
+    ctx,
+    edge,
+    flip,
+    prov,
+    seed_folder,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
@@ -258,6 +268,27 @@ async def test_a_browse_of_the_connector_lists_the_nodes_that_hang_from_it_the_v
         assert (await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=granted, flatten=False,
                                                             start_id="app1", start_type="app", include_scope=True))["rows"] == []
 
+
+
+@pytest.mark.parametrize("wide", [False, True], ids=["held", "wide"])
+async def test_a_browse_of_a_connector_this_process_distrusts_is_the_walks(pg_db, monkeypatch, wide) -> None:
+    """Once the walk has disagreed with kg about a connector, a browse of it is the walk's (as ``read.decide``), whatever the mode still says: the children, the total and the arrows,
+    for a node held in memory and one read in windows (``wide``)."""
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 3, readable_kids=[])
+    with ctx(org):
+        await p.batch_create_edges([edge("app1", "apps", "fold", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+    await flip(pg_db, org)
+    await _open_to_all(org, "c0001")
+    if wide:
+        monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 1)
+    page = await browse(p, org, "fold", ["fold"])
+    assert [r["id"] for r in page["rows"]] == ["c0001"] and page["total"] == 1                                       # trusted: kg's answer, which differs from the graph
+    assert [(r["id"], r["hasChildren"]) for r in (await browse_app(p, org, "app1", ["fold"]))["rows"]] == [("fold", True)]
+    monkeypatch.setattr(net, "DISTRUSTED", {(org, "app1"): None})
+    page = await browse(p, org, "fold", ["fold"])
+    assert page["rows"] == [] and page["total"] == 0 and not page.get("totalCapped")
+    assert [(r["id"], r["hasChildren"]) for r in (await browse_app(p, org, "app1", ["fold"]))["rows"]] == [("fold", False)]
 
 async def test_a_filter_never_tells_a_node_the_viewer_may_not_open_from_one_that_does_not_exist(pg_db) -> None:
     """The connector and origin filters apply after the start is admitted: a node the viewer may not open is the same not-found as a missing one, whatever the filters."""
