@@ -2407,6 +2407,28 @@ async def test_a_share_turned_off_loses_its_audience_grant(ws: Workspace) -> Non
     assert ("workspace-members", "GROUP", "READ") not in ws.grants("f")
 
 
+async def test_a_limited_item_whose_permissions_cannot_be_read_stops_inheriting_what_a_folder_above_it_shares(ws: Workspace) -> None:
+    ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[discoverable("anyone")])
+    await ws.sync()
+    assert "f" not in ws.records.stopped_inheriting
+
+    ws.world._mutate("f", lambda: ws.world._bump("f", inheritedPermissionsDisabled=True))
+    ws.http.fail("GET", "/drive/v3/files/f/permissions", 500, "backendError")
+    await ws.sync()
+
+    assert "f" in ws.records.stopped_inheriting  # known from its metadata: a limited item inherits nothing
+    assert any(g[1] == "USER" for g in ws.grants("f"))
+
+
+async def test_an_unreadable_item_that_is_not_limited_keeps_inheriting(ws: Workspace) -> None:
+    ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[discoverable("anyone")])
+    await ws.sync()
+    ws.world.rename("f", "y.txt")
+    ws.http.fail("GET", "/drive/v3/files/f/permissions", 500, "backendError")
+    await ws.sync()
+    assert "f" not in ws.records.stopped_inheriting
+
+
 async def test_a_domain_whose_people_are_all_gone_is_written_empty(ws: Workspace) -> None:
     ws.world.add_user("zed@gone.example")
     await ws.sync()

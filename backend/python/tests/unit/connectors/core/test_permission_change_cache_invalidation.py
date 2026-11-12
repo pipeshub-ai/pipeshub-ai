@@ -171,6 +171,36 @@ class TestRemovalsDropTheConnector:
         tx.batch_delete_edges.assert_not_called()
         notify.assert_not_called()
 
+    async def test_record_that_stops_inheriting_loses_its_edges_to_the_records_it_inherited_from(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.get_edges_from_node = AsyncMock(return_value=[{"_from": "records/rec-1", "_to": "records/parent-1"}])
+        proc = _processor(tx, events)
+
+        await proc.stop_inheriting_permissions("rec-1", CONNECTOR)
+
+        tx.delete_inherit_permissions_relation_record.assert_awaited_once_with("rec-1", "parent-1")
+        _dropped_after_commit(events)
+
+    async def test_record_that_stops_inheriting_from_a_record_group_loses_that_edge_too(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.get_edges_from_node = AsyncMock(return_value=[{"_from": "records/rec-1", "_to": "recordGroups/rg-1"}])
+        proc = _processor(tx, events)
+
+        await proc.stop_inheriting_permissions("rec-1", CONNECTOR)
+
+        tx.delete_inherit_permissions_relation_record_group.assert_awaited_once_with("rec-1", "rg-1")
+        tx.delete_inherit_permissions_relation_record.assert_not_called()
+
+    async def test_record_that_inherits_nothing_has_nothing_to_stop(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.get_edges_from_node = AsyncMock(return_value=[])
+        proc = _processor(tx, events)
+
+        await proc.stop_inheriting_permissions("rec-1", CONNECTOR)
+
+        tx.delete_inherit_permissions_relation_record.assert_not_called()
+        notify.assert_not_called()
+
     async def test_user_access_removed_from_a_folder_item(self, notify, events) -> None:
         tx = AsyncMock()
         proc = _processor(tx, events)

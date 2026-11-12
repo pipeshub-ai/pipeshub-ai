@@ -3248,9 +3248,27 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"Error processing Google Drive file {metadata.get('id', 'unknown')}: {ex}", exc_info=True)
             self._sync_ledger.fail_item()
+            await self._stop_inheriting_of_unreadable_limited_item(metadata)
             if raise_on_failure:
                 raise _ItemReadFailed(str(metadata.get('id', 'unknown'))) from ex
             return None
+
+    async def _stop_inheriting_of_unreadable_limited_item(self, metadata: dict) -> None:
+        """An item that is limited-access, whose permissions could not be read, inherits nothing: that is known from
+        its own metadata, not from the unreadable list. What a folder above it shares (a discoverable share's audience
+        included) must stop reaching it now. Its own stored grants stay, and the next successful read rewrites
+        everything."""
+        file_id = metadata.get("id")
+        if not (file_id and metadata.get("inheritedPermissionsDisabled")):
+            return
+        try:
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=file_id
+            )
+            if existing is not None:
+                await self.data_entities_processor.stop_inheriting_permissions(existing.id, self.connector_id)
+        except Exception as e:
+            self.logger.error(f"Could not stop the inheritance of unreadable limited item {file_id}: {e}")
 
     async def _process_drive_items_generator(
         self,

@@ -292,6 +292,7 @@ class FakeEntitiesProcessor:
         self.org_id = org_id
         self.records: dict[str, Any] = {}
         self.permissions: dict[str, list[Any]] = {}
+        self.stopped_inheriting: set[str] = set()
         self.record_groups: dict[str, Any] = {}
         self.record_group_permissions: dict[str, list[Any]] = {}
         self.app_users: dict[str, Any] = {}
@@ -535,6 +536,11 @@ class FakeEntitiesProcessor:
             self.permissions[record.external_record_id] = [
                 p for p in self.permissions.get(record.external_record_id, []) if p.email != user_email
             ]
+
+    async def stop_inheriting_permissions(self, record_id: str, connector_id: str) -> None:
+        record = self.by_id(record_id)
+        if record is not None:
+            self.stopped_inheriting.add(record.external_record_id)
 
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
         record = self.by_id(record_id)
