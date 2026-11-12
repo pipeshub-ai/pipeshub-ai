@@ -35,10 +35,13 @@ on:
         description: 'post a QA review comment (/qa review)'
         type: boolean
         default: false
+      # One input for what follows the plan (a dispatch takes at most ten inputs): "true" strengthens and
+      # adds tests after the run (/qa on a same-repo PR); "agent" runs the QA agent instead (Claude Code
+      # picks and judges, the engine runs); "combine[-open] NUMBER:SHA ..." first stacks those PRs.
       improve:
-        description: 'after the run, strengthen weak tests of the change and add missing ones (/qa on a same-repo PR)'
-        type: boolean
-        default: false
+        description: '"true", "agent", or "combine[-open] NUMBER:SHA ..." (set by /qa)'
+        type: string
+        default: ''
       command:
         description: 'the /qa command, for the header of its PR comment (set by /qa)'
         type: string
@@ -63,7 +66,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The QA agent's settings, from the improve input; checked here.
+  agent-args:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    outputs:
+      on: ${{ steps.parse.outputs.on }}
+      combine: ${{ steps.parse.outputs.combine }}
+      open_pr: ${{ steps.parse.outputs.open_pr }}
+    steps:
+      - id: parse
+        env:
+          AGENT: ${{ inputs.improve }}
+        run: |
+          on=false combine="" open_pr=false
+          if [[ "$AGENT" == agent ]]; then
+            on=true
+          elif [[ "$AGENT" =~ ^combine(-open)?((\ [0-9]{1,7}:[0-9a-f]{40}){1,8})$ ]]; then
+            on=true combine="${BASH_REMATCH[2]# }"
+            [[ -n "${BASH_REMATCH[1]}" ]] && open_pr=true
+          elif [[ -n "$AGENT" && "$AGENT" != true && "$AGENT" != false ]]; then
+            echo "::error::improve must be true, false, agent or \"combine[-open] NUMBER:SHA ...\""; exit 1
+          fi
+          { echo "on=$on"; echo "combine=$combine"; echo "open_pr=$open_pr"; } >> "$GITHUB_OUTPUT"
+
   pipeline:
+    needs: agent-args
     uses: ./.github/workflows/qa-pipeline.yml
     with:
       edition: oss
@@ -76,7 +105,25 @@ jobs:
       review: ${{ inputs.review || false }}
       command: ${{ inputs.command }}
       requested_by: ${{ inputs.requested_by }}
+      agent: ${{ needs.agent-args.outputs.on == 'true' }}
+      combine: ${{ needs.agent-args.outputs.combine }}
     secrets: inherit
+
+  # The QA agent's tests (a same-repo PR) or combined branch (/qa combine --open-pr), pushed by a
+  # job with no secrets, after the checks in qa-agent-publish.yml.
+  agent-publish:
+    needs: [agent-args, pipeline]
+    if: ${{ !cancelled() && vars.QA_ENFORCE == 'true' && needs.agent-args.outputs.on == 'true' && inputs.pr != '' && github.event_name == 'workflow_dispatch' && (needs.agent-args.outputs.combine == '' || needs.agent-args.outputs.open_pr == 'true') }}
+    uses: ./.github/workflows/qa-agent-publish.yml
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      edition: oss
+      pr: ${{ inputs.pr }}
+      head_sha: ${{ inputs.head_sha }}
+      combine: ${{ needs.agent-args.outputs.combine }}
+      requested_by: ${{ inputs.requested_by }}
 
   # /qa only: qa-command.yml sets improve for a same-repo PR. After the run, find the change's weak
   # tests and push proven stronger and missing ones, with the jobs of /qa tests (qa-tests.yml):
@@ -85,7 +132,7 @@ jobs:
   # when the repository variable QA_IMPROVE is 'false'.
   improve:
     needs: pipeline
-    if: ${{ !cancelled() && vars.QA_ENFORCE == 'true' && vars.QA_IMPROVE != 'false' && inputs.improve && inputs.mode == 'pr' && !inputs.plan_only && !inputs.review && inputs.pr != '' && github.event_name == 'workflow_dispatch' }}
+    if: ${{ !cancelled() && vars.QA_ENFORCE == 'true' && vars.QA_IMPROVE != 'false' && inputs.improve == 'true' && inputs.mode == 'pr' && !inputs.plan_only && !inputs.review && inputs.pr != '' && github.event_name == 'workflow_dispatch' }}
     uses: ./.github/workflows/qa-tests.yml
     permissions:
       contents: write

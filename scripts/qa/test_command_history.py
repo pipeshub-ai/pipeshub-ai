@@ -128,6 +128,34 @@ class TestCommand(unittest.TestCase):
                 command.parse(body, perm)
 
 
+class TestAgentCommands(unittest.TestCase):
+    def test_agent_runs_the_qa_agent_and_needs_write(self) -> None:
+        self.assertTrue(command.parse("/qa agent", "write")["agent"])
+        with self.assertRaises(command.CommandError):
+            command.parse("/qa agent", "read")
+        with self.assertRaisesRegex(command.CommandError, "takes no --profile"):
+            command.parse("/qa agent --profile fast", "write")
+
+    def test_plain_qa_is_the_agent_only_when_the_repository_says_so(self) -> None:
+        self.assertFalse(command.parse("/qa", "write")["agent"])
+        self.assertTrue(command.parse("/qa", "write", agent_default=True)["agent"])
+        self.assertFalse(command.parse("/qa plan", "write", agent_default=True)["agent"])
+        self.assertFalse(command.parse("/qa run --profile fast", "write", agent_default=True)["agent"])
+
+    def test_combine_takes_two_to_eight_distinct_prs_in_order(self) -> None:
+        c = command.parse("/qa combine #12 15 #9 --open-pr", "write")
+        self.assertEqual((c["command"], c["prs"], c["open_pr"], c["agent"]), ("combine", "12 15 9", True, True))
+        self.assertFalse(command.parse("/qa combine #1 #2", "write")["open_pr"])
+        for bad in ("/qa combine #1", "/qa combine " + " ".join(f"#{i}" for i in range(1, 10)), "/qa combine #1 #1",
+                    "/qa combine #1 #2; rm -rf /", "/qa combine #1 #x"):
+            with self.assertRaises(command.CommandError, msg=bad):
+                command.parse(bad, "write")
+        with self.assertRaisesRegex(command.CommandError, "no --trusted"):
+            command.parse("/qa combine #1 #2 --trusted " + "a" * 40, "admin")
+        with self.assertRaises(command.CommandError):
+            command.parse("/qa combine #1 #2", "read")
+
+
 class TestHistory(unittest.TestCase):
     PLAN = {"head": "x", "branch": "main", "profile": "standard", "tests": [{"id": "a", "source": "floor"}], "planner": {}}
 

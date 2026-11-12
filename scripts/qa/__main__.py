@@ -88,7 +88,8 @@ def _record(store: Path, plan: dict, results: dict, trigger: str | None = None,
 
 def _merged(out: Path) -> tuple[dict, dict | None]:
     """plan.json and every results*.json part merged, as the report reads them."""
-    plan = _load(out / "plan.json")
+    # The QA agent plans its own floor (a combined run's differs from the PR's), so its plan wins.
+    plan = _load(out / "agent-plan.json") if (out / "agent-plan.json").is_file() else _load(out / "plan.json")
     if (out / "agent.json").is_file():
         # Tests the QA agent ran beyond the floor join the plan, so their results reach the report and the gate.
         doc = _load(out / "agent.json")
@@ -361,6 +362,7 @@ def cmd_agent(args) -> int:
         if sess:
             print("qa agent: stack down: " + "; ".join(session.down(cfg, out)), file=sys.stderr)
         signal.signal(signal.SIGTERM, previous)
+    _dump(out / "agent-plan.json", _load(out / "plan.json"))
     for note in doc["notes"]:
         print(f"qa agent: {note}", file=sys.stderr)
     verdict = (doc.get("verdict") or {}).get("verdict", "none")
@@ -860,7 +862,7 @@ def cmd_prove(args) -> int:
 
 def cmd_command(args) -> int:
     try:
-        parsed = command.parse(args.body, args.permission, args.admin_team)
+        parsed = command.parse(args.body, args.permission, args.admin_team, args.agent_default)
     except command.CommandError as err:
         print(json.dumps({"ok": False, "error": str(err)}))
         return 1
@@ -1083,6 +1085,7 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--body", required=True)
     s.add_argument("--permission", required=True)
     s.add_argument("--admin-team", action="store_true")
+    s.add_argument("--agent-default", action="store_true", help="plain /qa runs the QA agent (repository variable QA_AGENT)")
     s.set_defaults(fn=cmd_command)
 
     s = sub.add_parser("bisect", help="find the commit that broke tests in a range")
