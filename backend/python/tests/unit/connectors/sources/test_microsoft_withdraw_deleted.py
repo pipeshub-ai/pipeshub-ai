@@ -662,7 +662,7 @@ async def test_sharepoint_run_reads_no_group_while_the_disabled_set_is_unknown(s
     c._reset_permission_caches = MagicMock()
     c._get_all_sites = AsyncMock(return_value=[])
     c._sync_user_groups = AsyncMock()
-    c.drive_delta_sync_point = MagicMock(read_sync_point=AsyncMock(return_value=None))
+    c.drive_delta_sync_point = MagicMock(read_sync_point=AsyncMock(return_value=None), update_sync_point=AsyncMock())
     with patch("app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
                AsyncMock(return_value=(MagicMock(), MagicMock()))):
         with pytest.raises(SharePointSyncIncomplete):  # an untrusted listing leaves the run incomplete, which a sync reports
@@ -726,7 +726,7 @@ async def test_sharepoint_a_run_that_reads_no_group_cannot_grant_from_an_earlier
         setattr(c, name, AsyncMock())
     c._get_all_sites = AsyncMock(return_value=[])
     c._sync_user_groups = AsyncMock()
-    c.drive_delta_sync_point = MagicMock(read_sync_point=AsyncMock(return_value=None))
+    c.drive_delta_sync_point = MagicMock(read_sync_point=AsyncMock(return_value=None), update_sync_point=AsyncMock())
     with patch("app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
                AsyncMock(return_value=(MagicMock(), MagicMock()))):
         with pytest.raises(SharePointSyncIncomplete):
@@ -790,6 +790,34 @@ async def test_sharepoint_a_run_that_withheld_a_direct_grant_has_every_item_read
         with pytest.raises(SharePointSyncIncomplete):
             await c.run_sync()
     c.drive_delta_sync_point.update_sync_point.assert_awaited_with("sharepoint-permission-model", sync_point_data={"version": 0})
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_every_item_is_marked_for_reading_again_before_any_site_is_read_while_the_disabled_set_is_unknown() -> None:
+    from unittest.mock import patch
+
+    c, _ = _sharepoint(["a", "b"], [_app_user("a")], complete=False)
+    _sharepoint_sync_point(c, None)
+    for name in ("_reinitialize_credential_if_needed", "_report_missing_graph_permission", "_remove_deleted_sites", "_remove_filtered_out"):
+        setattr(c, name, AsyncMock())
+    c._reset_permission_caches = MagicMock()
+    order: list[str] = []
+    c.drive_delta_sync_point = MagicMock(
+        read_sync_point=AsyncMock(return_value=None),
+        update_sync_point=AsyncMock(side_effect=lambda key, sync_point_data: order.append(f"{key}={sync_point_data['version']}")),
+    )
+
+    async def sites() -> list:
+        order.append("sites")
+        raise RuntimeError("the run stops while reading sites")
+    c._get_all_sites = sites
+    with patch("app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
+               AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        with pytest.raises(RuntimeError):
+            await c.run_sync()
+
+    # Written before any item's grants or delta token could move, so a run that stops later still re-reads everything.
+    assert order == ["sharepoint-permission-model=0", "sites"]
 
 
 @pytest.mark.parametrize(("unknown", "withheld"), [(True, True), (False, False)])

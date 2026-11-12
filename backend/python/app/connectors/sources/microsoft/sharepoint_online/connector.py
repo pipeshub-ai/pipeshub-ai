@@ -3848,6 +3848,14 @@ class SharePointConnector(BaseConnector):
                 # A warning about the app's permissions must not stop the sync it is about.
                 self.logger.warning(f"⚠️ Could not check the app's Microsoft Graph permissions: {e}")
             await self._sync_users()
+            if self._disabled_set_unknown:
+                # A grant may be withheld this run (_user_may_be_granted), and an item's grants and the drives' delta
+                # tokens are saved as the run goes. Mark every item for reading again before any of that, so a run
+                # that stops anywhere after this point still leaves the next run to write what was withheld. If this
+                # write fails, the run stops here and nothing has moved.
+                await self.drive_delta_sync_point.update_sync_point(
+                    PERMISSION_MODEL_SYNC_POINT_KEY, sync_point_data={"version": 0}
+                )
 
             sites = await self._get_all_sites()
             if self._disabled_set_unknown:
@@ -3890,15 +3898,6 @@ class SharePointConnector(BaseConnector):
                 except Exception as site_error:
                     self._health.skipped(f"site {site_record_group.name}", site_error)
 
-            if self._withheld_unknown_user:
-                # Items are not read again unless their model is out of date: make every one be, so the grants
-                # withheld here are written on the next run. Written after the sites are read and before the model
-                # version below: a run that withheld is never complete (an unknown disabled set skips the user
-                # listing), so the current version is not written over it and the next run reads everything. If
-                # this write fails, the run raises and the next run decides again.
-                await self.drive_delta_sync_point.update_sync_point(
-                    PERMISSION_MODEL_SYNC_POINT_KEY, sync_point_data={"version": 0}
-                )
             if self._health.complete and self._rewrite_all_items:
                 await self.drive_delta_sync_point.update_sync_point(
                     PERMISSION_MODEL_SYNC_POINT_KEY, sync_point_data={"version": PERMISSION_MODEL_VERSION}
