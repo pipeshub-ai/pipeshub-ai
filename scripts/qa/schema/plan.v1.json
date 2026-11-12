@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "qa plan (what the runner executes)",
+  "type": "object",
+  "required": [
+    "schema",
+    "mode",
+    "edition",
+    "profile",
+    "planner",
+    "base",
+    "head",
+    "tests",
+    "deferred",
+    "stack",
+    "matrix",
+    "dropped",
+    "budget_trimmed",
+    "missing",
+    "unmapped",
+    "risk"
+  ],
+  "properties": {
+    "schema": {
+      "const": "qa-plan/v1"
+    },
+    "planner": {
+      "type": "object",
+      "required": [
+        "adapter",
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "failed",
+            "skipped"
+          ]
+        }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "source",
+          "why"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "floor",
+              "model"
+            ]
+          },
+          "why": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "grep": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "flows": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "stack": {
+      "type": "object",
+      "required": [
+        "needed",
+        "graph_db",
+        "broker",
+        "compose_profiles"
+      ],
+      "properties": {
+        "needed": {
+          "type": "boolean"
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "graph_db": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "broker": {
+          "type": "string"
+        },
+        "compose_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "matrix": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "deferred": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unmapped": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "flows": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  }
+}

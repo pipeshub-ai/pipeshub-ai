@@ -28,6 +28,8 @@ from helper.clients.agents_client import AgentsClient
 from helper.clients.conversations_client import AgentConversationsClient
 from openapi_schema_validator import assert_response_matches_openapi_operation
 
+pytestmark = pytest.mark.live_model
+
 
 def _response_json(resp: requests.Response) -> dict[str, Any]:
     try:

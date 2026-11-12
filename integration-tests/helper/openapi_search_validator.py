@@ -1,7 +1,7 @@
 """
 Spec-driven response validator for enterprise-search integration tests.
 
-Loads `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml` once,
+Copies the OpenAPI document the server publishes (`helper.openapi_spec`) once,
 normalizes OpenAPI 3.0 `nullable: true` into valid JSON Schema **in place**,
 and validates response bodies against the schema declared for a
 `(path, method, status_code)` triple.
@@ -9,9 +9,8 @@ and validates response bodies against the schema declared for a
 In-place mutation of the cached spec is deliberate. `jsonschema`'s
 `RefResolver` returns `$ref`-resolved nodes straight from the document we
 hand it, so any nullable rewriting we want applied to schemas reached
-through a `$ref` must be visible in the cached document itself. Building
-a separate translated copy doubles allocations on a ~18k-line YAML for no
-benefit — nothing else in the test process consumes the raw spec.
+through a `$ref` must be visible in the cached document itself. The copy
+keeps that rewrite out of the merged document other validators share.
 
 Public entry point:
 
@@ -20,26 +19,17 @@ Public entry point:
 
 from __future__ import annotations
 
+import copy
 import json
 import threading
-from pathlib import Path
 from typing import Any
 
 import jsonschema
-import yaml
 from jsonschema import RefResolver
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-SPEC_PATH = (
-    _REPO_ROOT
-    / "backend"
-    / "nodejs"
-    / "apps"
-    / "src"
-    / "modules"
-    / "api-docs"
-    / "pipeshub-openapi.yaml"
-)
+from helper.openapi_spec import BASE_SPEC, load_spec
+
+SPEC_PATH = BASE_SPEC
 
 _spec_cache: dict | None = None
 _spec_lock = threading.Lock()
@@ -85,13 +75,8 @@ def _load_spec() -> dict:
         return _spec_cache
     with _spec_lock:
         if _spec_cache is None:
-            if not SPEC_PATH.exists():
-                raise FileNotFoundError(
-                    f"OpenAPI spec not found at {SPEC_PATH}. "
-                    "Make sure the backend source tree is checked out."
-                )
-            with SPEC_PATH.open(encoding="utf-8") as fh:
-                _spec_cache = yaml.safe_load(fh)
+            # Normalized in place below, so never the shared merged document itself.
+            _spec_cache = copy.deepcopy(load_spec())
             _normalize_in_place(_spec_cache)
     return _spec_cache
 

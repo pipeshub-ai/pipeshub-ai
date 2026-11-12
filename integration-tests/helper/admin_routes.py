@@ -164,11 +164,11 @@ def _factory_spans(text: str) -> list[tuple[str, int, int]]:
     return [(name, start, end) for (name, start), end in zip(starts, ends)]
 
 
-def admin_routes_in_file(
-    path: Path, prefix: str, span: tuple[int, int] | None = None,
+def routes_in_file(
+    path: Path, prefix: str, admin_only: bool = False, span: tuple[int, int] | None = None,
 ) -> list[DiscoveredRoute]:
-    """The admin routes in *path* (only those between *span*'s offsets, when
-    given), joined to *prefix*."""
+    """Every route *path* registers, any method, joined to *prefix* (only those
+    between *span*'s offsets, when given); ``admin_only`` keeps the admin-gated ones."""
     text = _strip_comments(path.read_text(encoding="utf-8"))
     start, end = span if span is not None else (0, len(text))
     # Middleware lists spread into a route (``...guard``), by the const name.
@@ -205,7 +205,7 @@ def admin_routes_in_file(
             continue
         chain = args[1:]
         admin_at = next((i for i, a in enumerate(chain) if _is_admin(a)), None)
-        if admin_at is None and not admin_from_here:
+        if admin_only and admin_at is None and not admin_from_here:
             continue
         before = tuple(used_before) + tuple(
             _middleware_name(a) for a in (chain[:admin_at] if admin_at is not None else ())
@@ -221,6 +221,39 @@ def admin_routes_in_file(
         ))
     return found
 
+
+
+def admin_routes_in_file(
+    path: Path, prefix: str, span: tuple[int, int] | None = None,
+) -> list[DiscoveredRoute]:
+    """The admin routes in *path* (only those between *span*'s offsets, when
+    given), joined to *prefix*."""
+    return routes_in_file(path, prefix, admin_only=True, span=span)
+
+
+def discover_routes(method: str, node_src: Path = NODE_SRC) -> tuple[list[DiscoveredRoute], list[str]]:
+    """Every route of ``method`` the Node API serves, and the routers whose mount
+    prefix is not a single one (none, or several), as ``"<file> (<factory>)"``,
+    returned not raised."""
+    mounts = router_mounts(node_src)
+    routes: list[DiscoveredRoute] = []
+    unknown: list[str] = []
+    for path in _sources(node_src):
+        text = path.read_text(encoding="utf-8")
+        if not _ROUTE_CALL.search(text):
+            continue
+        # Each router has its own prefix, so a file holding several is read router by router.
+        for factory, start, end in _factory_spans(_strip_comments(text)):
+            found = [r for r in routes_in_file(path, "", span=(start, end)) if r.method == method.upper()]
+            if not found:
+                continue
+            prefixes = mounts.get(factory, set())
+            if len(prefixes) != 1:
+                unknown.append(f"{_source(path)} ({factory})")
+                continue
+            prefix = next(iter(prefixes))
+            routes.extend(replace(route, path=_join(prefix, route.path)) for route in found)
+    return routes, sorted(unknown)
 
 def discover_admin_routes(node_src: Path = NODE_SRC) -> list[DiscoveredRoute]:
     """Every admin-gated route the Node API serves, with its full path."""

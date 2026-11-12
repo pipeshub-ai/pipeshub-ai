@@ -65,7 +65,7 @@ if TYPE_CHECKING:
 # drag the whole connector framework into the test process.
 FIXTURE_PATH = Path(kb_harness.__file__).resolve().parent.parent / "fixture" / "acme-corp.yaml"
 
-pytestmark = [pytest.mark.integration, pytest.mark.demo, pytest.mark.slow]
+pytestmark = [pytest.mark.live_model, pytest.mark.integration, pytest.mark.demo, pytest.mark.slow]
 
 RUNS = int(os.environ.get("DEMO_ACCEPTANCE_RUNS", "3"))
 MIN_PASS = int(os.environ.get("DEMO_ACCEPTANCE_MIN_PASS", "2"))

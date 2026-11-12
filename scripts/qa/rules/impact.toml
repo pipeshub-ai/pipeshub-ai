@@ -1,0 +1,232 @@
+# Path rules: when a changed file matches `paths`, everything the rule names is
+# added to the floor. Every matching rule applies; none stops the others.
+#
+# module    id of the module the rule belongs to (scripts/qa/rules/modules.toml)
+# tests     globs over test file paths (any suite)
+# markers   integration-tests markers; selects every it-stack test carrying one
+# it_all    true selects the whole it-stack suite
+# suites    suite ids to run in full
+# matrix    backend-matrix entries (scripts/qa/rules/always.toml matrix_entries)
+# graph_db  "neo4j" | "arango" | "both" for the integration stack
+# broker    "kafka" forces the kafka profile
+# names     expands the rule once per name, substituting {name} in every string
+#
+# Unit tests need no rule: mirrors and the import graph find them. Rules are for
+# what crosses a process boundary, which neither can see.
+
+# --- storage abstractions: run every backend the abstraction supports --------
+
+[[rule]]
+id = "graph-db"
+module = "graph-db"
+paths = ["backend/python/app/services/graph_db/**", "backend/python/app/connectors/core/base/data_store/**"]
+it_all = true
+graph_db = "both"
+matrix = ["neo4j", "arangodb"]
+
+[[rule]]
+id = "vector-db"
+module = "vector-db"
+paths = ["backend/python/app/services/vector_db/**"]
+markers = ["retrieval", "cleanup"]
+matrix = ["qdrant", "opensearch", "redis"]
+
+[[rule]]
+id = "messaging"
+module = "messaging"
+paths = ["backend/python/app/services/messaging/**", "backend/nodejs/apps/src/libs/services/kafka*", "backend/nodejs/apps/src/libs/services/redis-streams*"]
+markers = ["requires_kafka"]
+tests = ["integration-tests/messaging/**"]
+matrix = ["kafka", "redis-streams"]
+broker = "kafka"
+
+[[rule]]
+id = "kv-config"
+module = "kv-config"
+paths = ["backend/python/app/services/key_value/**", "backend/python/app/config/**", "backend/python/app/services/redis/**"]
+matrix = ["redis", "etcd"]
+
+[[rule]]
+id = "indexing-pipeline"
+module = "indexing"
+paths = ["backend/python/app/modules/transformers/**", "backend/python/app/modules/indexing/**", "backend/python/app/events/**", "backend/python/app/modules/parsers/**"]
+markers = ["retrieval", "cleanup"]
+tests = ["integration-tests/parsers/**"]
+
+[[rule]]
+id = "retrieval"
+module = "retrieval"
+paths = ["backend/python/app/modules/retrieval/**", "backend/python/app/modules/qna/**", "backend/python/app/modules/reranker/**", "backend/python/app/api/routes/search*.py", "backend/python/app/api/routes/chatbot.py"]
+markers = ["retrieval"]
+tests = ["integration-tests/response-validation/enterprise-search/**"]
+
+[[rule]]
+id = "agents"
+module = "agents"
+paths = ["backend/python/app/modules/agents/**", "backend/python/app/api/routes/agent.py"]
+tests = ["integration-tests/response-validation/enterprise-search/agents/**", "integration-tests/response-validation/enterprise-search/conversations/**"]
+
+[[rule]]
+id = "toolsets"
+module = "toolsets-mcp"
+paths = ["backend/python/app/api/routes/toolset*.py"]
+tests = ["integration-tests/response-validation/toolsets/**"]
+
+# --- connectors: the integration marker for each source ------------------------
+
+[[rule]]
+id = "connector-{name}"
+module = "connectors"
+names = ["azure_blob", "azure_files", "bookstack", "linear", "local_fs", "mariadb", "minio", "nextcloud", "notion", "postgres", "rss", "s3", "web", "zammad", "gitlab", "github_teams"]
+paths = ["backend/python/app/connectors/sources/{name}/**", "backend/python/app/sources/external/{name}/**", "integration-tests/connectors/{name}/**"]
+markers = ["{name}"]
+
+[[rule]]
+id = "connector-personal-variants"
+module = "connectors"
+paths = ["backend/python/app/connectors/sources/notion_personal/**"]
+markers = ["notion"]
+
+[[rule]]
+id = "connector-gitlab-personal"
+module = "connectors"
+paths = ["backend/python/app/connectors/sources/gitlab_personal/**"]
+markers = ["gitlab"]
+
+[[rule]]
+id = "connector-github"
+module = "connectors"
+paths = ["backend/python/app/connectors/sources/github/**", "integration-tests/connectors/github_personal/**"]
+markers = ["github"]
+
+[[rule]]
+id = "connector-gcs"
+module = "connectors"
+paths = ["backend/python/app/connectors/sources/google_cloud_storage/**", "integration-tests/connectors/gcs/**"]
+markers = ["gcs"]
+
+[[rule]]
+id = "connector-confluence"
+module = "connectors"
+paths = ["backend/python/app/connectors/sources/atlassian/confluence_*/**", "integration-tests/connectors/confluence/**"]
+markers = ["confluence"]
+
+[[rule]]
+id = "connector-jira"
+module = "connectors"
+paths = ["backend/python/app/connectors/sources/atlassian/jira*/**", "integration-tests/connectors/jira/**"]
+markers = ["jira"]
+
+[[rule]]
+id = "connector-atlassian-core"
+module = "connectors"
+paths = ["backend/python/app/connectors/sources/atlassian/core/**"]
+markers = ["confluence", "jira"]
+
+[[rule]]
+id = "connector-google-drive"
+module = "connectors"
+paths = ["backend/python/app/connectors/sources/google/drive/**", "backend/python/app/connectors/sources/google/common/**", "integration-tests/connectors/google_drive_*/**"]
+markers = ["google_drive_workspace", "google_drive_individual"]
+
+[[rule]]
+id = "connector-sharepoint"
+module = "connectors"
+paths = ["backend/python/app/connectors/sources/microsoft/sharepoint_online/**", "backend/python/app/connectors/sources/microsoft/common/**", "integration-tests/connectors/sharepoint/**"]
+markers = ["sharepoint"]
+
+[[rule]]
+id = "connector-core"
+module = "connectors"
+paths = ["backend/python/app/connectors/core/**", "backend/python/app/connectors/services/**", "backend/python/app/connectors_main.py"]
+tests = ["integration-tests/connectors/**"]
+graph_db = "neo4j"
+
+# --- Node API modules --------------------------------------------------------
+
+[[rule]]
+id = "permissions"
+module = "user-management"
+paths = ["backend/nodejs/apps/src/modules/user_management/**", "backend/nodejs/apps/src/libs/middlewares/**", "backend/python/app/**/permission*"]
+markers = ["permissions", "security"]
+tests = ["integration-tests/response-validation/user_management/**"]
+
+[[rule]]
+id = "auth"
+module = "auth"
+paths = ["backend/nodejs/apps/src/modules/auth/**"]
+tests = ["integration-tests/response-validation/auth/**"]
+markers = ["security"]
+
+[[rule]]
+id = "unauthorized-reads"
+module = "auth"
+paths = ["backend/nodejs/apps/src/libs/middlewares/**", "backend/nodejs/apps/src/**/routes/**", "backend/nodejs/apps/src/**/*.routes.ts", "backend/nodejs/apps/src/modules/api-docs/**", "backend/nodejs/apps/src/**/api-docs/*-overlay.yaml", "integration-tests/helper/read_route*.py"]
+tests = ["integration-tests/security/integration_test_unauthorized_reads.py", "integration-tests/unit/test_read_route_inventory.py"]
+
+[[rule]]
+id = "oauth"
+module = "oauth"
+paths = ["backend/nodejs/apps/src/modules/oauth_provider/**", "backend/nodejs/apps/src/modules/oauth_apps/**"]
+markers = ["oauth_clients", "oauth_provider"]
+tests = ["integration-tests/response-validation/oauth_app/**", "integration-tests/response-validation/oauth_provider/**"]
+
+[[rule]]
+id = "mcp"
+module = "toolsets-mcp"
+paths = ["backend/nodejs/apps/src/modules/mcp/**", "backend/nodejs/apps/src/modules/mcp_servers/**", "backend/python/app/api/routes/mcp*.py"]
+markers = ["mcp"]
+tests = ["integration-tests/response-validation/mcp/**", "integration-tests/mcp_package/**"]
+
+[[rule]]
+id = "storage"
+module = "storage"
+paths = ["backend/nodejs/apps/src/modules/storage/**"]
+markers = ["storage"]
+suites = ["it-helpers"]
+
+[[rule]]
+id = "knowledge-base"
+module = "knowledge-base"
+paths = ["backend/nodejs/apps/src/modules/knowledge_base/**"]
+tests = ["integration-tests/response-validation/knowledgebase/**", "frontend/tests/e2e/knowledge-base/**"]
+
+[[rule]]
+id = "enterprise-search"
+module = "enterprise-search"
+paths = ["backend/nodejs/apps/src/modules/enterprise_search/**"]
+markers = ["retrieval"]
+tests = ["integration-tests/response-validation/enterprise-search/**", "frontend/tests/e2e/chat/**"]
+
+[[rule]]
+id = "configuration-manager"
+module = "configuration"
+paths = ["backend/nodejs/apps/src/modules/configuration_manager/**"]
+tests = ["integration-tests/response-validation/configuration-manager/**", "integration-tests/response-validation/ai-model-providers/**"]
+
+[[rule]]
+id = "toolsets-node"
+module = "toolsets-mcp"
+paths = ["backend/nodejs/apps/src/modules/toolsets/**"]
+tests = ["integration-tests/response-validation/toolsets/**"]
+
+[[rule]]
+id = "model-health-check"
+module = "configuration"
+paths = ["backend/python/app/api/routes/health.py"]
+tests = ["frontend/tests/e2e/workspace/ai-models-*.spec.ts"]
+
+# --- frontend areas to e2e specs ----------------------------------------------
+
+[[rule]]
+id = "fe-{name}"
+module = "frontend"
+names = ["agents", "auth", "chat", "groups", "knowledge-base", "teams", "users", "workspace"]
+paths = ["frontend/app/**/{name}/**"]
+tests = ["frontend/tests/e2e/{name}/**"]
+
+[[rule]]
+id = "visual"
+module = "frontend"
+paths = ["frontend/app/**", "frontend/styles/**"]
+tests = ["frontend/tests/e2e/responsive/visual.spec.ts"]

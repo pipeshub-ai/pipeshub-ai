@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from pipeshub_client import PipeshubClient
 
 # One worker: the tests share the API's call log and the platform flag their fixtures reset.
-pytestmark = [pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.xdist_group("api_toolsets")]
+pytestmark = [pytest.mark.live_model, pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.xdist_group("api_toolsets")]
 
 # Seeded in the fixture's data: no model could know who is working on it.
 _TICKET = "ACME-7311"

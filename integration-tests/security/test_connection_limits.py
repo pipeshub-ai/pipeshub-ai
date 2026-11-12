@@ -50,7 +50,7 @@ from helper.mcp_oauth import (
 
 logger = logging.getLogger("connection-limits-it")
 
-pytestmark = [pytest.mark.integration, pytest.mark.security, pytest.mark.mcp]
+pytestmark = [pytest.mark.live_model, pytest.mark.integration, pytest.mark.security, pytest.mark.mcp]
 
 PATS = "/api/v1/personal-access-tokens"
 OUTSIDE_MESSAGE = "not shared with this connected app"

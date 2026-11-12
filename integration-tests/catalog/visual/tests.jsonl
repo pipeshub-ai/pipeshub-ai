@@ -1,0 +1,1 @@
+{"covers": [], "edition": "oss", "family": "playwright", "flows": [], "id": "e2e:tests/e2e/responsive/visual.spec.ts", "markers": [], "module": "frontend", "needs": ["service:stack"], "path": "frontend/tests/e2e/responsive/visual.spec.ts", "priority": null, "status": "active", "suite": "e2e-visual", "tags": [], "tc": null, "tests": 0, "title": ""}

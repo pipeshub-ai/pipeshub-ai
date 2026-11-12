@@ -1,0 +1,28 @@
+name: QA-PR
+
+# QA on every pull request: the deterministic floor from the checked-in rules,
+# reported on the PR. A pull_request job runs the PR's own code, so it gets no
+# secrets and no model; a maintainer adds the model and the stack with /qa,
+# which dispatches qa.yml at the commit they reviewed. See docs/qa-engine/README.md.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  # qa-pipeline.yml run-stack reads the previous nightly's screenshots; a called job may not ask for more than this.
+  actions: read
+
+concurrency:
+  group: qa-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pipeline:
+    uses: ./.github/workflows/qa-pipeline.yml
+    with:
+      edition: oss
+      use_model: false

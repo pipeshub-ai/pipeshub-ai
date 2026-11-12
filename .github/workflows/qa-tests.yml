@@ -1,0 +1,601 @@
+name: QA tests
+
+# `/qa tests <module>` and `/qa tests --implement <ids>`, dispatched by
+# qa-command.yml at the PR head it checked, and the improve stage of `/qa`,
+# called by qa.yml after its test run. Separate jobs, so no job holds both the
+# model key and the generated code, or the generated code and a write token:
+#   check    no secrets and no token; runs the PR's tests against mutants (improve only)
+#   draft    the model key; runs the default branch's engine, never the generated code
+#   prove    no secrets and no token; runs the generated tests (--implement, improve)
+#   publish  contents: write; copies only files from the draft artifact it verified
+#            by id and hash, commits and pushes them to a same-repo PR branch at the
+#            dispatched head, and comments
+# check and prove run the PR's code, so draft trusts only check's ids that it chose
+# itself, and publish trusts nothing prove produced except a list of ids, filtered
+# to the drafted ones. See docs/qa-engine/README.md, "Generating tests".
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        type: string
+        required: true
+      head_sha:
+        description: 'the PR head the command was checked at; nothing is pushed if the PR moved'
+        type: string
+        required: true
+      module:
+        description: '/qa tests <module>'
+        type: string
+        default: ''
+      implement:
+        description: '/qa tests --implement <ID[,ID...]>'
+        type: string
+        default: ''
+      improve:
+        description: 'the improve stage of /qa: strengthen weak tests of the change and add missing ones'
+        type: boolean
+        default: false
+      requested_by:
+        type: string
+        default: ''
+  # qa.yml's improve job, after the /qa test run. The same inputs.
+  workflow_call:
+    inputs:
+      pr:
+        type: string
+        required: true
+      head_sha:
+        type: string
+        required: true
+      module:
+        type: string
+        default: ''
+      implement:
+        type: string
+        default: ''
+      improve:
+        type: boolean
+        default: false
+      requested_by:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qa-tests-${{ inputs.pr }}
+  cancel-in-progress: false
+
+env:
+  QA_OUT: qa-out
+
+jobs:
+  # Runs no PR code: the strength check below starts only for an open same-repo PR still at head_sha.
+  guard:
+    if: inputs.improve
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check the PR before its code runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          [[ "$PR" =~ ^[0-9]+$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::pr or head_sha is malformed"; exit 1; }
+          read -r head fork state < <(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid,isCrossRepository,state \
+            --jq '"\(.headRefOid) \(.isCrossRepository) \(.state)"')
+          [[ "$state" == OPEN ]] || { echo "::error::the PR is not open"; exit 1; }
+          [[ "$fork" == false ]] || { echo "::error::improve skipped on fork PRs"; exit 1; }
+          [[ "$head" == "$HEAD_SHA" ]] || { echo "::error::the PR moved to ${head:0:10}"; exit 1; }
+
+  # The strength check runs the PR's tests: no secrets, no token, read-only permissions.
+  # Its weak list is untrusted: draft keeps only ids of its own candidate list.
+  check:
+    needs: guard
+    if: inputs.improve
+    runs-on: ubuntu-latest
+    # The engine stops starting tests after 10 minutes; the rest is the install.
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    outputs:
+      weak: ${{ steps.check.outputs.weak }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: qa-engine
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python test dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y libmariadb-dev
+          pip install uv
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e "backend/python[dev]"
+
+      - name: Find the weak tests
+        id: check
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          QA_ROOT="$GITHUB_WORKSPACE" python3 qa-engine/scripts/qa --out qa-out improve --check --target "$DEFAULT_BRANCH" \
+            --minutes 10 || echo "improve --check exited $?"
+          # At most 20 tests with 3 mutants each, a few kilobytes; a larger list is dropped, not cut into bad JSON.
+          weak=$(jq -c '[.weak[]? | {id, revert, survived: (.survived // [])[:3]}][:20]' qa-out/improve-check.json 2>/dev/null || echo '[]')
+          if (( ${#weak} > 60000 )); then
+            echo "::warning::the weak list is ${#weak} bytes; draft gets none"; weak='[]'
+          fi
+          echo "weak=$weak" >> "$GITHUB_OUTPUT"
+
+  draft:
+    needs: check
+    # check is skipped for /qa tests and may fail on the PR's code; draft runs either way.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      # The label qa-scenarios-ok is read at run time, by the engine, through a token file.
+      pull-requests: read
+    outputs:
+      drafted: ${{ steps.generate.outputs.drafted }}
+      artifact_id: ${{ steps.up.outputs.artifact-id }}
+      digest: ${{ steps.digest.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          # improve diffs the PR against the default branch.
+          fetch-depth: ${{ inputs.improve && '0' || '1' }}
+          persist-credentials: false
+
+      # The engine and rules come from the default branch, as in qa-pipeline.yml.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: qa-engine
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check the arguments and the head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          MODULE: ${{ inputs.module }}
+          IMPLEMENT: ${{ inputs.implement }}
+          IMPROVE: ${{ inputs.improve && 'true' || '' }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          [[ "$PR" =~ ^[0-9]+$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::pr or head_sha is malformed"; exit 1; }
+          given=$(( (${#MODULE} > 0) + (${#IMPLEMENT} > 0) + (${#IMPROVE} > 0) ))
+          if (( given != 1 )) || [[ "$MODULE$IMPLEMENT" == *[[:space:]]* ]]; then
+            echo "::error::give exactly one of module, implement and improve, with no spaces"; exit 1
+          fi
+          # The same fixed patterns as the comment parser: a direct dispatch is checked like a comment.
+          body="/qa tests ${IMPLEMENT:+--implement $IMPLEMENT}${MODULE}"
+          [[ -n "$IMPROVE" ]] && body="/qa"
+          python3 qa-engine/scripts/qa command --body "$body" --permission write >/dev/null \
+            || { echo "::error::module or ids do not match the /qa tests patterns"; exit 1; }
+          read -r head fork < <(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid,isCrossRepository \
+            --jq '"\(.headRefOid) \(.isCrossRepository)"')
+          [[ "$head" == "$HEAD_SHA" ]] || { echo "::error::the PR moved to ${head:0:10}"; exit 1; }
+          # improve pushes to the PR branch, which it cannot do on a fork: it never runs fork code with the key.
+          if [[ -n "$IMPROVE" && "$fork" != false ]]; then
+            echo "::error::improve skipped on fork PRs"; exit 1
+          fi
+          # qa-command.yml runs a fork PR only for an admin's --trusted <sha>, and only its GITHUB_TOKEN
+          # dispatch makes github-actions[bot] the triggering actor; a person's direct dispatch never does.
+          if [[ "$fork" != false && "$TRIGGERING_ACTOR" != 'github-actions[bot]' ]]; then
+            echo "::error::a fork PR runs only through /qa tests ... --trusted <sha> from an admin"; exit 1
+          fi
+          if [[ -n "$IMPLEMENT" ]]; then
+            # The engine reads it for its one label call and deletes it before the model runs.
+            (umask 077 && printf '%s' "$GH_TOKEN" > "$RUNNER_TEMP/qa-gh-token")
+          fi
+
+      - name: Install the planner CLI
+        if: (vars.QA_PLANNER || 'claude_code') == 'claude_code'
+        run: npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 || echo "planner CLI unavailable"
+
+      - name: Install LiteLLM
+        if: vars.QA_PLANNER == 'litellm'
+        run: pip install litellm >/dev/null 2>&1 || echo "litellm unavailable"
+
+      # No GH_TOKEN here: the model reads PR-authored text and runs with this environment.
+      - name: Ask the model
+        id: generate
+        env:
+          # Only the selected adapter's key: claude_code gets Anthropic's, litellm the key of the
+          # QA_PLANNER_MODEL provider, and a command adapter (the operator's CLI) every key.
+          ANTHROPIC_API_KEY: ${{ ((vars.QA_PLANNER || 'claude_code') == 'claude_code' || vars.QA_PLANNER == 'command' || vars.QA_PLANNER == 'litellm' && startsWith(vars.QA_PLANNER_MODEL, 'anthropic/')) && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ (vars.QA_PLANNER == 'command' || vars.QA_PLANNER == 'litellm' && startsWith(vars.QA_PLANNER_MODEL, 'openai/')) && secrets.OPENAI_API_KEY || '' }}
+          AZURE_API_KEY: ${{ (vars.QA_PLANNER == 'command' || vars.QA_PLANNER == 'litellm' && startsWith(vars.QA_PLANNER_MODEL, 'azure/')) && secrets.AZURE_API_KEY || '' }}
+          AZURE_API_BASE: ${{ (vars.QA_PLANNER == 'command' || vars.QA_PLANNER == 'litellm' && startsWith(vars.QA_PLANNER_MODEL, 'azure/')) && secrets.AZURE_API_BASE || '' }}
+          AZURE_API_VERSION: ${{ vars.AZURE_API_VERSION }}
+          GEMINI_API_KEY: ${{ (vars.QA_PLANNER == 'command' || vars.QA_PLANNER == 'litellm' && startsWith(vars.QA_PLANNER_MODEL, 'gemini/')) && secrets.GEMINI_API_KEY || '' }}
+          QA_PLANNER: ${{ vars.QA_PLANNER || 'claude_code' }}
+          QA_PLANNER_MODEL: ${{ vars.QA_PLANNER_MODEL }}
+          QA_PLANNER_CMD: ${{ vars.QA_PLANNER_CMD }}
+          QA_GH_TOKEN_FILE: ${{ runner.temp }}/qa-gh-token
+          PR: ${{ inputs.pr }}
+          MODULE: ${{ inputs.module }}
+          IMPLEMENT: ${{ inputs.implement }}
+          IMPROVE: ${{ inputs.improve && 'true' || '' }}
+          # Written by the check job, which ran the PR's code: the engine keeps only ids it chose itself.
+          WEAK: ${{ needs.check.outputs.weak }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          adapter="$QA_PLANNER"
+          if [[ ( "$adapter" == claude_code && -z "$ANTHROPIC_API_KEY" ) \
+                || ( "$adapter" == litellm && -z "$QA_PLANNER_MODEL" ) \
+                || ( "$adapter" == command && -z "$QA_PLANNER_CMD" ) ]]; then
+            adapter=none
+          fi
+          export QA_ROOT="$GITHUB_WORKSPACE"
+          mkdir -p qa-out
+          rc=0
+          if [[ -n "$IMPLEMENT" ]]; then
+            # Stack-grain rows are refused here: this workflow has no stack (see the README).
+            python3 qa-engine/scripts/qa generate --implement "$IMPLEMENT" --pr "$PR" --draft --stack none \
+              --adapter "$adapter" --timeout 900 2> qa-out/error.txt || rc=$?
+            echo "drafted=$(jq '.drafted | length' qa-out/implement.json 2>/dev/null || echo 0)" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$IMPROVE" ]]; then
+            printf '%s' "$WEAK" > "$RUNNER_TEMP/weak.json"
+            # A model failure or timeout is reported as skipped; it never fails the job.
+            python3 qa-engine/scripts/qa improve --draft --weak "$RUNNER_TEMP/weak.json" --target "$DEFAULT_BRANCH" \
+              --adapter "$adapter" --timeout 900 2> qa-out/error.txt || rc=$?
+            echo "drafted=$(jq '.drafted | length' qa-out/improve.json 2>/dev/null || echo 0)" >> "$GITHUB_OUTPUT"
+          else
+            python3 qa-engine/scripts/qa generate --module "$MODULE" --adapter "$adapter" --timeout 900 2> qa-out/error.txt || rc=$?
+            # The publish job takes the stubs from here, by the paths the engine wrote.
+            jq -r '.written[].path' qa-out/generate.json 2>/dev/null | while IFS= read -r f; do
+              mkdir -p "qa-out/files/$(dirname "$f")" && cp "$f" "qa-out/files/$f"
+            done || true
+          fi
+          rm -f "$QA_GH_TOKEN_FILE"
+          cat qa-out/error.txt >&2
+          echo "generate exited $rc"
+
+      - name: Refuse output that holds a secret, and hash the rest
+        id: digest
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The artifact can be downloaded by anyone who can read the repository, and publish pushes from it.
+          for v in "$ANTHROPIC_API_KEY" "$OPENAI_API_KEY" "$AZURE_API_KEY" "$AZURE_API_BASE" "$GEMINI_API_KEY" "$GH_TOKEN"; do
+            if [[ ${#v} -ge 8 ]] && grep -rqF -- "$v" qa-out; then
+              rm -rf qa-out
+              echo "::error::the model output holds a secret; nothing is uploaded"; exit 1
+            fi
+          done
+          # Hidden files are left out, as upload-artifact leaves them out.
+          sha=$(cd qa-out && find . -type f -not -path '*/.*' -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        id: up
+        with:
+          name: qa-tests-draft
+          path: qa-out/
+          retention-days: 14
+
+  prove:
+    needs: draft
+    if: (inputs.implement != '' || inputs.improve) && needs.draft.outputs.drafted != '' && needs.draft.outputs.drafted != '0'
+    runs-on: ubuntu-latest
+    # improve: the engine stops starting proofs after 10 minutes.
+    timeout-minutes: ${{ inputs.improve && 25 || 90 }}
+    # The generated tests and the PR's own code run here: no secrets, no token in the
+    # environment, read-only permissions. Nothing it uploads is trusted by publish.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          # improve reverts the change to the base the draft recorded.
+          fetch-depth: ${{ inputs.improve && '0' || '1' }}
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: qa-engine
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python test dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y libmariadb-dev
+          pip install uv
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e "backend/python[dev]"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.draft.outputs.artifact_id }}
+          merge-multiple: true
+          path: qa-out
+
+      - name: Prove the drafted tests
+        env:
+          PR: ${{ inputs.pr }}
+          IMPLEMENT: ${{ inputs.implement }}
+        run: |
+          if [[ -n "$IMPLEMENT" ]]; then
+            QA_ROOT="$GITHUB_WORKSPACE" python3 qa-engine/scripts/qa generate --implement "$IMPLEMENT" --pr "$PR" \
+              --from-drafts --stack none || echo "generate exited $?"
+          else
+            QA_ROOT="$GITHUB_WORKSPACE" python3 qa-engine/scripts/qa improve --from-drafts --minutes 10 || echo "improve exited $?"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-tests-proof
+          path: |
+            qa-out/implement.json
+            qa-out/generate.md
+            qa-out/prove/
+            qa-out/improve.json
+            qa-out/improve.md
+            qa-out/improve/prove/
+          retention-days: 14
+
+  publish:
+    needs: [draft, prove]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The only job that can write: it runs the default branch's engine on the PR tree
+    # (catalog build parses tests, it never imports or runs them) and nothing else of the PR.
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          # The token goes to the push alone, not into .git/config while the engine reads the tree.
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: qa-engine
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # By the id the draft job reported, then checked against its hash below: prove could
+      # replace an artifact of the same name, but not the draft job's outputs.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.draft.outputs.artifact_id != ''
+        continue-on-error: true
+        with:
+          artifact-ids: ${{ needs.draft.outputs.artifact_id }}
+          merge-multiple: true
+          # Outside the checkout: the engine lists untracked files, and these hold test files.
+          path: ${{ runner.temp }}/draft
+
+      - uses: actions/download-artifact@v4
+        if: inputs.implement != '' || inputs.improve
+        continue-on-error: true
+        with:
+          name: qa-tests-proof
+          path: ${{ runner.temp }}/proof
+
+      - name: Push the checked files and comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          MODULE: ${{ inputs.module }}
+          IMPLEMENT: ${{ inputs.implement }}
+          IMPROVE: ${{ inputs.improve && 'true' || '' }}
+          ACTOR: ${{ inputs.requested_by }}
+          DRAFT_RESULT: ${{ needs.draft.result }}
+          DRAFT_DIGEST: ${{ needs.draft.outputs.digest }}
+          PROVE_RESULT: ${{ needs.prove.result }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Failures are handled below, so the PR always gets its comment.
+          set +e -uo pipefail
+          [[ "$PR" =~ ^[0-9]+$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::pr or head_sha is malformed"; exit 1; }
+          [[ "$ACTOR" =~ ^[A-Za-z0-9-]{1,39}$ ]] || ACTOR="$GITHUB_ACTOR"
+          cmd="/qa tests ${IMPLEMENT:+--implement $IMPLEMENT}${MODULE}"
+          # The draft job checked the arguments; this only keeps a failed run's comment free of markup.
+          [[ "$MODULE$IMPLEMENT" =~ ^[A-Za-z0-9_./:,-]*$ ]] || cmd="/qa tests"
+          [[ -n "$IMPROVE" ]] && cmd="/qa"
+          draft="$RUNNER_TEMP/draft" proof="$RUNNER_TEMP/proof"
+          head="" fork="" state="" branch="" decision="" automerge=""
+          read -r head fork state branch decision automerge < <(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+            --json headRefOid,isCrossRepository,state,headRefName,reviewDecision,autoMergeRequest \
+            --jq '"\(.headRefOid) \(.isCrossRepository) \(.state) \(.headRefName) \(.reviewDecision // "" | if . == "" then "NONE" else . end) \(.autoMergeRequest != null)"') || true
+          shown_branch=${branch//[\`@]/}
+
+          verified=false
+          if [[ -d "$draft" && "$DRAFT_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            got=$(cd "$draft" && find . -type f -not -path '*/.*' -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1)
+            [[ "$got" == "$DRAFT_DIGEST" ]] && verified=true
+          fi
+          [[ "$verified" == true ]] || rm -rf "$draft"
+
+          # Only the paths the engine recorded, each a test file in the checkout, through no symlink.
+          plain() { [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9_./-]*/test_[A-Za-z0-9_]+\.py$ && "$1" != *..* && "$1" != .github/* ]] \
+                    && [[ ! -L "$1" && "$(realpath -m -- "$1")" == "$GITHUB_WORKSPACE/$1" ]]; }
+          files=() kept=() lost=()
+          if [[ -n "$MODULE" ]]; then
+            while IFS= read -r f; do
+              # A stub is a new file; the engine never overwrites one.
+              if plain "$f" && [[ -f "$draft/files/$f" && ! -e "$f" ]]; then
+                mkdir -p "$(dirname "$f")" && cp "$draft/files/$f" "$f" && files+=("$f")
+              fi
+            done < <(jq -r '.written[].path' "$draft/generate.json" 2>/dev/null)
+          else
+            # prove ran the PR's code, so its list is untrusted: only drafted ids count, and the
+            # content always comes from the verified draft.
+            # implement replaces a committed stub; improve adds a new file and never overwrites one.
+            stage=implement
+            [[ -n "$IMPROVE" ]] && stage=improve
+            while IFS= read -r id; do
+              if jq -e --arg id "$id" '.kept | arrays | any(.[]; .id == $id)' "$proof/$stage.json" >/dev/null 2>&1; then
+                path=$(jq -r --arg id "$id" 'first(.drafted[] | select(.id == $id)) | .path' "$draft/$stage.json")
+                reply=$(jq -r --arg id "$id" 'first(.drafted[] | select(.id == $id)) | .reply' "$draft/$stage.json")
+                if plain "$path" && [[ "$reply" =~ ^[A-Za-z0-9_.-]+-llm\.json$ ]] \
+                   && if [[ -n "$IMPROVE" ]]; then [[ ! -e "$path" && ! -L "$path" ]] && mkdir -p -- "$(dirname "$path")"
+                      else git ls-files --error-unmatch -- "$path" >/dev/null 2>&1; fi; then
+                  jq -j .content "$draft/$stage/$reply" > "$path" && files+=("$path") && kept+=("$id") && continue
+                fi
+              fi
+              lost+=("$id")
+            done < <(jq -r '.drafted[].id' "$draft/$stage.json" 2>/dev/null)
+          fi
+
+          status=""
+          if [[ -z "$head" ]]; then
+            status="Not pushed: the PR could not be read."
+          elif [[ "$state" != OPEN ]]; then
+            status="Not pushed: this PR is not open."
+          elif [[ -n "$IMPROVE" && "$fork" != false ]]; then
+            status="Skipped: improve skipped on fork PRs. It pushes to the PR branch, which this workflow cannot do on a fork."
+          elif [[ "$head" != "$HEAD_SHA" ]]; then
+            status="Not pushed: the PR moved from \`${HEAD_SHA:0:10}\` to \`${head:0:10}\` during the run. Run the command again."
+          elif [[ "$DRAFT_RESULT" != success || ( -n "$IMPLEMENT$IMPROVE" && "$PROVE_RESULT" == failure ) ]]; then
+            status="The run failed before anything was pushed."
+          elif [[ "$verified" != true ]]; then
+            status="Not pushed: the draft artifact does not match the hash the draft job reported."
+          elif (( ${#files[@]} == 0 )); then
+            status="Nothing to push."
+          elif [[ "$fork" != false ]]; then
+            status="Not pushed: this PR is from a fork, and this workflow cannot push to it. The files are in the run's \`qa-tests-draft\` artifact."
+          elif ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+            status="Not pushed: the PR branch name is not a valid ref."
+          elif [[ "$decision" == APPROVED || "$automerge" != false ]]; then
+            # A workflow-token push starts no checks, and no reviewer would see it before the merge.
+            status="Not pushed: the PR is approved or set to auto-merge (or that could not be read), so a bot commit would land unreviewed and untested. The proven files are listed below and are in the run's \`qa-tests-draft\` artifact."
+          elif [[ "$branch" == "$DEFAULT_BRANCH" || "$branch" == qa-history ]]; then
+            status="Not pushed: \`$shown_branch\` is not a branch this command writes to."
+          elif [[ "$(gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .protected 2>/dev/null)" != false ]]; then
+            status="Not pushed: \`$shown_branch\` is protected, or its protection could not be read."
+          elif ! QA_ROOT="$GITHUB_WORKSPACE" python3 qa-engine/scripts/qa catalog build >/dev/null; then
+            status="Not pushed: the catalog build failed."
+          else
+            git add -- "${files[@]}" && git add -u
+            extra=$(git diff --cached --name-only | grep -vxF -f <(printf '%s\n' "${files[@]}") \
+                    | grep -vE '^([A-Za-z0-9_.-]+/)*catalog/(tests\.jsonl|CATALOG\.md)$' || true)
+            if [[ -n "$extra" ]]; then
+              status="Not pushed: the catalog build changed other files."
+            elif git diff --cached | grep -qF -- "$GH_TOKEN"; then
+              status="Not pushed: the change holds a secret."
+            else
+              git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                commit -q -s -m "qa: ${MODULE:+test scenarios for $MODULE}${IMPLEMENT:+proven tests for planned scenarios}${IMPROVE:+proven tests for this change}" \
+                -m "Requested by $ACTOR with \`$cmd\` on PR $PR. Run: $RUN_URL"
+              auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+              # Never forced: a branch that moved since the checkout rejects the push.
+              if git -c "http.$GITHUB_SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" push -q origin "HEAD:refs/heads/$branch"; then
+                status="Pushed \`$(git rev-parse --short=10 HEAD)\` to \`$shown_branch\` as one signed-off commit. A push made with the workflow token does not start other workflows: push a commit or re-run the checks to test it."
+              else
+                status="Not pushed: \`$shown_branch\` moved during the run. Run the command again."
+              fi
+            fi
+          fi
+
+          {
+            if [[ -n "$IMPROVE" ]]; then
+              # The improvements never change the gate: that is the test run's own job.
+              # The markers let a later run replace exactly this section of the report comment.
+              echo "<!-- qa-improve:start -->"
+              echo "## Improvements"
+              echo
+              echo "Weak tests are found by running the PR's tests against mutants of the changed lines (the check job runs the PR's code). $status [Run]($RUN_URL)"
+            else
+              # A new comment per run: the markers let the next run collapse this one.
+              echo "<!-- qa-tests -->"
+              echo "<!-- qa-run:$GITHUB_RUN_ID -->"
+              echo "### QA tests: \`$cmd\`"
+              echo
+              echo "Requested by $ACTOR at \`${HEAD_SHA:0:12}\`. $status [Run]($RUN_URL)"
+            fi
+            echo
+            # Only the verified draft's text; the engine already cleaned the model's words in it.
+            if [[ -f "$draft/generate.md" ]]; then
+              grep -v '^next: ' "$draft/generate.md" | tr -d '@' | head -c 50000
+            elif [[ -f "$draft/improve.md" ]]; then
+              tr -d '@' < "$draft/improve.md" | head -c 20000
+            elif [[ -s "$draft/error.txt" ]]; then
+              echo '```text'; tail -n 20 "$draft/error.txt" | tr -d '`@' | head -c 5000; echo '```'
+            fi
+            if [[ -n "$IMPLEMENT$IMPROVE" && "$verified" == true ]] && (( ${#kept[@]} + ${#lost[@]} )); then
+              echo
+              # Under the Improvements heading, so that a later run's section replaces all of it.
+              echo "${IMPROVE:+##}## Proof"
+              echo
+              echo "Proven by the PR's own test environment (the prove job runs the PR's code); the evidence is in the run's \`qa-tests-proof\` artifact."
+              echo
+              for i in "${!kept[@]}"; do echo "- kept: ${kept[$i]} (\`${files[$i]}\`)"; done
+              for id in "${lost[@]}"; do echo "- not kept: $id"; done
+            fi
+            [[ -z "$IMPROVE" ]] || echo "<!-- qa-improve:end -->"
+          } > comment.md
+          if grep -qF -- "$GH_TOKEN" comment.md; then
+            echo "Requested by $ACTOR. The comment held a secret and was withheld. [Run]($RUN_URL)" > comment.md
+          fi
+          if [[ -n "$IMPROVE" ]]; then
+            # The section goes into this run's /qa report comment, which qa.yml's report job posted with
+            # the run's marker; alone when that comment is missing or full.
+            cid=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"<!-- qa-run:$GITHUB_RUN_ID -->\"))) | .id" \
+              2>/dev/null | head -n1) || cid=""
+            if [[ "$cid" =~ ^[0-9]+$ ]] && gh api "repos/$GITHUB_REPOSITORY/issues/comments/$cid" --jq .body > report.md 2>/dev/null; then
+              sed -i '/^<!-- qa-improve:start -->$/,/^<!-- qa-improve:end -->$/d' report.md
+              if (( $(wc -c < report.md) + $(wc -c < comment.md) < 60000 )); then
+                { cat report.md; echo; cat comment.md; } > body.md
+                gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$cid" -F body=@body.md >/dev/null && exit 0
+              fi
+            fi
+          fi
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+          if [[ -z "$IMPROVE" ]]; then
+            # Collapse the bot's older /qa tests comments; a failure here is only a warning.
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq \
+              ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"<!-- qa-tests -->\")) and (.body | contains(\"<!-- qa-run:$GITHUB_RUN_ID -->\") | not)) | .node_id" \
+              2>/dev/null | while IFS= read -r node; do
+                gh api graphql -f query='mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { minimizedComment { isMinimized } } }' \
+                  -f id="$node" >/dev/null || echo "::warning::could not collapse an older QA tests comment"
+              done
+          fi
+          true

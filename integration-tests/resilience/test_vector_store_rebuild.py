@@ -74,7 +74,7 @@ from retrieval.ranking import virtual_id_of
 
 logger = logging.getLogger("vector-store-rebuild")
 
-pytestmark = [pytest.mark.resilience, pytest.mark.asyncio(loop_scope="session")]
+pytestmark = [pytest.mark.live_model, pytest.mark.resilience, pytest.mark.asyncio(loop_scope="session")]
 
 TIMEOUT = int(os.getenv("RESILIENCE_VECTOR_REBUILD_TIMEOUT_SEC", "1800"))
 # The product gives the drop itself 600s (VECTOR_STORE_REBUILD_DELETE_WAIT_SECONDS)

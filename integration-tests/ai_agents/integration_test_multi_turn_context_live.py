@@ -46,7 +46,7 @@ from helper.clients.conversations_client import AgentConversationsClient, Conver
 from helper.clients.kb_client import KBClient
 from helper.indexing_progress import wait_until_finished
 
-pytestmark = [pytest.mark.integration, pytest.mark.ai_agents]
+pytestmark = [pytest.mark.live_model, pytest.mark.integration, pytest.mark.ai_agents]
 
 logger = logging.getLogger("ai-agents-it")
 

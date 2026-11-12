@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "qa review model output",
+  "type": "object",
+  "required": [
+    "requirements",
+    "checklist",
+    "risks"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "requirements": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "required": [
+          "text",
+          "tests"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "checklist": {
+      "type": "array",
+      "maxItems": 15,
+      "items": {
+        "type": "object",
+        "required": [
+          "area",
+          "probe"
+        ],
+        "properties": {
+          "area": {
+            "type": "string"
+          },
+          "probe": {
+            "type": "string"
+          },
+          "test": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
