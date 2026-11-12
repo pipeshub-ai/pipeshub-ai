@@ -322,7 +322,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           'conversation.semantic_search_members', 'conversation.semantic_searches',
           'identity.org_auth_config', 'identity.org_logos', 'identity.orgs', 'identity.slug_counters', 'identity.used_reset_links',
           'identity.user_activities', 'identity.user_credentials', 'identity.user_group_members', 'identity.user_groups', 'identity.user_pictures', 'identity.users', 'integrations.slack_threads', 'oauth.access_tokens',
-          'oauth.apps', 'oauth.authorization_codes', 'oauth.delegation_events', 'oauth.device_authorizations', 'oauth.refresh_tokens',
+          'oauth.agent_registrations', 'oauth.apps', 'oauth.authorization_codes', 'oauth.delegation_events', 'oauth.device_authorizations', 'oauth.refresh_tokens',
           'oauth.service_account_delegations',
           'platform.connectors_config', 'platform.docstore_changes', 'platform.mail_log', 'platform.notifications', 'platform.outbox', 'platform.store_epoch',
         ])
@@ -343,5 +343,5 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
 const DOCSTORE_TABLES_SQL = `SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
   WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition
     AND n.nspname IN ('identity', 'conversation', 'content', 'platform', 'oauth', 'integrations')
-    AND NOT (n.nspname = 'platform' AND (c.relname IN ('deployment_profile', 'consumer_inbox', 'jobs', 'kv_entries') OR c.relname LIKE 'queue\\_%' OR c.relname LIKE 'sched\\_%'))
+    AND NOT (n.nspname = 'platform' AND (c.relname IN ('deployment_profile', 'consumer_inbox', 'jobs', 'kv_entries', 'cache_entries') OR c.relname LIKE 'queue\\_%' OR c.relname LIKE 'sched\\_%'))
   ORDER BY 1, 2`

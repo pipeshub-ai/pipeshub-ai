@@ -8,6 +8,7 @@ import asyncio
 import os
 import threading
 import time
+from collections.abc import Mapping
 from urllib.parse import quote
 from typing import Dict, List, NamedTuple, Optional, Union
 
@@ -16,20 +17,26 @@ from qdrant_client.http.models import (  # type: ignore
     BinaryQuantization,
     BinaryQuantizationConfig,
     Distance,
+    FieldCondition as QdrantFieldCondition,
     Filter,
     FilterSelector,
     HasIdCondition,
     HnswConfigDiff,
     KeywordIndexParams,
     KeywordIndexType,
+    MatchValue,
     Modifier,
     OptimizersConfigDiff,
+    PayloadSchemaType,
     ProductQuantization,
     ProductQuantizationConfig,
     CompressionRatio,
+    Range,
     ScalarQuantization,
     ScalarQuantizationConfig,
     ScalarType,
+    SetPayload,
+    SetPayloadOperation,
     SparseIndexParams,
     SparseVectorParams,
     VectorParams,
@@ -38,6 +45,15 @@ from qdrant_client.http.models import (  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD, checked_fence
+from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.filters import (
+    forbid_org_in_payload,
+    forbid_fence_in_payload,
+    is_missing,
+    keep_org_in_overwrite,
+    require_filter_org,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -726,6 +742,8 @@ class QdrantService(IVectorDBService):
         self._assert_connected()
         if field_schema.get("type") == "keyword":
             schema = KeywordIndexParams(type=KeywordIndexType.KEYWORD)
+        elif field_schema.get("type") == "integer":
+            schema = PayloadSchemaType.INTEGER
         else:
             schema = field_schema  # type: ignore
         try:
@@ -796,6 +814,13 @@ class QdrantService(IVectorDBService):
             next_offset=str(next_offset) if next_offset is not None else None,
         )
 
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        self._assert_connected()
+        result = await self.client.count(  # type: ignore
+            collection_name=collection_name, count_filter=QdrantUtils.filter_expression_to_qdrant(count_filter), exact=True,
+        )
+        return int(result.count)
+
     async def retrieve_points(
         self,
         collection_name: str,
@@ -811,6 +836,18 @@ class QdrantService(IVectorDBService):
             with_vectors=False,
         )
         return [VectorPoint(id=str(p.id), payload=p.payload or {}) for p in raw_points]
+
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        self._assert_connected()
+        if not ids:
+            return set()
+        raw_points = await self.client.retrieve(  # type: ignore
+            collection_name=collection_name,
+            ids=list(ids),
+            with_payload=False,
+            with_vectors=False,
+        )
+        return {str(p.id) for p in raw_points}
 
     async def query_nearest_points(
         self,
@@ -886,6 +923,7 @@ class QdrantService(IVectorDBService):
                 "most of the collection. Pair it with a value match "
                 "(e.g. connectorIds)."
             )
+        require_filter_org(filter)
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
         # wait=True: callers sequence work after a delete (the connector cleanup
@@ -912,6 +950,8 @@ class QdrantService(IVectorDBService):
                 "every point in the collection. Populate at least one filter "
                 "condition (e.g. virtualRecordId)."
             )
+        require_filter_org(points)
+        keep_org_in_overwrite(payload, points)
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(points)
         await self.client.overwrite_payload(  # type: ignore
@@ -932,6 +972,8 @@ class QdrantService(IVectorDBService):
                 "set_payload called with an empty filter — this would update the entire "
                 "collection. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        require_filter_org(filter)
+        forbid_org_in_payload(payload)
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
         # wait=True for the same reason as delete_points: the connector cleanup
@@ -948,8 +990,13 @@ class QdrantService(IVectorDBService):
         collection_name: str,
         point_ids: List[str],
         payload: dict,
+        *,
+        org_id: str,
     ) -> None:
         self._assert_connected()
+        if is_missing(org_id):
+            raise OrgRequired("update_payload_by_ids needs the org of the points")
+        forbid_org_in_payload(payload)
         if not point_ids:
             return
         # A plain id list fails the whole call with a 404 if any id is missing;
@@ -957,7 +1004,42 @@ class QdrantService(IVectorDBService):
         await self.client.set_payload(  # type: ignore
             collection_name=collection_name,
             payload=payload,
-            points=FilterSelector(filter=Filter(must=[HasIdCondition(has_id=list(point_ids))])),
+            points=FilterSelector(filter=Filter(must=[
+                HasIdCondition(has_id=list(point_ids)),
+                QdrantFieldCondition(key="metadata.orgId", match=MatchValue(value=org_id)),
+            ])),
+            wait=True,
+        )
+
+    generation_fence = True
+
+    async def update_payloads_by_ids(self, collection_name: str, updates: Mapping[str, dict], *, org_id: str, **extra: object) -> None:
+        """With ``fence=n``: one batch of set-payload operations, each selecting its point by id and org and only while the point's
+        ``scopeFence`` is not above ``n`` (a point without one passes), and setting it to ``n``; the check and the write are one
+        operation in the store. Without a fence it is ``update_payload_by_ids`` for each distinct payload."""
+        fence = extra.pop("fence", None)
+        if fence is None:
+            await super().update_payloads_by_ids(collection_name, updates, org_id=org_id, **extra)
+            return
+        fence = checked_fence(fence)
+        self._assert_connected()
+        if is_missing(org_id):
+            raise OrgRequired("update_payload_by_ids needs the org of the points")
+        for payload in updates.values():
+            forbid_org_in_payload(payload)
+            forbid_fence_in_payload(payload)
+        if not updates:
+            return
+        # shortcut: a stored scopeFence that is not a number passes this filter (must_not on a Range matches a string), so it is overwritten;
+        # only this path writes the field, so it is always a number. Upgrade if another writer may set it: read the points first and refuse.
+        newer = QdrantFieldCondition(key=SCOPE_FENCE_FIELD, range=Range(gt=int(fence)))
+        await self.client.batch_update_points(  # type: ignore
+            collection_name=collection_name,
+            update_operations=[SetPayloadOperation(set_payload=SetPayload(
+                payload={**payload, SCOPE_FENCE_FIELD: int(fence)},
+                filter=Filter(must=[HasIdCondition(has_id=[point_id]),
+                                    QdrantFieldCondition(key="metadata.orgId", match=MatchValue(value=org_id))],
+                              must_not=[newer]))) for point_id, payload in updates.items()],
             wait=True,
         )
 

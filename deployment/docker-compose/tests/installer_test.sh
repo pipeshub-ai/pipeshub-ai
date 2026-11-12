@@ -49,6 +49,12 @@ check() { # check "desc" actual expected_substring
     fail "$1"; printf "         expected to contain: %s\n         got: %s\n" "$3" "$2"; fi
 }
 
+# Exact comparison: `check` matches a substring, which cannot show that something was NOT added to a value.
+check_exact() { # check_exact "desc" actual expected
+  if [[ "$2" == "$3" ]]; then pass "$1"; else
+    fail "$1"; printf "         expected exactly: %s\n         got: %s\n" "$3" "$2"; fi
+}
+
 # Extract a top-level function definition (closing brace in column 0) from a
 # script so the real implementation can be exercised in isolation.
 extract_fn() { awk -v fn="$1" '$0 ~ "^"fn"\\(\\) \\{"{g=1} g{print} g&&/^\}/{exit}' "$2"; }
@@ -313,6 +319,12 @@ check "reconfigure seeds port from existing .env" "$inner" 'get_existing_val APP
 check "reconfigure keeps the private-address switch" "$inner" 'get_existing_val PIPESHUB_BLOCK_PRIVATE_ADDRESSES'
 check "the private-address switch is written to .env" "$inner" 'optional_env_line PIPESHUB_BLOCK_PRIVATE_ADDRESSES'
 check "reconfigure keeps Qdrant's memory limit" "$inner" 'get_existing_val QDRANT_MEMORY_LIMIT'
+# install.sh supports bash 3.2 (macOS); case-conversion expansions need bash 4.
+if grep -vE '^[[:space:]]*#' "$INNER_INSTALLER" | grep -E '\$\{[A-Za-z_0-9]+(,,?|\^\^?)[^}]*\}' >/dev/null; then
+  fail "installer uses no bash-4 case conversion (\${v,,} / \${v^^})"
+else
+  pass "installer uses no bash-4 case conversion"
+fi
 check "Qdrant's memory limit is written to .env" "$inner" 'optional_env_line QDRANT_MEMORY_LIMIT'
 if [[ "$compose" == *"container_name:"* ]]; then
   fail "compose must not pin container_name (blocks a second project)"
@@ -411,7 +423,7 @@ eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"
 # --stop must tear down ALL profile-gated containers (not just the active
 # profile) so leftover graph/broker containers do not block network removal.
 stop_block="$(awk '/if \$FLAG_STOP; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")"
-check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"'
+check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"'
 check "stop removes orphans" "$stop_block" "down --remove-orphans"
 check "stop uses COMPOSE_PROJECT_NAME from .env" "$stop_block" 'PROJECT_NAME="$(resolve_project_name)"'
 check "stop validates project name from .env" "$stop_block" 'require_valid_project_name "$PROJECT_NAME"'
@@ -459,10 +471,35 @@ eval "$(extract_fn port_owned_by_project "$INNER_INSTALLER")"
   if port_owned_by_project 3001; then fail "must not match a different port"; else pass "ignores unrelated port"; fi
 )
 
+echo "== In-tree installer: default broker per deploy type (real code) =="
+# Run the installer's own default-selection block (case + volume overrides).
+_bsnip="$(awk '/^  case "\$DEPLOY_TYPE" in/{g=1} /if \$DETECTED_ETCD; then/{g=0} g' "$INNER_INSTALLER")"
+default_broker_for() ( # <deploy type> <kafka volume detected: true|false>
+  info() { :; }
+  DEPLOY_TYPE="$1"; DETECTED_KAFKA="$2"; DETECTED_ARANGO=false; DETECTED_NEO4J=false
+  eval "$_bsnip"; echo "$DEFAULT_BROKER"
+)
+check "full, no volumes -> redis" "$(default_broker_for full false)" "redis"
+check "full, existing Kafka volume -> kafka" "$(default_broker_for full true)" "kafka"
+check "slim, no volumes -> redis" "$(default_broker_for slim false)" "redis"
+check "explicit PIPESHUB_BROKER still read" "$(grep -c 'BROKER="${PIPESHUB_BROKER:-}"' "$INNER_INSTALLER")" "1"
+check "PIPESHUB_BROKER=kafka beats the default" "$(PIPESHUB_BROKER=kafka; BROKER="${PIPESHUB_BROKER:-}"; DEFAULT_BROKER=redis; echo "${BROKER:-$DEFAULT_BROKER}")" "kafka"
+
+echo "== In-tree installer: volume_exists (real function) =="
+eval "$(extract_fn volume_exists "$INNER_INSTALLER")"
+(
+  docker() { [ "$1 $2" = "volume inspect" ] && [ "$3" = "pipeshub-ai_kafka_data" ]; }   # only that volume exists
+  if volume_exists pipeshub-ai_kafka_data; then pass "finds an existing volume by exact name"; else fail "finds an existing volume by exact name"; fi
+  if volume_exists pipeshub-ai_kafka; then fail "a name prefix is not a match"; else pass "a name prefix is not a match"; fi
+  if volume_exists pipeshub-ai_etcd_data; then fail "an absent volume reads as absent"; else pass "an absent volume reads as absent"; fi
+)
+
 echo "== In-tree installer: COMPOSE_PROFILES derivation (real functions) =="
 # Pull the real function definitions out of the installer and exercise them in
 # isolation. Both are defined at top level with the closing brace in column 0.
 eval "$(extract_fn derive_compose_profiles "$INNER_INSTALLER")"
+eval "$(extract_fn opt_in_profiles "$INNER_INSTALLER")"
+_saved_env_val() { :; }
 eval "$(extract_fn persist_env_var "$INNER_INSTALLER")"
 
 dp() { DATA_STORE="$1" KV_STORE_TYPE="$2" MESSAGE_BROKER="$3" derive_compose_profiles; }
@@ -493,6 +530,97 @@ echo "== In-tree installer: persist_env_var replaces in place =="
   printf 'SECRET_KEY=abc\n' >"$ENV_FILE"
   persist_env_var COMPOSE_PROFILES "graph-neo4j"
   check "missing key appended" "$(cat "$ENV_FILE")" "COMPOSE_PROFILES=graph-neo4j"
+)
+
+echo "== In-tree installer: the opt-in postgres profiles =="
+check "keeps postgres in COMPOSE_PROFILES" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-migrate"
+check_exact "does not invent postgres" "$(dp neo4j redis redis)" "graph-neo4j,sandbox"
+check_exact "does not match a longer profile name" "$(COMPOSE_PROFILES=postgres-extra dp neo4j redis redis)" "graph-neo4j,sandbox"
+check_exact "keeps exactly the two opt-in profiles and nothing else" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-migrate"
+# the exact check does fail on a wrongly appended profile (the substring check did not)
+[[ "graph-neo4j,sandbox,postgres" != "graph-neo4j,sandbox" ]] && pass "an appended postgres is caught by the exact comparison" || fail "an appended postgres is caught by the exact comparison"
+check "uninstall also covers the postgres profiles" "$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")" 'sandbox,postgres,postgres-migrate"'
+check "uninstall asks before deleting the PostgreSQL volume" "$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")" "Also delete the PostgreSQL data volume?"
+# The .env the wizard writes carries one random password per login; an existing value is kept across --reconfigure.
+wizard="$(awk '/PostgreSQL profile \(opt-in\): kept across/{g=1} g{print} g&&/^  done/{exit}' "$INNER_INSTALLER")"
+(
+  get_existing_val() { case "$1" in PG_NODE_PASSWORD) echo kept;; *) echo "${2:-}";; esac; }
+  gen_secret() { printf 'x%.0s' $(seq 1 "${1:-32}"); }
+  eval "$wizard"
+  check "wizard keeps an existing PG password" "$PG_NODE_PASSWORD" "kept"
+  check "wizard generates the others" "$PG_BACKUP_PASSWORD:$PG_ADMIN_PASSWORD" "xxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxx"
+  check "wizard pins the major" "$PG_MAJOR" "18"
+)
+check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\${PG_' "$INNER_INSTALLER")" "9"
+
+# --reconfigure rebuilds COMPOSE_PROFILES from the wizard's choices; the saved override needs the PostgreSQL profiles, so they must
+# survive it, and the project must still render afterwards.
+(
+  work="$TMP_ROOT/reconfigure-pg"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  cp "$COMPOSE_DIR/docker-compose.yml" "$COMPOSE_DIR/docker-compose.postgres-docstore.yml" "$COMPOSE_DIR/env.template" "$work/"
+  mkdir -p "$work/postgres"
+  printf 'IMAGE_TAG=0.6.0-slim\nSECRET_KEY=abc\nMONGO_PASSWORD=m\nREDIS_PASSWORD=r\nNEO4J_PASSWORD=n\nAPP_PORT=3000\nPROJECT_NAME=testproj\nDATA_STORE=neo4j\nCOMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate\nPIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml\nPG_NODE_PASSWORD=keepnode\n' >"$work/.env"
+  out="$(cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only 2>&1)" && pass "--reconfigure with the override exits 0" || fail "--reconfigure with the override exits 0"
+  profiles="$(grep '^COMPOSE_PROFILES=' "$work/.env" | cut -d= -f2-)"
+  check "--reconfigure keeps both PostgreSQL profiles" ",$profiles," ",postgres,postgres-migrate,"
+  check "--reconfigure keeps the override" "$(cat "$work/.env")" "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml"
+  check "--reconfigure keeps an existing PG password" "$(cat "$work/.env")" "PG_NODE_PASSWORD=keepnode"
+  check "the printed command lists the override" "$out" "docker-compose.postgres-docstore.yml"
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    (cd "$work" && docker compose --env-file .env -f docker-compose.yml -f docker-compose.postgres-docstore.yml config -q 2>&1) \
+      && pass "the project renders after --reconfigure" || fail "the project renders after --reconfigure"
+  else
+    pass "the project renders after --reconfigure (skipped: no docker compose here)"
+  fi
+  # An override with no profiles saved at all still gets both (a hand-written .env).
+  printf 'IMAGE_TAG=0.6.0-slim\nSECRET_KEY=abc\nAPP_PORT=3000\nPROJECT_NAME=testproj\nDATA_STORE=neo4j\nCOMPOSE_PROFILES=graph-neo4j\nPIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml\n' >"$work/.env"
+  (cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
+  check "the override alone brings both profiles" ",$(grep '^COMPOSE_PROFILES=' "$work/.env" | cut -d= -f2-)," ",postgres,postgres-migrate,"
+)
+
+# --uninstall keeps the PostgreSQL volume unless --delete-postgres is given, also with --yes (checked with a recording docker).
+(
+  work="$TMP_ROOT/uninstall-pg"; mkdir -p "$work/bin"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  cp "$COMPOSE_DIR/docker-compose.yml" "$COMPOSE_DIR/docker-compose.postgres-docstore.yml" "$work/"
+  printf 'COMPOSE_PROJECT_NAME=testproj\nPIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml\nCOMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate\n' >"$work/.env"
+  cat >"$work/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+echo "docker $*" >>"$DOCKER_LOG"
+case "$1 $2" in
+  "volume ls") printf 'testproj_postgres_data\ntestproj_neo4j_data\ntestproj_redis_data\n' ;;
+esac
+exit 0
+STUB
+  chmod +x "$work/bin/docker"
+  # run_uninstall <stdin text> <args...>: the text answers the prompts in order (printf %b, so \n separates answers)
+  run_uninstall() { local input="$1"; shift; : >"$work/docker.log"; (cd "$work" && printf '%b' "$input" | PATH="$work/bin:$PATH" DOCKER_LOG="$work/docker.log" bash ./install.sh --uninstall "$@" >"$work/out.txt" 2>&1); }
+  run_uninstall "" --yes
+  log="$(cat "$work/docker.log")"
+  check "--uninstall --yes does not run down -v" "$([[ "$log" != *"down -v"* ]] && echo no-down-v)" "no-down-v"
+  check "--uninstall --yes removes the other volumes" "$log" "volume rm testproj_neo4j_data"
+  check "--uninstall --yes keeps the PostgreSQL volume" "$([[ "$log" != *"volume rm testproj_postgres_data"* ]] && echo kept)" "kept"
+  check "--uninstall --yes says how to delete it" "$(cat "$work/out.txt")" "--delete-postgres"
+  run_uninstall "" --yes --delete-postgres
+  check "--uninstall --yes --delete-postgres removes everything with down -v" "$(cat "$work/docker.log")" "down -v --remove-orphans"
+  # interactive: the first answer confirms the uninstall, the second answers the PostgreSQL question (asked unless --delete-postgres)
+  run_uninstall "y\nn\n"
+  check "an interactive uninstall asks about the PostgreSQL volume" "$(cat "$work/out.txt")" "Also delete the PostgreSQL data volume?"
+  check "and keeps it when the answer is no" "$([[ "$(cat "$work/docker.log")" != *"down -v"* && "$(cat "$work/docker.log")" != *"volume rm testproj_postgres_data"* ]] && echo kept)" "kept"
+  run_uninstall "y\ny\n"
+  check "and deletes it with down -v when the answer is yes" "$(cat "$work/docker.log")" "down -v --remove-orphans"
+  run_uninstall "y\n" --delete-postgres
+  check "--delete-postgres skips the PostgreSQL question" "$([[ "$(cat "$work/out.txt")" != *"Also delete the PostgreSQL"* ]] && echo no-prompt)" "no-prompt"
+  check "--delete-postgres deletes it without being asked" "$(cat "$work/docker.log")" "down -v --remove-orphans"
+  # a failed volume lookup is not "no PostgreSQL volume": the uninstall stops with nothing changed, it never runs down -v
+  sed -i 's|^  "volume ls") |  "volume ls") [ -n "${LS_FAIL:-}" ] \&\& { echo "Cannot connect to the Docker daemon" >\&2; exit 1; }; |' "$work/bin/docker"
+  : >"$work/docker.log"
+  (cd "$work" && PATH="$work/bin:$PATH" DOCKER_LOG="$work/docker.log" LS_FAIL=1 bash ./install.sh --uninstall --yes >"$work/out.txt" 2>&1); code=$?
+  log="$(cat "$work/docker.log")"
+  check "a failed volume lookup aborts the uninstall" "$([[ $code -ne 0 ]] && echo aborted)" "aborted"
+  check "and says nothing was changed" "$(cat "$work/out.txt")" "Nothing was changed"
+  check "and never runs down or removes a volume" "$([[ "$log" != *" down "* && "$log" != *"volume rm"* ]] && echo untouched)" "untouched"
 )
 
 echo "== In-tree installer: image refresh policy (real function + guards) =="
@@ -795,6 +923,53 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
   seed_env "0.7.0-slim"
   run_installer "--upgrade to the tag already in use" -- --upgrade --version 0.7.0-slim
   check "asking for the current tag is a no-op with a clear message" "$out" "Already on image tag 0.7.0-slim"
+
+  # --reconfigure rewrites .env in full; datastore sizing an operator set by hand
+  # must survive it, or a small machine silently goes back to the defaults.
+  sizing=(NEO4J_HEAP_INITIAL=256M NEO4J_HEAP_MAX=1536M NEO4J_PAGECACHE=256M
+          NEO4J_MEMORY_LIMIT=2688M NEO4J_MEMORY_RESERVATION=1G
+          MONGO_MEMORY_RESERVATION=256M QDRANT_MEMORY_RESERVATION=512M)
+  seed_env "0.6.0-slim"
+  printf '%s\n' "${sizing[@]}" >>"$work/.env"
+  run_installer "--reconfigure with datastore sizing" -- --reconfigure --yes
+  for kv in "${sizing[@]}"; do
+    check "--reconfigure keeps ${kv%%=*}" "$(cat "$work/.env")" $'\n'"$kv"$'\n'
+  done
+
+  seed_env "0.6.0-slim"
+  printf 'DATA_STORE=neo4j\nNEO4J_HEAP_INITIAL=2G\nNEO4J_HEAP_MAX=1G\n' >>"$work/.env"
+  status=0
+  out="$(cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only 2>&1)" || status=$?
+  if [[ $status -ne 0 ]]; then pass "initial heap above the maximum is refused"; else fail "initial heap above the maximum is refused"; fi
+  check "the refusal names both heap settings" "$out" "NEO4J_HEAP_INITIAL (2G) must be <= NEO4J_HEAP_MAX (1G)"
+
+  # Neo4j accepts GiB/MiB and plain bytes too; the check must read them.
+  for pair in "2GiB 1G" "1536MiB 1g" "2147483648 1024m" "010G 9G" "09G 8G"; do
+    seed_env "0.6.0-slim"
+    printf 'DATA_STORE=neo4j\nNEO4J_HEAP_INITIAL=%s\nNEO4J_HEAP_MAX=%s\n' ${pair} >>"$work/.env"
+    status=0
+    out="$(cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only </dev/null 2>&1)" || status=$?
+    if [[ $status -ne 0 ]]; then pass "initial heap above the maximum is refused (${pair})"; else fail "initial heap above the maximum is refused (${pair})"; fi
+  done
+  seed_env "0.6.0-slim"
+  printf 'DATA_STORE=neo4j\nNEO4J_HEAP_INITIAL=1GiB\nNEO4J_HEAP_MAX=1024m\n' >>"$work/.env"
+  run_installer "an initial heap equal to the maximum in other units" -- --reconfigure --yes
+
+  # ArangoDB does not read the Neo4j heap settings, so they must not block it.
+  # A docker stub with no volumes keeps the host's own stacks from steering the
+  # graph DB choice. Its own directory: the cases above may run the installer
+  # through sudo, and a root-owned .env backup from the same second would block
+  # this unprivileged run from writing its backup.
+  work="$TMP_ROOT/arango-ignores-neo4j-heap"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  [[ -f "$COMPOSE_DIR/docker-compose.yml" ]] && cp "$COMPOSE_DIR/docker-compose.yml" "$work/"
+  seed_env "0.6.0-slim"
+  nodocker="$work/nodocker"; mkdir -p "$nodocker"
+  printf '#!/bin/sh\n[ "$1" = volume ] && exit 1\nexit 0\n' >"$nodocker/docker"; chmod +x "$nodocker/docker"
+  printf 'NEO4J_HEAP_INITIAL=2G\nNEO4J_HEAP_MAX=1G\n' >>"$work/.env"
+  run_installer "an ArangoDB install ignores the Neo4j heap settings" \
+    PIPESHUB_GRAPH_DB=arango PATH="$nodocker:$PATH" -- --reconfigure --yes
+  check "the ArangoDB install was chosen" "$(cat "$work/.env")" $'\nDATA_STORE=arangodb\n'
 )
 
 PASS="$(wc -l <"$PASS_FILE" | tr -d ' ')"

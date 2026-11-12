@@ -20,6 +20,8 @@ import pytest
 from app.core import envelope, org_context
 from app.services.messaging.config import RedisStreamsConfig, StreamMessage
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
+from tests.support.undecodable_json import UNDECODABLE
+from tests.unit.services.messaging.message_log_helpers import in_delivery
 
 
 @pytest.fixture
@@ -213,11 +215,11 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        result = await consumer._process_message_with_classification(
+        result = await in_delivery(consumer._process_message_with_classification(
             "test-stream",
             "1-0",
             {"value": json.dumps({"eventType": "TEST", "payload": {"id": 1}})},
-        )
+        ))
 
         assert result == (True, False)
         handler.assert_awaited_once()
@@ -231,9 +233,9 @@ class TestProcessMessage:
         consumer.message_handler = handler
 
         inner = json.dumps({"eventType": "test", "payload": {"key": "val"}})
-        result = await consumer._process_message_with_classification(
+        result = await in_delivery(consumer._process_message_with_classification(
             "s", "1-0", {"value": json.dumps(inner)}
-        )
+        ))
 
         assert result == (True, False)
         called_msg = handler.call_args[0][0]
@@ -241,19 +243,20 @@ class TestProcessMessage:
         assert called_msg.payload == {"key": "val"}
 
     @pytest.mark.asyncio
-    async def test_returns_false_for_invalid_json(self, consumer):
+    @pytest.mark.parametrize("value", ["not-json{{{", *UNDECODABLE.values()], ids=["syntax", *UNDECODABLE])
+    async def test_returns_false_for_invalid_json(self, consumer, value):
         consumer.message_handler = AsyncMock()
-        result = await consumer._process_message_with_classification(
-            "s", "1-0", {"value": "not-json{{{"}
-        )
+        result = await in_delivery(consumer._process_message_with_classification(
+            "s", "1-0", {"value": value}
+        ))
         assert result == (False, True)
 
     @pytest.mark.asyncio
     async def test_returns_false_when_no_handler(self, consumer):
         consumer.message_handler = None
-        result = await consumer._process_message_with_classification(
+        result = await in_delivery(consumer._process_message_with_classification(
             "s", "1-0", {"value": json.dumps({"eventType": "test", "payload": {"k": "v"}})}
-        )
+        ))
         assert result == (False, True)
 
     @pytest.mark.asyncio
@@ -262,7 +265,7 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        result = await consumer._process_message_with_classification("s", "1-0", {"value": "{}"})
+        result = await in_delivery(consumer._process_message_with_classification("s", "1-0", {"value": "{}"}))
 
         # StreamMessage(**{}) will fail validation (missing eventType, payload)
         assert result[0] is False
@@ -271,9 +274,9 @@ class TestProcessMessage:
     @pytest.mark.asyncio
     async def test_returns_false_on_handler_exception(self, consumer):
         consumer.message_handler = AsyncMock(side_effect=Exception("handler error"))
-        result = await consumer._process_message_with_classification(
+        result = await in_delivery(consumer._process_message_with_classification(
             "s", "1-0", {"value": json.dumps({"eventType": "test", "payload": {"k": "v"}})}
-        )
+        ))
         assert result[0] is False
 
     @pytest.mark.asyncio
@@ -282,7 +285,7 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        result = await consumer._process_message_with_classification("s", "1-0", {"_init": "1"})
+        result = await in_delivery(consumer._process_message_with_classification("s", "1-0", {"_init": "1"}))
 
         assert result == (True, False)
         handler.assert_not_awaited()
@@ -293,7 +296,7 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        result = await consumer._process_message_with_classification("s", "1-0", {})
+        result = await in_delivery(consumer._process_message_with_classification("s", "1-0", {}))
 
         assert result == (True, False)
         handler.assert_not_awaited()
@@ -303,7 +306,7 @@ class TestProcessMessage:
         """When JSON parses to None (literal null), message should be skipped."""
         consumer.message_handler = AsyncMock(return_value=True)
 
-        result = await consumer._process_message_with_classification("s", "1-0", {"value": "null"})
+        result = await in_delivery(consumer._process_message_with_classification("s", "1-0", {"value": "null"}))
 
         assert result == (False, True)
         consumer.message_handler.assert_not_awaited()
@@ -1332,7 +1335,9 @@ class TestOrgContextWrapper:
             return True
 
         consumer.message_handler = handler
-        result = await consumer._process_message_with_classification("topic-a", "1-0", {"value": json.dumps(fields)})
+        result = await in_delivery(
+            consumer._process_message_with_classification("topic-a", "1-0", {"value": json.dumps(fields)})
+        )
         return result, seen
 
     async def test_signed_message_binds_the_signed_org_and_resets_after(self, consumer) -> None:

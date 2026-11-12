@@ -92,6 +92,8 @@ class _OneStreamProducer:
         self._stream = stream
 
     async def send_messages(self, topic: str, messages: list) -> list[bool]:
+        if topic == "record-title-events":
+            return [True] * len(messages)
         return await self._inner.send_messages(self._stream, messages)
 
     async def send_event(self, topic: str, event_type: str, payload: dict, key: str | None = None) -> bool:
@@ -124,6 +126,7 @@ class _Env:
                 run_coordination=run_coordination,
                 concurrency_manager=None,
                 page_size=500,
+                org_id=ORG_ID,
             )
 
     async def stored(self, record_id: str) -> dict:

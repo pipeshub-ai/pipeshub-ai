@@ -5,11 +5,22 @@
  * connected via StreamableHTTP transport.
  */
 
+import { createHash } from 'crypto';
+import { KeyObject } from 'node:crypto';
+import { getCurrentOrgId } from '../../../libs/context/orgContext';
+import { getRequestContext } from '../../../libs/context/request-context';
 import { Response, NextFunction } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger, getLogLevel } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
+import {
+  MCP_RELAY_HEADER,
+  relayKey,
+  signMcpRelay,
+} from '../../../libs/middlewares/mcp-relay';
+import { sendMcpError } from '../middlewares/mcp-guard.middleware';
+import { insufficientScopeChallenge, missingToolScopes } from '../step-up';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import {
   clientTags,
@@ -36,6 +47,9 @@ const logger = Logger.getInstance({
 // ESM-only modules — imported eagerly at module load, Node caches the result
 const mcpServerModule = import('@pipeshub-ai/mcp/esm/mcp-server/server.js');
 const coreModule = import('@pipeshub-ai/mcp/esm/core.js');
+const httpModule = import('@pipeshub-ai/mcp/esm/lib/http.js');
+const oauthScopesModule =
+  import('@pipeshub-ai/mcp/esm/mcp-server/oauth-scopes.js');
 
 /**
  * Activation signals for the MCP path. The transport is stateless, so every
@@ -159,6 +173,44 @@ export function mcpToolScopes(
     : ['read', 'write'];
 }
 
+/** The scopes an OAuth token or PAT holds; undefined for a caller that is not scope-limited. */
+function heldOAuthScopes(
+  user: Record<string, unknown> | undefined,
+): string[] | undefined {
+  if (user?.isOAuth !== true) return undefined;
+  const scopes: unknown = user.oauthScopes;
+  return Array.isArray(scopes)
+    ? scopes.filter((s): s is string => typeof s === 'string')
+    : [];
+}
+
+/**
+ * The audit trail of tool calls: who called which tool through which app, for how long and
+ * whether it failed. Argument names only, never their values or what the tool returned.
+ */
+function auditToolCall(
+  req: AuthenticatedUserRequest,
+  call: {
+    tool: string;
+    durationMs: number;
+    isError: boolean;
+    argumentNames: string[];
+  },
+): void {
+  const user: Record<string, unknown> | undefined = req.user;
+  logger.info('MCP tool call', {
+    audit: 'mcp_tool_call',
+    orgId: getCurrentOrgId(),
+    userId: user?.userId,
+    clientId: user?.oauthClientId,
+    tool: call.tool,
+    durationMs: call.durationMs,
+    isError: call.isError,
+    argumentNames: call.argumentNames,
+    requestId: req.context?.requestId,
+  });
+}
+
 /** The Grafana counter for the same step: org and domain only. */
 function recordActivityFromProps(
   activityName: string,
@@ -175,9 +227,10 @@ function recordActivityFromProps(
  * Creates a stateless MCP server per request, connected to the PipeshubCore SDK
  * using the caller's bearer token.
  */
-export const handleMCPRequest =
-  (appConfig: AppConfig) =>
-  async (
+export const handleMCPRequest = (appConfig: AppConfig) => {
+  // Built on first use, not with the router: the secret is read once the config is loaded.
+  let relaySigningKey: KeyObject | undefined;
+  return async (
     req: AuthenticatedUserRequest,
     res: Response,
     next: NextFunction,
@@ -189,10 +242,45 @@ export const handleMCPRequest =
 
       const { createMCPServer } = await mcpServerModule;
       const { PipeshubCore } = await coreModule;
+      const { HTTPClient } = await httpModule;
+      const { requiredOAuthScopes } = await oauthScopesModule;
+
+      const held = heldOAuthScopes(req.user);
+      if (held) {
+        const missing = missingToolScopes(req.body, held, requiredOAuthScopes);
+        if (missing.length > 0) {
+          res.set(
+            'WWW-Authenticate',
+            insufficientScopeChallenge(
+              held,
+              missing,
+              `${appConfig.oauthIssuer}/.well-known/oauth-protected-resource/mcp`,
+            ),
+          );
+          sendMcpError(
+            res,
+            403,
+            `This needs the ${missing.join(', ')} permission, which this connection was not given. Connect again and allow it.`,
+          );
+          return;
+        }
+      }
 
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       });
+      // The tools call the REST API over loopback; the header tells it those calls belong to this one.
+      relaySigningKey ??= relayKey(appConfig.scopedJwtSecret);
+      const relay = signMcpRelay(relaySigningKey, token);
+      const requestContext = getRequestContext();
+      if (requestContext) requestContext.mcpRelay = relay;
+      const httpClient = new HTTPClient().addHook(
+        'beforeRequest',
+        (request) => {
+          request.headers.set(MCP_RELAY_HEADER, relay);
+          return request;
+        },
+      );
 
       const { server: mcpServer } = createMCPServer({
         logger: {
@@ -204,11 +292,20 @@ export const handleMCPRequest =
         },
         dynamic: false,
         scopes: mcpToolScopes(req.user),
+        // Tools are listed only when the token holds every scope they need.
+        grantedOAuthScopes: held,
+        // Chat runs the person's connected actions only for a token allowed to run agents.
+        allowChatActions:
+          held === undefined || held.includes(OAuthScopeNames.AGENT_EXECUTE),
+        onToolCall: (call) => {
+          auditToolCall(req, call);
+        },
         serverURL,
         getSDK: () =>
           new PipeshubCore({
             security: { bearerAuth: token },
             serverURL,
+            httpClient,
           }),
       });
 
@@ -221,7 +318,8 @@ export const handleMCPRequest =
         mayReadCode(req.user) &&
         (await callerHasCodeRepos(
           codeDeps,
-          `${req.user?.orgId}:${req.user?.userId}`,
+          // Per token too: an app's knowledge limit narrows which repos it reads.
+          `${req.user?.orgId}:${req.user?.userId}:${createHash('sha256').update(codeDeps.authorization).digest('hex')}`,
         ))
       ) {
         // A client asking for code only (`/mcp?tools=code`) is not sent the
@@ -251,6 +349,14 @@ export const handleMCPRequest =
           : (server._instructions ?? '') + CODE_GRAPH_INSTRUCTIONS;
       }
 
+      // A client that hangs up cancels the call: closing aborts the running handlers' signals.
+      res.on('close', () => {
+        mcpServer.close().catch((error: unknown) => {
+          logger.warn('Closing the MCP server failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      });
       await mcpServer.connect(transport);
       const connectedProps = mcpConnectedProps(req);
       const toolCallProps = mcpToolCallProps(req);
@@ -292,3 +398,4 @@ export const handleMCPRequest =
       next(error);
     }
   };
+};

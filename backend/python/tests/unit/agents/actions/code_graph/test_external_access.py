@@ -18,8 +18,12 @@ from app.agents.actions.code_graph.repos import (
     repo_for_record,
     resolve_code_repo,
 )
+from app.api import connection_limit
 from app.api.routes import code_graph as routes
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType
+from app.modules.retrieval.selection_scope import SelectionTooLargeError
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 from .conftest import CONN, ORG, USER
 from .test_repo_identity import BLOBS, MAIN, TwoRepos
@@ -133,9 +137,13 @@ async def test_a_search_hit_names_its_repo() -> None:
 class _Container:
     def __init__(self, graph) -> None:
         self._graph = graph
+        self.retrievals = 0
 
     async def graph_provider(self) -> Repos:
         return self._graph
+
+    async def retrieval_service(self) -> None:
+        self.retrievals += 1
 
     def logger(self) -> logging.Logger:
         return logging.getLogger("test")
@@ -186,6 +194,67 @@ async def test_outline_and_entry_points_routes_answer_for_one_repo(blobs) -> Non
     assert bad.status_code == 422
 
 
+async def test_the_search_route_takes_the_external_mode_and_a_name(blobs) -> None:
+    res = _client(Repos()).post("/api/v1/code-graph/search", json={
+        "repo": "acme/admin", "pattern": "requests", "mode": "external", "name": "get"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["mode"] == "external" and body["module"] == "requests" and body["name"] == "get"
+    assert body["matches"] == [] and "hint" in body
+
+
+async def test_only_a_path_free_text_search_builds_the_retrieval_service(blobs) -> None:
+    client = _client(Repos())
+    for body in ({"pattern": "create_app"}, {"pattern": "x", "mode": "text", "path": "app/"},
+                 {"pattern": "requests", "mode": "external"}):
+        client.post("/api/v1/code-graph/search", json={"repo": "acme/admin", **body})
+    assert client.app.container.retrievals == 0
+    res = client.post("/api/v1/code-graph/search", json={"repo": "acme/admin", "pattern": "x", "mode": "text"})
+    assert client.app.container.retrievals == 1
+    assert "path" in res.json()["error"]
+
+
+async def test_impact_route_takes_edge_types_and_names_a_bad_one(blobs, monkeypatch) -> None:
+    passed: list[object] = []
+    impact = routes.CodeGraph.impact
+
+    async def spy(self, **kwargs):  # noqa: ANN202
+        passed.append(kwargs.get("edge_types"))
+        return await impact(self, **kwargs)
+
+    monkeypatch.setattr(routes.CodeGraph, "impact", spy)
+    client = _client(Repos())
+    target = {"repo": "acme/admin", "file_path": MAIN, "qualified_name": "function:create_app"}
+    calls = client.post("/api/v1/code-graph/impact", json={**target, "edge_types": ["CALLS"]})
+    assert calls.status_code == 200, calls.text
+    assert "error" not in calls.json()
+    assert passed == [["CALLS"]]  # the route hands the filter on; the tool's tests cover applying it
+    bad = client.post("/api/v1/code-graph/impact", json={**target, "edge_types": ["CALLZ"]})
+    assert "unknown edge_types ['CALLZ']" in bad.json()["error"]
+
+
+async def test_impact_of_diff_route_answers_for_one_repo_and_refuses_an_empty_patch() -> None:
+    client = _client(Repos())
+    patch = f"--- a/{MAIN}\n+++ b/{MAIN}\n@@ -2 +2 @@\n-a\n+b\n"
+    res = client.post("/api/v1/code-graph/impact-of-diff", json={"repo": "acme/admin", "patch": patch})
+    assert res.status_code == 200, res.text
+    assert {c["file_path"] for c in res.json()["changed"]} == {MAIN}
+    assert client.post("/api/v1/code-graph/impact-of-diff",
+                       json={"repo": "acme/admin", "patch": ""}).status_code == 422
+    assert client.post("/api/v1/code-graph/impact-of-diff",
+                       json={"repo": "acme/admin", "patch": "x" * (routes.MAX_PATCH_CHARS + 1)}).status_code == 422
+
+
+async def test_history_route_answers_for_one_repo_and_bounds_its_limit() -> None:
+    client = _client(Repos())
+    res = client.post("/api/v1/code-graph/history", json={"repo": "acme/admin", "file_path": MAIN})
+    assert res.status_code == 200, res.text
+    assert res.json()["pull_requests"] == [] and res.json()["file_path"] == MAIN
+    assert res.json()["untrusted"], "PR and ticket titles are written by whoever opens them"
+    assert client.post("/api/v1/code-graph/history",
+                       json={"repo": "acme/admin", "file_path": MAIN, "limit": 101}).status_code == 422
+
+
 async def test_read_by_search_hit_needs_no_repo(blobs) -> None:
     res = _client(Repos()).post("/api/v1/code-graph/read", json={"record_id": "rec-shop"})
     assert res.status_code == 200, res.text
@@ -220,6 +289,32 @@ async def test_repos_route_lists_readable_repos() -> None:
         {"repo": "acme/admin", "source": "GitHub", "connector_id": CONN, "graph_status": "never_built"},
     ]}
 
+
+async def test_repos_route_says_the_commit_each_repo_was_synced_at() -> None:
+    """Stamped by the git connectors on the code group; a repo not yet stamped says nothing."""
+    graph = Repos()
+    next(g for g in graph.groups if g["_key"] == "g-shop-code")["lastSyncedCommit"] = "9" * 40
+    by_repo = {r["repo"]: r for r in _client(graph).get("/api/v1/code-graph/repos").json()["repos"]}
+    assert by_repo["acme/shop"]["indexed_commit"] == "9" * 40
+    assert "indexed_commit" not in by_repo["acme/admin"]
+
+
+
+@pytest.mark.parametrize(("route", "body"), [
+    ("path", {"file_path_a": "no/such/a.py", "qualified_name_a": "function:a",
+              "file_path_b": "no/such/b.py", "qualified_name_b": "function:b"}),
+    ("search", {"pattern": "no_such_name_anywhere"}),
+])
+async def test_a_result_naming_no_file_says_the_named_repos_commit(route, body, blobs) -> None:
+    """Nothing was found, so no file or block says a commit; the one repo the call named still does."""
+    graph = Repos()
+    next(g for g in graph.groups if g["_key"] == "g-shop-code")["lastSyncedCommit"] = "9" * 40
+    client = _client(graph)
+    shop = client.post(f"/api/v1/code-graph/{route}", json={"repo": "acme/shop", **body})
+    assert shop.status_code == 200, shop.text
+    assert shop.json()["indexed_commit"] == "9" * 40
+    admin = client.post(f"/api/v1/code-graph/{route}", json={"repo": "acme/admin", **body})
+    assert admin.status_code == 200 and "indexed_commit" not in admin.json()  # never stamped
 
 async def test_repos_route_reports_each_repos_graph_status() -> None:
     """Built, pending or failed is visible per repo (O-3)."""
@@ -291,6 +386,52 @@ async def test_an_unreadable_record_is_a_404_that_names_it(blobs) -> None:
     assert res.json()["error"] == "record_id 'rec-shop' is not an indexed code file you can read."
 
 
+LIMITED = {"orgId": ORG, "userId": USER,
+           "knowledgeLimit": {"apps": [], "recordGroups": ["g-shop-code"], "records": []}}
+
+
+def _limit_admits(monkeypatch, *inside: str) -> None:
+    """The graph's answer for a connected app's limit: only ``inside`` is in it."""
+    async def outside(graph, user_id, org_id, ids, limit) -> set[str]:
+        return set() if limit is None else {i for i in ids if i not in inside}
+
+    async def groups_outside(graph, user_id, org_id, groups, limit) -> set[str]:
+        return set() if limit is None else {i for i in groups if i not in inside}
+
+    monkeypatch.setattr(connection_limit, "outside_connection", outside)
+    monkeypatch.setattr(connection_limit, "groups_outside_connection", groups_outside)
+
+
+async def test_a_connected_apps_limit_hides_every_repo_outside_it(monkeypatch, blobs) -> None:
+    """A PAT or OAuth app limited to some sources reads no repo past them (H3)."""
+    _limit_admits(monkeypatch, "g-shop-code")
+    client = _client(Repos(), user=LIMITED)
+    assert [r["repo"] for r in client.get("/api/v1/code-graph/repos").json()["repos"]] == ["acme/shop"]
+    by_name = client.post("/api/v1/code-graph/read", json={"repo": "acme/admin", "file_path": MAIN})
+    assert by_name.status_code == 404
+    assert by_name.json()["error"].startswith("No indexed repository you can read")
+    by_record = client.post("/api/v1/code-graph/read", json={"record_id": "rec-admin"})
+    assert by_record.status_code == 404
+    assert by_record.json()["error"] == "record_id 'rec-admin' is not an indexed code file you can read."
+    # A tool reads the record's own repo, whatever `repo` names.
+    mixed = client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "record_id": "rec-admin"})
+    assert mixed.status_code == 404
+    assert mixed.json()["error"] == "record_id 'rec-admin' is not an indexed code file you can read."
+    inside = client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "file_path": MAIN})
+    assert inside.status_code == 200, inside.text
+
+
+async def test_a_limit_too_large_to_check_is_a_422_not_an_outage(monkeypatch) -> None:
+    async def too_large(*_: object) -> set[str]:
+        raise SelectionTooLargeError
+
+    monkeypatch.setattr(connection_limit, "outside_connection", too_large)
+    monkeypatch.setattr(connection_limit, "groups_outside_connection", too_large)
+    client = _client(Repos(), user=LIMITED)
+    assert client.get("/api/v1/code-graph/repos").status_code == 422
+    assert client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "file_path": MAIN}).status_code == 422
+
+
 def test_a_large_result_is_cut_to_the_budget_and_says_so() -> None:
     rows = [{"file_path": f"src/f{i}.py", "qualifiedName": f"function:f{i}"} for i in range(5000)]
     out = routes.fit_to_budget({"neighbors": rows, "truncated": False}, max_chars=4000)
@@ -305,3 +446,53 @@ def test_a_small_result_is_untouched() -> None:
     small = {"neighbors": [{"a": 1}], "truncated": False}
     assert routes.fit_to_budget(small) is small
 
+
+
+WHOLE_CONNECTOR = {"orgId": ORG, "userId": USER,
+                   "knowledgeLimit": {"apps": [CONN], "recordGroups": [], "records": []}}
+
+
+class RecordGrantsOnly(Repos):
+    """A user who may read the repos' files but holds no permission on the record
+    group nodes, on a store that can go down (a Neo4j or ArangoDB read that fails)."""
+
+    down = False
+
+    async def get_user_by_user_id(self, user_id, *, raise_on_error=False) -> dict | None:
+        if self.down:
+            if raise_on_error:
+                raise ConnectionError("store down")
+            return None
+        return {"_key": "ukey", "userId": user_id}
+
+    async def check_access(self, user_key, org_id, *, node_ids=(), scopes=(), **_) -> AccessCheck:
+        if self.down:
+            raise PermissionVerificationUnavailableError("store down")
+        return AccessCheck()  # no group node is readable
+
+
+async def test_a_repo_read_through_its_files_is_inside_a_limit_that_names_its_connector(blobs) -> None:
+    client = _client(RecordGrantsOnly(), user=WHOLE_CONNECTOR)
+    assert [r["repo"] for r in client.get("/api/v1/code-graph/repos").json()["repos"]] == ["acme/admin", "acme/shop"]
+    assert client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "file_path": MAIN}).status_code == 200
+
+
+async def test_a_limit_naming_another_connector_still_hides_the_repos(blobs) -> None:
+    other = {**WHOLE_CONNECTOR, "knowledgeLimit": {"apps": ["conn-other"], "recordGroups": [], "records": []}}
+    assert _client(RecordGrantsOnly(), user=other).get("/api/v1/code-graph/repos").json()["repos"] == []
+
+
+async def test_a_store_outage_is_a_503_not_a_hidden_repo_and_the_repos_return_with_it(blobs) -> None:
+    graph = RecordGrantsOnly()
+    client = _client(graph, user=WHOLE_CONNECTOR)
+    graph.down = True
+    assert client.get("/api/v1/code-graph/repos").status_code == 503
+    assert client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "file_path": MAIN}).status_code == 503
+    graph.down = False
+    assert len(client.get("/api/v1/code-graph/repos").json()["repos"]) == 2
+
+
+async def test_a_repo_with_no_readable_file_stays_out_though_the_limit_names_its_connector(blobs) -> None:
+    """Readable repos are found first, then the limit is applied: a limit never makes a repo readable."""
+    client = _client(RecordGrantsOnly(deny={"rec-shop"}), user=WHOLE_CONNECTOR)
+    assert [r["repo"] for r in client.get("/api/v1/code-graph/repos").json()["repos"]] == ["acme/admin"]

@@ -77,7 +77,7 @@ def projected() -> Iterator[AsyncMock]:
 async def test_runs_on_the_normal_path_after_completed_is_written(projected: AsyncMock) -> None:
     orch = _sink("NOT_STARTED")
     order: list[str] = []
-    orch._update_indexing_status = AsyncMock(side_effect=lambda ctx: order.append("status"))
+    orch._update_indexing_status = AsyncMock(side_effect=lambda ctx: order.append("status") or True)
     projected.side_effect = lambda **kw: order.append("project") or Projection("written", 1)
 
     await orch.index(TransformContext(record=_record()))

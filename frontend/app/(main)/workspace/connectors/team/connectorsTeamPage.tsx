@@ -11,8 +11,13 @@ import { useFeatureFlagsStore, selectVectorStoreRebuildEnabled } from '@/lib/sto
 import { useToastStore } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import useSWR from 'swr';
+import { SWR_NS, SWR_POLICY, writeSwrKey } from '@/lib/api/swr-cache';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
+import { ACTIVE_TEAM_CONNECTORS_KEY, fetchActiveTeamConnectors } from '../cache-keys';
+import { loadInstanceConfigs } from '../utils/load-instance-configs';
+import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
   startConnectorSync,
   toggleConnectorSyncOn,
@@ -20,7 +25,6 @@ import {
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { localFsDesktopToast } from '../utils/local-fs-helpers';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
-import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
   refreshAllConnectorInstances,
   refreshConnectorInstanceDetails,
@@ -85,9 +89,7 @@ function TeamConnectorsPageContent() {
     activeConnectors,
     searchQuery,
     teamFilterTab,
-    isLoading,
     instances,
-    isLoadingInstances,
     connectorTypeInfo,
     showConfigSuccessDialog,
     newlyConfiguredConnectorId,
@@ -96,19 +98,15 @@ function TeamConnectorsPageContent() {
     setActiveConnectors,
     setSearchQuery,
     setTeamFilterTab,
-    setIsLoading,
     setError,
     openPanel,
     setInstances,
-    setIsLoadingInstances,
     setConnectorTypeInfo,
-    setInstanceConfig,
     clearInstanceData,
     openInstancePanel,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
     catalogRefreshToken,
-    bumpCatalogRefresh,
     setSelectedScope,
   } = useConnectorsStore();
 
@@ -144,40 +142,49 @@ function TeamConnectorsPageContent() {
   }, [searchParams, setTeamFilterTab]);
 
   // ── Fetch connector list data ───────────────────────────────
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
+  // The active list is shared with the demo check (one request per minute); the registry is read here.
+  const {
+    data: teamList,
+    error: teamListError,
+    isLoading: isTeamListLoading,
+  } = useSWR(ACTIVE_TEAM_CONNECTORS_KEY, fetchActiveTeamConnectors, SWR_POLICY.list60s);
+
+  // The personal page writes the same store field, so the team list is applied on every mount too.
+  useEffect(() => {
+    if (teamList) setActiveConnectors(filterConnectorsForScope(teamList.connectors ?? [], 'team'));
+  }, [teamList, setActiveConnectors]);
+
+  const [isRegistryLoading, setIsRegistryLoading] = useState(true);
+  const [registryFailed, setRegistryFailed] = useState(false);
+  const isLoading = isRegistryLoading || isTeamListLoading;
+
+  const fetchRegistry = useCallback(async () => {
+    setIsRegistryLoading(true);
+    setRegistryFailed(false);
     setError(null);
     try {
-      const [registryRes, activeRes] = await Promise.allSettled([
-        ConnectorsApi.getRegistryConnectors('team'),
-        ConnectorsApi.getActiveConnectors('team'),
-      ]);
-
-      if (registryRes.status === 'fulfilled') {
-        setRegistryConnectors(filterConnectorsForScope(registryRes.value.connectors, 'team'));
-      }
-      if (activeRes.status === 'fulfilled') {
-        setActiveConnectors(filterConnectorsForScope(activeRes.value.connectors, 'team'));
-      }
-
-      // If both failed, show error
-      if (registryRes.status === 'rejected' && activeRes.status === 'rejected') {
-        setError(t('workspace.connectors.toasts.loadError'));
-        addToast({
-          variant: 'error',
-          title: t('workspace.connectors.toasts.loadError'),
-        });
-      }
+      const res = await ConnectorsApi.getRegistryConnectors('team');
+      setRegistryConnectors(filterConnectorsForScope(res.connectors, 'team'));
     } catch {
-      setError('Failed to load connectors');
+      setRegistryFailed(true);
     } finally {
-      setIsLoading(false);
+      setIsRegistryLoading(false);
     }
-  }, [setRegistryConnectors, setActiveConnectors, setIsLoading, setError, addToast]);
+  }, [setRegistryConnectors, setError]);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData, catalogRefreshToken]);
+    void fetchRegistry();
+  }, [fetchRegistry, catalogRefreshToken]);
+
+  const bothListsFailed = registryFailed && Boolean(teamListError);
+  useEffect(() => {
+    if (!bothListsFailed) return;
+    setError(t('workspace.connectors.toasts.loadError'));
+    addToast({
+      variant: 'error',
+      title: t('workspace.connectors.toasts.loadError'),
+    });
+  }, [bothListsFailed, setError, addToast, t]);
 
   /** Stable across upserts that only change fields on existing instances (same ids → same string). */
   const instanceDetailKeys = useMemo(() => {
@@ -188,6 +195,19 @@ function TeamConnectorsPageContent() {
       .sort()
       .join('|');
   }, [activeConnectors, connectorType]);
+
+  // Read from the team list itself: the store may still hold the personal page's list for a render.
+  // An instance deleted here can stay in the server's list for a while; the store already hides it.
+  const deletedInstanceIds = useConnectorsStore((s) => s.deletedInstanceIds);
+  const teamInstanceKeys = useMemo(() => {
+    if (!connectorType || !teamList) return '';
+    const deleted = new Set(deletedInstanceIds);
+    return filterConnectorsForScope(teamList.connectors ?? [], 'team')
+      .filter((c) => c.type === connectorType && c._key && !deleted.has(c._key))
+      .map((c) => c._key as string)
+      .sort()
+      .join('|');
+  }, [teamList, connectorType, deletedInstanceIds]);
 
   // ── Instance type page: keep list + header in sync (no loading) ──
   useEffect(() => {
@@ -210,52 +230,12 @@ function TeamConnectorsPageContent() {
     setInstances,
   ]);
 
-  // ── Fetch config when instance set or catalog refresh changes (full loader) ──
-  useEffect(() => {
-    if (!connectorType) {
-      setIsLoadingInstances(false);
-      return;
-    }
-
-    const instanceIds = instanceDetailKeys.split('|').filter(Boolean);
-    if (instanceIds.length === 0) {
-      setIsLoadingInstances(false);
-      return;
-    }
-
-    let cancelled = false;
-
-    const run = async () => {
-      setIsLoadingInstances(true);
-      try {
-        await Promise.allSettled(
-          instanceIds.map(async (id) => {
-            const configRes = await ConnectorsApi.getConnectorConfig(id).catch(() => null);
-            if (cancelled) return;
-            if (configRes) {
-              setInstanceConfig(id, configRes);
-            }
-          })
-        );
-      } finally {
-        if (!cancelled) {
-          setIsLoadingInstances(false);
-        }
-      }
-    };
-
-    void run();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    connectorType,
-    catalogRefreshToken,
-    instanceDetailKeys,
-    setIsLoadingInstances,
-    setInstanceConfig,
-  ]);
+  // ── Instance configs: read for this set of instances at most once a minute; writes invalidate ──
+  const { isLoading: isLoadingConfigs } = useSWR(
+    connectorType && teamInstanceKeys ? ([SWR_NS.connectorConfigs, teamInstanceKeys] as const) : null,
+    ([, ids]) => loadInstanceConfigs(ids.split('|')),
+    SWR_POLICY.list60s,
+  );
 
   const refreshConnectorRowQuiet = useCallback(
     async (connectorId: string) => refreshConnectorInstanceDetails(connectorId),
@@ -269,9 +249,11 @@ function TeamConnectorsPageContent() {
 
   /** Re-sync catalog lists without toggling page `isLoading` (e.g. after sync toggle). */
   const refreshConnectorsListsQuiet = useCallback(async () => {
-    const { registry, active } = await fetchFilteredConnectorLists('team');
+    const { registry, active, activeResponse } = await fetchFilteredConnectorLists('team');
     if (registry) setRegistryConnectors(registry);
     if (active) setActiveConnectors(active);
+    // The page re-applies the cached list on mount, so the cache must hold this newer answer.
+    if (activeResponse) writeSwrKey(ACTIVE_TEAM_CONNECTORS_KEY, activeResponse);
   }, [setRegistryConnectors, setActiveConnectors]);
 
   const handleRefreshAllInstances = useCallback(async () => {
@@ -418,9 +400,9 @@ function TeamConnectorsPageContent() {
   const handleBackToList = useCallback(() => {
     setConnectorTypeInfo(null);
     clearInstanceData();
-    bumpCatalogRefresh();
+    // No catalog refresh: leaving is not a write, and every write on the type page refreshes it already.
     router.push('/workspace/connectors/team/');
-  }, [router, setConnectorTypeInfo, clearInstanceData, bumpCatalogRefresh]);
+  }, [router, setConnectorTypeInfo, clearInstanceData]);
 
   const handleAddInstance = useCallback(() => {
     if (!connectorTypeInfo) return;
@@ -540,11 +522,10 @@ function TeamConnectorsPageContent() {
       <>
         <ConnectorDetailsLayout
           connector={connectorTypeInfo}
-          scope="team"
           scopeLabel={t('workspace.sidebar.nav.connectors')}
           instances={instances}
           instanceConfigs={instanceConfigs}
-          isLoading={isLoadingInstances}
+          isLoading={isLoadingConfigs}
           onBack={handleBackToList}
           onAddInstance={handleAddInstance}
           onOpenDocs={handleOpenDocs}

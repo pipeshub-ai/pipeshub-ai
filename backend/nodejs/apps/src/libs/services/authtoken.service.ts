@@ -2,10 +2,12 @@
 import { injectable } from 'inversify';
 import { createPublicKey, createSecretKey, KeyObject } from 'node:crypto';
 import { UnauthorizedError } from '../errors/http.errors';
-import { Logger } from '../services/logger.service';
+import { withCause } from '../errors/base.error';
 import { isUserActionScope } from '../enums/token-scopes.enum';
 import { deriveUserActionSecret } from '../utils/jwtKeys';
 import jwt, { SignOptions } from 'jsonwebtoken';
+import { Request } from 'express';
+import { isMcpRelay, relayKey } from '../middlewares/mcp-relay';
 
 interface TokenPayload extends Record<string, any> {}
 
@@ -65,7 +67,6 @@ function isSignatureMismatch(error: unknown): boolean {
 
 @injectable()
 export class AuthTokenService {
-  private readonly logger = Logger.getInstance();
   private readonly jwtSecret: string;
   private readonly scopedJwtSecret: string;
   private readonly jwtVerificationKey: KeyObject;
@@ -73,6 +74,7 @@ export class AuthTokenService {
   private readonly userActionVerificationKey: KeyObject;
   private readonly jwtAlgorithms: jwt.Algorithm[];
   private readonly scopedJwtAlgorithms: jwt.Algorithm[];
+  private relayVerificationKey?: KeyObject;
 
   constructor(jwtSecret: string, scopedJwtSecret: string) {
     this.jwtSecret = jwtSecret;
@@ -88,6 +90,12 @@ export class AuthTokenService {
     this.scopedJwtAlgorithms = algorithmsFor(this.scopedJwtVerificationKey);
   }
 
+  /** Whether `req` is an API call the /mcp handler made for one of its tool calls. */
+  isMcpRelay(req: Request): boolean {
+    this.relayVerificationKey ??= relayKey(this.scopedJwtSecret);
+    return isMcpRelay(req, this.relayVerificationKey);
+  }
+
   async verifyToken(token: string): Promise<TokenPayload> {
     try {
       const decoded = jwt.verify(token, this.jwtVerificationKey, {
@@ -96,8 +104,8 @@ export class AuthTokenService {
 
       return decoded;
     } catch (error) {
-      this.logger.error('Token verification failed', { error });
-      throw new UnauthorizedError('Invalid token');
+      // Not logged here: the layer that answers the 401 logs it once, with this cause.
+      throw withCause(new UnauthorizedError('Invalid token'), error);
     }
   }
 
@@ -154,7 +162,6 @@ export class AuthTokenService {
         }
       }
     }
-    this.logger.error('Token verification failed', { error: failure });
-    throw new UnauthorizedError('Invalid token');
+    throw withCause(new UnauthorizedError('Invalid token'), failure);
   }
 }

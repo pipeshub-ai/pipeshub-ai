@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import type {
@@ -230,3 +231,5 @@ export const useOnboardingStore = create<OnboardingStore>()(
     { name: 'onboarding-store' }
   )
 );
+
+resetStoreOnSessionEnd(useOnboardingStore);

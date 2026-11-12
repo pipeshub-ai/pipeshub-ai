@@ -1,6 +1,7 @@
 """pipeshub_db_query_seconds{store,op} at the storage port boundary."""
 
 import asyncio
+import sys
 import time
 from typing import Never
 
@@ -88,26 +89,49 @@ def test_noop_backend_returns_store_untouched(monkeypatch) -> None:
 
 
 def test_overhead_relative_to_realistic_await(hist) -> None:
+    """The wrapper adds a few function calls to a store call, not real work.
+
+    Checked by counting the Python and C calls it makes (24 more per call today, a bound of 60) and by a time bound that
+    only a wrapper doing real work reaches (0.5 ms per call, against 20 microseconds before), not by a microsecond bound
+    that a shared runner's noise exceeds."""
+
     class Fast:
         async def op(self) -> None:
             return None
 
-    async def run(obj: Fast, n: int = 20000) -> float:
+    def calls_per_op(obj: Fast, n: int = 500) -> float:
+        seen = 0
+
+        def profile(_frame: object, event: str, _arg: object) -> None:
+            nonlocal seen
+            if event in ("call", "c_call"):
+                seen += 1
+
+        async def run() -> None:
+            for _ in range(n):
+                await obj.op()
+
+        sys.setprofile(profile)
+        try:
+            asyncio.run(run())
+        finally:
+            sys.setprofile(None)
+        return seen / n
+
+    async def seconds_per_op(obj: Fast, n: int = 2000) -> float:
         t = time.perf_counter()
         for _ in range(n):
             await obj.op()
         return (time.perf_counter() - t) / n
 
     instrumented = db_metrics.instrument_store(Fast(), "kv")
-    # Interleaved and the fastest of each kept: load on a shared runner then slows both
-    # sides of a trial alike instead of only whichever ran last.
+    assert calls_per_op(instrumented) - calls_per_op(Fast()) < 60
+    # Interleaved and the fastest of each kept: load on a shared runner then slows both sides of a trial alike.
     base = inst = float("inf")
     for _ in range(5):
-        base = min(base, asyncio.run(run(Fast())))
-        inst = min(inst, asyncio.run(run(instrumented)))
-    print(f"base {base * 1e6:.1f} us, instrumented {inst * 1e6:.1f} us")
-    # The wrapper costs a few microseconds per call: under 2% of a 1 ms store call.
-    assert inst - base < 2e-5
+        base = min(base, asyncio.run(seconds_per_op(Fast())))
+        inst = min(inst, asyncio.run(seconds_per_op(instrumented)))
+    assert inst - base < 5e-4
 
 
 def test_lifecycle_ops_not_timed(hist) -> None:

@@ -7,6 +7,7 @@ import asyncio
 import base64
 import hashlib
 import os
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
@@ -431,7 +432,7 @@ class _SlowToReap:
     exitcode = -9
 
     def __init__(self, reap_s: float) -> None:
-        self.reap_s, self.killed = reap_s, False
+        self.reap_s, self.killed, self.joined_on = reap_s, False, []
 
     def is_alive(self) -> bool:
         return not self.killed
@@ -440,6 +441,7 @@ class _SlowToReap:
         self.killed = True
 
     def join(self, timeout: float | None = None) -> None:
+        self.joined_on.append(threading.get_ident())
         time.sleep(self.reap_s)
 
 
@@ -462,49 +464,34 @@ class _Conn:
 
 class TestKillDoesNotBlockTheLoop:
     @staticmethod
-    async def _longest_stall(coro) -> float:
-        """The longest gap between two ticks of a 10 ms heartbeat while ``coro`` runs."""
-        stalls, last, stop = [0.0], time.monotonic(), asyncio.Event()
-
-        async def beat() -> None:
-            nonlocal last
-            while not stop.is_set():
-                await asyncio.sleep(0.01)
-                now = time.monotonic()
-                stalls.append(now - last)
-                last = now
-
-        ticker = asyncio.create_task(beat())
-        await asyncio.sleep(0.05)
-        last = time.monotonic()
-        try:
-            await coro
-        finally:
-            stop.set()
-            await ticker
-        return max(stalls)
+    def _reaped_off_the_loop(proc: _SlowToReap) -> bool:
+        """The child was joined, and never on the event loop's thread (where a slow reap would stall every request).
+        Where the join ran is checked, not how long the loop stalled: a stall bound also measures the host's load."""
+        return bool(proc.joined_on) and threading.get_ident() not in proc.joined_on
 
     async def test_an_overrun_reaps_the_child_off_the_event_loop(self, tmp_path, store) -> None:
         pool = M.Materialiser(pool_size=1, wall_budget_s=0.01, allow_loopback=True)
-        proc = _SlowToReap(0.6)
+        proc = _SlowToReap(0)
         pool._slots[0].proc, pool._slots[0].conn = proc, _Conn(polls=False)
 
         async def run() -> None:
             with pytest.raises(PushRefusal):
                 await pool.run(make_task(tmp_path, store, []))
 
-        assert await self._longest_stall(run()) < 0.3 and proc.killed
+        await run()
+        assert proc.killed and self._reaped_off_the_loop(proc)
 
     async def test_a_dead_pipe_reaps_the_child_off_the_event_loop(self, tmp_path, store) -> None:
         pool = M.Materialiser(pool_size=1, allow_loopback=True)
-        proc = _SlowToReap(0.6)
+        proc = _SlowToReap(0)
         pool._slots[0].proc, pool._slots[0].conn = proc, _Conn(polls=True)
 
         async def run() -> None:
             with pytest.raises(PushRefusal):
                 await pool.run(make_task(tmp_path, store, []))
 
-        assert await self._longest_stall(run()) < 0.3
+        await run()
+        assert self._reaped_off_the_loop(proc)
 
     async def test_a_cancelled_push_kills_at_once_and_still_reaps_to_the_end(self, tmp_path, store) -> None:
         pool = M.Materialiser(pool_size=1, wall_budget_s=30, allow_loopback=True)

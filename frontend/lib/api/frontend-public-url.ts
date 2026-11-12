@@ -1,5 +1,6 @@
 import { getFrontendOrigin } from '@/lib/auth/desktop-oauth';
 import { apiClient } from './axios-instance';
+import { onSessionEnd } from './session-cache';
 
 const FRONTEND_PUBLIC_URL_ENDPOINT = '/api/v1/configurationManager/frontendPublicUrl';
 
@@ -25,6 +26,10 @@ function fallbackBaseUrl(): string | null {
 }
 
 let inFlight: Promise<string | null> | null = null;
+// A request left over from the last session never settles; the next caller asks again.
+onSessionEnd(() => {
+  inFlight = null;
+});
 
 /**
  * The configured public frontend URL — the base the backend builds OAuth redirect URIs

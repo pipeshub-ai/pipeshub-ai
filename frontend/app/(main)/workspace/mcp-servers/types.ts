@@ -190,6 +190,16 @@ export interface McpMyServersResponse {
   instances: McpMyServerEntry[];
 }
 
+/** `GET /logos`: the uploaded logos of the custom servers the caller can see, by instance id. */
+export interface McpLogosResponse {
+  logos: Record<string, string>;
+}
+
+/** `PUT /instances/{id}/logo`: the logo as stored, a PNG data URL at most 96 px a side. */
+export interface McpLogoResponse {
+  logo: string;
+}
+
 export interface McpToolsResponse {
   tools: McpToolInfo[];
   /** When the list was read from the server (epoch ms). */

@@ -74,7 +74,7 @@ def test_one_huge_merge_is_refused_in_every_spelling(spelling: str) -> None:
     assert raised.value.too_large
 
 
-def test_many_small_tables_are_charged_with_headroom_for_the_resident_overhead(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_many_small_tables_are_charged_with_headroom_for_the_resident_overhead() -> None:
     # tracemalloc counts live objects; the resident set grew 1.12x the charge at 60 000 tables, so the
     # charge must clear the allocation by at least that much (measured: 1.32x with the round-5 constants)
     from tests.unit.modules.parsers.test_excel_worker_load_qa_round3 import (
@@ -82,5 +82,5 @@ def test_many_small_tables_are_charged_with_headroom_for_the_resident_overhead(m
         _many_small_tables,
     )
 
-    allocated, charged, _ = _allocated_and_charged(_many_small_tables(), monkeypatch)
+    allocated, charged, _ = _allocated_and_charged(_many_small_tables())
     assert charged >= 1.2 * allocated, f"charged {charged / 1e6:.1f} MB for {allocated / 1e6:.1f} MB allocated"

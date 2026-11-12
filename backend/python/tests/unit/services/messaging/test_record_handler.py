@@ -145,6 +145,32 @@ class TestProcessEventEdgeCases:
             )
 
 
+@pytest.mark.asyncio
+async def test_a_retry_clears_the_vectors_of_the_vrid_on_the_record_not_the_one_in_the_message() -> None:
+    """The first attempt's vectors are under the VRID it saved on the record."""
+    handler = _make_handler()
+    handler.event_processor.graph_provider.get_document = AsyncMock(
+        return_value=_vector_only_graph_doc(virtualRecordId="saved-by-attempt-1")
+    )
+    pipeline = handler.event_processor.processor.indexing_pipeline
+    pipeline.bulk_delete_embeddings = AsyncMock(side_effect=RuntimeError("stop after the clear"))
+
+    with pytest.raises(RuntimeError, match="stop after the clear"):
+        await _collect_events(
+            handler,
+            EventTypes.REINDEX_RECORD.value,
+            {
+                "recordId": "rec-1",
+                "orgId": "org-1",
+                "virtualRecordId": "vrid-in-the-message",
+                "mimeType": MimeTypes.XLSX.value,
+                "extension": "xlsx",
+            },
+        )
+
+    pipeline.bulk_delete_embeddings.assert_awaited_once_with(["saved-by-attempt-1"], org_id="org-1")
+
+
 # ===================================================================
 # Bulk delete event
 # ===================================================================
@@ -1331,7 +1357,9 @@ class TestVectorDbOnlyReindex:
             call.args[0]
             for call in handler.event_processor.graph_provider.get_document.await_args_list
         ]
-        assert "conn-1" not in get_document_ids
+        # Read once, to hold the event while the connector is being deleted; a rebuild is not
+        # gated on the connector being on.
+        assert get_document_ids.count("conn-1") == 1
 
     @pytest.mark.asyncio
     async def test_missing_blob_marks_failed(self):
@@ -1534,6 +1562,20 @@ class TestDeleteRecordEvent:
         )
 
     @pytest.mark.asyncio
+    async def test_delete_record_without_an_org_takes_it_from_the_record_before_the_embeddings_go(self) -> None:
+        """The embeddings are deleted for one org; an event without its org must not fail
+        closed while the record can still name it."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "orgId": "org-1"})
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+
+        await _collect_events(handler, EventTypes.DELETE_RECORD.value, {"recordId": "r1", "virtualRecordId": "vr1"})
+
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id="org-1")
+
+    @pytest.mark.asyncio
     async def test_delete_record_without_entity_vector_store_still_completes(self):
         """No entity store configured (the default in most deployments/tests)
         must not break the delete — it is a best-effort cleanup."""
@@ -1559,6 +1601,7 @@ class TestDeleteRecordSharedCopyHandover:
     def _handler() -> "RecordEventHandler":
         handler = _make_handler()
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value=None)
         return handler
 
     @pytest.mark.asyncio
@@ -2407,9 +2450,9 @@ class TestConnectorActiveCheck:
             "mimeType": "application/pdf",
         }
 
-        # First call returns the record, second call for connector returns None,
-        # third call in finally block returns record again for status check
-        gp.get_document = AsyncMock(side_effect=[record, None, record])
+        # The record, the connector for the delete hold (None), the connector for the
+        # connector check (None), then the record again for the finally block's status check
+        gp.get_document = AsyncMock(side_effect=[record, None, None, record])
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
@@ -2434,9 +2477,9 @@ class TestConnectorActiveCheck:
         }
         connector_instance = {"_key": "conn-1", "isActive": False}
 
-        # First call: record, second call: connector, third call: __update_document_status,
-        # fourth call: finally block record fetch
-        gp.get_document = AsyncMock(side_effect=[record, connector_instance, record, record])
+        # The record, the connector for the delete hold, the connector for the connector check,
+        # __update_document_status, then the finally block's record fetch
+        gp.get_document = AsyncMock(side_effect=[record, connector_instance, connector_instance, record, record])
         gp.update_node = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
@@ -2460,9 +2503,10 @@ class TestConnectorActiveCheck:
         }
         connector_instance = {"_key": "conn-1", "isActive": True}
 
-        # get_document calls: record, connector, then final status check
+        # get_document calls: record, connector (delete hold), connector (connector check), then final status check
         gp.get_document = AsyncMock(side_effect=[
             record,
+            connector_instance,
             connector_instance,
             record,  # final record fetch in finally block
         ])
@@ -3349,9 +3393,10 @@ class TestProcessEventErrors:
             "mimeType": "text/markdown",
         }
         connector_instance = {"_key": "conn-1", "isActive": True, "name": "GitHub Apache"}
-        # The record read for processing, its connector, the final failure's
-        # check whether this attempt indexed it, then __update_document_status.
-        gp.get_document = AsyncMock(side_effect=[record, connector_instance, record, record])
+        # The record read for processing, its connector for the delete hold and again for the
+        # connector check, the final failure's check whether this attempt indexed it, then
+        # __update_document_status.
+        gp.get_document = AsyncMock(side_effect=[record, connector_instance, connector_instance, record, record])
         gp.update_node = AsyncMock(return_value=True)
         handler._propagate_primary_failure_to_queued_duplicates = AsyncMock()
 
@@ -5756,6 +5801,24 @@ class TestOnMessageAbandoned:
         gp.update_node.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_failing_status_write_is_logged_as_an_error_and_not_taken_for_a_record_that_moved_on(self) -> None:
+        """The database failing is not "the record moved on": the swap raises, nothing else is written, and the log says
+        the marking failed (at error level, with the cause), not that the record was left alone."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "indexingStatus": ProgressStatus.QUEUED.value})
+        gp.update_node = AsyncMock(return_value=True)
+        gp.compare_and_set_indexing_status = AsyncMock(side_effect=ConnectionError("graph restarting"))
+
+        await handler.on_message_abandoned(self._message(), reason="4 transient failures", attempts=4)  # never raises
+
+        gp.update_node.assert_not_awaited()
+        errors = [str(c.args[0]) % c.args[1:] for c in handler.logger.error.call_args_list]
+        assert any("Error while marking record r1 FAILED" in e and "graph restarting" in e for e in errors)
+        infos = [str(c.args[0]) for c in handler.logger.info.call_args_list]
+        assert not any("moved on" in i for i in infos)
+
+    @pytest.mark.asyncio
     async def test_never_fails_a_record_whose_handler_is_still_running(self):
         """Idle-drain can abandon a sibling PEL entry while the original
         delivery is still IN_PROGRESS. Rewriting FAILED races the worker."""
@@ -6002,6 +6065,24 @@ class TestStageRedrive:
         ingress.redrive = AsyncMock(side_effect=ConnectionError("graph unavailable"))
         with pytest.raises(ConnectionError):
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(is_final_failure=True))
+        assert {c[0] for c in gp.mock_calls} == {"get_document"}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_connector_read_on_a_retrys_last_attempt_never_writes_the_records_statuses(self) -> None:
+        """The delete hold reads a connector record's app before the stage branch runs; that read
+        failing on the last attempt is still a stage re-run's failure, which owns no record status."""
+        handler, gp, ingress = self._handler(["vr1:rev-1:classify@1"])
+        record = {**gp.get_document.return_value, "origin": OriginTypes.CONNECTOR.value, "connectorId": "c1"}
+
+        async def get_document(doc_id, collection, **_kw) -> dict:
+            if collection == CollectionNames.APPS.value:
+                raise ConnectionError("graph unavailable")
+            return record
+
+        gp.get_document = AsyncMock(side_effect=get_document)
+        with pytest.raises(ConnectionError):
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(is_final_failure=True))
+        ingress.redrive.assert_not_awaited()
         assert {c[0] for c in gp.mock_calls} == {"get_document"}
 
     @pytest.mark.asyncio

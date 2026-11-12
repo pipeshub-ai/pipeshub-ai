@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -24,10 +25,20 @@ from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.agent_loop.mcp_access import ResolvedMCPServer
 from app.agents.agent_loop.mcp_tool_adapter import MCPToolAdapter
 from app.agents.mcp.client import MCPConnectionError
+from app.agents.mcp.errors import MCPHttpStatusError, MCPToolNotOfferedError
 from app.agents.mcp.models import MCPToolInfo
 from app.agents.mcp.oauth_client import MCPOAuthError
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
+from app.utils import logging_fields
+from app.utils.credential_refresh_log import MISCONFIGURED_REPEAT_S
+from app.utils.logger import log_record_fields
 from tests.unit.agents.adapter.conftest import make_context
+from tests.unit.agents.mcp.refresh_failures import (
+    BODY_SECRET,
+    TOKEN_HOST,
+    lock_contention_error,
+    token_endpoint_error,
+)
 
 
 def _server() -> ResolvedMCPServer:
@@ -661,13 +672,17 @@ class TestExecuteSuccess:
 
 
 class TestAFailedCallIsLoggedSafely:
-    """SEC-11: an expected failure logs one line, URLs without their query; a bug keeps its stack."""
+    """SEC-11: a failed call is one `tool_call.end` from the executor, by class, with no stack for an
+    expected failure and never the error's text (a URL with an API key, the arguments); a bug keeps its stack."""
 
-    async def _failure_record(self, exc: Exception, caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+    async def _end_record(self, exc: Exception, caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
         adapter = _make_adapter(_FakeSessionManager(exc=exc))
-        with caplog.at_level(logging.WARNING, logger="app.agents.agent_loop.mcp_tool_adapter"):
-            await adapter.execute(query="PA")
-        (record,) = [r for r in caplog.records if "MCP tool" in r.getMessage()]
+        registry = ToolRegistry()
+        registry.register_tool(adapter)
+        with caplog.at_level(logging.DEBUG):
+            await ToolExecutor(registry).call_tool(ToolCall(id="t1", name=adapter.name, arguments={"query": "PA"}))
+        (record,) = [r for r in caplog.records if r.getMessage() == "tool_call.end"]
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING and r is not record]
         return record
 
     async def test_an_http_error_logs_no_stack_and_no_api_key(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -677,29 +692,88 @@ class TestAFailedCallIsLoggedSafely:
             request=request, response=httpx.Response(500, request=request),
         )
 
-        record = await self._failure_record(error, caplog)
+        record = await self._end_record(error, caplog)
 
-        assert not record.exc_info
-        assert "secret" not in record.getMessage()
-        assert "https://mcp.example.com/mcp" in record.getMessage()
-        assert "(unreachable)" in record.getMessage()
+        assert record.levelno == logging.WARNING and not record.exc_text
+        assert "secret" not in caplog.text
+        fields = log_record_fields(record)
+        assert isinstance(fields.pop("duration_ms"), int)
+        assert fields == {
+            "tool": "mcp_jira_mcp_search", "tool_call_id": "t1", "mcp_server_id": "inst-1",
+            "outcome": "failure", "reason": "tool_error", "kind": "mcp",
+            "error_class": "upstream_5xx", "mcp_reason": "unreachable", "error_type": "HTTPStatusError",
+        }
+
+    async def test_a_401_says_so(self, caplog: pytest.LogCaptureFixture) -> None:
+        record = await self._end_record(MCPHttpStatusError(401, "The MCP server answered HTTP 401"), caplog)
+
+        fields = log_record_fields(record)
+        assert record.levelno == logging.WARNING and not record.exc_text
+        assert (fields["error_class"], fields["mcp_reason"], fields["status"]) == ("auth_expired", "unauthorized", 401)
 
     async def test_a_timeout_logs_no_stack(self, caplog: pytest.LogCaptureFixture) -> None:
-        record = await self._failure_record(asyncio.TimeoutError(), caplog)
+        record = await self._end_record(asyncio.TimeoutError(), caplog)
 
-        assert not record.exc_info
-        assert "(timeout)" in record.getMessage()
+        assert record.levelno == logging.WARNING and not record.exc_text
+        assert log_record_fields(record)["error_class"] == "timeout"
 
     async def test_an_expired_sign_in_logs_no_stack(self, caplog: pytest.LogCaptureFixture) -> None:
-        record = await self._failure_record(MCPTokenRefreshError("no refresh token"), caplog)
+        record = await self._end_record(MCPTokenRefreshError("no refresh token"), caplog)
 
-        assert not record.exc_info
+        assert record.levelno == logging.WARNING and not record.exc_text
+        assert log_record_fields(record)["error_class"] == "auth_expired"
+
+    async def test_a_rejected_oauth_client_is_our_misconfiguration(self, caplog: pytest.LogCaptureFixture) -> None:
+        record = await self._end_record(MCPOAuthError("rejected", error_code="invalid_client"), caplog)
+
+        assert record.levelno == logging.ERROR
+        assert log_record_fields(record)["error_class"] == "misconfigured"
+
+    async def test_a_servers_refusal_is_a_warning_without_its_text(self, caplog: pytest.LogCaptureFixture) -> None:
+        record = await self._end_record(MCPError(INVALID_PARAMS, "bad sentinel-q", data={"echo": "sentinel-q"}), caplog)
+
+        assert record.levelno == logging.WARNING and not record.exc_text
+        assert log_record_fields(record)["error_class"] == "bad_request"
+        assert "sentinel-q" not in caplog.text
+
+    async def test_a_stale_tool_list_is_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        record = await self._end_record(MCPToolNotOfferedError("gone"), caplog)
+
+        assert record.levelno == logging.WARNING
+        assert log_record_fields(record)["error_class"] == "not_found"
+
+    async def test_a_refresh_the_provider_couldnt_answer_is_tagged_unreachable(self, caplog: pytest.LogCaptureFixture) -> None:
+        record = await self._end_record(await token_endpoint_error(503, {"error": "temporarily_unavailable"}), caplog)
+
+        assert record.levelno == logging.WARNING and not record.exc_text
+        fields = log_record_fields(record)
+        assert (fields["error_class"], fields["mcp_reason"]) == ("unavailable", "unreachable")
 
     async def test_an_unexpected_error_keeps_its_stack(self, caplog: pytest.LogCaptureFixture) -> None:
-        record = await self._failure_record(KeyError("structuredContent"), caplog)
+        record = await self._end_record(KeyError("structuredContent"), caplog)
 
-        assert record.exc_info
-        assert "(error)" in record.getMessage()
+        assert record.levelno == logging.ERROR and record.exc_text
+        assert log_record_fields(record)["error_class"] == "internal"
+        assert "error_message" not in log_record_fields(record)
+
+    async def test_an_is_error_result_is_a_warning_without_its_text(self, caplog: pytest.LogCaptureFixture) -> None:
+        adapter = _make_adapter(_FakeSessionManager(result=_call_result(is_error=True, texts=("sentinel-r",))))
+        registry = ToolRegistry()
+        registry.register_tool(adapter)
+        with caplog.at_level(logging.DEBUG):
+            result = await ToolExecutor(registry).call_tool(ToolCall(id="t2", name=adapter.name, arguments={"query": "q"}))
+
+        (record,) = [r for r in caplog.records if r.getMessage() == "tool_call.end"]
+        assert record.levelno == logging.WARNING
+        assert log_record_fields(record)["reason"] == "server_error"
+        assert "error_class" not in log_record_fields(record)
+        assert "sentinel-r" not in caplog.text and result.content == "sentinel-r"
+
+    async def test_the_adapter_says_what_kind_of_tool_it_is(self) -> None:
+        adapter = _make_adapter(_FakeSessionManager())
+
+        assert adapter.log_kind == "mcp"
+        assert adapter.log_ids == {"mcp_server_id": "inst-1"}
 
 
 class TestExecuteFailure:
@@ -728,6 +802,34 @@ class TestExecuteFailure:
         assert output.success is False
         assert "Reconnect it in Workspace" in output.error
         assert "/services/mcp" not in output.error
+
+    async def test_a_provider_outage_during_the_refresh_asks_to_try_again(self) -> None:
+        outage = await token_endpoint_error(503, {"error": "temporarily_unavailable", "trace": BODY_SECRET})
+        adapter = _make_adapter(_FakeSessionManager(exc=outage))
+
+        output = await adapter.execute(query="PA")
+
+        assert output.error == (
+            "The sign-in to the Jira MCP MCP server couldn't be renewed: its sign-in provider is down or busy. "
+            "Try again in a few minutes."
+        )
+        assert BODY_SECRET not in output.error and TOKEN_HOST not in output.error
+
+    async def test_another_processs_refresh_asks_to_try_again(self) -> None:
+        adapter = _make_adapter(_FakeSessionManager(exc=await lock_contention_error()))
+
+        output = await adapter.execute(query="PA")
+
+        assert "Try again in a few minutes" in output.error
+        assert "Reconnect" not in output.error
+        assert "/services/mcp" not in output.error
+
+    async def test_a_refused_refresh_still_asks_to_reconnect(self) -> None:
+        adapter = _make_adapter(_FakeSessionManager(exc=await token_endpoint_error(400, {"error": "invalid_grant"})))
+
+        output = await adapter.execute(query="PA")
+
+        assert "Reconnect it in Workspace" in output.error
 
     async def test_oauth_error_never_shows_the_token_endpoint_body(self) -> None:
         adapter = _make_adapter(
@@ -953,6 +1055,7 @@ class TestStopInterruptsACall:
 
         assert output.success is False
         assert "Stopped before the Jira MCP MCP server answered" in output.error
+        assert output.end_fields == {"reason": "stopped", "error_class": "cancelled"}
         assert session_manager.cancelled is True
 
     async def test_without_a_stop_the_result_comes_back(self) -> None:
@@ -985,3 +1088,43 @@ class TestStopInterruptsACall:
         await asyncio.sleep(0)
 
         assert session_manager.cancelled is True
+
+
+class TestAMisconfiguredSignInIsAnErrorOnceAnHour:
+    """A refresh that can't work until an admin acts (no OAuth client) fails every turn: its `tool_call.end` is ERROR
+    once an hour per server, DEBUG in between, with the class the refresh's own `end` said."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(logging_fields, "_log_once_last", {})
+
+    async def _turn(self, exc: Exception, caplog: pytest.LogCaptureFixture, server: str = "inst-1") -> logging.LogRecord:
+        adapter = MCPToolAdapter(replace(_server(), instance_id=server), _tool_info(), _FakeSessionManager(exc=exc))
+        registry = ToolRegistry()
+        registry.register_tool(adapter)
+        with caplog.at_level(logging.DEBUG):
+            await ToolExecutor(registry).call_tool(ToolCall(id="t1", name=adapter.name, arguments={"query": "PA"}))
+        return [r for r in caplog.records if r.getMessage() == "tool_call.end"][-1]
+
+    async def test_the_second_turn_in_the_hour_is_debug_and_another_server_is_not(self, caplog: pytest.LogCaptureFixture) -> None:
+        def no_client() -> Exception:
+            return MCPTokenRefreshError("No OAuth client configuration found", refresh_reason="config_missing")
+
+        first = await self._turn(no_client(), caplog)
+        second = await self._turn(no_client(), caplog)
+        other = await self._turn(no_client(), caplog, server="inst-2")
+        for key in logging_fields._log_once_last:
+            logging_fields._log_once_last[key] -= MISCONFIGURED_REPEAT_S + 1
+        later = await self._turn(no_client(), caplog)
+
+        assert [r.levelno for r in (first, second, other, later)] == [logging.ERROR, logging.DEBUG, logging.ERROR, logging.ERROR]
+        assert {log_record_fields(r)["error_class"] for r in (first, second, other, later)} == {"misconfigured"}
+
+    @pytest.mark.parametrize("refresh_reason", ["lock_contention", "host_unresolved"])
+    async def test_an_unavailable_refresh_is_never_gated(self, caplog: pytest.LogCaptureFixture, refresh_reason: str) -> None:
+        def failure() -> Exception:
+            return MCPOAuthError("x", refresh_reason=refresh_reason)
+
+        lines = [await self._turn(failure(), caplog), await self._turn(failure(), caplog)]
+
+        assert [(r.levelno, log_record_fields(r)["error_class"]) for r in lines] == [(logging.WARNING, "unavailable")] * 2

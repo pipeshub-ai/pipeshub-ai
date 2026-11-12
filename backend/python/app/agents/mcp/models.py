@@ -197,6 +197,16 @@ class MCPServerInstanceConfig(MCPCamelModel):
     call_timeout_seconds: Optional[float] = Field(default=None, ge=1, le=600)
 
 
+MAX_LOGO_UPLOAD_BYTES = 1024 * 1024
+
+
+class MCPServerLogoPayload(MCPCamelModel):
+    """Request body for setting a custom server's logo: the image as a base64 data URL."""
+
+    # Base64 is 4/3 of the bytes; the `data:image/...;base64,` prefix is short.
+    logo: str = Field(max_length=MAX_LOGO_UPLOAD_BYTES * 4 // 3 + 64)
+
+
 class MCPServerConfig(MCPCamelModel):
     """Persisted instance metadata — no secrets.
 

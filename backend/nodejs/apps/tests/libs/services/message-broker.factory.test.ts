@@ -380,6 +380,7 @@ describe('MessageBrokerFactory', () => {
       expect(REQUIRED_TOPICS).to.be.an('array');
       const topicNames = REQUIRED_TOPICS.map((t: any) => t.topic);
       expect(topicNames).to.include('record-events');
+      expect(topicNames).to.include('record-title-events');
       expect(topicNames).to.include('entity-events');
       expect(topicNames).to.include('ai-config-events');
       expect(topicNames).to.include('sync-events');

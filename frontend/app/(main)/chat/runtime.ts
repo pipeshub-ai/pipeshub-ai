@@ -48,6 +48,8 @@ import {
 } from './components/message-area/ask-user-question-card';
 import { appendResumeParts } from './utils/tool-display';
 import { isToolApprovalResumeQuery } from './tool-approval';
+import { applyCompareToRequest, onPrimarySettled, settleBeforeSend } from './compare/compare-controller';
+import { compareModelForSlot } from './compare/compare-store';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
 const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
@@ -259,7 +261,8 @@ export function buildStreamChatRequestForSlot(
       : [];
 
   const modelCtxKey = ctxKeyFromAgent(effectiveAgentId ?? null);
-  const rawModel = getEffectiveModel(modelCtxKey);
+  // A compared slot keeps its own model for card and approval follow-ups, whatever the composer shows.
+  const rawModel = compareModelForSlot(slotId) ?? getEffectiveModel(modelCtxKey);
   if (!rawModel) {
     showNoModelToast();
   }
@@ -391,7 +394,7 @@ export interface LoadHistoricalResult {
   unansweredAskUserQuestion: PendingAskUserQuestion | null;
 }
 
-function isAskUserQuestionResumeQuery(text: string | undefined | null): boolean {
+export function isAskUserQuestionResumeQuery(text: string | undefined | null): boolean {
   return typeof text === 'string' && text.trimStart().startsWith('User selections:');
 }
 
@@ -657,6 +660,7 @@ export function loadHistoricalMessages(
         metadata: {
           custom: {
             citationMaps: buildCitationMapsFromApi([]),
+            ...(msg.answerHidden ? { answerHidden: msg.answerHidden } : {}),
           },
         },
       });
@@ -773,6 +777,7 @@ export function loadHistoricalMessages(
             modelInfo: msg.modelInfo,
             ...(feedbackInfo ? { feedbackInfo } : {}),
             ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
+            ...(msg.answerHidden ? { answerHidden: msg.answerHidden } : {}),
             ...(capturedPayload
               ? { persistedAskUserQuestion: capturedPayload }
               : {}),
@@ -1046,6 +1051,10 @@ export function buildExternalStoreConfig(
         return;
       }
 
+      // Sending on without choosing keeps the primary answer and drops the branch.
+      const settling = settleBeforeSend(targetSlotId);
+      if (settling) await settling;
+
       const msgAttachments = msgAttachmentsEarly;
 
       const apiQuery =
@@ -1071,9 +1080,12 @@ export function buildExternalStoreConfig(
         request.attachments = msgAttachments;
       }
 
+      const compared = applyCompareToRequest(targetSlotId, request, displayQuery);
+
       // Fire-and-forget — streaming.ts handles all state updates.
       // Keep `displayQuery` for the slot user row + streamingQuestion so attachment-only turns still match an empty text bubble.
-      streamMessageForSlot(targetSlotId, displayQuery, request);
+      const run = streamMessageForSlot(targetSlotId, displayQuery, request);
+      if (compared) void run.finally(() => onPrimarySettled(targetSlotId));
     },
 
     onCancel: async () => {

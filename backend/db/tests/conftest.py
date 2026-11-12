@@ -21,8 +21,8 @@ from db import bootstrap_roles
 from .rls_fixture import FIXTURE_SQL, SEED_SQL, OrgDb, start_pgbouncer
 
 BACKEND = Path(__file__).resolve().parents[2]
-VETTED: list[str] = []
-EXTENSIONS = ["pg_trgm"]      # the baseline extension; the administrator installs it
+VETTED: list[str] = ["retrieval"]
+EXTENSIONS = ["vector", "pg_trgm"]      # pgvector (the retrieval module) and the baseline pg_trgm; the administrator installs them
 SURFACE_DIR = Path(__file__).parent
 UPDATE_SURFACE = os.environ.get("UPDATE_SURFACE") == "1"
 

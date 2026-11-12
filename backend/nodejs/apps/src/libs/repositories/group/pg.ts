@@ -3,7 +3,7 @@
  * were added; a name is unique among an organisation's live groups (a partial unique index), so a duplicate arrives as a
  * unique-key error naming `name`.
  */
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import {
   Params,
   assertOrg,

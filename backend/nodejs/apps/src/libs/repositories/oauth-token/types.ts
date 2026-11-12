@@ -12,6 +12,55 @@ export enum OAuthDeviceCodeStatus {
   DENIED = 'denied',
 }
 
+export enum AgentRegistrationStatus {
+  PENDING = 'pending',
+  CLAIMED = 'claimed',
+  CONSUMED = 'consumed',
+  EXPIRED = 'expired',
+  REVOKED = 'revoked',
+}
+
+/** An agent registration. Only hashes of its three secrets are kept. */
+export interface AgentRegistrationDto {
+  _id: string;
+  claimEmail: string;
+  claimTokenHash: string;
+  attemptTokenHash: string;
+  userCodeHash: string;
+  attemptExpiresAt: Date;
+  /** The outer window the agent has to finish the claim in. */
+  expiresAt: Date;
+  /** When the sweeper may delete the row. */
+  purgeAt: Date;
+  status: AgentRegistrationStatus;
+  failedAttempts: number;
+  lastPolledAt?: Date;
+  claimedUserId?: string;
+  claimedOrgId?: string;
+  /** The scopes the person was shown and approved; every token issued under the registration stays within them. */
+  approvedScopes?: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface NewAgentRegistration {
+  claimEmail: string;
+  claimTokenHash: string;
+  attemptTokenHash: string;
+  userCodeHash: string;
+  attemptExpiresAt: Date;
+  expiresAt: Date;
+  /** When the row may be deleted: the end of the claim window, until a consume moves it past the assertion. */
+  purgeAt: Date;
+}
+
+/** A fresh claim attempt: replaces the previous one, so its URL and code stop working. */
+export interface AgentClaimAttempt {
+  attemptTokenHash: string;
+  userCodeHash: string;
+  attemptExpiresAt: Date;
+}
+
 /** An access token row (also personal and service tokens). Only the hash of the token is stored. */
 export interface AccessTokenDto {
   _id: string;
@@ -281,4 +330,54 @@ export interface OAuthTokenRepository {
   recordDevicePoll(id: string, at: Date): Promise<void>;
   /** Deletes and returns an approved, unexpired authorization, so two polls cannot both issue tokens. */
   claimApprovedDevice(id: string): Promise<DeviceCodeDto | null>;
+
+  // agent registrations (not tied to an org until claimed)
+  createAgentRegistration(
+    input: NewAgentRegistration,
+  ): Promise<AgentRegistrationDto>;
+  findAgentRegistrationById(id: string): Promise<AgentRegistrationDto | null>;
+  findAgentRegistrationByClaimHash(
+    hash: string,
+  ): Promise<AgentRegistrationDto | null>;
+  findAgentRegistrationByAttemptHash(
+    hash: string,
+  ): Promise<AgentRegistrationDto | null>;
+  /** Replaces the attempt of a still-pending registration (resets the failed count). False when it is no longer pending. */
+  startAgentClaimAttempt(
+    id: string,
+    attempt: AgentClaimAttempt,
+  ): Promise<boolean>;
+  /** Counts a wrong code on a pending registration; the max-th one expires it. */
+  recordAgentFailedAttempt(id: string, max: number): Promise<void>;
+  recordAgentPoll(id: string, at: Date): Promise<void>;
+  /** Pending to claimed for this person, or to revoked. False when it was not pending. */
+  decideAgentRegistration(
+    id: string,
+    decision:
+      | { status: AgentRegistrationStatus.REVOKED }
+      | {
+          status: AgentRegistrationStatus.CLAIMED;
+          userId: string;
+          orgId: string;
+          scopes: string[];
+        },
+  ): Promise<boolean>;
+  /**
+   * Claimed to consumed as one conditional write: of any number of concurrent polls exactly one gets the row.
+   * `purgeAt` replaces the row's, so it outlives the assertion this consume lets the caller issue.
+   */
+  consumeAgentRegistration(
+    id: string,
+    purgeAt: Date,
+  ): Promise<AgentRegistrationDto | null>;
+  /** The claimed and consumed registrations one person approved, newest first. */
+  listAgentRegistrationsForUser(
+    userId: string,
+  ): Promise<AgentRegistrationDto[]>;
+  /** Revokes one claimed or consumed registration; with `userId`, only if that person approved it. False when nothing matched. */
+  revokeAgentRegistration(id: string, userId?: string): Promise<boolean>;
+  /** Revokes the claimed and consumed registrations of one user. */
+  revokeAgentRegistrationsForUser(userId: string): Promise<void>;
+  /** Revokes every claimed and consumed registration (the agent app was revoked). */
+  revokeAllAgentRegistrations(): Promise<void>;
 }

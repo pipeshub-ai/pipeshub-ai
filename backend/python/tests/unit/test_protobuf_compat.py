@@ -92,13 +92,16 @@ def test_proto_plus_messages_round_trip() -> None:
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is not installed")
-def test_the_manifest_resolves_for_every_supported_python() -> None:
+def test_the_manifest_resolves_for_every_supported_python(tmp_path: Path) -> None:
     """A universal resolution covers each Python that requires-python admits.
     Before the protobuf pin was lifted it failed for Python 3.14, where the
     Google libraries need protobuf 6, which kept any lockfile from being made."""
     result = subprocess.run(
         [
-            "uv", "pip", "compile", str(MANIFEST), "--universal", "--quiet", "--output-file", "/dev/null",
+            # uv writes the output through a temporary file beside it, which /dev does not allow
+            # for a user other than root.
+            "uv", "pip", "compile", str(MANIFEST), "--universal", "--quiet",
+            "--output-file", str(tmp_path / "requirements.txt"),
             # Universal mode starts at the running Python, not at the manifest's lower bound.
             "--python-version", _lowest_python(),
         ],

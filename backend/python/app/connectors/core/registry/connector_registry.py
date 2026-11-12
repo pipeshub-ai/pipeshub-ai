@@ -1561,6 +1561,7 @@ class ConnectorRegistry:
         org_id: str,
         *,
         is_admin: bool,
+        transaction: str | None = None,
     ) -> dict[str, Any] | None:
         """
         Update a connector instance in the database with access control.
@@ -1571,6 +1572,7 @@ class ConnectorRegistry:
             user_id: User ID performing the update
             org_id: Organization ID
             is_admin: Whether the user is an admin
+            transaction: Read and write the instance inside this graph transaction
         Returns:
             Updated connector instance document or None if failed
         Raises:
@@ -1581,7 +1583,8 @@ class ConnectorRegistry:
 
             existing_document = await graph_provider.get_document(
                 connector_id,
-                self._collection_name
+                self._collection_name,
+                transaction=transaction,
             )
 
             if not existing_document:
@@ -1636,16 +1639,18 @@ class ConnectorRegistry:
                 'updatedAtTimestamp': get_epoch_timestamp_in_ms()
             }
 
-            # Execute update via update_node (only the changed fields)
+            # Execute update via update_node (only the changed fields: replaying the whole stored
+            # document would send legacy keys the schema no longer accepts)
             node_updates = {
-                k: v for k, v in updated_document.items()
+                k: v for k, v in {**updates, 'updatedAtTimestamp': updated_document['updatedAtTimestamp']}.items()
                 if k not in ('_key', '_id', '_rev', 'id')
             }
 
             await graph_provider.update_node(
                 connector_id,
                 self._collection_name,
-                node_updates
+                node_updates,
+                transaction=transaction,
             )
 
             result = [updated_document]

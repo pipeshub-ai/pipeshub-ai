@@ -435,3 +435,47 @@ async def test_a_deferred_stage_is_left_for_a_redrive_and_its_siblings_still_run
         VRID, REV, ["classify"], priority=Priority.INTERACTIVE, force=False
     ) == [f"{VRID}:{REV}:classify@1"]
     assert StageJob.model_validate(h.producer.jobs("pipeline.classify")[-1]).force is False
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_runs_each_follow_up_in_its_own_org_and_skips_a_state_with_none() -> None:
+    from app.core.org_context import current_org_id, system
+    from app.modules.pipeline.coordinator import REPUBLISH_BACKSTOP_MS
+
+    h = _Harness(_classify_after_embed())
+    seen: list[tuple[str, str]] = []
+    cas, send = h.states.cas, h.coordinator._send
+
+    async def recording_cas(key: str, **kwargs: object) -> bool:
+        seen.append(("cas", current_org_id()))
+        return await cas(key, **kwargs)  # type: ignore[arg-type]
+
+    async def recording_send(job: StageJob) -> bool:
+        seen.append(("send", current_org_id()))
+        return await send(job)
+
+    mark = h.coordinator._mark_published
+
+    async def recording_mark(job: StageJob) -> None:
+        seen.append(("mark", current_org_id()))
+        await mark(job)
+
+    h.states.cas, h.coordinator._send = recording_cas, recording_send  # type: ignore[method-assign]
+    h.coordinator._mark_published = recording_mark  # type: ignore[method-assign]
+    for org in ("org-a", "org-b", None):
+        job = StageJob(
+            stage="classify", stage_version=1, org_id="org-x", virtual_record_id=f"vr-{org}", rev=REV,
+            record_ids=("rec-1",), connector_id="conn-1", tier=ParseTier.LIGHT, priority=Priority.BULK,
+            trigger="test", text_digest="t", blocks_digest="b", text_chars=10, has_tables=False, has_images=False,
+        )
+        state = StageState.from_job(job, ProgressStatus.PAUSED, h.clock()).model_copy(update={"org_id": org})
+        h.states.put(state)
+    h.clock.advance(REPUBLISH_BACKSTOP_MS + 1)
+
+    with system("stage_sweep_test"):
+        report = await h.coordinator.sweep(queued_older_than_ms=60_000, limit=10)
+
+    assert set(seen) == {("cas", "org-a"), ("cas", "org-b"), ("send", "org-a"), ("send", "org-b"),
+                     ("mark", "org-a"), ("mark", "org-b")}
+    assert (report.republished, report.skipped_no_org) == (2, 1)
+    assert h.states.states[stage_state_key("vr-None", REV, "classify")].status is ProgressStatus.PAUSED

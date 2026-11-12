@@ -24,18 +24,19 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
   suite(`docstore-migrate: offline and online switch-over (${bin})`, function () {
     this.timeout(300_000);
     let w: World;
-    const hooks = { hooks: process.env.MIGRATE_TEST_HOOKS, opts: process.env.MIGRATE_FENCE_CLIENT_OPTIONS };
+    const hooks = { hooks: process.env.MIGRATE_TEST_HOOKS, opts: process.env.MIGRATE_FENCE_CLIENT_OPTIONS, ms: process.env.MIGRATE_FENCE_TEST_MS };
     const base = (): Record<string, unknown[]> => ({ ...identityDocs(), ...conversationDocs(), ...contentDocs() });
 
     before(async () => {
       // the cut waits as long as the application's client could hold a write (two minutes with the usual options); the tests shorten it
       process.env.MIGRATE_TEST_HOOKS = '1';
       process.env.MIGRATE_FENCE_CLIENT_OPTIONS = JSON.stringify({ waitQueueTimeoutMS: 100, connectTimeoutMS: 100, serverSelectionTimeoutMS: 100, retryWrites: true });
+      process.env.MIGRATE_FENCE_TEST_MS = '200';
       w = await startWorld(bin, 'migrate_switch', DB, { MIGRATE_WRITER_GRACE_MS: '300' });
     });
     after(async () => {
       await w?.stop();
-      for (const [k, v] of [['MIGRATE_TEST_HOOKS', hooks.hooks], ['MIGRATE_FENCE_CLIENT_OPTIONS', hooks.opts]] as const)
+      for (const [k, v] of [['MIGRATE_TEST_HOOKS', hooks.hooks], ['MIGRATE_FENCE_CLIENT_OPTIONS', hooks.opts], ['MIGRATE_FENCE_TEST_MS', hooks.ms]] as const)
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
     });

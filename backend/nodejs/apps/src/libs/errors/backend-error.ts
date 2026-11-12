@@ -1,4 +1,3 @@
-import { Logger } from '../services/logger.service';
 import {
   BadRequestError,
   ConflictError,
@@ -13,7 +12,7 @@ import {
   UnauthorizedError,
   UnprocessableEntityError,
 } from './http.errors';
-import { BaseError } from './base.error';
+import { BaseError, withCause } from './base.error';
 
 /** The connector service's refusal of a write to a knowledge base that is being deleted. */
 export const KB_BEING_DELETED_MESSAGE =
@@ -23,8 +22,6 @@ import {
   markClientSafe,
   serverFailureMessage,
 } from './reader-friendly';
-
-const logger = Logger.getInstance({ service: 'Backend Error' });
 
 /**
  * Shown when one PipesHub service cannot reach another. The fault is on the
@@ -176,23 +173,19 @@ const isConnectionRefused = (error: Indexed): boolean => {
 };
 
 /**
- * The error for a call to another PipesHub service that never got an answer:
- * 504 when it timed out, 503 when the service could not be reached (fetch's
- * "fetch failed", or axios's request with no response). Null for anything
- * else, including a call the service did answer. The one definition of
- * "unreachable", shared by `handleBackendError` and the error middleware.
+ * Whether a call to another PipesHub service never got an answer: 'timeout'
+ * when it timed out, 'unavailable' when the service could not be reached
+ * (fetch's "fetch failed", or axios's request with no response). Null for
+ * anything else, including a call the service did answer. The one definition
+ * of "unreachable", shared by `unansweredCallError` and the log taxonomy
+ * (`classifyError`).
  */
-export const unansweredCallError = (
+export const unansweredKind = (
   error: unknown,
-  operation: string,
-): HttpError | null => {
+): 'timeout' | 'unavailable' | null => {
   const source = asRecord(error);
   if (!source) return null;
-  const timedOut = (): HttpError => {
-    logger.error(`Timed out waiting for the service during ${operation}`);
-    return transientError(504, undefined, undefined);
-  };
-  if (asText(source.name) === 'TimeoutError') return timedOut();
+  if (asText(source.name) === 'TimeoutError') return 'timeout';
   const response = asRecord(source.response);
   // An answer with a status reached us; words like "fetch failed" in its body
   // describe the service's own work, not our connection to it.
@@ -208,18 +201,26 @@ export const unansweredCallError = (
     (source.detail === undefined || source.detail === null) &&
     isUnansweredAxiosCode(asText(source.code));
   if (noResponse && AXIOS_TIMEOUT_CODES.has(asText(source.code) ?? '')) {
-    return timedOut();
+    return 'timeout';
   }
-  if (!isConnectionRefused(source) && !noResponse) return null;
-  logger.error(`Could not reach the service during ${operation}`, {
-    cause:
-      asText(asRecord(source.cause)?.code) ??
-      asText(source.code) ??
-      asText(source.message),
-  });
-  return markClientSafe(
-    new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE),
-  );
+  return isConnectionRefused(source) || noResponse ? 'unavailable' : null;
+};
+
+/**
+ * The error for a call that never got an answer (see `unansweredKind`): 504
+ * when it timed out, 503 when the service could not be reached, carrying the
+ * original as its `cause`. Not logged here: whoever handles it logs it once.
+ */
+export const unansweredCallError = (error: unknown): HttpError | null => {
+  const kind = unansweredKind(error);
+  if (!kind) return null;
+  const mapped =
+    kind === 'timeout'
+      ? transientError(504, undefined, undefined)
+      : markClientSafe(
+          new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE),
+        );
+  return withCause(mapped, error);
 };
 
 /**
@@ -229,8 +230,12 @@ export const unansweredCallError = (
  * and `{ statusCode, data, msg }`.
  *
  * A 4xx keeps the service's own words — those are written for the person who
- * made the request. A 5xx does not: the reader gets `operation` in plain words
- * while the upstream detail is logged.
+ * made the request. A 5xx does not: the reader gets `operation` in plain words,
+ * and the upstream's detail stays in the upstream's own log (same request id).
+ *
+ * Not logged here: the call's `upstream.call.end` line and the error
+ * middleware's line report it. A mapped 5xx carries `{ status }` as its cause,
+ * so those lines class an upstream 500 as `upstream_5xx`, not as ours.
  */
 export const handleBackendError = (
   error: unknown,
@@ -249,7 +254,7 @@ export const handleBackendError = (
     );
   }
 
-  const unanswered = unansweredCallError(source, operation);
+  const unanswered = unansweredCallError(source);
   if (unanswered) return unanswered;
 
   // axios-style `{ response: { status, data } }`, or a service command's
@@ -271,9 +276,6 @@ export const handleBackendError = (
 
   // Some services report a refused connection in the body instead of a status.
   if (bodyDetail === 'ECONNREFUSED') {
-    logger.error(`Could not reach the service during ${operation}`, {
-      statusCode,
-    });
     return markClientSafe(
       new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE),
     );
@@ -284,30 +286,36 @@ export const handleBackendError = (
     if (source.detail !== undefined && source.detail !== null) {
       return new BadRequestError(stringifyErrorDetail(source.detail));
     }
-    logger.error(`${operation} failed`, { error: ownMessage });
-    return markClientSafe(
+    const mapped = markClientSafe(
       new InternalServerError(serverFailureMessage(operation)),
     );
+    const cause = safeCause(error);
+    return cause ? withCause(mapped, cause) : mapped;
   }
 
   const errorDetail = stringifyErrorDetail(
     bodyDetail ?? fallbackDetail ?? 'Unknown error',
   );
 
-  const mapped = errorForStatus(
+  return errorForStatus(
     statusCode,
     errorDetail,
     bodyDetail,
     response ?? source,
     operation,
   );
-  // Logged by what the caller is answered: a refusal passed on as the same
-  // 4xx is routine, anything that becomes a 5xx (a 405 included) is ours.
-  logger[mapped.statusCode >= 500 ? 'error' : 'warn'](
-    `Backend error during ${operation}`,
-    { statusCode, errorDetail, fullResponse: data },
-  );
-  return mapped;
+};
+
+/**
+ * What the error middleware may show as the cause of a failure with no status:
+ * only an Error, never a payload object, and never JSON.parse's message, which
+ * quotes the start of the body it could not read.
+ */
+const safeCause = (error: unknown): Error | undefined => {
+  if (error instanceof SyntaxError) {
+    return new SyntaxError('response was not valid JSON');
+  }
+  return error instanceof Error ? error : undefined;
 };
 
 const errorForStatus = (
@@ -347,9 +355,13 @@ const errorForStatus = (
     default:
       // Every 5xx (502 included, as the upload pre-check documents), and
       // anything unrecognised: the service's own words describe its internals,
-      // so the reader gets the plain sentence instead.
-      return markClientSafe(
-        new InternalServerError(serverFailureMessage(operation)),
+      // so the reader gets the plain sentence instead. The status as the cause
+      // lets the log class an upstream 5xx as theirs (a 405 stays ours).
+      return withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage(operation)),
+        ),
+        { status: statusCode },
       );
   }
 };

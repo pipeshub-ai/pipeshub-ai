@@ -45,7 +45,7 @@ Facts that shape every design choice:
 | Index | `newRecord` / `updateRecord` on `record-events`, published by the processor | The indexing service fetches content (signed URL first, else the connector's internal stream route, which calls `stream_record()`), parses, chunks and embeds. |
 | Open a citation | user clicks a result | The stream route checks the user's access, then calls `stream_record(record)`. |
 | Reindex | `<connector>.reindex` | `reindex_records()` re-sends chosen records for indexing. |
-| Disable or delete | UI | Sync stops; delete cascades the connector's nodes, vectors and config. |
+| Disable or delete | UI | Sync stops; delete cascades the connector's nodes, vectors and config. Turning sync off or on (`toggle_connector_instance`) flips `isActive` and adds one to the app's `toggleSeq` (`ConnectorStateKeys.TOGGLE_SEQ`) in one transaction, and its `appEnabled` / `appDisabled` event carries that number. `_handle_app_disabled` (`app/services/messaging/kafka/handlers/entity.py`) skips an off whose number is older than the app's while the connector is on: a quick off-then-on can have the off handled after the on was written. It writes `isActive: false` only while the app still has the number it checked (`update_node_fields_if_match`), so an on that commits meanwhile is seen rather than overwritten. An on whose event cannot be sent is reverted under the next number, and an `appDisabled` with that number is sent for the sync stop and cleanup a skipped off owed. The revert is itself conditional: when a newer toggle has moved the number on, nothing is reverted or sent, and the newer toggle's own event settles the state. If that `appDisabled` cannot be sent either, the connector is off but a sync already running keeps going until it ends or the next toggle. An `appDisabled` with no number (a refresh token gone bad, a delete) always disables. |
 
 ```mermaid
 sequenceDiagram
@@ -72,10 +72,11 @@ The platform calls only `run_sync()`. Whether a run is full or incremental is th
 - Any other run is a normal run. The **first** run is normally one of these: it simply finds no checkpoint and lists everything, but the full-sync cleanup below does not run after it.
 - An **incremental sync** finds its checkpoints and lists only what changed since.
 
-During a full sync, the processor notes every node the connector writes. When the run finishes, and only if the run wrote at least one node and `full_sync_coverage()` reports it complete, the platform removes the links of every node the run did not write. That is how deletions and revoked access are cleaned up for sources that cannot report them. It has these consequences:
+During a full sync, the processor notes every node the connector writes. When the run finishes, and only if the run wrote at least one node and `full_sync_coverage()` reports that it read the whole source and that the source lists everything (`complete` and `lists_everything` both true), the platform removes the links of every node the run did not write. That is how deletions and revoked access are cleaned up for sources that cannot report them. It has these consequences:
 
 - In a full sync, write every node you can see, changed or not. A node you skip because it looks unchanged loses its links. To keep a stored node without re-writing it, note it with the processor's `note_kept_records` (Jira Cloud does this).
 - If you skip part of the source after an error, return `FullSyncCoverage(complete=False)`. Nothing is unlinked after that run, so the skipped part is not treated as deleted, and deletions elsewhere wait for the next complete full sync.
+- If the source only ever lists part of what it holds by design (an RSS feed shows only its latest entries), return `FullSyncCoverage(lists_everything=False)`. Nothing is unlinked after any full sync, and, unlike `complete=False`, no retry is owed and no warning is logged. It overrides `complete`, with one exception: if `complete` is true, the groups whose members the run read (`create_user_group_membership`, `batch_upsert_user_groups`) still get exactly those members, so a member removed at the source loses the group's access. A user group, role or record group the run did not see is never unlinked.
 - If the sync reads only a date window by design (a "sync from" filter), return `FullSyncCoverage(window_start_ms=...)` and leave `complete` true, adding `windowed_group_types` for group types read only inside the window (a Slack thread). Only these unseen nodes are kept: records created before the window, groups of a type in `windowed_group_types` created before it, and every record in such a group (even one created inside the window). A node with no usable creation time counts as inside the window. Kept nodes keep their hierarchy and inheritance but lose their direct grants, since the run could not check who may see them: an `OPEN` or `STRICT` node that inherits stays readable through its parent, while a `RESTRICTED` node, or one that lived only on its own grants, is hidden until a sync re-reads it. Every other unseen node is fully unlinked: records and windowed groups created inside the window, record groups of any other type (whatever their creation time), user groups and roles. Do not use `complete=False` for a window: deletions would then never be cleaned up.
 
 `run_incremental_sync()` and `handle_webhook_notification()` are abstract methods you must implement, but nothing in the platform calls them today. Do not rely on webhooks for freshness; scheduled sync is the supported path.
@@ -91,13 +92,16 @@ flowchart TD
   R --> W[Processor writes what the run saw]
   W --> Q{Was this a full sync?}
   Q -->|no| N[Leave existing links in place]
-  Q -->|yes| C{Wrote at least one node, and complete?}
+  Q -->|yes| L{lists_everything?}
+  L -->|no, complete| M[Replace the members of the groups it read; unlink nothing]
+  L -->|no, not complete| K
+  L -->|yes| C{Wrote at least one node, and complete?}
   C -->|no| K[Unlink nothing]
   C -->|yes, no window| U[Unlink every node the run did not write]
   C -->|yes, window_start_ms| Win[Keep pre-window records and windowed groups, drop their direct grants, unlink the rest]
 ```
 
-`complete=false` is an error skip. Never use it for a date window: deletions would then never be cleaned up.
+`complete=false` is an error skip: the next sync runs in full once to retry. Never use it for a date window: deletions would then never be cleaned up. Nor for a source that never lists everything: use `lists_everything=false`.
 
 ## The data model, in one picture
 

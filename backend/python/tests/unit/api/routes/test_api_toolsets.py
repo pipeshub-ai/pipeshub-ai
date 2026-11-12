@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import logging
 import sys
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -22,11 +24,17 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from app.agents.mcp.models import OAuthTokens
+from app.agents.openapi import auth as auth_module
 from app.agents.openapi import executor as executor_module
 from app.agents.openapi import service as service_module
+from app.agents.openapi.models import ApiToolsetCredentials
+from app.agents.openapi.store import ApiToolsetStore
+from app.api.middlewares.request_log import install_request_logging
 from app.api.routes import api_toolsets as routes
 from app.utils.desktop_state import DESKTOP_STATE_PREFIX
+from app.utils.logger import log_record_fields
 from tests.support.in_memory_config import InMemoryConfigService
+from tests.unit.agents.mcp.refresh_failures import BODY_SECRET, token_endpoint_error
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -274,6 +282,23 @@ class TestInstances:
         assert api.call("DELETE", f"/instances/{created['id']}", user=ADMIN).status_code == 503
         assert api.call("GET", f"/instances/{created['id']}").status_code == 200
 
+    def test_a_usage_check_outage_is_one_warning_with_the_toolset_id(
+        self, api: Harness, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        install_request_logging(api.client.app)  # before the app's first request builds its middleware
+        caplog.set_level(logging.INFO, logger="app")
+        created = api.create()
+        api.used_by = ConnectionError("graph down")
+        caplog.clear()
+
+        resp = api.call("DELETE", f"/instances/{created['id']}", user=ADMIN)
+
+        assert resp.status_code == 503
+        (end,) = [r for r in caplog.records if r.name.startswith("app.") and r.levelno >= logging.WARNING]
+        fields = log_record_fields(end)
+        assert (end.getMessage(), end.levelno, fields["error_class"], fields["cause_type"], fields["toolset_id"]) == (
+            "http.request.end", logging.WARNING, "unavailable", "ConnectionError", created["id"])
+
     def test_delete_removes_the_record_and_every_credential(self, api: Harness) -> None:
         created = api.create()
         api.call("PUT", f"/instances/{created['id']}/credentials", json={"apiKey": "k"})
@@ -331,10 +356,13 @@ class TestCredentials:
         assert api.call("GET", "/instances").json()["instances"][0]["isConnected"] is True
 
 
+def _create_sign_in_toolset(api: Harness) -> dict[str, Any]:
+    """An authorization-code toolset with its OAuth app, as an admin adds it."""
+    return api.create(spec=AUTH_CODE_SPEC, authSchemeName="sso", operations=["list_pages"], scopes=["pages.read"],
+                      oauthClientId="wiki-app", oauthClientSecret="app-secret")
+
+
 class TestOAuthSignIn:
-    def _create(self, api: Harness) -> dict[str, Any]:
-        return api.create(spec=AUTH_CODE_SPEC, authSchemeName="sso", operations=["list_pages"], scopes=["pages.read"],
-                          oauthClientId="wiki-app", oauthClientSecret="app-secret")
 
     def test_client_id_is_required(self, api: Harness) -> None:
         resp = api.call("POST", "/instances", user=ADMIN, json={
@@ -342,18 +370,18 @@ class TestOAuthSignIn:
         assert resp.status_code == 400 and "client ID" in resp.json()["detail"]
 
     def test_admin_view_never_shows_the_app_secret(self, api: Harness) -> None:
-        created = self._create(api)
+        created = _create_sign_in_toolset(api)
         view = api.call("GET", f"/instances/{created['id']}/config", user=ADMIN).json()
         assert view["oauthClientId"] == "wiki-app" and view["hasOauthClientSecret"] is True
         assert "app-secret" not in str(view)
 
     def test_entering_credentials_is_refused(self, api: Harness) -> None:
-        created = self._create(api)
+        created = _create_sign_in_toolset(api)
         resp = api.call("PUT", f"/instances/{created['id']}/credentials", json={"token": "t"})
         assert resp.status_code == 400 and "Sign in" in resp.json()["detail"]
 
     def test_sign_in_round_trip(self, api: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
-        created = self._create(api)
+        created = _create_sign_in_toolset(api)
         exchanged: list[dict[str, Any]] = []
 
         async def exchange(token_url: str, client_id: str, client_secret: str | None, code: str, redirect_uri: str, **kw: Any) -> OAuthTokens:  # noqa: ANN401
@@ -386,7 +414,7 @@ class TestOAuthSignIn:
 
 
     def test_a_sign_in_from_the_desktop_app_is_marked_and_completes(self, api: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
-        created = self._create(api)
+        created = _create_sign_in_toolset(api)
 
         async def exchange(*_a: Any, **_kw: Any) -> OAuthTokens:  # noqa: ANN401
             return OAuthTokens(access_token="at", refresh_token="rt", expires_in=3600)
@@ -459,3 +487,31 @@ class TestTestCall:
         created = api.create(baseUrl="http://127.0.0.1:9", authSchemeName="none", operations=["list_announcements"])
         resp = api.call("POST", f"/instances/{created['id']}/test", json={})
         assert resp.status_code == 502 and "Could not reach the API" in resp.json()["detail"]
+
+    def _test_with_token_endpoint_error(self, api: Harness, monkeypatch: pytest.MonkeyPatch, status: int, body: dict[str, Any]) -> httpx.Response:
+        """The test call on an expired sign-in whose token endpoint answers `status` with `body`."""
+        error = asyncio.run(token_endpoint_error(status, {**body, "error_description": BODY_SECRET}))
+
+        async def refresh(*_a: object, **_kw: object) -> None:
+            raise error
+
+        monkeypatch.setattr(auth_module, "refresh_access_token", refresh)
+        created = _create_sign_in_toolset(api)
+        expired = OAuthTokens(access_token="old", refresh_token="rt", expires_in=60,
+                              created_at=datetime.now(timezone.utc) - timedelta(hours=1))
+        asyncio.run(ApiToolsetStore(api.config).save_credentials(created["id"], MEMBER, ApiToolsetCredentials(oauth=expired)))
+        return api.call("POST", f"/instances/{created['id']}/test", json={})
+
+    @pytest.mark.parametrize(("status", "body"), [(503, {"error": "temporarily_unavailable"}), (429, {"error": "slow_down"})])
+    def test_an_oauth_outage_is_a_502_that_says_try_again(
+        self, api: Harness, monkeypatch: pytest.MonkeyPatch, status: int, body: dict[str, Any],
+    ) -> None:
+        resp = self._test_with_token_endpoint_error(api, monkeypatch, status, body)
+        detail = resp.json()["detail"]
+        assert resp.status_code == 502 and "Try again" in detail
+        assert "sign in" not in detail and BODY_SECRET not in detail
+
+    def test_an_oauth_refusal_is_still_a_400_that_asks_to_sign_in_again(self, api: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+        resp = self._test_with_token_endpoint_error(api, monkeypatch, 400, {"error": "invalid_grant"})
+        detail = resp.json()["detail"]
+        assert resp.status_code == 400 and "or sign in again" in detail and BODY_SECRET not in detail

@@ -12,22 +12,7 @@ from app.agents.mcp.oauth_client import (
     refresh_access_token,
     request_client_credentials_token,
 )
-
-
-def _mock_async_client(inner: MagicMock):
-    cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=inner)
-    cm.__aexit__ = AsyncMock(return_value=False)
-    return patch("app.agents.mcp.oauth_client.httpx.AsyncClient", return_value=cm)
-
-
-def _json_response(status_code: int, body: dict) -> MagicMock:
-    resp = MagicMock()
-    resp.status_code = status_code
-    resp.headers = {"content-type": "application/json"}
-    resp.text = str(body)
-    resp.json.return_value = body
-    return resp
+from tests.support.mcp_oauth_fakes import json_response, mock_async_client
 
 
 def _form_response(status_code: int, text: str) -> MagicMock:
@@ -56,12 +41,12 @@ class TestParseFormEncoded:
 
 class TestExchangeCodeForToken:
     @pytest.mark.asyncio
-    async def test_json_response_parsed(self) -> None:
-        resp = _json_response(200, {"access_token": "tok", "token_type": "Bearer", "expires_in": 3600})
+    async def testjson_response_parsed(self) -> None:
+        resp = json_response(200, {"access_token": "tok", "token_type": "Bearer", "expires_in": 3600})
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             tokens = await exchange_code_for_token(
                 allow_private=True,
                 token_url="https://example.com/token",
@@ -81,7 +66,7 @@ class TestExchangeCodeForToken:
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             tokens = await exchange_code_for_token(
                 allow_private=True,
                 token_url="https://github.com/login/oauth/access_token",
@@ -96,11 +81,11 @@ class TestExchangeCodeForToken:
 
     @pytest.mark.asyncio
     async def test_missing_access_token_raises(self) -> None:
-        resp = _json_response(200, {"token_type": "Bearer"})
+        resp = json_response(200, {"token_type": "Bearer"})
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             with pytest.raises(MCPOAuthError, match="access_token"):
                 await exchange_code_for_token(
                     allow_private=True,
@@ -113,11 +98,11 @@ class TestExchangeCodeForToken:
 
     @pytest.mark.asyncio
     async def test_error_status_raises_oauth_error(self) -> None:
-        resp = _json_response(400, {"error": "invalid_request"})
+        resp = json_response(400, {"error": "invalid_request"})
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             with pytest.raises(MCPOAuthError):
                 await exchange_code_for_token(
                     allow_private=True,
@@ -130,11 +115,11 @@ class TestExchangeCodeForToken:
 
     @pytest.mark.asyncio
     async def test_includes_code_verifier_when_provided(self) -> None:
-        resp = _json_response(200, {"access_token": "tok"})
+        resp = json_response(200, {"access_token": "tok"})
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             await exchange_code_for_token(
                 allow_private=True,
                 token_url="https://example.com/token",
@@ -159,7 +144,7 @@ class TestExchangeCodeForToken:
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             tokens = await exchange_code_for_token(
                 allow_private=True,
                 token_url="https://example.com/token",
@@ -181,7 +166,7 @@ class TestExchangeCodeForToken:
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             tokens = await exchange_code_for_token(
                 allow_private=True,
                 token_url="https://example.com/token",
@@ -203,7 +188,7 @@ class TestExchangeCodeForToken:
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             tokens = await exchange_code_for_token(
                 allow_private=True,
                 token_url="https://example.com/token",
@@ -219,11 +204,11 @@ class TestExchangeCodeForToken:
 class TestRefreshAccessToken:
     @pytest.mark.asyncio
     async def test_successful_refresh_returns_new_tokens(self) -> None:
-        resp = _json_response(200, {"access_token": "newtok", "refresh_token": "newrefresh", "expires_in": 3600})
+        resp = json_response(200, {"access_token": "newtok", "refresh_token": "newrefresh", "expires_in": 3600})
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             tokens = await refresh_access_token(
                 allow_private=True,
                 token_url="https://example.com/token",
@@ -237,11 +222,11 @@ class TestRefreshAccessToken:
 
     @pytest.mark.asyncio
     async def test_refresh_token_preserved_when_provider_omits_new_one(self) -> None:
-        resp = _json_response(200, {"access_token": "newtok"})
+        resp = json_response(200, {"access_token": "newtok"})
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             tokens = await refresh_access_token(
                 allow_private=True,
                 token_url="https://example.com/token",
@@ -254,11 +239,11 @@ class TestRefreshAccessToken:
 
     @pytest.mark.asyncio
     async def test_invalid_grant_raises_permanent_error(self) -> None:
-        resp = _json_response(400, {"error": "invalid_grant", "error_description": "refresh token is invalid"})
+        resp = json_response(400, {"error": "invalid_grant", "error_description": "refresh token is invalid"})
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             with pytest.raises(MCPRefreshTokenInvalidError):
                 await refresh_access_token(
                     allow_private=True,
@@ -270,11 +255,11 @@ class TestRefreshAccessToken:
 
     @pytest.mark.asyncio
     async def test_generic_error_raises_recoverable_oauth_error(self) -> None:
-        resp = _json_response(500, {"error": "server_error"})
+        resp = json_response(500, {"error": "server_error"})
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             with pytest.raises(MCPOAuthError) as exc_info:
                 await refresh_access_token(
                     allow_private=True,
@@ -287,11 +272,11 @@ class TestRefreshAccessToken:
 
     @pytest.mark.asyncio
     async def test_missing_access_token_in_refresh_response_raises(self) -> None:
-        resp = _json_response(200, {"token_type": "Bearer"})
+        resp = json_response(200, {"token_type": "Bearer"})
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             with pytest.raises(MCPOAuthError, match="access_token"):
                 await refresh_access_token(
                     allow_private=True,
@@ -303,11 +288,11 @@ class TestRefreshAccessToken:
 
     @pytest.mark.asyncio
     async def test_refresh_omits_client_secret_when_none(self) -> None:
-        resp = _json_response(200, {"access_token": "newtok"})
+        resp = json_response(200, {"access_token": "newtok"})
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             await refresh_access_token(
                 allow_private=True,
                 token_url="https://example.com/token",
@@ -371,7 +356,7 @@ class TestErrorsInTheResponseBody:
     async def _refresh(resp: MagicMock) -> None:
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             await refresh_access_token(
                 allow_private=True, token_url="https://example.com/token",
                 client_id="cid", client_secret="csec", refresh_token="r",
@@ -379,35 +364,37 @@ class TestErrorsInTheResponseBody:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("resp", [
-        _json_response(200, {"error": "bad_refresh_token", "error_description": "The refresh token passed is incorrect or expired."}),
+        json_response(200, {"error": "bad_refresh_token", "error_description": "The refresh token passed is incorrect or expired."}),
         _form_response(200, "error=bad_refresh_token&error_description=expired"),
-        _json_response(401, {"error": "invalid_client"}),
+        json_response(401, {"error": "invalid_client"}),
         _form_response(200, "error=incorrect_client_credentials"),
-        _json_response(400, {"error": "unauthorized_client"}),
-        _json_response(400, {"error": "interaction_required", "error_description": "AADSTS50076: use MFA"}),
-        _json_response(400, {"error": "invalid_scope"}),
-        _json_response(400, {"error": "invalid_request"}),
+        json_response(400, {"error": "unauthorized_client"}),
+        json_response(400, {"error": "interaction_required", "error_description": "AADSTS50076: use MFA"}),
+        json_response(400, {"error": "invalid_scope"}),
+        json_response(400, {"error": "invalid_request"}),
     ])
     async def test_a_rejection_a_retry_cannot_fix_is_permanent(self, resp: MagicMock) -> None:
-        with pytest.raises(MCPRefreshTokenInvalidError):
+        with pytest.raises(MCPRefreshTokenInvalidError) as exc_info:
             await self._refresh(resp)
+        assert exc_info.value.status == resp.status_code
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("resp", [
-        _json_response(503, {"error": "temporarily_unavailable"}),
-        _json_response(200, {"error": "server_error"}),
-        _json_response(503, {"error": "interaction_required"}),
-        _json_response(429, {"error": "invalid_grant"}),
-        _json_response(500, {"error": "login_required"}),
+        json_response(503, {"error": "temporarily_unavailable"}),
+        json_response(200, {"error": "server_error"}),
+        json_response(503, {"error": "interaction_required"}),
+        json_response(429, {"error": "invalid_grant"}),
+        json_response(500, {"error": "login_required"}),
     ])
     async def test_a_provider_outage_can_be_retried(self, resp: MagicMock) -> None:
         with pytest.raises(MCPOAuthError) as exc_info:
             await self._refresh(resp)
         assert not isinstance(exc_info.value, MCPRefreshTokenInvalidError)
+        assert exc_info.value.status == resp.status_code
 
     @pytest.mark.asyncio
     async def test_the_message_names_the_error_not_the_raw_body(self) -> None:
-        resp = _json_response(400, {"error": "invalid_grant", "error_description": "expired", "trace": "x" * 5000})
+        resp = json_response(400, {"error": "invalid_grant", "error_description": "expired", "trace": "x" * 5000})
         with pytest.raises(MCPRefreshTokenInvalidError) as exc_info:
             await self._refresh(resp)
         assert str(exc_info.value) == "OAuth token request rejected (400): invalid_grant: expired"
@@ -416,7 +403,7 @@ class TestErrorsInTheResponseBody:
     async def test_a_code_exchange_error_with_status_200_is_an_error(self) -> None:
         inner = MagicMock()
         inner.post = AsyncMock(return_value=_form_response(200, "error=bad_verification_code&error_description=bad"))
-        with _mock_async_client(inner):
+        with mock_async_client(inner):
             with pytest.raises(MCPOAuthError, match="bad_verification_code"):
                 await exchange_code_for_token(
                     allow_private=True, token_url="https://example.com/token", client_id="cid",
@@ -430,8 +417,8 @@ class TestResourceIndicator:
     @pytest.mark.asyncio
     async def test_the_code_exchange_sends_it_and_the_tokens_keep_it(self) -> None:
         inner = MagicMock()
-        inner.post = AsyncMock(return_value=_json_response(200, {"access_token": "a", "refresh_token": "r"}))
-        with _mock_async_client(inner):
+        inner.post = AsyncMock(return_value=json_response(200, {"access_token": "a", "refresh_token": "r"}))
+        with mock_async_client(inner):
             tokens = await exchange_code_for_token(
                 allow_private=True, token_url="https://auth.example.com/token", client_id="cid",
                 client_secret=None, code="c", redirect_uri="https://app.example.com/cb",
@@ -444,8 +431,8 @@ class TestResourceIndicator:
     @pytest.mark.asyncio
     async def test_a_refresh_sends_it(self) -> None:
         inner = MagicMock()
-        inner.post = AsyncMock(return_value=_json_response(200, {"access_token": "a2"}))
-        with _mock_async_client(inner):
+        inner.post = AsyncMock(return_value=json_response(200, {"access_token": "a2"}))
+        with mock_async_client(inner):
             tokens = await refresh_access_token(
                 allow_private=True, token_url="https://auth.example.com/token", client_id="cid",
                 client_secret=None, refresh_token="r", resource="https://mcp.example.com/mcp",
@@ -457,8 +444,8 @@ class TestResourceIndicator:
     @pytest.mark.asyncio
     async def test_without_one_nothing_is_added(self) -> None:
         inner = MagicMock()
-        inner.post = AsyncMock(return_value=_json_response(200, {"access_token": "a2"}))
-        with _mock_async_client(inner):
+        inner.post = AsyncMock(return_value=json_response(200, {"access_token": "a2"}))
+        with mock_async_client(inner):
             await refresh_access_token(
                 allow_private=True, token_url="https://auth.example.com/token", client_id="cid",
                 client_secret=None, refresh_token="r",
@@ -473,8 +460,8 @@ class TestTheClientProvesWhoItIsTheWayItWasRegistered:
     @staticmethod
     async def _exchange(**kwargs: object) -> tuple[object, dict]:
         inner = MagicMock()
-        inner.post = AsyncMock(return_value=_json_response(200, {"access_token": "a", "refresh_token": "r"}))
-        with _mock_async_client(inner):
+        inner.post = AsyncMock(return_value=json_response(200, {"access_token": "a", "refresh_token": "r"}))
+        with mock_async_client(inner):
             tokens = await exchange_code_for_token(
                 allow_private=True, token_url="https://auth.example.com/token", code="c",
                 redirect_uri="https://app.example.com/cb", **kwargs,
@@ -522,8 +509,8 @@ class TestTheClientProvesWhoItIsTheWayItWasRegistered:
     @pytest.mark.asyncio
     async def test_a_refresh_authenticates_the_same_way_and_says_so(self) -> None:
         inner = MagicMock()
-        inner.post = AsyncMock(return_value=_json_response(200, {"access_token": "a2"}))
-        with _mock_async_client(inner):
+        inner.post = AsyncMock(return_value=json_response(200, {"access_token": "a2"}))
+        with mock_async_client(inner):
             tokens = await refresh_access_token(
                 allow_private=True, token_url="https://auth.example.com/token", client_id="cid",
                 client_secret="csec", refresh_token="r", auth_method="client_secret_basic",
@@ -542,7 +529,7 @@ class TestTheProvidersErrorCodeIsKept:
     async def _refresh_error(resp: MagicMock) -> MCPOAuthError:
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
-        with _mock_async_client(inner), pytest.raises(MCPOAuthError) as exc_info:
+        with mock_async_client(inner), pytest.raises(MCPOAuthError) as exc_info:
             await refresh_access_token(
                 allow_private=True, token_url="https://example.com/token",
                 client_id="cid", client_secret="csec", refresh_token="r",
@@ -551,7 +538,7 @@ class TestTheProvidersErrorCodeIsKept:
 
     @pytest.mark.asyncio
     async def test_an_unknown_client_is_reported_as_such(self) -> None:
-        error = await self._refresh_error(_json_response(401, {"error": "invalid_client"}))
+        error = await self._refresh_error(json_response(401, {"error": "invalid_client"}))
         assert error.error_code == "invalid_client"
         assert error.rejected_client is True
 
@@ -562,7 +549,7 @@ class TestTheProvidersErrorCodeIsKept:
 
     @pytest.mark.asyncio
     async def test_a_rejected_grant_is_not_a_rejected_client(self) -> None:
-        error = await self._refresh_error(_json_response(400, {"error": "invalid_grant"}))
+        error = await self._refresh_error(json_response(400, {"error": "invalid_grant"}))
         assert error.error_code == "invalid_grant"
         assert error.rejected_client is False
 
@@ -584,8 +571,8 @@ class TestClientCredentialsToken:
     @staticmethod
     async def _request(body: dict, **kwargs: object) -> tuple[object, dict]:
         inner = MagicMock()
-        inner.post = AsyncMock(return_value=_json_response(200, body))
-        with _mock_async_client(inner):
+        inner.post = AsyncMock(return_value=json_response(200, body))
+        with mock_async_client(inner):
             tokens = await request_client_credentials_token(
                 "https://auth.example.com/token", "cid", "csec", allow_private=True, **kwargs,
             )

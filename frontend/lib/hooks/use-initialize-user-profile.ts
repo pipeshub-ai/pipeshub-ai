@@ -160,6 +160,7 @@ export function useInitializeUserProfile() {
           email,
           isAdmin,
           hasLoggedIn: user?.hasLoggedIn ?? false,
+          designation: user ? (user.designation ?? null) : undefined,
         };
 
         setProfile({ ...resolvedProfile, avatarUrl });

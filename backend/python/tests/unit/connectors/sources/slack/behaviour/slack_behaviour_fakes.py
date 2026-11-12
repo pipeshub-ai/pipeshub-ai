@@ -341,6 +341,8 @@ class SlackWorkspace:
             return {"ok": False, "error": "channel_not_found"}
         if channel["is_private"]:
             return {"ok": False, "error": "method_not_supported_for_channel_type"}
+        if channel["is_archived"]:
+            return {"ok": False, "error": "is_archived"}
         channel["is_member"] = True
         return {"ok": True, "channel": channel}
 
@@ -349,7 +351,9 @@ class SlackWorkspace:
         channel = self.channels.get(cid)
         if not channel:
             return {"ok": False, "error": "channel_not_found"}
-        if not channel["is_member"]:
+        # Slack: only a user token reads a public channel it is not in.
+        user_reads_public = not channel["is_private"] and (self.calls[-1].token or "").startswith("xoxp-")
+        if not channel["is_member"] and not user_reads_public:
             return {"ok": False, "error": "not_in_channel"}
         msgs = sorted(
             (m for m in self.history[cid] if self._in_window(m["ts"], params)),
@@ -492,7 +496,8 @@ class FakeSlackStore:
             if existing:
                 group.id = existing.id
             self.record_groups[group.external_group_id] = group
-            self.group_access[group.external_group_id] = list(permissions)
+            if permissions is not None:  # None: the grants are unknown and the stored ones stay
+                self.group_access[group.external_group_id] = list(permissions)
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
         return self.record_groups.get(external_id)

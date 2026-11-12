@@ -623,6 +623,11 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
     _mcp_owned("get_oauth_config", "GET", "/oauth-config", "view the OAuth app of", 200, '"redirectUri"'),
     _mcp_owned("update_oauth_config", "PUT", "/oauth-config", "configure the OAuth app of", 200, _MCP_SUCCESS,
                body={"clientId": "it-admin-probe", "clientSecret": "it-admin-probe"}),
+    # Not a data URL: refused for that once past the check, so no logo is stored.
+    _mcp_owned("set_instance_logo", "PUT", "/logo", "change the logo of", 400, "Send the logo as a base64 data URL",
+               body={"logo": "it-admin-probe"}),
+    # None of these servers has a logo, so removing it changes nothing.
+    _mcp_owned("remove_instance_logo", "DELETE", "/logo", "change the logo of", 200, _MCP_SUCCESS),
     # Each case deletes a server made for it. A user's personal server is theirs alone: an admin
     # doesn't find it (and it is removed by its creator afterwards).
     ConditionalRoute(

@@ -66,8 +66,8 @@ async def get_oauth_credentials_for_toolset(
     if not oauth_config_id and instance_id:
         if logger:
             logger.warning(
-                f"No oauthConfigId in user config for instance {instance_id}. "
-                f"Fetching current instance's OAuth config (admin may have updated it)."
+                "No oauthConfigId in the user's toolset config: reading the instance's (an admin may have changed it)",
+                extra={"toolset_id": instance_id},
             )
         try:
             instances = await config_service.get_config(DEFAULT_TOOLSET_INSTANCES_PATH, default=[])
@@ -79,9 +79,7 @@ async def get_oauth_credentials_for_toolset(
                 if current_instance:
                     oauth_config_id = current_instance.get("oauthConfigId")
                     if logger:
-                        logger.info(
-                            f"Retrieved oauthConfigId from instance {instance_id}"
-                        )
+                        logger.info("Retrieved oauthConfigId from the instance", extra={"toolset_id": instance_id})
             if not oauth_config_id:
                 # A personal instance signs in with the client its owner entered on it.
                 personal = await find_personal_instance(config_service, toolset_config.get("orgId"), instance_id)
@@ -110,11 +108,6 @@ async def get_oauth_credentials_for_toolset(
             None,
         )
         if not oauth_config:
-            if logger:
-                logger.error(
-                    f"OAuth configuration '{oauth_config_id}' not found for toolset '{toolset_type}'. "
-                    f"Available config count: {len(oauth_configs)}"
-                )
             raise ValueError(
                 f"OAuth configuration '{oauth_config_id}' not found for toolset '{toolset_type}'. "
                 f"This can happen if:\n"
@@ -139,17 +132,10 @@ async def get_oauth_credentials_for_toolset(
                 f"Please ask an administrator to update the OAuth configuration."
             )
 
-        if logger:
-            logger.debug(
-                f"✅ Fetched complete OAuth config '{oauth_config_id}' "
-                f"for toolset type '{toolset_type}' ({len(config_data)} fields)"
-            )
         return dict(config_data)
     except ValueError:
         raise
     except Exception as e:
-        if logger:
-            logger.error(f"Failed to fetch OAuth credentials: {e}", exc_info=True)
         raise ValueError(
             f"Failed to retrieve OAuth credentials for toolset: {str(e)}"
         ) from e
@@ -237,9 +223,12 @@ async def load_instances_for_mutation(
     org_id: str,
     config_service: ConfigurationService,
 ) -> list[dict[str, Any]]:
-    """Load instances for create/update/delete."""
+    """Load instances for create/update/delete.
+
+    The whole list is written back, so a store that can't be read must fail the
+    mutation rather than read as no instances and be overwritten."""
     try:
-        instances_data = await config_service.get_config(DEFAULT_TOOLSET_INSTANCES_PATH, default=[])
+        instances_data = await config_service.get_config(DEFAULT_TOOLSET_INSTANCES_PATH, default=[], raise_on_error=True)
         if not isinstance(instances_data, list):
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
@@ -249,7 +238,6 @@ async def load_instances_for_mutation(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to load toolset instances: {e}", exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to access toolset instances. Please try again or contact support."

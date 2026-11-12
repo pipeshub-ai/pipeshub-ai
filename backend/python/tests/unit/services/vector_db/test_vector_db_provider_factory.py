@@ -129,6 +129,30 @@ class TestProviderDispatch:
         assert provider is fake_provider
 
     @pytest.mark.asyncio
+    async def test_pgvector_is_chosen_only_by_name(self, logger, config_service, monkeypatch) -> None:
+        """Nothing selects pgvector but VECTOR_DB_TYPE=pgvector; unset or any other value never reaches it."""
+        create = AsyncMock(return_value=AsyncMock())
+        with patch("app.services.vector_db.pgvector.pgvector.PgVectorService.create", create):
+            monkeypatch.setenv("VECTOR_DB_TYPE", "PgVector ")
+            provider = await VectorDBProviderFactory.create_provider(logger=logger, config_service=config_service)
+            create.assert_awaited_once_with(config_service)
+            assert provider is not None
+
+            create.reset_mock()
+            monkeypatch.delenv("VECTOR_DB_TYPE", raising=False)
+            with patch("app.services.vector_db.qdrant.qdrant.QdrantService.create", AsyncMock(return_value=AsyncMock())):
+                await VectorDBProviderFactory.create_provider(logger=logger, config_service=config_service)
+            create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["not-a-real-db", "pg", "postgres", "pgvector2", ""])
+    async def test_an_unknown_value_is_a_startup_error_naming_the_setting(self, logger, config_service, monkeypatch, value) -> None:
+        monkeypatch.setenv("VECTOR_DB_TYPE", value)
+        with pytest.raises(ValueError, match="VECTOR_DB_TYPE") as exc:
+            await VectorDBProviderFactory.create_provider(logger=logger, config_service=config_service)
+        assert "qdrant, opensearch, redis, pgvector" in str(exc.value)
+
+    @pytest.mark.asyncio
     async def test_unsupported_type_raises(self, logger, config_service, monkeypatch):
         monkeypatch.setenv("VECTOR_DB_TYPE", "not-a-real-db")
         with pytest.raises(ValueError, match="Unsupported VECTOR_DB_TYPE"):

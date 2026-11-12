@@ -17,7 +17,7 @@ import httpx
 from app.agents.mcp.errors import MCPUrlBlockedError
 from app.agents.mcp.url_guard import GuardedTransport
 from app.agents.openapi.request_builder import build_request
-from app.utils.url_redaction import redact_url
+from app.utils.logging_fields import log_event
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -72,6 +72,7 @@ class OpenAPIHttpExecutor:
     async def call(self, op: CompiledOperation, arguments: Mapping[str, Any]) -> ApiResponse:
         response = await self._send(op, arguments, force_refresh=False)
         if response.status == 401 and self._auth.can_refresh:
+            log_event(logger, "openapi.retry", level=logging.WARNING, status=401, reason="token_refresh")
             response = await self._send(op, arguments, force_refresh=True)
         return response
 
@@ -98,7 +99,6 @@ class OpenAPIHttpExecutor:
         except httpx.TimeoutException as e:
             raise ApiCallError(f"The API did not respond within {self._timeout:.0f} seconds.") from e
         except httpx.HTTPError as e:
-            logger.warning("API toolset call to %s failed: %s", redact_url(self._base_url), type(e).__name__)
             raise ApiCallError(f"Could not reach the API ({type(e).__name__}).") from e
         content_type = response.headers.get("content-type", "")
         return ApiResponse(response.status_code, content_type, _decode(raw, content_type, truncated=truncated), truncated)

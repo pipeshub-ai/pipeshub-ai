@@ -736,6 +736,8 @@
     "indexingStatus": {
       "completed": "已完成",
       "inProgress": "进行中",
+      "embeddingProgress_one": "正在嵌入 {{done, number}} / {{total, number}} 个分块",
+      "embeddingProgress_other": "正在嵌入 {{done, number}} / {{total, number}} 个分块",
       "failed": "失败",
       "fileTypeNotSupported": "不支持的文件类型",
       "notStarted": "未开始",
@@ -934,6 +936,11 @@
     "fork": "分叉对话",
     "forkFromHere": "从此处分叉",
     "regenerate": "重新生成",
+    "answerHidden": {
+      "lost": "此回答使用了您已无权访问的内容。",
+      "unconfirmed": "无法确认您的访问权限，请重试。",
+      "askAgain": "重新提问"
+    },
     "readAloud": "朗读",
     "stopReading": "停止朗读",
     "ttsNotSupported": "此浏览器不支持文字转语音",
@@ -1473,6 +1480,11 @@
     "stopListening": "停止聆听",
     "voiceInput": "语音输入",
     "regenerateResponse": "重新生成回答",
+    "quoteSelection": "引用",
+    "quoteSelectionHint": "针对这段提问",
+    "quotedExcerpt": "已引用",
+    "quotedExcerptTruncated": "已引用（已截断）",
+    "dismissQuote": "移除引用",
     "editQuery": "编辑提问",
     "queryOptions": "提问选项",
     "models": "模型",
@@ -1562,6 +1574,8 @@
     },
     "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。",
     "noResultsFor": "未找到“{{query}}”的结果",
+    "matchedByName": "按名称匹配",
+    "contentNotIndexedYet": "内容尚未索引",
     "removeSelectedSource": "移除 {{name}}",
     "diagramSourceCopied": "已复制图表源代码",
     "diagramImageCopied": "已复制图表图片",
@@ -1573,7 +1587,31 @@
       "webSearch": "网络搜索",
       "internalAndWebSearch": "内部 + 网络搜索"
     },
-    "searchDegraded": "结果可能不完整。"
+    "searchDegraded": "结果可能不完整。",
+    "compare": {
+      "toggle": "对比模型",
+      "pickTwo": "选择 {{max}} 个模型进行对比。",
+      "pickedHint": "每个问题会由两个模型并排回答。",
+      "costNote": "每个问题都会在两个模型上运行，因此用量约为两倍。在智能体模式下，两个模型都可以使用工具；需要批准的操作会在每一列中分别询问。",
+      "pillLabel": "对比 {{picked}}/{{max}}",
+      "stop": "停止",
+      "retry": "重试",
+      "failed": "此模型未能回答。请重试。",
+      "useAnswer": "使用此回答",
+      "useAnswerLabel": "使用 {{model}} 的回答",
+      "columnLabel": "{{model}} 的回答",
+      "chooseConflict": "此回答尚不能保留。请等待其完成后重试。",
+      "chooseFailed": "无法保留此回答。请重试。",
+      "primaryFallback": "模型",
+      "starting": "正在启动...",
+      "status": {
+        "starting": "正在启动",
+        "waiting": "等待中",
+        "streaming": "回答中",
+        "done": "已完成",
+        "error": "失败"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -2127,6 +2165,16 @@
         "copyErrorTitle": "无法复制"
       },
       "scopeCount_other": "{{count}} 个权限范围"
+    },
+    "agentSignIns": {
+      "title": "代理登录",
+      "subtitle": "您已批准代表您操作的代理。撤销后，该代理将无法获得新的访问权限。",
+      "columnApproved": "批准时间",
+      "revoke": "撤销",
+      "revokeAria": "撤销代理登录 {{id}}",
+      "revokedTitle": "代理登录已撤销",
+      "errorTitle": "无法撤销代理登录",
+      "loadError": "无法加载代理登录"
     },
     "aiModels": {
       "title": "AI 模型",
@@ -3397,6 +3445,104 @@
         "cancel": "取消",
         "continueTeam": "继续使用团队连接器",
         "goToPersonal": "设置个人连接器"
+      },
+      "accessCheck": {
+        "open": "检查某人的访问权限",
+        "title": "检查某人的访问权限",
+        "description": "查看某人能否读取此连接器中的记录，以及无法读取的原因。",
+        "personLabel": "人员",
+        "personPlaceholder": "选择人员",
+        "peopleLoading": "正在加载人员...",
+        "peopleFailed": "无法加载人员列表。",
+        "recordLabel": "记录 ID",
+        "recordHint": "打开记录并复制其 ID。",
+        "check": "检查",
+        "checking": "正在检查...",
+        "close": "关闭",
+        "resultHeading": "结果",
+        "restrictedArea": "受限区域",
+        "theyFallback": "此人",
+        "pathLabel": "位置：{{path}}",
+        "reference": "参考编号：{{ref}}（如果原因看起来不对，请提供给支持人员）",
+        "verdict": {
+          "granted": "{{name}} 可以查看此记录。",
+          "denied": "{{name}} 无法查看此记录。"
+        },
+        "reason": {
+          "granted": "如果它在搜索中缺失，可能是尚未建立索引，或连接器仍在同步。",
+          "not_linked": "{{name}} 没有关联到此连接器的账户。",
+          "no_grant": "{{container}} 中没有任何内容授予 {{name}} 访问权限。",
+          "restricted_container": "{{container}} 仅限其他人访问。",
+          "item_restricted": "此记录有自己的限制，{{name}} 不在其中。",
+          "parent_not_readable": "{{name}} 无法打开此记录所需的上级项目。",
+          "pending_rewrite": "此记录所在的文件夹正在更新。",
+          "syncing": "连接器尚未完成此部分的同步。",
+          "scheme_unreadable": "连接器无法读取此区域的访问规则，因此对所有人隐藏。",
+          "deleted_at_source": "此记录已在源端删除。",
+          "unexplained": "我们无法显示原因。"
+        },
+        "next": {
+          "not_linked": "请在源端修复账户，然后同步。",
+          "no_grant": "请在源端添加 {{name}}。",
+          "restricted_container": "请让所有者添加 {{name}}。",
+          "item_restricted": "请让所有者添加 {{name}}。",
+          "parent_not_readable": "请将上级项目共享给 {{name}}。",
+          "pending_rewrite": "请等待几分钟后再检查。",
+          "syncing": "请等待同步完成。",
+          "scheme_unreadable": "请在源端修复同步账户的权限。",
+          "deleted_at_source": "无需操作。",
+          "unexplained": "请联系支持人员并提供参考编号。"
+        },
+        "errors": {
+          "failed": "无法完成检查。请重试。",
+          "notFound": "在此连接器中找不到该人员或记录。",
+          "rateLimited": "检查次数过多。请一分钟后重试。"
+        },
+        "peopleRetry": "重试",
+        "askedAbout": "关于记录 {{record}}"
+      },
+      "access": {
+        "title": "访问",
+        "loading": "正在加载访问详情…",
+        "loadError": "无法加载访问详情。",
+        "retry": "重试",
+        "reach": "{{connector}} 中的更改会在{{interval}}内同步到 PipesHub。",
+        "reachUnknown": "{{connector}} 中的更改会在下次同步时到达 PipesHub。",
+        "syncNow": "立即同步权限",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "权限",
+          "succeeded": "上次刷新：{{when}}。",
+          "failed": "上次权限刷新失败，因此来源中的最新更改可能尚未生效。请选择“立即同步权限”重试。",
+          "never": "权限尚未刷新。在首次同步完成之前，此连接器的内容将保持隐藏。",
+          "running": "正在刷新权限。",
+          "incomplete": "上一次权限刷新没有运行到结束。"
+        },
+        "pending": {
+          "label": "等待生效",
+          "none": "没有等待中的项目。",
+          "some_other": "{{count}} 个文件夹正在更新。更新完成前，所有人都看不到它们，通常需要几分钟。",
+          "overflow": "某项更改涉及整个连接器，因此需要完整重建其权限索引。在此之前，搜索会逐条检查结果，因此不会因此隐藏任何内容。",
+          "unknown": "未知：无法读取等待更新的文件夹列表。请参阅“需要关注”。"
+        },
+        "attention": {
+          "label": "需要处理（{{count}}）",
+          "none": "没有需要处理的事项。",
+          "warning": "{{container}} 中有 {{items}} 个项目被隐藏。同步账户无法读取此容器的权限。",
+          "fix": "解决办法：在 {{vendor}} 中为同步账户授予 {{permission}} 权限，然后选择“立即同步权限”。",
+          "showAll": "再显示 {{count}} 项",
+          "warningNoContainer": "同步账户无法读取部分项目的权限，因此这些项目被隐藏。",
+          "rebuild": "此连接器的权限索引需要完整重建。在此之前，搜索会逐条检查结果，因此不会因此隐藏任何内容。",
+          "unfinished": "某项权限更改没有顺利完成。请让运行 PipesHub 的人员检查此连接器的权限索引。",
+          "stale": "部分项目无法通过更快的搜索进行检查，会改由经典搜索查找。",
+          "sweep": "此连接器的权限更新持续失败。请让运行 PipesHub 的人员检查其日志。",
+          "other": "此连接器的权限需要有人查看。",
+          "unreadable": "无法读取等待更新的文件夹列表。请让运行 PipesHub 的人员重建此连接器的权限索引。在此期间，搜索会逐条检查结果。"
+        }
       }
     },
     "mcpServers": {
@@ -3502,6 +3648,7 @@
         "disconnected": "已成功断开连接",
         "disconnectError": "断开连接失败",
         "credentialsSaveError": "服务器已保存，但凭证无法保存。您可以稍后在“管理”中添加。",
+        "logoSaveError": "服务器已保存，但其徽标未能保存。您可以在“管理”中重试。",
         "credentialsSaved": "凭据已保存",
         "credentialsReset": "MCP 服务器已更新。由于连接已更改，已保存的凭证已被删除；请重新连接后再使用。",
         "oauthTimedOut": "登录用时过长，已停止。请重试。",
@@ -3516,6 +3663,16 @@
       "form": {
         "name": "名称",
         "description": "描述",
+        "logo": "徽标",
+        "logoHint": "PNG、JPEG、WebP、GIF 或 SVG，最大 2 MB。正方形图片效果最佳。",
+        "logoUpload": "上传徽标",
+        "logoChange": "更换徽标",
+        "logoRemove": "移除",
+        "logoErrors": {
+          "type": "请使用 PNG、JPEG、WebP、GIF 或 SVG 图片。",
+          "size": "请使用不超过 2 MB 的图片。",
+          "unreadable": "无法读取此图片，请尝试其他文件。"
+        },
         "transport": "传输方式",
         "command": "命令",
         "args": "参数",
@@ -4806,6 +4963,8 @@
     "serviceAgentBadgeTooltip": "此服务智能体使用自己的工具集凭据。它以创建者的权限检索知识，因此所有使用者看到的结果都来自创建者有权阅读的内容。",
     "convertToServiceAgentTooltip": "永久性操作：智能体级别的工具集、与整个组织共享，并以创建者的权限检索知识。无法撤销。",
     "convertToServiceAgentTooltipNewAgent": "将此智能体创建为服务智能体：智能体级别的工具集、与整个组织共享，并以您的权限检索知识。",
+    "convertToServiceAgentTooltipNoOrg": "永久性操作：智能体级别的工具集，并以创建者的权限检索知识。请使用「共享」按钮来控制谁可以访问。无法撤销。",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "将此智能体创建为服务智能体：智能体级别的工具集，并以您的权限检索知识。请使用「共享」按钮来控制谁可以访问。",
     "agentActionsMenuAria": "智能体菜单",
     "agentMenuCreateAsServiceAgent": "创建为服务智能体",
     "agentMenuConvertToServiceAgent": "转换为服务智能体",
@@ -5287,6 +5446,8 @@
     "notGrantedOwnerHint": "创建此应用的人可以在 工作区设置 → 开发者设置 → OAuth 2.0 应用 中添加这些权限。",
     "notGrantedOfflineAccess": "此应用不会保持登录状态。会话结束后，你需要重新登录。",
     "unreviewedApp": "此应用是自行注册的，没有管理员审核过。",
+    "clientIdHost": "由 {{host}} 标识",
+    "redirectTo": "将您送回 {{uri}}",
     "legalNotice": "点击「允许」，即表示您授权 {{appName}} 按上述说明访问您的数据。",
     "privacyPolicy": "隐私政策",
     "deny": "拒绝",
@@ -5499,6 +5660,19 @@
     "expired": "此问题已过期。请在聊天中回复以继续。",
     "repliedInChat": "你已在聊天中回复。"
   },
+  "agentClaim": {
+    "title": "连接智能体",
+    "intro": "一个智能体声称其为您工作。仅当是您让它这样做，且代码与它向您展示的一致时，才批准。",
+    "scopesHeading": "此智能体将可以：",
+    "codeLabel": "输入智能体显示的 6 位代码",
+    "approve": "批准",
+    "loading": "正在检查此请求…",
+    "missingLink": "此链接缺少认领令牌。请向智能体重新获取。",
+    "doneTitle": "智能体已连接",
+    "doneLine": "智能体现在可以继续。可以关闭此窗口。",
+    "deniedTitle": "请求已拒绝",
+    "deniedLine": "智能体未获得访问权限。"
+  },
   "oauthDevice": {
     "title": "连接设备",
     "codeLabel": "请输入终端中显示的代码",
@@ -5652,5 +5826,107 @@
       "onTitle": "已为所有人重新开启演示数据",
       "errorTitle": "无法为所有人更改演示数据"
     }
+  },
+  "graph": {
+    "status": {
+      "stale": "图谱正在更新，最近的更改可能尚未显示。",
+      "building": "图谱正在构建，当前显示的内容可能不完整。",
+      "retrying": "图谱构建遇到问题，正在重试。",
+      "failed": "上一次图谱构建失败，此视图可能已过时。",
+      "unknown": "无法读取此图谱的状态。"
+    },
+    "empty": {
+      "neverBuilt": "此仓库尚无代码图谱。",
+      "tooLarge": "此仓库过大，无法生成图谱。"
+    },
+    "incomplete": "部分链接可能缺失。请按边类型或方向缩小范围。",
+    "simplified": "为保证流畅移动，已简化视图。",
+    "verify": {
+      "degraded": "暂时无法验证访问权限，正在显示上次确认的内容。",
+      "blank": "已有数分钟无法验证访问权限，因此已清空图谱。正在重新连接…"
+    },
+    "error": {
+      "unavailable": "暂时无法加载，请重试。",
+      "notAvailable": "此项目不可用。",
+      "unexpected": "出了点问题。",
+      "ambiguous": "有多个仓库同名。请在搜索框中选择仓库。",
+      "full": "此视图已满。打开一个节点以开始新的视图。",
+      "revoked": "你正在查看的项目已不可用。"
+    },
+    "title": "代码图谱",
+    "ui": {
+      "back": "后退",
+      "forward": "前进",
+      "fit": "适应视图",
+      "showTable": "以表格显示",
+      "showGraph": "以图谱显示",
+      "direction": {
+        "any": "两者",
+        "inbound": "调用方",
+        "outbound": "被调用方"
+      },
+      "includeTests": "包含测试",
+      "showMore": "显示更多",
+      "expand": "展开",
+      "open": "打开",
+      "nothingSelected": "选择一个节点以查看详情。",
+      "details": "详情",
+      "links": "链接：{{n}}",
+      "table": {
+        "caption": "此视图中的节点",
+        "name": "名称",
+        "kind": "类型",
+        "file": "文件",
+        "actions": "操作",
+        "moreRows": "显示更多行",
+        "callersShown": "已显示的调用方",
+        "calleesShown": "已显示的被调用方",
+        "focus": "中心"
+      },
+      "emptyPrompt": "在上方搜索函数、方法或类，查看谁调用了它以及它调用了谁。",
+      "disclosure": "仅显示你有权访问的内容。",
+      "legendInferred": "虚线表示按名称推断的链接。",
+      "disabled": "代码图谱未启用。",
+      "search": {
+        "repo": "仓库",
+        "repoPlaceholder": "选择仓库",
+        "placeholder": "按名称查找函数、方法或类",
+        "label": "搜索代码",
+        "results": "搜索结果",
+        "noRepos": "没有你可以读取的代码仓库。",
+        "noMatches": "没有匹配项。",
+        "chooseFirst": "请先选择仓库",
+        "minChars": "请至少输入 2 个字符。",
+        "more": "仅显示前几个匹配项。请输入更多内容以缩小搜索范围。"
+      },
+      "action": {
+        "retry": "重试",
+        "restore": "使用完整画质"
+      },
+      "loading": "正在加载…",
+      "legend": {
+        "functions": "函数和方法",
+        "classes": "类和接口",
+        "focus": "此视图的中心"
+      },
+      "openHint": "打开：将其设为新视图的中心。",
+      "expandHint": "展开：在此显示其相邻项，并保留当前内容。",
+      "announce": {
+        "opened": "正在显示 {{n}} 项。",
+        "added": "已添加 {{n}} 项。"
+      },
+      "canvasHint": "图谱图像无法供屏幕阅读器使用。请使用“以表格显示”按钮来阅读和操作每个节点。",
+      "selectionGone": "你选择的项目已不可用。",
+      "viewGraph": "查看图谱",
+      "viewGraphOf": "查看图谱：{{repo}}",
+      "fillerNode": "{{file}} 中的 {{kind}}"
+    },
+    "capped": "图中只显示此视图的一部分，表格列出全部内容。",
+    "crowded": "此视图越来越拥挤。请用筛选器缩小范围。",
+    "hint": {
+      "testsOff": "测试文件已隐藏。如果该项目在测试代码中，请打开“包含测试”。"
+    },
+    "nothingNew": "此节点没有更多内容可显示。",
+    "tableOnly": "为保持流畅，仅显示表格。"
   }
 }

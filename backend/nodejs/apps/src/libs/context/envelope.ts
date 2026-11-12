@@ -15,7 +15,11 @@ import {
   validateMode,
 } from './orgContext';
 import { Logger } from '../services/logger.service';
-import { ENVELOPE_REQUEST_ID, sanitizeRootId } from './request-context';
+import {
+  ENVELOPE_REQUEST_ID,
+  sanitizeRootId,
+  setContextIdentity,
+} from './request-context';
 
 /**
  * Signed broker envelope (v2); the Python twin is `app/core/envelope.py` and
@@ -507,5 +511,8 @@ export async function runWithEnvelope<V, R>(
     throw e;
   }
   const run = (): Promise<R> => fn(opened.message as V);
-  return opened.ctx ? runWithOrgContext(opened.ctx, run) : run();
+  if (!opened.ctx) return run();
+  // Only a verified signature replaces the unverified org the consumer's log context was opened with.
+  if (opened.ctx.source === 'envelope') setContextIdentity(opened.ctx);
+  return runWithOrgContext(opened.ctx, run);
 }

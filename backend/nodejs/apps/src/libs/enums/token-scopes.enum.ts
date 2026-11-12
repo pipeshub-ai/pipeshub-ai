@@ -15,6 +15,10 @@ export const TokenScopes = Object.freeze({
   // Held only by the Python services, on their caller-role lookups, so the
   // global rate limiter can tell those from client traffic (rate-limit.middleware).
   CALLER_ROLE: 'caller:role',
+  // Held only by the /mcp handler, on the API calls it makes for a tool call, so
+  // they are not counted again and an MCP-audience token is accepted on them
+  // (libs/middlewares/mcp-relay.ts). Never sent as an Authorization token.
+  MCP_RELAY: 'mcp:relay',
   // Slack bot process only. Narrower than FETCH_CONFIG because the route it
   // guards returns Slack workspace credentials for every org.
   SLACK_BOT_VERIFY: 'slack-bot:verify',

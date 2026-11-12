@@ -234,3 +234,26 @@ class TestEntityIndexIsNotIndexedContent:
         with pytest.raises(HTTPException) as exc:
             await check_collection_info(svc, MagicMock(), 1536, MagicMock())
         assert exc.value.status_code == 400
+
+
+class TestSurveyNeedsNoOrg:
+    @pytest.mark.asyncio
+    async def test_the_survey_counts_every_org_and_needs_no_bound_org(self) -> None:
+        """The model guard must see all points, and it runs with no org bound; the
+        count must not shrink to one org's, nor the call fail for want of one."""
+        from app.core import org_context
+        from app.services.vector_db.models import CollectionConfig, VectorPoint
+        from tests.support.in_memory_vector_db import InMemoryVectorDBService
+
+        db = InMemoryVectorDBService()
+        await db.create_collection("records", CollectionConfig(embedding_size=3))
+        await db.upsert_points("records", [
+            VectorPoint(id=f"{o}-{i}", dense_vector=[1.0, 0.0, 0.0], payload={"metadata": {"orgId": o}})
+            for o in ("a", "b") for i in range(2)
+        ])
+        svc = _retrieval_service()
+        svc.vector_db_service = db
+
+        with pytest.raises(org_context.MissingOrgContext):
+            org_context.current_org_id()
+        assert await survey_managed_collections(svc, MagicMock()) == (3, 4)

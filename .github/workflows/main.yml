@@ -49,7 +49,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: backend/nodejs/apps/package-lock.json
 
@@ -69,6 +69,17 @@ jobs:
             python3 .github/scripts/new_lint_findings.py eslint "$MERGE_BASE" "${CHANGED_FILES[@]}"
           else
             echo "No TypeScript files changed in backend, skipping ESLint."
+          fi
+
+      # docs/logging.md "Personal data": ids, never emails or names. Fails only on log calls this pull request adds.
+      - name: Fail on new emails or names in Node log calls
+        run: |
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          mapfile -d '' -t CHANGED_FILES < <(git diff --diff-filter=d --name-only -z "$MERGE_BASE" -- ':(glob)backend/nodejs/apps/src/**/*.ts' || true)
+          if ((${#CHANGED_FILES[@]})); then
+            python3 .github/scripts/new_lint_findings.py log-pii "$MERGE_BASE" "${CHANGED_FILES[@]}"
+          else
+            echo "No backend TypeScript files changed, skipping the personal-data check."
           fi
 
       - name: Build backend
@@ -94,7 +105,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
@@ -168,6 +179,29 @@ jobs:
             python3 .github/scripts/new_lint_findings.py ruff "$MERGE_BASE" "${CHANGED_FILES[@]}"
           else
             echo "No Python files changed, skipping ruff."
+          fi
+
+      # The log level already says what an emoji in a log line would (docs/logging.md).
+      # Fails only on emoji log calls this pull request adds to backend/python/app.
+      - name: Fail on new emoji in Python log calls
+        run: |
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          mapfile -d '' -t CHANGED_FILES < <(git diff --diff-filter=d --name-only -z "$MERGE_BASE" -- ':(glob)backend/python/app/**/*.py' || true)
+          if ((${#CHANGED_FILES[@]})); then
+            python3 .github/scripts/new_lint_findings.py log-emoji "$MERGE_BASE" "${CHANGED_FILES[@]}"
+          else
+            echo "No app Python files changed, skipping the emoji check."
+          fi
+
+      # docs/logging.md "Personal data": ids, never emails or names. Fails only on log calls this pull request adds.
+      - name: Fail on new emails or names in Python log calls
+        run: |
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          mapfile -d '' -t CHANGED_FILES < <(git diff --diff-filter=d --name-only -z "$MERGE_BASE" -- ':(glob)backend/python/app/**/*.py' || true)
+          if ((${#CHANGED_FILES[@]})); then
+            python3 .github/scripts/new_lint_findings.py log-pii "$MERGE_BASE" "${CHANGED_FILES[@]}"
+          else
+            echo "No app Python files changed, skipping the personal-data check."
           fi
 
       # A class or function defined twice in one test module replaces the
@@ -260,6 +294,10 @@ jobs:
         if: steps.changes.outputs.changed == 'true'
         run: bash deployment/docker-compose/tests/mongodb_stability_test.sh
 
+      - name: Validate datastore memory sizing variables
+        if: steps.changes.outputs.changed == 'true'
+        run: bash deployment/docker-compose/tests/compose_sizing_test.sh
+
       # installer_test.sh has existed with ~184 assertions and was not run by
       # any workflow. It needs neither Docker nor network, so there is no
       # reason for it not to gate a deployment change.
@@ -289,20 +327,7 @@ jobs:
       # a push discovers them. Pinned to a release tarball rather than an
       # action, because actionlint does not publish one.
       - name: Install actionlint
-        env:
-          ACTIONLINT_VERSION: 1.7.7
-          # Checksum of the pinned release tarball. Without it this step trusts
-          # whatever the URL returns, which is a release asset a third party can
-          # replace — and it runs on every pull request.
-          ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
-        run: |
-          set -euo pipefail
-          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl -fsSL "$url" -o /tmp/actionlint.tar.gz
-          echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
-          sudo install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
-          actionlint --version
+        uses: ./.github/actions/install-actionlint
 
       - name: Lint workflows
         env:
@@ -331,7 +356,19 @@ jobs:
       - name: Install the scripts' test dependency
         run: python3 -m pip install pyyaml==6.0.3
 
+      # scripts/test_log_pii.py parses TypeScript; it fails, not skips, without the typescript package.
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '20'
+
+      # The version backend/nodejs/apps/package-lock.json locks.
+      - name: Install typescript for the log-pii tests
+        run: npm install --no-save --no-package-lock --prefix "$RUNNER_TEMP/ts" typescript@5.7.2
+
       - name: Test the coverage script
+        env:
+          TS_MODULE: ${{ runner.temp }}/ts/node_modules/typescript
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
       # Fails only when a connector is registered without an integration test

@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
+from app.connectors.sources.zammad.access import GroupReaders, RoleAccess, UserAccess
 from app.connectors.sources.zammad.connector import (
     ATTACHMENT_ID_PARTS_COUNT,
     BATCH_SIZE_KB_ANSWERS,
@@ -17,6 +18,7 @@ from app.connectors.sources.zammad.connector import (
     ZAMMAD_CONFIG_PATH,
     ZAMMAD_LINK_OBJECT_MAP,
     ZAMMAD_LINK_TYPE_MAP,
+    ReadOutcome,
     ZammadConnector,
     ZammadReadError,
 )
@@ -58,6 +60,9 @@ def mock_data_entities_processor():
     proc.reindex_existing_records = AsyncMock()
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_group_by_external_id = AsyncMock(return_value=None)
+    # Held knowledge-base answers and their attachments, read by the KB sync.
+    proc.get_records_by_record_type = AsyncMock(return_value=[])
+    proc.get_records_by_parent = AsyncMock(return_value=[])
     return proc
 
 
@@ -67,6 +72,8 @@ def mock_data_store_provider():
     mock_tx = MagicMock()
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
     mock_tx.get_record_group_by_external_id = AsyncMock(return_value=None)
+    mock_tx.get_sync_point = AsyncMock(return_value=None)
+    mock_tx.update_sync_point = AsyncMock()
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     provider.transaction.return_value = mock_tx
@@ -130,7 +137,20 @@ def _mock_ds():
     ds.get_kb_category_permissions = AsyncMock(return_value=_resp(success=False))
     ds.list_ticket_states = AsyncMock(return_value=_resp(success=True, data=[]))
     ds.list_ticket_priorities = AsyncMock(return_value=_resp(success=True, data=[]))
+    ds.get_current_user = AsyncMock(return_value=_resp(success=False))
     return ds
+
+
+# A role as GET /roles?expand=true lists it; its holders read the groups they have read or full access to.
+AGENT_ROLE = {"id": 5, "name": "Agent", "active": True, "permissions": ["ticket.agent"], "group_ids": {}}
+
+
+def _readers(users: dict | None = None, roles: list | None = None) -> GroupReaders:
+    """Who may read each group, from users and roles as Zammad lists them (users: id -> user)."""
+    return GroupReaders(
+        {uid: UserAccess.from_user(user) for uid, user in (users or {}).items()},
+        {role["id"]: RoleAccess.from_role(role) for role in (roles if roles is not None else [AGENT_ROLE])},
+    )
 
 
 class TestModuleConstants:
@@ -169,18 +189,32 @@ class TestDetermineVisibility:
     def test_draft(self, connector):
         assert connector._determine_visibility({}) == "DRAFT"
 
-    def test_published_takes_precedence(self, connector):
+    def test_archived_takes_precedence(self, connector) -> None:
+        # Archiving keeps the earlier timestamps; Zammad tests archived first.
         assert connector._determine_visibility({
             "published_at": "2024-01-01",
             "internal_at": "2024-02-01",
             "archived_at": "2024-03-01",
-        }) == "PUBLIC"
+        }) == "ARCHIVED"
 
-    def test_internal_over_archived(self, connector):
+    def test_archived_over_internal(self, connector) -> None:
         assert connector._determine_visibility({
             "internal_at": "2024-02-01",
             "archived_at": "2024-03-01",
+        }) == "ARCHIVED"
+
+    def test_published_over_internal(self, connector) -> None:
+        assert connector._determine_visibility({
+            "published_at": "2024-03-01",
+            "internal_at": "2024-02-01",
+        }) == "PUBLIC"
+
+    def test_a_scheduled_time_does_not_count_yet(self, connector) -> None:
+        assert connector._determine_visibility({
+            "internal_at": "2024-02-01",
+            "published_at": "2999-01-01T00:00:00Z",
         }) == "INTERNAL"
+        assert connector._determine_visibility({"published_at": "2999-01-01T00:00:00Z"}) == "DRAFT"
 
 
 class TestCreateAnswerWithPermissions:
@@ -320,7 +354,10 @@ class TestProcessKBEntitiesFromFirstPage:
         ds = _mock_ds()
         ds.get_kb_category_permissions = AsyncMock(return_value=_resp(
             success=True,
-            data={"permissions": [{"role_id": 1, "access": "editor"}, {"role_id": 2, "access": "reader"}]}
+            data={
+                "roles_editor": [{"id": 1}], "roles_reader": [{"id": 2}],
+                "permissions": [{"role_id": 1, "access": "editor"}, {"role_id": 2, "access": "reader"}],
+            },
         ))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
@@ -357,8 +394,16 @@ class TestProcessKBEntitiesFromFirstPage:
         assert len(kb_map) == 0
 
     async def test_category_with_permissions_effective(self, connector):
+        """The listing's permissions_effective is ignored: only the permissions endpoint names each role's KB permission."""
         connector.base_url = "https://z.example.com"
         ds = _mock_ds()
+        ds.get_kb_category_permissions = AsyncMock(return_value=_resp(
+            success=True,
+            data={
+                "roles_editor": [{"id": 30}], "roles_reader": [{"id": 40}],
+                "permissions": [{"role_id": 30, "access": "editor"}, {"role_id": 40, "access": "reader"}],
+            },
+        ))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         assets = {
@@ -382,8 +427,9 @@ class TestProcessKBEntitiesFromFirstPage:
         cat_perms_map = {}
 
         await connector._process_kb_entities(assets, kb_map, category_map, cat_perms_map)
-        assert cat_perms_map[5]["editor_role_ids"] == [10]
-        assert cat_perms_map[5]["reader_role_ids"] == [20]
+        ds.get_kb_category_permissions.assert_awaited_once_with(kb_id=1, cat_id=5)
+        assert cat_perms_map[5]["editor_role_ids"] == [30]
+        assert cat_perms_map[5]["reader_role_ids"] == [40]
 
     async def test_category_with_parent(self, connector):
         connector.base_url = "https://z.example.com"
@@ -696,6 +742,12 @@ class TestSyncKnowledgeBases:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._get_kb_sync_checkpoint = AsyncMock(return_value=1700000000000)
         connector._update_kb_sync_checkpoint = AsyncMock()
+        # Both answers are held and the categories' editors were recorded, so only an edit rewrites one.
+        connector.data_entities_processor.get_records_by_record_type = AsyncMock(return_value=[
+            MagicMock(external_record_id="kb_answer_1", is_deleted=False),
+            MagicMock(external_record_id="kb_answer_2", is_deleted=False),
+        ])
+        connector._get_kb_category_editors = AsyncMock(return_value={})
 
         await connector._sync_knowledge_bases()
 
@@ -742,7 +794,6 @@ class TestSyncKnowledgeBases:
                 "1": {
                     "id": 1, "category_id": None, "translation_ids": [],
                     "created_at": "", "updated_at": "",
-                    "published_at": "2024-01-01",
                 }
             },
             "KnowledgeBaseAnswerTranslation": {},
@@ -754,7 +805,8 @@ class TestSyncKnowledgeBases:
         connector._update_kb_sync_checkpoint = AsyncMock()
 
         await connector._sync_knowledge_bases()
-        connector._update_kb_sync_checkpoint.assert_awaited()
+        # No timestamp at all (a passed state time would set it): the sync time is used.
+        connector._update_kb_sync_checkpoint.assert_awaited_once_with()
 
 
 class TestStreamRecord:
@@ -931,7 +983,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<p>Text <img src="/api/v1/attachments/9"/> more</p>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {9: 100})
         assert "data:image/png;base64," in result
 
     async def test_jpeg_detection(self, connector):
@@ -943,7 +995,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<img src="/api/v1/attachments/10"/>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {10: 100})
         assert "data:image/jpeg;base64," in result
 
     async def test_gif_detection(self, connector):
@@ -955,7 +1007,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<img src="/api/v1/attachments/11"/>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {11: 100})
         assert "data:image/gif;base64," in result
 
     async def test_svg_detection(self, connector):
@@ -967,7 +1019,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<img src="/api/v1/attachments/12"/>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {12: 100})
         assert "data:image/svg+xml;base64," in result
 
     async def test_url_extension_jpg(self, connector):
@@ -979,7 +1031,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<img src="/api/v1/attachments/13?file=photo.jpg"/>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {13: 100})
         assert "data:image/jpeg;base64," in result
 
     async def test_url_extension_webp(self, connector):
@@ -991,7 +1043,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<img src="/api/v1/attachments/14?file=photo.webp"/>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {14: 100})
         assert "data:image/webp;base64," in result
 
     async def test_url_extension_gif(self, connector):
@@ -1003,7 +1055,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<img src="/api/v1/attachments/15?file=anim.gif"/>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {15: 100})
         assert "data:image/gif;base64," in result
 
     async def test_url_extension_svg(self, connector):
@@ -1015,7 +1067,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<img src="/api/v1/attachments/16?file=icon.svg"/>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {16: 100})
         assert "data:image/svg+xml;base64," in result
 
     async def test_url_extension_png_explicit(self, connector):
@@ -1027,7 +1079,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<img src="/api/v1/attachments/17?file=img.png"/>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {17: 100})
         assert "data:image/png;base64," in result
 
     async def test_download_failure_skips(self, connector):
@@ -1037,7 +1089,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<img src="/api/v1/attachments/20"/>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {20: 100})
         assert "data:image" not in result
 
     async def test_empty_content_skips(self, connector):
@@ -1047,7 +1099,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<img src="/api/v1/attachments/21"/>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {21: 100})
         assert "data:image" not in result
 
     async def test_string_data_converted(self, connector):
@@ -1059,7 +1111,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<img src="/api/v1/attachments/22"/>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {22: 100})
         assert "data:image" in result
 
     async def test_exception_during_download_skips(self, connector):
@@ -1069,7 +1121,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<img src="/api/v1/attachments/23"/>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {23: 100})
         assert "data:image" not in result
 
     async def test_img_without_src_skips(self, connector):
@@ -1094,7 +1146,7 @@ class TestConvertHtmlImagesToBase64:
         connector.init.side_effect = lambda: set_data_source() or True
 
         html = '<img src="/api/v1/attachments/25"/>'
-        await connector._convert_html_images_to_base64(html)
+        await connector._convert_html_images_to_base64(html, {25: 100})
         connector.init.assert_awaited_once()
 
     async def test_xml_svg_detection(self, connector):
@@ -1106,7 +1158,7 @@ class TestConvertHtmlImagesToBase64:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         html = '<img src="/api/v1/attachments/26"/>'
-        result = await connector._convert_html_images_to_base64(html)
+        result = await connector._convert_html_images_to_base64(html, {26: 100})
         assert "data:image/svg+xml;base64," in result
 
 
@@ -1275,7 +1327,7 @@ class TestCheckAndFetchUpdatedTicket:
                 "created_at": "2024-01-01T00:00:00Z",
             }
         ))
-        ds.list_links = AsyncMock(return_value=_resp(success=False))
+        ds.list_links = AsyncMock(return_value=_resp(success=True, data={"links": [], "assets": {}}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         record = MagicMock()
@@ -1581,7 +1633,10 @@ class TestGetFilterOptions:
 class TestTestConnectionAndAccess:
     async def test_success(self, connector):
         ds = _mock_ds()
-        ds.list_groups = AsyncMock(return_value=_resp(success=True, data=[]))
+        ds.get_current_user = AsyncMock(return_value=_resp(success=True, data={"id": 1}, status_code=200))
+        ds.list_users = AsyncMock(return_value=_resp(success=True, data=[], status_code=200))
+        ds.list_groups = AsyncMock(return_value=_resp(success=True, data=[], status_code=200))
+        ds.list_roles = AsyncMock(return_value=_resp(success=True, data=[], status_code=200))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         result = await connector.test_connection_and_access()
@@ -1589,7 +1644,9 @@ class TestTestConnectionAndAccess:
 
     async def test_failure(self, connector):
         ds = _mock_ds()
-        ds.list_groups = AsyncMock(return_value=_resp(success=False, message="unauthorized"))
+        ds.get_current_user = AsyncMock(return_value=_resp(success=True, data={"id": 1}, status_code=200))
+        ds.list_users = AsyncMock(return_value=_resp(success=True, data=[], status_code=200))
+        ds.list_groups = AsyncMock(return_value=_resp(success=False, message="unauthorized", status_code=500))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         result = await connector.test_connection_and_access()
@@ -2455,11 +2512,20 @@ class TestFetchTicketLinksEdgeCases:
         assert len(result) == 1
         assert result[0].external_record_id == "kb_answer_99"
 
-    async def test_exception_returns_empty(self, connector):
+    async def test_exception_propagates(self, connector) -> None:
+        """A ticket's link edges are replaced by what is written: links not read must not be written as none."""
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("network"))
 
-        result = await connector._fetch_ticket_links(1)
-        assert result == []
+        with pytest.raises(Exception, match="network"):
+            await connector._fetch_ticket_links(1)
+
+    async def test_failed_read_raises(self, connector) -> None:
+        ds = _mock_ds()
+        ds.list_links = AsyncMock(return_value=_resp(success=False, message="list_links failed", status_code=500))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        with pytest.raises(ZammadReadError, match="links of ticket 1 could not be read: list_links failed"):
+            await connector._fetch_ticket_links(1)
 
     async def test_normal_link_non_integer_value(self, connector):
         ds = _mock_ds()
@@ -2547,27 +2613,26 @@ class TestFetchGroupsEdgeCases:
     async def test_member_string_id_conversion(self, connector):
         connector.sync_filters = MagicMock()
         connector._is_group_allowed_by_filter = MagicMock(return_value=True)
-        connector._user_id_to_data = {10: {"email": "bob@test.com", "role_ids": []}}
+        connector._user_id_to_data = {10: {"email": "bob@test.com", "role_ids": [5]}}
 
         ds = _mock_ds()
         ds.list_groups = AsyncMock(return_value=_resp(
             success=True,
             data=[{"id": 1, "name": "Support", "active": True}]
         ))
-        ds.get_group = AsyncMock(return_value=_resp(
-            success=True,
-            data={"id": 1, "user_ids": ["10"]}
-        ))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         bob_user = MagicMock(email="bob@test.com")
         user_map = {"bob@test.com": bob_user}
 
-        _, user_groups = await connector._fetch_groups(user_map)
+        # Role ids may come as strings; group ids in group_ids are always string keys.
+        readers = _readers({10: {"role_ids": ["5"], "group_ids": {"1": ["read"]}}})
+        _, user_groups = await connector._fetch_groups(user_map, readers)
         _, members = user_groups[0]
         assert bob_user in members
 
-    async def test_get_group_api_failure_keeps_stored_members(self, connector):
+    async def test_get_group_is_not_read_for_members(self, connector) -> None:
+        """Members come from the user and role lists; a group's own user_ids lists every access level."""
         connector.sync_filters = MagicMock()
         connector._is_group_allowed_by_filter = MagicMock(return_value=True)
 
@@ -2579,10 +2644,10 @@ class TestFetchGroupsEdgeCases:
         ds.get_group = AsyncMock(side_effect=Exception("API error"))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        record_groups, user_groups = await connector._fetch_groups({})
+        record_groups, user_groups = await connector._fetch_groups({}, _readers())
         assert len(record_groups) == 1
-        # Saving the group would replace its stored members with none.
-        assert user_groups == []
+        assert len(user_groups) == 1
+        ds.get_group.assert_not_awaited()
 
     async def test_non_list_groups_data(self, connector):
         connector.sync_filters = MagicMock()
@@ -2593,10 +2658,9 @@ class TestFetchGroupsEdgeCases:
             success=True,
             data={"id": 1, "name": "Single", "active": True}
         ))
-        ds.get_group = AsyncMock(return_value=_resp(success=True, data={"user_ids": []}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        record_groups, _ = await connector._fetch_groups({})
+        record_groups, _ = await connector._fetch_groups({}, _readers())
         assert len(record_groups) == 1
 
     async def test_group_no_id_skipped(self, connector):
@@ -2610,7 +2674,7 @@ class TestFetchGroupsEdgeCases:
         ))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        record_groups, _ = await connector._fetch_groups({})
+        record_groups, _ = await connector._fetch_groups({}, _readers())
         assert len(record_groups) == 0
 
     async def test_group_no_name_skipped(self, connector):
@@ -2624,20 +2688,15 @@ class TestFetchGroupsEdgeCases:
         ))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        record_groups, _ = await connector._fetch_groups({})
+        record_groups, _ = await connector._fetch_groups({}, _readers())
         assert len(record_groups) == 0
 
 
 class TestSyncRolesEdgeCases:
     async def test_no_role_id_skipped(self, connector):
-        ds = _mock_ds()
-        ds.list_roles = AsyncMock(return_value=_resp(
-            success=True, data=[{"name": "NoID", "active": True}]
-        ))
-        connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._user_id_to_data = {}
 
-        await connector._sync_roles([], {})
+        await connector._sync_roles([{"name": "NoID", "active": True}], {})
         connector.data_entities_processor.on_new_app_roles.assert_not_called()
 
     async def test_roles_pagination(self, connector):
@@ -2651,7 +2710,10 @@ class TestSyncRolesEdgeCases:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._user_id_to_data = {}
 
-        await connector._sync_roles([], {})
+        roles_data, outcome = await connector._fetch_roles()
+        assert outcome is ReadOutcome.COMPLETE
+        assert [c.kwargs["page"] for c in ds.list_roles.await_args_list] == [1, 2]
+        await connector._sync_roles(roles_data, {})
         args = connector.data_entities_processor.on_new_app_roles.call_args[0][0]
         assert len(args) == 101
 
@@ -2659,9 +2721,10 @@ class TestSyncRolesEdgeCases:
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("fail"))
 
         with pytest.raises(Exception, match="fail"):
-            await connector._sync_roles([], {})
+            await connector._fetch_roles()
 
     async def test_non_list_roles_data(self, connector):
+        """Anything but a list of roles is a read that did not complete: no member may be written from it."""
         ds = _mock_ds()
         ds.list_roles = AsyncMock(return_value=_resp(
             success=True,
@@ -2670,14 +2733,14 @@ class TestSyncRolesEdgeCases:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._user_id_to_data = {}
 
-        await connector._sync_roles([], {})
-        connector.data_entities_processor.on_new_app_roles.assert_awaited_once()
+        assert await connector._fetch_roles() == ([], ReadOutcome.INTERRUPTED)
 
     async def test_no_data_returns(self, connector):
         ds = _mock_ds()
         ds.list_roles = AsyncMock(return_value=_resp(success=True, data=None))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
+        assert await connector._fetch_roles() == ([], ReadOutcome.COMPLETE)
         await connector._sync_roles([], {})
         connector.data_entities_processor.on_new_app_roles.assert_not_called()
 
@@ -2690,7 +2753,7 @@ class TestTransformTicketEdgeCases:
         connector._user_id_to_data = {}
 
         ds = _mock_ds()
-        ds.list_links = AsyncMock(return_value=_resp(success=False))
+        ds.list_links = AsyncMock(return_value=_resp(success=True, data={"links": [], "assets": {}}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         result = await connector._transform_ticket_to_ticket_record({
@@ -2705,7 +2768,7 @@ class TestTransformTicketEdgeCases:
         connector._user_id_to_data = {}
 
         ds = _mock_ds()
-        ds.list_links = AsyncMock(return_value=_resp(success=False))
+        ds.list_links = AsyncMock(return_value=_resp(success=True, data={"links": [], "assets": {}}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         result = await connector._transform_ticket_to_ticket_record({
@@ -2727,7 +2790,7 @@ class TestTransformTicketEdgeCases:
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         ds = _mock_ds()
-        ds.list_links = AsyncMock(return_value=_resp(success=False))
+        ds.list_links = AsyncMock(return_value=_resp(success=True, data={"links": [], "assets": {}}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         result = await connector._transform_ticket_to_ticket_record({
@@ -2736,24 +2799,28 @@ class TestTransformTicketEdgeCases:
         })
         assert result.version == 5
 
-    async def test_user_lookup_failure(self, connector):
+    async def test_people_come_from_the_user_listing_not_a_user_lookup(self, connector) -> None:
         connector.base_url = "https://z.example.com"
         connector._state_map = {}
         connector._priority_map = {}
-        connector._user_id_to_data = {100: {"email": "user@test.com", "role_ids": []}}
+        connector._user_id_to_data = {100: {"email": "user@test.com", "name": "Una User", "role_ids": []}}
 
         ds = _mock_ds()
         ds.get_user = AsyncMock(side_effect=Exception("user lookup fail"))
-        ds.list_links = AsyncMock(return_value=_resp(success=False))
+        ds.list_links = AsyncMock(return_value=_resp(success=True, data={"links": [], "assets": {}}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         result = await connector._transform_ticket_to_ticket_record({
-            "id": 1, "title": "Test", "customer_id": 100
+            "id": 1, "title": "Test", "customer_id": 100, "owner_id": 999,
         })
         assert result is not None
-        assert result.creator_email == "user@test.com"
+        assert (result.creator_email, result.creator_name) == ("user@test.com", "Una User")
+        # An owner not in the listing (a system user, or one left out) gives no assignee.
+        assert (result.assignee_email, result.assignee) == ("", "")
+        ds.get_user.assert_not_awaited()
 
     async def test_link_fetch_failure(self, connector):
+        """Writing the ticket replaces its link edges, so a ticket whose links weren't read is not written."""
         connector.base_url = "https://z.example.com"
         connector._state_map = {}
         connector._priority_map = {}
@@ -2763,12 +2830,14 @@ class TestTransformTicketEdgeCases:
         ds.list_links = AsyncMock(side_effect=Exception("links fail"))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        result = await connector._transform_ticket_to_ticket_record({
-            "id": 1, "title": "Test"
-        })
-        assert result is not None
+        with pytest.raises(Exception, match="links fail"):
+            await connector._transform_ticket_to_ticket_record({"id": 1, "title": "Test"})
 
-    async def test_datasource_failure_for_user(self, connector):
+        ds.list_links = AsyncMock(return_value=_resp(success=False, message="list_links failed", status_code=503))
+        with pytest.raises(ZammadReadError):
+            await connector._transform_ticket_to_ticket_record({"id": 1, "title": "Test"})
+
+    async def test_datasource_failure_fails_the_ticket(self, connector) -> None:
         connector.base_url = "https://z.example.com"
         connector._state_map = {}
         connector._priority_map = {}
@@ -2776,10 +2845,8 @@ class TestTransformTicketEdgeCases:
 
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("ds fail"))
 
-        result = await connector._transform_ticket_to_ticket_record({
-            "id": 1, "title": "Test", "customer_id": 100
-        })
-        assert result is not None
+        with pytest.raises(Exception, match="ds fail"):
+            await connector._transform_ticket_to_ticket_record({"id": 1, "title": "Test", "customer_id": 100})
 
 
 class TestGroupFilterEdgeCases:

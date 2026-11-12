@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent import observability as obs
-from app.agent_loop_lib.core.exceptions import ToolError
+from app.agent_loop_lib.core.exceptions import ToolError, spawn_refusal
 from app.agent_loop_lib.core.types import AgentResult, Goal, ToolCall
 from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.events.base import EventType, ToolCallStatus
@@ -19,6 +20,7 @@ from app.agent_loop_lib.tools.builtin.coordination.agent_tool import AgentTool
 from app.agent_loop_lib.tools.builtin.coordination.parent_results import parent_request
 from app.agent_loop_lib.tools.special_route import RouteContext
 from app.agent_loop_lib.tools.tags import TAG_SPAWN, TAG_SPAWN_BATCH
+from app.utils.error_class import log_failure
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent.spec import AgentSpec
@@ -26,6 +28,8 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.runtime.runtime import AgentRuntime
 
 __all__ = ["SpawnAgentTool", "build_spawn_child", "child_result_content", "run_spawned_child"]
+
+_logger = logging.getLogger(__name__)
 
 
 def child_result_content(child_result: AgentResult) -> dict[str, Any]:
@@ -187,6 +191,12 @@ async def _run_detached_spawn(agent, call: ToolCall, goal, turn_index: int, star
             "status": ToolCallStatus.SUCCESS if child_result.success else ToolCallStatus.ERROR,
         })
     except Exception as e:
+        # Nothing waits on a detached child: this is its one failure line. No error text: a failed
+        # prerequisite's carries the child's error, which can quote a provider's answer.
+        log_failure(
+            _logger, "sub_agent.detached_failed", e, role=call.arguments.get("role"), include_error_text=False,
+            **(spawn_refusal(e) or {}),
+        )
         if agent.scope is not None:
             failed = AgentResult(
                 goal=Goal(description=call.arguments.get("goal", "")),
@@ -208,6 +218,10 @@ class SpawnAgentTool(Tool):
     `run_ctx`/`_detached_tasks`/`_pending_spawn_tasks`, none of which a
     stateless `Tool` instance shared across the whole registry can hold.
     """
+
+    @property
+    def log_kind(self) -> str:
+        return "sub_agent"
 
     @property
     def name(self) -> str:
@@ -372,7 +386,10 @@ class SpawnAgentTool(Tool):
                 tool_call_id=call.id, name=call.name, content=child_result_content(child_result),
             )
         except Exception as e:
-            return CoreToolResult(tool_call_id=call.id, name=call.name, content=str(e), is_error=True)
+            return CoreToolResult(
+                tool_call_id=call.id, name=call.name, content=str(e), is_error=True,
+                cause=e, end_fields=spawn_refusal(e) or {"reason": "exception"},
+            )
 
     async def execute(self, **kwargs: Any) -> ToolOutput:
         raise ToolError("spawn_agent is a special route (see SpecialRouteHandler.handle()) and must not be executed directly")

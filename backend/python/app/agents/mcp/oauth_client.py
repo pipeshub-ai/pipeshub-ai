@@ -8,6 +8,7 @@ breaking for form-encoded token endpoints (e.g. GitHub).
 import base64
 import json as _json
 import logging
+import socket
 from typing import Any, Optional
 from urllib.parse import parse_qs, quote_plus
 
@@ -16,11 +17,13 @@ import httpx
 from app.agents.mcp.errors import MCPUrlBlockedError
 from app.agents.mcp.models import OAuthTokens, TokenEndpointAuthMethod, utcnow
 from app.agents.mcp.url_guard import GuardedTransport
+from app.utils.error_class import chain_has
 from app.utils.oauth_errors import (
     PERMANENT_GRANT_ERROR_CODES,
     is_permanent_grant_rejection,
     oauth_error_code,
 )
+from app.utils.url_fetcher import UnresolvableHostError
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +37,20 @@ _MAX_ERROR_TEXT_CHARS = 500
 
 class MCPOAuthError(Exception):
     """Raised when a token exchange/refresh request fails. `error_code` is the RFC 6749 `error`
-    the provider sent, when it sent one."""
+    the provider sent, when it sent one; `status` is the token endpoint's HTTP status, when it answered with an error.
+    `refresh_reason` tags why for the refresh log lines (`app.utils.credential_refresh_log.ERROR_CLASS_BY_REASON`)."""
 
-    def __init__(self, message: str = "", *, error_code: Optional[str] = None) -> None:
+    refresh_reason: Optional[str] = None
+
+    def __init__(
+        self, message: str = "", *, error_code: Optional[str] = None, status: Optional[int] = None,
+        refresh_reason: Optional[str] = None,
+    ) -> None:
         super().__init__(message)
         self.error_code = error_code
+        self.status = status
+        if refresh_reason:  # keeps a subclass's class-level tag
+            self.refresh_reason = refresh_reason
 
     @property
     def rejected_client(self) -> bool:
@@ -48,6 +60,8 @@ class MCPOAuthError(Exception):
 
 class MCPRefreshTokenInvalidError(MCPOAuthError):
     """The provider permanently rejected the refresh token — re-authentication is required."""
+
+    refresh_reason = "invalid_grant"
 
 
 def _error_text(status_code: int, body: Any, text: str) -> str:  # noqa: ANN401
@@ -112,7 +126,9 @@ async def _post_token_request(
         try:
             resp = await client.post(token_url, data=data, headers={"Accept": "application/json", **(headers or {})})
         except MCPUrlBlockedError as e:
-            raise MCPOAuthError(str(e)) from e
+            # The guard refuses a host that doesn't resolve with the same error as a policy block; DNS is often transient.
+            reason = "host_unresolved" if chain_has(e, UnresolvableHostError, socket.gaierror) else "url_blocked"
+            raise MCPOAuthError(str(e), refresh_reason=reason) from e
         content_type = resp.headers.get("content-type", "").lower()
         text = resp.text
         json_body = None
@@ -130,8 +146,11 @@ async def _post_token_request(
             if is_permanent_grant_rejection(text, error_code, _PERMANENT_ERROR_CODES, status=resp.status_code):
                 raise MCPRefreshTokenInvalidError(
                     f"OAuth token request rejected ({resp.status_code}): {detail}", error_code=error_code,
+                    status=resp.status_code,
                 )
-            raise MCPOAuthError(f"OAuth token request failed ({resp.status_code}): {detail}", error_code=error_code)
+            raise MCPOAuthError(
+                f"OAuth token request failed ({resp.status_code}): {detail}", error_code=error_code, status=resp.status_code,
+            )
         return body
 
 

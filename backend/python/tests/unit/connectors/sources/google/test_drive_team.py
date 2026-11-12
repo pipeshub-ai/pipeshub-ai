@@ -377,6 +377,219 @@ class TestFetchPermissions:
         assert perms[0].email == "user@example.com"
         assert perms[0].type == PermissionType.READ
 
+    async def test_empty_list_on_shared_drive_item_still_grants_the_viewer(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+
+        perms, is_fallback, _ = await connector._fetch_permissions(
+            "file-1", is_drive=False, user_email="viewer@example.com"
+        )
+        assert is_fallback is True
+        assert [p.email for p in perms] == ["viewer@example.com"]
+
+    async def test_empty_list_on_limited_folder_adds_no_grant_and_does_not_fail(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+
+        perms, is_fallback, shared = await connector._fetch_permissions(
+            "folder-1", is_drive=False, user_email="viewer@example.com",
+            inherited_permissions_disabled=True,
+        )
+        assert (perms, is_fallback, shared) == ([], True, [])
+
+    async def test_403_on_limited_folder_adds_no_grant_and_does_not_fail(self, connector) -> None:
+        from googleapiclient.errors import HttpError
+
+        mock_resp = MagicMock()
+        mock_resp.status = HttpStatusCode.FORBIDDEN.value
+        http_error = HttpError(mock_resp, b"forbidden")
+        http_error.error_details = [{"reason": "insufficientFilePermissions"}]
+        connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
+
+        perms, is_fallback, _ = await connector._fetch_permissions(
+            "folder-1", is_drive=False, user_email="viewer@example.com",
+            inherited_permissions_disabled=True,
+        )
+        assert (perms, is_fallback) == ([], True)
+
+    async def test_quota_403_on_limited_folder_still_raises(self, connector) -> None:
+        from googleapiclient.errors import HttpError
+
+        mock_resp = MagicMock()
+        mock_resp.status = HttpStatusCode.FORBIDDEN.value
+        http_error = HttpError(mock_resp, b"rate")
+        http_error.error_details = [{"reason": "userRateLimitExceeded"}]
+        connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
+
+        with pytest.raises(HttpError):
+            await connector._fetch_permissions(
+                "folder-1", is_drive=False, user_email="viewer@example.com",
+                inherited_permissions_disabled=True,
+            )
+
+    async def test_empty_list_for_a_user_who_can_share_the_item_is_an_unreadable_answer(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+
+        with pytest.raises(RuntimeError, match="can share"):
+            await connector._fetch_permissions(
+                "file-1", is_drive=False, user_email="editor@example.com", can_share=True,
+            )
+
+    async def test_list_whose_entries_are_all_left_out_by_the_connector_still_gives_the_sharer_a_fallback(self, connector) -> None:
+        # a suspended owner is dropped by the connector: the source did answer with an entry
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "p1", "role": "owner", "type": "user", "emailAddress": "gone@example.com", "deleted": True},
+        ]})
+
+        perms, is_fallback, _ = await connector._fetch_permissions(
+            "file-1", is_drive=False, user_email="editor@example.com", can_share=True,
+        )
+        assert is_fallback is True
+        assert [p.email for p in perms] == ["editor@example.com"]
+
+    async def test_reindex_of_an_item_whose_permissions_could_not_be_read_is_not_queued_as_unchanged(self, connector) -> None:
+        from app.connectors.sources.google.drive.team.connector import FullSyncLedger
+
+        record = MagicMock(external_record_id="file-1", external_record_group_id="sd-1", id="rec-1")
+        service = connector.drive_data_source.client
+        metadata = _make_file_metadata(file_id="file-1", name="a.txt", parents=["sd-1"])
+        metadata["capabilities"] = {"canShare": True}
+        metadata["driveId"] = "sd-1"
+        connector._get_drive_service_with_fallback = AsyncMock(
+            return_value=(service, "editor@example.com", ("pid", "editor@example.com", metadata))
+        )
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+        real_process = connector._process_drive_item
+
+        async def process_with_a_ledger_swapped_meanwhile(*args: object, **kwargs: object) -> object:
+            # a sync starting meanwhile replaces the ledger: no count taken before the call can be compared after it
+            connector._sync_ledger = FullSyncLedger()
+            return await real_process(*args, **kwargs)
+
+        connector._process_drive_item = process_with_a_ledger_swapped_meanwhile
+        with patch("app.connectors.sources.google.drive.team.connector.get_impersonation_candidates",
+                   AsyncMock(return_value=["editor@example.com"])):
+            with pytest.raises(Exception, match="file-1"):
+                await connector._check_and_fetch_updated_record("org-1", record)
+
+            connector.data_entities_processor.reindex_existing_records = AsyncMock()
+            connector.data_entities_processor.on_new_records = AsyncMock()
+            connector.data_store_provider.compare_and_set_indexing_status = AsyncMock(return_value=["rec-1"])
+            await connector.reindex_records([record])
+        connector.data_entities_processor.reindex_existing_records.assert_not_awaited()
+        # the record the caller marked NOT_STARTED is left FAILED, which a retry of failed records selects
+        connector.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
+            ["rec-1"], "NOT_STARTED", "FAILED"
+        )
+
+    async def test_item_read_failure_is_raised_only_when_asked(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+        metadata = _make_file_metadata(file_id="file-1", name="a.txt", parents=["sd-1"])
+        metadata["capabilities"] = {"canShare": True}
+        kwargs = {"user_id": "u1", "user_email": "editor@example.com", "drive_id": "sd-1", "is_shared_drive": True}
+
+        assert await connector._process_drive_item(metadata=metadata, **kwargs) is None
+        with pytest.raises(Exception, match="file-1"):
+            await connector._process_drive_item(metadata=metadata, raise_on_failure=True, **kwargs)
+
+    async def test_item_whose_list_is_empty_for_a_user_who_can_share_it_is_failed_not_written(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+        metadata = _make_file_metadata(file_id="file-1", name="a.txt", parents=["sd-1"])
+        metadata["capabilities"] = {"canShare": True}
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="editor@example.com",
+            drive_id="sd-1", is_shared_drive=True,
+        )
+
+        assert result is None
+        assert connector._sync_ledger.item_failures == 1
+
+    async def test_item_whose_list_is_empty_for_a_user_who_cannot_share_it_still_gives_them_read(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+        metadata = _make_file_metadata(file_id="file-1", name="a.txt", parents=["sd-1"])
+        metadata["capabilities"] = {"canShare": False}
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="viewer@example.com",
+            drive_id="sd-1", is_shared_drive=True,
+        )
+
+        assert result is not None
+        assert [p.email for p in result.new_permissions] == ["viewer@example.com"]
+        assert connector._sync_ledger.item_failures == 0
+
+    async def test_empty_list_for_a_member_of_a_limited_folder_gives_their_own_fallback(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+
+        perms, is_fallback, _ = await connector._fetch_permissions(
+            "folder-1", is_drive=False, user_email="member@example.com",
+            inherited_permissions_disabled=True, can_list_children=True,
+        )
+        assert is_fallback is True
+        assert [(p.email, p.type) for p in perms] == [("member@example.com", PermissionType.READ)]
+
+    async def test_403_for_a_member_of_a_limited_folder_gives_their_own_fallback(self, connector) -> None:
+        from googleapiclient.errors import HttpError
+
+        mock_resp = MagicMock()
+        mock_resp.status = HttpStatusCode.FORBIDDEN.value
+        http_error = HttpError(mock_resp, b"forbidden")
+        http_error.error_details = [{"reason": "insufficientFilePermissions"}]
+        connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
+
+        perms, is_fallback, _ = await connector._fetch_permissions(
+            "folder-1", is_drive=False, user_email="member@example.com",
+            inherited_permissions_disabled=True, can_list_children=True,
+        )
+        assert is_fallback is True
+        assert [(p.email, p.type) for p in perms] == [("member@example.com", PermissionType.READ)]
+
+    async def test_item_for_a_member_of_a_limited_folder_is_not_failed_and_is_a_fallback(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+        metadata = _make_file_metadata(
+            file_id="folder-1", name="Folder", mime_type="application/vnd.google-apps.folder",
+            parents=["sd-1"], file_extension=None,
+        )
+        metadata["inheritedPermissionsDisabled"] = True
+        metadata["capabilities"] = {"canListChildren": True}
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="member@example.com",
+            drive_id="sd-1", is_shared_drive=True,
+        )
+
+        assert result is not None
+        assert result.permissions_changed is False  # a fallback is never written as the item's list
+        assert [p.email for p in result.new_permissions] == ["member@example.com"]
+
+    async def test_user_on_limited_folder_writes_the_real_grants(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={
+            "permissions": [{"id": "p1", "role": "reader", "type": "user", "emailAddress": "member@example.com"}],
+        })
+
+        perms, is_fallback, _ = await connector._fetch_permissions(
+            "folder-1", is_drive=False, user_email="member@example.com",
+            inherited_permissions_disabled=True,
+        )
+        assert is_fallback is False
+        assert [p.email for p in perms] == ["member@example.com"]
+
+    async def test_item_on_limited_folder_for_a_user_not_on_it_keeps_stored_grants(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+        metadata = _make_file_metadata(
+            file_id="folder-1", name="Folder", mime_type="application/vnd.google-apps.folder",
+            parents=["sd-1"], file_extension=None,
+        )
+        metadata["inheritedPermissionsDisabled"] = True
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="viewer@example.com",
+            drive_id="sd-1", is_shared_drive=True,
+        )
+
+        assert result is not None
+        assert result.new_permissions == []
+        assert result.permissions_changed is False
+        connector.data_entities_processor.add_permission_to_record.assert_not_called()
 
 # ---------------------------------------------------------------------------
 # _sync_record_groups
@@ -578,3 +791,40 @@ class TestTeamInit:
         })
         with pytest.raises(ValueError, match="Admin email not found"):
             await connector.init()
+
+
+class TestTeamDriveItemPeople:
+    async def test_my_drive_file_carries_owner_author_and_last_modifier(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+        metadata = _make_file_metadata(
+            owners=[{"displayName": "Alice", "emailAddress": "alice@example.com", "permissionId": "p-alice"}],
+            parents=["folder-1"],
+        )
+        metadata["lastModifyingUser"] = {"displayName": "Bob", "emailAddress": "bob@example.com", "permissionId": "p-bob"}
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+
+        record = result.record
+        assert [o.email for o in record.owners] == ["alice@example.com"]
+        assert record.authored_by is not None
+        assert record.authored_by.source_id == "p-alice"
+        assert record.last_modified_by is not None
+        assert record.last_modified_by.email == "bob@example.com"
+
+    async def test_shared_drive_file_has_no_author(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+        metadata = _make_file_metadata(parents=["sd-1"], owners=[])
+        metadata["driveId"] = "sd-1"
+        metadata["lastModifyingUser"] = {"displayName": "Bob", "emailAddress": "bob@example.com", "permissionId": "p-bob"}
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="user@example.com", drive_id="sd-1", is_shared_drive=True
+        )
+
+        record = result.record
+        assert record.authored_by is None
+        assert record.owners == []
+        assert record.last_modified_by is not None
+        assert record.last_modified_by.source_id == "p-bob"

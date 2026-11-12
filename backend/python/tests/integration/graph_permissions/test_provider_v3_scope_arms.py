@@ -59,6 +59,8 @@ from .fixture_graph import (
 )
 from .loaders import load_into_neo4j
 
+pytestmark = pytest.mark.integration
+
 APP = "v3-app"
 KB_APP = "v3-kb"
 RGL = "RECORD_GROUP_LEVEL"

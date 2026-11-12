@@ -10,7 +10,8 @@ import { asArray } from '@/lib/utils/safe';
 import { EntityRowActionMenu, type RowAction } from '../../../components';
 import type { McpMyServerEntry } from '../../types';
 import { MCP_TRANSPORT_LABELS, isPersonalMcpInstance } from '../../types';
-import { isMcpInstanceDisabled, McpDisabledBadge } from '../../components';
+import { isMcpInstanceDisabled, McpDisabledBadge, McpLogoImage } from '../../components';
+import { useMcpServerLogo } from '../../logo-store';
 import { McpStatusBadge, mcpConnectionState, usesSharedCredential } from '../../connection-state';
 
 interface McpPersonalServerCardProps {
@@ -41,6 +42,7 @@ export function McpPersonalServerCard({
 
   const needsAuth = instance.authMode !== 'none' && !usesSharedCredential(instance);
   const connectorType = resolveConnectorType(instance.typeId || instance.name);
+  const logo = useMcpServerLogo(instance._id);
   const state = mcpConnectionState(instance);
   const signInAction =
     state === 'needs_connect'
@@ -114,7 +116,7 @@ export function McpPersonalServerCard({
             flexShrink: 0,
           }}
         >
-          <ConnectorIcon type={connectorType} size={16} color="var(--gray-10)" />
+          {logo ? <McpLogoImage src={logo} size={16} /> : <ConnectorIcon type={connectorType} size={16} color="var(--gray-10)" />}
         </Flex>
         <Flex align="center" gap="1" flexShrink="0">
           {isMcpInstanceDisabled(instance) ? (

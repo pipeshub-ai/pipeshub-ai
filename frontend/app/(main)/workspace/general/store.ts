@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 
@@ -184,3 +185,5 @@ export const useGeneralStore = create<GeneralStore>()(
     { name: 'GeneralStore' }
   )
 );
+
+resetStoreOnSessionEnd(useGeneralStore);

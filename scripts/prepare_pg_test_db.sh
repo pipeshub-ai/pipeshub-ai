@@ -3,12 +3,18 @@
 # variables they read to stdout as `export` lines (workflows append them to $GITHUB_ENV with `sed 's/^export //'`).
 #   PG_ADMIN_URL=postgresql://postgres@127.0.0.1:5432/postgres scripts/prepare_pg_test_db.sh [dbname]
 # Needs: python with backend/db/requirements.txt installed (PREPARE_PG_PYTHON, default python), a superuser in PG_ADMIN_URL.
+# A non-local PG_ADMIN_URL host is refused unless PG_TEST_ALLOW_REMOTE=1.
 # PG_RUNTIME_ROLE (connectors|node) picks the login in PG_RUNTIME_TEST_URL. Every login role gets the password in PG_TEST_PASSWORD (default: a fixed test value; the server is a throwaway one).
 set -euo pipefail
 : "${PG_ADMIN_URL:?PG_ADMIN_URL is required}"
 db=${1:-pipeshub_ci}
 py=${PREPARE_PG_PYTHON:-python}
 pw=${PG_TEST_PASSWORD:-ci-test-password}
+host=${PG_ADMIN_URL#*://}; host=${host##*@}; host=${host%%/*}
+if [[ $host == \[* ]]; then host=${host%%]*}]; else host=${host%%:*}; fi
+case "$host" in localhost|127.0.0.1|'[::1]') ;; *)
+  [ "${PG_TEST_ALLOW_REMOTE:-}" = 1 ] || { echo "prepare_pg_test_db: PG_ADMIN_URL host '$host' is not local; the fixed test password is for throwaway servers only (set PG_TEST_ALLOW_REMOTE=1 to override)" >&2; exit 2; } ;;
+esac
 root=$(cd "$(dirname "$0")/.." && pwd)
 base=${PG_ADMIN_URL%/*}                     # postgresql://user@host:port
 hostport=${base#*@}
@@ -18,7 +24,7 @@ with psycopg.connect(sys.argv[1], autocommit=True) as c:
     c.execute(f'DROP DATABASE IF EXISTS "{sys.argv[2]}" WITH (FORCE)')
     c.execute(f'CREATE DATABASE "{sys.argv[2]}"')
 PY
-export PG_ADMIN_URL="$base/$db" PG_BOOTSTRAP_EXTENSIONS=pg_trgm
+export PG_ADMIN_URL="$base/$db" PG_BOOTSTRAP_EXTENSIONS=vector,pg_trgm
 for r in NODE CONNECTORS INDEXING QUERY KV JOBS MIGRATE BACKUP; do export "PG_${r}_PASSWORD=$pw"; done
 cd "$root/backend"
 "$py" -m db.bootstrap_roles >&2

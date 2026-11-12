@@ -9,6 +9,7 @@ from logging import Logger
 from typing import Any, AsyncGenerator, Callable, DefaultDict, Dict, List, Optional, Set, Tuple, Type, TypeAlias, TypeVar
 from urllib.parse import parse_qsl, quote, urlsplit
 from uuid import uuid4
+from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
 from app.utils.html_markdown import html_to_markdown, html_to_markdown_async
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
@@ -95,6 +96,7 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
+from app.modules.entity_resolution.organizations import accounts_last, extracted_organization_id
 from collections import defaultdict
 
 from app.models.blocks import (
@@ -834,9 +836,36 @@ class SalesforceConnector(BaseConnector):
         """EE override: injects org_id for tenant isolation on Person nodes."""
         return Person(**kwargs)
 
+    async def _own_external_orgs(self, tx_store: TransactionStore, nodes: list[dict]) -> list[dict]:
+        """The account organisations among ``nodes`` this connector's org may
+        reuse by name, in order: those recording it as parentOrgId
+        (`_create_org`), and ones written before that was recorded which the
+        org reaches through its own prospect or customer edge (the next upsert
+        stamps them). An unstamped node none of its edges reaches may be
+        another org's, so it is never reused. A failed edge read raises: read
+        as "no edges", it would duplicate every unstamped account."""
+        org_id = self.data_entities_processor.org_id
+        nodes = [n for n in nodes if n.get("isExternal") is True and n.get("parentOrgId") in (None, org_id)]
+        if not any(n.get("parentOrgId") is None for n in nodes):
+            return nodes
+        owned = await self._account_org_owners(tx_store)
+        return [n for n in nodes if n.get("parentOrgId") is not None or (n.get("_key") or n.get("id")) in owned]
+
+    async def _account_org_owners(self, tx_store: TransactionStore) -> dict[str, set[str | None]]:
+        """The organisations this org's own prospect or customer edges reach, each
+        with the Salesforce account ids those edges record."""
+        owner = f"{CollectionNames.ORGS.value}/{self.data_entities_processor.org_id}"
+        owners: dict[str, set[str | None]] = {}
+        for collection in (CollectionNames.PROSPECT.value, CollectionNames.CUSTOMER.value):
+            for edge in await tx_store.get_edges_from_node(owner, collection, raise_on_error=True):
+                key = str(edge.get("_to") or "").split("/", 1)[-1]
+                owners.setdefault(key, set()).add(edge.get("externalId"))
+        return owners
+
     def _create_org(self, **kwargs) -> Org:
-        """EE override: injects org_id as parentOrgId for tenant isolation on external Org nodes."""
-        return Org(**kwargs)
+        """An account's external organisation, recording the org it belongs to
+        as parentOrgId, which scopes the organisation entity to that org."""
+        return Org(**{"parent_org_id": self.data_entities_processor.org_id, **kwargs})
 
     def __init__(
         self,
@@ -1227,7 +1256,7 @@ class SalesforceConnector(BaseConnector):
                 self.connector_id, connector_type, refresh_token
             )
         except Exception as e:
-            self.logger.error(f"Token refresh failed for connector {self.connector_id}: {e}", exc_info=True)
+            log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
             return False
 
         # Re-initialize the connector so the data source uses the new token
@@ -4714,19 +4743,15 @@ class SalesforceConnector(BaseConnector):
         try:
             newly_synced_account_ids: Set[str] = set()
             org_id = self.data_entities_processor.org_id
-            parent_org_id = self._get_parent_org_id()
 
             # One-time setup: snapshot existing external orgs into a name -> _key map.
             # Updated in place each page so that newly upserted orgs are recognized as
             # existing on subsequent pages (correct delete-then-recreate behaviour).
             async with self.data_store_provider.transaction() as tx_store:
-                all_orgs = await tx_store.get_all_orgs()
-            external_org_key_by_name: Dict[str, str] = {
-                o["name"]: o["_key"]
-                for o in (all_orgs or [])
-                if o.get("isExternal") is True
-                and (parent_org_id is None or o.get("parentOrgId") == parent_org_id)
-            }
+                # Unknown is not empty: a failed read would re-create every account.
+                all_orgs = await tx_store.get_all_orgs(raise_on_error=True)
+                own_orgs = await self._own_external_orgs(tx_store, all_orgs or [])
+            external_org_key_by_name: Dict[str, str] = {o["name"]: o["_key"] for o in accounts_last(own_orgs)}
 
             total_orgs = 0
             total_record_groups = 0
@@ -4773,7 +4798,9 @@ class SalesforceConnector(BaseConnector):
                         # None keeps the account's readers: the permission step writes them
                         # from UserRecordAccess, and [] would clear them until it runs.
                         record_groups_with_perms.append((record_group, None))
-                        updated_time_ms = _parse_salesforce_timestamp(acc.LastModifiedDate)
+                        # The edge schemas need non-null timestamps; an account without dates gets now.
+                        edge_created_ms = start_time_ms or get_epoch_timestamp_in_ms()
+                        edge_updated_ms = _parse_salesforce_timestamp(acc.LastModifiedDate) or edge_created_ms
                         prospect_edge = {
                             "to_id": org_node.id,
                             "rating": rating,
@@ -4781,8 +4808,8 @@ class SalesforceConnector(BaseConnector):
                             "externalId": account_id,
                             "startTime": start_time_ms,
                             "endTime": end_time_ms,
-                            "createdAtTimestamp": start_time_ms,
-                            "updatedAtTimestamp": updated_time_ms,
+                            "createdAtTimestamp": edge_created_ms,
+                            "updatedAtTimestamp": edge_updated_ms,
                         }
                         customer_edge: Optional[Dict] = None
                         if end_time_ms is not None:
@@ -4793,8 +4820,8 @@ class SalesforceConnector(BaseConnector):
                                 "activeCustomer": active_customer,
                                 "externalId": account_id,
                                 "since": end_time_ms,
-                                "createdAtTimestamp": start_time_ms,
-                                "updatedAtTimestamp": updated_time_ms,
+                                "createdAtTimestamp": edge_created_ms,
+                                "updatedAtTimestamp": edge_updated_ms,
                             }
                         orgs_with_edges.append((org_node, record_group, prospect_edge, customer_edge))
                     except Exception as e:
@@ -4814,16 +4841,35 @@ class SalesforceConnector(BaseConnector):
                     tx_store: TransactionStore, orgs_with_edges: list[tuple[Org, RecordGroup, dict, dict | None]]
                 ) -> None:
                     nonlocal external_org_key_by_name
-                    all_orgs = await tx_store.get_all_orgs(is_external=True)
-                    parent_org_id = self._get_parent_org_id()
+                    all_orgs = await tx_store.get_all_orgs(is_external=True, raise_on_error=True)
                     external_org_key_by_name = {
                         o["name"]: o.get("id", o.get("_key"))
-                        for o in all_orgs
-                        if parent_org_id is None or o.get("parentOrgId") == parent_org_id
+                        for o in accounts_last(await self._own_external_orgs(tx_store, all_orgs))
                     }
+                    external_keys = set(external_org_key_by_name.values())
+                    account_owners: dict[str, set[str | None]] | None = None
                     delete_tasks = []
                     for org, rg, _, _ in orgs_with_edges:
                         existing_key = external_org_key_by_name.get(org.name)
+                        adopted = False
+                        if existing_key is not None and existing_key == extracted_organization_id(org_id, org.name):
+                            # Extraction's node found by its exact name: claimed only as below, once per page.
+                            existing_key = None
+                        if existing_key is None:
+                            # A node documents named before the CRM synced the
+                            # account (KG-13 3b): the account takes it over, so
+                            # those records link to it. Only extraction's own
+                            # deterministic key, never another account's.
+                            extracted = extracted_organization_id(org_id, org.name)
+                            # Not a node another account holds, nor one taken earlier in this page.
+                            if extracted in external_keys:
+                                if account_owners is None:
+                                    account_owners = await self._account_org_owners(tx_store)
+                                holders = account_owners.get(extracted, set())
+                                if holders <= {rg.external_group_id}:
+                                    existing_key = extracted
+                                    adopted = not holders  # a rename of its holder is not a first sync
+                                    external_keys.discard(extracted)
                         if existing_key is not None:
                             org.id = existing_key
                             delete_tasks.append(tx_store.delete_edges_to(
@@ -4841,9 +4887,9 @@ class SalesforceConnector(BaseConnector):
                                 CollectionNames.RECORD_GROUPS.value,
                                 CollectionNames.DEAL_OF.value,
                             ))
-                        else:
-                            if rg.external_group_id:
-                                newly_synced_account_ids.add(rg.external_group_id)
+                        if (existing_key is None or adopted) and rg.external_group_id:
+                            # An adopted node is old, but the account is first synced now.
+                            newly_synced_account_ids.add(rg.external_group_id)
                     if delete_tasks:
                         for _del in delete_tasks:
                             await _del
@@ -4939,17 +4985,21 @@ class SalesforceConnector(BaseConnector):
                             )
                             continue
 
+                        since_ms = _parse_salesforce_timestamp(contact.CreatedDate)
+                        contact_updated_ms = _parse_salesforce_timestamp(contact.LastModifiedDate)
+                        # The person and edge schemas need non-null timestamps; a contact without dates gets now.
+                        edge_created_ms = since_ms or get_epoch_timestamp_in_ms()
+                        edge_updated_ms = contact_updated_ms or edge_created_ms
+
                         person = self._create_person(
                             email=email,
                             org_id=org_id,
                             first_name=contact.FirstName,
                             last_name=contact.LastName,
                             phone=contact.Phone,
-                            created_at=_parse_salesforce_timestamp(contact.CreatedDate),
-                            updated_at=_parse_salesforce_timestamp(contact.LastModifiedDate),
+                            created_at=edge_created_ms,
+                            updated_at=edge_updated_ms,
                         )
-                        since_ms = _parse_salesforce_timestamp(contact.CreatedDate)
-                        contact_updated_ms = _parse_salesforce_timestamp(contact.LastModifiedDate)
 
                         contact_edge = {
                             "to_id": person.id,
@@ -4957,8 +5007,8 @@ class SalesforceConnector(BaseConnector):
                             "leadSource": contact.LeadSource,
                             "since": since_ms,
                             "externalId": contact_id,
-                            "createdAtTimestamp": since_ms,
-                            "updatedAtTimestamp": contact_updated_ms,
+                            "createdAtTimestamp": edge_created_ms,
+                            "updatedAtTimestamp": edge_updated_ms,
                         }
                         member_of_edge: Optional[Dict] = None
                         account_obj = contact.Account or {}
@@ -4969,8 +5019,8 @@ class SalesforceConnector(BaseConnector):
                                 "accountName": account_name,
                                 "title": contact.Title,
                                 "department": contact.Department,
-                                "createdAtTimestamp": since_ms,
-                                "updatedAtTimestamp": contact_updated_ms,
+                                "createdAtTimestamp": edge_created_ms,
+                                "updatedAtTimestamp": edge_updated_ms,
                             }
                         contact_with_edges.append((person, contact_edge, member_of_edge))
                     except Exception as e:
@@ -5028,11 +5078,7 @@ class SalesforceConnector(BaseConnector):
                     }
                     org_name_map = {
                         node.get("name"): node
-                        for node in (existing_orgs_result or [])
-                        if parent_org_id is None or (
-                            node.get("isExternal") is True
-                            and node.get("parentOrgId") == parent_org_id
-                        )
+                        for node in accounts_last(await self._own_external_orgs(tx_store, existing_orgs_result or []))
                     }
 
                     unchanged_emails: set = set()
@@ -5150,6 +5196,9 @@ class SalesforceConnector(BaseConnector):
                             _parse_salesforce_timestamp(lead.ConvertedDate)
                             if is_converted else None
                         )
+                        # The person and edge schemas need non-null timestamps; a lead without dates gets now.
+                        edge_created_ms = start_time_ms or get_epoch_timestamp_in_ms()
+                        edge_updated_ms = _parse_salesforce_timestamp(lead.LastModifiedDate) or edge_created_ms
                         edge_attrs = {
                             "company": lead.Company,
                             "title": lead.Title,
@@ -5161,8 +5210,8 @@ class SalesforceConnector(BaseConnector):
                             "externalId": lead_id,
                             "startTime": start_time_ms,
                             "endTime": end_time_ms,
-                            "createdAtTimestamp": start_time_ms,
-                            "updatedAtTimestamp": _parse_salesforce_timestamp(lead.LastModifiedDate),
+                            "createdAtTimestamp": edge_created_ms,
+                            "updatedAtTimestamp": edge_updated_ms,
                         }
                         lead_email = lead.Email
                         if not lead_email:
@@ -5176,8 +5225,8 @@ class SalesforceConnector(BaseConnector):
                             first_name=lead.FirstName,
                             last_name=lead.LastName,
                             phone=lead.Phone,
-                            created_at=_parse_salesforce_timestamp(lead.CreatedDate),
-                            updated_at=_parse_salesforce_timestamp(lead.LastModifiedDate),
+                            created_at=edge_created_ms,
+                            updated_at=edge_updated_ms,
                         )
                         lead_with_edges.append((person, edge_attrs))
                     except Exception as e:
@@ -5408,8 +5457,9 @@ class SalesforceConnector(BaseConnector):
                     records.append(record)
                     deal_info_edge = {
                         "stage": opp.StageName or "",
-                        "createdAtTimestamp": _parse_salesforce_timestamp(opp.CreatedDate),
-                        "updatedAtTimestamp": _parse_salesforce_timestamp(opp.LastModifiedDate),
+                        # The edge schema needs non-null timestamps; an opportunity without dates gets now.
+                        "createdAtTimestamp": _parse_salesforce_timestamp(opp.CreatedDate) or get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": _parse_salesforce_timestamp(opp.LastModifiedDate) or get_epoch_timestamp_in_ms(),
                     }
                     opportunity_with_edges.append((record, deal_info_edge))
 

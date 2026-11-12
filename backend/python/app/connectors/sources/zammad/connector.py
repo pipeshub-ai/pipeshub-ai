@@ -1,6 +1,8 @@
 """Zammad Connector Implementation"""
 import asyncio
 import base64
+import json
+import mimetypes
 import os
 import re
 from dataclasses import dataclass, field
@@ -16,6 +18,7 @@ from typing import (
     Optional,
     Tuple,
 )
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from bs4 import BeautifulSoup  # pyright: ignore[reportMissingModuleSource]
@@ -32,7 +35,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -69,7 +72,17 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.sources.zammad.access import GroupReaders, RoleAccess, UserAccess, is_external
 from app.connectors.sources.zammad.common.apps import ZammadApp
+from app.connectors.sources.zammad.kb_access import (
+    ARCHIVED,
+    DRAFT,
+    INTERNAL,
+    PUBLISHED,
+    CategoryAccess,
+    answer_changed_at,
+    answer_state,
+)
 from app.connectors.utils.record_ids import new_record_id
 from app.connectors.utils.value_mapper import ValueMapper
 from app.models.blocks import (
@@ -111,6 +124,10 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Config path for Zammad connector
 ZAMMAD_CONFIG_PATH = "/services/connectors/{connector_id}/config"
+# Zammad has no API rate limit of its own; this keeps one sync from crowding out
+# the agents working in the same instance. A 429 or 5xx from a proxy in front is
+# retried with backoff (Retry-After honoured, up to 30 s a wait).
+ZAMMAD_REQUESTS_PER_SECOND = 20
 
 # Constants for batch processing and parsing
 BATCH_SIZE_KB_ANSWERS = 50
@@ -141,6 +158,8 @@ MAX_TICKET_READ_ATTEMPTS = 3
 # Narrowest updated_at window a group's ticket search is split into (queries use whole seconds).
 MIN_SPLIT_WINDOW_MS = 60_000
 GRAPH_RECORDS_PAGE_SIZE = 500
+# Largest image inlined into an answer's text as a data URI; a larger one stays a link.
+MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
 FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup:excluded_groups"
 # A Zammad before 6.5 can't count tickets, so finding deleted ones means listing every
 # held ticket. That runs at most this often per group; 6.5 and later check every sync.
@@ -150,6 +169,8 @@ FULL_TICKET_LISTING_INTERVAL_MS = int(
 )
 # Attachment records are "<ticket>_<article>_<attachment>".
 TICKET_ATTACHMENT_ID_PATTERN = re.compile(r"^(\d+)_\d+_\d+$")
+# Knowledge-base answer records are "kb_answer_<answer>".
+KB_ANSWER_ID_PATTERN = re.compile(r"^kb_answer_(\d+)$")
 
 
 @dataclass(frozen=True)
@@ -201,6 +222,20 @@ class ZammadReadError(Exception):
         super().__init__(message)
         self.read_until = read_until
         self.burst = burst
+
+
+class ZammadSyncIncompleteError(Exception):
+    """Part of a sync could not be read or written; raised once the rest has run.
+
+    Everything that was read is written first, and nothing is removed on the
+    strength of a read that failed. Raising makes the run end as failed, so it
+    is never reported as a success, and a full sync does not unlink what it did
+    not see.
+    """
+
+    def __init__(self, parts: list[str]) -> None:
+        super().__init__("Zammad sync incomplete: " + "; ".join(parts))
+        self.parts = parts
 
 
 class ReadOutcome(Enum):
@@ -255,6 +290,7 @@ ZAMMAD_LINK_OBJECT_MAP: Dict[str, RecordType] = {
     .with_description("Sync tickets, articles, knowledge base, and users from Zammad")\
     .with_categories(["Help Desk", "Knowledge Base"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_resilience_config(rate_limit=ZAMMAD_REQUESTS_PER_SECOND, max_retries=3, max_delay=30.0)\
     .with_auth([
         AuthBuilder.type(AuthType.API_TOKEN).fields([
             AuthField(
@@ -385,9 +421,18 @@ class ZammadConnector(BaseConnector):
         # Cache for lookups
         self._state_map: Dict[int, str] = {}  # state_id -> state_name
         self._priority_map: Dict[int, str] = {}  # priority_id -> priority_name
-        self._user_id_to_data: Dict[int, Dict[str, Any]] = {}  # user_id -> {"email": str, "role_ids": List[int]} (lightweight mapping)
+        self._user_id_to_data: dict[int, dict[str, Any]] = {}  # user_id -> {"email", "name", "role_ids"} (lightweight mapping)
+        # What each synced user brings to ticket access (active, roles, own group rows).
+        self._user_access: dict[int, UserAccess] = {}
         # How the last _fetch_users read ended; run_sync reads it straight after.
         self._users_read = ReadOutcome.COMPLETE
+        # Parts of the current sync that could not be read or written (see ZammadSyncIncompleteError).
+        self._incomplete: list[str] = []
+        # Ids of the groups listed as inactive; their tickets leave PipesHub like a filtered-out group's.
+        self._inactive_group_ids: set[str] | None = None
+        self._inactive_group_names: dict[str, str] = {}
+        # Ticket id -> external ids of the attachments written for it this sync (the group being synced).
+        self._written_attachments: dict[str, set[str]] = {}
 
         # Filter collections (initialized in run_sync)
         self.sync_filters: Any = None
@@ -409,7 +454,8 @@ class ZammadConnector(BaseConnector):
             client = await ZammadClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
-                connector_instance_id=self.connector_id
+                connector_instance_id=self.connector_id,
+                resilience=self.resilience,
             )
 
             # Store client for future use
@@ -481,7 +527,8 @@ class ZammadConnector(BaseConnector):
             client = await ZammadClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
-                connector_instance_id=self.connector_id
+                connector_instance_id=self.connector_id,
+                resilience=self.resilience,
             )
             self.external_client = client
             self.data_source = ZammadDataSource(client)
@@ -547,27 +594,39 @@ class ZammadConnector(BaseConnector):
             self.sync_filters = sync_filters
             self.indexing_filters = indexing_filters
             self._ticket_count_unsupported = False
+            self._incomplete = []
 
-            # Step 1: Fetch and sync users
-            self.logger.info("👤 Step 1: Syncing users...")
-            users, user_email_map = await self._fetch_users()
+            # Step 1: Roles, read first: who is staff and who a customer, and who may
+            # read a group's tickets, depend on the roles' permissions and group access.
+            self.logger.info("🎭 Step 1: Reading roles...")
+            roles_data, roles_read = await self._fetch_roles()
+            if roles_read is not ReadOutcome.COMPLETE:
+                self._incomplete.append(f"the role list ({roles_read.value})")
+            roles = {int(r["id"]): RoleAccess.from_role(r) for r in roles_data if str(r.get("id", "")).isdigit()}
+
+            # Step 2: Fetch and sync users
+            self.logger.info("👤 Step 2: Syncing users...")
+            users, user_email_map = await self._fetch_users(roles if roles_read is ReadOutcome.COMPLETE else None)
             if users:
                 await self.data_entities_processor.on_new_app_users(users)
                 self.logger.info(f"✅ Synced {len(users)} users")
-            # Group and role members are built from the user list, and writing them
-            # replaces what is stored: from a list cut short, everyone not on it would
-            # lose access through every group and role.
-            keep_members = self._users_read is ReadOutcome.INTERRUPTED
+            if self._users_read is not ReadOutcome.COMPLETE:
+                self._incomplete.append(f"the user list ({self._users_read.value})")
+            # Group and role members are built from the user and role lists, and
+            # writing them replaces what is stored: from a list cut short, everyone
+            # not on it would lose access through every group and role.
+            keep_members = ReadOutcome.INTERRUPTED in (self._users_read, roles_read)
+            readers = GroupReaders(self._user_access, roles)
 
-            # Step 2: Fetch and sync groups (creates BOTH RecordGroups AND UserGroups)
-            self.logger.info("👥 Step 2: Syncing groups...")
-            group_record_groups, group_user_groups = await self._fetch_groups(user_email_map)
+            # Step 3: Fetch and sync groups (creates BOTH RecordGroups AND UserGroups)
+            self.logger.info("👥 Step 3: Syncing groups...")
+            group_record_groups, group_user_groups = await self._fetch_groups(user_email_map, readers)
 
             # IMPORTANT: Sync UserGroups BEFORE RecordGroups!
             # so UserGroups must exist first for permission edges to be created.
             if keep_members:
                 self.logger.warning(
-                    "⚠️ The user list was not read in full, so group members stay as stored this sync"
+                    "⚠️ The user or role list was not read in full, so group members stay as stored this sync"
                 )
             elif group_user_groups:
                 await self.data_entities_processor.on_new_user_groups(group_user_groups)
@@ -577,14 +636,13 @@ class ZammadConnector(BaseConnector):
                 await self.data_entities_processor.on_new_record_groups(group_record_groups)
                 self.logger.info(f"✅ Synced {len(group_record_groups)} groups as RecordGroups")
 
-            # Step 3: Fetch and sync roles
+            # Step 4: Sync roles and their members
             if keep_members:
                 self.logger.warning(
-                    "⚠️ The user list was not read in full, so roles and their members stay as stored this sync"
+                    "⚠️ The user or role list was not read in full, so roles and their members stay as stored this sync"
                 )
             else:
-                self.logger.info("🎭 Step 3: Syncing roles...")
-                await self._sync_roles(users, user_email_map)
+                await self._sync_roles(roles_data, user_email_map)
 
             # Step 5: Sync tickets (linked to group RecordGroups via group_id)
             self.logger.info("🎫 Step 5: Syncing tickets...")
@@ -596,6 +654,9 @@ class ZammadConnector(BaseConnector):
             self.logger.info("📚 Step 6: Syncing knowledge base...")
             await self._sync_knowledge_bases()
 
+            if self._incomplete:
+                # Everything readable has been written; the run still must not count as a success.
+                raise ZammadSyncIncompleteError(self._incomplete)
             self.logger.info(f"✅ Zammad sync completed for connector {self.connector_id}")
 
         except Exception as e:
@@ -644,9 +705,17 @@ class ZammadConnector(BaseConnector):
 
     # ==================== ENTITY FETCHING & SYNCING ====================
 
-    async def _fetch_users(self) -> Tuple[List[AppUser], Dict[str, AppUser]]:
+    async def _fetch_users(
+        self, roles: Optional[dict[int, RoleAccess]] = None,
+    ) -> tuple[list[AppUser], dict[str, AppUser]]:
         """
         Fetch all users from Zammad with pagination.
+
+        Args:
+            roles: The complete role list, when it could be read. A user none of whose
+                active roles is a staff role is a customer of the help desk and is
+                registered as a guest, so PipesHub does not make them an
+                organisation member. Without the roles nobody is marked a guest.
 
         Returns:
             Tuple of (list of AppUser objects, email -> AppUser map). Whether
@@ -655,6 +724,9 @@ class ZammadConnector(BaseConnector):
         users: List[AppUser] = []
         user_email_map: Dict[str, AppUser] = {}
         self._users_read = ReadOutcome.INTERRUPTED
+        # The connector instance outlives a sync: last sync's users must not linger.
+        self._user_id_to_data = {}
+        self._user_access = {}
 
         datasource = await self._get_fresh_datasource()
         page = 1
@@ -704,24 +776,16 @@ class ZammadConnector(BaseConnector):
                     self.logger.debug(f"Skipping system user: {email} ({full_name})")
                     continue
 
-                # Store lightweight mapping: user_id -> {email, role_ids} (instead of full user data)
-                role_ids = user_data.get("role_ids", [])
-                role_ids_int = []
-                if role_ids:
-                    # Convert to list of integers
-                    for role_id in role_ids:
-                        if isinstance(role_id, int):
-                            role_ids_int.append(role_id)
-                        elif isinstance(role_id, str) and role_id.isdigit():
-                            role_ids_int.append(int(role_id))
-
-                self._user_id_to_data[user_id] = {
-                    "email": email.lower(),
-                    "role_ids": role_ids_int
-                }
-
+                # Store lightweight mapping: user_id -> {email, name, role_ids} (instead of full user data)
+                access = UserAccess.from_user(user_data)
+                self._user_access[user_id] = access
                 # Use full_name (already computed above) or fallback to email
                 display_name = full_name or email
+                self._user_id_to_data[user_id] = {
+                    "email": email.lower(),
+                    "name": display_name,
+                    "role_ids": sorted(access.role_ids),
+                }
 
                 # Create AppUser
                 app_user = AppUser(
@@ -733,6 +797,7 @@ class ZammadConnector(BaseConnector):
                     email=email,
                     full_name=display_name,
                     is_active=active,
+                    is_guest=roles is not None and is_external(access, roles),
                 )
 
                 users.append(app_user)
@@ -755,14 +820,23 @@ class ZammadConnector(BaseConnector):
 
     async def _fetch_groups(
         self,
-        user_email_map: Dict[str, AppUser]
+        user_email_map: dict[str, AppUser],
+        readers: GroupReaders,
     ) -> Tuple[List[Tuple[RecordGroup, List[Permission]]], List[Tuple[AppUserGroup, List[AppUser]]]]:
         """
         Fetch Zammad groups and create BOTH RecordGroups AND UserGroups.
         Groups are the permission boundary for tickets in Zammad.
 
+        A group's UserGroup holds the users who may read its tickets (``readers``),
+        not its ``user_ids``: those list every access level, and ``change``,
+        ``create`` or ``overview`` alone does not let an agent read a ticket. An
+        inactive group is written with no members, since nobody reads its tickets
+        as an agent, and gets no RecordGroup; its tickets are removed like a
+        filtered-out group's (see ``_remove_tickets_in_excluded_groups``).
+
         Args:
             user_email_map: Map of email -> AppUser for membership tracking
+            readers: Who may read each group's tickets, from the user and role lists
 
         Returns:
             Tuple of (record_groups, user_groups):
@@ -777,8 +851,10 @@ class ZammadConnector(BaseConnector):
         per_page = 100
         self._filter_excluded_group_ids = None
         self._synced_group_ids = None
+        self._inactive_group_ids = None
         excluded_group_ids: set[str] = set()
         synced_group_ids: set[str] = set()
+        inactive_group_ids: set[str] = set()
         listing_complete = True
 
         while True:
@@ -786,7 +862,15 @@ class ZammadConnector(BaseConnector):
 
             if not response.success:
                 listing_complete = False
-                self.logger.warning(f"Failed to fetch groups from Zammad (page {page})")
+                outcome = read_failure(response.status_code)
+                hint = ""
+                if response.status_code == HttpStatusCode.FORBIDDEN.value:
+                    # Zammad before 6.5 lists groups to admin.group only.
+                    hint = "; before Zammad 6.5 the token needs the admin.group permission"
+                self._incomplete.append(f"the group list ({outcome.value}{hint})")
+                self.logger.warning(
+                    f"Failed to fetch groups from Zammad (page {page}, HTTP {response.status_code}){hint}"
+                )
                 break
             if not response.data:
                 break
@@ -801,53 +885,30 @@ class ZammadConnector(BaseConnector):
             for group_data in groups_data:
                 group_id = group_data.get("id")
                 group_name = group_data.get("name", "")
-                active = group_data.get("active", True)
+                active = group_data.get("active", True) is not False
 
                 if group_id and not self._is_group_allowed_by_filter(str(group_id)):
                     excluded_group_ids.add(str(group_id))
                     self.logger.debug(f"⏭️ Skipping group {group_id} ({group_name}) - excluded by filter")
                     continue
 
-                if not active or not group_id or not group_name:
+                if not group_id or not group_name:
                     continue
 
-                # Parse timestamps
-                created_at = self._parse_zammad_datetime(group_data.get("created_at", ""))
-                updated_at = self._parse_zammad_datetime(group_data.get("updated_at", ""))
+                if active:
+                    record_groups.append((self._group_record_group(group_data), [
+                        # Permission: UserGroup -> RecordGroup (the group's readers can access)
+                        Permission(
+                            entity_type=EntityType.GROUP,
+                            type=PermissionType.READ,
+                            external_id=str(group_id)  # Links to UserGroup.source_user_group_id
+                        )
+                    ]))
+                    synced_group_ids.add(str(group_id))
+                else:
+                    inactive_group_ids.add(str(group_id))
+                    self._inactive_group_names[str(group_id)] = group_name
 
-                # Build web URL for group
-                web_url = None
-                if self.base_url:
-                    web_url = f"{self.base_url}/#manage/groups/{group_id}"
-
-                # 1. Create RecordGroup for permission inheritance
-                record_group = RecordGroup(
-                    id=str(uuid4()),
-                    org_id=self.data_entities_processor.org_id,
-                    external_group_id=f"group_{group_id}",
-                    connector_id=self.connector_id,
-                    connector_name=self.connector_name,
-                    name=group_name,
-                    short_name=str(group_id),
-                    group_type=RecordGroupType.PROJECT,
-                    web_url=web_url,
-                    source_created_at=created_at if created_at else None,
-                    source_updated_at=updated_at if updated_at else None,
-                )
-
-                # Permission: UserGroup -> RecordGroup (group members can access)
-                permissions: List[Permission] = [
-                    Permission(
-                        entity_type=EntityType.GROUP,
-                        type=PermissionType.READ,
-                        external_id=str(group_id)  # Links to UserGroup.source_user_group_id
-                    )
-                ]
-
-                record_groups.append((record_group, permissions))
-                synced_group_ids.add(str(group_id))
-
-                # 2. Create AppUserGroup for membership tracking
                 user_group = AppUserGroup(
                     id=str(uuid4()),
                     org_id=self.data_entities_processor.org_id,
@@ -855,53 +916,14 @@ class ZammadConnector(BaseConnector):
                     connector_id=self.connector_id,
                     app_name=Connectors.ZAMMAD,
                     name=group_name,
-                    description=group_data.get("note", ""),
+                    description=group_data.get("note", "") or "",
                 )
-
-                # Get users assigned to this group by calling get_group API
-                member_app_users: List[AppUser] = []
-                try:
-                    group_detail_response = await datasource.get_group(group_id)
-                except Exception as e:
-                    group_detail_response = None
-                    self.logger.warning(f"Failed to fetch group members for group {group_id}: {e}")
-                group_detail = group_detail_response.data if group_detail_response else None
-                if group_detail_response and group_detail_response.success and isinstance(group_detail, dict):
-                    # Zammad API returns user_ids or member_ids in group detail
-                    member_user_ids = group_detail.get("user_ids", [])
-
-                    for member_user_id in member_user_ids:
-                        # Convert to int if needed
-                        if isinstance(member_user_id, str) and member_user_id.isdigit():
-                            member_user_id = int(member_user_id)
-
-                        # Get email from lightweight mapping
-                        user_data = self._user_id_to_data.get(member_user_id)
-                        if user_data:
-                            email = user_data.get("email")
-                            if email and email in user_email_map:
-                                member_app_users.append(user_email_map[email])
-                elif (
-                    group_detail_response is None
-                    or group_detail_response.success
-                    or read_failure(group_detail_response.status_code) is ReadOutcome.INTERRUPTED
-                ):
-                    # Writing the group replaces its stored members, so a group whose
-                    # members weren't read is left out and keeps them. Its RecordGroup
-                    # above is still written, so its tickets sync.
-                    self.logger.warning(
-                        f"Could not read the members of group {group_id}; its members stay as stored this sync"
-                    )
-                    continue
-                else:
-                    # Refused (or gone, 404): saved with no members, so nobody keeps
-                    # access through it that Zammad can't confirm.
-                    self.logger.warning(
-                        f"Zammad refused the members of group {group_id} "
-                        f"(HTTP {group_detail_response.status_code}); saving it with none"
-                    )
-
-                user_groups.append((user_group, member_app_users))
+                members: list[AppUser] = []
+                for user_id in sorted(readers.readers(group_id, group_active=active)):
+                    email = self._user_id_to_data.get(user_id, {}).get("email")
+                    if email and email in user_email_map:
+                        members.append(user_email_map[email])
+                user_groups.append((user_group, members))
 
             # Check if we got less than per_page, meaning we're done
             if len(groups_data) < per_page:
@@ -912,98 +934,115 @@ class ZammadConnector(BaseConnector):
         if listing_complete:
             self._filter_excluded_group_ids = excluded_group_ids
             self._synced_group_ids = synced_group_ids
+            self._inactive_group_ids = inactive_group_ids
         self.logger.info(
             f"📥 Fetched {len(user_groups)} groups, "
             f"created {len(record_groups)} RecordGroups and {len(user_groups)} UserGroups"
         )
         return (record_groups, user_groups)
 
+    def _group_record_group(self, group_data: dict[str, Any]) -> RecordGroup:
+        """The RecordGroup a Zammad group's tickets sit in."""
+        group_id = group_data.get("id")
+        created_at = self._parse_zammad_datetime(group_data.get("created_at", ""))
+        updated_at = self._parse_zammad_datetime(group_data.get("updated_at", ""))
+        return RecordGroup(
+            id=str(uuid4()),
+            org_id=self.data_entities_processor.org_id,
+            external_group_id=f"group_{group_id}",
+            connector_id=self.connector_id,
+            connector_name=self.connector_name,
+            name=group_data.get("name", ""),
+            short_name=str(group_id),
+            group_type=RecordGroupType.PROJECT,
+            web_url=f"{self.base_url}/#manage/groups/{group_id}" if self.base_url else None,
+            source_created_at=created_at if created_at else None,
+            source_updated_at=updated_at if updated_at else None,
+        )
+
+    async def _fetch_roles(self) -> tuple[list[dict[str, Any]], ReadOutcome]:
+        """Every role, with its permission names (``expand``), and how far the read got."""
+        datasource = await self._get_fresh_datasource()
+        roles: list[dict[str, Any]] = []
+        page = 1
+        per_page = 100
+        while True:
+            response = await datasource.list_roles(page=page, per_page=per_page, expand=True)
+            if not response.success:
+                outcome = read_failure(response.status_code)
+                hint = ""
+                if response.status_code == HttpStatusCode.FORBIDDEN.value:
+                    # Zammad before 6.5 lists roles to admin.role only.
+                    hint = "; before Zammad 6.5 the token needs the admin.role permission"
+                self.logger.warning(
+                    f"Failed to read Zammad roles (page {page}, HTTP {response.status_code}){hint}: "
+                    f"{response.error or response.message}"
+                )
+                return roles, outcome
+            data = response.data
+            if not data:
+                return roles, ReadOutcome.COMPLETE
+            if not isinstance(data, list) or not all(isinstance(r, dict) for r in data):
+                self.logger.warning(f"Zammad answered the role list (page {page}) with something that is not a list of roles")
+                return roles, ReadOutcome.INTERRUPTED
+            if any(r.get("permission_ids") and not isinstance(r.get("permissions"), list) for r in data):
+                # Without the names nobody would count as an agent, and every member list would be emptied.
+                self.logger.warning("Zammad listed roles without their permission names (expand); members stay as stored")
+                return roles, ReadOutcome.INTERRUPTED
+            roles.extend(data)
+            if len(data) < per_page:
+                return roles, ReadOutcome.COMPLETE
+            page += 1
+
     async def _sync_roles(
         self,
-        users: List[AppUser],
+        roles_data: list[dict[str, Any]],
         user_email_map: Dict[str, AppUser]
     ) -> None:
-        """Fetch and sync roles from Zammad as AppRoles with user mappings."""
-        try:
-            datasource = await self._get_fresh_datasource()
-            page = 1
-            per_page = 100
-            app_roles: List[Tuple[AppRole, List[AppUser]]] = []
+        """Write the roles as AppRoles with their members.
 
-            while True:
-                response = await datasource.list_roles(page=page, per_page=per_page)
+        An inactive role is written with no members: Zammad grants nothing
+        through it, so nobody keeps knowledge-base access through it.
+        """
+        app_roles: list[tuple[AppRole, list[AppUser]]] = []
+        for role_data in roles_data:
+            role_id = role_data.get("id")
+            if not role_id:
+                continue
 
-                if not response.success:
-                    if page == 1:
-                        self.logger.warning(f"Failed to fetch roles: {response.message if hasattr(response, 'message') else 'Unknown error'}")
-                    break
+            role_name = role_data.get("name", f"Role {role_id}")
+            active = role_data.get("active", True) is not False
 
-                if not response.data:
-                    break
+            # Parse timestamps
+            created_at = self._parse_zammad_datetime(role_data.get("created_at", ""))
+            updated_at = self._parse_zammad_datetime(role_data.get("updated_at", ""))
 
-                roles_data = response.data
-                if not isinstance(roles_data, list):
-                    roles_data = [roles_data]
+            # Get users assigned to this role by checking user_id_to_data mapping
+            role_users: list[AppUser] = []
+            if active:
+                for user_data in self._user_id_to_data.values():
+                    if role_id in user_data.get("role_ids", []):
+                        email = user_data.get("email")
+                        if email and email in user_email_map:
+                            role_users.append(user_email_map[email])
 
-                if not roles_data:
-                    break
+            app_role = AppRole(
+                id=str(uuid4()),
+                org_id=self.data_entities_processor.org_id,
+                source_role_id=str(role_id),
+                connector_id=self.connector_id,
+                app_name=Connectors.ZAMMAD,
+                name=role_name,
+                source_created_at=created_at if created_at else None,
+                source_updated_at=updated_at if updated_at else None,
+            )
+            app_roles.append((app_role, role_users))
 
-                # Process each role directly in the loop (like groups)
-                for role_data in roles_data:
-                    role_id = role_data.get("id")
-                    if not role_id:
-                        continue
-
-                    role_name = role_data.get("name", f"Role {role_id}")
-                    active = role_data.get("active", True)
-
-                    if not active:
-                        continue
-
-                    # Parse timestamps
-                    created_at = self._parse_zammad_datetime(role_data.get("created_at", ""))
-                    updated_at = self._parse_zammad_datetime(role_data.get("updated_at", ""))
-
-                    # Get users assigned to this role by checking user_id_to_data mapping
-                    role_users: List[AppUser] = []
-                    for user_id, user_data in self._user_id_to_data.items():
-                        user_role_ids = user_data.get("role_ids", [])
-                        if role_id in user_role_ids:
-                            # Get email from lightweight mapping
-                            email = user_data.get("email")
-                            if email and email in user_email_map:
-                                role_users.append(user_email_map[email])
-
-                    # Create AppRole
-                    app_role = AppRole(
-                        id=str(uuid4()),
-                        org_id=self.data_entities_processor.org_id,
-                        source_role_id=str(role_id),
-                        connector_id=self.connector_id,
-                        app_name=Connectors.ZAMMAD,
-                        name=role_name,
-                        source_created_at=created_at if created_at else None,
-                        source_updated_at=updated_at if updated_at else None,
-                    )
-
-                    app_roles.append((app_role, role_users))
-
-                # Check if we got less than per_page, meaning we're done
-                if len(roles_data) < per_page:
-                    break
-
-                page += 1
-
-            # Sync roles
-            if app_roles:
-                await self.data_entities_processor.on_new_app_roles(app_roles)
-                self.logger.info(f"✅ Synced {len(app_roles)} roles")
-            else:
-                self.logger.info("No roles found")
-
-        except Exception as e:
-            self.logger.error(f"❌ Error syncing roles: {e}", exc_info=True)
-            raise
+        if app_roles:
+            await self.data_entities_processor.on_new_app_roles(app_roles)
+            self.logger.info(f"✅ Synced {len(app_roles)} roles")
+        else:
+            self.logger.info("No roles found")
 
     # ==================== TICKET SYNCING ====================
 
@@ -1042,6 +1081,7 @@ class ZammadConnector(BaseConnector):
 
                 self.logger.info(f"📋 Starting ticket sync for group: {group_name}")
 
+                self._written_attachments = {}
                 # Read group-level sync point (using group name as key)
                 last_sync_time = await self._get_group_sync_checkpoint(group_name)
                 burst_resume = await self._get_burst_resume(group_name)
@@ -1093,6 +1133,7 @@ class ZammadConnector(BaseConnector):
                             self.logger.debug(f"📝 Synced batch: {batch_tickets} tickets for group {group_name}")
                 except ZammadReadError as e:
                     listing_complete = False
+                    self._incomplete.append(f"the tickets of group '{group_name}'")
                     self.logger.warning(
                         f"⚠️ Incomplete ticket read for group {group_name}; the next sync reads again from the last complete window: {e}"
                     )
@@ -1129,6 +1170,7 @@ class ZammadConnector(BaseConnector):
                     self.logger.info(f"✅ Synced {total_tickets} tickets for group {group_name}")
 
             except Exception as e:
+                self._incomplete.append(f"the tickets of group '{group_record_group.name}'")
                 self.logger.error(f"❌ Error syncing tickets for group {group_record_group.name}: {e}", exc_info=True)
                 continue  # Continue with next group even if one fails
 
@@ -1338,7 +1380,11 @@ class ZammadConnector(BaseConnector):
                 continue
             version = f"{ticket_key}@{updated_at}"
             try:
-                batch_records.extend(await self._ticket_records(ticket_data))
+                records = await self._ticket_records(ticket_data)
+                batch_records.extend(records)
+                self._written_attachments[ticket_key] = {
+                    r.external_record_id for r, _ in records if isinstance(r, FileRecord)
+                }
                 written[ticket_key] = updated_at
                 failures.failing.pop(ticket_key, None)
                 failures.given_up.pop(version, None)
@@ -1472,8 +1518,13 @@ class ZammadConnector(BaseConnector):
         match = TICKET_ATTACHMENT_ID_PATTERN.match(external_id)
         return match.group(1) if match else None
 
-    async def _records_by_ticket_in_group(self, external_group_id: str) -> dict[str, list[str]]:
-        """Record ids of each ticket held in a group record group: its attachments, then the ticket."""
+    async def _records_by_ticket_in_group(
+        self, external_group_id: str, attachments: dict[str, list[tuple[str, str]]] | None = None,
+    ) -> dict[str, list[str]]:
+        """Record ids of each ticket held in a group record group: its attachments, then the ticket.
+
+        ``attachments``, when given, receives each ticket's attachment records as (record id, external id).
+        """
         by_ticket: dict[str, list[str]] = defaultdict(list)
         after_key: str | None = None
         while True:
@@ -1491,6 +1542,8 @@ class ZammadConnector(BaseConnector):
                     by_ticket[ticket_id].append(record.id)
                 else:
                     by_ticket[ticket_id].insert(0, record.id)
+                    if attachments is not None:
+                        attachments.setdefault(ticket_id, []).append((record.id, record.external_record_id or ""))
             if len(page) < GRAPH_RECORDS_PAGE_SIZE:
                 return by_ticket
             after_key = page[-1].id
@@ -1628,14 +1681,15 @@ class ZammadConnector(BaseConnector):
         if ticket is None or not self._is_group_allowed_by_filter(str(ticket["group_id"])) \
                 or not self._passes_date_filters(ticket):
             return await self._delete_ticket_records(record_ids, reason)
-        if f"group_{ticket['group_id']}" == held_in_group:
-            return True
         if self._synced_group_ids is None:
             return False
         if str(ticket["group_id"]) not in self._synced_group_ids:
+            # An inactive group (no agent reads it) or a nameless one: nothing syncs it.
             return await self._delete_ticket_records(
-                record_ids, f"{reason}; it is now in group {ticket['group_id']}, which is not synced"
+                record_ids, f"{reason}; it is in group {ticket['group_id']}, which is not synced"
             )
+        if f"group_{ticket['group_id']}" == held_in_group:
+            return True
         await self.data_entities_processor.on_new_records(await self._ticket_records(ticket))
         return True
 
@@ -1664,9 +1718,11 @@ class ZammadConnector(BaseConnector):
         """
         external_group_id = f"group_{group_id}"
         try:
-            by_ticket = await self._records_by_ticket_in_group(external_group_id)
+            held_attachments: dict[str, list[tuple[str, str]]] = {}
+            by_ticket = await self._records_by_ticket_in_group(external_group_id, held_attachments)
             if not by_ticket:
                 return
+            await self._remove_attachments_no_longer_on_their_ticket(group_name, by_ticket, held_attachments)
             point = await self.tickets_sync_point.read_sync_point(group_name) or {}
             last_full = point.get("full_listing_at") or 0
             full_listing_recent = get_epoch_timestamp_in_ms() - last_full < FULL_TICKET_LISTING_INTERVAL_MS
@@ -1696,58 +1752,121 @@ class ZammadConnector(BaseConnector):
                     self.logger.warning(f"Could not settle ticket {ticket_id} of group '{group_name}': {e}")
             if removed:
                 self.logger.info(f"🗑️ Settled {removed} tickets no longer listed in group '{group_name}'")
+            if not (all_read and settled_all):
+                self._incomplete.append(f"the check for deleted tickets of group '{group_name}'")
             # Only a full listing that read everything and settled everything starts the next interval.
             if self._ticket_count_unsupported and all_read and settled_all:
                 await self.tickets_sync_point.update_sync_point(
                     group_name, {"full_listing_at": get_epoch_timestamp_in_ms()},
                 )
         except Exception as e:
+            self._incomplete.append(f"the check for deleted tickets of group '{group_name}'")
             self.logger.warning(f"Could not check group '{group_name}' for deleted tickets: {e}", exc_info=True)
 
-    async def _remove_tickets_in_excluded_groups(self) -> None:
-        """Remove the tickets held in a group the applied group filter now leaves out.
+    async def _remove_attachments_no_longer_on_their_ticket(
+        self,
+        group_name: str,
+        by_ticket: dict[str, list[str]],
+        held_attachments: dict[str, list[tuple[str, str]]],
+    ) -> None:
+        """Remove the attachment records of a ticket written this sync that its articles no longer hold.
 
-        Each ticket is read back first, so one that moved to a synced group is
-        written there instead of removed. The clean-up is remembered in a sync
-        point only when every ticket was settled; editing the filters deletes
-        the sync points, so the next sync cleans up again.
+        A merge moves the source ticket's articles to the target, where their
+        attachments are written under the target's id; an article an agent deletes
+        takes its attachments with it. Only tickets whose articles were read in full
+        this sync are compared, so a failed read removes nothing.
+        """
+        for ticket_id, attachments in held_attachments.items():
+            current = self._written_attachments.get(ticket_id)
+            if current is None:
+                continue
+            for record_id, external_id in attachments:
+                if external_id in current:
+                    continue
+                if await self._delete_ticket_records(
+                    [record_id], f"attachment {external_id} is no longer on ticket {ticket_id}",
+                ):
+                    by_ticket[ticket_id].remove(record_id)
+                else:
+                    self._incomplete.append(f"the removal of attachment {external_id} in group '{group_name}'")
+
+    async def _remove_tickets_in_excluded_groups(self) -> None:
+        """Remove the tickets held in a group that is out of the sync's scope.
+
+        That is a group the applied group filter leaves out, or one Zammad lists
+        as inactive (no agent reads its tickets there). Each ticket is read back
+        first, so one that moved to a synced group is written there instead of
+        removed. An inactive group's ticket sync point is cleared with it, so if
+        the group is made active again its tickets are all read again. The
+        clean-up is remembered in a sync point only when every ticket was
+        settled; editing the filters deletes the sync points, so the next sync
+        cleans up again. Nothing is done before a complete group listing.
         """
         excluded = self._filter_excluded_group_ids
-        if not excluded:
+        inactive = self._inactive_group_ids
+        if excluded is None or inactive is None:
             return
-        wanted = sorted(excluded)
+        wanted = sorted(excluded | inactive)
         try:
             done = await self.tickets_sync_point.read_sync_point(FILTER_CLEANUP_SYNC_POINT_KEY)
-            if done and done.get("excluded_group_ids") == wanted:
+            done_ids = (done or {}).get("excluded_group_ids") or []
+            if done_ids == wanted:
+                return
+            if not wanted:
+                # A group made active again: its next deactivation must clean up again.
+                await self.tickets_sync_point.update_sync_point(FILTER_CLEANUP_SYNC_POINT_KEY, {"excluded_group_ids": []})
                 return
             unsettled = 0
             for group_id in wanted:
                 external_group_id = f"group_{group_id}"
+                reason = "group excluded by filter" if group_id in excluded else "group is inactive in Zammad"
                 by_ticket = await self._records_by_ticket_in_group(external_group_id)
                 if by_ticket:
-                    self.logger.info(
-                        f"🗑️ Settling {len(by_ticket)} tickets of group {group_id}, which the group filter excludes"
-                    )
+                    self.logger.info(f"🗑️ Settling {len(by_ticket)} tickets of group {group_id} ({reason})")
                 for ticket_id, record_ids in by_ticket.items():
                     try:
-                        settled = await self._settle_ticket(
-                            ticket_id, record_ids, external_group_id,
-                            f"group {group_id} excluded by filter",
-                        )
+                        if group_id in inactive and group_id not in excluded:
+                            # Zammad's own word that the group is out of reach: it lists the
+                            # group inactive, and refuses even an admin a ticket in it, so
+                            # there is nothing to read back. A ticket that moved to an active
+                            # group was refiled there by that group's read, earlier in this sync.
+                            settled = await self._delete_ticket_records(record_ids, f"group {group_id}: {reason}")
+                        else:
+                            settled = await self._settle_ticket(
+                                ticket_id, record_ids, external_group_id, f"group {group_id}: {reason}",
+                            )
                     except Exception as e:
                         settled = False
                         self.logger.warning(f"Could not settle ticket {ticket_id} of group {group_id}: {e}")
                     unsettled += not settled
+                if group_id in inactive and group_id not in excluded:
+                    await self._forget_group_sync_point(group_id)
+                if not unsettled and not await self._records_by_ticket_in_group(external_group_id):
+                    # Empty now: the group's folder goes too. Only after every ticket
+                    # in it was settled, so it takes no record with it.
+                    await self.data_entities_processor.on_record_group_deleted(external_group_id, self.connector_id)
             if unsettled:
+                self._incomplete.append(f"the removal of {unsettled} tickets of groups out of scope")
                 self.logger.warning(
-                    f"{unsettled} tickets in filtered-out groups could not be settled; retrying next sync"
+                    f"{unsettled} tickets in groups out of scope could not be settled; retrying next sync"
                 )
                 return
             await self.tickets_sync_point.update_sync_point(
                 FILTER_CLEANUP_SYNC_POINT_KEY, {"excluded_group_ids": wanted}
             )
         except Exception as e:
-            self.logger.warning(f"Could not remove tickets of filtered-out groups: {e}", exc_info=True)
+            self._incomplete.append("the removal of tickets of groups out of scope")
+            self.logger.warning(f"Could not remove tickets of groups out of scope: {e}", exc_info=True)
+
+    async def _forget_group_sync_point(self, group_id: str) -> None:
+        """Clear an inactive group's ticket sync point, so its tickets are read in full if it comes back."""
+        name = self._inactive_group_names.get(group_id)
+        if not name:
+            return
+        await self.tickets_sync_point.update_sync_point(name, {
+            "last_sync_time": 0, "burst_low": 0, "burst_high": 0, "burst_next_id": 0, "full_listing_at": 0,
+            "read_failure_versions": [], "read_failure_counts": [],
+        })
 
     # ==================== ATTACHMENT HANDLING AND TRANSFORMATIONS ====================
 
@@ -1785,31 +1904,19 @@ class ZammadConnector(BaseConnector):
             articles = [articles]
 
         for article in articles:
+            if not isinstance(article, dict):
+                raise ZammadReadError(f"articles of ticket {ticket_id} hold an entry that is not an article")
             article_id = article.get("id")
-            article_sender = article.get("sender", "")
-            article_from = article.get("from", "")
-            article_preferences = article.get("preferences", {})
-
-            # Skip attachments from system-generated articles (auto-replies, bounce notifications, etc.)
-            if article_sender == "System":
-                self.logger.debug(f"Skipping attachments from system article {article_id} (sender: System)")
+            skip = self._article_skip_reason(article)
+            if skip:
+                self.logger.debug(f"Skipping attachments of article {article_id}: {skip}")
                 continue
 
-            # Skip auto-response emails (bounce notifications, delivery failures, etc.)
-            if article_preferences.get("is-auto-response") or article_preferences.get("send-auto-response") is False:
-                self.logger.debug(f"Skipping attachments from auto-response article {article_id}")
-                continue
-
-            # Skip MAILER-DAEMON bounce notifications
-            if "MAILER-DAEMON" in article_from or "Mail Delivery System" in article_from:
-                self.logger.debug(f"Skipping attachments from bounce notification article {article_id}")
-                continue
-
-            article_attachments = article.get("attachments", [])
+            article_attachments = article.get("attachments") or []
 
             for attachment in article_attachments:
                 try:
-                    attachment_id = attachment.get("id")
+                    attachment_id = attachment.get("id") if isinstance(attachment, dict) else None
                     if not attachment_id:
                         continue
                     # Ticket attachment external_record_id format: {ticket_id}_{article_id}_{attachment_id}
@@ -1828,6 +1935,25 @@ class ZammadConnector(BaseConnector):
                     self.logger.warning(f"Failed to process attachment: {e}")
 
         return attachments
+
+    @staticmethod
+    def _article_skip_reason(article: dict[str, Any]) -> str | None:
+        """Why an article is left out of the ticket (a system note, an auto reply, a bounce), or None.
+
+        Any of its fields may be null: an article made through the API as an
+        e-mail has no ``from``, and ``preferences`` may be empty or null.
+        """
+        if article.get("sender") == "System":
+            return "a system article"
+        preferences = article.get("preferences")
+        if isinstance(preferences, dict) and (
+            preferences.get("is-auto-response") or preferences.get("send-auto-response") is False
+        ):
+            return "an auto response"
+        article_from = article.get("from")
+        if isinstance(article_from, str) and ("MAILER-DAEMON" in article_from or "Mail Delivery System" in article_from):
+            return "a bounce notification"
+        return None
 
     async def _fetch_kb_answer_attachments(
         self,
@@ -1944,55 +2070,13 @@ class ZammadConnector(BaseConnector):
         if priority and not isinstance(priority, Priority):
             priority = Priority.MEDIUM
 
-        # Get customer (creator) and owner (assignee) info - fetch on-demand
-        customer_id = ticket_data.get("customer_id")
-        owner_id = ticket_data.get("owner_id")
-        creator_email = ""
-        creator_name = ""
-        assignee_email = ""
-        assignee_name = ""
-
-        # Fetch datasource once if we need to get user details
-        datasource = None
-        if customer_id or owner_id:
-            try:
-                datasource = await self._get_fresh_datasource()
-            except Exception as e:
-                self.logger.debug(f"Failed to get datasource for ticket user lookups: {e}")
-
-        # Get customer (creator) info
-        if customer_id:
-            # Get email from lightweight mapping
-            customer_user_data = self._user_id_to_data.get(customer_id, {})
-            creator_email = customer_user_data.get("email", "")
-            # Fetch user details on-demand if needed for name
-            if creator_email and datasource:
-                try:
-                    user_response = await datasource.get_user(customer_id)
-                    if user_response.success and user_response.data:
-                        customer_detail = user_response.data
-                        firstname = customer_detail.get("firstname", "") or ""
-                        lastname = customer_detail.get("lastname", "") or ""
-                        creator_name = f"{firstname} {lastname}".strip() or creator_email
-                except Exception as e:
-                    self.logger.debug(f"Failed to fetch user {customer_id} for ticket: {e}")
-
-        # Get owner (assignee) info - reuse datasource
-        if owner_id:
-            # Get email from lightweight mapping
-            owner_user_data = self._user_id_to_data.get(owner_id, {})
-            assignee_email = owner_user_data.get("email", "")
-            # Fetch user details on-demand if needed for name
-            if assignee_email and datasource:
-                try:
-                    user_response = await datasource.get_user(owner_id)
-                    if user_response.success and user_response.data:
-                        owner_detail = user_response.data
-                        firstname = owner_detail.get("firstname", "") or ""
-                        lastname = owner_detail.get("lastname", "") or ""
-                        assignee_name = f"{firstname} {lastname}".strip() or assignee_email
-                except Exception as e:
-                    self.logger.debug(f"Failed to fetch user {owner_id} for ticket: {e}")
+        # Customer (creator) and owner (assignee), from the user list read this sync.
+        customer = self._user_id_to_data.get(ticket_data.get("customer_id"), {})
+        owner = self._user_id_to_data.get(ticket_data.get("owner_id"), {})
+        creator_email = customer.get("email", "")
+        creator_name = customer.get("name", "") if creator_email else ""
+        assignee_email = owner.get("email", "")
+        assignee_name = owner.get("name", "") if assignee_email else ""
 
         # Parse timestamps
         created_at = self._parse_zammad_datetime(ticket_data.get("created_at", ""))
@@ -2046,16 +2130,14 @@ class ZammadConnector(BaseConnector):
             preview_renderable=False,
         )
 
-        # Fetch linked tickets and KB answers for this ticket
-        try:
-            related_external_records = await self._fetch_ticket_links(ticket_id=int(ticket_id))
-            if related_external_records:
-                ticket_record.related_external_records = related_external_records
-                self.logger.debug(
-                    f"🔗 Ticket {ticket_id} has {len(related_external_records)} linked records"
-                )
-        except Exception as e:
-            self.logger.debug(f"Failed to fetch links for ticket {ticket_id}: {e}")
+        # Linked tickets and KB answers. A failed read raises: the ticket's link edges
+        # are replaced by what is written, so writing none would delete them all.
+        related_external_records = await self._fetch_ticket_links(ticket_id=int(ticket_id))
+        if related_external_records:
+            ticket_record.related_external_records = related_external_records
+            self.logger.debug(
+                f"🔗 Ticket {ticket_id} has {len(related_external_records)} linked records"
+            )
 
         return ticket_record
 
@@ -2086,9 +2168,9 @@ class ZammadConnector(BaseConnector):
         if not attachment_id:
             return None
 
-        filename = attachment_data.get("filename", "")
-        size = attachment_data.get("size", 0)
-        content_type = attachment_data.get("preferences", {}).get("Content-Type", "application/octet-stream")
+        filename = attachment_data.get("filename") or ""
+        size = self._attachment_size(attachment_data.get("size"))
+        content_type = self._attachment_mime_type(attachment_data.get("preferences"), filename)
 
         # Check for existing record
         existing_record = await self.data_entities_processor.get_record_by_external_id(
@@ -2155,6 +2237,25 @@ class ZammadConnector(BaseConnector):
 
         return file_record
 
+    @staticmethod
+    def _attachment_mime_type(preferences: object, filename: str) -> str:
+        """An attachment's type: ``Content-Type`` (mail), ``Mime-Type`` (files added through the
+        API or the agent UI, which carry no ``Content-Type``), else from the file name."""
+        if isinstance(preferences, dict):
+            for key in ("Content-Type", "Mime-Type", "Content-type", "mime_type"):
+                value = preferences.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.split(";")[0].strip()
+        return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+    @staticmethod
+    def _attachment_size(size: object) -> int:
+        """Zammad sends an attachment's size as a string of digits."""
+        try:
+            return max(int(str(size)), 0)
+        except (TypeError, ValueError):
+            return 0
+
     # ==================== HELPER FUNCTIONS ====================
 
     def _parse_zammad_datetime(self, datetime_str: str) -> int:
@@ -2185,21 +2286,27 @@ class ZammadConnector(BaseConnector):
 
         Returns:
             List of RelatedExternalRecord objects for creating LINKED_TO edges
+
+        Raises:
+            ZammadReadError: the links could not be read
         """
         related_records: List[RelatedExternalRecord] = []
 
-        try:
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.list_links(
-                link_object="Ticket",
-                link_object_value=ticket_id
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.list_links(
+            link_object="Ticket",
+            link_object_value=ticket_id
+        )
+        if not response.success or (response.data is not None and not isinstance(response.data, dict)):
+            raise ZammadReadError(
+                f"links of ticket {ticket_id} could not be read: {response.error or response.message}"
             )
+        if not response.data:
+            return related_records
 
-            if not response.success or not response.data:
-                return related_records
-
-            links = response.data.get("links", [])
-            assets = response.data.get("assets", {})
+        try:
+            links = response.data.get("links") or []
+            assets = response.data.get("assets") or {}
 
             for link in links:
                 link_type = link.get("link_type", "normal")
@@ -2225,6 +2332,10 @@ class ZammadConnector(BaseConnector):
                     except (ValueError, TypeError):
                         # If link_object_value is not a valid integer, skip this check
                         pass
+
+                if link_object == "Ticket" and not self._linked_ticket_in_scope(assets, link_object_value):
+                    # A link to a ticket the sync leaves out would write a placeholder record for it.
+                    continue
 
                 # Map Zammad object type to RecordType (inline mapping)
                 record_type = ZAMMAD_LINK_OBJECT_MAP.get(link_object)
@@ -2287,6 +2398,17 @@ class ZammadConnector(BaseConnector):
             self.logger.warning(f"Failed to fetch links for ticket {ticket_id}: {e}")
 
         return related_records
+
+    def _linked_ticket_in_scope(self, assets: dict[str, Any], ticket_id: object) -> bool:
+        """Whether a linked ticket's group is synced; True when the links' assets do not say."""
+        tickets = assets.get("Ticket") if isinstance(assets, dict) else None
+        linked = tickets.get(str(ticket_id)) if isinstance(tickets, dict) else None
+        group_id = linked.get("group_id") if isinstance(linked, dict) else None
+        if group_id is None:
+            return True
+        if not self._is_group_allowed_by_filter(str(group_id)):
+            return False
+        return self._synced_group_ids is None or str(group_id) in self._synced_group_ids
 
     # ==================== SYNC CHECKPOINTS ====================
 
@@ -2352,12 +2474,20 @@ class ZammadConnector(BaseConnector):
         Zammad 6.0 and later. /api/v1/search can't list them before 6.5: it ignores
         ``offset``, and answers ``objects=KnowledgeBaseAnswerTranslation`` with a 500.
         The sync point moves only once every listed answer has been written.
+
+        An answer is written again when it was edited, when a scheduled state
+        change came due, when it is listed but not held (restored, or newly
+        visible to the token), and, if it is a draft or archived (granted to the
+        category's editor roles by name), when those roles changed. An answer
+        held but no longer listed is read back, and removed only when Zammad says
+        it is gone or not visible to the token.
         """
         last_sync_time = await self._get_kb_sync_checkpoint()
         datasource = await self._get_fresh_datasource()
         try:
             listing = await self._read_kb_listing(datasource)
         except ZammadReadError as e:
+            self._incomplete.append("the knowledge base listing")
             self.logger.warning(f"⚠️ Knowledge base not synced; its sync point stays where it was: {e}")
             return
 
@@ -2369,11 +2499,11 @@ class ZammadConnector(BaseConnector):
             since = None
             self.logger.info("🔄 Full KB sync")
 
-        changed_answers = {
-            answer_id: answer_data
+        listed_answers: dict[str, dict[str, Any]] = {
+            str(answer_id): answer_data
             for answer_id, answer_data in listing.get("KnowledgeBaseAnswer", {}).items()
-            if self._kb_answer_changed_since(answer_data, since)
         }
+        held_answers = await self._held_kb_answer_ids()
         kb_map: Dict[int, RecordGroup] = {}
         category_map: Dict[int, RecordGroup] = {}
         category_permissions_map: Dict[int, Dict[str, Any]] = {}
@@ -2383,19 +2513,51 @@ class ZammadConnector(BaseConnector):
             category_map=category_map,
             category_permissions_map=category_permissions_map
         )
+        category_editors = {
+            str(cat_id): sorted(perms.get("editor_role_ids", []))
+            for cat_id, perms in category_permissions_map.items()
+            if perms.get("read") is not False
+        }
+        earlier_editors = await self._get_kb_category_editors()
+        if earlier_editors is None and since is not None:
+            # Answers written before this version used other rules (an archived
+            # answer stayed public, a scheduled time counted at once), so every
+            # answer is written again once, the first time the editors are recorded.
+            self.logger.info("🔄 KB answers are all written again once, under the current access rules")
+            since = None
+        editors_changed = {
+            cat_id for cat_id, editors in category_editors.items()
+            if earlier_editors is not None and earlier_editors.get(cat_id) != editors
+        }
 
-        if not changed_answers:
+        changed_answers = {
+            answer_id: answer_data
+            for answer_id, answer_data in listed_answers.items()
+            if self._kb_answer_changed_since(answer_data, since)
+            or answer_id not in held_answers
+            or (
+                str(answer_data.get("category_id")) in editors_changed
+                and self._determine_visibility(answer_data) in ("ARCHIVED", "DRAFT")
+            )
+        }
+
+        total_synced, max_updated_at, failed_updated_at = 0, 0, []
+        if changed_answers:
+            total_synced, max_updated_at, failed_updated_at = await self._sync_kb_answers(
+                answers=changed_answers,
+                assets=listing,
+                category_map=category_map,
+                category_permissions_map=category_permissions_map
+            )
+        else:
             self.logger.info("No KB answers changed since the last sync")
-            return
 
-        total_synced, max_updated_at, failed_updated_at = await self._sync_kb_answers(
-            answers=changed_answers,
-            assets=listing,
-            category_map=category_map,
-            category_permissions_map=category_permissions_map
+        await self._remove_kb_answers_gone(
+            sorted(held_answers - set(listed_answers)), next(iter(kb_map), None)
         )
 
         if failed_updated_at:
+            self._incomplete.append(f"{len(failed_updated_at)} knowledge base answer(s)")
             # Every answer older than the oldest failure was written, so the sync point
             # may move up to that failure but not past it.
             self.logger.warning(
@@ -2404,12 +2566,100 @@ class ZammadConnector(BaseConnector):
             hold_at = None if 0 in failed_updated_at else min(failed_updated_at)
             if hold_at and (not last_sync_time or hold_at > last_sync_time):
                 await self._update_kb_sync_checkpoint(hold_at)
-        elif max_updated_at > 0:
-            await self._update_kb_sync_checkpoint(max_updated_at + 1000)
-        elif total_synced > 0:
-            await self._update_kb_sync_checkpoint()
+        else:
+            # Remembered only once every answer they gate was written with them.
+            if category_editors != earlier_editors:
+                await self._save_kb_category_editors(category_editors)
+            if max_updated_at > 0:
+                await self._update_kb_sync_checkpoint(max_updated_at + 1000)
+            elif total_synced > 0:
+                await self._update_kb_sync_checkpoint()
 
         self.logger.info(f"✅ KB sync completed: {total_synced} answers processed")
+
+    async def _get_kb_category_editors(self) -> dict[str, list[int]] | None:
+        """The editor roles of each category as last written, or None before the first such sync."""
+        data = await self.kb_sync_point.read_sync_point(KB_SYNC_POINT_KEY) or {}
+        raw = data.get("category_editors")
+        if not isinstance(raw, str):
+            return None
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    async def _save_kb_category_editors(self, editors: dict[str, list[int]]) -> None:
+        # A JSON string: a Neo4j property can't hold a map.
+        await self.kb_sync_point.update_sync_point(
+            KB_SYNC_POINT_KEY, {"category_editors": json.dumps(editors, sort_keys=True)}
+        )
+
+    async def _held_kb_answer_ids(self) -> set[str]:
+        """Zammad ids of the knowledge-base answers PipesHub holds for this connector."""
+        records = await self.data_entities_processor.get_records_by_record_type(
+            self.connector_id, RecordType.WEBPAGE
+        )
+        held: set[str] = set()
+        for record in records:
+            # One in the trash is already removed; reading it back every sync would only cost a request.
+            if getattr(record, "is_deleted", False):
+                continue
+            match = KB_ANSWER_ID_PATTERN.match(record.external_record_id or "")
+            if match:
+                held.add(match.group(1))
+        return held
+
+    async def _remove_kb_answers_gone(self, answer_ids: list[str], kb_id: int | None) -> None:
+        """Remove held answers the listing no longer has, each only on Zammad's definite word.
+
+        The answer is read back: only 404 (deleted) removes it, with its
+        attachments. A 403 keeps it: Zammad does not say it is gone, only that
+        the token may not see it. Any other answer keeps it and marks the sync
+        incomplete, so the next one tries again.
+        """
+        if not answer_ids:
+            return
+        datasource = await self._get_fresh_datasource()
+        removed = 0
+        for answer_id in answer_ids:
+            try:
+                response = await datasource.get_kb_answer(id=int(answer_id), kb_id=kb_id)
+            except Exception as e:
+                self._incomplete.append(f"the check of knowledge base answer {answer_id}")
+                self.logger.warning(f"Could not read back KB answer {answer_id}: {e}")
+                continue
+            if response.success:
+                # Listed nowhere yet readable: keep it; it is written when the listing has it again.
+                continue
+            if response.status_code == HttpStatusCode.FORBIDDEN.value:
+                self.logger.warning(
+                    f"KB answer {answer_id} is no longer listed and the token may not read it; keeping it"
+                )
+                continue
+            if response.status_code != HttpStatusCode.NOT_FOUND.value:
+                self._incomplete.append(f"the check of knowledge base answer {answer_id}")
+                self.logger.warning(
+                    f"KB answer {answer_id} is no longer listed and could not be read back "
+                    f"(HTTP {response.status_code}); keeping it this sync"
+                )
+                continue
+            external_id = f"kb_answer_{answer_id}"
+            record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, external_id)
+            if record is None:
+                continue
+            children = await self.data_entities_processor.get_records_by_parent(
+                self.connector_id, external_id, visibility=RecordVisibility.ALL,
+            )
+            if await self._delete_ticket_records(
+                [child.id for child in children] + [record.id],
+                f"KB answer {answer_id} is gone from Zammad (HTTP {response.status_code})",
+            ):
+                removed += 1
+            else:
+                self._incomplete.append(f"the removal of knowledge base answer {answer_id}")
+        if removed:
+            self.logger.info(f"🗑️ Removed {removed} KB answer(s) no longer in Zammad")
 
     async def _read_kb_listing(self, datasource: ZammadDataSource) -> dict[str, Any]:
         """Every knowledge base, category and answer Zammad lists, keyed by asset type.
@@ -2432,10 +2682,11 @@ class ZammadConnector(BaseConnector):
         return listing
 
     def _kb_answer_changed_since(self, answer_data: dict[str, Any], since: int | None) -> bool:
+        """Whether the answer was edited, or a scheduled state change came due, since ``since``."""
         if since is None:
             return True
-        updated_at = self._parse_zammad_datetime(answer_data.get("updated_at", ""))
-        return not updated_at or updated_at >= since
+        changed_at = answer_changed_at(answer_data, get_epoch_timestamp_in_ms())
+        return not changed_at or changed_at >= since
 
     async def _process_kb_entities(
         self,
@@ -2556,63 +2807,47 @@ class ZammadConnector(BaseConnector):
                 else:
                     parent_external_group_id = None
 
-                # Extract permissions from permissions_effective if present
-                permissions_effective = cat_data.get("permissions_effective", [])
+                # Effective access per role: the category's (inherited) rows, and the
+                # default of every role without a row. Only the permissions endpoint
+                # says which roles hold knowledge_base.editor / .reader, so it is read
+                # for every category; the listing's permissions_effective has rows only.
                 editor_role_ids: List[int] = []
                 reader_role_ids: List[int] = []
                 # False when the category's permissions couldn't be read for a reason
                 # that passes: saving it would replace its stored grants with none.
                 permissions_read = True
-
-                if permissions_effective:
-                    editor_role_ids = [
-                        p["role_id"] for p in permissions_effective
-                        if p.get("access") == "editor"
-                    ]
-                    reader_role_ids = [
-                        p["role_id"] for p in permissions_effective
-                        if p.get("access") == "reader"
-                    ]
+                try:
+                    perm_response = await datasource.get_kb_category_permissions(
+                        kb_id=kb_id,
+                        cat_id=cat_id
+                    )
+                except Exception as e:
+                    perm_response = None
+                    self.logger.warning(f"Failed to fetch permissions for category {cat_id}: {e}")
+                perm_data = perm_response.data if perm_response else None
+                if perm_response and perm_response.success and isinstance(perm_data, dict):
+                    access = CategoryAccess.from_permissions_response(perm_data)
+                    editor_role_ids = list(access.editor_role_ids)
+                    reader_role_ids = list(access.reader_role_ids)
+                elif (
+                    perm_response is None
+                    or perm_response.success
+                    or read_failure(perm_response.status_code) is ReadOutcome.INTERRUPTED
+                ):
+                    permissions_read = False
+                    self._incomplete.append(f"the permissions of knowledge base category {cat_id}")
+                    self.logger.warning(
+                        f"Could not read the permissions of KB category {cat_id}; it and its "
+                        "archived and draft answers keep their stored access this sync"
+                    )
                 else:
-                    # Fetch from API if not in response
-                    try:
-                        perm_response = await datasource.get_kb_category_permissions(
-                            kb_id=kb_id,
-                            cat_id=cat_id
-                        )
-                    except Exception as e:
-                        perm_response = None
-                        self.logger.warning(f"Failed to fetch permissions for category {cat_id}: {e}")
-                    perm_data = perm_response.data if perm_response else None
-                    if perm_response and perm_response.success and isinstance(perm_data, dict):
-                        # Use 'permissions' array for actual access levels (not roles_editor/roles_reader)
-                        # permissions array has: {"id": X, "access": "editor|reader|none", "role_id": Y}
-                        permissions_list = perm_data.get("permissions", [])
-                        editor_role_ids = [
-                            p["role_id"] for p in permissions_list
-                            if p.get("access") == "editor"
-                        ]
-                        reader_role_ids = [
-                            p["role_id"] for p in permissions_list
-                            if p.get("access") == "reader"
-                        ]
-                    elif (
-                        perm_response is None
-                        or perm_response.success
-                        or read_failure(perm_response.status_code) is ReadOutcome.INTERRUPTED
-                    ):
-                        permissions_read = False
-                        self.logger.warning(
-                            f"Could not read the permissions of KB category {cat_id}; it and its "
-                            "archived and draft answers keep their stored access this sync"
-                        )
-                    else:
-                        # Refused, or gone (404): saved with no role grants, so nobody
-                        # keeps access through it that Zammad can't confirm.
-                        self.logger.warning(
-                            f"Zammad refused the permissions of KB category {cat_id} "
-                            f"(HTTP {perm_response.status_code}); saving it with no role grants"
-                        )
+                    # Refused (only editors may read them), or gone (404): saved with no
+                    # role grants, so nobody keeps access through it that Zammad can't confirm.
+                    self.logger.warning(
+                        f"Zammad refused the permissions of KB category {cat_id} "
+                        f"(HTTP {perm_response.status_code}); saving it with no role grants. "
+                        "The token needs knowledge_base.editor for internal and draft answers to be shared"
+                    )
 
                 # Store permissions and KB ID for answer processing
                 category_permissions_map[cat_id] = {
@@ -2700,7 +2935,8 @@ class ZammadConnector(BaseConnector):
 
             for answer_id_str, answer_data in answer_items[batch_start:batch_start + BATCH_SIZE_KB_ANSWERS]:
                 answer_id = int(answer_id_str)
-                answer_updated_at = self._parse_zammad_datetime(answer_data.get("updated_at", ""))
+                # The checkpoint follows state changes that came due too (see _kb_answer_changed_since).
+                answer_updated_at = answer_changed_at(answer_data, get_epoch_timestamp_in_ms())
 
                 try:
                     # Track max updated_at for checkpoint
@@ -2767,17 +3003,11 @@ class ZammadConnector(BaseConnector):
                         if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.KNOWLEDGE_BASE):
                             answer_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-                        # Check if this is an existing record with changed permissions
-                        # When visibility changes (PUBLIC/INTERNAL/DRAFT/ARCHIVED), inherit_permissions changes too
-                        needs_permission_update = False
-                        if existing_record is not None:
-                            old_inherit = getattr(existing_record, 'inherit_permissions', None)
-                            new_inherit = answer_record.inherit_permissions
-                            # Detect permission change: inherit_permissions flag changed OR
-                            # record was updated (revision changed) - always refresh permissions on update
-                            if old_inherit != new_inherit or existing_record.external_revision_id != answer_record.external_revision_id:
-                                needs_permission_update = True
-                                self.logger.debug(f"Permission update needed for answer {answer_id}: inherit_permissions {old_inherit} -> {new_inherit}")
+                        # An answer is written when its state, its editors or its text may have
+                        # changed; its grants are then replaced, not added to. Outside a full sync
+                        # on_new_records only adds, so a scheduled archive that came due (same
+                        # revision, same inheritance) would keep its organisation-wide grant.
+                        needs_permission_update = existing_record is not None
 
                         batch_records.append((answer_record, permissions, needs_permission_update))
                         total_synced += 1
@@ -2829,14 +3059,15 @@ class ZammadConnector(BaseConnector):
         Returns:
             Visibility state: "PUBLIC", "INTERNAL", "ARCHIVED", or "DRAFT"
         """
-        if answer_data.get("published_at"):
-            return "PUBLIC"
-        elif answer_data.get("internal_at"):
-            return "INTERNAL"
-        elif answer_data.get("archived_at"):
-            return "ARCHIVED"
-        else:
-            return "DRAFT"
+        # Zammad's state machine: the first of archived, published, internal whose
+        # time has passed. An archived answer keeps its published_at, and a
+        # scheduled (future) time does not count yet.
+        return {
+            ARCHIVED: "ARCHIVED",
+            PUBLISHED: "PUBLIC",
+            INTERNAL: "INTERNAL",
+            DRAFT: "DRAFT",
+        }[answer_state(answer_data, get_epoch_timestamp_in_ms())]
 
     def _create_answer_with_permissions(
         self,
@@ -3103,14 +3334,28 @@ class ZammadConnector(BaseConnector):
 
         ticket_data = ticket_response.data
 
-        # Fetch articles for this ticket
+        # Fetch articles for this ticket. A failed read must fail the stream: an
+        # empty article list would index the ticket as its title alone, and it
+        # stays that way until the ticket next changes in Zammad.
         articles_response = await datasource.list_ticket_articles(ticket_id=int(ticket_id))
-        articles = []
-        if articles_response.success and articles_response.data:
-            articles = articles_response.data if isinstance(articles_response.data, list) else [articles_response.data]
+        articles_data = articles_response.data
+        if (
+            not articles_response.success
+            or (isinstance(articles_data, dict) and articles_data.get("error"))
+            or (articles_data and not isinstance(articles_data, list))
+        ):
+            self.logger.warning("Failed to fetch the articles of ticket %s for streaming", ticket_id)
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector=self.display_name,
+                status=articles_response.status_code,
+                message=articles_response.message or articles_response.error,
+            )
+        articles = [a for a in (articles_data or []) if isinstance(a, dict)]
 
         # Sort articles by created_at
-        articles.sort(key=lambda a: a.get("created_at", ""))
+        articles.sort(key=lambda a: a.get("created_at") or "")
 
         # Build BlockGroups
         block_groups: List[BlockGroup] = []
@@ -3124,11 +3369,11 @@ class ZammadConnector(BaseConnector):
         # First article becomes the Description BlockGroup
         if articles:
             first_article = articles[0]
-            description_body_html = first_article.get("body", "")
+            description_body_html = first_article.get("body") or ""
             first_article_id = first_article.get("id")
 
             # Get attachments for first article (description) as children_records
-            first_article_attachments = first_article.get("attachments", [])
+            first_article_attachments = first_article.get("attachments") or []
             description_children_records: List[ChildRecord] = []
             if first_article_id and first_article_attachments:
                 description_children_records = await self._build_ticket_attachment_child_records(
@@ -3162,29 +3407,18 @@ class ZammadConnector(BaseConnector):
             # Remaining articles become Comment BlockGroups
             for article in articles[1:]:
                 article_id = article.get("id")
-                article_body_html = article.get("body", "")
-                article_from = article.get("from", "")
-                article_subject = article.get("subject", "")
-                article_sender = article.get("sender", "")
-                article_preferences = article.get("preferences", {})
+                article_body_html = article.get("body") or ""
+                article_from = article.get("from") or ""
+                article_subject = article.get("subject") or ""
 
                 # Skip articles without ID
                 if not article_id:
                     continue
 
-                # Skip system-generated articles (auto-replies, triggers, etc.)
-                if article_sender == "System":
-                    self.logger.debug(f"Skipping system-generated article {article_id} for ticket {ticket_id}")
-                    continue
-
-                # Skip auto-response emails (bounce notifications, delivery failures, etc.)
-                if article_preferences.get("is-auto-response") or article_preferences.get("send-auto-response") is False:
-                    self.logger.debug(f"Skipping auto-response article {article_id} for ticket {ticket_id}")
-                    continue
-
-                # Skip MAILER-DAEMON bounce notifications
-                if "MAILER-DAEMON" in article_from or "Mail Delivery System" in article_from:
-                    self.logger.debug(f"Skipping bounce notification article {article_id} for ticket {ticket_id}")
+                # Skip system notes, auto replies and bounces
+                skip = self._article_skip_reason(article)
+                if skip:
+                    self.logger.debug(f"Skipping article {article_id} of ticket {ticket_id}: {skip}")
                     continue
 
                 if not article_body_html:
@@ -3201,7 +3435,7 @@ class ZammadConnector(BaseConnector):
                     comment_name = f"{article_subject} - {author_name}"
 
                 # Get attachments for this article as children_records
-                article_attachments = article.get("attachments", [])
+                article_attachments = article.get("attachments") or []
                 comment_children_records: List[ChildRecord] = []
                 if article_attachments:
                     comment_children_records = await self._build_ticket_attachment_child_records(
@@ -3305,14 +3539,10 @@ class ZammadConnector(BaseConnector):
                         kb_id=kb_id,
                         cat_id=category_id
                     )
-                    if perm_response.success and perm_response.data:
-                        # Use 'permissions' array for actual access levels (not roles_editor/roles_reader)
-                        # permissions array has: {"id": X, "access": "editor|reader|none", "role_id": Y}
-                        permissions_list = perm_response.data.get("permissions", [])
-                        editor_role_ids = [
-                            p["role_id"] for p in permissions_list
-                            if p.get("access") == "editor"
-                        ]
+                    if perm_response.success and isinstance(perm_response.data, dict):
+                        editor_role_ids = list(
+                            CategoryAccess.from_permissions_response(perm_response.data).editor_role_ids
+                        )
                 except Exception as e:
                     self.logger.debug(f"Failed to fetch category permissions for category {category_id}: {e}")
 
@@ -3393,17 +3623,25 @@ class ZammadConnector(BaseConnector):
 
         # Get KB ID from init response or use default (Zammad has single KB per instance)
         kb_id = 1  # Default KB ID
+        content_id: Optional[int] = None
         try:
             init_response = await datasource.init_knowledge_base()
             if init_response.success and init_response.data:
                 kb_assets = init_response.data.get("KnowledgeBase", {})
                 if kb_assets:
                     kb_id = int(list(kb_assets.keys())[0])
+                # The body is a translation's content, asked for by the content's id,
+                # which is not the answer's id once an answer has a second translation.
+                for translation in (init_response.data.get("KnowledgeBaseAnswerTranslation") or {}).values():
+                    if isinstance(translation, dict) and translation.get("answer_id") == answer_id \
+                            and isinstance(translation.get("content_id"), int):
+                        content_id = translation["content_id"]
+                        break
         except Exception:
             pass
 
         # Try to fetch KB answer using correct endpoint format
-        answer_response = await datasource.get_kb_answer(id=answer_id, kb_id=kb_id)
+        answer_response = await datasource.get_kb_answer(id=answer_id, kb_id=kb_id, content_id=content_id)
         # Without this the body stays "" and a title-only container streams at 200.
         raise_for_stream_fetch(
             success=answer_response.success,
@@ -3493,9 +3731,11 @@ class ZammadConnector(BaseConnector):
             kb_id=kb_id
         )
 
-        # Convert embedded images to base64 before converting HTML to Markdown
+        # Convert embedded images to base64 before converting HTML to Markdown. Only
+        # this answer's own attachments: the token can read attachments the answer's
+        # readers can't, and an image tag may name any attachment id.
         if body:
-            body = await self._convert_html_images_to_base64(body)
+            body = await self._convert_html_images_to_base64(body, self._inline_image_sizes(answer_attachments))
 
         # Convert HTML body to Markdown (same as ticket streaming)
         body_md = await html_to_markdown_async(body) if body else ""
@@ -3520,19 +3760,55 @@ class ZammadConnector(BaseConnector):
         blocks_container = BlocksContainer(blocks=[], block_groups=[answer_block_group])
         return blocks_container.model_dump_json(indent=2).encode('utf-8')
 
-    async def _convert_html_images_to_base64(self, html_content: str) -> str:
+    @staticmethod
+    def _inline_image_sizes(attachments: list[dict[str, Any]]) -> dict[int, int]:
+        """Attachment id -> size in bytes (0 when not stated) for the attachments an answer may inline."""
+        sizes: dict[int, int] = {}
+        for attachment in attachments or []:
+            if not isinstance(attachment, dict):
+                continue
+            attachment_id = attachment.get("id")
+            if isinstance(attachment_id, str) and attachment_id.isdigit():
+                attachment_id = int(attachment_id)
+            if not isinstance(attachment_id, int) or isinstance(attachment_id, bool):
+                continue
+            size = attachment.get("size")
+            try:
+                sizes[attachment_id] = int(size) if size is not None else 0
+            except (TypeError, ValueError):
+                sizes[attachment_id] = 0
+        return sizes
+
+    def _is_own_attachment_url(self, src: str) -> bool:
+        """Whether an image source is relative or on the configured Zammad host."""
+        parts = urlsplit(src)
+        if not parts.scheme and not parts.netloc:
+            return True
+        base = urlsplit(self.base_url or "")
+        return (parts.scheme, (parts.hostname or "").lower(), parts.port) == (
+            base.scheme, (base.hostname or "").lower(), base.port
+        )
+
+    async def _convert_html_images_to_base64(
+        self, html_content: str, allowed_attachments: Optional[dict[int, int]] = None,
+    ) -> str:
         """
         Convert embedded images in HTML content to base64 data URIs.
 
         Finds all <img> tags with src pointing to Zammad attachments (e.g., /api/v1/attachments/9)
-        and replaces them with base64-encoded data URIs in markdown format.
+        and replaces them with base64-encoded data URIs in markdown format. Only an
+        attachment in ``allowed_attachments`` (id -> size) is fetched, at most
+        MAX_INLINE_IMAGE_BYTES, and only from a relative URL or the configured
+        Zammad host; any other image is left as it is.
 
         Args:
             html_content: HTML content that may contain embedded images
+            allowed_attachments: The attachments this content may inline, with their sizes
 
         Returns:
             HTML content with images converted to base64 data URIs (ready for markdown conversion)
         """
+        allowed = allowed_attachments or {}
         if not html_content:
             return html_content
 
@@ -3558,6 +3834,12 @@ class ZammadConnector(BaseConnector):
                 continue
 
             attachment_id = int(attachment_match.group(1))
+            if attachment_id not in allowed or not self._is_own_attachment_url(src):
+                self.logger.debug(f"Not inlining image {src}: not an attachment of this content")
+                continue
+            if allowed[attachment_id] > MAX_INLINE_IMAGE_BYTES:
+                self.logger.debug(f"Not inlining image {src}: {allowed[attachment_id]} bytes")
+                continue
 
             # Initialize datasource on first Zammad attachment encountered
             if datasource is None:
@@ -3581,6 +3863,9 @@ class ZammadConnector(BaseConnector):
 
                 if not image_bytes:
                     self.logger.debug(f"⚠️ Empty image content from attachment {attachment_id}")
+                    continue
+                if len(image_bytes) > MAX_INLINE_IMAGE_BYTES:
+                    self.logger.debug(f"Not inlining attachment {attachment_id}: {len(image_bytes)} bytes")
                     continue
 
                 # Determine image type from Content-Type header or URL
@@ -3813,23 +4098,43 @@ class ZammadConnector(BaseConnector):
         self.logger.info("✅ Zammad incremental sync completed")
 
     async def test_connection_and_access(self) -> bool:
-        """Test connection and access to Zammad using DataSource"""
+        """Check the token signs in and can read what a sync reads: users, groups and roles.
+
+        Before Zammad 6.5, groups and roles are listed only to admin.group and
+        admin.role; a token without them would sync nothing. A refusal raises
+        ConnectorInitError naming the permission, which the setup screen shows.
+        """
         try:
-            # Initialize client if needed
             datasource = await self._get_fresh_datasource()
-
-            # Test by fetching groups (simple API call)
-            response = await datasource.list_groups()
-
-            if response.success:
-                self.logger.info("✅ Zammad connection test successful")
-                return True
-            else:
-                self.logger.error(f"❌ Connection test failed: {response.message if hasattr(response, 'message') else 'Unknown error'}")
-                return False
+            me = await datasource.get_current_user()
         except Exception as e:
             self.logger.error(f"❌ Connection test failed: {e}", exc_info=True)
             return False
+        if me.status_code in (HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value):
+            raise ConnectorInitError(
+                "Zammad did not accept the access token. Check that it is current and that "
+                "API token access is turned on in Zammad (Admin > System > API)."
+            )
+        if not me.success:
+            self.logger.error(f"❌ Connection test failed: users/me answered HTTP {me.status_code}: {me.message}")
+            return False
+        for what, response, permission in (
+            ("users", await datasource.list_users(page=1, per_page=1), "ticket.agent"),
+            ("groups", await datasource.list_groups(page=1, per_page=1), "admin.group"),
+            ("roles", await datasource.list_roles(page=1, per_page=1), "admin.role"),
+        ):
+            if response.status_code == HttpStatusCode.FORBIDDEN.value:
+                raise ConnectorInitError(
+                    f"Zammad refused this token the list of {what}. Give the token the {permission} permission"
+                    + ("" if what == "users" else " (Zammad before 6.5 lists them only to it)") + "."
+                )
+            if not response.success:
+                self.logger.error(
+                    f"❌ Connection test failed: Zammad did not list {what} (HTTP {response.status_code})"
+                )
+                return False
+        self.logger.info("✅ Zammad connection test successful")
+        return True
 
     async def get_signed_url(self, record: Record) -> str:
         """Create a signed URL for a specific record"""
@@ -4121,13 +4426,10 @@ class ZammadConnector(BaseConnector):
                         kb_id=kb_id,
                         cat_id=category_id
                     )
-                    if perm_response.success and perm_response.data:
-                        # Use 'permissions' array for actual access levels (not roles_editor/roles_reader)
-                        permissions_list = perm_response.data.get("permissions", [])
-                        editor_role_ids = [
-                            p["role_id"] for p in permissions_list
-                            if p.get("access") == "editor"
-                        ]
+                    if perm_response.success and isinstance(perm_response.data, dict):
+                        editor_role_ids = list(
+                            CategoryAccess.from_permissions_response(perm_response.data).editor_role_ids
+                        )
                 except Exception as e:
                     self.logger.warning(f"Failed to fetch category permissions for reindexing: {e}")
 

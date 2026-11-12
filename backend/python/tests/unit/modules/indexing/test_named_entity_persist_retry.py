@@ -205,3 +205,33 @@ async def test_the_rebuilt_record_reaches_the_reprojection_with_its_content_id()
     assert await retry._retry_one(_graph([], record), sink, "r1", "o1", 100) == "written"
     (ctx,), _ = sink.reproject_named_entities.await_args
     assert ctx.record.virtual_record_id == "v1"
+
+
+async def test_a_retry_with_no_org_is_dropped_so_it_does_not_fill_the_page() -> None:
+    """Skipped and left, a page of them would take every later pass's place; nothing can run for them without an organisation."""
+    rows = [{"recordId": "missing", "orgId": None, "attempts": 1, "dueAt": 100}, {"recordId": "valid", "orgId": "o1", "attempts": 1, "dueAt": 100}]
+    pending = list(rows)
+    graph = _graph(rows)
+    graph.get_due_named_entity_persist_retries = AsyncMock(side_effect=lambda page_size: pending[:page_size])
+
+    async def clear(record_id: str, due: int) -> bool:
+        pending[:] = [row for row in pending if (row["recordId"], row["dueAt"]) != (record_id, due)]
+        return True
+
+    graph.clear_named_entity_persist_retry = AsyncMock(side_effect=clear)
+    one = AsyncMock(return_value="written")
+    sink = MagicMock()
+    with patch.object(retry, "_retry_one", one):
+        assert await retry.retry_pending_named_entity_persists(graph_provider=graph, sink=sink, logger=LOG, page_size=1) == 0
+        assert await retry.retry_pending_named_entity_persists(graph_provider=graph, sink=sink, logger=LOG, page_size=1) == 1
+    assert one.await_args.args[2] == "valid"
+    assert [c.args for c in graph.clear_named_entity_persist_retry.await_args_list] == [("missing", 100), ("valid", 100)]
+
+
+@pytest.mark.parametrize("clear", [AsyncMock(return_value=False), AsyncMock(side_effect=RuntimeError("write failed"))])
+async def test_a_missing_org_retry_that_could_not_be_cleared_is_not_counted_as_dropped(clear) -> None:
+    graph = _graph([{"recordId": "r1", "orgId": None, "attempts": 1, "dueAt": 100}])
+    graph.clear_named_entity_persist_retry = clear
+    with patch.object(retry, "record_recovery_org_pass") as counted:
+        await _drain(graph, MagicMock())
+    counted.assert_not_called()

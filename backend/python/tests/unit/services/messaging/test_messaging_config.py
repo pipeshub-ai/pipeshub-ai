@@ -92,8 +92,26 @@ class TestRequiredTopics:
         assert Topic.SYNC_EVENTS.value in REQUIRED_TOPICS
         assert Topic.HEALTH_CHECK.value in REQUIRED_TOPICS
 
+    def test_record_title_events_topic(self) -> None:
+        assert Topic.RECORD_TITLE_EVENTS.value == "record-title-events"
+        assert Topic.RECORD_TITLE_EVENTS.value in REQUIRED_TOPICS
+
     def test_has_at_least_five_topics(self):
         assert len(REQUIRED_TOPICS) >= 5
+
+    def test_has_the_priority_topic(self) -> None:
+        assert Topic.RECORD_EVENTS_PRIORITY.value == "record-events-priority"
+        assert Topic.RECORD_EVENTS_PRIORITY.value in REQUIRED_TOPICS
+
+    def test_priority_lane_caps_are_small_and_configurable(self, monkeypatch) -> None:
+        monkeypatch.delenv("PRIORITY_LANE_HEAVY_LIMIT", raising=False)
+        monkeypatch.delenv("PRIORITY_LANE_LIGHT_LIMIT", raising=False)
+        assert (messaging_env.priority_lane_heavy_limit, messaging_env.priority_lane_light_limit) == (1, 3)
+
+        monkeypatch.setenv("PRIORITY_LANE_HEAVY_LIMIT", "2")
+        monkeypatch.setenv("PRIORITY_LANE_LIGHT_LIMIT", "0")
+        assert messaging_env.priority_lane_heavy_limit == 2
+        assert messaging_env.priority_lane_light_limit == 1  # never below one: the lane would stop
 
 
 class TestMessagingEnvConfig:
@@ -360,7 +378,20 @@ class TestRecordProcessingTimeoutFor:
 
     def test_stale_recovery_waits_out_the_longest_budget(self) -> None:
         """A cutoff under the PDF budget would republish a PDF still parsing."""
-        assert messaging_env.stale_recovery_after_seconds == 5400.0 + 1800.0 + 120.0
+        assert messaging_env.stale_recovery_after_seconds == 5400.0 + 2 * 1800.0 + 1800.0 + 120.0
+
+    def test_stale_recovery_covers_two_parse_waits_and_the_embedding_gate_pause(self) -> None:
+        """A record queues for a parse slot at download and again at parse, and its
+        batches may pause the budget at the embedding gate; each of those moves
+        the record's age past its budget."""
+        assert messaging_env.embedding_gate_wait_cap_seconds == 1800.0
+        assert (
+            messaging_env.stale_recovery_after_seconds
+            == messaging_env.max_record_processing_timeout
+            + 2 * messaging_env.parse_admission_wait_seconds
+            + messaging_env.embedding_gate_wait_cap_seconds
+            + messaging_env.concurrency_lease_seconds
+        )
 
     def test_stale_recovery_also_waits_out_the_parse_admission_queue(self) -> None:
         """`parse_admission_wait` pauses the processing budget while a record

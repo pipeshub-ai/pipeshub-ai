@@ -98,9 +98,15 @@ async def test_call_budget_full_quiet_and_after_a_membership_change(servicenow_c
 
 
 def _written(sc) -> list[str]:
-    written = [r.external_record_id for c in sc.data_entities_processor.on_new_records.await_args_list
+    """External ids written since the last read, as a new record or a content update."""
+    processor = sc.data_entities_processor
+    written = [r.external_record_id for c in processor.on_new_records.await_args_list
                for r, _ in c.args[0]]
-    sc.data_entities_processor.on_new_records.reset_mock()
+    updates = getattr(processor, "on_record_content_update", None)
+    if updates is not None:
+        written.extend(c.args[0].external_record_id for c in updates.await_args_list)
+        updates.reset_mock()
+    processor.on_new_records.reset_mock()
     return written
 
 

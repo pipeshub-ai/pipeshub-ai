@@ -38,7 +38,7 @@ from app.connectors.sources.localKB.handlers.kb_service import (
     folder_levels_in_path,
 )
 from app.exceptions.graph_db_exceptions import GraphQueryError
-from app.models.entities import FileRecord
+from app.models.entities import FileRecord, SourcePerson
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
 from app.services.graph_db.interface.graph_db_provider import MoveDestinationMissing
@@ -870,11 +870,32 @@ class TestDeleteKnowledgeBase:
 
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is True
-        assert calls[:3] == [
+        assert calls[:4] == [
             "intent:/services/entityCleanup/pending/kb1",
             "intent:/services/storageRelease/pending/kb1",
+            "intent:/services/lateWriteSweep/pending/kb1",
             "graph-delete",
         ]
+
+    @pytest.mark.asyncio
+    async def test_the_late_write_intent_keeps_the_kbs_record_group(self, service, mock_config_service) -> None:
+        """A KB file's code links carry the KB's record group and no connectorId, and the group goes with the delete."""
+        written: dict[str, dict] = {}
+
+        async def record(key, value) -> bool:
+            written[key] = value
+            return True
+
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[{"_key": "kb1"}])
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
+        mock_config_service.get_config = AsyncMock(return_value=None)
+        mock_config_service.set_config = AsyncMock(side_effect=record)
+
+        assert (await service.delete_knowledge_base("kb1", "user1", "org1"))["success"] is True
+        assert written["/services/lateWriteSweep/pending/kb1"]["recordGroupIds"] == ["kb1"]
+        assert service.graph_provider.get_nodes_by_filters.await_args.kwargs["filters"] == {"connectorId": "kb1"}
 
     @pytest.mark.asyncio
     async def test_no_graph_delete_without_a_recorded_intent(self, service, mock_config_service) -> None:
@@ -1028,7 +1049,8 @@ class TestDeleteKBStorageCleanup:
             mock_asyncio.create_task.call_args[0][0].close()
 
         assert calls == [
-            "/services/entityCleanup/pending/kb1", "/services/storageRelease/pending/kb1", "delete",
+            "/services/entityCleanup/pending/kb1", "/services/storageRelease/pending/kb1",
+            "/services/lateWriteSweep/pending/kb1", "delete",
         ]
 
     @pytest.mark.asyncio
@@ -1950,7 +1972,7 @@ class TestCreateKbPermissions:
 
         assert result == failure
         assert service.graph_provider.create_kb_permissions.await_args.kwargs["user_ids"] == ["gk_u2"]
-        notified.assert_awaited_once_with("kb1")
+        notified.assert_awaited_once_with("kb1", scope_org=None)  # no org bound in this test: the global bump
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("role", ["ORGANIZER", "COMMENTER", "FILEORGANIZER"])
@@ -3472,6 +3494,21 @@ class TestUploadRecordsPipeline:
         built = service._build_kb_file_record("kb1", record, file_rec, None, "http://storage:3001")
         assert built.fetch_signed_url is None
 
+    def test_build_kb_file_record_ignores_client_statuses_and_content_id(self, service) -> None:
+        record = _minimal_upload_record_dict(
+            indexingStatus=ProgressStatus.COMPLETED.value,
+            extractionStatus=ProgressStatus.COMPLETED.value,
+            virtualRecordId="vr-client",
+            isPlaceholder=True,
+            isInternal=True,
+        )
+        file_rec = {"name": "root.pdf", "mimeType": "application/pdf", "isFile": False}
+        built = service._build_kb_file_record("kb1", record, file_rec, None, "http://storage:3001")
+        assert built.indexing_status == ProgressStatus.QUEUED.value
+        assert built.extraction_status == ProgressStatus.NOT_STARTED.value
+        assert built.virtual_record_id is None
+        assert (built.is_placeholder, built.is_internal, built.is_file) == (False, False, True)
+
     def test_build_kb_file_record_stamps_uploader(self, service) -> None:
         record = _minimal_upload_record_dict()
         file_rec = {"name": "root.pdf", "mimeType": "application/pdf", "isFile": True}
@@ -3739,6 +3776,55 @@ class TestFolderDepthLimit:
         assert result["reason"] == FOLDER_DEPTH_LIMIT_REASON
 
 
+# ===========================================================================
+# Uploader recorded as the creator of uploaded records
+# ===========================================================================
+
+
+def _stub_upload_pipeline(service: KnowledgeBaseService, mock_config_service: AsyncMock, validation: dict) -> None:
+    mock_config_service.get_config = AsyncMock(return_value={"storage": {"endpoint": "http://storage:3001"}})
+    gp = service.graph_provider
+    gp._validate_upload_context = AsyncMock(return_value=validation)
+    gp._analyze_upload_structure = MagicMock(return_value=_upload_analysis())
+    gp.find_folder_by_name_in_parent = AsyncMock(return_value=None)
+    gp._populate_file_destinations = MagicMock()
+    gp._fetch_existing_file_names_in_parent = AsyncMock(return_value=set())
+    gp._normalize_name = lambda n: n or ""
+    gp._normalized_name_variants_lower = lambda n: [n.lower()] if n else []
+    gp._generate_upload_message = MagicMock(return_value="uploaded")
+
+
+_UPLOAD_FILES = [{
+    "filePath": "docs/a.pdf",
+    "record": _minimal_upload_record_dict(recordName="a.pdf", externalRecordId="ext-a"),
+    "fileRecord": {"name": "a.pdf", "mimeType": "application/pdf", "isFile": True},
+}]
+
+
+class TestUploadRecordsCreator:
+    @pytest.mark.asyncio
+    async def test_uploader_is_created_by_on_files_and_new_folders(self, service, mock_config_service) -> None:
+        uploader = {"_key": "user-key-1", "userId": "user1", "orgId": "org1",
+                    "email": "ann@acme.com", "fullName": "Ann Uploader"}
+        _stub_upload_pipeline(service, mock_config_service, {"valid": True, "user": uploader, "user_key": "user-key-1"})
+
+        await service._upload_records("kb1", "user1", "org1", [dict(f) for f in _UPLOAD_FILES], parent_folder_id=None)
+
+        entities = service.processor_for_kb.return_value.on_new_records.await_args[0][0]
+        expected = SourcePerson(email="ann@acme.com", display_name="Ann Uploader")
+        assert [record.created_by for record, _ in entities] == [expected, expected]
+        assert all(record.authored_by is None for record, _ in entities)
+
+    @pytest.mark.asyncio
+    async def test_uploader_without_email_names_no_one(self, service, mock_config_service) -> None:
+        _stub_upload_pipeline(service, mock_config_service, {"valid": True, "user": {"_key": "user-key-1"}})
+
+        await service._upload_records("kb1", "user1", "org1", [dict(f) for f in _UPLOAD_FILES], parent_folder_id=None)
+
+        entities = service.processor_for_kb.return_value.on_new_records.await_args[0][0]
+        assert all(record.created_by is None for record, _ in entities)
+
+
 class TestPushedRecordFileReplace:
     """A pushed record's file cannot be replaced; a rename can."""
 
@@ -3768,3 +3854,26 @@ class TestPushedRecordFileReplace:
         result = await svc.update_record("u", "r", {}, file_metadata={"lastModified": 1})
         assert result["success"] is True
         processor.on_record_content_update.assert_called_once()
+
+
+class TestKeepCreator:
+    @pytest.mark.asyncio
+    async def test_a_reloaded_record_is_named_after_its_existing_creator(self, service) -> None:
+        service.graph_provider.get_record_people = AsyncMock(
+            return_value=[{"id": "u1", "name": "Ann", "email": "ann@acme.com"}],
+        )
+        record = MagicMock(id="r1", org_id="org1", created_by=None)
+
+        assert await service._keep_creator(record) is record
+
+        assert record.created_by == SourcePerson(email="ann@acme.com", display_name="Ann")
+        service.graph_provider.get_record_people.assert_awaited_once_with("r1", "org1")
+
+    @pytest.mark.asyncio
+    async def test_a_record_with_no_creator_stays_without_one(self, service) -> None:
+        service.graph_provider.get_record_people = AsyncMock(return_value=[])
+        record = MagicMock(id="r1", org_id="org1", created_by=None)
+
+        await service._keep_creator(record)
+
+        assert record.created_by is None

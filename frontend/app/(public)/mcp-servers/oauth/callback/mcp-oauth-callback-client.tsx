@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
 import { isProcessedError } from '@/lib/api';
+import { failOnSessionEnd } from '@/lib/api/session-cache';
 import { integrationHandoffLink, type DesktopIntegrationFamily } from '@/lib/auth/desktop-oauth';
 import DesktopHandoffNotice from '@/app/(public)/auth/desktop-handoff-notice';
 import {
@@ -89,7 +90,8 @@ export function McpOAuthCallbackClient({
           throw new Error(t('workspace.mcpServers.oauth.noState'));
         }
 
-        const data = await completeCallback({ code, state });
+        // A sign-out (e.g. in another tab) drops the answer: fail into the error state rather than spin forever.
+        const data = await failOnSessionEnd(completeCallback({ code, state }));
 
         if (!data?.success) {
           const friendlyMessage = data?.errorMessage;

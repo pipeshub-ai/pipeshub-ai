@@ -4935,6 +4935,16 @@ class TestEnsureIndexes:
         )
 
     @pytest.mark.asyncio
+    async def test_registers_the_org_key_index_the_backfill_hints(self, connected_provider) -> None:
+        """page_record_ids_by_type hints this index by name; without it each page sorts the org."""
+        connected_provider.http_client.ensure_persistent_index = AsyncMock()
+        await connected_provider._ensure_indexes()
+        assert any(
+            c.args[:2] == ("records", ["orgId", "_key"]) and c.kwargs.get("name") == "records_org_key"
+            for c in connected_provider.http_client.ensure_persistent_index.await_args_list
+        )
+
+    @pytest.mark.asyncio
     async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
         """The walk hints this index by name, so its fields and name must stay as the query expects."""
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
@@ -6030,6 +6040,21 @@ class TestGetFileRecordById:
 
 
 class TestGetUserByEmail:
+    @pytest.mark.asyncio
+    async def test_an_org_scopes_the_lookup(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.return_value = []
+        await connected_provider.get_user_by_email("a@x.com", org_id="org-1")
+        query, kwargs = connected_provider.http_client.execute_aql.await_args.args[0], connected_provider.http_client.execute_aql.await_args.kwargs
+        assert "user.orgId == @org_id" in query
+        assert kwargs["bind_vars"] == {"email": "a@x.com", "org_id": "org-1"}
+
+    @pytest.mark.asyncio
+    async def test_without_an_org_the_lookup_is_unchanged(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.return_value = []
+        await connected_provider.get_user_by_email("a@x.com")
+        assert "orgId" not in connected_provider.http_client.execute_aql.await_args.args[0]
+        assert connected_provider.http_client.execute_aql.await_args.kwargs["bind_vars"] == {"email": "a@x.com"}
+
     @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
@@ -13767,6 +13792,8 @@ class TestDeleteConnectorInstanceFull:
     @pytest.mark.asyncio
     async def test_success_with_records(self, connected_provider):
         connected_provider.get_document = AsyncMock(return_value={"_key": "c1"})
+        # Nothing was written during the delete, so its sweep finds nothing left at once.
+        connected_provider._count_connector_blocks_and_stage_states = AsyncMock(return_value=0)
         connected_provider._collect_connector_entities = AsyncMock(return_value={
             "record_keys": ["r1"],
             "record_group_keys": ["rg1"],

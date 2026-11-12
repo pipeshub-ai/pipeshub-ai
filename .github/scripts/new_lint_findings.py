@@ -16,6 +16,12 @@ sorts it in a cleanup pull request.
 Usage, from the repository root:
     new_lint_findings.py ruff   <merge-base> <file>...   (files under backend/python)
     new_lint_findings.py eslint <merge-base> <file>...   (files under backend/nodejs/apps)
+    new_lint_findings.py log-emoji <merge-base> <file>... (files under backend/python; emoji in log calls)
+    new_lint_findings.py log-pii <merge-base> <file>...   (backend/python/app .py and backend/nodejs/apps/src .ts;
+                                                           emails and names in log calls)
+
+A code in WARN_ONLY never fails the check: a rise in it is printed as a warning for reviewers.
+log-pii reports each reviewed exemption (`# log-pii: ok <reason>`) as LOG-PII-OK.
 """
 import collections
 import json
@@ -23,7 +29,11 @@ import os
 import subprocess
 import sys
 
-CWD = {"ruff": "backend/python", "eslint": "backend/nodejs/apps"}
+# log-pii runs from the repository root: one invocation takes both runtimes' paths.
+CWD = {"ruff": "backend/python", "eslint": "backend/nodejs/apps", "log-emoji": "backend/python", "log-pii": "."}
+_SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts")
+SCRIPTS = {"log-emoji": os.path.join(_SCRIPTS_DIR, "log_emoji.py"), "log-pii": os.path.join(_SCRIPTS_DIR, "log_pii.py")}
+WARN_ONLY = frozenset({"LOG-PII-OK"})
 
 
 def lint(tool: str, files: list[str]) -> list[tuple[str, str, int]]:
@@ -32,17 +42,19 @@ def lint(tool: str, files: list[str]) -> list[tuple[str, str, int]]:
     rel = [os.path.relpath(f, cwd) for f in files]
     if tool == "ruff":
         cmd = ["ruff", "check", "--output-format=json", "--exit-zero", *rel]
+    elif tool in SCRIPTS:
+        cmd = [sys.executable, SCRIPTS[tool], *rel]
     else:
         cmd = ["npx", "eslint", "--format", "json", *rel]
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
     # ESLint exits 1 when it finds errors and 2 when it cannot run at all.
-    if proc.returncode not in (0, 1) or (tool == "ruff" and proc.returncode):
+    if proc.returncode not in (0, 1) or (tool != "eslint" and proc.returncode):
         sys.stderr.write(proc.stderr)
         sys.exit(f"{tool} could not run (exit {proc.returncode})")
     root = os.getcwd()
     found = []
     for item in json.loads(proc.stdout or "[]"):
-        if tool == "ruff":
+        if tool != "eslint":   # ruff, log-emoji and log-pii print the same shape
             loc = item.get("location") or {}
             found.append((os.path.relpath(item["filename"], root), item["code"] or "syntax", loc.get("row", 0)))
         else:
@@ -118,19 +130,20 @@ def main() -> None:
         lines[(f, r)].append(line)
 
     added = {k: head_count[k] - main_count[k] for k in head_count if head_count[k] > main_count[k]}
-    existing = sum(min(head_count[k], main_count[k]) for k in head_count)
+    existing = sum(min(head_count[k], main_count[k]) for k in head_count if k[1] not in WARN_ONLY)
 
     for (f, r), n in sorted(added.items()):
         where = ", ".join(str(x) for x in sorted(lines[(f, r)]))
         msg = f"{n} new {r} (main has {main_count[(f, r)]}, this pull request has {head_count[(f, r)]}); lines {where}"
-        print(f"::error file={f},line={min(lines[(f, r)])}::{msg}")
+        print(f"::{'warning' if r in WARN_ONLY else 'error'} file={f},line={min(lines[(f, r)])}::{msg}")
         print(f"{f}: {msg}")
+    failing = sum(n for (_, r), n in added.items() if r not in WARN_ONLY)
     if existing:
         print(f"::notice::{existing} {tool} findings in these files were already on main. "
               "They do not fail this check; fixing them in a separate pull request is welcome.")
     sys.stdout.flush()
-    if added:
-        sys.exit(f"{sum(added.values())} new {tool} findings. Fix them before merging.")
+    if failing:
+        sys.exit(f"{failing} new {tool} findings. Fix them before merging.")
     print(f"No new {tool} findings.")
 
 

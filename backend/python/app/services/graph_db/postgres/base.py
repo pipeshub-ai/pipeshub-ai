@@ -7,7 +7,10 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
-from app.core.org_context import current_or_system, spawn_in_request
+from app.core.db.uow import QUERY_LOG_SKIP
+from app.core.org_context import current_or_system, current_org_id, spawn_in_request
+from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+from app.utils.db_query_log import CALLER_FRAME, caller_origin
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -17,6 +20,10 @@ if TYPE_CHECKING:
     from app.core.org_context import OrgContext
 
 _HIER = ("PARENT_CHILD", "ATTACHMENT")
+_VALIDATOR = NodeSchemaValidator()
+# The bound of the vetted lookups of graph_0007 and graph_0008 (value mentions: one more): a read that returns that many rows may be partial, and the caller reads with its own statement.
+VETTED_BOUND = 100_000
+MENTIONS_BOUND = 100_001
 
 
 class NotImplementedInPostgres(NotImplementedError):
@@ -63,11 +70,18 @@ def _edge(e: dict) -> tuple[str, str, str, str, dict]:
 
 def _ekey(coll: str, props: dict) -> str:
     """What tells parallel edges of one pair apart: a link's relation type, a grant's type (a user's own grant and the organization's grant to
-    the same record are two edges); empty for the rest, one edge per pair."""
+    the same record are two edges), an authenticated-as link's connector (one link per connector, as on the other stores), an entity relation's type (a record
+    created by and assigned to one user holds two edges, as ``batch_create_entity_relations`` merges on Neo4j); empty for the rest, one edge per pair."""
     if coll == "permission":
         return str(props.get("type") or "")
+    if coll == CollectionNames.AUTHENTICATED_AS.value:
+        return str(props.get("connectorId") or "")
+    if coll == CollectionNames.ENTITY_RELATIONS.value:
+        return str(props.get("edgeType") or "")
     rt = props.get("relationshipType")
-    return rt if coll == CollectionNames.NODE_RELATIONS.value and rt not in (None, *_HIER) else ""
+    if coll == CollectionNames.NODE_RELATIONS.value and rt not in (None, *_HIER):
+        return f"{rt}\x1f{props['constraintName']}" if props.get("constraintName") else rt     # two foreign keys of one type between one pair are two edges
+    return ""
 
 
 class TransactionClosed(RuntimeError):
@@ -92,6 +106,7 @@ class _Txn:
         self._q: asyncio.Queue | None = None
         self._task: asyncio.Task | None = None
         self._ended: BaseException | None = None
+        self._commit_origin = None  # the frame that asked for the commit, for its db.query record
 
     async def _main(self) -> None:
         try:
@@ -101,6 +116,7 @@ class _Txn:
                     if item in ("commit", "rollback"):
                         if item == "rollback":
                             raise _Rollback
+                        CALLER_FRAME.set(self._commit_origin)  # this task's own context: the COMMIT below names its caller
                         break
                     fn, fut = item
                     try:
@@ -139,7 +155,20 @@ class _Txn:
             self._q = asyncio.Queue()
             self._task = spawn_in_request(self._main())
         fut = asyncio.get_running_loop().create_future()
-        await self._q.put((fn, fut))
+        from app.services.graph_db.postgres.kg.guard import current_writer
+        writers = current_writer.get()      # the task keeps the context of the call that opened it: each call brings its own writer along
+        # A task that fn spawns inherits the origin, keeping that frame and its locals alive while it runs.
+        origin = caller_origin(QUERY_LOG_SKIP)
+
+        async def as_this_caller(tx: Tx) -> Any:  # noqa: ANN401
+            token = current_writer.set(writers)
+            caller = CALLER_FRAME.set(origin)
+            try:
+                return await fn(tx)
+            finally:
+                CALLER_FRAME.reset(caller)
+                current_writer.reset(token)
+        await self._q.put((as_this_caller, fut))
         try:
             await asyncio.wait({fut, self._task}, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError:
@@ -162,6 +191,8 @@ class _Txn:
             if how == "commit" and self._ended is not None and not isinstance(self._ended, TransactionClosed):
                 raise self._ended      # a commit on a transaction that was lost is not a commit
             return
+        if how == "commit":
+            self._commit_origin = caller_origin(QUERY_LOG_SKIP)
         await self._q.put(how)
         await asyncio.wait({self._task})
         if how == "commit" and self._ended is not None and not isinstance(self._ended, TransactionClosed):
@@ -175,6 +206,8 @@ class _Rollback(Exception):
 class PgBase:
     def __init__(self, logger: Logger, db: KernelDB, config_service: Any = None) -> None:  # noqa: ANN401
         self.logger, self._db = logger, db
+        from app.services.graph_db.postgres.kg.flush import install as install_kg
+        install_kg(db)        # the projection into kg: the guard before a graph write, the flush before COMMIT of the connectors service's unit
         self.config_service = config_service  # read by callers that build blob storage from the provider, as on Neo4j/Arango
         self._txns: dict[str, _Txn] = {}
 
@@ -185,10 +218,36 @@ class PgBase:
         # Fails closed: no ambient org raises MissingOrgContext. A system context (org enumeration at start-up) reads through the jobs role.
         return await self._db.run(fn, write=write, jobs=current_or_system().kind == "system")
 
+    async def _validate_upserts(self, collection: str, docs: list[dict], transaction: str | None = None) -> None:
+        """Check every document before the first write. A payload lacking required fields is legal only for a node that exists: one read per batch
+        for those ids, and an absent one is a create without them."""
+        merged: dict[Any, dict] = {}      # a repeated id is written as one merged document (last wins per field): that is what is checked
+        for d in docs:
+            key = d.get("id", d.get("_key"))        # as the validator reads it
+            merged[key] = {**merged.get(key, {}), **d}
+        lacking = {}
+        for key, d in merged.items():
+            if missing := _VALIDATOR.validate_node_upsert(collection, d):
+                if not isinstance(key, str):
+                    raise SchemaValidationError(collection, f"a document without an id lacks required fields {missing}")
+                lacking[key] = missing
+        if not lacking:
+            return
+        rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.existing_keys_for_upsert */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[])",
+                                                 current_org_id(), collection, list(lacking)), transaction)
+        present = {r["id"] for r in rows}
+        for key, missing in lacking.items():
+            if key not in present:
+                raise SchemaValidationError(collection, f"node '{key}' does not exist and the write lacks required fields {missing}")
+
     async def _system_read(self, fn: Callable[[Tx], Awaitable[Any]]) -> Any:  # noqa: ANN401
         """A cross-org read that goes through the vetted ``graph.system_*`` functions: the service's own role, no org bound, no jobs login."""
         async with self._db.runtime_uow() as tx:
             return await fn(tx)
+
+    async def ping(self) -> None:
+        """Raises unless the store answers: one constant select through the service's own role (what the health probe calls)."""
+        await self._system_read(lambda tx: tx.fetchval("/* pipeshub:graph.ping */ SELECT 1"))
 
     async def connect(self) -> bool:
         return True  # the caller starts the KernelDB
@@ -225,25 +284,68 @@ class PgBase:
     def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         return self.is_write_conflict(error)
 
+    async def _one(self, sql: str, *args: Any, transaction: str | None = None) -> dict | None:  # noqa: ANN401
+        r = await self._q(lambda tx: tx.fetchrow(sql, *args), transaction)
+        return _doc(r["doc"]) if r else None
+
     @staticmethod
     def _shape(doc: dict, collection: str, fields: list[str] | None) -> dict:
         """``return_fields=["_key"]`` names the stored ``id`` (callers resolve records and paths that way)."""
         return {f: doc.get("id" if f == "_key" else f) for f in fields} if fields else _arango(doc, collection)
 
 
+_PG_TRUE = frozenset({"t", "tr", "tru", "true", "y", "ye", "yes", "on", "1"})
+_PG_FALSE = frozenset({"f", "fa", "fal", "fals", "false", "n", "no", "of", "off", "0"})
+
+
+def _pgbool(v: object) -> bool:
+    """``coalesce((doc->>key)::boolean, false)`` for a stored value, including its refusal: JSON null or absent is false, a boolean is itself, a string or an
+    integer reads as PostgreSQL reads its text (case-insensitive, prefixes of true/false/yes/no/on/off, 1 and 0, trimmed of ASCII blanks only), and anything
+    else (another text, a float, an array, an object) raises as the cast does, so an unreadable flag never reads as "live"."""
+    if v is None or isinstance(v, bool):
+        return bool(v)
+    if isinstance(v, (str, int)):
+        t = str(v).strip(" \t\n\r\v\f").lower()
+        if t in _PG_TRUE:
+            return True
+        if t in _PG_FALSE:
+            return False
+    raise ValueError("a document flag is not a boolean")
+
+
 def _field(name: str) -> str:
     return "id" if name == "_key" else name
 
 
-# Filter keys with an expression index (graph_0001): a literal predicate on the same expression lets the planner use it. Keys are from this list only.
-_HOT = {"blocks": ("recordId", "nameFolded"), "codeFiles": ("filePath",)}
+def _match(filters: dict | None, in_filters: dict | None, first: int, n: str = "n") -> tuple[str, list]:
+    """Equality and membership predicates on ``{n}.doc`` as SQL using parameters ``$first``... and their values."""
+    sql, args = "", []
+    if filters:
+        sql += f""" AND NOT EXISTS (SELECT 1 FROM unnest(${first}::text[], ${first + 1}::text[]) f(k, v)
+            WHERE {n}.doc->f.k IS DISTINCT FROM f.v::jsonb)"""
+        args += [[_field(k) for k in filters], [_j(v) for v in filters.values()]]
+        first += 2
+    if in_filters:
+        sql += f""" AND NOT EXISTS (SELECT 1 FROM jsonb_each(${first}::jsonb) f WHERE NOT EXISTS
+            (SELECT 1 FROM jsonb_array_elements(f.value) x WHERE x = {n}.doc->f.key))"""
+        args.append(_j({_field(k): list(v) for k, v in in_filters.items()}))
+    return sql, args
 
 
-def _hot_values(collection: str, filters: dict | None) -> tuple[str | None, str | None, str | None]:
-    """Literal values of the indexed keys (recordId, nameFolded, filePath) for a bound, null-when-absent predicate; only the collections of ``_HOT`` have them."""
+def _hot(collection: str, filters: dict | None) -> tuple[str, tuple[str, ...]] | None:
+    """The vetted read (graph_0003) that serves a lookup by an indexed key of the document, as ``(function, its leading arguments)``, or None when the
+    filters name none of them (or exceed what the function accepts). Row-level security hides the expression indexes (graph_0001) from a plain statement."""
     f = filters or {}
-    keys = _HOT.get(collection, ())
-    return tuple(f[k] if k in keys and isinstance(f.get(k), str) else None for k in ("recordId", "nameFolded", "filePath"))  # type: ignore[return-value]
+    if not 0 < len(f) <= 32 or not all(0 < len(k) <= 200 for k in f):
+        return None
+    rec, conn, name, path = (f.get(k) if isinstance(f.get(k), str) else "" for k in ("recordId", "connectorId", "nameFolded", "filePath"))
+    if collection == "blocks" and 0 < len(rec) <= 200:
+        return "blocks_by_record", (rec,)
+    if collection == "blocks" and 0 < len(conn) <= 200 and 0 < len(name) <= 1000:
+        return "blocks_by_name", (conn, name)
+    if collection == "codeFiles" and 0 < len(path) <= 2000:
+        return "code_files_by_path", (path,)
+    return None
 
 
 _LINK_COLLS = ["nodeRelations", "recordLinks"]  # a link is a nodeRelations row with a link type, or a recordLinks row
@@ -252,7 +354,8 @@ _LINK_COLLS = ["nodeRelations", "recordLinks"]  # a link is a nodeRelations row 
 def _edge_scope(collection: str, *, pair: bool = False) -> tuple[list[str], int]:
     """The physical collections and the kind of row a logical edge collection stands for, one rule for every reader and deleter (as ``Neo4jProvider``'s
     relationship types): ``recordLinks`` is the links, whichever collection holds them (kind 2); ``nodeRelations`` is the hierarchy edge for one pair
-    (kind 1) and the hierarchy and the links for a whole node (kind 0); any other collection is itself (kind 0)."""
+    (kind 1, also for ``delete_all_edges_for_node``) and the hierarchy and the links for the node-wide reads and ``delete_edges_from`` / ``_to`` (kind 0);
+    any other collection is itself (kind 0)."""
     if collection == "recordLinks":
         return _LINK_COLLS, 2
     if collection == "nodeRelations":

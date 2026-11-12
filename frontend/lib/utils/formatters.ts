@@ -219,3 +219,15 @@ export function toIconSlug(name: string): string {
 export function toIconPath(subfolder: string, name: string): string {
   return `/icons/${subfolder}/${toIconSlug(name)}.svg`;
 }
+
+/** "Ada Lovelace" → "Ada L"; a single name is kept as is. */
+export function shortUserName(fullName: string | null | undefined): string {
+  const parts = (fullName ?? '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length > 1) return `${parts[0]} ${parts[parts.length - 1][0]}`;
+  return parts[0] ?? '';
+}
+
+/** A user's name, else their email, else `null`. */
+export function userDisplayName(user: { name?: string | null; email?: string | null } | null | undefined): string | null {
+  return user?.name?.trim() || user?.email?.trim() || null;
+}

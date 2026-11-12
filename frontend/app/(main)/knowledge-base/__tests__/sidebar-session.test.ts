@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { useAuthStore } from '@/lib/store/auth-store';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import { useKnowledgeBaseStore } from '../store';
 import { resetKnowledgeBaseSession } from '../utils/sidebar-session';
 import { openFolderChildren } from '../utils/folder-children';
@@ -70,6 +71,19 @@ describe('knowledge base state across sign-out', () => {
 
     expect(useKnowledgeBaseStore.getState().appNodes).toEqual([]);
     expect(useKnowledgeBaseStore.getState().nodeChildrenCache.size).toBe(0);
+  });
+
+  it('forgets the sidebar, and the loads still out, when the session ends on an org switch (app stays open)', async () => {
+    const lastOrg = held<ReturnType<typeof hubResponse>>();
+    getNodeChildren.mockReturnValueOnce(lastOrg.promise).mockResolvedValue(hubResponse([]));
+    void openFolderChildren('kb-eng', 'kb');
+
+    clearSessionCache({ refetch: true });
+
+    expect(useKnowledgeBaseStore.getState().appNodes).toEqual([]);
+    // The next open does not join the last org's load, which never settles.
+    await openFolderChildren('kb-eng', 'kb');
+    expect(getNodeChildren).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the sidebar when the same user refreshes their session', () => {

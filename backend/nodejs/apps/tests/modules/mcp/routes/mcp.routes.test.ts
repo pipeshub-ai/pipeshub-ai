@@ -8,6 +8,11 @@ import { createMCPRouter } from '../../../../src/modules/mcp/routes/mcp.routes'
 import { UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import { BaseError } from '../../../../src/libs/errors/base.error'
 import { ExpiredTokenError, InvalidTokenError } from '../../../../src/libs/errors/oauth.errors'
+import { createMockLogger } from '../../../helpers/mock-logger'
+
+const sendError: express.ErrorRequestHandler = (err, _req, res, _next) => {
+  res.status(err instanceof BaseError ? err.statusCode : 500).json({ error: err.message })
+}
 
 describe('MCP Routes — createMCPRouter', () => {
   let container: Container
@@ -18,14 +23,23 @@ describe('MCP Routes — createMCPRouter', () => {
     container = new Container()
 
     mockAuthMiddleware = {
-      authenticate: sinon.stub().callsFake((_req: any, _res: any, next: any) => next()),
+      authenticate: sinon.stub().callsFake((req: any, _res: any, next: any) => {
+        req.user = { userId: 'user-1', isOAuth: true }
+        next()
+      }),
     }
     mockAppConfig = {
       oauthBackendUrl: 'http://localhost:3001',
+      oauthIssuer: 'https://pipeshub.example.com',
+      frontendUrl: 'https://pipeshub.example.com',
+      scopedJwtSecret: 'test-scoped-secret',
+      maxRequestsPerMinute: 1000,
     }
 
     container.bind('AuthMiddleware').toConstantValue(mockAuthMiddleware)
     container.bind('AppConfig').toConstantValue(mockAppConfig)
+    container.bind('Logger').toConstantValue(createMockLogger())
+    container.bind('OAuthTokenService').toConstantValue({ mcpResource: 'https://pipeshub.example.com/mcp' })
   })
 
   afterEach(() => {
@@ -139,58 +153,58 @@ describe('MCP Routes — createMCPRouter', () => {
   // Middleware chain
   // =========================================================================
   describe('middleware chain', () => {
-    it('should have 2 handlers on POST route (auth + request handler)', () => {
+    it('should guard POST with origin, limits, auth and the token check before the handler', () => {
       const router = createMCPRouter(container)
       const postLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.post,
       )
       // route.stack contains the handler layers for that route
-      expect(postLayer.route.stack).to.have.length(2)
+      expect(postLayer.route.stack).to.have.length(6)
     })
 
-    it('should have 2 handlers on GET route (auth + request handler)', () => {
+    it('should guard GET with origin, limits, auth and the token check before the 405 handler', () => {
       const router = createMCPRouter(container)
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
       )
-      expect(getLayer.route.stack).to.have.length(2)
+      expect(getLayer.route.stack).to.have.length(6)
     })
 
-    it('should use authMiddleware.authenticate as first handler on POST', () => {
+    it('should authenticate after the origin check and the rejected-token limit on POST', () => {
       const router = createMCPRouter(container)
       const postLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.post,
       )
-      const firstHandler = postLayer.route.stack[0].handle
+      const firstHandler = postLayer.route.stack[2].handle
       expect(firstHandler).to.equal(mockAuthMiddleware.authenticate)
     })
 
-    it('should use authMiddleware.authenticate as first handler on GET', () => {
+    it('should authenticate after the origin check and the rejected-token limit on GET', () => {
       const router = createMCPRouter(container)
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
       )
-      const firstHandler = getLayer.route.stack[0].handle
+      const firstHandler = getLayer.route.stack[2].handle
       expect(firstHandler).to.equal(mockAuthMiddleware.authenticate)
     })
 
-    it('should use handleMCPRequest handler as second handler on POST', () => {
+    it('should end POST with the handleMCPRequest handler', () => {
       const router = createMCPRouter(container)
       const postLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.post,
       )
-      const secondHandler = postLayer.route.stack[1].handle
+      const secondHandler = postLayer.route.stack[5].handle
       // handleMCPRequest(appConfig) returns an async function
       expect(secondHandler).to.be.a('function')
       expect(secondHandler).to.not.equal(mockAuthMiddleware.authenticate)
     })
 
-    it('should use a 405 handler as second handler on GET', () => {
+    it('should end GET with a 405 handler', () => {
       const router = createMCPRouter(container)
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
       )
-      const secondHandler = getLayer.route.stack[1].handle
+      const secondHandler = getLayer.route.stack[5].handle
       expect(secondHandler).to.be.a('function')
       expect(secondHandler).to.not.equal(mockAuthMiddleware.authenticate)
     })
@@ -209,7 +223,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const postLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.post,
       )
-      expect(postLayer.route.stack[0].handle).to.equal(customAuth)
+      expect(postLayer.route.stack[2].handle).to.equal(customAuth)
     })
 
     it('should use same auth middleware for both routes', () => {
@@ -220,8 +234,8 @@ describe('MCP Routes — createMCPRouter', () => {
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
       )
-      expect(postLayer.route.stack[0].handle).to.equal(
-        getLayer.route.stack[0].handle,
+      expect(postLayer.route.stack[2].handle).to.equal(
+        getLayer.route.stack[2].handle,
       )
     })
   })
@@ -262,9 +276,7 @@ describe('MCP Routes — createMCPRouter', () => {
     mockAppConfig.oauthIssuer = 'https://pipeshub.example.com'
     const app = express()
     app.use('/mcp', createMCPRouter(container))
-    app.use((err: any, _req: any, res: any, _next: any) => {
-      res.status(err instanceof BaseError ? err.statusCode : 500).json({ error: err.message })
-    })
+    app.use(sendError)
     const server = app.listen(0)
     try {
       const { port } = server.address() as AddressInfo
@@ -333,6 +345,133 @@ describe('MCP Routes — createMCPRouter', () => {
       expect(res.headers.get('www-authenticate')).to.equal(
         'Bearer resource_metadata="https://pipeshub.example.com/.well-known/oauth-protected-resource/mcp"',
       )
+    })
+  })
+
+  // =========================================================================
+  // Guard: Origin and rate limits, on one router so the limits keep their counts
+  // =========================================================================
+  describe('guard', () => {
+    let user: string | undefined
+    let authFails: boolean
+    let audience: string | undefined
+
+    async function serve(): Promise<{ get: (headers?: Record<string, string>) => Promise<Response>; close: () => void }> {
+      mockAuthMiddleware.authenticate = (req: any, _res: any, next: any) => {
+        if (authFails) return next(new UnauthorizedError('Invalid token'))
+        req.user = { userId: user, isOAuth: true, oauthAudience: audience }
+        next()
+      }
+      const app = express()
+      app.use('/mcp', createMCPRouter(container))
+      app.use(sendError)
+      const server = app.listen(0)
+      const { port } = server.address() as AddressInfo
+      return {
+        get: (headers = {}) => fetch(`http://127.0.0.1:${port}/mcp`, { headers }),
+        close: () => server.close(),
+      }
+    }
+
+    beforeEach(() => {
+      user = 'user-1'
+      authFails = false
+      audience = undefined
+    })
+
+    it('takes a token for /mcp and one with no audience, and refuses one for another resource', async () => {
+      const { get, close } = await serve()
+      try {
+        expect((await get()).status).to.equal(405)
+        audience = 'https://pipeshub.example.com/mcp'
+        expect((await get()).status).to.equal(405)
+        audience = 'https://other.example/api'
+        const refused = await get()
+        expect(refused.status).to.equal(401)
+        expect(refused.headers.get('www-authenticate')).to.contain('resource_metadata=')
+      } finally {
+        close()
+      }
+    })
+
+    it('refuses a web session token, which is not meant for MCP clients', async () => {
+      mockAuthMiddleware.authenticate = (req: any, _res: any, next: any) => {
+        req.user = { userId: 'user-1' }
+        next()
+      }
+      const app = express()
+      app.use('/mcp', createMCPRouter(container))
+      app.use(sendError)
+      const server = app.listen(0)
+      try {
+        const { port } = server.address() as AddressInfo
+        const res = await fetch(`http://127.0.0.1:${port}/mcp`)
+        expect(res.status).to.equal(401)
+      } finally {
+        server.close()
+      }
+    })
+
+    it('refuses a browser page from another origin, before authentication', async () => {
+      const { get, close } = await serve()
+      try {
+        const res = await get({ origin: 'https://evil.example' })
+        expect(res.status).to.equal(403)
+        expect(await res.json()).to.deep.equal({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: 'Origin not allowed.' },
+          id: null,
+        })
+      } finally {
+        close()
+      }
+    })
+
+    it("lets through clients that send no Origin, and the instance's own origin", async () => {
+      const { get, close } = await serve()
+      try {
+        expect((await get()).status).to.equal(405)
+        expect((await get({ origin: 'https://pipeshub.example.com' })).status).to.equal(405)
+      } finally {
+        close()
+      }
+    })
+
+    it('gives each account its own budget, answered in JSON-RPC', async () => {
+      mockAppConfig.maxRequestsPerMinute = 2
+      const { get, close } = await serve()
+      try {
+        expect((await get()).status).to.equal(405)
+        expect((await get()).status).to.equal(405)
+        const limited = await get()
+        expect(limited.status).to.equal(429)
+        expect(((await limited.json()) as any).error.message).to.contain('This account')
+        user = 'user-2'
+        expect((await get()).status).to.equal(405)
+      } finally {
+        close()
+      }
+    })
+
+    it('counts an address only on rejected tokens', async () => {
+      mockAppConfig.maxRequestsPerMinute = 2
+      const { get, close } = await serve()
+      try {
+        // Accepted calls from many accounts behind one address do not use its budget.
+        for (const u of ['a', 'b', 'c', 'd']) {
+          user = u
+          expect((await get()).status).to.equal(405)
+        }
+        authFails = true
+        // The token-less discovery probe is not counted.
+        for (let i = 0; i < 4; i++) expect((await get()).status).to.equal(401)
+        const bad = { authorization: 'Bearer bad' }
+        expect((await get(bad)).status).to.equal(401)
+        expect((await get(bad)).status).to.equal(401)
+        expect((await get(bad)).status).to.equal(429)
+      } finally {
+        close()
+      }
     })
   })
 })

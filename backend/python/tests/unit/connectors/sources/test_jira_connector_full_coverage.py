@@ -808,7 +808,6 @@ class TestReindexRecords:
             connector_name=Connectors.JIRA,
             connector_id="conn-jira-1",
             scope="personal",
-            created_by="test-user-id",
         )
         connector._check_and_fetch_updated_record = AsyncMock(return_value=None)
 
@@ -939,6 +938,9 @@ class TestCheckAndFetchUpdatedIssue:
         mock_ds.get_issue = AsyncMock(return_value=_make_mock_response(200, issue_response))
         mock_ds.get_project_issue_security_scheme = AsyncMock(return_value=_make_mock_response(
             404, {"errorMessages": ["Security level for project proj-1 does not exist."]}))
+        mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response(200, {"id": 1}))
+        mock_ds.get_permission_scheme_grants = AsyncMock(
+            return_value=_make_mock_response(200, {"permissions": []}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         record = _make_ticket_record(source_updated_at=1700000000000)
@@ -1630,6 +1632,7 @@ class TestFetchProjectPermissionScheme:
     @pytest.mark.asyncio
     async def test_user_permission(self):
         connector = _make_connector()
+        connector._user_read_unfinished = True  # no user map: the grant's own email is only used after a cut-short user read
         mock_ds = MagicMock()
         mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response(200, {"id": 1}))
         mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response(200, {

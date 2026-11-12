@@ -647,6 +647,8 @@
     "indexingStatus": {
       "completed": "Abgeschlossen",
       "inProgress": "In Bearbeitung",
+      "embeddingProgress_one": "Einbettung {{done, number}} / {{total, number}} Chunk",
+      "embeddingProgress_other": "Einbettung {{done, number}} / {{total, number}} Chunks",
       "failed": "Fehlgeschlagen",
       "fileTypeNotSupported": "Dateityp nicht unterstützt",
       "notStarted": "Nicht gestartet",
@@ -845,6 +847,11 @@
     "fork": "Chat abzweigen",
     "forkFromHere": "Ab hier abzweigen",
     "regenerate": "Neu generieren",
+    "answerHidden": {
+      "lost": "Diese Antwort verwendete Inhalte, auf die Sie nicht mehr zugreifen können.",
+      "unconfirmed": "Wir konnten Ihren Zugriff nicht bestätigen. Versuchen Sie es erneut.",
+      "askAgain": "Erneut fragen"
+    },
     "readAloud": "Vorlesen",
     "stopReading": "Vorlesen beenden",
     "ttsNotSupported": "Text-to-Speech wird in diesem Browser nicht unterstützt",
@@ -1343,6 +1350,11 @@
     "stopListening": "Sprachaufnahme stoppen",
     "voiceInput": "Spracheingabe",
     "regenerateResponse": "Antwort neu generieren",
+    "quoteSelection": "Zitieren",
+    "quoteSelectionHint": "Dazu fragen",
+    "quotedExcerpt": "Zitat",
+    "quotedExcerptTruncated": "Zitat (gekürzt)",
+    "dismissQuote": "Zitat entfernen",
     "editQuery": "Anfrage bearbeiten",
     "queryOptions": "Anfrageoptionen",
     "models": "Modelle",
@@ -1477,6 +1489,8 @@
     },
     "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht.",
     "noResultsFor": "Keine Ergebnisse für „{{query}}“",
+    "matchedByName": "Nach Name gefunden",
+    "contentNotIndexedYet": "Inhalt noch nicht indexiert",
     "removeSelectedSource": "{{name}} entfernen",
     "diagramSourceCopied": "Diagrammquelle kopiert",
     "diagramImageCopied": "Diagrammbild kopiert",
@@ -1488,7 +1502,31 @@
       "webSearch": "Websuche",
       "internalAndWebSearch": "Interne + Websuche"
     },
-    "searchDegraded": "Die Ergebnisse sind möglicherweise unvollständig."
+    "searchDegraded": "Die Ergebnisse sind möglicherweise unvollständig.",
+    "compare": {
+      "toggle": "Modelle vergleichen",
+      "pickTwo": "Wählen Sie {{max}} Modelle zum Vergleichen.",
+      "pickedHint": "Jede Frage wird von beiden Modellen nebeneinander beantwortet.",
+      "costNote": "Jede Frage läuft auf beiden Modellen und verbraucht daher etwa doppelt so viel. Im Agent-Modus können beide Werkzeuge nutzen; Aktionen, die eine Freigabe brauchen, werden in jeder Spalte separat abgefragt.",
+      "pillLabel": "Vergleich {{picked}}/{{max}}",
+      "stop": "Stopp",
+      "retry": "Erneut versuchen",
+      "failed": "Dieses Modell konnte nicht antworten. Versuchen Sie es erneut.",
+      "useAnswer": "Diese Antwort verwenden",
+      "useAnswerLabel": "Antwort von {{model}} verwenden",
+      "columnLabel": "Antwort von {{model}}",
+      "chooseConflict": "Diese Antwort kann noch nicht übernommen werden. Warten Sie, bis sie fertig ist, und versuchen Sie es erneut.",
+      "chooseFailed": "Diese Antwort konnte nicht übernommen werden. Versuchen Sie es erneut.",
+      "primaryFallback": "Modell",
+      "starting": "Startet...",
+      "status": {
+        "starting": "Startet",
+        "waiting": "Wartet",
+        "streaming": "Antwortet",
+        "done": "Fertig",
+        "error": "Fehlgeschlagen"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -3266,6 +3304,105 @@
         "cancel": "Abbrechen",
         "continueTeam": "Mit Team-Connector fortfahren",
         "goToPersonal": "Persönlichen Connector einrichten"
+      },
+      "accessCheck": {
+        "open": "Zugriff einer Person prüfen",
+        "title": "Zugriff einer Person prüfen",
+        "description": "Prüfen Sie, ob eine Person einen Datensatz dieses Konnektors lesen kann und warum nicht.",
+        "personLabel": "Person",
+        "personPlaceholder": "Person auswählen",
+        "peopleLoading": "Personen werden geladen...",
+        "peopleFailed": "Die Personenliste konnte nicht geladen werden.",
+        "recordLabel": "Datensatz-ID",
+        "recordHint": "Öffnen Sie den Datensatz und kopieren Sie seine ID.",
+        "check": "Prüfen",
+        "checking": "Wird geprüft...",
+        "close": "Schließen",
+        "resultHeading": "Ergebnis",
+        "restrictedArea": "ein eingeschränkter Bereich",
+        "theyFallback": "Diese Person",
+        "pathLabel": "Position: {{path}}",
+        "reference": "Referenz: {{ref}} (an den Support weitergeben, falls der Grund falsch erscheint)",
+        "verdict": {
+          "granted": "{{name}} kann diesen Datensatz sehen.",
+          "denied": "{{name}} kann diesen Datensatz nicht sehen."
+        },
+        "reason": {
+          "granted": "Wenn er in der Suche fehlt, ist er vielleicht noch nicht indexiert oder der Konnektor synchronisiert noch.",
+          "not_linked": "{{name}} hat kein mit diesem Konnektor verknüpftes Konto.",
+          "no_grant": "Nichts in {{container}} gibt {{name}} Zugriff.",
+          "restricted_container": "{{container}} ist auf andere Personen beschränkt.",
+          "item_restricted": "Dieser Datensatz hat eine eigene Beschränkung und {{name}} gehört nicht dazu.",
+          "parent_not_readable": "{{name}} kann ein übergeordnetes Element, das dieser Datensatz braucht, nicht öffnen.",
+          "pending_rewrite": "Der Ordner dieses Datensatzes wird gerade aktualisiert.",
+          "syncing": "Der Konnektor hat die Synchronisierung dieses Teils noch nicht abgeschlossen.",
+          "scheme_unreadable": "Der Konnektor kann die Zugriffsregeln für diesen Bereich nicht lesen, deshalb ist er für alle ausgeblendet.",
+          "deleted_at_source": "Dieser Datensatz wurde an der Quelle gelöscht.",
+          "unexplained": "Wir können den Grund nicht anzeigen."
+        },
+        "next": {
+          "not_linked": "Korrigieren Sie das Konto an der Quelle und synchronisieren Sie dann.",
+          "no_grant": "Fügen Sie {{name}} an der Quelle hinzu.",
+          "restricted_container": "Bitten Sie den Eigentümer, {{name}} hinzuzufügen.",
+          "item_restricted": "Bitten Sie den Eigentümer, {{name}} hinzuzufügen.",
+          "parent_not_readable": "Geben Sie das übergeordnete Element für {{name}} frei.",
+          "pending_rewrite": "Warten Sie einige Minuten und prüfen Sie dann erneut.",
+          "syncing": "Warten Sie, bis die Synchronisierung abgeschlossen ist.",
+          "scheme_unreadable": "Korrigieren Sie die Berechtigung des Synchronisierungskontos an der Quelle.",
+          "deleted_at_source": "Nichts zu tun.",
+          "unexplained": "Wenden Sie sich mit der Referenz an den Support."
+        },
+        "errors": {
+          "failed": "Die Prüfung war nicht möglich. Versuchen Sie es erneut.",
+          "notFound": "Diese Person oder dieser Datensatz wurde in diesem Konnektor nicht gefunden.",
+          "rateLimited": "Zu viele Prüfungen. Versuchen Sie es in einer Minute erneut."
+        },
+        "peopleRetry": "Erneut versuchen",
+        "askedAbout": "Zu Datensatz {{record}}"
+      },
+      "access": {
+        "title": "Zugriff",
+        "loading": "Zugriffsdetails werden geladen…",
+        "loadError": "Die Zugriffsdetails konnten nicht geladen werden.",
+        "retry": "Erneut versuchen",
+        "reach": "Änderungen in {{connector}} erreichen PipesHub innerhalb von {{interval}}.",
+        "reachUnknown": "Änderungen in {{connector}} erreichen PipesHub bei der nächsten Synchronisierung.",
+        "syncNow": "Berechtigungen jetzt synchronisieren",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "Berechtigungen",
+          "succeeded": "Zuletzt aktualisiert: {{when}}.",
+          "failed": "Die letzte Aktualisierung der Berechtigungen ist fehlgeschlagen, daher sind neue Änderungen in der Quelle möglicherweise noch nicht übernommen. Wählen Sie „Berechtigungen jetzt synchronisieren“, um es erneut zu versuchen.",
+          "never": "Die Berechtigungen wurden noch nicht aktualisiert. Inhalte dieses Connectors bleiben verborgen, bis die erste Synchronisierung abgeschlossen ist.",
+          "running": "Berechtigungen werden gerade aktualisiert.",
+          "incomplete": "Die letzte Berechtigungsaktualisierung wurde nicht bis zum Ende ausgeführt."
+        },
+        "pending": {
+          "label": "Wartet auf Anwendung",
+          "none": "Nichts wartet.",
+          "some_one": "{{count}} Ordner wird aktualisiert. Er ist für alle verborgen, bis die Aktualisierung abgeschlossen ist, meist einige Minuten.",
+          "some_other": "{{count}} Ordner werden aktualisiert. Sie sind für alle verborgen, bis die Aktualisierung abgeschlossen ist, meist einige Minuten.",
+          "overflow": "Eine Änderung betraf den gesamten Konnektor, daher muss sein Berechtigungsindex vollständig neu aufgebaut werden. Bis dahin prüft die Suche jedes Ergebnis, sodass dadurch nichts verborgen wird.",
+          "unknown": "Unbekannt: Die Liste der Ordner, die auf ein Update warten, kann nicht gelesen werden. Siehe „Erfordert Aufmerksamkeit“."
+        },
+        "attention": {
+          "label": "Handlungsbedarf ({{count}})",
+          "none": "Es besteht kein Handlungsbedarf.",
+          "warning": "{{items}} Elemente in {{container}} sind verborgen. Das Synchronisierungskonto kann die Berechtigungen dieses Containers nicht lesen.",
+          "fix": "Lösung: Geben Sie dem Synchronisierungskonto in {{vendor}} die Berechtigung {{permission}} und wählen Sie dann „Berechtigungen jetzt synchronisieren“.",
+          "showAll": "{{count}} weitere anzeigen",
+          "warningNoContainer": "Einige Elemente sind verborgen, weil das Synchronisierungskonto ihre Berechtigungen nicht lesen kann.",
+          "rebuild": "Der Berechtigungsindex dieses Konnektors muss vollständig neu aufgebaut werden. Bis dahin prüft die Suche jedes Ergebnis, sodass dadurch nichts verborgen wird.",
+          "unfinished": "Eine Berechtigungsänderung wurde nicht sauber abgeschlossen. Bitten Sie die Person, die PipesHub betreibt, den Berechtigungsindex dieses Konnektors zu prüfen.",
+          "stale": "Einige Elemente konnten von der schnelleren Suche nicht geprüft werden und werden stattdessen von der klassischen Suche gefunden.",
+          "sweep": "Berechtigungsaktualisierungen für diesen Konnektor schlagen wiederholt fehl. Bitten Sie die Person, die PipesHub betreibt, die Protokolle zu prüfen.",
+          "other": "Bei den Berechtigungen dieses Konnektors muss sich jemand etwas ansehen.",
+          "unreadable": "Die Liste der Ordner, die auf ein Update warten, kann nicht gelesen werden. Bitten Sie die Person, die PipesHub betreibt, den Berechtigungsindex dieses Konnektors neu aufzubauen. Die Suche prüft währenddessen jedes Ergebnis."
+        }
       }
     },
     "mcpServers": {
@@ -3371,6 +3508,7 @@
         "disconnected": "Erfolgreich getrennt",
         "disconnectError": "Trennen fehlgeschlagen",
         "credentialsSaveError": "Server gespeichert, aber die Anmeldedaten konnten nicht gespeichert werden. Sie können sie später über \"Verwalten\" hinzufügen.",
+        "logoSaveError": "Server gespeichert, aber das Logo konnte nicht gespeichert werden. Sie können es unter „Verwalten“ erneut versuchen.",
         "credentialsSaved": "Anmeldedaten gespeichert",
         "credentialsReset": "MCP-Server aktualisiert. Gespeicherte Anmeldedaten wurden entfernt, da sich die Verbindung geändert hat. Verbinden Sie sich erneut, um ihn zu verwenden.",
         "oauthTimedOut": "Die Anmeldung hat zu lange gedauert und wurde abgebrochen. Versuchen Sie es erneut.",
@@ -3385,6 +3523,16 @@
       "form": {
         "name": "Name",
         "description": "Beschreibung",
+        "logo": "Logo",
+        "logoHint": "PNG, JPEG, WebP, GIF oder SVG, bis 2 MB. Ein quadratisches Bild sieht am besten aus.",
+        "logoUpload": "Logo hochladen",
+        "logoChange": "Logo ändern",
+        "logoRemove": "Entfernen",
+        "logoErrors": {
+          "type": "Verwenden Sie ein PNG-, JPEG-, WebP-, GIF- oder SVG-Bild.",
+          "size": "Verwenden Sie ein Bild mit höchstens 2 MB.",
+          "unreadable": "Dieses Bild konnte nicht gelesen werden. Versuchen Sie eine andere Datei."
+        },
         "transport": "Transport",
         "command": "Befehl",
         "args": "Argumente",
@@ -4268,6 +4416,16 @@
       "scopeCount_one": "{{count}} Berechtigungsbereich",
       "scopeCount_other": "{{count}} Berechtigungsbereiche"
     },
+    "agentSignIns": {
+      "title": "Agent-Anmeldungen",
+      "subtitle": "Agenten, die Sie genehmigt haben, in Ihrem Namen zu handeln. Widerrufen Sie eine, damit sie keinen neuen Zugriff mehr erhält.",
+      "columnApproved": "Genehmigt",
+      "revoke": "Widerrufen",
+      "revokeAria": "Agent-Anmeldung {{id}} widerrufen",
+      "revokedTitle": "Agent-Anmeldung widerrufen",
+      "errorTitle": "Die Agent-Anmeldung konnte nicht widerrufen werden",
+      "loadError": "Die Agent-Anmeldungen konnten nicht geladen werden"
+    },
     "skills": {
       "title": "Skills",
       "subtitle": "Erstellen Sie eigene Skills für Ihre Agenten: Markdown-Anweisungen, optionale Skripte und Referenzdateien — versioniert und verwaltet wie alle anderen Inhalte im Agent Builder.",
@@ -4745,6 +4903,8 @@
     "serviceAgentBadgeTooltip": "Dieser Service-Agent nutzt eigene Toolset-Anmeldedaten. Er durchsucht Wissen mit dem Zugriff seines Erstellers, sodass alle Nutzer nur Ergebnisse aus dem sehen, was der Ersteller lesen darf.",
     "convertToServiceAgentTooltip": "Dauerhaft: agentbezogene Toolsets, für die gesamte Organisation freigegeben, und Wissenssuche mit dem Zugriff des Erstellers. Kann nicht rückgängig gemacht werden.",
     "convertToServiceAgentTooltipNewAgent": "Erstellt diesen Agenten als Service-Agent: agentbezogene Toolsets, für die gesamte Organisation freigegeben, und Wissenssuche mit Ihrem Zugriff.",
+    "convertToServiceAgentTooltipNoOrg": "Dauerhaft: agentbezogene Toolsets und Wissenssuche mit dem Zugriff des Erstellers. Verwenden Sie die Teilen-Schaltfläche, um den Zugriff zu steuern. Kann nicht rückgängig gemacht werden.",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "Erstellt diesen Agenten als Service-Agent: agentbezogene Toolsets und Wissenssuche mit Ihrem Zugriff. Verwenden Sie die Teilen-Schaltfläche, um den Zugriff zu steuern.",
     "agentActionsMenuAria": "Agentenmenü",
     "agentMenuCreateAsServiceAgent": "Als Service-Agent erstellen",
     "agentMenuConvertToServiceAgent": "In Service-Agent umwandeln",
@@ -5258,7 +5418,9 @@
     "notGrantedHeading": "Diese Anwendung hat auch diese Berechtigungen angefordert. Die Einstellungen der Anwendung erlauben sie nicht, daher erhält sie sie nicht:",
     "notGrantedOwnerHint": "Die Person, die diese Anwendung erstellt hat, kann sie unter Arbeitsbereich-Einstellungen → Entwicklereinstellungen → OAuth 2.0 Apps hinzufügen.",
     "notGrantedOfflineAccess": "Die Anwendung bleibt nicht angemeldet. Sie müssen sich erneut anmelden, wenn die Sitzung endet.",
-    "unreviewedApp": "Diese Anwendung hat sich selbst registriert. Sie wurde von keinem Administrator geprüft."
+    "unreviewedApp": "Diese Anwendung hat sich selbst registriert. Sie wurde von keinem Administrator geprüft.",
+    "clientIdHost": "Identifiziert durch {{host}}",
+    "redirectTo": "Leitet Sie zurück zu {{uri}}"
   },
   "auth": {
     "titleSection": {
@@ -5439,6 +5601,19 @@
     "skipAll": "Alle überspringen",
     "expired": "Diese Frage ist abgelaufen. Antworten Sie im Chat, um fortzufahren.",
     "repliedInChat": "Sie haben im Chat geantwortet."
+  },
+  "agentClaim": {
+    "title": "Agent verbinden",
+    "intro": "Ein Agent gibt an, in Ihrem Auftrag zu arbeiten. Genehmigen Sie ihn nur, wenn Sie ihn beauftragt haben und der Code mit dem übereinstimmt, den er Ihnen gezeigt hat.",
+    "scopesHeading": "Dieser Agent darf:",
+    "codeLabel": "Geben Sie den 6-stelligen Code ein, den der Agent angezeigt hat",
+    "approve": "Genehmigen",
+    "loading": "Anfrage wird geprüft…",
+    "missingLink": "Diesem Link fehlt das Claim-Token. Bitten Sie den Agenten um einen neuen.",
+    "doneTitle": "Agent verbunden",
+    "doneLine": "Der Agent kann nun fortfahren. Sie können dieses Fenster schließen.",
+    "deniedTitle": "Anfrage abgelehnt",
+    "deniedLine": "Der Agent hat keinen Zugriff erhalten."
   },
   "oauthDevice": {
     "title": "Gerät verbinden",
@@ -5686,5 +5861,107 @@
       "onTitle": "Demodaten für alle wieder eingeschaltet",
       "errorTitle": "Die Demodaten konnten nicht für alle geändert werden"
     }
+  },
+  "graph": {
+    "status": {
+      "stale": "Der Graph wird aktualisiert; neueste Änderungen fehlen möglicherweise.",
+      "building": "Der Graph wird erstellt, daher ist die Ansicht möglicherweise unvollständig.",
+      "retrying": "Beim Erstellen des Graphen ist ein Problem aufgetreten; es wird erneut versucht.",
+      "failed": "Der letzte Graph-Aufbau ist fehlgeschlagen, daher ist diese Ansicht möglicherweise veraltet.",
+      "unknown": "Der Zustand dieses Graphen konnte nicht gelesen werden."
+    },
+    "empty": {
+      "neverBuilt": "Für dieses Repository gibt es noch keinen Code-Graphen.",
+      "tooLarge": "Dieses Repository ist zu groß für einen Graphen."
+    },
+    "incomplete": "Einige Verknüpfungen fehlen möglicherweise. Grenzen Sie nach Kantentyp oder Richtung ein.",
+    "simplified": "Vereinfachte Ansicht für flüssige Bewegung.",
+    "verify": {
+      "degraded": "Der Zugriff kann derzeit nicht geprüft werden. Angezeigt wird der zuletzt bestätigte Stand.",
+      "blank": "Der Zugriff konnte mehrere Minuten lang nicht geprüft werden, daher wurde der Graph geleert. Verbindung wird wiederhergestellt …"
+    },
+    "error": {
+      "unavailable": "Dies konnte gerade nicht geladen werden. Bitte erneut versuchen.",
+      "notAvailable": "Dieses Element ist nicht verfügbar.",
+      "unexpected": "Etwas ist schiefgelaufen.",
+      "ambiguous": "Mehrere Repositories tragen diesen Namen. Wählen Sie das Repository im Suchfeld.",
+      "full": "Diese Ansicht ist voll. Öffnen Sie einen Knoten, um eine neue zu beginnen.",
+      "revoked": "Das Element, das Sie angesehen haben, ist nicht mehr verfügbar."
+    },
+    "title": "Code-Graph",
+    "ui": {
+      "back": "Zurück",
+      "forward": "Vor",
+      "fit": "An Ansicht anpassen",
+      "showTable": "Als Tabelle anzeigen",
+      "showGraph": "Als Graph anzeigen",
+      "direction": {
+        "any": "Beide",
+        "inbound": "Aufrufer",
+        "outbound": "Aufgerufene"
+      },
+      "includeTests": "Tests einbeziehen",
+      "showMore": "Mehr anzeigen",
+      "expand": "Erweitern",
+      "open": "Öffnen",
+      "nothingSelected": "Wählen Sie einen Knoten, um Details zu sehen.",
+      "details": "Details",
+      "links": "Verknüpfungen: {{n}}",
+      "table": {
+        "caption": "Knoten in dieser Ansicht",
+        "name": "Name",
+        "kind": "Art",
+        "file": "Datei",
+        "actions": "Aktionen",
+        "moreRows": "Weitere Zeilen anzeigen",
+        "callersShown": "Angezeigte Aufrufer",
+        "calleesShown": "Angezeigte Aufgerufene",
+        "focus": "Mittelpunkt"
+      },
+      "emptyPrompt": "Suchen Sie oben nach einer Funktion, Methode oder Klasse, um zu sehen, was sie aufruft und von wem sie aufgerufen wird.",
+      "disclosure": "Zeigt nur, worauf Sie Zugriff haben.",
+      "legendInferred": "Gestrichelte Linien sind anhand des Namens abgeleitete Verknüpfungen.",
+      "disabled": "Der Code-Graph ist nicht aktiviert.",
+      "search": {
+        "repo": "Repository",
+        "repoPlaceholder": "Repository wählen",
+        "placeholder": "Funktion, Methode oder Klasse nach Namen suchen",
+        "label": "Code durchsuchen",
+        "results": "Suchergebnisse",
+        "noRepos": "Keine Code-Repositories, die Sie lesen können.",
+        "noMatches": "Keine Treffer.",
+        "chooseFirst": "Wählen Sie zuerst ein Repository",
+        "minChars": "Geben Sie mindestens 2 Zeichen ein.",
+        "more": "Es werden die ersten Treffer angezeigt. Geben Sie mehr ein, um die Suche einzugrenzen."
+      },
+      "action": {
+        "retry": "Erneut versuchen",
+        "restore": "Volle Qualität verwenden"
+      },
+      "loading": "Wird geladen …",
+      "legend": {
+        "functions": "Funktionen und Methoden",
+        "classes": "Klassen und Schnittstellen",
+        "focus": "Mittelpunkt dieser Ansicht"
+      },
+      "openHint": "Öffnen: macht dies zum Mittelpunkt einer neuen Ansicht.",
+      "expandHint": "Erweitern: zeigt die Nachbarn hier an und behält die aktuelle Ansicht.",
+      "announce": {
+        "opened": "{{n}} Elemente werden angezeigt.",
+        "added": "{{n}} Elemente hinzugefügt."
+      },
+      "canvasHint": "Die Grafik ist für Screenreader nicht verfügbar. Nutzen Sie die Schaltfläche „Als Tabelle anzeigen“, um alle Knoten zu lesen und zu bedienen.",
+      "selectionGone": "Das ausgewählte Element ist nicht mehr verfügbar.",
+      "viewGraph": "Graph ansehen",
+      "viewGraphOf": "Graph ansehen: {{repo}}",
+      "fillerNode": "{{kind}} in {{file}}"
+    },
+    "capped": "Die Grafik zeigt nur einen Teil dieser Ansicht. Die Tabelle listet alles auf.",
+    "crowded": "Diese Ansicht wird voll. Grenzen Sie sie mit Filtern ein.",
+    "hint": {
+      "testsOff": "Testdateien sind ausgeblendet. Liegt das Element im Testcode, schalten Sie „Tests einbeziehen“ ein."
+    },
+    "nothingNew": "Für diesen Knoten gibt es nichts weiter anzuzeigen.",
+    "tableOnly": "Es wird nur die Tabelle angezeigt, damit alles flüssig bleibt."
   }
 }

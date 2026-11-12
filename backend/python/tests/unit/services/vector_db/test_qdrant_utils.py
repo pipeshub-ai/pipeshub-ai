@@ -155,13 +155,15 @@ class TestBuildConditions:
         assert len(result) == 1
         assert result[0].match == MatchAny(any=["admin", "user"])
 
-    def test_list_all_none_values_produces_no_condition(self):
+    def test_list_all_none_values_matches_nothing(self):
         result = QdrantUtils.build_conditions({"roles": [None, None]})
-        assert result == []
+        assert [c.key for c in result] == ["metadata.roles"]
+        assert result[0].match == MatchAny(any=[])
 
-    def test_empty_list_produces_no_condition(self):
+    def test_empty_list_matches_nothing(self):
         result = QdrantUtils.build_conditions({"roles": []})
-        assert result == []
+        assert [c.key for c in result] == ["metadata.roles"]
+        assert result[0].match == MatchAny(any=[])
 
     def test_none_value_filtered_out(self):
         result = QdrantUtils.build_conditions({"orgId": None})
@@ -192,9 +194,9 @@ class TestBuildConditions:
             "roles": ["admin"],
             "empty_list": [],
         })
-        assert len(result) == 2
+        assert len(result) == 3
         keys = {c.key for c in result}
-        assert keys == {"metadata.orgId", "metadata.roles"}
+        assert keys == {"metadata.orgId", "metadata.roles", "metadata.empty_list"}
 
     def test_multiple_list_filters(self):
         result = QdrantUtils.build_conditions({

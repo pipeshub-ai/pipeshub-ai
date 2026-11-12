@@ -881,12 +881,58 @@ describe('log-redaction.utils', () => {
 })
 
 describe('redactSecretsInText', () => {
+  it('masks a JWT anywhere in the text, with or without a signature, and keeps what is around it', () => {
+    const jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFAYi5jIn0.c2lnbmF0dXJlLXZhbHVl';
+    expect(redactSecretsInText(`Invalid token signature: ${jwt}`)).to.equal('Invalid token signature: [REDACTED]');
+    expect(redactSecretsInText(`seen (${jwt}) and eyJhbGciOiJub25lIn0.eyJzdWIiOiIxIn0.`)).to.equal('seen ([REDACTED]) and [REDACTED]');
+    expect(redactSecretsInText('version 1.2.3 of eyJ-lib, file a.b.c')).to.equal('version 1.2.3 of eyJ-lib, file a.b.c');
+    expect(redactSecretsInText(`Authorization: Bearer ${jwt}`)).to.equal('Authorization: Bearer [REDACTED]');
+    expect(redactSecretsInText(`{"error":"bad","token_hint":"${jwt}"}`)).to.equal('{"error":"bad","token_hint":"[REDACTED]"}');
+  });
+
+  it('stays linear on a long run of eyJ- (a JWT match can only start where no token character precedes)', () => {
+    const text = 'eyJ-'.repeat(25_000) + 'x';
+    const started = process.hrtime.bigint();
+    expect(redactSecretsInText(text)).to.equal(text);
+    expect(Number(process.hrtime.bigint() - started) / 1e6).to.be.below(200);
+  });
+
   it('redacts a secret in free text and keeps the rest readable', () => {
     const out = redactSecretsInText('GET https://x.example/cb?code=s3cr3t failed; Authorization: Bearer abc.def at foo (a.ts:1:2)');
 
     expect(out).not.to.include('s3cr3t');
     expect(out).not.to.include('abc.def');
     expect(out).to.include('at foo (a.ts:1:2)');
+  });
+
+  it('redacts a quoted JSON field by its sensitive key, however it is spaced or escaped', () => {
+    const out = redactSecretsInText(
+      'upstream said {"access_token":"AT-SECRET","refresh_token": "RT-SECRET", "client_secret" : "CS-\\"SECRET\\"-X", "error":"invalid_grant"} at foo (a.ts:1:2)',
+    );
+
+    expect(out).not.to.include('AT-SECRET');
+    expect(out).not.to.include('RT-SECRET');
+    expect(out).not.to.include('SECRET');
+    expect(out).to.include('"access_token":"[REDACTED]"');
+    expect(out).to.include('"refresh_token": "[REDACTED]"');
+    expect(out).to.include('"client_secret" : "[REDACTED]"');
+    expect(out).to.include('"error":"invalid_grant"');
+    expect(out).to.include('at foo (a.ts:1:2)');
+  });
+
+  it('redacts a quoted JSON value cut off before its closing quote', () => {
+    expect(redactSecretsInText('body: {"refresh_token":"RT-SECRET')).to.equal('body: {"refresh_token":"[REDACTED]"');
+    expect(redactSecretsInText('body: {"refresh_token":"RT-SECRET\\')).to.equal('body: {"refresh_token":"[REDACTED]"');
+  });
+
+  it('redacts a quoted JSON field named like a credential header', () => {
+    const out = redactSecretsInText('sent {"Authorization":"raw-TOKEN-SECRET","x-api-key":"KEY-SECRET"}');
+    expect(out).to.equal('sent {"Authorization":"[REDACTED]","x-api-key":"[REDACTED]"}');
+  });
+
+  it('leaves a quoted JSON field with a non-sensitive key as it is', () => {
+    const text = '{"error":"invalid_grant","error_description":"Bad Request"}';
+    expect(redactSecretsInText(text)).to.equal(text);
   });
 
   it('stays linear on a long run with no separator', () => {
@@ -939,6 +985,9 @@ describe('redaction on adversarial input', () => {
     ['redactQueryForLog, password-URL shape', () => redactQueryForLog({ q: manyPasswordShapes })],
     ['redactSecretsInText, password-URL shape', () => redactSecretsInText(manyPasswordShapes.join(' '))],
     ['redactLogMetadata, password-URL shape', () => redactLogMetadata({ urls: manyPasswordShapes.map((p) => `/x?a=${p}`) })],
+    ['redactSecretsInText, unterminated quoted JSON value', () => redactSecretsInText(`"access_token":"${'\\"'.repeat(N)}`)],
+    ['redactSecretsInText, many quoted JSON heads', () => redactSecretsInText(`"a":`.repeat(N))],
+    ['redactSecretsInText, quoted key then a long run of spaces', () => redactSecretsInText(`"a"${' '.repeat(N)}`)],
   ]
   for (const [name, run] of cases) {
     it(`${name} finishes in linear time`, () => {

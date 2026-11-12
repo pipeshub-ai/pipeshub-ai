@@ -121,7 +121,8 @@ class TestEnrichSqlTableWithFkRelations:
     def _caller_may_open_every_table(self) -> Iterator[None]:
         """The access check passes every table for a caller with an identity, as for an admin.
         A test about the access check patches its own."""
-        def check(_provider, ids, user_id, org_id) -> set[str]:
+        def check(_provider, ids, user_id, org_id, **_) -> set[str]:
+            """Check."""
             return set(ids) if user_id and org_id else set()
 
         with patch("app.utils.fetch_full_record.accessible_node_ids", AsyncMock(side_effect=check)):
@@ -418,7 +419,7 @@ class TestReadableIssueIdsFailClosed:
         graph_provider.get_record_key_by_external_id = AsyncMock(side_effect=lookup)
         graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk"})
         graph_provider.check_access = AsyncMock(
-            side_effect=lambda user_key, org, node_ids: MagicMock(node_ids=set(node_ids))
+            side_effect=lambda user_key, org, node_ids: MagicMock(node_ids=set(node_ids), placeholder_ids=frozenset())
         )
         ticket = MagicMock(spec=TicketRecord)
         ticket.to_llm_context_with_live_fields = AsyncMock(return_value="x")
@@ -504,7 +505,7 @@ class TestFetchMultipleRecordsImpl:
         """These cases are about enrichment and resolution, not access."""
         with patch(
             "app.utils.fetch_full_record.accessible_node_ids",
-            new=AsyncMock(side_effect=lambda _gp, ids, _user, _org: set(ids)),
+            new=AsyncMock(side_effect=lambda _gp, ids, _user, _org, **_: set(ids)),
         ):
             yield
 

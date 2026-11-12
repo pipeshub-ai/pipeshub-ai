@@ -554,7 +554,6 @@ function PersonalConnectorsPageContent() {
       <>
         <ConnectorDetailsLayout
           connector={connectorTypeInfo}
-          scope="personal"
           scopeLabel={t('workspace.sidebar.nav.connectors')}
           instances={instances}
           instanceConfigs={instanceConfigs}

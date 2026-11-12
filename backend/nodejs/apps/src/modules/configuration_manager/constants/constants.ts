@@ -154,6 +154,13 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     defaultEnabled: false,
   },
   {
+    key: 'ENABLE_CHAT_COMPARE',
+    label: 'Enable Compare Models in Chat (Beta)',
+    description:
+      'Let users send one question to two configured models at once and choose the better answer. Disable to hide Compare models in chat and reject its requests.',
+    defaultEnabled: false,
+  },
+  {
     key: 'ENABLE_SKILLS',
     label: 'Enable Skills (Beta)',
     description:

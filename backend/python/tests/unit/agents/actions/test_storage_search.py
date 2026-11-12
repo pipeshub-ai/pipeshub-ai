@@ -1985,6 +1985,24 @@ class TestFindRecordsSaysWhenOutputWasCut:
         assert body["output_truncated"] is False  # the cap of 2 lines is not reached by the one readable file
 
     @pytest.mark.asyncio
+    async def test_readable_view_limited_to_allowed_records_holds_only_those(self, tmp_path) -> None:
+        import json as _json
+        _seed_two_records(tmp_path)  # both match; only one is readable
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok", _VRID_FORBIDDEN: "rec-no"})
+
+        _, both = await tool.find_records("c", 'grep -rl "secretword" .', readable_only=True)
+        _, one = await tool.find_records(
+            "c", 'grep -rl "secretword" .', readable_only=True, allowed_vrids=frozenset({_VRID_FORBIDDEN}),
+        )
+        _, none = await tool.find_records(
+            "c", 'grep -rl "secretword" .', readable_only=True, allowed_vrids=frozenset(),
+        )
+
+        assert len(_json.loads(both)["records"]) == 2
+        assert [r["virtual_record_id"] for r in _json.loads(one)["records"]] == [_VRID_FORBIDDEN]
+        assert not _json.loads(none).get("records")
+
+    @pytest.mark.asyncio
     async def test_readable_only_search_that_cannot_make_a_view_always_reports_a_cut(self, tmp_path) -> None:
         import json as _json
         _seed_two_records(tmp_path)

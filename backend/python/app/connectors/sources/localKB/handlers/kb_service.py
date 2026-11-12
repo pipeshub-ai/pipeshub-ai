@@ -26,6 +26,10 @@ from app.connectors.services.entity_cleanup_intents import (
     record_pending_entity_cleanup,
 )
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.late_write_sweep import (
+    LateWriteSweepIntentError,
+    record_pending_late_write_sweep,
+)
 from app.connectors.services.storage_release import (
     StorageReleaseIntentError,
     record_pending_storage_release,
@@ -38,9 +42,10 @@ from app.connectors.services.vector_cleanup_events import (
     log_cleanup_publish_failure,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
+from app.core.org_context import current_org_id
 from app.connectors.sources.localKB.handlers.delete_lease import hold_delete_lease
 from app.connectors.sources.localKB.push.contract import is_pushed_revision
-from app.models.entities import FileRecord, RecordType
+from app.models.entities import FileRecord, RecordType, SourcePerson
 from app.models.source_dates import (
     UPLOAD_SOURCE_CREATED_FIELD,
     SourceTimestampOrigin,
@@ -50,7 +55,7 @@ from app.models.source_dates import (
 )
 from app.modules.indexing.record_republish import reembeds_from_storage
 from app.modules.retrieval.selection_scope import CONNECTION_OUTSIDE_MESSAGE
-from app.services.cache.invalidation_hooks import notify_kb_records_changed
+from app.services.cache.invalidation_hooks import notify_kb_records_changed, notify_principals_changed
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
 from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
@@ -284,6 +289,14 @@ def _upload_lock(kb_id: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _UPLOAD_LOCKS[kb_id] = lock
     return lock
+
+
+def _ambient_org() -> str | None:
+    """The org of the request this runs in, so a KB change moves that org's viewer-scope version and not every org's."""
+    try:
+        return current_org_id()
+    except Exception:  # no org bound (a job): the caller's global bump is the safe answer
+        return None
 
 
 class KnowledgeBaseService:
@@ -758,7 +771,10 @@ class KnowledgeBaseService:
             # a partial auto-commit (NEO4J_CREATE_TRANSACTIONS=false) lands the
             # same KB once.
             self.logger.info("💾 Executing database operations...")
-            await self.graph_data_store.execute_idempotent_in_transaction(write_kb, explicit=True)
+            try:
+                await self.graph_data_store.execute_idempotent_in_transaction(write_kb, explicit=True)
+            finally:
+                await notify_principals_changed(org_id)  # the owner's grant is new; also after a partial auto-commit
             # After the commit, and outside the retry: the lane is keyed by
             # kb_key, so a second call returns the same lane. Best-effort; a
             # failure is logged and the first publish places the KB instead.
@@ -1082,7 +1098,8 @@ class KnowledgeBaseService:
 
             # Recorded before anything is removed: a lost deleteConnectorEntities
             # is then still reconciled by the indexing service, and an unfinished
-            # storage release by the connectors service.
+            # storage release and what indexing writes after the delete by the
+            # connectors service.
             try:
                 await record_pending_entity_cleanup(
                     self.config_service, org_id=org_id, connector_id=kb_id,
@@ -1091,7 +1108,10 @@ class KnowledgeBaseService:
                 await record_pending_storage_release(
                     self.config_service, org_id=org_id, connector_id=kb_id,
                 )
-            except (EntityCleanupIntentError, StorageReleaseIntentError):
+                await record_pending_late_write_sweep(
+                    self.config_service, self.graph_provider, org_id=org_id, connector_id=kb_id,
+                )
+            except (EntityCleanupIntentError, StorageReleaseIntentError, LateWriteSweepIntentError):
                 self.logger.error("❌ Could not record the cleanup owed by KB %s; not deleting it", kb_id)
                 return {
                     "success": False,
@@ -1198,9 +1218,13 @@ class KnowledgeBaseService:
                 return refused
 
             # From here the cascade may have removed part of the KB, so the status stays DELETING.
-            result = await self.graph_provider.delete_connector_instance(
-                connector_id=kb_id, org_id=org_id
-            )
+            try:
+                result = await self.graph_provider.delete_connector_instance(
+                    connector_id=kb_id, org_id=org_id
+                )
+            finally:
+                # Whether or not it finished, the cascade may have removed the members' access.
+                await notify_principals_changed(org_id)
 
             if not result or not result.get("success"):
                 # the provider's "error" can be exception text, so it stays in the log
@@ -1606,7 +1630,7 @@ class KnowledgeBaseService:
             folder_record.record_name = name
             folder_record.updated_at = get_epoch_timestamp_in_ms()
             processor = await self.processor_for_kb(kb_id)
-            await processor.on_record_metadata_update(folder_record)
+            await processor.on_record_metadata_update(await self._keep_creator(folder_record))
             self.logger.info(f"✅ Folder updated successfully: {folder_id} by user {user_id}")
             return {
                 "success": True,
@@ -1815,6 +1839,7 @@ class KnowledgeBaseService:
             if extra_keys:
                 self.logger.warning(f"update_record ignoring unmapped update keys: {extra_keys}")
             record.updated_at = timestamp
+            await self._keep_creator(record)
 
             processor = await self.processor_for_kb(kb_context["kb_id"])
             if file_metadata is not None:
@@ -2296,7 +2321,7 @@ class KnowledgeBaseService:
                     raise LookupError(f"record {record_id} not found after restore")
                 renamed.record_name = new_name
                 renamed.updated_at = get_epoch_timestamp_in_ms()
-                await processor.on_record_metadata_update(renamed)
+                await processor.on_record_metadata_update(await self._keep_creator(renamed))
             except Exception as e:
                 self.logger.error("❌ Restored record %s but could not rename it: %s", record_id, e)
                 rename_failed.append(record_id)
@@ -2562,7 +2587,7 @@ class KnowledgeBaseService:
                 updated = await self.update_kb_permission(kb_id, requester_id, role_changes, [], role)
                 if not (updated or {}).get("success"):
                     # The new members above are already written.
-                    await notify_kb_records_changed(kb_id)
+                    await notify_kb_records_changed(kb_id, scope_org=_ambient_org())
                     return updated
             if result.get("success"):
                 result["updatedUsers"] = role_changes
@@ -2571,7 +2596,7 @@ class KnowledgeBaseService:
                 # expires otherwise: the cache is only invalidated on
                 # record-set changes, and a permission edit changes no
                 # records. Rare enough that the extra DEL costs nothing.
-                await notify_kb_records_changed(kb_id)
+                await notify_kb_records_changed(kb_id, scope_org=_ambient_org())
                 return result
             else:
                 return self._mutation_failure(result, "share this knowledge base")
@@ -2800,7 +2825,7 @@ class KnowledgeBaseService:
                 # expires otherwise: the cache is only invalidated on
                 # record-set changes, and a permission edit changes no
                 # records. Rare enough that the extra DEL costs nothing.
-                await notify_kb_records_changed(kb_id)
+                await notify_kb_records_changed(kb_id, scope_org=_ambient_org())
                 return {
                     "success": True,
                     "userIds": valid_user_ids,
@@ -2992,7 +3017,7 @@ class KnowledgeBaseService:
                 # expires otherwise: the cache is only invalidated on
                 # record-set changes, and a permission edit changes no
                 # records. Rare enough that the extra DEL costs nothing.
-                await notify_kb_records_changed(kb_id)
+                await notify_kb_records_changed(kb_id, scope_org=_ambient_org())
                 return {
                     "success": True,
                     "userIds": valid_user_ids,
@@ -3416,6 +3441,15 @@ class KnowledgeBaseService:
         frec.parent_external_record_id = parent_folder_id or None
         # Server-side stamp: never trust a client-supplied uploader.
         frec.uploaded_by = uploaded_by or None
+        # The converter keeps a stored record's statuses, content id and flags; an
+        # upload is a new, ordinary file, and any of these sent by the client
+        # ("COMPLETED", a placeholder, internal, not a file) would skip its indexing.
+        frec.indexing_status = ProgressStatus.QUEUED.value
+        frec.extraction_status = ProgressStatus.NOT_STARTED.value
+        frec.virtual_record_id = None
+        frec.is_placeholder = False
+        frec.is_internal = False
+        frec.is_file = True
         frec.source_timestamp_origin = upload_origin(frec.source_created_at, frec.created_at).value
         if storage_url and frec.external_record_id:
             frec.fetch_signed_url = (
@@ -3516,6 +3550,22 @@ class KnowledgeBaseService:
                 )
         return file_records, skipped_files, failed_files
 
+    @staticmethod
+    def _uploader(user: dict | None) -> SourcePerson | None:
+        """The validated uploader as the records' creator. By email: platform users
+        have no source id on the KB app, and the people step resolves members by email."""
+        email = (user or {}).get("email")
+        return SourcePerson(email=email, display_name=user.get("fullName") or None) if email else None
+
+    async def _keep_creator(self, record: FileRecord) -> FileRecord:
+        """Name the record's existing creator again before an update: a reloaded
+        record carries none, and the people step would drop the creator's edge."""
+        for person in await self.graph_provider.get_record_people(record.id, record.org_id):
+            if person.get("email"):
+                record.created_by = SourcePerson(email=person["email"], display_name=person.get("name"))
+                break
+        return record
+
     async def _upload_records(
         self, kb_id: str, user_id: str, org_id: str, files: List[Dict], parent_folder_id: Optional[str]
     ) -> Dict:
@@ -3556,6 +3606,9 @@ class KnowledgeBaseService:
                 )
 
                 entities = [(fr, []) for fr in new_folder_records] + [(fr, []) for fr in file_records]
+                uploader = self._uploader(validation.get("user"))
+                for fr, _ in entities:
+                    fr.created_by = uploader
                 if entities:
                     processor = await self.processor_for_kb(kb_id)
                     await processor.on_new_records(entities)
@@ -3752,7 +3805,7 @@ class KnowledgeBaseService:
             old_external_id = record.external_record_id
             record.parent_external_record_id = new_parent_id  # None => KB root (no edge)
             processor = await self.processor_for_kb(kb_id)
-            await processor.on_records_moved([(old_external_id, record, [])])
+            await processor.on_records_moved([(old_external_id, await self._keep_creator(record), [])])
 
             self.logger.info(f"✅ Record {record_id} moved → {destination}")
             return {

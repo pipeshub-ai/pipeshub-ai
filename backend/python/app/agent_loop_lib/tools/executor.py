@@ -18,7 +18,11 @@ Bridges two different result types at this one boundary:
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.types import ToolCall
@@ -37,12 +41,16 @@ from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.tools.base import ToolOutput
 from app.agent_loop_lib.tools.errors import ToolNotFoundError, ToolValidationError
 from app.agent_loop_lib.tools.registry import ToolRegistry
+from app.utils.error_class import already_logged, classify_error, level_for, log_failure
+from app.utils.logging_fields import log_event, log_fields
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.scope import ToolScope
     from app.agent_loop_lib.tools.base import Tool
 
-__all__ = ["UNKNOWN_TOOL_ERROR_PREFIX", "ToolExecutor"]
+__all__ = ["UNKNOWN_TOOL_ERROR_PREFIX", "ToolExecutor", "log_tool_call_end"]
+
+logger = logging.getLogger(__name__)
 
 OverrideExecute = Callable[[], Awaitable[CoreToolResult]]
 
@@ -60,6 +68,60 @@ OnAsk = Callable[[ToolCall, str], Awaitable[bool]]
 OnPending = Callable[[ToolCall, PendingApproval], Awaitable[None]]
 
 _USAGE_HINT_DESCRIPTION_LIMIT = 100
+MAX_LOGGED_TOOL_NAME = 128
+# The `ToolOutput.end_fields` keys `tool_call.end` carries besides `reason` (`level` is read apart: not a field).
+_END_FIELD_KEYS = ("error_class", "status", "mcp_reason")
+_UNKNOWN_TOOL = MappingProxyType({"reason": "unknown_tool", "error_class": "not_found"})
+_EXCEPTION = MappingProxyType({"reason": "exception"})
+
+
+def log_tool_call_end(
+    *, outcome: str, reason: str | None = None, error_class: str | None = None,
+    cause: BaseException | None = None, tool: str | None = None, level: int | None = None, **fields: object,
+) -> None:
+    """The one ``tool_call.end`` line of a tool call: ``outcome`` is success, failure or skipped,
+    ``reason`` the exit (exception, tool_error, bad_args, denied, ...). A failure with a ``cause``
+    is logged once with its class and no error text (it can echo the arguments); another failure
+    at its class's level, WARNING when unclassified; success and skipped at INFO. A call parked
+    for approval isn't over yet: DEBUG, and the settled card logs the line. Pass ``tool`` and
+    ``tool_call_id`` where `call_tool` hasn't bound them. ``level`` (the ``level`` key of
+    ``ToolOutput.end_fields``) lowers a ``misconfigured`` failure's line, a repeat inside its hourly
+    gate; for any other class, or a higher level, it is ignored."""
+    if tool is not None:
+        fields["tool"] = tool[:MAX_LOGGED_TOOL_NAME]
+    if cause is not None:
+        cls = error_class or classify_error(cause)
+        lowered = cls == "misconfigured" and level is not None and level < level_for(cls)
+        want = level if lowered else level_for(cls)
+        if not already_logged(cause, want):
+            # Marks it (an outer handler's line then drops to DEBUG); the stack once, at ERROR.
+            log_failure(
+                logger, "tool_call.end", cause, level=want, error_class=cls, include_error_text=False,
+                outcome=outcome, reason=reason, **fields,
+            )
+            return
+        # Already logged (another call failed with the same exception): this call's line, at its level, no second stack.
+        log_event(
+            logger, "tool_call.end", level=want, outcome=outcome, reason=reason, error_class=cls,
+            error_type=type(cause).__name__, **fields,
+        )
+        return
+    if outcome == "failure":
+        level = level_for(error_class) if error_class else logging.WARNING
+    else:
+        level = logging.DEBUG if reason == "awaiting_approval" else logging.INFO
+    log_event(logger, "tool_call.end", level=level, outcome=outcome, reason=reason, error_class=error_class, **fields)
+
+
+@dataclass
+class _Ended:
+    """How a call ended, filled in by `_dispatch` at its exit; a raise leaves the defaults."""
+
+    outcome: str = "failure"
+    reason: str | None = "exception"
+    output: ToolOutput | None = None
+    duration_ms: int | None = None
+    deny_reason: str | None = None
 
 
 def _collapse_repeated_name(name: str) -> str | None:
@@ -184,8 +246,55 @@ class ToolExecutor:
         standalone/test calls), is attached to both decision contexts so
         middleware can reach `ctx.scope.turn.run` for ambient run state —
         see `core/scope.py`.
+
+        Logs one `tool_call.end` per call, with `tool` and `tool_call_id` (and the tool's
+        `log_ids`) bound on every line logged while it runs.
         """
         resolved_name = self._resolve_tool_name(call.name)
+        tool = self._registry.resolve_by_name(resolved_name) if self._registry.has(resolved_name) else None
+        ids = tool.log_ids if tool is not None else {}
+        ended = _Ended()
+        with log_fields(
+            tool=resolved_name[:MAX_LOGGED_TOOL_NAME], tool_call_id=call.id,
+            mcp_server_id=ids.get("mcp_server_id"), toolset_id=ids.get("toolset_id"),
+        ):
+            try:
+                result = await self._dispatch(
+                    call, resolved_name, ended, session_id=session_id, caller=caller,
+                    override_execute=override_execute, on_denied=on_denied, on_ask=on_ask,
+                    on_pending=on_pending, scope=scope,
+                )
+            except BaseException as exc:
+                self._log_end(ended, tool, raised=exc)
+                raise
+            self._log_end(ended, tool)
+        return result
+
+    @staticmethod
+    def _log_end(ended: _Ended, tool: "Tool | None", *, raised: BaseException | None = None) -> None:
+        output = None if raised is not None else ended.output
+        fields = {key: output.end_fields.get(key) for key in _END_FIELD_KEYS} if output is not None else {}
+        cause = raised or (output.cause if output is not None and ended.outcome == "failure" else None)
+        log_tool_call_end(
+            outcome=ended.outcome, reason=ended.reason, cause=cause, deny_reason=ended.deny_reason,
+            level=output.end_fields.get("level") if output is not None else None,
+            kind=tool.log_kind if tool is not None else None, duration_ms=ended.duration_ms, **fields,
+        )
+
+    async def _dispatch(
+        self,
+        call: ToolCall,
+        resolved_name: str,
+        ended: _Ended,
+        *,
+        session_id: str | None,
+        caller: str,
+        override_execute: OverrideExecute | None,
+        on_denied: Callable[[str], Awaitable[None]] | None,
+        on_ask: OnAsk | None,
+        on_pending: OnPending | None,
+        scope: "ToolScope | None",
+    ) -> CoreToolResult:
         path = self._registry.path_for_name(resolved_name)
         tags = self._registry.tags_for_name(resolved_name) if path is not None else ()
         resolved_path = path or f"/unresolved/{call.name}"
@@ -211,6 +320,7 @@ class ToolExecutor:
         pending = pre_ctx.pending_approval if pre_ctx.decision == PreDecision.ASK else None
         if pending is not None and on_pending is not None:
             await on_pending(call, pending)
+            ended.outcome, ended.reason = "skipped", "awaiting_approval"
             return CoreToolResult(tool_call_id=call.id, name=call.name, content=pending.message, is_error=True)
 
         approved = pre_ctx.decision == PreDecision.ALLOW
@@ -221,6 +331,8 @@ class ToolExecutor:
             reason = pre_ctx.decision_reason or f"tool call to {call.name!r} was not approved"
             if on_denied is not None:
                 await on_denied(reason)
+            ended.outcome, ended.reason = "skipped", "denied"
+            ended.deny_reason = pre_ctx.decision_code
             return CoreToolResult(tool_call_id=call.id, name=call.name, content=reason, is_error=True)
 
         from app.agent_loop_lib.transport.opik_tracing import (
@@ -234,7 +346,11 @@ class ToolExecutor:
             arguments=dict(call.arguments),
             project_name=self._opik_project_name,
         ) as span:
-            tool_result = await self._run(call, resolved_name, pre_ctx.tool_input, override_execute)
+            started = time.perf_counter()
+            try:
+                tool_result = await self._run(call, resolved_name, pre_ctx.tool_input, override_execute)
+            finally:
+                ended.duration_ms = round((time.perf_counter() - started) * 1000)
             record_tool_span_output(span, result=tool_result)
 
         post_ctx = ToolResultContext(
@@ -250,10 +366,14 @@ class ToolExecutor:
         await self._kernel.on(HookEvent.POST_TOOL_USE).dispatch(post_ctx)
 
         final = post_ctx.tool_response
+        ended.output = final
         if post_ctx.decision == PostDecision.BLOCK:
             reason = post_ctx.decision_reason or "tool result was blocked"
+            ended.reason = "blocked"
             return CoreToolResult(tool_call_id=call.id, name=call.name, content=reason, is_error=True)
 
+        ended.outcome = "success" if final.success else "failure"
+        ended.reason = None if final.success else final.end_fields.get("reason", "tool_error")
         return CoreToolResult(
             tool_call_id=call.id,
             name=call.name,
@@ -312,6 +432,8 @@ class ToolExecutor:
                     data=core_result.content,
                     error=str(core_result.content) if core_result.is_error else None,
                     sources=list(core_result.sources),
+                    cause=core_result.cause,
+                    end_fields=core_result.end_fields,
                 )
             tool = self._registry.resolve_by_name(resolved_name)
         except ToolNotFoundError:
@@ -327,8 +449,9 @@ class ToolExecutor:
                         f"{UNKNOWN_TOOL_ERROR_PREFIX} {call.name!r} — that's a toolset name, not a "
                         f"callable tool. Call one of its tools directly: {', '.join(sorted(candidates))}"
                     ),
+                    end_fields=_UNKNOWN_TOOL,
                 )
-            return ToolOutput(success=False, error=f"{UNKNOWN_TOOL_ERROR_PREFIX} {call.name}")
+            return ToolOutput(success=False, error=f"{UNKNOWN_TOOL_ERROR_PREFIX} {call.name}", end_fields=_UNKNOWN_TOOL)
 
         try:
             normalized = dict(tool_input)
@@ -339,14 +462,17 @@ class ToolExecutor:
             # again — appending the tool's own parameter list lets it fix
             # the call in one turn instead of flailing until
             # `ToolErrorTracker`'s 3-strike limit blocks the tool outright.
-            return ToolOutput(success=False, error=f"{exc}\n\n{_usage_hint(tool)}")
+            return ToolOutput(
+                success=False, error=f"{exc}\n\n{_usage_hint(tool)}",
+                end_fields={"reason": "bad_args", "error_class": "bad_request"},
+            )
         except Exception as exc:
-            return ToolOutput(success=False, error=str(exc))
+            return ToolOutput(success=False, error=str(exc), cause=exc, end_fields=_EXCEPTION)
 
         try:
             return await tool.execute(**normalized)
         except Exception as exc:
-            return ToolOutput(success=False, error=str(exc))
+            return ToolOutput(success=False, error=str(exc), cause=exc, end_fields=_EXCEPTION)
 
     async def execute(self, call: ToolCall) -> CoreToolResult:
         """Backward-compatible alias for `call_tool` with no session/override."""

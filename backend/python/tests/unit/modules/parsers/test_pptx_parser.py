@@ -15,7 +15,7 @@ from app.modules.parsers.pptx.pptx_parser import PPTXParser
 # ---------------------------------------------------------------------------
 class TestPPTXParserInit:
     def test_converter_created(self):
-        with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter") as mock_cls:
+        with patch("docling.document_converter.DocumentConverter") as mock_cls:
             mock_cls.return_value = MagicMock()
             parser = PPTXParser()
             assert parser.converter is not None
@@ -34,8 +34,8 @@ class TestParseBinary:
         mock_result.document = mock_document
         mock_converter.convert.return_value = mock_result
 
-        with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
-            with patch("app.modules.parsers.pptx.pptx_parser.DocumentStream") as mock_stream_cls:
+        with patch("docling.document_converter.DocumentConverter", return_value=mock_converter):
+            with patch("docling.datamodel.base_models.DocumentStream") as mock_stream_cls:
                 mock_stream = MagicMock()
                 mock_stream_cls.return_value = mock_stream
 
@@ -56,8 +56,8 @@ class TestParseBinary:
         mock_result.document = MagicMock()
         mock_converter.convert.return_value = mock_result
 
-        with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
-            with patch("app.modules.parsers.pptx.pptx_parser.DocumentStream") as mock_stream_cls:
+        with patch("docling.document_converter.DocumentConverter", return_value=mock_converter):
+            with patch("docling.datamodel.base_models.DocumentStream") as mock_stream_cls:
                 mock_stream_cls.return_value = MagicMock()
 
                 parser = PPTXParser()
@@ -77,8 +77,8 @@ class TestParseBinary:
         mock_result.status.__str__ = lambda self: "failure"
         mock_converter.convert.return_value = mock_result
 
-        with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
-            with patch("app.modules.parsers.pptx.pptx_parser.DocumentStream", return_value=MagicMock()):
+        with patch("docling.document_converter.DocumentConverter", return_value=mock_converter):
+            with patch("docling.datamodel.base_models.DocumentStream", return_value=MagicMock()):
                 parser = PPTXParser()
                 with pytest.raises(DocumentProcessingError, match="Failed to parse PPTX"):
                     parser.parse_binary(b"bad data")
@@ -87,8 +87,8 @@ class TestParseBinary:
         mock_converter = MagicMock()
         mock_converter.convert.side_effect = RuntimeError("Corrupt file")
 
-        with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
-            with patch("app.modules.parsers.pptx.pptx_parser.DocumentStream", return_value=MagicMock()):
+        with patch("docling.document_converter.DocumentConverter", return_value=mock_converter):
+            with patch("docling.datamodel.base_models.DocumentStream", return_value=MagicMock()):
                 parser = PPTXParser()
                 with pytest.raises(RuntimeError, match="Corrupt file"):
                     parser.parse_binary(b"data")
@@ -100,8 +100,8 @@ class TestParseBinary:
         mock_result.document = MagicMock()
         mock_converter.convert.return_value = mock_result
 
-        with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
-            with patch("app.modules.parsers.pptx.pptx_parser.DocumentStream") as mock_stream_cls:
+        with patch("docling.document_converter.DocumentConverter", return_value=mock_converter):
+            with patch("docling.datamodel.base_models.DocumentStream") as mock_stream_cls:
                 mock_stream_cls.return_value = MagicMock()
 
                 parser = PPTXParser()
@@ -121,7 +121,7 @@ class TestParseFile:
         mock_result.document = mock_document
         mock_converter.convert.return_value = mock_result
 
-        with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
+        with patch("docling.document_converter.DocumentConverter", return_value=mock_converter):
             parser = PPTXParser()
             result = parser.parse_file("/path/to/presentation.pptx")
 
@@ -135,7 +135,7 @@ class TestParseFile:
         mock_result.status.__str__ = lambda self: "error"
         mock_converter.convert.return_value = mock_result
 
-        with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
+        with patch("docling.document_converter.DocumentConverter", return_value=mock_converter):
             parser = PPTXParser()
             with pytest.raises(DocumentProcessingError, match="Failed to parse PPTX"):
                 parser.parse_file("/path/to/bad.pptx")
@@ -144,7 +144,7 @@ class TestParseFile:
         mock_converter = MagicMock()
         mock_converter.convert.side_effect = FileNotFoundError("No such file")
 
-        with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
+        with patch("docling.document_converter.DocumentConverter", return_value=mock_converter):
             parser = PPTXParser()
             with pytest.raises(FileNotFoundError, match="No such file"):
                 parser.parse_file("/nonexistent/file.pptx")
@@ -156,7 +156,7 @@ class TestParseFile:
         mock_result.document = MagicMock()
         mock_converter.convert.return_value = mock_result
 
-        with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
+        with patch("docling.document_converter.DocumentConverter", return_value=mock_converter):
             parser = PPTXParser()
             parser.parse_file("/some/path/file.pptx")
             mock_converter.convert.assert_called_once_with("/some/path/file.pptx")
@@ -169,7 +169,7 @@ class TestParseFile:
         mock_result.document = MagicMock()
         mock_converter.convert.return_value = mock_result
 
-        with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
+        with patch("docling.document_converter.DocumentConverter", return_value=mock_converter):
             parser = PPTXParser()
             parser.parse_file("/path/a.pptx")
             parser.parse_file("/path/b.pptx")
@@ -183,7 +183,7 @@ class TestParseFile:
             mock_result.status.value = status_val
             mock_converter.convert.return_value = mock_result
 
-            with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
+            with patch("docling.document_converter.DocumentConverter", return_value=mock_converter):
                 parser = PPTXParser()
                 with pytest.raises(DocumentProcessingError):
                     parser.parse_file("/path/to/file.pptx")

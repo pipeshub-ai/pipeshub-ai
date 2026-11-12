@@ -15,12 +15,16 @@ import { ConnectorsCollectionsPanel } from '@/chat/components/chat-panel/expansi
 import { AgentScopedResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/agent-scoped-resources-panel';
 import { bareToolFullName } from '@/chat/tool-groups';
 import { UniversalAgentResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/universal-agent-resources-panel';
-import { MessageActionIndicator } from '@/chat/components/chat-panel/expansion-panels/message-actions';
+import { MessageActionIndicator, QuotedExcerptChip } from '@/chat/components/chat-panel/expansion-panels/message-actions';
+import { formatQuotedSelection, parseQuotedSelection } from '@/chat/utils/quoted-selection';
 import {
   ModelSelectorPanel,
   getAppliedReasoningEffortLabel,
 } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { SelectedCollections } from '@/chat/components/selected-collections';
+import { useCompareAvailable } from '@/chat/compare/components/compare-picker-toggle';
+import { useCompareStore } from '@/chat/compare/compare-store';
+import { MAX_COMPARE_MODELS } from '@/chat/compare/types';
 import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import {
   AgentStrategyModeSwitcher,
@@ -292,6 +296,8 @@ export function ChatInput({
   const isMobile = useIsMobile();
   // ── Message action state (local — NOT in Zustand store) ──
   const [activeMessageAction, setActiveMessageAction] = useState<ActiveMessageAction>(null);
+  const [quotedExcerpt, setQuotedExcerpt] = useState<string | null>(null);
+  const [quotedExcerptTruncated, setQuotedExcerptTruncated] = useState(false);
   const [regenModelOverride, setRegenModelOverride] = useState<ModelOverride | null>(null);
   const isRegenerateMode = activeMessageAction?.type === 'regenerate';
   const isEditMode = activeMessageAction?.type === 'editQuery';
@@ -319,6 +325,10 @@ export function ChatInput({
     slotId: draftSlotId,
     message,
     setMessage,
+    quotedExcerpt,
+    setQuotedExcerpt,
+    quotedExcerptTruncated,
+    setQuotedExcerptTruncated,
     paused: isActionMode,
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -506,8 +516,12 @@ export function ChatInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- getEffectiveModel reads these from the store
     [modelCtxKey, openedProjectId, settings.newChatDefaultModel, settings.selectedModels, settings.defaultModels],
   );
-  const displayModelLabel =
-    chatModelOptions.selectionLabel(t, displayModel) ??
+  const compareAvailable = useCompareAvailable(modelCtxKey);
+  const compareEnabled = useCompareStore((s) => s.enabled) && compareAvailable;
+  const comparePicked = useCompareStore((s) => s.models);
+  const displayModelLabel = compareEnabled
+    ? t('chat.compare.pillLabel', { picked: comparePicked.length, max: MAX_COMPARE_MODELS })
+    : chatModelOptions.selectionLabel(t, displayModel) ??
     (displayModel
       ? (displayModel.modelFriendlyName || displayModel.modelName)
       : t('chat.aiModelsTooltip'));
@@ -885,6 +899,21 @@ export function ChatInput({
   // Regenerate: closes all panels, sets activeMessageAction, and pre-fills the
   // textarea with the original question text (dispatched from message-actions.tsx
   // as { messageId, text: question }).
+  const draftBeforeActionRef = useRef<{ text: string; mentions: MentionNode[] } | null>(null);
+
+  const stashDraftBeforeAction = useCallback(() => {
+    if (activeMessageAction) return;
+    draftBeforeActionRef.current = { text: message, mentions };
+  }, [activeMessageAction, mentions, message]);
+
+  const applyQuotedPayload = useCallback((text: string | undefined | null, quotedFromPayload?: string) => {
+    const parsed = parseQuotedSelection(text ?? '');
+    const excerpt = quotedFromPayload ?? parsed.excerpt;
+    setQuotedExcerpt(excerpt);
+    setQuotedExcerptTruncated(false);
+    return excerpt ? parsed.question : (text ?? '');
+  }, []);
+
   const handleShowRegenBar = useCallback((payload?: unknown) => {
     if (typeof payload !== 'object' || payload === null) return;
     const { messageId, text, appliedFilters } = payload as { messageId: string; text?: string; appliedFilters?: AppliedFilters };
@@ -893,10 +922,10 @@ export function ChatInput({
     setRegenModelOverride(null);
     leaveEditFiles(false);
     useChatStore.getState().setRegenAnswers(null);
+    stashDraftBeforeAction();
     setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters });
-    // Pre-fill textarea so user can see what will be regenerated (shown dimmed/disabled)
-    setMessage(text ?? '');
-  }, [dismissExpansionPanels, leaveEditFiles]);
+    setMessage(applyQuotedPayload(text));
+  }, [applyQuotedPayload, dismissExpansionPanels, leaveEditFiles, stashDraftBeforeAction]);
 
   // Edit query: same as regenerate but the textarea is editable so the user can
   // amend the question before resending. Also focuses the textarea immediately.
@@ -916,19 +945,51 @@ export function ChatInput({
     setRegenModelOverride(null);
     useChatStore.getState().setRegenAnswers(null);
     enterEditFiles(attachments ?? []);
+    stashDraftBeforeAction();
     setActiveMessageAction({ type: 'editQuery', messageId, text, appliedFilters, attachments });
-    // Populate the textarea with the original question so the user can edit it
-    setMessage(text ?? '');
+    setMessage(applyQuotedPayload(text));
     setTimeout(() => textareaRef.current?.focus(), 0);
-  }, [dismissExpansionPanels, enterEditFiles]);
+  }, [applyQuotedPayload, dismissExpansionPanels, enterEditFiles, stashDraftBeforeAction]);
+
+  const handleShowQuoteBar = useCallback((payload?: unknown) => {
+    if (typeof payload !== 'object' || payload === null) return;
+    const { text, truncated } = payload as { text?: string; truncated?: boolean };
+    const excerpt = typeof text === 'string' ? text.trim() : '';
+    if (!excerpt) return;
+    dismissExpansionPanels();
+    if (expandable) setIsExpanded(true);
+    const leavingAction = Boolean(activeMessageAction);
+    leaveEditFiles(false);
+    setActiveMessageAction(null);
+    setRegenModelOverride(null);
+    useChatStore.getState().setRegenAnswers(null);
+    if (leavingAction) {
+      const saved = draftBeforeActionRef.current;
+      draftBeforeActionRef.current = null;
+      setMessage(saved?.text ?? '');
+      setMentions(saved?.mentions ?? []);
+    }
+    setQuotedExcerpt(excerpt);
+    setQuotedExcerptTruncated(Boolean(truncated));
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [activeMessageAction, dismissExpansionPanels, expandable, leaveEditFiles]);
+
+  const handleDismissQuote = useCallback(() => {
+    setQuotedExcerpt(null);
+    setQuotedExcerptTruncated(false);
+  }, []);
 
   // Dismissing either action clears the pill bar and resets the textarea to empty.
   const handleDismissAction = useCallback(() => {
     leaveEditFiles(false);
     setActiveMessageAction(null);
     setRegenModelOverride(null);
+    setQuotedExcerpt(null);
+    setQuotedExcerptTruncated(false);
     useChatStore.getState().setRegenAnswers(null);
+    draftBeforeActionRef.current = null;
     setMessage('');
+    setMentions([]);
   }, [leaveEditFiles]);
 
   // While the bar is open, the reply's question card can be answered again (ChatResponse reads this).
@@ -938,23 +999,29 @@ export function ChatInput({
     return () => useChatStore.getState().setRegenTargetMessageId(null);
   }, [regenTargetMessageId]);
 
-  // Register showRegenBar / showEditQuery commands
+  // Register showRegenBar / showEditQuery / showQuoteBar commands
   useEffect(() => {
     const { register, unregister } = useCommandStore.getState();
     register('showRegenBar', handleShowRegenBar);
     register('showEditQuery', handleShowEditQuery);
+    register('showQuoteBar', handleShowQuoteBar);
     return () => {
       unregister('showRegenBar');
       unregister('showEditQuery');
+      unregister('showQuoteBar');
     };
-  }, [handleShowRegenBar, handleShowEditQuery]);
+  }, [handleShowRegenBar, handleShowEditQuery, handleShowQuoteBar]);
 
   // Dismiss message action on slot switch
   useEffect(() => {
     leaveEditFilesRef.current(false);
     setActiveMessageAction(null);
     setRegenModelOverride(null);
-  }, [activeSlotId]);
+    if (!persistDraft) {
+      setQuotedExcerpt(null);
+      setQuotedExcerptTruncated(false);
+    }
+  }, [activeSlotId, persistDraft]);
 
   // ── Execute message action (regenerate or edit query) ──
   const executeMessageAction = useCallback((_editedText?: string) => {
@@ -963,8 +1030,9 @@ export function ChatInput({
     const isEdit = activeMessageAction.type === 'editQuery';
     const af = activeMessageAction.appliedFilters;
     const editedText = isEdit ? stripMentionPads(message, retainedMentions(message, mentions)).trim() : '';
+    const nextQuery = quotedExcerpt ? formatQuotedSelection(quotedExcerpt, editedText) : editedText;
     // An empty edit has no question to answer; stay in edit mode so the text can be fixed.
-    if (isEdit && !editedText) return;
+    if (isEdit && !nextQuery.trim()) return;
     const modelOverride = regenModelOverride ?? undefined;
     const originalFilters = af
       ? buildAssistantApiFilters({
@@ -981,14 +1049,16 @@ export function ChatInput({
       .filter((file) => file.status === 'uploaded' && file.ref)
       .map((file) => file.ref as AttachmentRef);
     const filesChanged = isEdit && !sameFiles(editedFiles, storedFiles);
-    const textChanged = isEdit && editedText !== activeMessageAction.text.trim();
+    const textChanged = isEdit && nextQuery !== activeMessageAction.text.trim();
     const edit = textChanged || filesChanged
-      ? { query: editedText, ...(filesChanged ? { attachments: editedFiles } : {}) }
+      ? { query: nextQuery, ...(filesChanged ? { attachments: editedFiles } : {}) }
       : undefined;
     // The files picked for the edit now belong to the question; what the reader had attached returns.
     leaveEditFiles(true);
     setActiveMessageAction(null);
     setRegenModelOverride(null);
+    setQuotedExcerpt(null);
+    setQuotedExcerptTruncated(false);
     setMessage('');
     if (activeSlotId) {
       const target = [activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters] as const;
@@ -1000,7 +1070,7 @@ export function ChatInput({
       else if (answers) streamRegenerateForSlot(...target, undefined, answers);
       else streamRegenerateForSlot(...target);
     }
-  }, [activeMessageAction, regenModelOverride, activeSlotId, message, mentions, uploadedFiles, leaveEditFiles]);
+  }, [activeMessageAction, regenModelOverride, activeSlotId, message, mentions, uploadedFiles, leaveEditFiles, quotedExcerpt]);
 
   // Submitting the reopened question card regenerates as the bar's button does, with the bar's model.
   useEffect(() => {
@@ -1143,7 +1213,7 @@ export function ChatInput({
     // Only forward chips whose upload completed. A failed chip stays, with
     // its retry, and does not by itself enable send.
     const hasUploaded = uploadedFiles.some((f) => f.status === 'uploaded');
-    if ((message.trim() || hasUploaded) && onSend) {
+    if ((message.trim() || hasUploaded || quotedExcerpt) && onSend) {
       const refs = uploadedFiles
         .filter((f) => f.status === 'uploaded' && f.ref)
         .map((f) => f.ref!);
@@ -1190,14 +1260,17 @@ export function ChatInput({
         setMentions([]);
         setUploadedFiles([]);
         setShowUploadArea(false);
+        setQuotedExcerpt(null);
+        setQuotedExcerptTruncated(false);
         if (textareaRef.current) {
           textareaRef.current.style.height = 'auto';
         }
       };
       const sentText = message;
       draft.markSent();
+      const questionText = stripMentionPads(message, kept);
       const sending = onSend(
-        stripMentionPads(message, kept),
+        quotedExcerpt ? formatQuotedSelection(quotedExcerpt, questionText) : questionText,
         refs.length > 0 ? refs : undefined,
         sent.length > 0 ? sent : undefined,
       );
@@ -1222,6 +1295,10 @@ export function ChatInput({
     // Escape cancels whichever action mode is active (edit or regenerate)
     if (e.key === 'Escape' && isActionMode) {
       handleDismissAction();
+      return;
+    }
+    if (e.key === 'Escape' && quotedExcerpt) {
+      handleDismissQuote();
       return;
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -1640,7 +1717,7 @@ export function ChatInput({
   };
 
   const hasSendableAttachment = uploadedFiles.some((f) => f.status === 'uploaded');
-  const hasContent = Boolean(message.trim()) || hasSendableAttachment || isListening;
+  const hasContent = Boolean(message.trim()) || hasSendableAttachment || isListening || Boolean(quotedExcerpt);
   const hasUploadingAttachments = uploadedFiles.some((f) => f.status === 'uploading');
   const canSubmit =
     (hasContent || activeMessageAction !== null) &&
@@ -1739,6 +1816,7 @@ export function ChatInput({
       showUploadArea,
       uploadedFiles.length > 0,
       showSelectedCollectionsRow,
+      Boolean(quotedExcerpt),
     ].join('|'),
   );
 
@@ -2240,6 +2318,23 @@ export function ChatInput({
         </Flex>
       )}
 
+      {quotedExcerpt && (
+        <Flex
+          style={{
+            width: '100%',
+            minWidth: 0,
+            boxSizing: 'border-box',
+            padding: isActionMode ? '0 var(--space-4)' : 'var(--space-2) var(--space-4) 0',
+          }}
+        >
+          <QuotedExcerptChip
+            excerpt={quotedExcerpt}
+            truncated={quotedExcerptTruncated}
+            onDismiss={handleDismissQuote}
+          />
+        </Flex>
+      )}
+
       {/* Textarea + toolbar */}
       <Flex
       direction="column"
@@ -2341,6 +2436,7 @@ export function ChatInput({
             selectedModel={displayModel}
             onModelSelect={handleModelSelect}
             agentId={agentId}
+            allowCompare
           />
         </ChatInputExpansionPanel>
       ) : usesScopedPanel && isAgentResourcesPanelOpen && expansionViewMode === 'inline' ? (

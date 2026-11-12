@@ -52,8 +52,11 @@ const SWEPT: Record<string, string> = {
   'integrations.slack_threads': 'slack_conversations',
 };
 
-/** Written back whole at a rollback: not followed row by row (they live minutes) but their MongoDB form must match the row. */
-const WRITE_WHOLE = ['authorizationCodes'];
+/**
+ * Written back whole at a rollback: not followed row by row, but their MongoDB form must match the row (an agent sign-in revoked
+ * after the cut must not come back as the consumed document MongoDB still holds).
+ */
+const WRITE_WHOLE = ['authorizationCodes', 'oauthAgentRegistrations'];
 
 export interface ReverseOptions {
   log: Log;

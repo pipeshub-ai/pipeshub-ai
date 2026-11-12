@@ -25,7 +25,9 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.services.graph_db.common.record_visibility import is_live_record
+from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.connector_off import ConnectorOffResult
+from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.utils.user_errors import CONNECTOR_OFF
 
 if TYPE_CHECKING:
@@ -54,7 +56,23 @@ class ConnectorState(Enum):
     ACTIVE = "active"
     OFF = "off"
     REMOVED = "removed"
+    # Its app is marked DELETING. Not REMOVED: a delete can be put back (an unsent event, a
+    # graph delete that failed with the connector still there), so its events are held, not dropped.
+    DELETING = "deleting"
     UNKNOWN = "unknown"
+
+
+# How long an event held for a connector delete waits before it is delivered again.
+HELD_FOR_DELETE_DELAY_S = 60.0
+
+
+class RecordHeldForDelete(RequeueWithoutAttempt):
+    """The record's connector is being deleted: handed back before anything is written or taken
+    out of the vector store. Once the delete sticks the redelivery finds the record gone; after a
+    revert it is indexed as it would have been. Only this message waits, and waiting is never charged."""
+
+    counts_toward_backstop = False
+    pauses_consumer = False
 
 
 class ReadTimeOutcome(Enum):
@@ -69,6 +87,8 @@ def connector_state(instance: Mapping[str, Any] | None) -> ConnectorState:
     """State of a connector app document read with ``raise_on_error=True``."""
     if not instance:
         return ConnectorState.REMOVED
+    if instance.get("status") == APP_STATUS_DELETING:
+        return ConnectorState.DELETING
     return ConnectorState.ACTIVE if instance.get("isActive", False) else ConnectorState.OFF
 
 
@@ -123,11 +143,14 @@ def gating_connector_id(record: Mapping[str, Any]) -> str | None:
     return None
 
 
+_NON_NULL_STATUS_FIELDS = frozenset({"indexingStatus", "extractionStatus", "parsingStatus"})
+
+
 def connector_off_updates(record: Mapping[str, Any]) -> dict[str, Any]:
     """The fields the handler writes on a record whose connector is off."""
     updates: dict[str, Any] = {
         "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
-        "extractionStatus": record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+        "extractionStatus": record.get("extractionStatus") or ProgressStatus.NOT_STARTED.value,
         "processingStartedAt": None,
         "reason": CONNECTOR_OFF,
     }
@@ -242,7 +265,7 @@ class GraphConnectorOffFilter:
                 CollectionNames.APPS.value,
                 "id",
                 sorted(connector_ids),
-                return_fields=["id", "isActive"],
+                return_fields=["id", "isActive", "status"],
                 raise_on_error=True,
             ),
             timeout=self._read_timeout_seconds,
@@ -431,7 +454,11 @@ class GraphConnectorOffFilter:
                 written_fields = connector_off_updates(record)
                 rows.append((
                     record_id,
-                    {field: record.get(field) for field in written_fields},
+                    # A legacy record may lack a status; None is not a status, so that key is left as written.
+                    {
+                        field: record.get(field) for field in written_fields
+                        if record.get(field) is not None or field not in _NON_NULL_STATUS_FIELDS
+                    },
                     {"indexingStatus": written_fields["indexingStatus"], "reason": written_fields["reason"]},
                 ))
             try:

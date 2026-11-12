@@ -81,7 +81,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        node-version: [20]
+        node-version: [22, 24]
 
     steps:
       - name: Checkout code
@@ -131,7 +131,7 @@ jobs:
         if: ${{ always() && inputs.generate-coverage-reports == true }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: nodejs-coverage-report-${{ matrix.os }}
+          name: nodejs-coverage-report-${{ matrix.os }}-node${{ matrix.node-version }}
           path: backend/nodejs/apps/coverage-report.zip
           retention-days: 7
           if-no-files-found: ignore
@@ -244,6 +244,18 @@ jobs:
           mapfile -t shard_args <<< "$args"
           pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 --cov --cov-report= --durations=15 \
             --junitxml="junit-$SHARD.xml"
+
+      # The pgvector building blocks run again on their own, with a report of their own, so that a collection error or a skipped case
+      # in them fails the build, whatever else the shard skips: every case must have run, and the counts must be the files' counts.
+      - name: pgvector unit suites ran in full
+        if: ${{ matrix.shard == 'services' }}
+        working-directory: backend/python
+        run: |
+          pytest -p no:cacheprovider tests/unit/services/vector_db/test_pgvector_core.py tests/unit/services/vector_db/test_pgvector_placement.py \
+            --timeout=60 --junitxml=junit-pgvector.xml
+          python3 ../../scripts/assert_no_skips.py junit-pgvector.xml --min-tests 1 \
+            --expect-suite 'tests.unit.services.vector_db.test_pgvector_core=110' \
+            --expect-suite 'tests.unit.services.vector_db.test_pgvector_placement=8'
 
       # upload-artifact skips dotfiles unless told otherwise, and every coverage
       # data file is one. Not named python-coverage-report-*: weekly-coverage.yml
@@ -492,7 +504,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install Node dependencies
         working-directory: backend/nodejs/apps

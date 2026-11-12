@@ -1,8 +1,7 @@
 import { HttpMethod } from '../../enums/http-methods.enum';
-import { Logger } from '../../services/logger.service';
 import { BaseCommand } from '../command.interface';
 import { Readable } from 'stream';
-import { redactSensitiveQueryParams } from '../../utils/log-redaction.utils';
+import { upstreamFetch } from '../../http/upstream-call';
 
 export interface ConnectorServiceCommandOptions {
   uri: string;
@@ -25,10 +24,6 @@ export interface ConnectorServiceResponse<T> {
   headers?: Record<string, string>;
 }
 
-const logger = Logger.getInstance({
-  service: 'ConnectorServiceCommand',
-});
-
 const isTimeout = (error: unknown): boolean =>
   (error as { name?: unknown } | null)?.name === 'TimeoutError';
 
@@ -47,12 +42,17 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
     this.retries = options.retries ?? 3;
   }
 
-  private attempt(url: string, requestOptions: RequestInit): Promise<Response> {
-    return fetch(
+  private attempt(
+    url: string,
+    requestOptions: RequestInit,
+    attempt: number,
+  ): Promise<Response> {
+    return upstreamFetch(
       url,
       this.timeoutMs
         ? { ...requestOptions, signal: AbortSignal.timeout(this.timeoutMs) }
         : requestOptions,
+      attempt,
     );
   }
   
@@ -65,44 +65,28 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
       body: this.body,
     };
 
-    try {
-      const response = await this.fetchWithRetry(
-        async () => this.attempt(url, requestOptions),
-        this.retries,
-        300,
-        (error) => !isTimeout(error),
-      );
+    const response = await this.fetchWithRetry(
+      (n) => this.attempt(url, requestOptions, n),
+      this.retries,
+      300,
+      (error) => !isTimeout(error),
+    );
 
-      logger.debug('Connector service command success', {
-        url: redactSensitiveQueryParams(url),
-        statusCode: response.status,
-        statusText: response.statusText,
-      });
-
-      // A 204 has no body to parse; parsing it would throw and turn a success into a 500.
-      const data = response.status === 204 ? undefined : await response.json();
-      
-      // Convert Headers object to plain object
-      const responseHeaders: Record<string, string> = {};
-      response.headers.forEach((value, key) => {
-        responseHeaders[key] = value;
-      });
-      
-      return {
-        statusCode: response.status,
-        data: data,
-        msg: response.statusText,
-        headers: responseHeaders,
-      };
-    } catch (error: any) {
-      logger.error('Connector service command failed', {
-        error: error.message,
-        url: redactSensitiveQueryParams(url),
-        // Headers carry the caller's bearer token and bodies carry connector secrets.
-        method: this.method,
-      });
-      throw error;
-    }
+    // A 204 has no body to parse; parsing it would throw and turn a success into a 500.
+    const data = response.status === 204 ? undefined : await response.json();
+    
+    // Convert Headers object to plain object
+    const responseHeaders: Record<string, string> = {};
+    response.headers.forEach((value, key) => {
+      responseHeaders[key] = value;
+    });
+    
+    return {
+      statusCode: response.status,
+      data: data,
+      msg: response.statusText,
+      headers: responseHeaders,
+    };
   }
 
   // Execute streaming request
@@ -114,64 +98,48 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
       body: this.body,
     };
 
-    try {
-      const response = await this.fetchWithRetry(
-        async () => fetch(url, requestOptions),
-        3,
-        300,
-      );
+    const response = await this.fetchWithRetry(
+      (attempt) => upstreamFetch(url, requestOptions, attempt),
+      3,
+      300,
+    );
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      if (!response.body) {
-        throw new Error('Response body is null');
-      }
-
-      logger.info('Connector service streaming command success', {
-        url: redactSensitiveQueryParams(url),
-        statusCode: response.status,
-        statusText: response.statusText,
-      });
-
-      // Convert ReadableStream to Node.js Readable
-      const readable = new Readable({
-        read() {}
-      });
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-
-      const pump = async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            
-            if (done) {
-              readable.push(null);
-              break;
-            }
-            
-            const chunk = decoder.decode(value, { stream: true });
-            readable.push(chunk);
-          }
-        } catch (error) {
-          readable.destroy(error as Error);
-        }
-      };
-
-      pump();
-
-      return readable;
-    } catch (error: any) {
-      logger.error('Connector service streaming command failed', {
-        error: error.message,
-        url: redactSensitiveQueryParams(url),
-        // Headers carry the caller's bearer token and bodies carry connector secrets.
-        method: this.method,
-      });
-      throw error;
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
+
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+
+    // Convert ReadableStream to Node.js Readable
+    const readable = new Readable({
+      read() {}
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    const pump = async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          
+          if (done) {
+            readable.push(null);
+            break;
+          }
+          
+          const chunk = decoder.decode(value, { stream: true });
+          readable.push(chunk);
+        }
+      } catch (error) {
+        readable.destroy(error as Error);
+      }
+    };
+
+    pump();
+
+    return readable;
   }
 }

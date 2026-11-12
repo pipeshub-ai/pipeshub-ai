@@ -17,6 +17,7 @@ from app.telemetry.modules.http_metrics import (
     HTTP_REQUESTS,
     bound_route,
 )
+from app.utils.route_template import route_template
 
 
 class MetricsMiddleware(BaseHTTPMiddleware):
@@ -35,7 +36,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             elapsed = time.perf_counter() - start
-            route = bound_route(self._route_template(request))
+            route = bound_route(route_template(request.scope))
             org = self._org(request)
             domain = self._domain(request)
             # Never reset counters — push cumulative values, let the TSDB
@@ -46,16 +47,6 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             HTTP_REQUEST_DURATION.observe(
                 self.service_name, route, request.method, value=elapsed
             )
-
-    @staticmethod
-    def _route_template(request: Request) -> str:
-        """Matched route template (low cardinality), with a safe fallback."""
-        route = request.scope.get("route")
-        template = getattr(route, "path_format", None) or getattr(route, "path", None)
-        if template:
-            return template
-        # Raw paths (404s, bot scans) are unbounded label values.
-        return "unmatched"
 
     @staticmethod
     def _org(request: Request) -> str:

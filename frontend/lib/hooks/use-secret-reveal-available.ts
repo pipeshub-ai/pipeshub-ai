@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiClient } from '@/lib/api';
+import { onSessionEnd } from '@/lib/api/session-cache';
 
 const STATUS_URL = '/api/v1/configurationManager/secretReveal';
 
@@ -9,6 +10,10 @@ const STATUS_URL = '/api/v1/configurationManager/secretReveal';
 export const REVEAL_PARAMS = { reveal: 'true' } as const;
 
 let pending: Promise<boolean> | null = null;
+// The next sign-in may be to another server (desktop); its answer may differ.
+onSessionEnd(() => {
+  pending = null;
+});
 
 /**
  * Whether this deployment lets an admin read stored secrets back. The server

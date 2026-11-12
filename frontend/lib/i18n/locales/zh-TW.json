@@ -736,6 +736,8 @@
     "indexingStatus": {
       "completed": "已完成",
       "inProgress": "進行中",
+      "embeddingProgress_one": "正在嵌入 {{done, number}} / {{total, number}} 個區塊",
+      "embeddingProgress_other": "正在嵌入 {{done, number}} / {{total, number}} 個區塊",
       "failed": "失敗",
       "fileTypeNotSupported": "不支援的檔案類型",
       "notStarted": "尚未開始",
@@ -934,6 +936,11 @@
     "fork": "分叉對話",
     "forkFromHere": "從此處分叉",
     "regenerate": "重新產生",
+    "answerHidden": {
+      "lost": "此回答使用了您已無權存取的內容。",
+      "unconfirmed": "無法確認您的存取權限，請重試。",
+      "askAgain": "重新提問"
+    },
     "readAloud": "朗讀",
     "stopReading": "停止朗讀",
     "ttsNotSupported": "此瀏覽器不支援文字轉語音",
@@ -1473,6 +1480,11 @@
     "stopListening": "停止聆聽",
     "voiceInput": "語音輸入",
     "regenerateResponse": "重新產生回覆",
+    "quoteSelection": "引用",
+    "quoteSelectionHint": "針對這段提問",
+    "quotedExcerpt": "已引用",
+    "quotedExcerptTruncated": "已引用（已截斷）",
+    "dismissQuote": "移除引用",
     "editQuery": "編輯提問",
     "queryOptions": "提問選項",
     "models": "模型",
@@ -1562,6 +1574,8 @@
     },
     "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。",
     "noResultsFor": "找不到「{{query}}」的結果",
+    "matchedByName": "依名稱符合",
+    "contentNotIndexedYet": "內容尚未索引",
     "removeSelectedSource": "移除 {{name}}",
     "diagramSourceCopied": "已複製圖表原始碼",
     "diagramImageCopied": "已複製圖表圖片",
@@ -1573,7 +1587,31 @@
       "webSearch": "網路搜尋",
       "internalAndWebSearch": "內部 + 網路搜尋"
     },
-    "searchDegraded": "結果可能不完整。"
+    "searchDegraded": "結果可能不完整。",
+    "compare": {
+      "toggle": "比較模型",
+      "pickTwo": "選擇 {{max}} 個模型進行比較。",
+      "pickedHint": "每個問題會由兩個模型並排回答。",
+      "costNote": "每個問題都會在兩個模型上執行，因此用量約為兩倍。在代理模式下，兩個模型都可以使用工具；需要核准的操作會在每一欄中分別詢問。",
+      "pillLabel": "比較 {{picked}}/{{max}}",
+      "stop": "停止",
+      "retry": "重試",
+      "failed": "此模型無法回答。請再試一次。",
+      "useAnswer": "使用此回答",
+      "useAnswerLabel": "使用 {{model}} 的回答",
+      "columnLabel": "{{model}} 的回答",
+      "chooseConflict": "此回答尚無法保留。請等待其完成後再試一次。",
+      "chooseFailed": "無法保留此回答。請再試一次。",
+      "primaryFallback": "模型",
+      "starting": "正在啟動...",
+      "status": {
+        "starting": "正在啟動",
+        "waiting": "等待中",
+        "streaming": "回答中",
+        "done": "已完成",
+        "error": "失敗"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -2127,6 +2165,16 @@
         "copyErrorTitle": "無法複製"
       },
       "scopeCount_other": "{{count}} 個權限範圍"
+    },
+    "agentSignIns": {
+      "title": "代理登入",
+      "subtitle": "您已核准代表您操作的代理。撤銷後，該代理將無法取得新的存取權限。",
+      "columnApproved": "核准時間",
+      "revoke": "撤銷",
+      "revokeAria": "撤銷代理登入 {{id}}",
+      "revokedTitle": "代理登入已撤銷",
+      "errorTitle": "無法撤銷代理登入",
+      "loadError": "無法載入代理登入"
     },
     "aiModels": {
       "title": "AI 模型",
@@ -3397,6 +3445,104 @@
         "cancel": "取消",
         "continueTeam": "繼續使用團隊連接器",
         "goToPersonal": "設定個人連接器"
+      },
+      "accessCheck": {
+        "open": "檢查某人的存取權限",
+        "title": "檢查某人的存取權限",
+        "description": "查看某人能否讀取此連接器中的記錄，以及無法讀取的原因。",
+        "personLabel": "人員",
+        "personPlaceholder": "選擇人員",
+        "peopleLoading": "正在載入人員...",
+        "peopleFailed": "無法載入人員清單。",
+        "recordLabel": "記錄 ID",
+        "recordHint": "開啟記錄並複製其 ID。",
+        "check": "檢查",
+        "checking": "正在檢查...",
+        "close": "關閉",
+        "resultHeading": "結果",
+        "restrictedArea": "受限區域",
+        "theyFallback": "此人",
+        "pathLabel": "位置：{{path}}",
+        "reference": "參考編號：{{ref}}（如果原因看起來不對，請提供給支援人員）",
+        "verdict": {
+          "granted": "{{name}} 可以檢視此記錄。",
+          "denied": "{{name}} 無法檢視此記錄。"
+        },
+        "reason": {
+          "granted": "如果它在搜尋中缺失，可能是尚未建立索引，或連接器仍在同步。",
+          "not_linked": "{{name}} 沒有連結到此連接器的帳戶。",
+          "no_grant": "{{container}} 中沒有任何內容授予 {{name}} 存取權限。",
+          "restricted_container": "{{container}} 僅限其他人存取。",
+          "item_restricted": "此記錄有自己的限制，{{name}} 不在其中。",
+          "parent_not_readable": "{{name}} 無法開啟此記錄所需的上層項目。",
+          "pending_rewrite": "此記錄所在的資料夾正在更新。",
+          "syncing": "連接器尚未完成此部分的同步。",
+          "scheme_unreadable": "連接器無法讀取此區域的存取規則，因此對所有人隱藏。",
+          "deleted_at_source": "此記錄已在來源端刪除。",
+          "unexplained": "我們無法顯示原因。"
+        },
+        "next": {
+          "not_linked": "請在來源端修復帳戶，然後同步。",
+          "no_grant": "請在來源端新增 {{name}}。",
+          "restricted_container": "請讓擁有者新增 {{name}}。",
+          "item_restricted": "請讓擁有者新增 {{name}}。",
+          "parent_not_readable": "請將上層項目共用給 {{name}}。",
+          "pending_rewrite": "請等待幾分鐘後再檢查。",
+          "syncing": "請等待同步完成。",
+          "scheme_unreadable": "請在來源端修復同步帳戶的權限。",
+          "deleted_at_source": "無需操作。",
+          "unexplained": "請聯絡支援人員並提供參考編號。"
+        },
+        "errors": {
+          "failed": "無法完成檢查。請再試一次。",
+          "notFound": "在此連接器中找不到該人員或記錄。",
+          "rateLimited": "檢查次數過多。請一分鐘後再試。"
+        },
+        "peopleRetry": "重試",
+        "askedAbout": "關於記錄 {{record}}"
+      },
+      "access": {
+        "title": "存取",
+        "loading": "正在載入存取詳細資料…",
+        "loadError": "無法載入存取詳細資料。",
+        "retry": "重試",
+        "reach": "{{connector}} 中的變更會在{{interval}}內同步到 PipesHub。",
+        "reachUnknown": "{{connector}} 中的變更會在下次同步時送達 PipesHub。",
+        "syncNow": "立即同步權限",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "權限",
+          "succeeded": "上次重新整理：{{when}}。",
+          "failed": "上次權限重新整理失敗，因此來源中的最新變更可能尚未生效。請選擇「立即同步權限」重試。",
+          "never": "權限尚未重新整理。在首次同步完成之前，此連接器的內容將保持隱藏。",
+          "running": "正在重新整理權限。",
+          "incomplete": "上一次權限重新整理沒有執行到結束。"
+        },
+        "pending": {
+          "label": "等待套用",
+          "none": "沒有等待中的項目。",
+          "some_other": "{{count}} 個資料夾正在更新。更新完成前，所有人都看不到它們，通常需要幾分鐘。",
+          "overflow": "某項變更涉及整個連接器，因此需要完整重建其權限索引。在此之前，搜尋會逐筆檢查結果，因此不會因此隱藏任何內容。",
+          "unknown": "未知：無法讀取等待更新的資料夾清單。請參閱「需要關注」。"
+        },
+        "attention": {
+          "label": "需要處理（{{count}}）",
+          "none": "沒有需要處理的事項。",
+          "warning": "{{container}} 中有 {{items}} 個項目被隱藏。同步帳戶無法讀取此容器的權限。",
+          "fix": "解決方式：在 {{vendor}} 中為同步帳戶授予 {{permission}} 權限，然後選擇「立即同步權限」。",
+          "showAll": "再顯示 {{count}} 項",
+          "warningNoContainer": "同步帳戶無法讀取部分項目的權限，因此這些項目被隱藏。",
+          "rebuild": "此連接器的權限索引需要完整重建。在此之前，搜尋會逐筆檢查結果，因此不會因此隱藏任何內容。",
+          "unfinished": "某項權限變更沒有順利完成。請執行 PipesHub 的人員檢查此連接器的權限索引。",
+          "stale": "部分項目無法由較快的搜尋檢查，會改由經典搜尋尋找。",
+          "sweep": "此連接器的權限更新持續失敗。請執行 PipesHub 的人員檢查其記錄。",
+          "other": "此連接器的權限需要有人查看。",
+          "unreadable": "無法讀取等待更新的資料夾清單。請讓執行 PipesHub 的人員重建此連接器的權限索引。在此期間，搜尋會逐筆檢查結果。"
+        }
       }
     },
     "mcpServers": {
@@ -3502,6 +3648,7 @@
         "disconnected": "已成功中斷連線",
         "disconnectError": "無法中斷連線",
         "credentialsSaveError": "伺服器已儲存，但憑證無法儲存。您可以稍後從「管理」中新增。",
+        "logoSaveError": "伺服器已儲存，但其標誌未能儲存。您可以在「管理」中重試。",
         "credentialsSaved": "憑證已儲存",
         "credentialsReset": "MCP 伺服器已更新。由於連線已變更，已儲存的憑證已被移除；請重新連線後再使用。",
         "oauthTimedOut": "登入時間過長，已停止。請再試一次。",
@@ -3516,6 +3663,16 @@
       "form": {
         "name": "名稱",
         "description": "描述",
+        "logo": "標誌",
+        "logoHint": "PNG、JPEG、WebP、GIF 或 SVG，最大 2 MB。正方形圖片效果最佳。",
+        "logoUpload": "上傳標誌",
+        "logoChange": "更換標誌",
+        "logoRemove": "移除",
+        "logoErrors": {
+          "type": "請使用 PNG、JPEG、WebP、GIF 或 SVG 圖片。",
+          "size": "請使用不超過 2 MB 的圖片。",
+          "unreadable": "無法讀取此圖片，請嘗試其他檔案。"
+        },
         "transport": "傳輸方式",
         "command": "命令",
         "args": "引數",
@@ -4806,6 +4963,8 @@
     "serviceAgentBadgeTooltip": "此服務代理使用自己的工具組憑證。它以建立者的權限檢索知識，因此所有使用者看到的結果都來自建立者有權閱讀的內容。",
     "convertToServiceAgentTooltip": "永久性操作：代理層級的工具組、與整個組織共用，並以建立者的權限檢索知識。無法復原。",
     "convertToServiceAgentTooltipNewAgent": "將此代理建立為服務代理：代理層級的工具組、與整個組織共用，並以您的權限檢索知識。",
+    "convertToServiceAgentTooltipNoOrg": "永久性操作：代理層級的工具組，並以建立者的權限檢索知識。請使用「分享」按鈕控制誰可以存取。無法復原。",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "將此代理建立為服務代理：代理層級的工具組，並以您的權限檢索知識。請使用「分享」按鈕控制誰可以存取。",
     "agentActionsMenuAria": "代理選單",
     "agentMenuCreateAsServiceAgent": "建立為服務代理",
     "agentMenuConvertToServiceAgent": "轉換為服務代理",
@@ -5287,6 +5446,8 @@
     "notGrantedOwnerHint": "建立此應用程式的人可以在 工作區設定 → 開發人員設定 → OAuth 2.0 應用程式 中新增這些權限。",
     "notGrantedOfflineAccess": "此應用程式不會保持登入狀態。工作階段結束後，你需要重新登入。",
     "unreviewedApp": "此應用程式是自行註冊的，沒有管理員審核過。",
+    "clientIdHost": "由 {{host}} 識別",
+    "redirectTo": "將您送回 {{uri}}",
     "legalNotice": "按一下「允許」即表示您授權 {{appName}} 依上述說明存取您的資料。",
     "privacyPolicy": "隱私權政策",
     "deny": "拒絕",
@@ -5499,6 +5660,19 @@
     "expired": "此問題已過期。請在聊天中回覆以繼續。",
     "repliedInChat": "你已在聊天中回覆。"
   },
+  "agentClaim": {
+    "title": "連接代理",
+    "intro": "一個代理表示它為您工作。僅在是您要求它這麼做，且代碼與它顯示給您的相符時，才核准。",
+    "scopesHeading": "此代理將可以：",
+    "codeLabel": "輸入代理顯示的 6 位數代碼",
+    "approve": "核准",
+    "loading": "正在檢查此請求…",
+    "missingLink": "此連結缺少認領權杖。請向代理重新取得。",
+    "doneTitle": "代理已連接",
+    "doneLine": "代理現在可以繼續。可以關閉此視窗。",
+    "deniedTitle": "請求已拒絕",
+    "deniedLine": "代理未獲得存取權限。"
+  },
   "oauthDevice": {
     "title": "連接裝置",
     "codeLabel": "請輸入終端機中顯示的代碼",
@@ -5652,5 +5826,107 @@
       "onTitle": "已為所有人重新開啟示範資料",
       "errorTitle": "無法為所有人變更示範資料"
     }
+  },
+  "graph": {
+    "status": {
+      "stale": "圖譜正在更新，最近的變更可能尚未顯示。",
+      "building": "圖譜正在建置，目前顯示的內容可能不完整。",
+      "retrying": "圖譜建置發生問題，正在重試。",
+      "failed": "上一次圖譜建置失敗，此檢視可能已過時。",
+      "unknown": "無法讀取此圖譜的狀態。"
+    },
+    "empty": {
+      "neverBuilt": "此儲存庫尚無程式碼圖譜。",
+      "tooLarge": "此儲存庫過大，無法產生圖譜。"
+    },
+    "incomplete": "部分連結可能遺失。請依邊類型或方向縮小範圍。",
+    "simplified": "為維持流暢移動，已簡化檢視。",
+    "verify": {
+      "degraded": "目前無法驗證存取權限，正在顯示上次確認的內容。",
+      "blank": "已有數分鐘無法驗證存取權限，因此已清除圖譜。正在重新連線…"
+    },
+    "error": {
+      "unavailable": "目前無法載入，請再試一次。",
+      "notAvailable": "此項目無法使用。",
+      "unexpected": "發生了一些問題。",
+      "ambiguous": "有多個儲存庫同名。請在搜尋框中選擇儲存庫。",
+      "full": "此檢視已滿。開啟一個節點以開始新的檢視。",
+      "revoked": "你正在檢視的項目已無法使用。"
+    },
+    "title": "程式碼圖譜",
+    "ui": {
+      "back": "上一步",
+      "forward": "下一步",
+      "fit": "符合檢視大小",
+      "showTable": "以表格顯示",
+      "showGraph": "以圖譜顯示",
+      "direction": {
+        "any": "兩者",
+        "inbound": "呼叫端",
+        "outbound": "被呼叫端"
+      },
+      "includeTests": "包含測試",
+      "showMore": "顯示更多",
+      "expand": "展開",
+      "open": "開啟",
+      "nothingSelected": "選取節點以檢視詳細資料。",
+      "details": "詳細資料",
+      "links": "連結：{{n}}",
+      "table": {
+        "caption": "此檢視中的節點",
+        "name": "名稱",
+        "kind": "類型",
+        "file": "檔案",
+        "actions": "動作",
+        "moreRows": "顯示更多列",
+        "callersShown": "已顯示的呼叫端",
+        "calleesShown": "已顯示的被呼叫端",
+        "focus": "中心"
+      },
+      "emptyPrompt": "在上方搜尋函式、方法或類別，查看誰呼叫它以及它呼叫了誰。",
+      "disclosure": "僅顯示你有權存取的內容。",
+      "legendInferred": "虛線表示依名稱推斷的連結。",
+      "disabled": "程式碼圖譜未啟用。",
+      "search": {
+        "repo": "儲存庫",
+        "repoPlaceholder": "選擇儲存庫",
+        "placeholder": "依名稱尋找函式、方法或類別",
+        "label": "搜尋程式碼",
+        "results": "搜尋結果",
+        "noRepos": "沒有你可以讀取的程式碼儲存庫。",
+        "noMatches": "沒有相符項目。",
+        "chooseFirst": "請先選擇儲存庫",
+        "minChars": "請至少輸入 2 個字元。",
+        "more": "僅顯示前幾個相符項目。請輸入更多內容以縮小搜尋範圍。"
+      },
+      "action": {
+        "retry": "重試",
+        "restore": "使用完整畫質"
+      },
+      "loading": "正在載入…",
+      "legend": {
+        "functions": "函式和方法",
+        "classes": "類別和介面",
+        "focus": "此檢視的中心"
+      },
+      "openHint": "開啟：將其設為新檢視的中心。",
+      "expandHint": "展開：在此顯示其相鄰項，並保留目前內容。",
+      "announce": {
+        "opened": "正在顯示 {{n}} 項。",
+        "added": "已新增 {{n}} 項。"
+      },
+      "canvasHint": "圖譜圖像無法供螢幕閱讀器使用。請使用「以表格顯示」按鈕來閱讀和操作每個節點。",
+      "selectionGone": "你選取的項目已無法使用。",
+      "viewGraph": "檢視圖譜",
+      "viewGraphOf": "檢視圖譜：{{repo}}",
+      "fillerNode": "{{file}} 中的 {{kind}}"
+    },
+    "capped": "圖中只顯示此檢視的一部分，表格列出全部內容。",
+    "crowded": "此檢視越來越擁擠。請用篩選器縮小範圍。",
+    "hint": {
+      "testsOff": "測試檔案已隱藏。如果該項目在測試程式碼中，請開啟「包含測試」。"
+    },
+    "nothingNew": "此節點沒有更多內容可顯示。",
+    "tableOnly": "為保持流暢，僅顯示表格。"
   }
 }

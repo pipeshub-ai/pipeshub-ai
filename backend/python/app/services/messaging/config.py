@@ -30,6 +30,9 @@ class Topic(str, Enum):
     """Well-known messaging topics."""
 
     RECORD_EVENTS = "record-events"
+    # Record names, published by connectors so a record is findable by name before it is indexed.
+    RECORD_TITLE_EVENTS = "record-title-events"
+    RECORD_EVENTS_PRIORITY = "record-events-priority"
     CODE_GRAPH_EVENTS = "code-graph-events"
     ENTITY_EVENTS = "entity-events"
     AI_CONFIG_EVENTS = "ai-config-events"
@@ -105,6 +108,7 @@ class PipelineEvent(BaseModel):
 # Handler type aliases
 # ---------------------------------------------------------------------------
 
+# True: done or skipped. False: deliver again later. Raise on failure: the consumer classifies it terminal or transient.
 MessageHandler = Callable[[StreamMessage], Awaitable[bool]]
 IndexingMessageHandler = Callable[[StreamMessage], AsyncGenerator[PipelineEvent, None]]
 
@@ -207,13 +211,11 @@ class MessagingEnvConfig:
     def record_lease_wait_seconds(self) -> float:
         """Bounded wait for the per-record lease before giving up.
 
-        This lease is only contended by *duplicate* in-flight deliveries of
-        the same record (a different, unrelated record never competes for
-        it), and the task already holds an outer indexing slot/semaphore
-        while waiting. An unbounded wait here convoys the whole pipeline if
-        several duplicates of one record arrive together; a short bounded
-        wait is enough since whoever already holds the lease is actively
-        processing that same record.
+        Only work on the same record competes for this lease (a duplicate
+        delivery, a pipeline stage, a retention sweep), and the task already
+        holds an outer indexing slot/semaphore while waiting. An unbounded wait
+        here convoys the whole pipeline if several events of one record arrive
+        together, so a delivery that waits this long is handed back instead.
         """
         return _env_seconds("INDEXING_RECORD_LEASE_WAIT_SECONDS", 10.0)
 
@@ -303,6 +305,18 @@ class MessagingEnvConfig:
         return int(os.getenv("MESSAGE_BATCH_SIZE_INDEXING", "10"))
 
     @property
+    def record_title_batch_size(self) -> int:
+        """Record names written per entity-index write by the title consumer."""
+        size = _env_int("RECORD_TITLE_BATCH_SIZE", 100)
+        return size if size >= 1 else 100
+
+    @property
+    def record_title_flush_seconds(self) -> float:
+        """How long a partial batch of record names waits for more before it is written."""
+        seconds = _env_seconds("RECORD_TITLE_FLUSH_SECONDS", 2.0)
+        return seconds if seconds >= 0.1 else 2.0
+
+    @property
     def message_timeout_ms(self) -> int:
         """Block timeout for reading messages (milliseconds)."""
         return int(os.getenv("MESSAGE_TIMEOUT_MS", "2000"))
@@ -326,6 +340,27 @@ class MessagingEnvConfig:
         if ext == "pdf" or mime == "application/pdf":
             return self.pdf_record_processing_timeout
         return self.record_processing_timeout
+
+    @property
+    def embed_stall_floor_seconds(self) -> float:
+        """The least time without a finished embedding batch before a record counts as stalled.
+        Sized above the slowest batch measured on a contended four-core host (about 120 s)."""
+        return _env_seconds("EMBED_STALL_FLOOR_SECONDS", 360.0)
+
+    @property
+    def embed_stall_ceiling_seconds(self) -> float:
+        """The most the stall timer is ever stretched to, however slow the recent batches were."""
+        return max(self.embed_stall_floor_seconds, _env_seconds("EMBED_STALL_CEILING_SECONDS", 1200.0))
+
+    @property
+    def embed_record_ceiling_seconds(self) -> float:
+        """Embedding time one chain of attempts may spend before a cut is counted again (6 h)."""
+        return _env_seconds("EMBED_RECORD_CEILING_SECONDS", 21600.0)
+
+    @property
+    def embed_cut_requeue_delay_seconds(self) -> float:
+        """How long the broker holds a record whose attempt was cut after making progress."""
+        return _env_seconds("EMBED_CUT_REQUEUE_DELAY_SECONDS", 5.0)
 
     @property
     def max_record_processing_timeout(self) -> float:
@@ -370,6 +405,13 @@ class MessagingEnvConfig:
         return self.record_processing_timeout
 
     @property
+    def embedding_gate_wait_cap_seconds(self) -> float:
+        """The most a record's budget is paused for queueing at the embedding server's gate."""
+        from app.modules.indexing.record_progress import GATE_PAUSE_LIMIT_SECONDS
+
+        return GATE_PAUSE_LIMIT_SECONDS
+
+    @property
     def stale_recovery_after_seconds(self) -> float:
         # Sized to the longest a record can legitimately sit IN_PROGRESS, so
         # the age-based cutoff cannot republish one that is still working.
@@ -379,10 +421,13 @@ class MessagingEnvConfig:
         # waited for a slot and then used its whole budget is older than the
         # budget by the length of that wait. With leases this cutoff is unused
         # (`is_stale` applies one lease interval, backed by ownership); without
-        # them it is the only guard, so it has to cover the worst case.
+        # them it is the only guard, so it has to cover the worst case. A record
+        # queues for a parse slot twice (download, then parse), and its batches
+        # may pause the budget again at the embedding gate.
         default = (
             self.max_record_processing_timeout
-            + self.parse_admission_wait_seconds
+            + 2 * self.parse_admission_wait_seconds
+            + self.embedding_gate_wait_cap_seconds
             + self.concurrency_lease_seconds
         )
         return float(os.getenv("STALE_INDEXING_RECOVERY_AFTER_SECONDS", str(default)))
@@ -683,6 +728,18 @@ class MessagingEnvConfig:
         turned off less than this long ago has its events skipped by the
         handler one by one, as before. ``0`` turns read-time settling off."""
         return _env_seconds("INDEXING_CONNECTOR_STATE_REFRESH_SECONDS", 15.0)
+
+    @property
+    def priority_lane_heavy_limit(self) -> int:
+        """Heavy-tier records the priority consumer (``record-events-priority``) runs at once,
+        per worker process. Small next to the normal pools: the lane exists to read a record
+        now, not to index faster. It also bounds the lane's heavy parses."""
+        return max(1, _env_int("PRIORITY_LANE_HEAVY_LIMIT", 1))
+
+    @property
+    def priority_lane_light_limit(self) -> int:
+        """Light-tier records the priority consumer runs at once, per worker process."""
+        return max(1, _env_int("PRIORITY_LANE_LIGHT_LIMIT", 3))
 
 
 messaging_env = MessagingEnvConfig()

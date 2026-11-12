@@ -160,7 +160,6 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
         with self.lock:
             self._cleanup_expired_keys()
             if key not in self.store or self.store[key].is_expired():
-                logger.error("❌ Key does not exist: %s", key)
                 raise KeyError(f'Key "{key}" does not exist.')
 
             logger.debug("🔄 Updating value")

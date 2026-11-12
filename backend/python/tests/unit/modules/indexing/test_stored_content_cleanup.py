@@ -35,6 +35,9 @@ MAPPING = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 DOC_ID = "65f1c0ffee0123456789abcd"
 
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _cleanup(*, records_by_vrid=None, mapping_org="org-1", purge=None):
     graph = AsyncMock()
     records_by_vrid = records_by_vrid or {}
@@ -47,6 +50,8 @@ def _cleanup(*, records_by_vrid=None, mapping_org="org-1", purge=None):
     graph.get_document = AsyncMock(
         side_effect=lambda key, collection, raise_on_error: {"orgId": mapping_org} if mapping_org else None
     )
+    # Like the providers: the org of one of the vrid's stage states, None when none names one.
+    graph.stage_state_org_for_virtual_record = AsyncMock(return_value=None)
     blob = AsyncMock()
     blob.purge_virtual_record_documents = purge or AsyncMock(return_value=1)
     blob.purge_document = AsyncMock(return_value=1)
@@ -161,10 +166,40 @@ class TestReleaseVirtualRecords:
 
 class TestAMappingRowWithoutAnOwner:
     @pytest.mark.asyncio
-    async def test_is_kept_for_a_retry_not_released(self):
-        """The row is the sweeper's only marker for the envelope."""
+    async def test_takes_the_org_from_the_stage_states(self) -> None:
         cleanup, graph, blob = _cleanup()
         graph.get_document = AsyncMock(return_value={"id": "vr-1", "documentId": "doc"})
+        graph.stage_state_org_for_virtual_record = AsyncMock(return_value="org-7")
+
+        failed = await cleanup.release_virtual_records(["vr-1"])
+
+        assert failed == []
+        blob.purge_virtual_record_documents.assert_awaited_once_with("org-7", "vr-1")
+        graph.stage_states_delete_for_virtual_records.assert_awaited_once_with(["vr-1"])
+        graph.delete_nodes.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_with_no_org_anywhere_is_dropped_once_with_a_warning(self) -> None:
+        """Storage is filed by org, so nothing can be purged; keeping the row only
+        retried it every sweep, for good. Nothing in storage is touched."""
+        cleanup, graph, blob = _cleanup()
+        graph.get_document = AsyncMock(return_value={"id": "vr-1", "documentId": "doc"})
+
+        failed = await cleanup.release_virtual_records(["vr-1"])
+
+        assert failed == []
+        blob.purge_virtual_record_documents.assert_not_awaited()
+        graph.stage_states_delete_for_virtual_records.assert_awaited_once_with(["vr-1"])
+        graph.delete_nodes.assert_awaited_once()
+        assert cleanup.logger.warning.call_count == 1
+        assert "vr-1" in cleanup.logger.warning.call_args.args
+
+    @pytest.mark.asyncio
+    async def test_a_stage_state_read_that_fails_keeps_the_row_for_a_retry(self) -> None:
+        """An outage is not "no org anywhere": the row stays, so nothing is dropped on a guess."""
+        cleanup, graph, blob = _cleanup()
+        graph.get_document = AsyncMock(return_value={"id": "vr-1", "documentId": "doc"})
+        graph.stage_state_org_for_virtual_record = AsyncMock(side_effect=RuntimeError("graph down"))
 
         failed = await cleanup.release_virtual_records(["vr-1"])
 
@@ -194,7 +229,7 @@ class TestPipelineUsesTheStorageStep:
         registry = MagicMock()
         registry.strategy = MagicMock()
         registry.manifest_store = MagicMock()
-        return IndexingPipeline(
+        pipeline = IndexingPipeline(
             logger=MagicMock(),
             config_service=MagicMock(),
             graph_provider=AsyncMock(),
@@ -202,6 +237,10 @@ class TestPipelineUsesTheStorageStep:
             vector_db_service=AsyncMock(),
             stored_content=stored_content,
         )
+        pipeline.vector_db_service.scroll = AsyncMock(return_value=MagicMock(points=[]))  # no other org holds points
+        pipeline.collection_locator = MagicMock()
+        pipeline.collection_locator.all_collections = AsyncMock(return_value=["records"])
+        return pipeline
 
     @pytest.mark.asyncio
     async def test_forgetting_a_mapping_goes_through_the_storage_step(self):
@@ -270,7 +309,7 @@ class TestPipelineUsesTheStorageStep:
         assert result["success"] is True
         assert result["virtual_record_ids_deleted"] == 1
         assert result["stored_content_pending"] == 1
-        stored.release_virtual_records.assert_awaited_once_with(["vr-1"], org_id=None)
+        stored.release_virtual_records.assert_awaited_once_with(["vr-1"], org_id="org-1")
 
 
 def _session_answering(status: int, body: dict):

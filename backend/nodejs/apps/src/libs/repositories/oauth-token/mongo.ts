@@ -3,13 +3,18 @@ import { OAuthAccessToken } from '../../../modules/oauth_provider/schema/oauth.a
 import { OAuthRefreshToken } from '../../../modules/oauth_provider/schema/oauth.refresh_token.schema';
 import { AuthorizationCode } from '../../../modules/oauth_provider/schema/authorization_code.schema';
 import { OAuthDeviceCode } from '../../../modules/oauth_provider/schema/oauth.device_code.schema';
+import { OAuthAgentRegistration } from '../../../modules/oauth_provider/schema/oauth.agent_registration.schema';
 import { mapMongoError } from '../mongo';
 import { toPlain } from '../plain';
 import {
+  AgentRegistrationStatus,
   OAuthDeviceCodeStatus,
   REFRESH_ROTATED,
   REFRESH_REUSE_DETECTED,
   type AccessTokenDto,
+  type AgentClaimAttempt,
+  type AgentRegistrationDto,
+  type NewAgentRegistration,
   type AuthorizationCodeDto,
   type DeviceCodeDto,
   type NewAccessToken,
@@ -489,5 +494,188 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
       expiresAt: { $gt: new Date() },
     });
     return claimed ? toPlain<DeviceCodeDto>(claimed) : null;
+  }
+
+  // ---- agent registrations ----------------------------------------------------------------------------------------------
+  async createAgentRegistration(
+    input: NewAgentRegistration,
+  ): Promise<AgentRegistrationDto> {
+    try {
+      const stored = await OAuthAgentRegistration.create(input);
+      return toPlain<AgentRegistrationDto>(stored);
+    } catch (error) {
+      throw mapMongoError(error);
+    }
+  }
+
+  private async findAgentRegistration(
+    filter: Record<string, unknown>,
+  ): Promise<AgentRegistrationDto | null> {
+    const record = await OAuthAgentRegistration.findOne(filter);
+    return record ? toPlain<AgentRegistrationDto>(record) : null;
+  }
+
+  async findAgentRegistrationById(
+    id: string,
+  ): Promise<AgentRegistrationDto | null> {
+    return Types.ObjectId.isValid(id)
+      ? this.findAgentRegistration({ _id: oid(id) })
+      : null;
+  }
+
+  findAgentRegistrationByClaimHash(
+    hash: string,
+  ): Promise<AgentRegistrationDto | null> {
+    return this.findAgentRegistration({ claimTokenHash: { $eq: hash } });
+  }
+
+  findAgentRegistrationByAttemptHash(
+    hash: string,
+  ): Promise<AgentRegistrationDto | null> {
+    return this.findAgentRegistration({ attemptTokenHash: { $eq: hash } });
+  }
+
+  async startAgentClaimAttempt(
+    id: string,
+    attempt: AgentClaimAttempt,
+  ): Promise<boolean> {
+    const r = await OAuthAgentRegistration.updateOne(
+      { _id: oid(id), status: AgentRegistrationStatus.PENDING },
+      { $set: { ...attempt, failedAttempts: 0 } },
+    );
+    return r.modifiedCount === 1;
+  }
+
+  async recordAgentFailedAttempt(id: string, max: number): Promise<void> {
+    const next = { $add: ['$failedAttempts', 1] };
+    await OAuthAgentRegistration.updateOne(
+      { _id: oid(id), status: AgentRegistrationStatus.PENDING },
+      [
+        {
+          $set: {
+            failedAttempts: next,
+            status: {
+              $cond: [
+                { $gte: [next, max] },
+                AgentRegistrationStatus.EXPIRED,
+                '$status',
+              ],
+            },
+          },
+        },
+      ],
+      { updatePipeline: true },
+    );
+  }
+
+  async recordAgentPoll(id: string, at: Date): Promise<void> {
+    await OAuthAgentRegistration.updateOne(
+      { _id: oid(id) },
+      { $set: { lastPolledAt: at } },
+    );
+  }
+
+  async decideAgentRegistration(
+    id: string,
+    decision:
+      | { status: AgentRegistrationStatus.REVOKED }
+      | {
+          status: AgentRegistrationStatus.CLAIMED;
+          userId: string;
+          orgId: string;
+          scopes: string[];
+        },
+  ): Promise<boolean> {
+    const r = await OAuthAgentRegistration.updateOne(
+      { _id: oid(id), status: AgentRegistrationStatus.PENDING },
+      {
+        $set:
+          decision.status === AgentRegistrationStatus.CLAIMED
+            ? {
+                status: decision.status,
+                claimedUserId: oid(decision.userId),
+                claimedOrgId: oid(decision.orgId),
+                approvedScopes: decision.scopes,
+              }
+            : { status: decision.status },
+      },
+    );
+    return r.modifiedCount === 1;
+  }
+
+  async consumeAgentRegistration(
+    id: string,
+    purgeAt: Date,
+  ): Promise<AgentRegistrationDto | null> {
+    const row = await OAuthAgentRegistration.findOneAndUpdate(
+      { _id: oid(id), status: AgentRegistrationStatus.CLAIMED },
+      { $set: { status: AgentRegistrationStatus.CONSUMED, purgeAt } },
+      { new: true },
+    );
+    return row ? toPlain<AgentRegistrationDto>(row) : null;
+  }
+
+  async listAgentRegistrationsForUser(
+    userId: string,
+  ): Promise<AgentRegistrationDto[]> {
+    if (!Types.ObjectId.isValid(userId)) return [];
+    const rows = await OAuthAgentRegistration.find({
+      claimedUserId: oid(userId),
+      status: {
+        $in: [
+          AgentRegistrationStatus.CLAIMED,
+          AgentRegistrationStatus.CONSUMED,
+        ],
+      },
+    }).sort({ createdAt: -1 });
+    return rows.map((r) => toPlain<AgentRegistrationDto>(r));
+  }
+
+  async revokeAgentRegistration(id: string, userId?: string): Promise<boolean> {
+    if (!Types.ObjectId.isValid(id)) return false;
+    if (userId !== undefined && !Types.ObjectId.isValid(userId)) return false;
+    const r = await OAuthAgentRegistration.updateOne(
+      {
+        _id: oid(id),
+        ...(userId !== undefined ? { claimedUserId: oid(userId) } : {}),
+        status: {
+          $in: [
+            AgentRegistrationStatus.CLAIMED,
+            AgentRegistrationStatus.CONSUMED,
+          ],
+        },
+      },
+      { $set: { status: AgentRegistrationStatus.REVOKED } },
+    );
+    return r.modifiedCount === 1;
+  }
+
+  async revokeAgentRegistrationsForUser(userId: string): Promise<void> {
+    await OAuthAgentRegistration.updateMany(
+      {
+        claimedUserId: oid(userId),
+        status: {
+          $in: [
+            AgentRegistrationStatus.CLAIMED,
+            AgentRegistrationStatus.CONSUMED,
+          ],
+        },
+      },
+      { $set: { status: AgentRegistrationStatus.REVOKED } },
+    );
+  }
+
+  async revokeAllAgentRegistrations(): Promise<void> {
+    await OAuthAgentRegistration.updateMany(
+      {
+        status: {
+          $in: [
+            AgentRegistrationStatus.CLAIMED,
+            AgentRegistrationStatus.CONSUMED,
+          ],
+        },
+      },
+      { $set: { status: AgentRegistrationStatus.REVOKED } },
+    );
   }
 }

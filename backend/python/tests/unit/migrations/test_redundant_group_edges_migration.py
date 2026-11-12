@@ -53,3 +53,15 @@ async def test_a_finished_migration_does_not_run_again() -> None:
     service, _ = _service(provider, done=True)
     assert (await service.migrate())["skipped"] is True
     provider.drop_redundant_group_edges.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_structure_change_that_could_not_be_recorded_keeps_the_migration_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ACL_SCOPE_FIELDS", "on")
+    provider = MagicMock()
+    provider.drop_redundant_group_edges = AsyncMock(return_value={"removed": 7})
+    provider.get_all_orgs = AsyncMock(side_effect=RuntimeError("graph down"))
+    service, config = _service(provider)
+    result = await service.migrate()
+    assert result["success"] is False
+    config.set_config.assert_not_awaited()

@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from app.core import org_context
 from app.modules.artifacts.stored_retention import (
     RETIRE_GRACE_MS,
     STRAY_GRACE_SECONDS,
@@ -351,3 +352,25 @@ class TestStrayPass:
         key, report = await sweep.run_strays(None)
 
         assert report.paused and key == "v0" and len(blob.listed_with) == 1
+
+
+@pytest.mark.asyncio
+async def test_under_system_each_mapping_is_retired_in_its_own_org_and_one_with_none_is_skipped() -> None:
+    graph, blob = FakeGraph(), FakeBlob()
+    for vrid, org in (("v1", "org-a"), ("v2", "org-b"), ("v3", None)):
+        graph.add(vrid, orgId=org, retired=[_retired(f"d-{vrid}", 2 * GR)])
+        blob.rows[f"d-{vrid}"] = {"retiredAt": NOW - 2 * GR}
+    seen: list[str] = []
+    get_document = graph.get_document
+
+    async def recording(key: str, collection: str, **kw: Any) -> dict[str, Any] | None:  # noqa: ANN401
+        seen.append(org_context.current_org_id())
+        return await get_document(key, collection, **kw)
+
+    graph.get_document = recording  # type: ignore[method-assign]
+
+    with org_context.system("stored_retention_test"):
+        _, report = await _sweep(graph, blob).run_page(None)
+
+    assert set(seen) == {"org-a", "org-b"}
+    assert report.skipped_no_org == 1 and report.purged == 2

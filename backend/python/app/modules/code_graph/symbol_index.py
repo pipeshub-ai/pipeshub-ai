@@ -8,16 +8,24 @@ deferred facts and the per-file type tables together.
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.modules.code_graph.guards import CALLABLE_KINDS, TYPE_KINDS, lang_family
+from app.modules.parsers.code_parser.models import DECLARATION, EXPLICIT
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-__all__ = ["BlockRow", "SymbolIndex", "build_symbol_index"]
+__all__ = ["OVERRIDING_KINDS", "BlockRow", "SymbolIndex", "build_symbol_index"]
+
+# The kinds the method index holds, so the only ones OVERRIDES edges are drawn between (edge_builder) and the
+# only ones whose override lookup the code-graph tools make.
+OVERRIDING_KINDS = frozenset({"method", "constructor"})
+
+_REPEAT = re.compile(r"#\d+(?=\.|$)")
 
 
 def _ensure_list(value: object) -> list[dict]:
@@ -69,6 +77,17 @@ class BlockRow:
     # Set on one block per file. The other blocks' facts hold only the resident
     # relations, so this is the complete list of names the file references.
     referenced_names: tuple[str, ...] = ()
+    # Block `modifiers` (C/C++: "declaration", "static", "returns:<Class>").
+    modifiers: tuple[str, ...] = ()
+    # The file-summary block's `macroTable`: C/C++ function-like macro -> [line, names its body calls].
+    macro_table: dict[str, list] = field(default_factory=dict)
+    type_param_count: int = 0
+    # Where the definition starts: a top-level one after an import of the same name rebinds that name.
+    start_line: int | None = None
+    # The stored Block.externalRefs: the edge build rewrites only the lists that change.
+    external_refs: tuple[str, ...] = ()
+    # A property / getter (block `isAccessor`): a member value landing on it is a read.
+    is_accessor: bool = False
 
     @staticmethod
     def from_doc(doc: dict[str, Any], paths: dict[str, str]) -> "BlockRow":
@@ -92,6 +111,12 @@ class BlockRow:
             pending_edges=_ensure_list(doc.get("pendingEdges")),
             type_table=_ensure_dict(doc.get("typeTable")),
             referenced_names=_ensure_str_list(doc.get("referencedNames")),
+            modifiers=_ensure_str_list(doc.get("modifiers")),
+            macro_table=_ensure_dict(doc.get("macroTable")),
+            type_param_count=doc.get("typeParamCount") or 0,
+            start_line=doc.get("startLine") if isinstance(doc.get("startLine"), int) else None,
+            external_refs=_ensure_str_list(doc.get("externalRefs")),
+            is_accessor=bool(doc.get("isAccessor")),
         )
 
 
@@ -109,15 +134,24 @@ class SymbolIndex:
     # (parent_block_id, method_name) -> block key. Derived from parentBlockId +
     # kind rather than re-reading the METHOD edges, which saves a query.
     method_index: dict[tuple[str, str], str] = field(default_factory=dict)
+    # Explicit interface implementations (block key -> the interface's name), kept out of method_index.
+    explicit_impls: dict[str, str] = field(default_factory=dict)
     blocks_by_record: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
     file_by_record: dict[str, str] = field(default_factory=dict)
     record_by_file: dict[str, str] = field(default_factory=dict)
     type_table_by_record: dict[str, dict[str, str]] = field(default_factory=dict)
+    macro_table_by_record: dict[str, dict[str, list]] = field(default_factory=dict)
     names_by_record: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     # Names each file references: its `referencedNames` list plus the names in
     # whatever facts its blocks carry, so a node projected before the residue
     # change (full facts, no list) is covered the same way.
     referenced_names_by_record: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
+    # Qualified paths of the types defined so far, and the forward declarations standing in for undefined ones.
+    defined_types: set[str] = field(default_factory=set)
+    declared_types: dict[str, list[str]] = field(default_factory=dict)
+    # C/C++ per-file lookups memoized for one build (resolvers/c_family.py): same-stem sources, and the files seen.
+    c_paired: dict[str, list[str]] = field(default_factory=dict)
+    c_visible: dict[str, set[str]] = field(default_factory=dict)
 
     def candidates(self, name: str) -> list[str]:
         return self.by_name.get(name, [])
@@ -143,6 +177,8 @@ class SymbolIndex:
             self.family_by_block[row.key] = family
         if row.type_table:
             self.type_table_by_record[row.record_id] = row.type_table
+        if row.macro_table:
+            self.macro_table_by_record[row.record_id] = row.macro_table
 
         # referencedNames comes from codeFiles (passed in referenced_names).
         # Fallback to block's resident facts for nodes projected before the
@@ -160,12 +196,30 @@ class SymbolIndex:
         if row.name:
             self.by_name[row.name].append(row.key)
             self.names_by_record[row.record_id].add(row.name)
-            if row.parent_block_id and row.kind in ("method", "constructor"):
-                self.method_index[(row.parent_block_id, row.name)] = row.key
+            if row.parent_block_id and row.kind in OVERRIDING_KINDS:
+                explicit = next((m[len(EXPLICIT):] for m in row.modifiers if m.startswith(EXPLICIT)), None)
+                if explicit:
+                    # `Task IHandler.Handle(..)` is IHandler.Handle's implementation, never `Handle` of its type.
+                    self.explicit_impls[row.key] = explicit
+                else:
+                    self.method_index[(row.parent_block_id, row.name)] = row.key
         if row.kind in CALLABLE_KINDS:
             self.callable_blocks.add(row.key)
         elif row.kind in TYPE_KINDS:
+            self._add_type(row)
+
+    def _add_type(self, row: BlockRow) -> None:
+        """A C++ forward declaration (`class Conn;`) is a type only while no definition of the same qualified name is
+        indexed: a definition is never second to it, and one tree-sitter misparsed (abseil's attribute macros on
+        `class Mutex`) leaves the declaration to stand for it. Order-independent, as the scan is paged."""
+        path = _REPEAT.sub("", (row.qualified_name or "").partition(":")[2])
+        if DECLARATION not in row.modifiers:
             self.type_blocks.add(row.key)
+            self.defined_types.add(path)
+            self.type_blocks.difference_update(self.declared_types.pop(path, ()))
+        elif path not in self.defined_types:
+            self.type_blocks.add(row.key)
+            self.declared_types.setdefault(path, []).append(row.key)
 
 
 def build_symbol_index(

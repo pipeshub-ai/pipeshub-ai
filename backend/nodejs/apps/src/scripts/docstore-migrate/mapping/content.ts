@@ -682,6 +682,62 @@ const delegationEvents: CollectionMapping = {
   derived: [],
 };
 
+/**
+ * Agent registrations are kept in the install's organisation, like device authorizations. Unlike those they back an identity
+ * assertion for weeks, so a copy keeps every row the sweeper has not yet reached (`custom`: `verify.ts` checks that each is there).
+ */
+const oauthAgentRegistrations: CollectionMapping = {
+  collection: 'oauthAgentRegistrations',
+  repository: 'oauth-token',
+  table: 'oauth.agent_registrations',
+  idCol: 'id',
+  orgPath: null,
+  orgCol: null,
+  custom: true,
+  versionCol: 'version',
+  fields: [
+    { col: 'claim_email', path: 'claimEmail', type: 'text' },
+    { col: 'claim_token_hash', path: 'claimTokenHash', type: 'text' },
+    { col: 'attempt_token_hash', path: 'attemptTokenHash', type: 'text' },
+    { col: 'user_code_hash', path: 'userCodeHash', type: 'text' },
+    { col: 'attempt_expires_at', path: 'attemptExpiresAt', type: 'date' },
+    { col: 'expires_at', path: 'expiresAt', type: 'date' },
+    { col: 'purge_at', path: 'purgeAt', type: 'date' },
+    { col: 'status', path: 'status', type: 'text', readAbsentAs: 'pending' },
+    {
+      col: 'failed_attempts',
+      path: 'failedAttempts',
+      type: 'int',
+      readAbsentAs: 0,
+    },
+    { col: 'last_polled_at', path: 'lastPolledAt', type: 'date' },
+    { col: 'claimed_user_id', path: 'claimedUserId', type: 'oid' },
+    { col: 'claimed_org_id', path: 'claimedOrgId', type: 'oid' },
+    { col: 'approved_scopes', path: 'approvedScopes', type: 'text_array' },
+    ...CREATED,
+  ],
+  censusKnown: [
+    'claimEmail',
+    'claimTokenHash',
+    'attemptTokenHash',
+    'userCodeHash',
+    'attemptExpiresAt',
+    'expiresAt',
+    'purgeAt',
+    'status',
+    'failedAttempts',
+    'lastPolledAt',
+    'claimedUserId',
+    'claimedOrgId',
+    'approvedScopes',
+    'approvedScopes[]',
+    'createdAt',
+    'updatedAt',
+    '__v',
+  ],
+  derived: ['org_id'],
+};
+
 /** Parents before children: apps before their tokens and codes; Slack links after the chat sessions they continue (copied earlier). */
 const LISTED: CollectionMapping[] = [
   documents,
@@ -695,6 +751,7 @@ const LISTED: CollectionMapping[] = [
   oauthRefreshTokens,
   authorizationCodes,
   oauthDeviceCodes,
+  oauthAgentRegistrations,
   slackConversations,
   serviceAccountDelegations,
   delegationEvents,

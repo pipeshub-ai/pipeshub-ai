@@ -19,6 +19,7 @@ import { mcpOAuthFailureMessage, useMcpOAuthPopup } from '../hooks/use-mcp-oauth
 import { McpAuthDialog, McpDisconnectDialog } from '../components';
 import type { McpMyServerEntry, McpToolInfo } from '../types';
 import { isOfferedForNewServers, replacementFor } from '../catalog-replacement';
+import { reloadMcpLogos } from '../logo-store';
 import {
   McpCatalogLayout,
   McpServerDetailsLayout,
@@ -246,7 +247,10 @@ function TeamMcpServersPageContent() {
           onReauthenticate={(instance) => void handleReauthenticate(instance)}
           onDisconnect={setDisconnecting}
           busyInstanceId={busyInstanceId}
-          onRefreshAll={() => void loadData()}
+          onRefreshAll={() => {
+            void loadData();
+            void reloadMcpLogos();
+          }}
           toolsState={toolsState}
           onDiscoverTools={(instance) => void handleDiscoverTools(instance)}
         />
@@ -263,7 +267,10 @@ function TeamMcpServersPageContent() {
           onManageTemplate={(template) => handleManageTemplate(template.typeId)}
           onEditInstance={(instance) => store.openEditInstance(instance)}
           onDeleteInstance={(instance) => store.openDeleteDialog(instance)}
-          onRefresh={() => void loadData()}
+          onRefresh={() => {
+            void loadData();
+            void reloadMcpLogos();
+          }}
           onOpenPersonal={() => router.push('/workspace/mcp-servers/personal/')}
         />
       )}

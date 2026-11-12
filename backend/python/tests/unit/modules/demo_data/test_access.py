@@ -115,6 +115,26 @@ async def test_saving_and_clearing_the_choice() -> None:
 
 
 @pytest.mark.asyncio
+async def test_clearing_a_choice_that_went_although_the_store_answered_false_is_saved() -> None:
+    """etcd: a delete retried after its answer was lost finds nothing and answers False."""
+    config = _config({"include": False})
+    config.delete_config = AsyncMock(side_effect=lambda key: config.store.pop(key) and False)
+
+    await write_preference(config, "org", "u1", include=None)
+
+    assert preference_key("org", "u1") not in config.store
+
+
+@pytest.mark.asyncio
+async def test_clearing_a_choice_that_is_still_there_is_reported() -> None:
+    config = _config({"include": False})
+    config.delete_config = AsyncMock(return_value=False)
+
+    with pytest.raises(RuntimeError):
+        await write_preference(config, "org", "u1", include=None)
+
+
+@pytest.mark.asyncio
 async def test_a_failed_save_is_reported() -> None:
     config = _config()
     config.set_config = AsyncMock(return_value=False)

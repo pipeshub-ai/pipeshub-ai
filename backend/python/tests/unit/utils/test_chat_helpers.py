@@ -5036,6 +5036,10 @@ class TestCreateRecordFromVectorMetadata:
         assert "block_containers" in record
         assert len(record["block_containers"]["blocks"]) == 1
         assert "point-1" in point_id_map
+        # The scroll that rebuilds a record is confined to the caller's org.
+        mock_vector_service.filter_collection.assert_awaited_once_with(
+            must={"orgId": "org-1", "virtualRecordId": "vr-1"}
+        )
 
     @pytest.mark.asyncio
     async def test_exception_reraised(self):

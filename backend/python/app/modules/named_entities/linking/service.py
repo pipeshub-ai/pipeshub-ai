@@ -77,6 +77,7 @@ class LinkResult:
 class Linking:
     results: list[LinkResult]
     timed_out: bool
+    """For logs only (see ``CandidateSet.timed_out``)."""
     verifier_called: bool
     names: dict[str, str]
     """Entity id to the name shown for it."""

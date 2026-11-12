@@ -104,10 +104,18 @@ class RecordsHandler(ToolResultHandler):
     async def format_message(self, tool_result: dict[str, Any], context: dict[str, Any]) -> list[dict[str, Any]]:
         message_contents = context.get("message_contents", [])
         flattened = [msg for message_content in message_contents for msg in message_content]
-        not_available = tool_result.get("not_available_ids", {})
+        reasons = tool_result.get("unavailable_reasons") or {}
+        not_available = [rid for rid in tool_result.get("not_available_ids", {}) if reasons.get(rid) != "content_being_prepared"]
+        preparing = [rid for rid in tool_result.get("not_available_ids", {}) if reasons.get(rid) == "content_being_prepared"]
         if not_available:
             ids_str = ", ".join(f"'{rid}'" for rid in not_available)
             flattened.append({"type": "text", "text": f"\nNote: The following record(s) are not available: {ids_str}"})
+        if preparing:
+            ids_str = ", ".join(f"'{rid}'" for rid in preparing)
+            flattened.append({
+                "type": "text",
+                "text": f"\nNote: The content of the following record(s) is being prepared; ask again shortly: {ids_str}",
+            })
         return flattened
 
 

@@ -632,9 +632,8 @@ class AgentContext(BaseModel):
             # Mirrored so a tool can see the flag without reaching for the
             # context (`fetch.py` records render outcomes only when it is on).
             "include_retrieval_context": self.include_retrieval_context,
-            # Tools that call a model themselves (grep-command generation)
-            # report into it; absent unless the request opted in.
-            "usage_ledger": self.usage_ledger if self.include_retrieval_context else None,
+            # Tools that call a model themselves (grep-command generation) report into it.
+            "usage_ledger": self.usage_ledger,
             "system_prompt": self.system_prompt,
             "instructions": self.instructions,
             "custom_instructions": self.custom_instructions,

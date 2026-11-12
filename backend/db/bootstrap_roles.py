@@ -4,7 +4,9 @@ Idempotent and additive: a missing role is created, a missing membership is gran
 altered (passwords included). Needs an administrative credential (``PG_ADMIN_URL``: CREATEROLE, and database
 ownership for the REVOKEs). No role created here has SUPERUSER, CREATEROLE or BYPASSRLS.
 
-Logins get a password only when the matching variable is set (``PG_NODE_PASSWORD``, ``PG_MIGRATE_PASSWORD`` ...); ``pipeshub_ro`` and ``pipeshub_restore`` never get one here (a restore window sets its own).
+Every login that is about to be created needs its password variable (``PG_NODE_PASSWORD``, ``PG_MIGRATE_PASSWORD`` ...), or the run stops with
+an error before it creates anything. ``PG_BOOTSTRAP_ALLOW_NO_PASSWORD=1`` waives that for peer, trust or certificate authentication.
+``pipeshub_ro`` and ``pipeshub_restore`` never get a password here (a restore window sets its own).
 ``PG_BOOTSTRAP_EXTENSIONS`` (comma list, e.g. ``vector,pg_trgm``) installs extensions into schema ``ext``.
 """
 import contextlib
@@ -35,21 +37,31 @@ LARGE_OBJECTS_SQL = """DO $$ DECLARE f regprocedure; BEGIN
            AND p.proname ~ '^(lo_|lo(read|write)$)' LOOP
     EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f);
   END LOOP; END $$"""
-SHIPPED_VETTED = ("kernel", "platform", "identity", "graph")      # schemas of the shipped revisions that own SECURITY DEFINER functions
+SHIPPED_VETTED = ("kernel", "platform", "identity", "retrieval", "graph", "kg")      # schemas of the shipped revisions that own SECURITY DEFINER functions
+class MissingPassword(ValueError):
+    pass
+
+
 _SCHEMA = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def bootstrap(conn: psycopg.Connection, vetted_schemas: Iterable[str] = (), passwords: Mapping[str, str] | None = None,
-              extensions: Iterable[str] = ()) -> list[str]:
+              extensions: Iterable[str] = (), *, allow_no_password: bool = True) -> list[str]:
     """Apply the layout on an autocommit admin connection; returns what it created.
 
     ``extensions`` are installed into schema ``ext`` (created here when missing, owned by the owner role): an extension such as
-    pgvector needs a superuser, so it is the administrator's step, never a migration's."""
+    pgvector needs a superuser, so it is the administrator's step, never a migration's.
+
+    ``allow_no_password=False`` (what the command line passes unless waived) refuses to create a password-less login."""
     passwords = passwords or {}
     vetted = [f"pipeshub_vetted_{s}" for s in dict.fromkeys([*SHIPPED_VETTED, *vetted_schemas])]   # the shipped schemas' functions need theirs
     if bad := [s for s in vetted_schemas if not _SCHEMA.match(s)]:
         raise ValueError(f"not a schema name: {bad}")
     existing = {r[0] for r in conn.execute("SELECT rolname FROM pg_roles")}
+    if not allow_no_password and (bare := [v for r, v in PASSWORD_VARS.items() if r not in existing and not passwords.get(r)]):
+        raise MissingPassword(
+            f"no password for a login role that would be created: set {', '.join(bare)}, "
+            "or set PG_BOOTSTRAP_ALLOW_NO_PASSWORD=1 if these roles use peer, trust or certificate authentication")
     made = []
     for name, login in [*ROLES, *[(v, False) for v in vetted]]:
         if name in existing:
@@ -92,8 +104,13 @@ def main(argv: list[str]) -> int:
         return 2
     extensions = [e for e in os.environ.get("PG_BOOTSTRAP_EXTENSIONS", "").split(",") if e]
     passwords = {role: os.environ[var] for role, var in PASSWORD_VARS.items() if os.environ.get(var)}
+    waived = os.environ.get("PG_BOOTSTRAP_ALLOW_NO_PASSWORD") == "1"
     with psycopg.connect(url, autocommit=True) as conn:
-        made = bootstrap(conn, schemas, passwords, extensions)
+        try:
+            made = bootstrap(conn, schemas, passwords, extensions, allow_no_password=waived)
+        except MissingPassword as e:
+            print(f"bootstrap_roles: {e}", file=sys.stderr)
+            return 2
     print("bootstrap_roles: created " + (", ".join(made) or "nothing (layout already in place)"))
     return 0
 

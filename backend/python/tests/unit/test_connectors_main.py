@@ -1,16 +1,18 @@
 """Comprehensive unit tests for app.connectors_main module."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import sys
 import types
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.testclient import TestClient
 
 from app.services.messaging.config import MessageBrokerType
 from tests.support.host_header import POISONED_HOSTS, request_with_host
@@ -283,6 +285,36 @@ class TestResumeSyncServices:
         started = {c.kwargs["connector_id"]: c.kwargs["start_sync"] for c in create.await_args_list}
         assert started == {"owed": False, "plain": True}
         assert [c.kwargs["connector_id"] for c in publish.await_args_list] == ["owed"]
+
+    async def test_boot_logs_user_count_not_user_details(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Every boot walks every org's users; only their count may reach the log."""
+        from app.connectors_main import resume_sync_services
+
+        logger_name = "tests.connectors_main.resume_users"
+        mock_container = _make_container()
+        mock_container.logger.return_value = logging.getLogger(logger_name)
+        mock_container.connectors_map = {}
+        gp = _make_graph_provider()
+        gp.get_all_orgs = AsyncMock(return_value=[{"_key": "org1"}])
+        gp.get_org_apps = AsyncMock(return_value=[{"_key": "app1", "type": "Slack"}])
+        gp.get_users = AsyncMock(return_value=[
+            {"_key": "user1", "email": "alice@example.com", "fullName": "Alice Liddell"},
+            {"_key": "user2", "email": "bob@example.com", "fullName": "Bob Builder"},
+        ])
+        ds = _make_data_store(gp)
+        caplog.set_level(logging.DEBUG, logger=logger_name)
+
+        with patch(
+            "app.connectors_main.ConnectorFactory.create_and_start_sync",
+            new_callable=AsyncMock,
+            return_value=MagicMock(),
+        ):
+            assert await resume_sync_services(mock_container, ds) is True
+
+        messages = [r.getMessage() for r in caplog.records if r.name == logger_name]
+        assert "Found 2 users for organization org1" in messages
+        for personal in ("alice@example.com", "bob@example.com", "Alice Liddell", "Bob Builder"):
+            assert not any(personal in m for m in messages), personal
 
     async def test_connector_none_not_stored(self):
         """If ConnectorFactory returns None, it should not be stored."""
@@ -1328,6 +1360,7 @@ class TestAuthenticateRequestsMiddleware:
 
         mock_call_next.assert_awaited_once_with(mock_authenticated_request)
         assert result is mock_response
+        mock_logger.debug.assert_not_called()  # the raw path is never logged
 
     async def test_auth_http_exception(self):
         """HTTPException during auth returns JSON error response."""
@@ -1342,14 +1375,20 @@ class TestAuthenticateRequestsMiddleware:
         app.container = MagicMock()
         app.container.logger.return_value = mock_logger
 
-        with patch("app.connectors_main.authMiddleware", new_callable=AsyncMock, side_effect=HTTPException(status_code=401, detail="Unauthorized")):
+        refusal = HTTPException(status_code=401, detail="Unauthorized")
+        with (
+            patch("app.connectors_main.authMiddleware", new_callable=AsyncMock, side_effect=refusal),
+            patch("app.connectors_main.mark_request_failure") as hand_over,
+        ):
             result = await authenticate_requests(mock_request, mock_call_next)
 
         assert result.status_code == 401
+        hand_over.assert_called_once_with(mock_request, refusal)
         mock_call_next.assert_not_awaited()
+        mock_logger.warning.assert_not_called()
 
     async def test_auth_unexpected_exception(self):
-        """Unexpected exception during auth returns 500 error."""
+        """Not caught here: the request's http.request.end logs it once and answers the 500."""
         from app.connectors_main import authenticate_requests, app
 
         mock_request = MagicMock()
@@ -1362,9 +1401,9 @@ class TestAuthenticateRequestsMiddleware:
         app.container.logger.return_value = mock_logger
 
         with patch("app.connectors_main.authMiddleware", new_callable=AsyncMock, side_effect=RuntimeError("unexpected")):
-            result = await authenticate_requests(mock_request, mock_call_next)
+            with pytest.raises(RuntimeError, match="unexpected"):
+                await authenticate_requests(mock_request, mock_call_next)
 
-        assert result.status_code == 500
         mock_call_next.assert_not_awaited()
 
     async def test_non_excluded_path_requires_auth(self):
@@ -1412,6 +1451,188 @@ class TestAuthenticateRequestsMiddleware:
 
         mock_auth.assert_not_awaited()
         mock_call_next.assert_awaited_once_with(request)
+
+    async def test_route_cancellation_is_not_logged_as_a_crash(self) -> None:
+        """CancelledError (client disconnect, shutdown) is a BaseException: re-raised, not logged."""
+        from app.connectors_main import app, authenticate_requests
+
+        request = request_with_host("/api/v1/x")
+        mock_call_next = AsyncMock(side_effect=asyncio.CancelledError)
+        mock_logger = MagicMock()
+        app.container = MagicMock()
+        app.container.logger.return_value = mock_logger
+
+        with patch("app.connectors_main.authMiddleware", new_callable=AsyncMock, return_value=request):
+            with pytest.raises(asyncio.CancelledError):
+                await authenticate_requests(request, mock_call_next)
+
+        mock_logger.exception.assert_not_called()
+        mock_logger.error.assert_not_called()
+
+
+class TestAuthenticateRequestsThroughStarlette:
+    """The real middleware on a minimal app wired like connectors_main, so call_next has Starlette's semantics.
+
+    raise_server_exceptions=True makes any exception that escapes the app fail the test: an escape makes uvicorn
+    log it a second time and close the client's keep-alive connection.
+    """
+
+    LOGGER_NAME = "tests.connectors_main.auth_mw"
+    END = "http.request.end"
+
+    @pytest.fixture
+    def client_and_auth(self, caplog: pytest.LogCaptureFixture) -> Iterator[tuple[TestClient, AsyncMock, list[str]]]:
+        import app.connectors_main as cm
+        from app.api.middlewares.request_log import install_request_logging
+
+        routes_run: list[str] = []
+        mini = FastAPI()
+        mini.middleware("http")(cm.authenticate_requests)
+        install_request_logging(mini)  # same order as connectors_main
+
+        @mini.get("/api/v1/boom")
+        async def boom() -> None:
+            raise RuntimeError("route exploded")
+
+        @mini.get("/api/v1/conflict")
+        async def conflict() -> None:
+            raise HTTPException(status_code=409, detail="already exists")
+
+        @mini.get("/api/v1/ok")
+        async def ok() -> dict[str, str]:
+            routes_run.append("ok")
+            return {"status": "ok"}
+
+        @mini.get("/api/v1/stream")
+        async def stream() -> StreamingResponse:
+            async def body() -> AsyncIterator[bytes]:
+                yield b"first"
+                raise RuntimeError("mid-stream")
+
+            return StreamingResponse(body())
+
+        @mini.get("/health")
+        async def health() -> dict[str, str]:
+            return {"status": "healthy"}
+
+        @mini.get("/drive/webhook")
+        async def webhook() -> None:
+            raise RuntimeError("webhook exploded")
+
+        caplog.set_level(logging.DEBUG, logger=self.LOGGER_NAME)
+        caplog.set_level(logging.DEBUG, logger="app.api.middlewares.request_log")
+        container = MagicMock()
+        container.logger.return_value = logging.getLogger(self.LOGGER_NAME)
+        with patch.object(cm.app, "container", container, create=True), patch(
+            "app.connectors_main.authMiddleware", new_callable=AsyncMock, side_effect=lambda request: request
+        ) as auth:
+            with TestClient(mini, raise_server_exceptions=True) as test_client:
+                yield test_client, auth, routes_run
+
+    def _auth_records(self, caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.name == self.LOGGER_NAME and r.levelno >= logging.WARNING]
+
+    def _end(self, caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+        (record,) = [r for r in caplog.records if r.getMessage() == self.END]
+        return record
+
+    def test_route_crash_is_logged_once_on_the_request_line_not_as_auth(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, _, _ = client_and_auth
+
+        response = client.get("/api/v1/boom", headers={"x-request-id": "rid-123"})
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Internal server error"}
+        assert self._auth_records(caplog) == []
+        record = self._end(caplog)
+        assert record.levelno == logging.ERROR
+        assert (record.status, record.error_class, record.error_type, record.route) == (
+            500, "internal", "RuntimeError", "/api/v1/boom")
+        assert "route exploded" in record.exc_text
+        assert record.request_id.startswith("rid-123")
+        assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) == 1
+
+    def test_auth_crash_is_logged_once_and_route_never_runs(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, auth, routes_run = client_and_auth
+        auth.side_effect = RuntimeError("auth bug")
+
+        response = client.get("/api/v1/ok")
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Internal server error"}
+        record = self._end(caplog)
+        assert record.levelno == logging.ERROR and "auth bug" in record.exc_text
+        assert routes_run == []
+
+    def test_auth_rejection_is_one_info_line_with_its_reason_and_keeps_its_status(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        from app.api.middlewares.auth import AuthRejected
+
+        client, auth, routes_run = client_and_auth
+        auth.side_effect = AuthRejected(401, "Not authenticated", reason="expired")
+
+        response = client.get("/api/v1/ok")
+
+        assert response.status_code == 401
+        assert response.json() == {"detail": "Not authenticated"}
+        assert self._auth_records(caplog) == []
+        record = self._end(caplog)
+        assert record.levelno == logging.INFO
+        assert (record.status, record.error_class, record.reason, record.route) == (
+            401, "auth_expired", "expired", "/api/v1/ok")
+        assert routes_run == []
+
+    def test_excluded_path_skips_auth(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, auth, _ = client_and_auth
+
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        auth.assert_not_awaited()
+        assert self._auth_records(caplog) == []
+        assert self._end(caplog).levelno == logging.DEBUG
+
+    def test_excluded_path_crash_gets_the_same_body_and_one_line(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, auth, _ = client_and_auth
+
+        response = client.get("/drive/webhook")
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Internal server error"}
+        auth.assert_not_awaited()
+        assert self._end(caplog).levelno == logging.ERROR
+
+    def test_route_http_exception_passes_through_unchanged(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, _, _ = client_and_auth
+
+        response = client.get("/api/v1/conflict")
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": "already exists"}
+        assert self._auth_records(caplog) == []
+        assert (self._end(caplog).levelno, self._end(caplog).error_class) == (logging.INFO, "conflict")
+
+    def test_successful_route_is_untouched(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, auth, routes_run = client_and_auth
+
+        response = client.get("/api/v1/ok")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+        auth.assert_awaited_once()
+        assert routes_run == ["ok"]
+        assert self._auth_records(caplog) == []
+        assert self._end(caplog).outcome == "success"
+
+    def test_stream_body_crash_is_logged_on_the_request_line_with_the_status_sent(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        """The response has started, so the exception is re-raised (uvicorn closes the connection, as before)."""
+        client, _, _ = client_and_auth
+
+        with pytest.raises(RuntimeError, match="mid-stream"):
+            client.get("/api/v1/stream")
+
+        assert self._auth_records(caplog) == []
+        record = self._end(caplog)
+        assert (record.levelno, record.status, record.outcome) == (logging.ERROR, 200, "failure")
 
 
 # ---------------------------------------------------------------------------
@@ -1504,24 +1725,18 @@ class TestConnectorHealthCheck:
 # ---------------------------------------------------------------------------
 # global_exception_handler
 # ---------------------------------------------------------------------------
-class TestGlobalExceptionHandler:
-    """Tests for global_exception_handler()."""
+class TestCrashResponse:
+    """An unhandled exception is answered by request_log (one body for every service and path), not here."""
 
-    async def test_returns_500_with_error_details(self):
-        """Global handler returns 500 with error message and path."""
-        from app.connectors_main import global_exception_handler, app
+    def test_app_registers_no_exception_handler_of_its_own(self):
+        import app.connectors_main as cm
+        from app.api.middlewares.request_context import RequestContextMiddleware
+        from app.api.middlewares.request_log import RequestLogMiddleware
 
-        mock_request = MagicMock()
-        mock_request.url.path = "/api/test"
-
-        mock_logger = MagicMock()
-        app.container = MagicMock()
-        app.container.logger.return_value = mock_logger
-
-        exc = RuntimeError("something went wrong")
-        result = await global_exception_handler(mock_request, exc)
-
-        assert result.status_code == 500
+        assert Exception not in cm.app.exception_handlers
+        assert not hasattr(cm, "global_exception_handler")
+        classes = [m.cls for m in cm.app.user_middleware]
+        assert classes.index(RequestContextMiddleware) + 1 == classes.index(RequestLogMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -1542,6 +1757,7 @@ class TestRun:
             host="0.0.0.0",
             port=8088,
             log_level="info",
+            access_log=False,
             reload=True,
             workers=1,
             timeout_worker_healthcheck=60,
@@ -1559,6 +1775,7 @@ class TestRun:
             host="127.0.0.1",
             port=9000,
             log_level="info",
+            access_log=False,
             reload=False,
             workers=4,
             timeout_worker_healthcheck=60,
@@ -1588,6 +1805,7 @@ class TestRun:
             host="0.0.0.0",
             port=8088,
             log_level="info",
+            access_log=False,
             reload=False,
             workers=workers,
             timeout_worker_healthcheck=60,
@@ -1683,6 +1901,85 @@ class TestGraphDbHealthCheck:
             response = await graph_db_health_check(request)
 
         assert response.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_healthy(self) -> None:
+        """PostgreSQL graph probe pings the provider and answers 200."""
+        from app.connectors_main import graph_db_health_check
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=AsyncMock(return_value=None))
+
+        with patch("app.connectors_main.os.getenv", return_value="postgres"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 200
+        request.app.state.graph_provider.ping.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_unhealthy(self) -> None:
+        """A failing PostgreSQL graph read answers 503, not the unknown-store 200."""
+        from app.connectors_main import graph_db_health_check
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=AsyncMock(side_effect=RuntimeError("down")))
+
+        with patch("app.connectors_main.os.getenv", return_value="postgres"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_hanging_ping_answers_503_at_the_deadline(self) -> None:
+        """A ping stuck on a saturated pool answers 503 within the deadline instead of outlasting the caller's timeout."""
+        import time
+
+        from app.connectors_main import graph_db_health_check
+
+        async def hang() -> None:  # ignores cancellation, as a unit waiting on its rollback does
+            end = time.monotonic() + 2
+            while time.monotonic() < end:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.sleep(0.05)
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=hang)
+
+        t0 = time.monotonic()
+        with patch("app.connectors_main.os.getenv", return_value="postgres"), \
+             patch("app.connectors_main.PG_PROBE_TIMEOUT_SEC", 0.05):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        assert time.monotonic() - t0 < 1
+        assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_cancelled_handler_cancels_the_ping(self) -> None:
+        """If the request is cancelled while the probe waits, the ping is cancelled too and nothing is left unretrieved."""
+        from app.connectors_main import graph_db_health_check
+
+        started = asyncio.Event()
+        seen: list[asyncio.Task] = []
+
+        async def ping() -> None:
+            seen.append(asyncio.current_task())
+            started.set()
+            await asyncio.sleep(30)
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=ping)
+
+        with patch("app.connectors_main.os.getenv", return_value="postgres"):
+            handler = asyncio.create_task(graph_db_health_check(request))
+            await started.wait()
+            handler.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await handler
+            await asyncio.sleep(0)
+
+        assert seen[0].cancelled()
 
     @pytest.mark.asyncio
     async def test_graph_db_health_neo4j_healthy(self):

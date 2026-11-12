@@ -1,19 +1,22 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
+import useSWR from 'swr';
 import { Badge, Box, Flex, Select, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 import { toast } from '@/lib/store/toast-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { AIModelsApi } from '../api';
+import { SWR_POLICY } from '@/lib/api/swr-cache';
+import { AI_MODEL_KEYS, AIModelsApi } from '../api';
 import type { ConfiguredModel, ModelRoleAssignment } from '../types';
 import { MODEL_ROLE_NAMES } from '../types';
 
+const EMPTY_ROLES: Record<string, ModelRoleAssignment> = {};
+
 interface ModelRolesSectionProps {
   configuredModels: Record<string, ConfiguredModel[]>;
-  onRolesUpdated?: () => void;
   /**
    * 'settings' (default) — compact single-row card for the workspace settings page.
    * 'onboarding' — two-role side-by-side layout with context, shown during setup.
@@ -42,16 +45,19 @@ const INDEXING_ELIGIBLE_MODEL_TYPES = ['llm', 'slm', 'reasoning', 'multiModal'] 
 
 export function ModelRolesSection({
   configuredModels,
-  onRolesUpdated,
   variant = 'settings',
   highlighted = false,
   onAcknowledgedChange,
 }: ModelRolesSectionProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
-  const [loading, setLoading] = useState(true);
+  const { data: rolesData, isLoading: loading, mutate: mutateRoles } = useSWR(
+    AI_MODEL_KEYS.roles,
+    () => AIModelsApi.getRoles(),
+    SWR_POLICY.sessionStable,
+  );
+  const roles = rolesData?.modelRoles ?? EMPTY_ROLES;
   const [saving, setSaving] = useState(false);
-  const [roles, setRoles] = useState<Record<string, ModelRoleAssignment>>({});
   /**
    * Whether the user has explicitly interacted with the dropdown.
    * In onboarding variant the dropdown starts with no value until acknowledged.
@@ -65,27 +71,14 @@ export function ModelRolesSection({
     }
   }, [acknowledged, onAcknowledgedChange]);
 
-  const loadRoles = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await AIModelsApi.getRoles();
-      setRoles(data.modelRoles ?? {});
-      // If an explicit assignment already exists from a previous session, treat it
-      // as acknowledged so we don't block the user needlessly.
-      if (data.modelRoles?.[MODEL_ROLE_NAMES.INDEXING]) {
-        setAcknowledged(true);
-        onAcknowledgedChange?.(true);
-      }
-    } catch {
-      // Non-fatal — falls back to default model
-    } finally {
-      setLoading(false);
-    }
-  }, [onAcknowledgedChange]);
-
+  // An assignment saved in an earlier session counts as acknowledged, so the user is not blocked.
+  // A failed roles read is non-fatal: the indexing role falls back to the default model.
   useEffect(() => {
-    void loadRoles();
-  }, [loadRoles]);
+    if (rolesData?.modelRoles?.[MODEL_ROLE_NAMES.INDEXING]) {
+      setAcknowledged(true);
+      onAcknowledgedChange?.(true);
+    }
+  }, [rolesData]);
 
   const indexingCandidates: ConfiguredModel[] = INDEXING_ELIGIBLE_MODEL_TYPES.flatMap(
     (mt) => (configuredModels[mt] ?? []).map((m) => ({ ...m, modelType: mt }))
@@ -123,16 +116,15 @@ export function ModelRolesSection({
       setSaving(true);
       try {
         await AIModelsApi.updateRoles(updatedRoles);
-        setRoles(updatedRoles);
+        await mutateRoles({ ...rolesData, modelRoles: updatedRoles }, { revalidate: false });
         toast.success(t('workspace.aiModels.roles.toastSaved'));
-        onRolesUpdated?.();
       } catch {
         toast.error(t('workspace.aiModels.roles.toastSaveError'));
       } finally {
         setSaving(false);
       }
     },
-    [roles, indexingCandidates, t, onRolesUpdated, acknowledge]
+    [roles, rolesData, mutateRoles, indexingCandidates, t, acknowledge]
   );
 
   // In onboarding variant the select has no value until the user acknowledges;

@@ -13,7 +13,7 @@ WRITTEN = sorted(
     "conversation.chat_session_members conversation.chat_messages conversation.semantic_searches conversation.semantic_search_members "
     "conversation.citations content.documents content.projects "
     "content.project_members platform.notifications platform.mail_log platform.connectors_config platform.outbox oauth.apps "
-    "oauth.access_tokens oauth.refresh_tokens oauth.authorization_codes oauth.device_authorizations oauth.service_account_delegations oauth.delegation_events "
+    "oauth.access_tokens oauth.refresh_tokens oauth.authorization_codes oauth.device_authorizations oauth.service_account_delegations oauth.delegation_events oauth.agent_registrations "
     "integrations.slack_threads platform.docstore_changes".split())      # (the change log: the reverse follower reads and trims it)
 # tables that had no jobs privilege before, or only SELECT/DELETE (the sweeper) or SELECT/UPDATE/DELETE (the dispatcher)
 JOBS_NEVER_WRITES = ["content.documents", "content.projects", "content.project_members", "oauth.apps", "oauth.service_account_delegations",

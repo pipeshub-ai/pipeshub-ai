@@ -22,7 +22,10 @@ from app.exceptions.indexing_exceptions import (
 )
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.modules.parsers.pdf.pdf_rasterizer import render_batch_from_path_sync
+from app.modules.parsers.pdf.pdf_rasterizer import (
+    cancel_on,
+    render_batch_from_path_sync,
+)
 from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
 from app.utils.aimodels import (
     LLMProvider,
@@ -334,9 +337,16 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 "Rendering page batch %d–%d of %d", batch[0], batch[-1], total
             )
             sink = _RenderSink()
+            stop = threading.Event()
             try:
-                await asyncio.to_thread(self._render_into, batch, sink)
+                # The thread copies this context, so its render can see the event.
+                with cancel_on(stop):
+                    await asyncio.to_thread(self._render_into, batch, sink)
                 self._page_images.update(sink.close())
+            except asyncio.CancelledError:
+                # A thread cannot be cancelled; this tells a render waiting for a lane to leave.
+                stop.set()
+                raise
             finally:
                 sink.close()
 
@@ -524,7 +534,10 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         # a slow page never holds up the others. A slot is freed when the page's image is
         # dropped (its call succeeded or it was given up).
         window = max(1, self.PAGE_RENDER_BATCH_SIZE)
-        render_chunk = max(1, window // 4)
+        # A render hands the parent its pages as arrays (up to 30 MB each) until they are
+        # encoded, so a chunk is capped at the default's 5 pages: a raised window then keeps
+        # more encoded images alive, never more arrays, and the parent's 0.5 GiB estimate holds.
+        render_chunk = max(1, min(window // 4, 5))
         slots = asyncio.Semaphore(window)
         ready: asyncio.Queue[Optional[int]] = asyncio.Queue()
         n_workers = max(1, min(self.CONCURRENCY_LIMIT, len(pages)))

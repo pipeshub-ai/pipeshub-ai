@@ -7,16 +7,13 @@ import hashlib
 import json
 import random
 import re
+import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 
 from app.modules.parsers.markdown import linear_image_search as lis
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
 
 # The Markdown image pattern is checked against a frozen record of what the
 # original exponential regex returned (see ``_oracle``); it is no longer
@@ -123,6 +120,13 @@ def _cpu(fn, text: str) -> float:
     return time.thread_time() - start
 
 
+def _best_of_three(fn, small: str, large: str) -> tuple[float, float]:
+    # Interleaved, so a slow stretch on a busy runner falls on both sizes instead of on the larger one alone (8.06x measured
+    # once on CI for a pattern that doubles in 2.0x locally).
+    times = [(_cpu(fn, small), _cpu(fn, large)) for _ in range(3)]
+    return min(t for t, _ in times), min(t for _, t in times)
+
+
 @pytest.mark.parametrize("name", sorted(REFERENCE))
 @pytest.mark.parametrize("unit", FAMILIES)
 def test_doubling_the_input_does_not_quadruple_the_time(name: str, unit: str) -> None:
@@ -130,8 +134,7 @@ def test_doubling_the_input_does_not_quadruple_the_time(name: str, unit: str) ->
     small, large = unit * (24_000 // len(unit)), unit * (96_000 // len(unit))
     run = lambda t: list(ours.finditer(t))  # noqa: E731
     # Best of three, so one scheduling hiccup cannot fail the ratio.
-    t_small = min(_cpu(run, small) for _ in range(3))
-    t_large = min(_cpu(run, large) for _ in range(3))
+    t_small, t_large = _best_of_three(run, small, large)
     # Four times the input: linear is 4x and quadratic 16x. A 2x step left too
     # little room between them on a busy two-core runner (2.6x measured once).
     assert t_large <= max(t_small, 0.004) * 8, (name, unit, t_small, t_large)
@@ -144,8 +147,7 @@ def test_data_destination_with_unmatched_title_tail_is_linear(unit: str, tail: s
     ours = lis.MD_IMAGE_NESTED
     small, large = unit * (24_000 // len(unit)) + tail, unit * (96_000 // len(unit)) + tail
     run = lambda t: list(ours.finditer(t))  # noqa: E731
-    t_small = min(_cpu(run, small) for _ in range(3))
-    t_large = min(_cpu(run, large) for _ in range(3))
+    t_small, t_large = _best_of_three(run, small, large)
     assert t_large <= max(t_small, 0.004) * 8, (unit, t_small, t_large)
     assert t_large < 1.5, (unit, t_small, t_large)
 
@@ -160,40 +162,22 @@ def test_one_scan_is_shared_by_searches_over_the_same_text() -> None:
         while (m := ours.search(t, pos, scan)) is not None:
             pos = m.end()
     small, large = text, text * 4
-    t_small = min(_cpu(loop, small) for _ in range(3))
-    t_large = min(_cpu(loop, large) for _ in range(3))
+    t_small, t_large = _best_of_three(loop, small, large)
     assert t_large <= max(t_small, 0.004) * 8, (t_small, t_large)
+
+
+# Threads that ran the blocking image extraction. Where it ran is checked, not how long the loop
+# stalled: a stall bound also measures the host's load.
+EXTRACTED_ON: list[int] = []
 
 
 class _SlowMarkdownParser:
     def __init__(self, **_: object) -> None: ...
 
     def extract_and_replace_images(self, text: str) -> tuple[str, list]:
-        time.sleep(0.4)  # stands in for CPU work that holds the GIL
+        EXTRACTED_ON.append(threading.get_ident())
+        time.sleep(0.01)  # stands in for CPU work that holds the GIL
         return text, []
-
-
-async def _worst_loop_gap(coro_factory: Callable[[], Awaitable[None]]) -> float:
-    import asyncio
-
-    worst = 0.0
-    stop = False
-
-    async def heartbeat() -> None:
-        nonlocal worst
-        last = time.monotonic()
-        while not stop:
-            await asyncio.sleep(0.01)
-            now = time.monotonic()
-            worst = max(worst, now - last)
-            last = now
-
-    task = asyncio.create_task(heartbeat())  # test-local task, awaited below
-    await asyncio.sleep(0.05)
-    await coro_factory()
-    stop = True
-    await task
-    return worst
 
 
 async def test_large_markdown_image_extraction_does_not_block_the_event_loop(monkeypatch) -> None:
@@ -206,8 +190,10 @@ async def test_large_markdown_image_extraction_does_not_block_the_event_loop(mon
     parser = object.__new__(blocks_parser.BlocksParser)
     parser.logger = logging.getLogger("test")
     parser.config_service = None
-    worst = await _worst_loop_gap(lambda: parser._process_blockgroup_images("x" * (300 * 1024), allow_remote_fetch=True))
-    assert worst < 0.2, worst
+    EXTRACTED_ON.clear()
+    await parser._process_blockgroup_images("x" * (300 * 1024), allow_remote_fetch=True)
+    assert EXTRACTED_ON
+    assert threading.get_ident() not in EXTRACTED_ON
 
 
 class _SlowHtmlParser:
@@ -215,7 +201,8 @@ class _SlowHtmlParser:
         return html
 
     def extract_and_replace_images(self, html: str) -> tuple[str, list]:
-        time.sleep(0.4)
+        EXTRACTED_ON.append(threading.get_ident())
+        time.sleep(0.01)
         return html, []
 
     async def parse_to_blocks(self, *_a: object, **_k: object) -> None:
@@ -241,8 +228,10 @@ async def test_large_html_image_extraction_does_not_block_the_event_loop() -> No
         with pytest.raises(_Stop):
             await parser._process_single_blockgroup_html(group, "r", _SlowHtmlParser(), allow_remote_fetch=True)
 
-    worst = await _worst_loop_gap(run)
-    assert worst < 0.2, worst
+    EXTRACTED_ON.clear()
+    await run()
+    assert EXTRACTED_ON
+    assert threading.get_ident() not in EXTRACTED_ON
 
 
 WS_PIECES = [

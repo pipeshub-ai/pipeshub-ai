@@ -1,7 +1,11 @@
 import { AIServiceResponse } from '../../../modules/enterprise_search/types/conversation.interfaces';
 import { HttpMethod } from '../../enums/http-methods.enum';
-import { Logger } from '../../services/logger.service';
 import { BaseCommand } from '../command.interface';
+import {
+  endUpstreamCall,
+  upstreamFetch,
+  UpstreamCall,
+} from '../../http/upstream-call';
 import { Readable } from 'stream';
 
 export interface AICommandOptions {
@@ -10,8 +14,8 @@ export interface AICommandOptions {
   headers?: Record<string, string>;
   queryParams?: Record<string, string | number | boolean>;
   body?: any;
-  // Total budget across all attempts: the abort signal is shared, so a timed-out
-  // first attempt fails the remaining ones immediately.
+  // Total budget across all attempts and the waits between them: once it runs
+  // out no further attempt is made.
   timeoutMs?: number;
   maxAttempts?: number;
 }
@@ -24,10 +28,6 @@ interface FetchCommandError extends Error {
   status?: number;
   statusText?: string;
 }
-
-const logger = Logger.getInstance({
-  service: 'AIServiceCommand',
-});
 
 const AI_SERVICE_TIMEOUT_MS = 620_000;
 
@@ -50,6 +50,7 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
   public async execute(): Promise<AIServiceResponse<T>> {
     const url = this.buildUrl();
     const sanitizedHeaders = this.sanitizeHeaders(this.headers);
+    const budget = AbortSignal.timeout(this.timeoutMs);
     const requestOptions: RequestInit = {
       method: this.method,
       headers: sanitizedHeaders,
@@ -61,40 +62,26 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       // downloading, retry shortly" message the health check produced.
       // Not applied to executeStream(), whose SSE progress stream is meant to
       // outlive any single request.
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal: budget,
     };
 
-    try {
-      const response = await this.fetchWithRetry(
-        async () => fetch(url, requestOptions),
-        this.maxAttempts,
-        300,
-      );
+    const response = await this.fetchWithRetry(
+      (attempt) => upstreamFetch(url, requestOptions, attempt),
+      this.maxAttempts,
+      300,
+      undefined,
+      budget,
+    );
 
-      logger.debug('AI service command success', {
-        url: url,
-        statusCode: response.status,
-        statusText: response.statusText,
-      });
-
-      // Assuming the response is JSON; adjust if needed.
-      const data = await response.json();
-      const retryAfter = response.headers.get('retry-after');
-      return {
-        statusCode: response.status,
-        data: data,
-        msg: response.statusText,
-        ...(retryAfter ? { headers: { 'retry-after': retryAfter } } : {}),
-      };
-    } catch (error: any) {
-      // Headers are left out: they carry the caller's bearer token.
-      logger.error('AI service command failed', {
-        error: error.message,
-        url: url,
-        method: this.method,
-      });
-      throw error;
-    }
+    // Assuming the response is JSON; adjust if needed.
+    const data = await response.json();
+    const retryAfter = response.headers.get('retry-after');
+    return {
+      statusCode: response.status,
+      data: data,
+      msg: response.statusText,
+      ...(retryAfter ? { headers: { 'retry-after': retryAfter } } : {}),
+    };
   }
 
   private parseErrorPayload(rawPayload: string): unknown {
@@ -186,74 +173,67 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       ...(signal ? { signal } : {}),
     };
 
-    try {
-      const response = await this.fetchWithRetry(
-        async () => fetch(url, requestOptions),
-        3,
-        300,
-      );
+    // A 2xx with a body is held: its call line is written when the stream ends, not at its headers.
+    const held: { call?: UpstreamCall } = {};
+    const response = await this.fetchWithRetry(
+      (attempt) =>
+        upstreamFetch(url, requestOptions, attempt, (call) => {
+          held.call = call;
+        }),
+      this.maxAttempts,
+      300,
+      undefined,
+      signal,
+    );
+    const end = (result: { status: number; error?: unknown }): void => {
+      if (held.call) endUpstreamCall(held.call, result);
+    };
 
-      if (!response.ok) {
-        let error: FetchCommandError;
-        try{
-          error = await this.buildStreamHttpError(response);
-        }
-        catch (error) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        throw error;
+    if (!response.ok) {
+      let error: FetchCommandError;
+      try{
+        error = await this.buildStreamHttpError(response);
       }
-
-      if (!response.body) {
-        throw new Error('Response body is null');
-      }
-
-      logger.info('AI service streaming command success', {
-        url: url,
-        statusCode: response.status,
-        statusText: response.statusText,
-      });
-
-      // Convert ReadableStream to Node.js Readable
-      const readable = new Readable({
-        read() {}
-      });
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-
-      const pump = async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            
-            if (done) {
-              readable.push(null);
-              break;
-            }
-            
-            const chunk = decoder.decode(value, { stream: true });
-            readable.push(chunk);
-          }
-        } catch (error) {
-          readable.destroy(error as Error);
-        }
-      };
-
-      pump();
-
-      return readable;
-    } catch (error: any) {
-      // An answer with an error status is logged once, with its body, by the
-      // caller's handleBackendError; only a request that got no answer is logged here.
-      if (!(error as FetchCommandError).response) {
-        logger.error('AI service streaming command failed', {
-          error: error.message,
-          url: url,
-          method: this.method,
-        });
+      catch (error) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
       throw error;
     }
+
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+
+    // Convert ReadableStream to Node.js Readable
+    const readable = new Readable({
+      read() {}
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    const pump = async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          
+          if (done) {
+            end({ status: response.status });
+            readable.push(null);
+            break;
+          }
+          
+          const chunk = decoder.decode(value, { stream: true });
+          readable.push(chunk);
+        }
+      } catch (error) {
+        end({ status: response.status, error });
+        readable.destroy(error as Error);
+      }
+    };
+
+    pump();
+
+    return readable;
   }
 }

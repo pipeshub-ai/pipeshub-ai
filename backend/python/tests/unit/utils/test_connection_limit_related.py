@@ -222,7 +222,7 @@ class TestForeignKeyTables:
     def _readable() -> tuple[Any, Any]:
         return (
             patch("app.utils.chat_helpers.accessible_node_ids_for_enrichment",
-                  AsyncMock(side_effect=lambda _g, ids, _u, _o: set(ids))),
+                  AsyncMock(side_effect=lambda _g, ids, _u, _o, **_: set(ids))),
             patch("app.utils.chat_helpers.live_record_ids", AsyncMock(side_effect=lambda _g, ids, _o: set(ids))),
         )
 
@@ -244,7 +244,7 @@ class TestForeignKeyTables:
     @pytest.mark.parametrize(("limit", "shown"), [(FILE_LIMIT, ["t-in"]), (None, ["t-in", "t-out"])])
     async def test_a_related_table_outside_the_limit_is_not_named_when_read_by_id(self, limit, shown) -> None:
         with patch("app.utils.fetch_full_record.accessible_node_ids",
-                   AsyncMock(side_effect=lambda _g, ids, _u, _o: set(ids))), \
+                   AsyncMock(side_effect=lambda _g, ids, _u, _o, **_: set(ids))), \
              patch("app.utils.fetch_full_record.live_record_ids",
                    AsyncMock(side_effect=lambda _g, ids, _o: set(ids))), \
              patch(OUTSIDE, _outside("t-out")):

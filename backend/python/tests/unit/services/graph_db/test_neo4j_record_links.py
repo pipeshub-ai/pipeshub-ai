@@ -10,12 +10,14 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames
 from app.migrations.record_link_migration import RecordLinkMigrationService
+from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 
 def _provider(rows=None) -> tuple[Neo4jProvider, list]:
     provider = Neo4jProvider.__new__(Neo4jProvider)
     provider.logger = MagicMock()
+    provider.validator = NodeSchemaValidator()
     queries: list = []
 
     async def execute(query, parameters=None, txn_id=None) -> list:
@@ -76,6 +78,20 @@ class TestReadsCoverBoth:
             "a", "records", CollectionNames.NODE_RELATIONS.value, ["BLOCKS"],
         )
         assert deleted == 2 and "NODE_RELATION|RECORD_LINK" in queries[0][0]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_link_cleanup_raises_when_asked_and_reads_as_zero_otherwise(self) -> None:
+        """0 also means "nothing to delete": a caller that writes replacements next asks for the failure."""
+        provider, _ = _provider()
+
+        async def down(query, parameters=None, txn_id=None) -> list:
+            raise ConnectionError("neo4j unavailable")
+
+        provider.client.execute_query = down
+        args = ("a", "records", CollectionNames.NODE_RELATIONS.value, ["MODIFIES"])
+        assert await provider.delete_edges_by_relationship_types(*args) == 0
+        with pytest.raises(ConnectionError):
+            await provider.delete_edges_by_relationship_types(*args, raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_a_single_pair_delete_stays_on_the_hierarchy(self) -> None:

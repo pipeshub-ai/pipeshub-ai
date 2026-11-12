@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import logging
 import math
 import os
@@ -85,6 +86,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.model_identity.call_context import narrow_workload
 from app.services.model_identity.workload import Workload
+from app.services.permissions.metrics import SERVING_DEGRADED
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -256,6 +258,10 @@ class _RecordIdSearch:
     empty_scope: bool = False
 
 
+# The scope filter of the shadow comparison's search, set only inside that task: a real search never sees one.
+_SHADOW_SCOPE_FILTER: contextvars.ContextVar[Any] = contextvars.ContextVar("acl_shadow_scope_filter", default=None)
+
+
 @dataclass
 class _QueryPlan:
     """Per-search cache so a re-query does not pay for embeddings twice.
@@ -285,6 +291,12 @@ class _QueryPlan:
     narrow_shortfall: bool = False
     # A provider answered some search of this request with less than its full search (``SearchResult.degraded``).
     degraded: bool = False
+    # The viewer's deferring scope filter (``ServingPlanner``): set only for the main container search, and cleared by the record-id path,
+    # whose own filter is the enumerated ids.
+    scope_filter: Any = None
+    # Every connector the viewer is gated into is served and exact (``ServingPlanner.plan_exact``): the filter decides every point, so the first fetch is
+    # exactly the limit asked. Meaningless without ``scope_filter``.
+    served_exact: bool = False
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -457,6 +469,8 @@ class RetrievalService:
     # Local models may load or download on first use, so their queries get no deadline.
     # A class default, so an instance built without __init__ (as some tests do) has it too.
     _cached_embedding_is_local = True
+    _shadow = None
+    _planner = None
 
     def __init__(
         self,
@@ -484,6 +498,10 @@ class RetrievalService:
         self.blob_store = blob_store
         self.vector_db_service = vector_db_service
         self.collection_registry = collection_registry
+        # Compares the scope filter with the post-check on the side (ACL_FILTER_MODE=shadow); None in every other mode.
+        self._shadow = self._build_shadow(graph_provider)
+        # Reads a container search with the viewer's scope filter (ACL_FILTER_MODE=scopes); None in every other mode.
+        self._planner = self._build_planner(graph_provider)
 
         # Capability negotiation — determines which embedding legs are needed.
         self._capabilities = vector_db_service.get_capabilities()
@@ -505,6 +523,48 @@ class RetrievalService:
             f"supports_sparse={self._capabilities.supports_sparse_vectors}, "
             f"supports_text_search={self._capabilities.supports_server_side_text_search}"
         )
+
+    def _build_shadow(self, graph_provider: IGraphDBProvider) -> object | None:
+        """The shadow comparator in shadow mode, else None. An invalid setting raises ValueError here, at start-up, naming the setting."""
+        from app.services.permissions.wiring import build_shadow_comparator
+
+        return build_shadow_comparator(graph_provider)
+
+    def _build_planner(self, graph_provider: IGraphDBProvider) -> object | None:
+        from app.services.permissions.wiring import build_serving_planner
+
+        return build_serving_planner(graph_provider)
+
+    def _submit_shadow(
+        self, queries, filter, asked: int, org_id: str, user_id: str | None, user_key: str | None,  # noqa: A002, ANN001
+        scope_connector_ids: frozenset[str] | None, scopes: Sequence[SelectionScope], plan: "_QueryPlan",
+        returned_vids: set[str], accessible: dict[str, str],
+    ) -> None:
+        """Hand the finished search to the shadow comparator (once per search, from the attempt that was kept), which repeats it with
+        the viewer's scope filter in a detached task. It gets a plan of its own (the embeddings are reused, nothing of the real plan is written) and never changes what this call returns."""
+        from app.services.permissions.shadow import ShadowIncomplete
+
+        shadow_plan = _QueryPlan(dense=plan.dense, sparse=plan.sparse, collections=plan.collections)
+
+        async def run_scoped(flt: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+            token = _SHADOW_SCOPE_FILTER.set(flt)
+            try:
+                found = await self._execute_parallel_searches(queries, filter, asked, org_id, user_id, plan=shadow_plan)
+            finally:
+                _SHADOW_SCOPE_FILTER.reset(token)
+            if shadow_plan.failed_collections:      # a collection that failed to answer would read as recall loss
+                raise ShadowIncomplete
+            return found
+
+        async def check(vrids: set[str]) -> set[str]:
+            found = await self.graph_provider.check_access(
+                user_key or "", org_id, virtual_record_ids=vrids, indexed_only=True, connector_ids=scope_connector_ids, scopes=scopes)
+            return set(found.records_by_vrid)
+
+        try:
+            self._shadow.submit(org_id, user_key or "", returned_vids, set(accessible), run_scoped, check)
+        except Exception as exc:  # the shadow must never cost a search
+            self.logger.warning("acl shadow comparison not started: %s", type(exc).__name__)
 
     @property
     def _result_merger(self) -> ResultMerger:
@@ -870,6 +930,8 @@ class RetrievalService:
             if permission_filter is None:
                 return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
             filter, scope_virtual_ids = permission_filter
+            if use_containers and self._planner is not None and self.vector_db_service.supports_scope_filter:
+                plan.scope_filter, plan.served_exact = await self._planner.plan_exact(org_id, user_key)
 
             record_cut = _record_cut_for(scope_virtual_ids)
             # The search API's first page, varied across sources: the plain
@@ -1134,10 +1196,9 @@ class RetrievalService:
             for idx, result in enumerate(search_results):
                 if not result or not isinstance(result, dict):
                     continue
-                if not result.get("metadata"):
-                    self.logger.warning(f"Result has no metadata: {result}")
-                    continue
-                virtual_id = result["metadata"].get("virtualRecordId")
+                # Normalisation gives every hit metadata, and a payload without it cannot pass
+                # the metadata.orgId filter; a hit lacking it has no record and falls to the else.
+                virtual_id = (result.get("metadata") or {}).get("virtualRecordId")
                 if virtual_id is not None and virtual_id in virtual_to_record_map:
                     record_id = virtual_to_record_map[virtual_id].get("_key")
                     record = record_id_to_record_map.get(record_id)
@@ -1573,6 +1634,7 @@ class RetrievalService:
                         plan=candidate_plan,
                         user_key=user_key,
                         scopes=scopes,
+                        compare=False,
                     )
                     if degraded:
                         return [], {}
@@ -1951,6 +2013,7 @@ class RetrievalService:
         query by the ids, keep the hits the access check admits. Raises when any
         step fails; the caller decides what stands instead.
         """
+        plan.scope_filter = None      # the enumerated ids are this path's filter
         enumerated = await self._get_accessible_virtual_ids_task(
             user_id, org_id, filters, self.graph_provider, time_range=time_range,
         )
@@ -2029,8 +2092,12 @@ class RetrievalService:
         plan: "_QueryPlan | None" = None,
         user_key: str | None = None,
         scopes: Sequence[SelectionScope] = (),
+        compare: bool = True,
     ) -> tuple[list[dict[str, Any]], dict[str, str], bool]:
         """Search under a container filter, then resolve what the user may read.
+
+        ``compare``: hand the finished search to the shadow comparison (when it is on). The deeper read for source diversity passes False: it
+        is the same search read at a greater depth, and one search is compared once.
 
         Returns ``(results, accessible_map, verification_degraded)``. The third
         element is what stops a graph outage being reported as an empty corpus.
@@ -2044,7 +2111,7 @@ class RetrievalService:
         """
         plan = plan if plan is not None else _QueryPlan()
         plan.narrow_shortfall = False
-        fetch_limit = self._overfetch_limit(limit, containers)
+        fetch_limit = limit if plan.scope_filter is not None and plan.served_exact else self._overfetch_limit(limit, containers)
         # `limit` is per query — `_run_searches` issues one request per expanded
         # query and concatenates the deduped batches — so every comparison below
         # is against the whole fan-out, not one query's share.
@@ -2057,6 +2124,7 @@ class RetrievalService:
         best_surviving = -1
         best_degraded = False
         best_failed: list[str] = []
+        best_shadow: tuple[int, set[str], dict[str, str]] | None = None      # what the shadow comparison needs from the kept attempt
 
         for attempt in range(MAX_SEARCH_ATTEMPTS):
             # Per attempt, not per loop: a later attempt that fails verification
@@ -2137,6 +2205,7 @@ class RetrievalService:
                 )
                 best_degraded = attempt_degraded
                 best_failed = plan.failed_collections
+                best_shadow = None if attempt_degraded else (asked, returned_vids, accessible)
 
             if attempt_degraded:
                 # Retrying would hammer a graph that has just failed to answer.
@@ -2177,6 +2246,8 @@ class RetrievalService:
             )
 
         plan.failed_collections = best_failed
+        if compare and best_shadow is not None and self._shadow is not None and plan.dense is not None and self.vector_db_service.supports_scope_filter:
+            self._submit_shadow(queries, filter, best_shadow[0], org_id, user_id, user_key, scope_connector_ids, scopes, plan, best_shadow[1], best_shadow[2])
         # Over-fetching is a means, not a promise: drop the headroom this path
         # added, best-scoring first, or by record under the record cut.
         # `budget` is the record-id path's *ceiling*, not its typical output —
@@ -2690,6 +2761,7 @@ class RetrievalService:
                 filter=filter,
                 limit=fused_limit,
                 fusion_method=FusionMethod.RRF,
+                scope_filter=_SHADOW_SCOPE_FILTER.get() or (plan.scope_filter if plan is not None else None),
             )
             for query, dense_embedding, sparse_embedding in zip(
                 queries, dense_query_embeddings, sparse_query_embeddings
@@ -2712,6 +2784,7 @@ class RetrievalService:
             plan.collections_searched = len(collections)
         if degraded and plan is not None:
             plan.degraded = True
+            SERVING_DEGRADED.inc("scopes" if requests and requests[0].scope_filter is not None and _SHADOW_SCOPE_FILTER.get() is None else "legacy")
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
         # Measured after the cut, so "exhausted" still means a query came back

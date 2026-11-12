@@ -17,10 +17,12 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede ML imports
 from app.api.routes.parsing import router as parsing_router
+from app.api.validation_errors import input_free_422
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import OCRProvider
 from app.containers.parsing import ParsingAppContainer, initialize_container
@@ -44,7 +46,10 @@ from app.modules.parsers.parse_pool import (
     set_resource_governor as set_parse_pool_governor,
 )
 from app.modules.parsers.parse_pool import shutdown_parse_pool
-from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+from app.modules.parsers.pdf.docling_processor import (
+    DoclingProcessor,
+    shutdown_docling_pool,
+)
 from app.modules.parsers.pdf.docling_processor import (
     set_resource_governor as set_docling_processor_governor,
 )
@@ -321,6 +326,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cleared first, or the next submit in this process starts a new pool.
     set_parse_pool_governor(None)
     shutdown_parse_pool()
+    shutdown_docling_pool()
     governor.stop()
     governor_task.cancel()
     try:
@@ -347,6 +353,7 @@ app = FastAPI(
     description="Parses documents into BlocksContainer format",
     version="2.0.0",
     lifespan=lifespan,
+    exception_handlers={RequestValidationError: input_free_422},
 )
 configure_app(app, "parsing")
 

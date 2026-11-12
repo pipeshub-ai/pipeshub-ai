@@ -36,9 +36,20 @@ def _node(kind: str, key: str, name: str) -> dict[str, Any]:
 
 
 class _Graph:
-    def __init__(self, nodes: list[dict[str, Any]]) -> None:
+    def __init__(self, nodes: list[dict[str, Any]], spellings: dict[str, list[str]] | None = None) -> None:
         self.nodes = {node["id"]: node for node in nodes}
         self.prefix_calls: list[list[tuple[str, str]]] = []
+        # How readable records spell each node; by default as it is stored.
+        self.spellings = spellings
+
+    async def get_named_entity_mentions_in_records(
+        self, org_id: str, entity_ids: list[str], record_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        spelled = self.spellings if self.spellings is not None else {
+            i: [self.nodes[i]["name"]] for i in entity_ids if i in self.nodes
+        }
+        return [{"entityId": i, "recordId": r, "extractedNames": spelled.get(i, [])}
+                for i in entity_ids for r in record_ids]
 
     async def get_named_entities_by_ids(self, org_id: str, ids: list[str]) -> list[dict[str, Any]]:
         return [self.nodes[i] for i in ids if i in self.nodes]
@@ -401,6 +412,21 @@ async def test_a_nodes_alias_family_is_its_learned_short_and_full_forms_that_the
 
 
 @pytest.mark.asyncio
+async def test_an_alias_node_is_named_only_as_a_readable_record_spells_it() -> None:
+    from app.modules.named_entities.linking.candidates import alias_family
+
+    full = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    short = _node("organization", _SHORT_KEY, "PINECREST (LEGAL HOLD)")
+    readable = {full["id"], short["id"]}
+    graph = _Graph([full, short], spellings={short["id"]: ["Pinecrest"]})
+    assert await alias_family(graph, CONTEXT, full["id"], probe=_probe(readable)) == [
+        {"id": short["id"], "kind": "organization", "name": "Pinecrest"},
+    ]
+    # No readable record spells it: left out, never shown under its stored name.
+    assert await alias_family(_Graph([full, short], spellings={}), CONTEXT, full["id"], probe=_probe(readable)) == []
+
+
+@pytest.mark.asyncio
 async def test_a_shared_alias_gives_no_family() -> None:
     from app.modules.named_entities.linking.candidates import alias_family
 
@@ -411,6 +437,32 @@ async def test_a_shared_alias_gives_no_family() -> None:
     readable = {n["id"] for n in (hospitality, bank, short)}
     assert await alias_family(graph, CONTEXT, hospitality["id"], probe=_probe(readable)) == []
     assert await alias_family(graph, CONTEXT, short["id"], probe=_probe(readable)) == []
+
+
+async def test_an_unreadable_node_sharing_the_alias_leaves_the_family_as_it_would_be_without_it() -> None:
+    from app.modules.named_entities.linking.candidates import alias_family
+
+    hospitality = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    bank = _aliased(_node("organization", "name:organization:pinecrest bank", "Pinecrest Bank"), _SHORT_KEY)
+    short = _node("organization", _SHORT_KEY, "Pinecrest")
+    readable = {hospitality["id"], short["id"]}
+    alone = await alias_family(_Graph([hospitality, short]), CONTEXT, hospitality["id"], probe=_probe(readable))
+    shared = await alias_family(_Graph([bank, hospitality, short]), CONTEXT, hospitality["id"], probe=_probe(readable))
+    assert shared == alone == [{"id": short["id"], "kind": "organization", "name": "Pinecrest"}]
+    assert await alias_family(_Graph([bank, hospitality, short]), CONTEXT, short["id"], probe=_probe(readable)) == [
+        {"id": hospitality["id"], "kind": "organization", "name": "Pinecrest Hospitality"},
+    ]
+
+
+async def test_an_unreadable_carrier_of_an_asked_alias_does_not_untie_it() -> None:
+    hospitality = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    bank = _aliased(_node("organization", "name:organization:pinecrest bank", "Pinecrest Bank"), _SHORT_KEY)
+    _, found = await _find([bank, hospitality], {hospitality["id"]}, [{"name": "Pinecrest", "kind": "organization"}])
+    (entry,) = found.per_mention
+    assert [(c.entity_id, c.source) for c in entry.candidates if c.source is CandidateSource.ALIAS] == [
+        (hospitality["id"], CandidateSource.ALIAS),
+    ]
+    assert bank["id"] not in {c.entity_id for c in entry.candidates}
 
 
 @pytest.mark.asyncio

@@ -549,3 +549,111 @@ class TestThroughThePermissionLayer:
         assert [h.entity_id for h in hits] == [keys["gate_topic"]]
         assert [r["_key"] for r in hits[0].records] == [keys["gated"]]
         assert hits[0].more_records is False
+
+
+# ---------------------------------------------------------------------------
+# A record named directly is returned whether or not its content is indexed.
+# One fixture, both backends: the same rows, with the same keys.
+# ---------------------------------------------------------------------------
+
+TITLE_RECORDS = {
+    "indexed": {"status": ProgressStatus.COMPLETED.value},
+    "queued": {"status": ProgressStatus.QUEUED.value},
+    "off": {"status": ProgressStatus.AUTO_INDEX_OFF.value},
+    "trashed": {"status": ProgressStatus.QUEUED.value, "deleted": True},
+    "other_org": {"status": ProgressStatus.QUEUED.value, "other_org": True},
+    "other_connector": {"status": ProgressStatus.QUEUED.value, "connector": RECORD_LEVEL},
+}
+FOUND_BY_NAME = {"indexed", "queued", "off"}
+
+
+def _title_rows(org_id: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": f"{org_id}-title-{name}",
+            "name": name,
+            "org": f"{org_id}-other" if spec.get("other_org") else org_id,
+            "connector": spec.get("connector", APP_LEVEL),
+            "status": spec["status"],
+            "deleted": bool(spec.get("deleted")),
+        }
+        for name, spec in TITLE_RECORDS.items()
+    ]
+
+
+async def _seed_title_records(provider: Neo4jProvider | ArangoHTTPProvider, org_id: str) -> None:
+    rows = _title_rows(org_id)
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query(
+            """
+            UNWIND $rows AS row
+            CREATE (:Record {id: row.id, orgId: row.org, connectorId: row.connector, recordName: row.name,
+                             recordType: 'FILE', isDeleted: row.deleted, indexingStatus: row.status,
+                             sourceLastModifiedTimestamp: 1})
+            """,
+            parameters={"rows": rows},
+        )
+        return
+    await _insert(provider, CollectionNames.RECORDS.value, [
+        {
+            **Record(
+                id=row["id"], org_id=row["org"], record_name=row["name"], record_type=RecordType.FILE,
+                external_record_id=f"ext-{row['id']}", version=0, origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.KNOWLEDGE_BASE, connector_id=row["connector"],
+                indexing_status=row["status"], source_updated_at=1,
+            ).to_arango_base_record(),
+            "isDeleted": row["deleted"],
+        }
+        for row in rows
+    ])
+
+
+async def _remove_title_records(provider: Neo4jProvider | ArangoHTTPProvider, org_id: str) -> None:
+    ids = [row["id"] for row in _title_rows(org_id)]
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query(
+            "MATCH (r:Record) WHERE r.id IN $ids DETACH DELETE r", parameters={"ids": ids},
+        )
+        return
+    await provider.http_client.execute_aql(
+        f"FOR d IN {CollectionNames.RECORDS.value} FILTER d._key IN @ids REMOVE d IN {CollectionNames.RECORDS.value}",
+        {"ids": ids},
+    )
+
+
+@pytest.fixture
+async def title_records(backend) -> AsyncIterator[dict[str, str]]:
+    provider, org_id = backend
+    await _seed_title_records(provider, org_id)
+    try:
+        yield {row["name"]: row["id"] for row in _title_rows(org_id)}
+    finally:
+        await _remove_title_records(provider, org_id)
+
+
+class TestRecordsFoundByTheirName:
+    async def test_candidates_are_the_live_records_of_the_org_and_connector_whatever_their_index_state(
+        self, backend, title_records,
+    ) -> None:
+        provider, org_id = backend
+        refs = [{"id": key, "type": "record", "connectorIds": [APP_LEVEL]} for key in title_records.values()]
+        found = await provider.get_entity_candidate_records(refs, org_id)
+        returned = {name for name, key in title_records.items() if found[("record", key)]}
+        assert returned == FOUND_BY_NAME
+        for name in returned:
+            (row,) = found[("record", title_records[name])]
+            assert set(row) == set(ArangoHTTPProvider._ENTITY_CANDIDATE_RECORD_FIELDS)
+            assert row["indexingStatus"] == TITLE_RECORDS[name]["status"]
+
+    async def test_permitted_rows_agree_with_the_candidates(self, backend, title_records) -> None:
+        provider, org_id = backend
+        refs = [{"id": key, "type": "record", "connectorIds": [APP_LEVEL]} for key in title_records.values()]
+        out = await provider.get_permitted_entity_records(
+            refs, org_id, _keys(org_id)["user"], app_level_connector_ids=[APP_LEVEL],
+        )
+        returned = {name for name, key in title_records.items() if out[("record", key)]}
+        assert returned == FOUND_BY_NAME
+        for name in returned:
+            (row,) = out[("record", title_records[name])]
+            assert set(row) == set(ArangoHTTPProvider._ENTITY_CANDIDATE_RECORD_FIELDS)
+            assert row["indexingStatus"] == TITLE_RECORDS[name]["status"]

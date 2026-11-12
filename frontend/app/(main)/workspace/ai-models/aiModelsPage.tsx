@@ -40,13 +40,7 @@ export default function AIModelsPage() {
         }
         belowHeader={
           manager.capabilitySection === 'text_generation' ? (
-            <ModelRolesSection
-              configuredModels={manager.configuredModels}
-              onRolesUpdated={() => {
-                void manager.loadProviders();
-                void manager.loadModels();
-              }}
-            />
+            <ModelRolesSection configuredModels={manager.configuredModels} />
           ) : null
         }
         providers={manager.providers}

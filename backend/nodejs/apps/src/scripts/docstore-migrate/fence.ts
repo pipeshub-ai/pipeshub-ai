@@ -1,9 +1,10 @@
 /** The cutover tooling's side of the Mongo fence document (see libs/repositories/fence.ts). */
 import {
   FENCE_POLL_GAP_MS,
+  fenceCutoverWaitMs,
+  fenceSendMs,
   appFenceSendOptions,
   FENCED_WRITE_OP_MATCH,
-  fenceCutoverWaitMs,
   type FenceSendOptions,
 } from '../../libs/repositories/fence';
 import type { MigrationRuntime } from './runtime';
@@ -39,6 +40,21 @@ export class FenceOpsTimeoutError extends Error {
     );
   }
 }
+
+/**
+ * Tests of the command line set MIGRATE_FENCE_TEST_MS (with MIGRATE_TEST_HOOKS=1) to shorten the two fixed waits of a cutover.
+ * Anything but a non-negative whole number is refused, so a typo cannot change the timing silently.
+ */
+export const fenceTestMs = (): number | undefined => {
+  const raw = process.env.MIGRATE_FENCE_TEST_MS;
+  if (process.env.MIGRATE_TEST_HOOKS !== '1' || raw === undefined)
+    return undefined;
+  if (!/^\d+$/.test(raw))
+    throw new Error(
+      `MIGRATE_FENCE_TEST_MS must be a non-negative whole number of milliseconds, got ${JSON.stringify(raw)}`,
+    );
+  return Number(raw);
+};
 
 /** Tunables; tests shorten them. `opsTimeoutMs` is the operator's limit (MIGRATE_FENCE_OPS_TIMEOUT_S, default 120 s). */
 export const fenceTuning = {
@@ -100,7 +116,12 @@ async function enforceDrainDwell(
     throw new Error(
       `the fence must be 'draining' before '${to}' (it is '${mode}')`,
     );
-  const wait = fenceCutoverWaitMs(fenceTuning.clientOptions(rt));
+  const opts = fenceTuning.clientOptions(rt);
+  const shortened = fenceTestMs();
+  const wait =
+    shortened === undefined
+      ? fenceCutoverWaitMs(opts)
+      : shortened + fenceSendMs(opts);
   if (!Number.isFinite(wait))
     throw new Error(
       'the MongoDB client has an unbounded wait queue (waitQueueTimeoutMS 0): no time bounds a write that passed the fence; the cutover is refused',
@@ -113,7 +134,7 @@ async function enforceDrainDwell(
     const running = await fenceTuning.fencedOpsRunning(rt);
     if (running === 0) {
       clean += 1;
-      if (clean < 2) await sleep.ms(fenceTuning.pollMs);
+      if (clean < 2) await sleep.ms(fenceTestMs() ?? fenceTuning.pollMs);
       continue;
     }
     clean = 0;
@@ -125,7 +146,7 @@ async function enforceDrainDwell(
       waitedMs: waited,
       timeoutMs: fenceTuning.opsTimeoutMs,
     });
-    await sleep.ms(fenceTuning.pollMs);
+    await sleep.ms(fenceTestMs() ?? fenceTuning.pollMs);
   }
 }
 

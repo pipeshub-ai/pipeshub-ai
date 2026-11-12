@@ -18,6 +18,7 @@ import pytest
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.connectors.services.event_service import EventService
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.entities import FileRecord, RecordType
 from tests.unit.connectors.services.coordinator_stub import installed_stub, spawned
 
@@ -103,11 +104,11 @@ class TestProcessEventDeleteAction:
             })
 
     @pytest.mark.asyncio
-    async def test_unknown_action_returns_false(self, service):
-        """Unknown action returns False and logs error."""
-        result = await service.process_event("gmail.unknown_action", {})
-        assert result is False
-        service.logger.error.assert_called()
+    async def test_unknown_action_is_terminal(self, service):
+        """Unknown action raises NonRetryableError; the consumer logs it, the service does not log it again."""
+        with pytest.raises(NonRetryableError, match="unknown_action"):
+            await service.process_event("gmail.unknown_action", {})
+        service.logger.error.assert_not_called()
 
 
 # ===========================================================================
@@ -527,9 +528,10 @@ class TestHandleDelete:
 
         assert await self._delete_with_helper(service, helper) is True
 
-        assert [c for c in calls if "/services/connectors/" not in c][:4] == [
+        assert [c for c in calls if "/services/connectors/" not in c][:5] == [
             "/services/entityCleanup/pending/c1",
             "/services/storageRelease/pending/c1",
+            "/services/lateWriteSweep/pending/c1",
             "graph",
             "release",
         ]

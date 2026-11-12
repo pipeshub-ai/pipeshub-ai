@@ -166,7 +166,7 @@ class TestCascadeDeleteSite:
         ):
             await processor.on_records_deleted_cascade(["rec-1", "rec-2"], "kb-1")
 
-        notify.assert_awaited_once_with("kb-1")
+        notify.assert_awaited_once_with("kb-1", None)  # the processor has no org here: a global bump, never a wrong org
 
     async def test_silent_when_nothing_was_deleted(self) -> None:
         processor = self._processor({"successfully_deleted": 0, "eventData": None})

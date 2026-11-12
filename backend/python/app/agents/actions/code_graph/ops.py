@@ -17,7 +17,10 @@ from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations
+from app.modules.code_graph.synced_commit import LAST_SYNCED_COMMIT
 from app.modules.parsers.code_parser.lang_config import LANGUAGES
+
+from .results import saw_commit
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
@@ -36,6 +39,7 @@ __all__ = [
     "SymbolRef",
     "attach_file_paths",
     "get_record_roles",
+    "nodes_in_org",
     "repo_names",
     "resolve_symbol",
 ]
@@ -55,6 +59,8 @@ STRUCTURAL_RELATIONS = [
 # reaching another across files (calls, imports, heritage).
 CROSS_FILE_RELATIONS = [
     RecordRelations.CALLS.value,
+    # A function handed over as a value (callback, table entry): it may run later.
+    RecordRelations.INDIRECT_CALL.value,
     RecordRelations.IMPORTS.value,
     RecordRelations.IMPORTS_FROM.value,
     RecordRelations.RE_EXPORTS.value,
@@ -86,6 +92,8 @@ CODE_RELATIONS = [*STRUCTURAL_RELATIONS, *CROSS_FILE_RELATIONS]
 # count ranks the wrong symbol first, which is worse than no ranking at all.
 _DEGREE_CANDIDATES = 400
 _DEGREE_ROW_LIMIT = 50000
+_DEGREE_PAGE = 5000
+_MAX_NEIGHBOUR_PAGE = 5000
 
 _BLOCKS = CollectionNames.BLOCKS.value
 _RECORDS = CollectionNames.RECORDS.value
@@ -104,16 +112,33 @@ EDGE_LANGUAGES = frozenset(
 NAME_ONLY_LANGUAGES = frozenset(
     name for name, cfg in LANGUAGES.items() if cfg.call_types and not cfg.import_handler_name
 )
+# Calls and imports resolve and types have methods, but no INHERITS/IMPLEMENTS/OVERRIDES:
+# Go satisfies interfaces implicitly, so nothing in the source names the link. (C has no
+# methods, so it has nothing to miss.)
+NO_HERITAGE_LANGUAGES = frozenset(
+    name for name in EDGE_LANGUAGES
+    if LANGUAGES[name].method_types and not LANGUAGES[name].heritage_handler_name
+)
 
 
 def coverage_for(blocks: "Iterable[dict[str, Any]]") -> dict[str, Any] | None:
     """The coverage gap for these blocks' languages, or None when there is none."""
-    languages = {(b.get("language") or "").lower() for b in blocks} - {""} - EDGE_LANGUAGES
-    if not languages:
+    seen = {(b.get("language") or "").lower() for b in blocks} - {""}
+    languages = seen - EDGE_LANGUAGES
+    no_heritage = sorted(seen & NO_HERITAGE_LANGUAGES)
+    if not languages and not no_heritage:
         return None
     name_only = sorted(languages & NAME_ONLY_LANGUAGES)
     missing = sorted(languages - NAME_ONLY_LANGUAGES)
     parts = []
+    if no_heritage:
+        parts.append(
+            f"For {', '.join(n.capitalize() for n in no_heritage)}, calls and imports resolve, but "
+            "there are no INHERITS, IMPLEMENTS or OVERRIDES edges: nothing links a type to the "
+            "interface it satisfies, so impact does not step from an implementation to callers "
+            "that hold the interface, and entry_points may list a method called only through an "
+            "interface as uncalled."
+        )
     if name_only:
         parts.append(
             f"For {', '.join(name_only)}, CALLS edges are matched by name only "
@@ -127,9 +152,10 @@ def coverage_for(blocks: "Iterable[dict[str, Any]]") -> dict[str, Any] | None:
     parts.append("A missing caller or path here is not evidence -- confirm with search "
                  "and read_code.")
     return {
-        "cross_file_edges": False,
+        "cross_file_edges": not languages,
         "languages": sorted(languages),
         **({"name_matched_calls": name_only} if name_only else {}),
+        **({"no_heritage_edges": no_heritage} if no_heritage else {}),
         "note": " ".join(parts),
     }
 
@@ -253,13 +279,16 @@ async def _records_for_path(
         rows = await graph_provider.get_nodes_by_filters(
             collection=_CODE_FILES,
             filters={"orgId": org_id, "filePath": candidate},
-            return_fields=["_key"],
+            return_fields=["_key", "commitSha"],
             raise_on_error=True,
         )
         keys = [key for row in rows or [] if (key := row.get("_key") or row.get("id"))]
         if keys and choose is not None:
             keys = await choose(keys)
         if keys:
+            for row in rows or []:
+                if (key := row.get("_key") or row.get("id")) in keys:
+                    saw_commit(candidate, key, row.get("commitSha"))
             return keys, candidate
     return [], file_path
 
@@ -336,14 +365,8 @@ async def repo_names(
     ids = sorted({g for g in group_ids if g})
     if not ids:
         return {}
-    groups = [
-        _unwrap(row) for row in await graph_provider.get_nodes_by_field_in(
-            collection=_RECORD_GROUPS, field_name="_key", field_values=ids,
-            return_fields=["_key", "orgId", "connectorId", "groupName", "parentExternalGroupId"],
-            raise_on_error=True,
-        ) or []
-    ]
-    groups = [g for g in groups if g.get("orgId") == org_id]
+    groups = await nodes_in_org(graph_provider, org_id, _RECORD_GROUPS, ids,
+                                ["_key", "connectorId", "groupName", "parentExternalGroupId"])
     parent_ids = sorted({g["parentExternalGroupId"] for g in groups if g.get("parentExternalGroupId")})
     parents: dict[tuple[str | None, str], str] = {}
     if parent_ids:
@@ -363,6 +386,76 @@ async def repo_names(
         if key and name:
             out[key] = name
     return out
+
+
+async def record_repo_names(
+    graph_provider: IGraphDBProvider, org_id: str, record_ids: "Iterable[str]",
+) -> dict[str, str]:
+    """The repo of each record, named as result rows name it (``repo_names``, else the group id)."""
+    ids = sorted(set(record_ids))
+    if not ids:
+        return {}
+    rows = await nodes_in_org(graph_provider, org_id, _RECORDS, ids, ["_key", "recordGroupId"])
+    groups = {key: g for row in rows
+              if (key := row.get("_key") or row.get("id")) and (g := row.get("recordGroupId"))}
+    names = await repo_names(graph_provider, org_id, groups.values())
+    return {key: names.get(g) or g for key, g in groups.items()}
+
+
+async def name_repos_of_shared_paths(
+    graph_provider: IGraphDBProvider, org_id: str, rows: "Iterable[tuple[str, dict[str, Any]]]", path_field: str,
+) -> None:
+    """Set ``repo`` on the ``(record id, row)`` rows whose path a row of another record also shows: two of a
+    connector's repos can hold one path, and only the repo tells those rows (and their commits) apart.
+
+    Best effort: the rows are the answer, so a failed lookup leaves them unnamed (their commit then reads
+    unknown) rather than failing the call.
+    """
+    rows = list(rows)
+    records_at = Counter(path for path, _ in {(row[path_field], rid) for rid, row in rows})
+    shared = [(rid, row) for rid, row in rows if records_at[row[path_field]] > 1]
+    if not shared:
+        return
+    try:
+        names = await record_repo_names(graph_provider, org_id, {rid for rid, _ in shared})
+    except Exception:
+        logger.warning("Repo names for %d rows sharing a path unavailable", len(shared), exc_info=True)
+        return
+    for rid, row in shared:
+        if rid in names:
+            row["repo"] = names[rid]
+
+
+async def synced_commits(
+    graph_provider: IGraphDBProvider, org_id: str, group_ids: "Iterable[str]",
+) -> dict[str, str]:
+    """``lastSyncedCommit`` of each record group that has one (written by the git connectors)."""
+    ids = sorted(set(group_ids))
+    if not ids:
+        return {}
+    rows = await nodes_in_org(graph_provider, org_id, _RECORD_GROUPS, ids, ["_key", LAST_SYNCED_COMMIT])
+    return {key: commit for row in rows
+            if (key := row.get("_key") or row.get("id")) and (commit := row.get(LAST_SYNCED_COMMIT))}
+
+
+async def nodes_in_org(
+    graph_provider: IGraphDBProvider, org_id: str, collection: str, keys: "Iterable[str]", fields: list[str],
+) -> list[dict[str, Any]]:
+    """The *collection* nodes with these keys that belong to *org_id*, with *fields*.
+
+    A lookup by key is not org-scoped, so its rows are re-filtered against the org the caller already
+    validated: the one place the code-graph tools read a stored row's ``orgId`` for that.
+    """
+    if not org_id:  # `None == None` would keep every row stored without an org
+        raise ValueError("nodes_in_org needs the caller's org")
+    wanted = sorted({k for k in keys if k})
+    if not wanted:
+        return []
+    rows = await graph_provider.get_nodes_by_field_in(
+        collection=collection, field_name="_key", field_values=wanted,
+        return_fields=[*fields, "orgId"], raise_on_error=True,
+    ) or []
+    return [row for row in map(_unwrap, rows) if row.get("orgId") == org_id]
 
 
 async def _attach_repos(
@@ -488,28 +581,47 @@ async def _readable_blocks(
     return out
 
 
-async def _readable_keys(
+async def _readable_block_rows(
     graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
-) -> set[str]:
-    """The keys among ``keys`` of blocks in this org whose file the caller may read.
+    connector_id: str | None = None, *, extra_fields: "Iterable[str]" = (),
+) -> dict[str, dict[str, Any]]:
+    """Block key -> its light row, for the blocks among ``keys`` in this org (and ``connector_id``) the caller may read.
 
     The one check a traversal applies at every hop (S-7): what is reached
     through a file the caller cannot read, and what is counted, must not
-    depend on that file. Loads only key, record and org.
+    depend on that file. Loads only key, record, org and connector, plus ``extra_fields``.
     """
-    wanted = sorted({k for k in keys if k})
-    if not wanted:
-        return set()
-    rows = [
-        _unwrap(row) for row in await graph_provider.get_nodes_by_field_in(
-            collection=_BLOCKS, field_name="_key", field_values=wanted,
-            return_fields=["_key", "recordId", "orgId"], raise_on_error=True,
-        ) or []
-    ]
-    rows = [r for r in rows if r.get("orgId") == org_id]
+    rows = await nodes_in_org(graph_provider, org_id, _BLOCKS, keys, ["_key", "recordId", "connectorId", *extra_fields])
+    rows = [r for r in rows if connector_id is None or r.get("connectorId") == connector_id]
+    if not rows:
+        return {}
     readable = await access.readable(r.get("recordId") for r in rows)
-    return {key for r in rows
+    return {key: r for r in rows
             if r.get("recordId") in readable and (key := r.get("_key") or r.get("id"))}
+
+
+async def _readable_block_records(
+    graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
+    connector_id: str | None = None,
+) -> dict[str, str]:
+    """Block key -> record id, for the blocks among ``keys`` the caller may read (see ``_readable_block_rows``)."""
+    rows = await _readable_block_rows(graph_provider, org_id, access, keys, connector_id)
+    return {key: r["recordId"] for key, r in rows.items()}
+
+
+async def _readable_kinds(
+    graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
+) -> dict[str, str | None]:
+    """Block key -> kind, for the blocks among ``keys`` the caller may read (see ``_readable_block_rows``)."""
+    rows = await _readable_block_rows(graph_provider, org_id, access, keys, extra_fields=["kind"])
+    return {key: r.get("kind") for key, r in rows.items()}
+
+
+async def _readable_keys(
+    graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
+) -> set[str]:
+    """The keys among ``keys`` of blocks in this org whose file the caller may read."""
+    return set(await _readable_block_records(graph_provider, org_id, access, keys))
 
 
 async def attach_file_paths(
@@ -533,11 +645,92 @@ async def attach_file_paths(
     for block in blocks:
         info = file_info.get(block.get("recordId"))
         block["filePath"] = info.file_path if info else None
+    for record_id, info in file_info.items():
+        saw_commit(info.file_path, record_id, info.commit_sha)
     await _attach_repos(graph_provider, org_id, blocks)
 
 
 def _key_of(block: dict) -> str:
     return block.get("_key") or block.get("id") or ""
+
+
+class _WalkFailed(RuntimeError):
+    """The store's neighbour query failed (as opposed to the access check)."""
+
+
+async def _readable_neighbour_rows(
+    graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess | None, keys: list[str],
+    relations: list[str], direction: str, *, page: int, budget: int, want: int | None = None,
+    connector_id: str | None = None, include_tests: bool = True,
+    accept: "Callable[[dict[str, Any]], bool] | None" = None, node_collection: str = _BLOCKS,
+) -> tuple[list[dict[str, Any]], bool, bool]:
+    """Edge rows from ``keys`` (nodes of ``node_collection``) whose far end the caller can read:
+    ``(rows, over, incomplete)``.
+
+    Pages the store in a fixed order and filters each page before counting, so
+    rows the caller cannot read, rows ``accept`` refuses, blocks outside
+    ``connector_id`` and (unless ``include_tests``) test-file blocks neither
+    fill ``want`` nor move ``over``. Test rows are still returned, uncounted, so
+    the caller can say how many it hid. ``over`` is true when more than ``want``
+    counted rows exist (the first ``want`` are returned). ``incomplete`` is true
+    when ``budget`` raw rows were scanned before the store ran out or ``want``
+    was passed. ``access=None`` skips the readability check.
+    """
+    counted: list[dict[str, Any]] = []
+    tests: list[tuple[int, dict[str, Any]]] = []
+    counted_at: list[int] = []     # stream position of each counted row, in the store's own order
+    scanned, after = 0, ""
+    page = min(page, budget)
+    while True:
+        try:
+            raw = list(await graph_provider.get_neighbors_for_nodes_by_relationship_types(
+                node_keys=keys, node_collection=node_collection, relationship_types=relations,
+                direction=direction, limit=page, after=after, raise_on_error=True,
+            ) or [])
+        except Exception as exc:
+            logger.exception("Neighbour walk failed")
+            raise _WalkFailed("Failed to walk the code graph") from exc
+        first = scanned
+        scanned += len(raw)
+        raw_kept = [(first + i, r) for i, r in enumerate(raw)
+                    if r.get("collection") in (_BLOCKS, _RECORDS) and (accept is None or accept(r))]
+        block_keys = [r.get("key") for _, r in raw_kept if r.get("collection") == _BLOCKS]
+        if access is None:
+            ok_blocks, ok_records = dict.fromkeys(k for k in block_keys if k), None
+        else:
+            ok_blocks = await _readable_block_records(graph_provider, org_id, access, block_keys, connector_id)
+            ok_records = await access.readable(r.get("key") for _, r in raw_kept if r.get("collection") == _RECORDS)
+        roles = {} if include_tests else await get_record_roles(graph_provider, org_id, set(ok_blocks.values()))
+        for pos, r in raw_kept:
+            if r.get("collection") == _BLOCKS:
+                if r.get("key") not in ok_blocks:
+                    continue
+                if roles.get(ok_blocks[r["key"]]) == TEST_ROLE:
+                    tests.append((pos, r))
+                    continue
+            elif ok_records is not None and r.get("key") not in ok_records:
+                continue
+            counted.append(r)
+            counted_at.append(pos)
+        if want is not None and len(counted) > want:
+            # Test rows past the last kept row would depend on where hidden rows put the page breaks.
+            # Compared by stream position, not by cursor text: the store's collation is not ours.
+            cut = counted_at[want - 1] if want > 0 else -1
+            return counted[:want] + [t for pos, t in tests if pos < cut], True, False
+        if len(raw) < page:
+            return counted + [t for _, t in tests], False, False
+        if scanned >= budget:
+            # shortcut: the scan stops after `budget` raw rows; filter readability in the store query if hubs routinely exceed it.
+            return counted + [t for _, t in tests], False, True
+        # A provider that ignores `after` would repeat a page for ever (equality only: the store's collation is not ours).
+        if not (nxt := raw[-1].get("cursor")) or nxt == after:
+            logger.error("Neighbour query did not advance its cursor")
+            raise _WalkFailed("Failed to walk the code graph")
+        after = nxt
+        # Rows the caller cannot read don't fill the page, so each further read is larger: a hub of hidden
+        # rows costs a few reads, not one per page. Where the pages break changes nothing returned, and no
+        # read passes the budget, so `incomplete` means the same raw count at any page size.
+        page = min(max(page, min(2 * page, _MAX_NEIGHBOUR_PAGE)), budget - scanned)
 
 
 async def _degrees(
@@ -561,33 +754,16 @@ async def _degrees(
     if len(keys) < 2:
         return {}, False
     try:
-        rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
-            node_keys=keys,
-            node_collection=_BLOCKS,
-            relationship_types=relations,
-            direction="any",
-            limit=_DEGREE_ROW_LIMIT,
+        rows, _, incomplete = await _readable_neighbour_rows(
+            graph_provider, org_id, access, keys, relations, "any",
+            page=_DEGREE_PAGE, budget=_DEGREE_ROW_LIMIT,
         )
-    except Exception as exc:
-        logger.warning("Degree lookup failed: %s", exc)
+    except _WalkFailed as exc:
+        logger.warning("Degree lookup failed: %s", exc.__cause__ or exc)
         return {}, False
-    rows = list(rows or [])
-    # Only edges to what the caller can read: a count over hidden files says
-    # how much is hidden there (S-7).
-    readable_blocks = await _readable_keys(
-        graph_provider, org_id, access,
-        (r.get("key") for r in rows if r.get("collection") == _BLOCKS),
-    )
-    readable_records = await access.readable(
-        r.get("key") for r in rows if r.get("collection") == _RECORDS
-    )
-    counts: Counter = Counter()
-    for row in rows:
-        anchor = row.get("anchorKey")
-        key = row.get("key")
-        if anchor and (key in readable_blocks or key in readable_records):
-            counts[anchor] += 1
-    capped = len(rows) >= _DEGREE_ROW_LIMIT or len(blocks) > _DEGREE_CANDIDATES
+    counts: Counter = Counter(r["anchorKey"] for r in rows if r.get("anchorKey"))
+    # Capped only when the scan budget ran out: hidden edges below it change nothing.
+    capped = incomplete or len(blocks) > _DEGREE_CANDIDATES
     return dict(counts), capped
 
 

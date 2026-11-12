@@ -18,6 +18,8 @@ from app.core.envelope import (
 )
 from app.core.org_context import OrgContext
 from app.exceptions.non_retryable import NonRetryableError
+from app.utils import logging_fields
+from tests.support.undecodable_json import DEEP, LONG_INT
 
 KEY = derive_key("test-scopedJwtSecret-from-config-service")
 OTHER_KEY = derive_key("another-secret")
@@ -244,7 +246,7 @@ async def test_producer_signs_the_event_type(monkeypatch) -> None:
 async def test_stale_signature_follows_the_mode(monkeypatch, caplog) -> None:
     old = _msg(issued_at=int(time.time()) - 901)
     monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
-    envelope._last_logged.clear()
+    monkeypatch.setattr(logging_fields, "_log_once_last", {})
     before = envelope.STALE._metric.labels(TOPIC)._value.get()
     with caplog.at_level("ERROR"):
         assert (await _open(old)).ctx.org_id == "org_b"  # shadow: counted and logged, accepted
@@ -299,7 +301,7 @@ async def test_no_key_while_signing_is_never_silent(monkeypatch, caplog) -> None
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
     monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
     before = envelope.UNVERIFIED._metric.labels(TOPIC)._value.get()
-    envelope._last_logged.clear()
+    monkeypatch.setattr(logging_fields, "_log_once_last", {})
     with caplog.at_level("ERROR"):
         assert (await _open(_msg(), keys=())).ctx.source == "legacy-payload"
     assert envelope.UNVERIFIED._metric.labels(TOPIC)._value.get() == before + 1 and "key unavailable" in caplog.text
@@ -370,3 +372,74 @@ async def test_invalid_settings_stop_startup(monkeypatch) -> None:
     monkeypatch.setenv("ENVELOPE_MAX_AGE_SECONDS", "-1")
     with pytest.raises(ValueError):
         await envelope.configure_from_config(_Config(0))
+
+
+# F34: json.loads fails in three ways on text that can never decode. Only JSONDecodeError used to count as poison.
+CAUSES = {"nesting_too_deep": (DEEP, RecursionError), "integer_too_long": (LONG_INT, ValueError)}
+
+
+@pytest.mark.parametrize(("text", "cause"), CAUSES.values(), ids=CAUSES.keys())
+def test_text_that_can_never_decode_raises_json_decode_error(text: str, cause: type) -> None:
+    with pytest.raises(json.JSONDecodeError) as e:
+        envelope.decode_json(text)
+    assert type(e.value.__cause__) is cause
+
+
+def test_a_syntax_error_keeps_its_own_position() -> None:
+    with pytest.raises(json.JSONDecodeError) as e:
+        envelope.decode_json('{"a": 1,}')
+    assert e.value.pos == 8 and e.value.__cause__ is None
+
+
+def test_decodable_text_at_the_limits_still_decodes() -> None:
+    assert envelope.decode_json('{"n": ' + "1" * 4300 + "}") == {"n": int("1" * 4300)}
+    # Deep but well under every CPython build's C recursion limit (1500 on some 3.12 builds).
+    assert envelope.decode_json("[" * 500 + "]" * 500) is not None
+
+
+@pytest.mark.parametrize(("text", "cause"), CAUSES.values(), ids=CAUSES.keys())
+def test_a_double_encoded_message_that_can_never_decode_raises_json_decode_error(text: str, cause: type) -> None:
+    with pytest.raises(json.JSONDecodeError) as e:
+        envelope.decode_message(json.dumps(text))
+    assert type(e.value.__cause__) is cause
+
+
+def test_decode_message_decodes_a_double_encoded_body_once_more() -> None:
+    assert envelope.decode_message(json.dumps(json.dumps({"a": 1}))) == {"a": 1}
+    assert envelope.decode_message('{"a": "{}"}') == {"a": "{}"}  # only the top level is decoded twice
+
+
+@pytest.mark.parametrize("text", [DEEP, LONG_INT], ids=CAUSES.keys())
+async def test_a_payload_string_that_can_never_decode_is_malformed(text: str) -> None:
+    with pytest.raises(EnvelopeRejected, match="malformed"):  # unsigned (v1 shape)
+        await _open({"eventType": "newRecord", "payload": text})
+    m = _msg()
+    m["payload"] = text
+    m["ctx"]["sig"] = compute_sig(KEY, TOPIC, m["ctx"], text, m.get("eventType", ""))
+    with pytest.raises(EnvelopeRejected, match="malformed"):  # validly signed
+        await _open(m)
+
+
+# F54: a lone surrogate (valid JSON, "\ud800") cannot be encoded for the signature; decided by the message, so poison.
+@pytest.mark.parametrize("field", ["payload", "eventId"])
+async def test_a_lone_surrogate_in_a_signed_message_is_malformed(field: str) -> None:
+    m = _msg()
+    if field == "payload":
+        m["payload"] = '{"orgId": "org_b", "n": "\ud800"}'
+    else:
+        m["ctx"]["eventId"] = "evt-\ud800"
+    with pytest.raises(EnvelopeRejected, match="malformed"):
+        await _open(m)
+
+
+# F54: only json.loads's verdict on the text is converted; MemoryError and other RuntimeErrors are the process.
+@pytest.mark.parametrize("error", [MemoryError(), RuntimeError("cannot schedule new futures after shutdown")],
+                         ids=["memory", "runtime"])
+def test_decode_json_leaves_process_errors_alone(monkeypatch: pytest.MonkeyPatch, error: BaseException) -> None:
+    def failing(_text: str) -> None:
+        raise error
+
+    monkeypatch.setattr(json, "loads", failing)
+    with pytest.raises(type(error)) as e:
+        envelope.decode_json("{}")
+    assert e.value is error

@@ -17,6 +17,7 @@ export interface MockResponse {
   sendFile: SinonStub;
   download: SinonStub;
   contentType: SinonStub;
+  on: SinonStub;
 }
 
 export function createMockRequest(overrides: Record<string, any> = {}): any {
@@ -60,6 +61,7 @@ export function createMockResponse(): MockResponse {
     sendFile: sinon.stub(),
     download: sinon.stub(),
     contentType: sinon.stub(),
+    on: sinon.stub(),
   };
   // Chain: res.status(200).json({}) should work
   res.status.returns(res);
@@ -69,6 +71,7 @@ export function createMockResponse(): MockResponse {
   res.writeHead.returns(res);
   res.type.returns(res);
   res.contentType.returns(res);
+  res.on.returns(res);
   return res;
 }
 

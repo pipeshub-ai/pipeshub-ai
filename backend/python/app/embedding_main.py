@@ -14,6 +14,7 @@ import contextlib
 import copy
 import ctypes
 import gc
+import math
 import os
 import struct
 import threading
@@ -25,12 +26,15 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Any
 
+import anyio
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.api.middlewares.body_limit import BodyLimitMiddleware
+from app.api.validation_errors import input_free_422
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
@@ -50,7 +54,7 @@ from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from sentence_transformers import SentenceTransformer
     from transformers import PreTrainedTokenizerBase
@@ -66,9 +70,28 @@ DEFAULT_NORMALIZE = os.getenv("EMBEDDING_SERVER_NORMALIZE", "true").lower() in (
 _ENV_MAX_CONCURRENT_EMBEDDINGS = (os.getenv("EMBEDDING_SERVER_MAX_CONCURRENCY") or "").strip()
 
 
+# Above this many CPUs the slot count is the CPU count, as before.
+_SMALL_TIER_MAX_CPUS = 8
+
+
+def _omp_threads_per_encode() -> int:
+    """Threads one encode uses, from OMP_NUM_THREADS; 2 unless it is a positive integer."""
+    raw = (os.getenv("OMP_NUM_THREADS") or "").strip()
+    return int(raw) if raw.isdecimal() and int(raw) > 0 else 2
+
+
 def _default_max_concurrent_embeddings() -> int:
-    """Encode slots when not set explicitly: the container's CPUs, at least 2."""
-    return max(2, effective_cpu_count())
+    """Encode slots when not set explicitly.
+
+    On a small container every slot is a torch encode running ``omp`` threads,
+    so as many slots as CPUs would oversubscribe it several times over and
+    stretch every batch (queries included). Slots are sized so the threads
+    fill the CPUs once. Larger containers keep one slot per CPU.
+    """
+    cpus = effective_cpu_count()
+    if cpus <= _SMALL_TIER_MAX_CPUS:
+        return max(2, cpus // _omp_threads_per_encode())
+    return max(2, cpus)
 
 
 MAX_CONCURRENT_EMBEDDINGS = (
@@ -360,6 +383,10 @@ class EncodePriority(StrEnum):
         return cls.BULK
 
 
+class EncodeAbandoned(Exception):
+    """The caller left before its vectors were wanted; nobody will read the result."""
+
+
 class EncodeGate:
     """Encode slots shared by search queries and bulk indexing batches.
 
@@ -378,18 +405,37 @@ class EncodeGate:
     batch frees goes to a waiting query first, so a steady stream of
     batches cannot keep queries waiting either. With a single slot the two
     take turns. Event-loop only; no locking.
+
+    ``stats()`` reads accounting kept on the side (when each slot was taken,
+    recent queue waits); none of it takes part in admission.
     """
 
-    def __init__(self, capacity: int, reserved_for_queries: int = 1) -> None:
+    # Wait samples kept per priority for the percentile in ``stats()``.
+    _WAIT_WINDOW = 256
+
+    def __init__(
+        self,
+        capacity: int,
+        reserved_for_queries: int = 1,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         if capacity < 1:
             raise ValueError(f"capacity must be at least 1, got {capacity}")
         self._capacity = capacity
         self._bulk_limit = max(1, capacity - max(0, reserved_for_queries))
         self._in_use = 0
         self._bulk_in_use = 0
-        self._waiting: dict[EncodePriority, deque[asyncio.Future[None]]] = {
+        self._waiting: dict[EncodePriority, deque[asyncio.Future[int]]] = {
             EncodePriority.QUERY: deque(),
             EncodePriority.BULK: deque(),
+        }
+        self._clock = clock
+        self._next_token = 0
+        # token -> (priority, time taken); a token tells a release which slot it frees.
+        self._held: dict[int, tuple[EncodePriority, float]] = {}
+        self._waits: dict[EncodePriority, deque[float]] = {
+            p: deque(maxlen=self._WAIT_WINDOW) for p in EncodePriority
         }
 
     @property
@@ -417,10 +463,13 @@ class EncodeGate:
             return True
         return self._in_use < self._bulk_limit and not self.waiting(EncodePriority.QUERY)
 
-    def _take(self, priority: EncodePriority) -> None:
+    def _take(self, priority: EncodePriority) -> int:
         self._in_use += 1
         if priority is EncodePriority.BULK:
             self._bulk_in_use += 1
+        self._next_token += 1
+        self._held[self._next_token] = (priority, self._clock())
+        return self._next_token
 
     def _grant_next(self, priority: EncodePriority, *, any_free_slot: bool = False) -> bool:
         queue = self._waiting[priority]
@@ -433,8 +482,7 @@ class EncodeGate:
             return False
         # The slot is taken on the waiter's behalf, so nothing that runs
         # before it resumes can take it first.
-        self._take(priority)
-        queue.popleft().set_result(None)
+        queue.popleft().set_result(self._take(priority))
         return True
 
     def _wake(self, *, bulk_released: bool = False) -> None:
@@ -454,24 +502,60 @@ class EncodeGate:
             if not any(self._grant_next(priority) for priority in order):
                 return
 
-    async def acquire(self, priority: EncodePriority) -> None:
+    def stats(self) -> dict[str, object]:
+        """Gate state for ``/health``. Read-only."""
+        now = self._clock()
+
+        def p95_ms(priority: EncodePriority) -> float:
+            waits = sorted(self._waits[priority])
+            return round(waits[max(0, math.ceil(0.95 * len(waits)) - 1)] * 1000, 1) if waits else 0.0
+
+        def oldest_age_s(priority: EncodePriority) -> float:
+            taken = [t for p, t in self._held.values() if p is priority]
+            return round(now - min(taken), 1) if taken else 0.0
+
+        return {
+            "slots": self._capacity,
+            # What bulk cannot use; the configured reservation is capped so bulk keeps a slot.
+            "reserved": self._capacity - self._bulk_limit,
+            "bulk_limit": self._bulk_limit,
+            "in_use": self._in_use,
+            "waiting": self.waiting(EncodePriority.QUERY) + self.waiting(EncodePriority.BULK),
+            "wait_p95_ms": {"query": p95_ms(EncodePriority.QUERY), "bulk": p95_ms(EncodePriority.BULK)},
+            "oldest_in_use_age_s": {
+                "query": oldest_age_s(EncodePriority.QUERY),
+                "bulk": oldest_age_s(EncodePriority.BULK),
+            },
+        }
+
+    async def acquire(self, priority: EncodePriority) -> int:
+        """Take a slot; the returned token goes back to ``release`` to say which one."""
+        started = self._clock()
         if not self.waiting(priority) and self._has_room(priority):
-            self._take(priority)
-            return
-        waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            token = self._take(priority)
+            self._waits[priority].append(0.0)
+            return token
+        waiter: asyncio.Future[int] = asyncio.get_running_loop().create_future()
         self._waiting[priority].append(waiter)
         # Settles the queue at once if there is room after all (its head
         # was only waiters that have since given up).
         self._wake()
         try:
-            await waiter
+            token = await waiter
         except asyncio.CancelledError:
             if waiter.done() and not waiter.cancelled():
                 # Granted, then cancelled before it could run: hand it back.
-                self.release(priority)
+                self.release(priority, waiter.result())
             raise
+        self._waits[priority].append(self._clock() - started)
+        return token
 
-    def release(self, priority: EncodePriority) -> None:
+    def release(self, priority: EncodePriority, token: int | None = None) -> None:
+        if token is None:
+            # No token (a caller that did not keep it): the oldest of that priority.
+            token = next((t for t, (p, _) in self._held.items() if p is priority), None)
+        if token is None or self._held.pop(token, None) is None:
+            return  # nothing held under that token: a second release must not free another slot
         self._in_use = max(0, self._in_use - 1)
         if priority is EncodePriority.BULK:
             self._bulk_in_use = max(0, self._bulk_in_use - 1)
@@ -479,11 +563,11 @@ class EncodeGate:
 
     @asynccontextmanager
     async def slot(self, priority: EncodePriority) -> AsyncIterator[None]:
-        await self.acquire(priority)
+        token = await self.acquire(priority)
         try:
             yield
         finally:
-            self.release(priority)
+            self.release(priority, token)
 
 
 def release_memory() -> None:
@@ -754,12 +838,15 @@ class ModelManager:
         try:
             yield await self.get_model(model_name, trust_remote_code=trust_remote_code)
         finally:
-            remaining = self._in_use[key] - 1
-            if remaining:
-                self._in_use[key] = remaining
-            else:
-                del self._in_use[key]
-            self._last_used[key] = time.monotonic()
+            self._drop_lease(key)
+
+    def _drop_lease(self, key: str) -> None:
+        remaining = self._in_use[key] - 1
+        if remaining:
+            self._in_use[key] = remaining
+        else:
+            del self._in_use[key]
+        self._last_used[key] = time.monotonic()
 
     def reap_idle(self, now: float | None = None) -> list[str]:
         """Drop models nobody has used for ``idle_seconds``; return their names.
@@ -931,8 +1018,26 @@ class ModelManager:
                 return [len(i) for i in ids]
 
             if counter.tokenizer is None:
-                async with self._encode_gate.slot(EncodePriority.BULK):
-                    return await asyncio.to_thread(_count)
+                # Uses the model's own tokenizer, so it holds an encode slot and
+                # the model's lease until its thread ends, even if this request is
+                # cancelled meanwhile: the idle reaper must not drop the model.
+                token = await self._encode_gate.acquire(EncodePriority.BULK)
+                try:
+                    fallback = spawn_detached(asyncio.to_thread(_count), name="embedding-count")
+                except BaseException:
+                    self._encode_gate.release(EncodePriority.BULK, token)
+                    raise
+                lease_key = self._cache_key(model_name)
+                self._in_use[lease_key] += 1
+
+                def _release_slot(done: asyncio.Future[list[int]]) -> None:
+                    self._drop_lease(lease_key)
+                    self._encode_gate.release(EncodePriority.BULK, token)
+                    if not done.cancelled():
+                        done.exception()  # mark retrieved when nobody is waiting any more
+
+                fallback.add_done_callback(_release_slot)
+                return await asyncio.shield(fallback)
             # No encode slot: counting never touches the model weights, so it
             # must not compete with indexing for encode capacity. Counts queue
             # on the event loop, not on worker threads: a thread parked behind
@@ -952,6 +1057,9 @@ class ModelManager:
             work.add_done_callback(_release)
             return await asyncio.shield(work)
 
+    def encode_gate_stats(self) -> dict[str, object]:
+        return self._encode_gate.stats()
+
     async def encode(
         self,
         model_name: str,
@@ -959,7 +1067,31 @@ class ModelManager:
         *,
         trust_remote_code: bool = False,
         priority: EncodePriority = EncodePriority.BULK,
+        should_stop: Callable[[], Awaitable[bool]] | None = None,
     ) -> list[list[float]]:
+        """Embed ``texts``.
+
+        ``should_stop`` (for a request: whether the client has gone) is asked
+        once the slot is held and again before the vectors are returned. A
+        request whose caller left while it queued costs an instant skip rather
+        than a batch of CPU. Work already inside the model cannot be
+        interrupted, so the slot is held until that thread ends even if this
+        request is cancelled meanwhile.
+        """
+
+        async def _abandoned(stage: str) -> bool:
+            if should_stop is None:
+                return False
+            try:
+                if not await should_stop():
+                    return False
+            except Exception:
+                # A broken check must not fail work the caller may still want.
+                logger.debug("Disconnect check failed %s; treating the client as present", stage, exc_info=True)
+                return False
+            logger.info("Embedding request abandoned %s: model=%s inputs=%d", stage, model_name, len(texts))
+            return True
+
         async with self._lease(model_name, trust_remote_code=trust_remote_code) as model:
 
             def _encode() -> list[list[float]]:
@@ -973,8 +1105,30 @@ class ModelManager:
                 )
                 return embeddings.tolist()
 
-            async with self._encode_gate.slot(priority):
-                return await asyncio.to_thread(_encode)
+            token = await self._encode_gate.acquire(priority)
+            try:
+                if await _abandoned("before start"):
+                    raise EncodeAbandoned
+                work = spawn_detached(asyncio.to_thread(_encode), name="embedding-encode")
+            except BaseException:
+                self._encode_gate.release(priority, token)
+                raise
+            # The thread outlives a cancelled request, so it keeps the model leased
+            # too: the idle reaper must not drop a model that is still encoding.
+            lease_key = self._cache_key(model_name)
+            self._in_use[lease_key] += 1
+
+            def _release(done: asyncio.Future[list[list[float]]]) -> None:
+                self._drop_lease(lease_key)
+                self._encode_gate.release(priority, token)
+                if not done.cancelled():
+                    done.exception()  # mark retrieved when nobody is waiting any more
+
+            work.add_done_callback(_release)
+            vectors = await asyncio.shield(work)
+            if await _abandoned("after encode"):
+                raise EncodeAbandoned
+            return vectors
 
 
 model_manager = ModelManager()
@@ -1114,6 +1268,7 @@ app = FastAPI(
     description="OpenAI-compatible API for local dense embedding models",
     version="1.0.0",
     lifespan=lifespan,
+    exception_handlers={RequestValidationError: input_free_422},
 )
 
 # Size caps: refuse before the body is buffered. The indexing client sends at
@@ -1145,6 +1300,7 @@ async def health_check() -> JSONResponse:
                     "source": effective_cpu_source(),
                     "max_concurrent_embeddings": MAX_CONCURRENT_EMBEDDINGS,
                 },
+                "encode_gate": model_manager.encode_gate_stats(),
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -1232,9 +1388,23 @@ async def download_progress(model_name: str) -> JSONResponse:
     )
 
 
+async def _client_gone(request: Request) -> bool:
+    """Whether the client has disconnected.
+
+    ``Request.is_disconnected`` polls inside an already-cancelled scope; behind
+    a ``BaseHTTPMiddleware`` (the telemetry one) that cancel lands before the
+    disconnect is read, so it always answers False. Wait a moment for real.
+    The body is already read by now, so the only message left is a disconnect.
+    """
+    with anyio.move_on_after(0.005):
+        return (await request.receive())["type"] == "http.disconnect"
+    return False
+
+
 @app.post("/v1/embeddings")
 async def create_embeddings(
     request: EmbeddingRequest,
+    http_request: Request,
     x_embedding_priority: Annotated[str | None, Header()] = None,
 ) -> EmbeddingResponse:
     # --- server-side policy checks (fail fast, before any I/O) ---
@@ -1261,7 +1431,11 @@ async def create_embeddings(
             texts,
             trust_remote_code=request.trust_remote_code,
             priority=EncodePriority.from_header(x_embedding_priority),
+            should_stop=lambda: _client_gone(http_request),
         )
+    except EncodeAbandoned:
+        # Nobody is reading this; 499 is the conventional "client closed request".
+        raise HTTPException(status_code=499, detail="Client closed request") from None
     except Exception as exc:
         logger.exception("Embedding failed for model=%s", request.model)
         raise HTTPException(
