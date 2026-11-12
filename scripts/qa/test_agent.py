@@ -30,6 +30,7 @@ FAKE = textwrap.dedent('''\
     scenario = json.loads(Path(os.environ["FAKE_CLAUDE"]).read_text())
     prompt = sys.argv[sys.argv.index("-p") + 1]
     Path(os.environ["FAKE_CLAUDE"] + ".argv").write_text(json.dumps(sys.argv))
+    Path(os.environ["FAKE_CLAUDE"] + ".token").write_text(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""))
     inp = Path(re.search(r"Read `([^`]+)` first", prompt).group(1))
     agent_dir = inp.parent
     time.sleep(scenario.get("sleep", 0))
@@ -86,6 +87,7 @@ class AgentCase(unittest.TestCase):
 
     def run_round(self, ids, where):
         self.floor_runs.append(list(ids))
+        self.round_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
         where.mkdir(parents=True, exist_ok=True)
         (where / "results.json").write_text(json.dumps({"tests": [{"id": i, "outcome": "fail", "details": "assert 2 == 3"} for i in ids]}))
 
@@ -153,6 +155,22 @@ class TestRounds(AgentCase):
         doc = self.go({"is_error": True, "exit": 1})
         self.assertTrue(any(n.startswith("agent claude exited 1") for n in doc["notes"]), doc["notes"])
         self.assertIn("the agent wrote no verdict", doc["notes"])
+
+
+class TestCredentials(AgentCase):
+    def test_only_the_claude_process_gets_the_credential(self) -> None:
+        with mock.patch.dict(os.environ, {"CI": "true", "CLAUDE_CODE_OAUTH_TOKEN": "tok-only-for-claude"}):
+            doc = self.go({"verdict": verdict()})
+            self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", os.environ)
+        self.assertIsNone(self.round_token)  # round 0 ran without it
+        self.assertEqual(Path(str(self.scenario) + ".token").read_text(), "tok-only-for-claude")
+        self.assertEqual(doc["verdict"]["verdict"], "broken")
+
+    def test_the_credential_in_the_output_drops_it(self) -> None:
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "tok-only-for-claude"}):
+            doc = self.go({"verdict": verdict(summary="token tok-only-for-claude")})
+        self.assertEqual(doc["verdict"], {})
+        self.assertIn("held a secret", doc["notes"][0])
 
 
 class TestChanges(AgentCase):

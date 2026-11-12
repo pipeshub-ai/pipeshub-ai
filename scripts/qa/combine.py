@@ -117,7 +117,7 @@ def build(root: Path, base: str, prs: list[dict[str, Any]], resolve: Resolver) -
     return result
 
 
-def claude_resolver(minutes: float = 20) -> Resolver:
+def claude_resolver(minutes: float = 20, creds: dict[str, str] | None = None) -> Resolver:
     """Claude Code edits only the conflicted files; build() checks what it did."""
     def resolve(root: Path, files: list[str], ctx: dict[str, Any]) -> str | None:
         exe = shutil.which("claude")
@@ -136,7 +136,7 @@ def claude_resolver(minutes: float = 20) -> Resolver:
         if os.environ.get("QA_PLANNER_MODEL") and os.environ.get("QA_PLANNER", "claude_code") == "claude_code":
             cmd += ["--model", os.environ["QA_PLANNER_MODEL"]]
         try:
-            out = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=minutes * 60)
+            out = subprocess.run(cmd, cwd=root, env={**os.environ, **(creds or {})}, capture_output=True, text=True, timeout=minutes * 60)
         except subprocess.TimeoutExpired:
             return f"the resolver stopped at its {minutes:.0f}-minute limit"
         return None if out.returncode == 0 else f"claude exited {out.returncode}: {(out.stdout or out.stderr).strip()[:300]}"

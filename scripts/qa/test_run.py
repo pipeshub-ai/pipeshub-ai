@@ -340,6 +340,18 @@ class TestConftestGroups(RunCase):
             run._execute(self.cfg, inv, self.out / "logs", {})
         return seen[0]
 
+    def test_tests_never_get_the_agents_model_credential(self) -> None:
+        envs = []
+
+        def fake(cmd, **kw):
+            envs.append(kw["env"])
+            return mock.Mock(returncode=0)
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "tok-abcdefgh", "ANTHROPIC_API_KEY": "sk-abcdefgh"}), \
+             mock.patch.object(run.subprocess, "run", fake):
+            run._execute(self.cfg, self.invs()[0], self.out / "logs", {"ANTHROPIC_API_KEY": "sk-from-stack"})
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", envs[0])
+        self.assertNotIn("ANTHROPIC_API_KEY", envs[0])
+
     def test_a_group_gets_its_own_timeout_or_the_time_left(self) -> None:
         inv = self.invs()[0]
         self.assertEqual(self.timeout_given(inv), 90 * 60)

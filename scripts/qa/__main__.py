@@ -308,6 +308,8 @@ def cmd_agent(args) -> int:
     """Round 0 runs the rule floor; then Claude Code picks and judges further rounds, which the engine runs."""
     cfg = config.load()
     out = _out(args)
+    # Out of the environment before any test runs; only the claude processes get it.
+    creds = agent.take_credentials()
     combined = None
     if args.combine:
         try:
@@ -316,7 +318,7 @@ def cmd_agent(args) -> int:
             print(f"qa agent: {exc}", file=sys.stderr)
             return 2
         try:
-            combined = combine.build(cfg.root, args.combine_base, prs, combine.claude_resolver())
+            combined = combine.build(cfg.root, args.combine_base, prs, combine.claude_resolver(creds=creds))
         except combine.CombineError as exc:
             return _combine_stopped(args, out, str(exc), exc.result)
         # A bundle needs a ref; publish fetches refs/qa/combined from it to push the combined branch.
@@ -354,7 +356,7 @@ def cmd_agent(args) -> int:
             _dump(where / "results.json", result)
 
         doc = agent.run_agent(cfg, out, plan, run_round, sess=sess, minutes=args.minutes, max_turns=args.max_turns,
-                              combined=_combined_summary(combined))
+                              combined=_combined_summary(combined), creds=creds)
     except run._Cancelled:
         print("qa agent: cancelled", file=sys.stderr)
         return 130

@@ -1836,6 +1836,18 @@ class TestQaAgentWorkflows(unittest.TestCase):
         for banned in (r"git\s+(merge|pull|rebase|cherry-pick|am)\b", r"push[^\n]*(--force|\s-f\b|\+HEAD|\+refs)"):
             self.assertIsNone(re.search(banned, script), banned)
 
+    def test_the_untrusted_patch_is_checked_from_a_clean_engine_before_it_is_applied(self) -> None:
+        steps = self.load("qa-agent-publish.yml")["jobs"]["publish"]["steps"]
+        names = [s.get("name") or s.get("uses", "") for s in steps]
+        self.assertLess(names.index("Keep a clean copy of the engine"),
+                        next(i for i, n in enumerate(names) if str(n).startswith("actions/download-artifact")))
+        script = "\n".join(_scripts(self.load("qa-agent-publish.yml")["jobs"]["publish"]))
+        self.assertIn('sys.path.insert(0, os.environ["ENGINE_SCRIPTS"])', script)
+        self.assertNotIn('"qa-engine/scripts"', script)
+        check, apply = script.index("git apply --numstat"), script.index('git apply --exclude=')
+        self.assertLess(check, apply)
+        self.assertIn("--exclude='qa-engine/*'", script[apply:apply + 80])
+
     def test_claude_credentials_reach_only_steps_behind_the_agent_or_model_switches(self) -> None:
         for name in ("qa-pipeline.yml", "qa-tests.yml"):
             for line in (REPO / ".github" / "workflows" / name).read_text().splitlines():
