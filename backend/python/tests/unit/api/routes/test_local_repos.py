@@ -13,8 +13,8 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from app.api.routes import local_repos
-from app.core.org_context import OrgContext, set_request_context
 from app.connectors.sources.local_repo import store
+from app.core.org_context import OrgContext, set_request_context
 
 KEY = "repo-key-0001"
 
