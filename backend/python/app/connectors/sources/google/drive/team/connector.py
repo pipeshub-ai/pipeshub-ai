@@ -239,13 +239,16 @@ FAILED_ITEMS = "failed_items"
 MAX_FAILED_ITEMS = 500
 # Removed files whose check stayed undecided for MAX_UNRECOGNISED_403_RUNS runs, as "fileId:driveId", per user and per
 # user and shared drive, on keys of their own: re-reading a feed in full deletes its checkpoint, never these. Each is
-# kept and checked again at the start of every run until a clean answer settles it, without holding anything.
+# kept and checked again on later runs until a clean answer settles it, without holding anything. None is ever dropped
+# unsettled: a list holds MAX_UNDECIDED_REMOVALS entries per key and goes on to "<key>_part<n>" keys, n from 1, their
+# count kept as UNDECIDED_PARTS on the first key. A run checks one part again, the parts in turn (UNDECIDED_NEXT_PART).
 UNDECIDED_REMOVALS_SYNC_POINT_PREFIX = "undecided_removals_"
 UNDECIDED_REMOVALS = "entries"
 MAX_UNDECIDED_REMOVALS = MAX_FAILED_ITEMS
-# Set when an undecided list was full: every feed is read in full on each run until one can remove the records no
-# listing saw (`reconcile_unseen_records`), so a file left out of the list is not kept for good.
-FULL_RECONCILE_SYNC_POINT_KEY = "full_reconcile_owed"
+UNDECIDED_PARTS = "parts"
+UNDECIDED_NEXT_PART = "next_part"
+# Every undecided list's first key, so a full sync's cleanup spares their files whoever is synced (`keys`).
+UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY = "undecided_removal_keys"
 # The ids of the items that failed in the listing this task is reading (each user's sync runs in its own task).
 _failed_items: ContextVar[set[str] | None] = ContextVar("drive_failed_items", default=None)
 FILTER_CLEANUP_PAGE_SIZE = 500
@@ -463,6 +466,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Batch processing configuration
         self.batch_size = 100
         self._sync_ledger = FullSyncLedger()
+        # Guards the read-modify-write of the undecided lists' key index across concurrent user tasks.
+        self._undecided_keys_lock = asyncio.Lock()
         self._run_report: DriveRunReport | None = None
         # Keyed by impersonated user: a target one user can read says nothing about another.
         self._shortcut_cache: dict[str, dict[str, dict]] = {}
@@ -811,14 +816,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # Files under a selected folder nobody could list fail the folder
                 # filter without being seen, so cleanup would read them as deleted.
                 self._sync_ledger.note_incomplete()
+            await self._spare_undecided_removals()
             await reconcile_unseen_records(
                 self.data_entities_processor,
                 self.connector_id,
                 self._sync_ledger,
                 self.logger,
             )
-            if self._sync_ledger.can_reconcile:
-                await self.drive_delta_sync_point.update_sync_point(FULL_RECONCILE_SYNC_POINT_KEY, {"owed": False})
 
             # Step 6: Remove what changed sync filters now leave out
             await self._remove_records_outside_filters()
@@ -1380,8 +1384,6 @@ class GoogleDriveTeamConnector(BaseConnector):
         marker = await self.drive_delta_sync_point.read_sync_point(DISCOVERABLE_SHARES_SYNC_POINT_KEY)
         domains = sorted(self._account_domains) if self._account_domains is not None else None
         read_all = not marker or (domains is not None and marker.get("domains") != domains)
-        # Owed until a complete run reconciles (`_run_sync_steps`), so a run cut short reads everything again.
-        read_all |= bool((await self.drive_delta_sync_point.read_sync_point(FULL_RECONCILE_SYNC_POINT_KEY) or {}).get("owed"))
         for user in self.synced_users:
             if not read_all and (user.email or "").lower() not in self._returning_emails:
                 continue
@@ -3058,7 +3060,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         row, so the caller holds its checkpoint once the rest of the feed is read; the record and its other grants
         stay. At the limit the file is kept, listed under `undecided_key` to be checked again on later runs, and
         the checkpoint may move on: one file nobody answers for must not hold every later change. The reporting
-        user's own grant is already gone. A full list owes a full reconciliation instead. Any other failure raises."""
+        user's own grant is already gone. Any other failure raises, so the change is read again."""
         if not file_id:
             await apply()
             return None
@@ -3077,20 +3079,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 f"Still not known after {MAX_UNRECOGNISED_403_RUNS} runs whether anyone else can open file {file_id} "
                 f"({e}); it is kept and checked again on later runs, and the other changes move on"
             )
-            stored = (await self.drive_delta_sync_point.read_sync_point(undecided_key) or {}).get(UNDECIDED_REMOVALS)
-            entries = {str(x) for x in stored or []}
-            if (entry := f"{file_id}:{drive_id or ''}") in entries:
-                return None
-            if len(entries) >= MAX_UNDECIDED_REMOVALS:
-                self.logger.error(
-                    f"Too many removed files are undecided to keep checking file {file_id} by id; every Drive is "
-                    "read in full until a complete run removes the records no listing finds"
-                )
-                await self.drive_delta_sync_point.update_sync_point(FULL_RECONCILE_SYNC_POINT_KEY, {"owed": True})
-                return None
-            await self.drive_delta_sync_point.update_sync_point(
-                undecided_key, {UNDECIDED_REMOVALS: sorted(entries | {entry})}
-            )
+            await self._park_undecided_removal(undecided_key, f"{file_id}:{drive_id or ''}")
             return None
         held.clear(file_id)
         await self._save_held_removed_changes(held, sync_point_key)
@@ -3100,6 +3089,70 @@ class GoogleDriveTeamConnector(BaseConnector):
     def _undecided_key(user: AppUser, drive_id: str | None = None) -> str:
         return f"{UNDECIDED_REMOVALS_SYNC_POINT_PREFIX}{user.source_user_id}" + (f"_{drive_id}" if drive_id else "")
 
+    @staticmethod
+    def _undecided_part_key(undecided_key: str, part: int) -> str:
+        return f"{undecided_key}_part{part}" if part else undecided_key
+
+    async def _read_undecided(self, undecided_key: str) -> tuple[int, list[list[str]]]:
+        """The part the next run checks again, and every part of an undecided list, the first one included."""
+        first = await self.drive_delta_sync_point.read_sync_point(undecided_key) or {}
+        parts = []
+        for part in range(max(int(first.get(UNDECIDED_PARTS) or 1), 1)):
+            doc = first if not part else (
+                await self.drive_delta_sync_point.read_sync_point(self._undecided_part_key(undecided_key, part)) or {}
+            )
+            stored = doc.get(UNDECIDED_REMOVALS)
+            parts.append([str(x) for x in stored] if isinstance(stored, list) else [])
+        return int(first.get(UNDECIDED_NEXT_PART) or 0) % len(parts), parts
+
+    async def _park_undecided_removal(self, undecided_key: str, entry: str) -> None:
+        """Add an entry to an undecided list, in the first part with room or a new one. Nothing is dropped: the key
+        is indexed first, and a new part is counted before it is written, so no write that fails part way leaves an
+        entry where neither the recheck nor the cleanup finds it. A failure raises."""
+        _, parts = await self._read_undecided(undecided_key)
+        if any(entry in part for part in parts):
+            return
+        async with self._undecided_keys_lock:
+            index = await self.drive_delta_sync_point.read_sync_point(UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY) or {}
+            keys = [str(k) for k in index.get("keys") or []]
+            if undecided_key not in keys:
+                await self.drive_delta_sync_point.update_sync_point(
+                    UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY, {"keys": sorted([*keys, undecided_key])}
+                )
+        part = next((n for n, p in enumerate(parts) if len(p) < MAX_UNDECIDED_REMOVALS), len(parts))
+        if part == len(parts):
+            parts.append([])
+            await self.drive_delta_sync_point.update_sync_point(undecided_key, {UNDECIDED_PARTS: len(parts)})
+            self.logger.warning(
+                f"{sum(map(len, parts))} removed files are undecided on one list; it goes on to part {part}"
+            )
+        await self.drive_delta_sync_point.update_sync_point(
+            self._undecided_part_key(undecided_key, part), {UNDECIDED_REMOVALS: sorted([*parts[part], entry])}
+        )
+
+    async def _spare_undecided_removals(self) -> None:
+        """Count every file on an undecided list as seen by this run, so a full sync's cleanup never deletes one. A
+        file shared with an audience in a drive no synced user is in is in no listing, yet its audience may still
+        open it; it is settled only by its recheck. When the lists cannot be read, the cleanup is skipped."""
+        if not self._sync_ledger.can_reconcile:
+            return
+        spared = 0
+        try:
+            index = await self.drive_delta_sync_point.read_sync_point(UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY) or {}
+            for key in index.get("keys") or []:
+                for part in (await self._read_undecided(str(key)))[1]:
+                    for entry in part:
+                        self._sync_ledger.see(entry.partition(":")[0])
+                        spared += 1
+        except Exception as e:
+            self.logger.warning(
+                f"The undecided removals could not be read ({type(e).__name__}); no stale record is removed"
+            )
+            self._sync_ledger.note_incomplete()
+            return
+        if spared:
+            self.logger.info(f"{spared} undecided removal(s) are kept out of the stale-record cleanup")
+
     async def _recheck_undecided_removals(
         self,
         undecided_key: str,
@@ -3107,12 +3160,14 @@ class GoogleDriveTeamConnector(BaseConnector):
         source: GoogleDriveDataSource,
         settle: Callable[[str, str | None], Awaitable[None]],
     ) -> None:
-        """At the start of a run, full listing or not, check again each removal kept undecided past the limit, until
-        a clean answer settles it: the file is removed or kept as for any removed change, or the user can open it
-        again (their feed then reports what changed). One still undecided, or whose check fails, stays listed.
-        Nothing here holds a checkpoint."""
-        stored = (await self.drive_delta_sync_point.read_sync_point(undecided_key) or {}).get(UNDECIDED_REMOVALS)
-        entries = [str(x) for x in stored] if isinstance(stored, list) else []
+        """At the start of a run, full listing or not, check again the removals kept undecided past the limit, one
+        part of the list per run, the parts in turn, until a clean answer settles each: the file is removed or kept
+        as for any removed change, the user can open it again (their feed then reports what changed), or its record
+        is gone (never by the stale-record cleanup, which spares these). One still undecided, or whose check fails,
+        stays listed. Nothing here holds a checkpoint."""
+        part, parts = await self._read_undecided(undecided_key)
+        part = next((n % len(parts) for n in range(part, part + len(parts)) if parts[n % len(parts)]), part)
+        entries = parts[part]
         left: list[str] = []
         for entry in entries:
             file_id, _, drive_id = entry.partition(":")
@@ -3127,7 +3182,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.warning(f"Whether anyone else can open file {file_id} is still not settled: {e}")
                 left.append(entry)
         if left != entries:
-            await self.drive_delta_sync_point.update_sync_point(undecided_key, {UNDECIDED_REMOVALS: left})
+            await self.drive_delta_sync_point.update_sync_point(
+                self._undecided_part_key(undecided_key, part), {UNDECIDED_REMOVALS: left}
+            )
+        if len(parts) > 1 and entries:
+            await self.drive_delta_sync_point.update_sync_point(
+                undecided_key, {UNDECIDED_NEXT_PART: (part + 1) % len(parts)}
+            )
 
     async def _apply_shared_drive_removal(
         self,

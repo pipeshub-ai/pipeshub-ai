@@ -4109,18 +4109,119 @@ async def test_a_parked_shared_drive_removal_is_settled_after_the_drive_checkpoi
     assert "d" not in ws.records.records, "checked again with Carol listed: nobody can open it"
 
 
-async def test_a_full_undecided_list_owes_a_full_reconciliation_instead_of_dropping_the_file(
+async def _park_undecided_removals(ws: Workspace, *file_ids: str) -> None:
+    """Files shared with Bob and "anyone" in a drive no synced user is in, so no listing finds them: Bob loses them
+    and nobody else asked can answer (a refusal), so each is kept past the limit and listed, in this order."""
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+        MAX_UNRECOGNISED_403_RUNS,
+    )
+
+    for name in ("a", "b", "c", "d", "e"):  # a listing that finds most records, so a full sync's cleanup runs
+        ws.world.add_item(name, f"{name}.txt", parent="root-alice", owner=ALICE)
+    _audience_file_in_an_unwalked_drive(ws, discoverable("anyone"))
+    for file_id in file_ids:
+        if file_id != "g1":
+            ws.world.add_item(
+                file_id, f"{file_id}.txt", parent="sd-3",
+                perms=[{"type": "user", "role": "writer", "emailAddress": BOB}, discoverable("anyone")],
+            )
+            ws.world.files[file_id].perm_access = "all"
+    await ws.sync()
+    for file_id in file_ids:
+        ws.world.unshare(file_id, BOB)
+        # Bob opens it no more ("anyone" would let him in the fake), and everyone else asked is refused.
+        ws.http.fail("GET", f"/drive/v3/files/{file_id}", 404, "notFound", when=lambda r: r.identity == BOB)
+        ws.http.fail(
+            "GET", f"/drive/v3/files/{file_id}", 403, "insufficientFilePermissions",
+            when=lambda r: r.identity != BOB,
+        )
+        for _ in range(MAX_UNRECOGNISED_403_RUNS):
+            await ws.sync()
+    assert set(file_ids) <= set(ws.records.records)
+
+
+def _undecided_parts(ws: Workspace) -> list[list[str]]:
+    """Bob's My Drive undecided list, part by part (`UNDECIDED_PARTS`, `UNDECIDED_REMOVALS`)."""
+    key = f"undecided_removals_{ws.world.users[BOB].user_id}"
+    first = ws.sync_points.value(key) or {}
+    parts = [first] + [ws.sync_points.value(f"{key}_part{n}") or {} for n in range(1, first.get("parts") or 1)]
+    return [[e.partition(":")[0] for e in part.get("entries") or []] for part in parts]
+
+
+def _read_everything_in_full_next_run(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import (
+        DISCOVERABLE_SHARES_SYNC_POINT_KEY,
+    )
+
+    for key in [k for k in ws.sync_points.sync_points if k.endswith(DISCOVERABLE_SHARES_SYNC_POINT_KEY)]:
+        del ws.sync_points.sync_points[key]
+
+
+def _drop_the_audience_shares(ws: Workspace, *file_ids: str) -> None:
+    ws.http.clear_faults()
+    for file_id in file_ids:
+        ws.world.files[file_id].perms = [p for p in ws.world.files[file_id].perms if p.get("type") != "anyone"]
+
+
+async def test_an_undecided_list_past_the_cap_keeps_every_file_in_parts_and_settles_a_part_per_run(
     ws: Workspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import app.connectors.sources.google.drive.team.connector as drive_connector
 
-    monkeypatch.setattr(drive_connector, "MAX_UNDECIDED_REMOVALS", 0)
-    ws.world.add_item("a", "a.txt", parent="root-alice", owner=ALICE)  # a listing that finds something
-    await _park_an_undecided_removal_of_g1(ws)
-    assert (ws.sync_points.value("full_reconcile_owed") or {}).get("owed") is True
+    monkeypatch.setattr(drive_connector, "MAX_UNDECIDED_REMOVALS", 1)
+    await _park_undecided_removals(ws, "g2", "g1")
+    assert _undecided_parts(ws) == [["g2"], ["g1"]], "nothing is dropped past the cap"
 
-    ws.http.clear_faults()
-    ws.world.files["g1"].perms = [p for p in ws.world.files["g1"].perms if p.get("type") != "anyone"]
-    await ws.sync()  # every Drive is read in full, and no listing finds g1 any more
-    assert "g1" not in ws.records.records
-    assert ws.sync_points.value("full_reconcile_owed")["owed"] is False
+    _drop_the_audience_shares(ws, "g1", "g2")
+    await ws.sync()
+    assert ("g1" in ws.records.records) != ("g2" in ws.records.records), "one part is checked again per run"
+    await ws.sync()
+    assert "g1" not in ws.records.records and "g2" not in ws.records.records
+    assert _undecided_parts(ws) == [[], []]
+
+
+async def test_an_undecided_audience_file_in_no_listing_is_never_swept_by_a_full_sync(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+
+    monkeypatch.setattr(drive_connector, "MAX_UNDECIDED_REMOVALS", 1)
+    await _park_undecided_removals(ws, "g2", "g1")
+    _read_everything_in_full_next_run(ws)
+    for _ in range(3):
+        await ws.sync()
+        assert {"g1", "g2"} <= set(ws.records.records), "its audience may still open it: kept while undecided"
+        assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+    assert _undecided_parts(ws) == [["g2"], ["g1"]]
+    assert ws.records.deleted == []
+
+
+async def test_a_full_sync_whose_cleanup_removes_nothing_keeps_the_undecided_files_listed(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+
+    monkeypatch.setattr(drive_connector, "MAX_UNDECIDED_REMOVALS", 1)
+    await _park_undecided_removals(ws, "g2", "g1")
+    _read_everything_in_full_next_run(ws)
+    ws.records.fail_record_listing = True  # the cleanup returns 0 without removing anything
+    await ws.sync()
+    ws.records.fail_record_listing = False
+    assert _undecided_parts(ws) == [["g2"], ["g1"]]
+
+    _drop_the_audience_shares(ws, "g1", "g2")
+    await ws.sync()
+    await ws.sync()
+    assert "g1" not in ws.records.records and "g2" not in ws.records.records, "settled by their recheck"
+
+
+async def test_a_normal_full_syncs_cleanup_spares_a_file_on_an_undecided_list(ws: Workspace) -> None:
+    await _park_undecided_removals(ws, "g1")
+    _read_everything_in_full_next_run(ws)
+    await ws.sync()
+    assert "g1" in ws.records.records and _undecided_parts(ws) == [["g1"]]
+    assert "a" in ws.records.records
+
+    _drop_the_audience_shares(ws, "g1")
+    await ws.sync()
+    assert "g1" not in ws.records.records, "a clean answer settles it"
