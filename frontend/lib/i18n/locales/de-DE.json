@@ -5963,5 +5963,20 @@
     },
     "nothingNew": "Für diesen Knoten gibt es nichts weiter anzuzeigen.",
     "tableOnly": "Es wird nur die Tabelle angezeigt, damit alles flüssig bleibt."
+  },
+  "accessNotice": {
+    "permissions_updating": "Einige Quellen aktualisieren Berechtigungen, daher können ein paar Ergebnisse einige Minuten lang fehlen.",
+    "connector_syncing": "{{name}} synchronisiert noch, daher können Ergebnisse daraus unvollständig sein.",
+    "connector_syncing_unnamed": "Eine Quelle synchronisiert noch, daher können Ergebnisse daraus unvollständig sein.",
+    "check_unavailable": "Wir konnten gerade nicht prüfen, auf welche Dokumente Sie Zugriff haben, daher werden keine Ergebnisse angezeigt. Bitte versuchen Sie es in einer Minute erneut.",
+    "emptySyncing": "Noch nichts zu durchsuchen. {{name}} synchronisiert noch.",
+    "emptySyncing_unnamed": "Noch nichts zu durchsuchen. Eine Quelle synchronisiert noch.",
+    "noAccess": {
+      "title": "Sie haben keinen Zugriff auf dieses Element",
+      "body": "Es wurde möglicherweise verschoben, gelöscht oder eingeschränkt. Fragen Sie den Eigentümer oder öffnen Sie es dort, wo es herkommt, falls Sie den Link haben.",
+      "justGotAccess": "Gerade Zugriff an der Quelle erhalten? Neuer Zugriff erscheint nach der nächsten Synchronisierung.",
+      "copyDetails": "Details für einen Admin kopieren",
+      "copied": "Details kopiert"
+    }
   }
 }

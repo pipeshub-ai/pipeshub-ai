@@ -912,6 +912,7 @@ export interface SSECompleteEvent {
     timestamp: string;
     duration: number;
     searchDegraded?: boolean;
+    accessNotices?: unknown;
     /** Name-only hits for records whose content is not indexed yet. */
     unindexedMatches?: UnindexedMatch[];
   };
@@ -1329,5 +1330,6 @@ export interface SearchResponse {
     searchResults: SearchResultItem[];
     /** The search store answered with less than its full search (e.g. it was busy). */
     searchDegraded?: boolean;
+    accessNotices?: unknown;
   };
 }

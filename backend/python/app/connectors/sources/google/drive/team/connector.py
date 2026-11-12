@@ -124,7 +124,7 @@ from app.connectors.sources.google.common.impersonation import (
     is_delegation_error,
     resolve_explicit_user,
 )
-from app.connectors.sources.google.drive.team.user_status import UserStatusTracker
+from app.connectors.sources.google.drive.team.user_status import UserStatusTracker, is_active_account
 from app.connectors.sources.google.drive.team.drive_access import (
     DrivePermissionBatch,
     grants_to_store,
@@ -503,6 +503,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Accounts that cannot sign in (suspended, archived, deleted), and those active again this run.
         self._inactive_emails: set[str] = set()
         self._returning_emails: set[str] = set()
+        # Whether this run's user listing was cut (an empty page before its end); see _sync_users.
+        self._listing_cut = False
 
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
@@ -814,6 +816,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             all_users: List[AppUser] = []
             alias_domains: dict[str, set[str]] = {}
             page_token: Optional[str] = None
+            listing_complete = True
+            ambiguous_end = False
+            self._listing_cut = False
+            pages_read = 0
 
             while True:
                 try:
@@ -828,6 +834,15 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                     # Paging follows the token alone: an empty page is not the end of the listing.
                     users_data = result.get("users", [])
+                    if not users_data:
+                        if result.get("nextPageToken"):
+                            # More follows an empty page: users may be missing.
+                            listing_complete = False
+                        elif pages_read:
+                            # Google ends a listing with a page that has users, but a directory whose size is an exact
+                            # multiple of the page size may end this way: judged below by its fingerprint.
+                            ambiguous_end = True
+                    pages_read += 1
 
                     # Transform Google user dictionaries to AppUser objects
                     for user in users_data:
@@ -896,21 +911,46 @@ class GoogleDriveTeamConnector(BaseConnector):
                     self.logger.error(f"Error fetching users page: {e}", exc_info=True)
                     raise
 
+            if ambiguous_end and listing_complete:
+                # The same listing on the next run is the directory's own size; a transient cut differs. It is kept
+                # after a match, so an exact page-size directory stays complete.
+                fingerprint = self._user_status.fingerprint(all_users)
+                if not await self._user_status.fingerprint_is_remembered(fingerprint):
+                    listing_complete = False
+                    await self._user_status.remember_fingerprint(fingerprint)
+            else:
+                await self._user_status.forget_fingerprint()
+            self._listing_cut = not listing_complete
+            if self._listing_cut:
+                self.logger.warning(
+                    "The user listing may be cut (an empty page before its end); no account's status is changed on this run"
+                )
+                self._sync_ledger.note_incomplete()
+
             if not all_users:
                 self.logger.warning("No users found in Google Workspace")
                 self.synced_users = []
                 self.synced_user_emails = set()
+                if self._listing_cut:
+                    await self._hold_back_on_cut_listing(all_users)
                 return
 
             # Process all users through the data entities processor
             self.logger.info(f"Processing {len(all_users)} users...")
-            await self.data_entities_processor.on_new_app_users(all_users)
+            # A cut run does not link a listed account that cannot sign in: it may not be linked now.
+            await self.data_entities_processor.on_new_app_users(
+                all_users if listing_complete else [u for u in all_users if is_active_account(u)]
+            )
 
             # Store users for use in batch processing
             self.synced_users = all_users
             self.synced_user_emails = {user.email.lower() for user in all_users if user.email}
             self._alias_domains = alias_domains
-            await self._apply_user_status(all_users)
+            if listing_complete:
+                await self._apply_user_status(all_users)
+            else:
+                await self._hold_back_on_cut_listing(all_users)
+            # Also on a cut listing: a person it leaves out is only left out of the groups until a complete one.
             await self._write_audience_groups()
 
             self.logger.info(f"✅ Successfully synced {len(all_users)} users")
@@ -918,6 +958,19 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error syncing users: {e}", exc_info=True)
             raise
+
+    async def _hold_back_on_cut_listing(self, listed: list[AppUser]) -> None:
+        """What a cut user listing may be used for: narrowing only. Accounts it shows as unable to sign in lose their
+        access now; accounts it does not show are unknown, and keep their groups and grants; nobody is restored and
+        nothing is saved."""
+        suspended = sorted(u.email.lower() for u in listed if u.email and not is_active_account(u))
+        removed = 0
+        for email in suspended:
+            removed += await self.data_entities_processor.remove_user_access_to_connector(self.connector_id, email)
+        if suspended:
+            self.logger.info(f"{len(suspended)} account(s) shown unable to sign in lose access; removed {removed} grant(s)")
+        self._inactive_emails = await self._user_status.inactive_on_partial_listing(listed)
+        self._returning_emails = set()
 
     async def _apply_user_status(self, listed: list[AppUser]) -> None:
         """Take access away from accounts that can no longer sign in, and note the ones that came back.
@@ -1266,8 +1319,21 @@ class GoogleDriveTeamConnector(BaseConnector):
         """
         if not self._external_emails:
             return
-
         emails = list(self._external_emails)
+        if self._listing_cut:
+            # A person missing from a cut listing looks external: those on a domain of the listed people, of the last
+            # complete listing, or verified for the Workspace (an alias domain with no listed account) are held back
+            # (their membership waits for a complete listing). If the verified domains cannot be read, the listed and
+            # last complete listing's domains still hold people back, and this run's collaborators are not dropped.
+            try:
+                verified = await self._workspace_domains()
+            except Exception as e:
+                self.logger.warning(f"Workspace domains could not be read; holding back by the listed domains only: {e}")
+                verified = set()
+            domains = {e.rpartition("@")[2] for e in self.synced_user_emails} | await self._user_status.known_domains() | verified
+            emails = [e for e in emails if e.rpartition("@")[2] not in domains]
+            if not emails:
+                return
         try:
             await self.data_entities_processor.on_external_app_users(
                 emails, self.connector_id

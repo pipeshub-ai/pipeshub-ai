@@ -5928,5 +5928,20 @@
     },
     "nothingNew": "此节点没有更多内容可显示。",
     "tableOnly": "为保持流畅，仅显示表格。"
+  },
+  "accessNotice": {
+    "permissions_updating": "部分来源正在更新权限，因此几分钟内可能缺少一些结果。",
+    "connector_syncing": "{{name}} 仍在同步，因此来自它的结果可能不完整。",
+    "connector_syncing_unnamed": "有来源仍在同步，因此来自它的结果可能不完整。",
+    "check_unavailable": "我们暂时无法检查您有权访问哪些文档，因此不显示结果。请一分钟后重试。",
+    "emptySyncing": "暂时没有可搜索的内容。{{name}} 仍在同步。",
+    "emptySyncing_unnamed": "暂时没有可搜索的内容。有来源仍在同步。",
+    "noAccess": {
+      "title": "您无权访问此项目",
+      "body": "它可能已被移动、删除或受到限制。请询问所有者，或在您有链接时从原处打开。",
+      "justGotAccess": "刚在源端获得访问权限？新的访问权限会在下次同步后显示。",
+      "copyDetails": "复制详细信息给管理员",
+      "copied": "详细信息已复制"
+    }
   }
 }

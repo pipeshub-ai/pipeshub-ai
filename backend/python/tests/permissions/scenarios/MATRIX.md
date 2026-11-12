@@ -14,7 +14,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `atlassian/jira_data_center` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_data_center/connector.py:4868` | writer read |
 | `atlassian/jira_cloud_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_cloud_personal/connector.py:97` | writer read |
 | `atlassian/jira_data_center_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_data_center_personal/connector.py:66` | writer read |
-| `microsoft/sharepoint_online` | sharepoint | override | - | `app/connectors/sources/microsoft/sharepoint_online/connector.py:1685` | writer read |
+| `microsoft/sharepoint_online` | sharepoint | override | - | `app/connectors/sources/microsoft/sharepoint_online/connector.py:1690` | writer read |
 | `microsoft/onedrive` | onedrive | override | - | `app/connectors/sources/microsoft/onedrive/connector.py:1060` | writer read |
 | `google/drive/team` | drive | union | shared drives whose items are neither shared nor limited | `app/connectors/sources/google/drive/team/drive_access.py:64` | writer read |
 | `google/drive/individual` | container | container | the whole app | `app/connectors/sources/google/drive/individual/connector.py:185` | writer read |
@@ -33,6 +33,8 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `notion_personal` | container | container | the whole app | `app/connectors/sources/notion_personal/connector.py:55` | writer read |
 | `localKB` | container | container | the whole app | `app/connectors/sources/localKB/connector.py:57` | writer read |
 | `local_fs` | container | container | the whole app | `app/connectors/sources/local_fs/connector.py:467` | writer read |
+| `local_repo` | container | container | the whole app | `app/connectors/sources/local_repo/connector.py:38` | writer read |
+| `local_folder` | container | container | the whole app | `app/connectors/sources/local_folder/connector.py:347` | writer read |
 | `cifs` | container | container | the whole app | `app/connectors/sources/cifs/connector.py:84` | writer read |
 | `smb` | container | container | the whole app | `app/connectors/sources/smb/connector.py:86` | writer read |
 | `azure_blob` | container | container | the whole app | `app/connectors/sources/azure_blob/connector.py:352` | writer read |
@@ -90,6 +92,8 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `notion_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `localKB` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `local_fs` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
+| `local_repo` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
+| `local_folder` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `cifs` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `smb` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `azure_blob` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |

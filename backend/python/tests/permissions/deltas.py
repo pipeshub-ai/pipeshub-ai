@@ -30,11 +30,13 @@ class Delta:
     pairs: tuple[str, ...]  # "<scenario>/<viewer>/<node>"
     reason: str
     fix: str
+    #: Published in the documentation: `{connector, source, differs}` written for the reader; None keeps the entry internal.
+    public: dict[str, str] | None = None
 
 
 def load_deltas(path: Path = SCENARIOS_ROOT / "deltas.yaml") -> list[Delta]:
     rows = yaml.safe_load(path.read_text())["deltas"]
-    out = [Delta(r["id"], r["direction"], tuple(r["scenarios"]), tuple(r["pairs"]), r["reason"], r["fix"]) for r in rows]
+    out = [Delta(r["id"], r["direction"], tuple(r["scenarios"]), tuple(r["pairs"]), r["reason"], r["fix"], r.get("public")) for r in rows]
     for d in out:
         if d.direction not in DIRECTIONS:
             raise ValueError(f"{d.id}: direction must be one of {DIRECTIONS}")

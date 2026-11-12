@@ -2185,9 +2185,15 @@ export const sendSSEErrorEvent = async (
 
 /** The answer's search was served with less than the full search (the query service says so): the UI shows a note. */
 export const searchDegradedMeta = (
-  data: Pick<IAIResponse, 'searchDegraded'> | null | undefined,
-): { searchDegraded?: true } =>
-  data?.searchDegraded === true ? { searchDegraded: true } : {};
+  data:
+    Pick<IAIResponse, 'searchDegraded' | 'accessNotices'> | null | undefined,
+): {
+  searchDegraded?: true;
+  accessNotices?: NonNullable<IAIResponse['accessNotices']>;
+} => ({
+  ...(data?.searchDegraded === true ? { searchDegraded: true as const } : {}),
+  ...(data?.accessNotices?.length ? { accessNotices: data.accessNotices } : {}),
+});
 
 /**
  * Send complete event to client with conversation data — `RUN_FINISHED`
