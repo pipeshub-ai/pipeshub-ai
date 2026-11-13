@@ -528,6 +528,7 @@
     "created": "생성일",
     "updated": "업데이트일",
     "source": "소스",
+    "actions": "작업",
     "noData": "데이터가 없습니다",
     "loading": "데이터 로드 중...",
     "selectAll": "모두 선택",

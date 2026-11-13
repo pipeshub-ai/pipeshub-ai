@@ -528,6 +528,7 @@
     "created": "Created",
     "updated": "Updated",
     "source": "Source",
+    "actions": "Actions",
     "noData": "No data available",
     "loading": "Loading data...",
     "selectAll": "Select all",

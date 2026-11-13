@@ -528,6 +528,7 @@
     "created": "建立時間",
     "updated": "更新時間",
     "source": "來源",
+    "actions": "動作",
     "noData": "沒有可用的資料",
     "loading": "正在載入資料…",
     "selectAll": "全選",

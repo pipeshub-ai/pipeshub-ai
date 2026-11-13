@@ -236,7 +236,7 @@ async def get_knowledge_hub_root_nodes(
     only_containers: bool = Query(False, description="Only return nodes with children (for sidebar)"),
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     limit: int = Query(50, ge=1, le=200, description="Items per page"),
-    sort_by: str = Query("updatedAt", description="Sort field: name, createdAt, updatedAt, size, type"),
+    sort_by: str = Query("updatedAt", description="Sort field: name, createdAt, updatedAt, size, type, origin"),
     sort_order: str = Query("desc", description="Sort order: asc or desc"),
     q: Optional[str] = Query(None, description="Full-text search query"),
     node_types: Optional[str] = Query(None, description="Comma-separated node types"),
@@ -299,7 +299,7 @@ async def get_knowledge_hub_children_nodes(
     only_containers: bool = Query(False, description="Only return nodes with children (for sidebar)"),
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     limit: int = Query(50, ge=1, le=200, description="Items per page"),
-    sort_by: str = Query("updatedAt", description="Sort field: name, createdAt, updatedAt, size, type"),
+    sort_by: str = Query("updatedAt", description="Sort field: name, createdAt, updatedAt, size, type, origin"),
     sort_order: str = Query("desc", description="Sort order: asc or desc"),
     q: Optional[str] = Query(None, description="Full-text search query"),
     node_types: Optional[str] = Query(None, description="Comma-separated node types"),
@@ -587,13 +587,27 @@ _MAX_BOUNDED_SEARCH_PAGE = 5
 _APP_BATCH = 200
 _INVALID_LIMIT_CURSOR = "Invalid cursor: issued for a different listing"
 _COUNT_LABELS = {"app": "apps", "folder": "folders", "recordGroup": "groups", "record": "records"}
+# None is a missing value: `_sorted_like_the_providers` puts it last.
 _SORT_KEYS = {
-    "name": lambda item: (item.name or "").casefold(),
-    "createdAt": lambda item: item.createdAt or 0,
-    "updatedAt": lambda item: item.updatedAt or 0,
-    "size": lambda item: item.sizeInBytes if item.sizeInBytes is not None else -1,
+    "name": lambda item: None if item.name is None else item.name.lower(),
+    "createdAt": lambda item: item.createdAt,
+    "updatedAt": lambda item: item.updatedAt,
+    "size": lambda item: item.sizeInBytes,
     "type": lambda item: str(item.nodeType),
+    "origin": lambda item: str(item.origin),
 }
+
+
+def _sorted_like_the_providers(rows: list, sort_by: str, sort_order: str) -> list:
+    """The graph providers' page order: rows with no value last in either
+    direction, the value in the asked direction, then id ascending. Rows sorted
+    here sit beside rows the providers sorted, so the two orders must agree."""
+    key = _SORT_KEYS.get(sort_by, _SORT_KEYS["name"])
+    # Stable passes, least significant first, so only the value term is reversed.
+    by_id = sorted(rows, key=lambda item: item.id)
+    with_value = [item for item in by_id if key(item) is not None]
+    without = [item for item in by_id if key(item) is None]
+    return sorted(with_value, key=key, reverse=sort_order == "desc") + without
 
 
 def _bad_cursor() -> HTTPException:
@@ -744,8 +758,7 @@ async def _named_root(
         item for item in await service.named_node_items(query["user_id"], query["org_id"], named)
         if _admits(item, query)
     ]
-    sort_key = _SORT_KEYS.get(query["sort_by"], _SORT_KEYS["name"])
-    rows.sort(key=lambda item: (sort_key(item), item.id), reverse=query["sort_order"] == "desc")
+    rows = _sorted_like_the_providers(rows, query["sort_by"], query["sort_order"])
     limit = query["limit"]
     page = rows[offset:offset + limit]
     end = offset + len(page)

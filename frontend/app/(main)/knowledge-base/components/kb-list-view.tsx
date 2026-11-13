@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, type ReactNode } from 'react';
-import { Flex, Box, Text, Checkbox, Button, DropdownMenu, IconButton, Tooltip } from '@radix-ui/themes';
+import { Flex, Box, Text, Checkbox, Button, DropdownMenu, IconButton, Tooltip, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { formatSize, formatDate } from '@/lib/utils/formatters';
@@ -304,49 +304,65 @@ export function TableHeaderCell({
   };
 
   if (sortable) {
+    const ariaSort = isActive ? (sort?.order === 'asc' ? 'ascending' : 'descending') : 'none';
     return (
-      <Button
-        variant="ghost"
-        size="1"
-        color="gray"
-        onClick={handleClick}
+      // The cell carries the column semantics and sort state; the button inside only acts.
+      <Flex
+        role="columnheader"
+        aria-sort={ariaSort}
         style={{
           width,
           flex,
-          justifyContent: align === 'center' ? 'center' : 'flex-start',
+          // The flexible File name column may shrink to nothing, like its row cells
+          minWidth: flex ? 0 : minWidth,
+          overflow: flex ? 'hidden' : undefined,
           height: 36,
-          // Radix ghost buttons pull out by their padding, which made neighbouring labels touch
-          margin: 0,
-          minWidth,
-          // Radix buttons default to flex-shrink 0; shrink like the row cells below the header
-          flexShrink: flex ? undefined : 1,
-          // Radix buttons are content-box; the padding must sit inside the column width
-          boxSizing: 'border-box',
-          padding: '0 var(--space-2)',
-          cursor: 'pointer',
-          backgroundColor: 'transparent',
         }}
       >
-        <Text size="1" style={{ color: 'var(--neutral-9)', fontWeight: 400 }}>
-          {label}
-        </Text>
-        <MaterialIcon
-          name={
-            isActive
-              ? sort?.order === 'asc'
-                ? 'arrow_drop_up'
-                : 'arrow_drop_down'
-              : 'arrow_drop_down'
-          }
-          size={16}
-          color={'var(--neutral-9)'}
-        />
-      </Button>
+        <Button
+          variant="ghost"
+          size="1"
+          color="gray"
+          onClick={handleClick}
+          style={{
+            width: '100%',
+            minWidth: 0,
+            justifyContent: align === 'center' ? 'center' : 'flex-start',
+            height: 36,
+            // Radix ghost buttons pull out by their padding, which made neighbouring labels touch
+            margin: 0,
+            // Radix buttons are content-box; the padding must sit inside the column width
+            boxSizing: 'border-box',
+            padding: '0 var(--space-2)',
+            cursor: 'pointer',
+            backgroundColor: 'transparent',
+          }}
+        >
+          <Text size="1" style={{ color: 'var(--neutral-9)', fontWeight: 400 }}>
+            {label}
+          </Text>
+          {/* The ligature name is text; hidden, the button's name is the column label alone */}
+          <span aria-hidden="true" style={{ display: 'inline-flex' }}>
+            <MaterialIcon
+              name={
+                isActive
+                  ? sort?.order === 'asc'
+                    ? 'arrow_drop_up'
+                    : 'arrow_drop_down'
+                  : 'arrow_drop_down'
+              }
+              size={16}
+              color={'var(--neutral-9)'}
+            />
+          </span>
+        </Button>
+      </Flex>
     );
   }
 
   return (
     <Flex
+      role="columnheader"
       align="center"
       justify={align === 'center' ? 'center' : 'start'}
       gap="1"
@@ -579,6 +595,8 @@ function TableRow({
     >
       {/* Checkbox column — kept as a spacer when hidden so the file name doesn't shift left */}
       <Flex
+        role={showCheckbox ? 'cell' : undefined}
+        aria-hidden={showCheckbox ? undefined : true}
         align="center"
         justify="center"
         style={{ width: '36px', padding: '0 8px', cursor: showCheckbox ? 'pointer' : 'default' }}
@@ -591,6 +609,7 @@ function TableRow({
           <Checkbox
             size="1"
             checked={isSelected}
+            aria-label={t('kb.rowActions.select', { name: item.name })}
             onCheckedChange={() => onSelect()}
             onClick={(e: React.MouseEvent) => e.stopPropagation()}
             style={{cursor: 'pointer'}}
@@ -600,6 +619,7 @@ function TableRow({
 
       {/* File Name */}
       <Flex
+        role="cell"
         align="center"
         gap="2"
         style={{ flex: 1, padding: '0 var(--space-2)', minWidth: 0 }}
@@ -705,7 +725,7 @@ function TableRow({
 
       {/* Status — tooltip only when an icon exists (avoid empty tooltip when status is null) */}
       {!isMobile && (
-      <Flex align="center" justify="center" style={{ width: kbCol('status'), minWidth: kbColMin('status'), padding: '0 var(--space-2)' }}>
+      <Flex role="cell" align="center" justify="center" style={{ width: kbCol('status'), minWidth: kbColMin('status'), padding: '0 var(--space-2)' }}>
         {(() => {
           if (shouldHideIndexingStatusForHubRecord(item)) {
             return (
@@ -730,7 +750,7 @@ function TableRow({
 
       {/* Source — All Records rows only; icon + source name on hover */}
       {!isMobile && showSourceColumn && isAllRecordDisplayRow(item) && (
-        <Flex align="center" justify="center" gap="2" style={{ width: kbCol('source'), minWidth: kbColMin('source'), padding: '0 var(--space-2)' }}>
+        <Flex role="cell" align="center" justify="center" gap="2" style={{ width: kbCol('source'), minWidth: kbColMin('source'), padding: '0 var(--space-2)' }}>
           <Tooltip content={item.sourceName} side="top" delayDuration={200}>
             <Box style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
               {item.sourceType === 'collection' ? (
@@ -745,7 +765,7 @@ function TableRow({
 
       {/* Size — hidden on mobile to keep the row readable */}
       {!belowDesktop && (
-        <Flex align="center" justify="center" style={{ width: kbCol('size'), minWidth: kbColMin('size'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
+        <Flex role="cell" align="center" justify="center" style={{ width: kbCol('size'), minWidth: kbColMin('size'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
           <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? formatSize(item.sizeInBytes ?? undefined)
@@ -757,7 +777,7 @@ function TableRow({
 
       {/* Created — hidden on mobile. Skip when timestamp is 0 (source has no real value). */}
       {!belowDesktop && (
-        <Flex align="center" justify="center" style={{ width: kbCol('created'), minWidth: kbColMin('created'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
+        <Flex role="cell" align="center" justify="center" style={{ width: kbCol('created'), minWidth: kbColMin('created'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
           <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? (item.createdAt ? formatDate(item.createdAt) : '-')
@@ -769,7 +789,7 @@ function TableRow({
 
       {/* Updated — hidden on mobile. Skip when timestamp is 0. */}
       {!isMobile && (
-        <Flex align="center" justify="center" style={{ width: kbCol('updated'), minWidth: kbColMin('updated'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
+        <Flex role="cell" align="center" justify="center" style={{ width: kbCol('updated'), minWidth: kbColMin('updated'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
           <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? (item.updatedAt ? formatDate(item.updatedAt) : '-')
@@ -779,12 +799,13 @@ function TableRow({
         </Flex>
       )}
 
-      {!belowDesktop && extraColumns ? extraColumns.cell(item) : null}
+      {/* display: contents keeps the extension's own layout; the wrapper only gives it the cell role */}
+      {!belowDesktop && extraColumns ? <Box role="cell" style={{ display: 'contents' }}>{extraColumns.cell(item)}</Box> : null}
 
       {/* Actions */}
       {/* A slot per action the list offers, filled or not, so the icons line up from row to row. */}
       {/* Never shrinks: the row menu stays reachable however the columns are sized */}
-      <Flex align="center" justify="center" gap="2" style={{ width: actionsWidth(isMobile, !!onGoToParent), flexShrink: 0, padding: '0 var(--space-2)' }}>
+      <Flex role="cell" align="center" justify="center" gap="2" style={{ width: actionsWidth(isMobile, !!onGoToParent), flexShrink: 0, padding: '0 var(--space-2)' }}>
         {onPreview && !isMobile && (
           <Box style={ACTION_SLOT}>
             {canPreview && (
@@ -965,8 +986,11 @@ export function KbListView({
     // display: contents keeps the header and body as the parent's flex children while the
     // column-width variables reach every cell inside.
     <div style={{ display: 'contents', ...columnWidthStyle }}>
+      {/* The table holds only its rows; the loading status and the pager sit outside it. */}
+      <div role="table" style={{ display: 'contents' }}>
       {/* Table Header */}
       <Flex
+        role="row"
         align="center"
         style={{
           height: 36,
@@ -978,6 +1002,8 @@ export function KbListView({
       >
         {/* Checkbox column — kept as a spacer when hidden so the File Name column doesn't shift left */}
         <Flex
+          role={showCheckbox ? 'columnheader' : undefined}
+          aria-hidden={showCheckbox ? undefined : true}
           align="center"
           justify="center"
           style={{ width: '36px', padding: '0 var(--space-2)', cursor: showCheckbox ? 'pointer' : 'default' }}
@@ -987,6 +1013,7 @@ export function KbListView({
             <Checkbox
               size="1"
               checked={allSelected}
+              aria-label={t('table.selectAll')}
               onCheckedChange={onSelectAll}
               style={{cursor: 'pointer'}}
             />
@@ -994,7 +1021,7 @@ export function KbListView({
         </Flex>
 
         {/* File Name */}
-        <TableHeaderCell label={t('table.fileName')} field="name" flex={1} sort={sort} onSort={onSort} />
+        <TableHeaderCell label={t('table.fileName')} field="name" sortable flex={1} sort={sort} onSort={onSort} />
         {resizeHandle('name')}
 
         {/* Status — on phones it moves under the name */}
@@ -1025,18 +1052,20 @@ export function KbListView({
         )}
         {!isMobile && resizeHandle('updated')}
 
-        {!belowDesktop && extraColumns ? extraColumns.header : null}
+        {!belowDesktop && extraColumns ? <Box role="columnheader" style={{ display: 'contents' }}>{extraColumns.header}</Box> : null}
 
         {/* Actions */}
-        <Box style={{ width: actionsWidth(isMobile, !!onGoToParent), flexShrink: 0 }} />
+        <Box role="columnheader" style={{ width: actionsWidth(isMobile, !!onGoToParent), flexShrink: 0 }}>
+          <VisuallyHidden>{t('table.actions')}</VisuallyHidden>
+        </Box>
       </Flex>
 
       {/* Table Body */}
       <Box style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       {(loading || revealing) && (
+        // Only a picture of rows: the loading state is announced outside the table.
         <Box
-          role={loading ? 'status' : undefined}
-          aria-label={loading ? t('common.loading', { defaultValue: 'Loading' }) : undefined}
+          aria-hidden
           onAnimationEnd={(e) => {
             if (e.target === e.currentTarget) setRevealing(false);
           }}
@@ -1066,6 +1095,7 @@ export function KbListView({
         </Box>
       )}
       <Box
+        role="rowgroup"
         className="no-scrollbar"
         style={{ position: 'relative', flex: 1, minHeight: 0, overflowY: 'auto' }}
       >
@@ -1093,11 +1123,16 @@ export function KbListView({
             onDownload={onDownload}
           />
         ))}
-        <Box style={{ height: 96 }} />
+        <Box aria-hidden style={{ height: 96 }} />
       </Box>
       {/* Rows dissolve under the floating composer dock instead of meeting it at a hard edge. */}
       <ProgressiveBlur height={104} />
       </Box>
+      </div>
+
+      {loading && (
+        <VisuallyHidden role="status">{t('common.loading', { defaultValue: 'Loading' })}</VisuallyHidden>
+      )}
 
       {/* Pagination */}
       {pagination && (
