@@ -2836,6 +2836,11 @@
           "samlSso": "SAML SSO",
           "oauth": "OAuth"
         }
+      },
+      "enterpriseSso": {
+        "title": "SAML 싱글 사인온 및 OpenID Connect",
+        "description": "Okta, OneLogin 또는 기타 SAML 2.0·OpenID Connect ID 공급자로 로그인하도록 합니다.",
+        "contactSales": "영업팀에 문의"
       }
     },
     "connectors": {

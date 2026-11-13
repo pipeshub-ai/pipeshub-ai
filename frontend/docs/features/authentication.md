@@ -249,6 +249,10 @@ GET /api/v1/orgAuthConfig/signInRemoval
 - Explains how they get a password: "Forgot Password" on the sign-in page (needs SMTP), or a set-password link created by whoever runs the PipesHub server (1.0 upgrade guide)
 - Renders nothing once the list is empty, or if the status request fails
 
+### SAML and OpenID Connect notice
+- A card below the method rows: "SAML single sign-on and OpenID Connect", one line on what they do, an "Available in EE" badge (its tooltip says it is part of the PipesHub Enterprise Edition) and a "Talk to sales" link to `https://docs.pipeshub.com/contact-us`.
+- Shown to every admin who opens the page; it has no toggle and calls no API.
+
 ### Success Toast
 ```
 Title: "{Provider} Auth successfully configured!"

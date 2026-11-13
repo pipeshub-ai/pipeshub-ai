@@ -47,4 +47,18 @@ describe('EnterpriseFeatureNotice', () => {
     expect(notice.textContent).toContain('Decide which tools run.');
     expect(notice.textContent).toContain(en.common.enterprise.label);
   });
+
+  it('shows the action it is given, such as a contact link', () => {
+    render(
+      <Theme>
+        <EnterpriseFeatureNotice
+          title="SAML"
+          description="Sign in through your identity provider."
+          action={<a href="https://docs.pipeshub.com/contact-us">Talk to sales</a>}
+        />
+      </Theme>
+    );
+    const link = screen.getByRole('link', { name: 'Talk to sales' });
+    expect(link.getAttribute('href')).toBe('https://docs.pipeshub.com/contact-us');
+  });
 });

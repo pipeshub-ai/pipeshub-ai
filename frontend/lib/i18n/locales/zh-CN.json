@@ -2836,6 +2836,11 @@
           "samlSso": "SAML SSO",
           "oauth": "OAuth"
         }
+      },
+      "enterpriseSso": {
+        "title": "SAML 单点登录和 OpenID Connect",
+        "description": "让成员通过 Okta、OneLogin 或其他 SAML 2.0 或 OpenID Connect 身份提供商登录。",
+        "contactSales": "联系销售"
       }
     },
     "connectors": {

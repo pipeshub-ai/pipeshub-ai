@@ -2728,6 +2728,11 @@
           "samlSso": "SAML SSO",
           "oauth": "OAuth"
         }
+      },
+      "enterpriseSso": {
+        "title": "Inicio de sesión único SAML y OpenID Connect",
+        "description": "Permite iniciar sesión con Okta, OneLogin o cualquier otro proveedor de identidad SAML 2.0 u OpenID Connect.",
+        "contactSales": "Hablar con ventas"
       }
     },
     "connectors": {

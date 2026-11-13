@@ -2695,6 +2695,11 @@
           "samlSso": "SAML SSO",
           "oauth": "OAuth"
         }
+      },
+      "enterpriseSso": {
+        "title": "SAML-Single-Sign-on und OpenID Connect",
+        "description": "Melden Sie Personen über Okta, OneLogin oder einen anderen SAML-2.0- oder OpenID-Connect-Identitätsanbieter an.",
+        "contactSales": "Vertrieb kontaktieren"
       }
     },
     "connectors": {

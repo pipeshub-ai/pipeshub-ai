@@ -12,6 +12,7 @@ import {
   IconButton,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SettingsSaveBar } from '../components/settings-save-bar';
 import { ConfirmationDialog } from '../components/confirmation-dialog';
@@ -368,6 +369,22 @@ export default function AuthenticationPage() {
                   />
                 );
               })}
+              <EnterpriseFeatureNotice
+                title={t('workspace.authentication.enterpriseSso.title')}
+                description={t('workspace.authentication.enterpriseSso.description')}
+                action={
+                  <Text size="1">
+                    <a
+                      href="https://docs.pipeshub.com/contact-us"
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: 'var(--accent-11)', textDecoration: 'none' }}
+                    >
+                      {t('workspace.authentication.enterpriseSso.contactSales')}
+                    </a>
+                  </Text>
+                }
+              />
             </Flex>
         </Flex>
 

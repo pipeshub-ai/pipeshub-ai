@@ -2855,6 +2855,11 @@
           "samlSso": "SAML SSO",
           "oauth": "OAuth"
         }
+      },
+      "enterpriseSso": {
+        "title": "SAML single sign-on and OpenID Connect",
+        "description": "Sign people in through Okta, OneLogin or any other SAML 2.0 or OpenID Connect identity provider.",
+        "contactSales": "Talk to sales"
       }
     },
     "connectors": {
