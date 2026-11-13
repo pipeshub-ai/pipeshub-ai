@@ -64,6 +64,9 @@ LITERALS = """/* pipeshub:kg.read_literals */ SELECT r.sk, r.id, r.leaf,
 # With no statistics a bitmap scan of the whole org can look cheaper than the index searches an array of ids needs (plan_cache_mode, set by the unit, is the other half of the profile).
 # With sorts off nothing but the key's index can answer a seek above; the read's other statements ask for no order (a join, GROUP BY or DISTINCT is hashed instead).
 # The short lock and statement limits hand a blocked or slow read to the walk at once, instead of holding a pooled connection for the service's own limits.
+# The knowledge-hub listing asks class_verdicts in a transaction of its own, without PROFILE (its pages are ordered): sorts are off for the literals' seeks only.
+SORTS_OFF = """/* pipeshub:kg.read_sorts_off */ WITH s AS MATERIALIZED (SELECT current_setting('enable_sort') AS was) SELECT was, set_config('enable_sort', 'off', true) FROM s"""
+SORTS_BACK = "/* pipeshub:kg.read_sorts_back */ SELECT set_config('enable_sort', $1, true)"
 PROFILE = """/* pipeshub:kg.read_profile */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('enable_sort', 'off', true), set_config('lock_timeout', '200ms', true),
     set_config('statement_timeout', '2s', true)"""
 
@@ -91,12 +94,15 @@ async def class_verdicts(tx: Tx, org: str, classes: dict[int, list[list[Any]]], 
     lits = sorted({x for cl in classes.values() for clause in cl for x in clause if x != SELF})
     live: set[int] = set()
     seen: set[int] = set()
+    was = await tx.fetchval(SORTS_OFF) if lits else None
     for k in range(0, len(lits), CHUNK):
         for r in await tx.fetch(LITERALS, org, lits[k:k + CHUNK]):
             if r["leaf"] is False and r["has_child"]:
                 seen.add(r["sk"])
                 if r["id"] in granted:
                     live.add(r["sk"])
+    if was is not None:
+        await tx.fetchval(SORTS_BACK, was)
     out: dict[int, tuple[bool, bool] | None] = {}
     for c, cl in classes.items():
         if any(x != SELF and x not in seen for clause in cl for x in clause):
