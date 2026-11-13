@@ -49,6 +49,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.drupal_wiki.drupal_wiki import DrupalWikiRESTClientViaToken
 from app.sources.external.drupal_wiki.graphql import (
+    DrupalWikiGraphQLAuthError,
     DrupalWikiGraphQLError,
     DrupalWikiGraphQLRefusedError,
     DrupalWikiGraphQLTransientError,
@@ -151,10 +152,10 @@ def connector(processor: MagicMock) -> DrupalWikiConnector:
     instance.indexing_filters = FilterCollection()
     instance.record_sync_point.read_sync_point = AsyncMock(return_value={})
     instance.record_sync_point.update_sync_point = AsyncMock()
-    # init() always builds the GraphQL data source; a space whose tree cannot be read
-    # is the failure a test opts into, not a missing client.
+    # init() always builds the GraphQL data source. Spaces are flat by default; a tree
+    # that cannot be read is the failure a test opts into.
     instance.graphql = MagicMock()
-    instance.graphql.get_space_tree = AsyncMock(side_effect=DrupalWikiGraphQLError("no tree"))
+    instance.graphql.get_space_tree = AsyncMock(return_value=[])
     instance.graphql.get_space_members = AsyncMock(side_effect=DrupalWikiGraphQLError("no members"))
     return instance
 
@@ -704,6 +705,7 @@ class TestParentPreservation:
     ) -> None:
         # Re-saving a page with no parent deletes its PARENT_CHILD edge, so when the
         # tree cannot be read the stored parent has to be carried over.
+        connector.graphql.get_space_tree = AsyncMock(side_effect=DrupalWikiGraphQLError("no tree"))
         connector.data_source.list_pages = AsyncMock(return_value=response(spring_page([page_payload(733)])))
         connector.data_source.list_attachments = AsyncMock(return_value=response([]))
 
@@ -989,6 +991,7 @@ class TestHelpers:
     async def test_space_tree_is_unknown_without_graphql(self, connector: DrupalWikiConnector) -> None:
         # None, not {}: an empty dict would mean "this space has no parents" and
         # would delete the stored PARENT_CHILD edges.
+        connector.graphql.get_space_tree = AsyncMock(side_effect=DrupalWikiGraphQLError("no tree"))
         assert await connector._fetch_space_tree(12, "Engineering") is None
 
     @pytest.mark.asyncio
@@ -2008,6 +2011,35 @@ class TestConnectionTestProbesGraphQL:
         assert connector.last_action_items is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("members", "tree"), [
+        ("answers", "hangs"),
+        ("answers", "fails"),
+        ("fails", "answers"),
+    ])
+    async def test_one_answer_alone_leaves_the_card_as_it_is(
+        self, connector: DrupalWikiConnector, members: str, tree: str
+    ) -> None:
+        # The query that did not answer may be the refused one, so its warning must stay.
+        self.rest_ok(connector)
+
+        async def hang(_space_id: int) -> dict:
+            await asyncio.sleep(3600)
+            return {}
+
+        behaviour = {
+            "answers": {"return_value": []},
+            "hangs": {"side_effect": hang},
+            "fails": {"side_effect": DrupalWikiGraphQLTransientError("502")},
+        }
+        connector.graphql.get_space_members = AsyncMock(**behaviour[members])
+        connector.graphql.get_space_tree = AsyncMock(**behaviour[tree])
+
+        with patch("app.connectors.sources.drupal_wiki.connector.GRAPHQL_PROBE_TIMEOUT_S", 0.2):
+            assert await connector.test_connection_and_access() is True
+
+        assert connector.last_action_items is None
+
+    @pytest.mark.asyncio
     async def test_a_rest_failure_still_fails_without_asking_graphql(
         self, connector: DrupalWikiConnector
     ) -> None:
@@ -2126,6 +2158,59 @@ class TestTreeRefused:
         # The structure says nothing about which records exist, so nothing is held back.
         assert connector.full_sync_coverage().complete is True
         assert len(page_checkpoint_writes(connector)) == 3
+
+
+class TestTreeFailuresThatMayPass:
+    """A tree that fails without a refusal is an error every run; a refusal is a warning
+    sent once. Either way the stored parents stay."""
+
+    @staticmethod
+    def wiki_with_parents(connector: DrupalWikiConnector, processor: MagicMock) -> None:
+        wiki_with_spaces(connector, OPEN_TEAM)
+        # For the sync points it keeps across runs; the open space reads no grants.
+        store_space_access(connector, processor, ["USER"])
+        processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda _, external_id: stored_record(int(external_id.split(":")[1]), parent="page:700")
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [
+        DrupalWikiGraphQLAuthError("SpaceContentStructure failed (HTTP 401)"),
+        DrupalWikiGraphQLTransientError("SpaceContentStructure failed (HTTP 502)"),
+    ])
+    async def test_an_auth_or_transient_failure_is_an_error_every_run(
+        self, connector: DrupalWikiConnector, processor: MagicMock, error: Exception
+    ) -> None:
+        self.wiki_with_parents(connector, processor)
+        connector.graphql.get_space_tree = AsyncMock(side_effect=error)
+
+        for _ in range(2):
+            await run_with_no_filters(connector)
+            assert written_pages(processor)["page:103"][0].parent_external_record_id == "page:700"
+            processor.on_new_records.reset_mock()
+
+        assert [
+            (call.kwargs["type"], call.kwargs["severity"]) for call in connector.notify.await_args_list
+        ] == [(NotificationType.CONNECTOR_SYNC_ERROR, NotificationSeverity.ERROR)] * 2
+        assert "page structure of the Drupal Wiki space 'Team'" in connector.notify.await_args.kwargs["message"]
+        # The pages are read again next run, when the tree may answer.
+        assert page_checkpoint_writes(connector) == []
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_is_one_warning_over_runs(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        self.wiki_with_parents(connector, processor)
+        connector.graphql.get_space_tree = AsyncMock(side_effect=refused("SpaceContentStructure"))
+
+        for _ in range(2):
+            await run_with_no_filters(connector)
+            assert written_pages(processor)["page:103"][0].parent_external_record_id == "page:700"
+            processor.on_new_records.reset_mock()
+
+        connector.notify.assert_awaited_once()
+        assert connector.notify.await_args.kwargs["severity"] == NotificationSeverity.WARNING
+        assert connector.notify.await_args.kwargs["message"] == "- " + TREE_UNREADABLE.message.format(spaces="'Team'")
 
 
 class TestOpenSpaceUnaffectedByRefusal:

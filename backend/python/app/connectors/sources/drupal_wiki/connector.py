@@ -563,11 +563,14 @@ class DrupalWikiConnector(BaseConnector):
         """
         self._graphql_refused = None
         probe, probe_rest = self._graphql_probe()
+        operations = (probe.get_space_members, probe.get_space_tree)
+        answered = 0
         try:
             async with asyncio.timeout(GRAPHQL_PROBE_TIMEOUT_S):
-                for operation in (probe.get_space_members, probe.get_space_tree):
+                for operation in operations:
                     try:
                         await self._graphql_read(operation(space_id))
+                        answered += 1
                     except DrupalWikiGraphQLError as e:
                         self.logger.warning("Drupal Wiki connection test: %s", e)
         except TimeoutError:
@@ -577,6 +580,10 @@ class DrupalWikiConnector(BaseConnector):
             )
         finally:
             await probe_rest.close()
+        # One answer is not enough to clear the card: the query that did not answer may be
+        # the refused one, so the stored items stay until both answer or one is refused.
+        if not self._graphql_refused and answered < len(operations):
+            self._graphql_refused = None
         if self._graphql_refused:
             self.logger.warning(
                 "Drupal Wiki connection test: %s. %s", GRAPHQL_REFUSED_TITLE, GRAPHQL_REFUSED_MESSAGE
@@ -1491,9 +1498,16 @@ class DrupalWikiConnector(BaseConnector):
         """
         try:
             nodes = await self._graphql_read(self.graphql.get_space_tree(space_id))
-        except DrupalWikiGraphQLError as e:
+        except DrupalWikiGraphQLRefusedError as e:
             self.logger.warning("Drupal Wiki: page structure of '%s': %s", space_name, e)
             self._report_space_problem(TREE_UNREADABLE, f"'{space_name}'")
+            return None
+        except DrupalWikiGraphQLError as e:
+            # Not a lasting refusal, so an error every run rather than a warning sent once.
+            self._fail(
+                f"Could not read the page structure of the Drupal Wiki space '{space_name}', "
+                f"so its pages keep the structure they already have: {e}"
+            )
             return None
         # No node carrying a page id means the reply has changed shape, not that the
         # space is flat. Returning {} would re-save every page with no parent and wipe
