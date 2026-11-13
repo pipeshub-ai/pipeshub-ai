@@ -25,6 +25,7 @@ from .kh_worlds import (
     DEEPOPEN,
     DEEPSEED,
     FOLDERSTUB,
+    HIDESEED,
     KEYCLASH,
     KH_WORLDS,
     NESTSTUB,
@@ -261,6 +262,24 @@ async def test_a_child_the_check_admits_by_any_arm_keeps_its_row_and_its_stub(gr
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
             await layer.release(worlds)
+
+
+async def test_a_child_below_a_group_that_hides_its_children_is_listed_only_where_it_opens(graph_layers) -> None:
+    """The check admits C below a seed, but C also hangs under a group that hides its children, and the walk from the App does not reach it: a
+    browse of C refuses to open it, so the browse of its other parent R does not list it (nor take a place under the cap for it), R shows no
+    arrow, and the seed does not list it either (HIDESEED)."""
+    for layer in graph_layers:
+        await layer.preload([HIDESEED])
+        try:
+            assert await layer.admitted(HIDESEED, "u", ["C"]) == {"C"}, layer.name
+            assert await children_of(layer, HIDESEED, "u", "C", "record") is None, layer.name
+            assert await children_of(layer, HIDESEED, "u", "f", "recordGroup") == {"R": False}, layer.name
+            assert await children_of(layer, HIDESEED, "u", "R", "record") == {}, layer.name
+            assert await children_of(layer, HIDESEED, "u", "s", "record") == {}, layer.name
+            bad = _bad(await check_world(layer, HIDESEED, "hideseed"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([HIDESEED])
 
 
 async def test_an_open_apps_member_is_matched_by_the_apps_handle_not_its_key(graph_layers) -> None:

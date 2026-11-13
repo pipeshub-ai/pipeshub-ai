@@ -583,9 +583,23 @@ def _aql_browse_child(c: str, p: str, tag: str, from_app: str, p_member: str | N
     member_of_open_app = (f"(kh_opens AND {record_c} AND LENGTH(FOR kh_ma IN (kh_opens AND {record_c} ? [1] : [])"
                           f" FOR kh_mb IN 1..1 OUTBOUND {c} {CollectionNames.BELONGS_TO.value}"
                           f' FILTER kh_mb._id == CONCAT("{CollectionNames.APPS.value}/", @app_id) LIMIT 1 RETURN 1) > 0)')
-    return (f"({_aql_read_by_app(c)} AND (({from_app} OR {member_of_open_app}) ? (({_aql_granted_hop(c, p, tag + 'h', navigation=True)}"
-            f" AND {walk} AND {below_member}) ? true : ({_aql_in_scope(c, p)})) : ({p}.hideChildren != true AND (({_aql_open_hop(c, p, tag + 'o')}"
-            f" AND {walk_seeded} AND {below_member_seeded}) ? true : ({_aql_in_scope(c, p)})))))")
+    # A child listed by any arm but a hop of the walk from the App opens only where no group that hides its children lies above it, or its own
+    # walk reaches it (`_aql_opens_below_hidden`, as `browse_start` opens it).
+    visible = _aql_opens_below_hidden(c, p, tag + "v")
+    hop = f"({_aql_granted_hop(c, p, tag + 'h', navigation=True)} AND {walk} AND {below_member})"
+    return (f"({_aql_read_by_app(c)} AND (({from_app} OR {member_of_open_app}) ? ({hop} ? ({from_app} ? true : {visible})"
+            f" : ({_aql_in_scope(c, p)} ? {visible} : false)) : ({p}.hideChildren != true AND ((({_aql_open_hop(c, p, tag + 'o')}"
+            f" AND {walk_seeded} AND {below_member_seeded}) ? true : ({_aql_in_scope(c, p)})) ? {visible} : false))))")
+
+
+def _aql_opens_below_hidden(c: str, p: str, tag: str) -> str:
+    """Whether a browse of ``c``, a child of ``p`` that ``p`` is opened to list, opens it (`browse_start`): a node below a group that hides its
+    children opens only where the walk from the App reaches it, which never passes such a group. ``p`` is open, so only another parent of ``c``
+    can put such a group above it; a child with one parent costs one edge read. ``kh_app``, ``kh_opens`` and ``@granted`` must be in scope."""
+    q, e = f"kh_q{tag}", f"kh_qe{tag}"
+    elsewhere = (f"LENGTH(FOR {q}, {e} IN 1..1 INBOUND {c} {CollectionNames.NODE_RELATIONS.value} FILTER {e}.relationshipType IN {_HIERARCHY_AQL}"
+                 f" AND {q}._id != {p}._id AND ({q}.hideChildren == true OR {_aql_hidden_above(q, tag)}) LIMIT 1 RETURN 1) > 0")
+    return f"({elsewhere} ? {_aql_row_from_app(c)} : true)"
 
 
 # Arango's write-write conflict (errorNum 1200), as the HTTP client reports it.
@@ -631,6 +645,8 @@ def _aql_undecided(v: str, *, decided: str | None = None) -> str:
             FILTER kh_uc.orgId == @org_id AND kh_uc.connectorId == @app_id AND kh_uc.isDeleted != true AND kh_uc.isPlaceholder != true
             {f"FILTER kh_uc._id NOT IN {decided}" if decided else ""}
             FILTER NOT {_aql_in_hidden_group("kh_uc", "kv")}
+            // a child a browse of it would refuse takes no place under the cap
+            FILTER {_aql_opens_below_hidden("kh_uc", v, "kw")}
             COLLECT kh_uk = kh_uc._key, kh_uh = kh_uc._id
             SORT kh_uk
             LIMIT {IGraphDBProvider._KH_UNDECIDED_MAX + (1 if decided else 0)}
@@ -21478,7 +21494,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }}
             """,
             # Below a browse start: what a row's arrow reads too.
-            "step_browse": "LET kh_opens = @kh_opens" + children(
+            # A child's own reach (`_aql_opens_below_hidden`) reads the App.
+            "step_browse": f'LET kh_app = DOCUMENT("{apps}", @app_id) LET kh_opens = @kh_opens' + children(
                 "", _aql_browse_child("kh_c", "kh_p", "b", "@kh_from_app", "kh_pm"),
                 f"\n                LET kh_pm = {_aql_is_member('kh_p')}"),
             "enrich": f"""
@@ -21532,7 +21549,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }
         for step in ("step_browse", "step_app"):
             # One hop of the rules from a browse's start, and the children they leave undecided (`_kh_v3_with_admitted`).
-            queries[f"{step}_undecided"] = (f"LET kh_walked = ({queries[step]})\n"
+            # The undecided children read the App and the grants as the step does (`_aql_opens_below_hidden`).
+            step_body = queries[step].removeprefix(f'LET kh_app = DOCUMENT("{apps}", @app_id) ').removeprefix("LET kh_opens = @kh_opens")
+            queries[f"{step}_undecided"] = (f'LET kh_app = DOCUMENT("{apps}", @app_id) LET kh_opens = @kh_opens LET kh_walked = ({step_body})\n'
                                             f"RETURN {{walked: kh_walked, undecided: {_aql_undecided('DOCUMENT(@kh_frontier[0])', decided='APPEND(kh_walked, @kh_placed)')}}}")
         # A browse answers a declared group's arrow exactly; a flatten reads arrows by the stricter rule.
         template = queries["enrich"]

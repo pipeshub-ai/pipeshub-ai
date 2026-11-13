@@ -604,6 +604,23 @@ grants: [[u, h], [u, q]]
 gates: [[u, A]]
 """))
 
+# HIDESEED: SIDESEED where C also hangs under a group H that hides its children. The check admits C below the seed (it does not read the display
+# flag), but a browse of C refuses to open it (only the walk from the App, which never passes H, opens a node below a group that hides its
+# children), so a browse of R does not list C, and R shows no arrow.
+HIDESEED = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]}
+  - {id: H, kind: group, connector: A, rule: OPEN, hide_children: true, parents: [A], belongs: [A]}
+  - {id: x, kind: group, connector: A, rule: RESTRICTED, parents: [A], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: OPEN, parents: [x]}
+  - {id: C, kind: record, connector: A, rule: OPEN, parents: [R, s, H], inherits: [s]}
+grants: [[u, f], [u, s]]
+gates: [[u, A]]
+"""))
+
 # KEYCLASH: an App that opens everything, and a strict record m below a seed the walk does not reach, which belongs to no App. The test adds, on
 # ArangoDB only, a record group whose key is the App's key and files m in it: m belongs to that group, not to the App, so it is not listed.
 KEYCLASH = world_from_data(yaml.safe_load("""
@@ -647,4 +664,4 @@ gates: [[u, A]]
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
              SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ, OPENGRANT, OPENGRANTTEAM, SIDESEED,
-             STUBSEED, NESTSTUB, CAPSTUB]
+             STUBSEED, NESTSTUB, CAPSTUB, HIDESEED]

@@ -92,4 +92,6 @@ async def test_a_record_the_viewer_may_open_whose_browse_fails_is_an_under_admit
         "f": ([_item("r1"), _item("r2")], [2], [2]),
         "r1": None,
     })
-    assert [(f.kind, f.detail) for f in found] == [("browse_gap", "r1: the browse does not open it")]
+    # an under-admit of the record, and a row listed that does not open
+    assert sorted((f.kind, f.detail) for f in found) == [("browse", "f: lists r1, and the browse refuses to open it"),
+                                                         ("browse_gap", "r1: the browse does not open it")]

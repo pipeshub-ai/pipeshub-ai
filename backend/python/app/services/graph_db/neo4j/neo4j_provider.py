@@ -20853,6 +20853,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHERE kh_ur.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND kh_u.orgId = $org_id AND kh_u.connectorId = $app_id
               AND kh_u.id IS NOT NULL AND NOT coalesce(kh_u.isDeleted, false) AND NOT coalesce(kh_u.isPlaceholder, false)
               {f"AND NOT coalesce(({decided}), false)" if decided else ""} AND NOT {self._kh_v3_in_hidden_group("kh_u", "kv")}
+              // a child a browse of it would refuse takes no place under the cap
+              AND {self._kh_v3_opens_below_hidden("kh_u", v)}
             WITH DISTINCT kh_u.id AS kh_uid ORDER BY kh_uid LIMIT {self._KH_UNDECIDED_MAX + (1 if decided else 0)}
             RETURN kh_uid }} END"""
 
@@ -21188,18 +21190,31 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         member_of_open_app = f"({opens} AND {c}:Record AND EXISTS {{ ({c})-[:BELONGS_TO]->(app) }})"
         walk_seeded = f"(NOT ({declared_p} OR ({p}:RecordGroup AND {p}.id IN $declaredScope)) OR {seed})"
         below_member_seeded = f"(NOT {member_p} OR {seed})"
-        return f"""{_cypher_read_by_app(c)} AND ((({from_app} OR {member_of_open_app}) AND ({hop}) AND {walk} AND {below_member})
+        # A child listed by any arm but a hop of the walk from the App opens only where no group that hides its children lies above it, or its
+        # own walk reaches it (`_kh_v3_opens_below_hidden`, as a browse of it opens it).
+        visible = self._kh_v3_opens_below_hidden(c, p, state=state, opens=opens)
+        return f"""{_cypher_read_by_app(c)} AND ((({from_app} OR {member_of_open_app}) AND ({hop}) AND {walk} AND {below_member}
+                  AND ({from_app} OR {visible}))
               OR (NOT {from_app} AND NOT {member_of_open_app}
                   AND NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
                   AND coalesce({c}.accessRule, 'OPEN') = 'OPEN'
-                  AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds) AND {walk_seeded} AND {below_member_seeded})
+                  AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds) AND {walk_seeded} AND {below_member_seeded} AND {visible})
               OR (NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
                   AND ({c}.id IN $declaredScope
                        OR ({c}:Record AND EXISTS {{
                            ({c})-[:BELONGS_TO]->(sg:RecordGroup) WHERE sg.id IN $declaredScope
-                       }}))))"""
+                       }})) AND {visible}))"""
+
+    def _kh_v3_opens_below_hidden(self, c: str, p: str, *, state: bool = False, opens: str = _CYPHER_APP_OPENS) -> str:
+        """Whether a browse of ``c``, a child of ``p`` that ``p`` is opened to list, opens it: a node below a group that hides its children opens
+        only where the walk from the App reaches it, which never passes such a group. ``p`` is open, so only another parent of ``c`` can put such a
+        group above it; a child with one parent costs one edge read. ``app`` must be in scope."""
+        walked = self._kh_v3_row_from_app(
+            c, hop=self._kh_v3_granted_hop("kh_oc", "kh_op", state=state, opens=opens), hierarchy="IN ['PARENT_CHILD', 'ATTACHMENT']")
+        return (f"(NOT EXISTS {{ MATCH (kh_q)-[kh_qr:NODE_RELATION]->({c}) WHERE kh_qr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']"
+                f" AND kh_q <> {p} AND ({self._kh_hides('kh_q', state=state)} OR {self._kh_v3_hidden_above('kh_q', 'q')}) }} OR {walked})")
 
     @staticmethod
     def _kh_v3_hidden_above(v: str, tag: str, *, from_depth: int = 1) -> str:
@@ -21683,11 +21698,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return self._kh_grants_by_probe(expr) if probe is not None and not listing_by_probe else expr
 
         if scoped_start:
-            slim_from_app, row_from_app = "fromApp", "coalesce(item.fa, false)"
+            row_from_app = "coalesce(item.fa, false)"
         elif flatten:
-            slim_from_app = row_from_app = "false"
+            row_from_app = "false"
         else:
-            slim_from_app = row_from_app = "NOT node.id IN $kh_placed"
+            row_from_app = "NOT node.id IN $kh_placed"
         start_admitted, admitted_ancestors, declared_scope = False, [], []
         if scoped_start:
             def start_access() -> "Awaitable[tuple[bool, list[str], list[str]]]":
@@ -22208,7 +22223,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Beside what the rules select, a browse lists every child of the start the batch check admits: the statement hands back the
             # children the rules leave undecided, and the page is read again with those the check admits (`_kh_v3_undecided`).
-            undecided = "[]" if flatten else self._kh_v3_undecided("start", decided="kh_u IN rawNodes")
+            undecided = "[]" if flatten else by_probe(self._kh_v3_undecided("start", decided="kh_u IN rawNodes"))
             # An admitted start with no children must still return one row, or
             # the breadcrumb scope disappears with the empty unwind.
             # The walk runs inside the CALL and hands on nodes: an id list imported
@@ -22322,7 +22337,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
              (coalesce(app.permissionModel, '') = 'APP_LEVEL'
               OR app.type = 'KB') AS appOpensEverything
         {scope}
-        WITH app, allNodes, {self._kh_v3_undecided("app", decided="kh_u IN allNodes")} AS khUndecided
+        WITH app, allNodes, {by_probe(self._kh_v3_undecided("app", decided="kh_u IN allNodes"))} AS khUndecided
         CALL (app, allNodes) {{
         {listing}
         }}

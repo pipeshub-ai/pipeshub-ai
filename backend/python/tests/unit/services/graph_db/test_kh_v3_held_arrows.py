@@ -347,4 +347,4 @@ def test_the_frontier_and_the_sidebar_reach_walk_only_for_a_node_with_a_child() 
     slim = ArangoHTTPProvider._kh_v3_slim_aql(tuple(conditions), "name", stubs=True)
     assert "LET kh_row_from_app = LENGTH(FOR kh_kx, kh_kxe IN 1..1 OUTBOUND kh_sd" in slim
     assert "FILTER kh_way OR LENGTH(kh_probe) > 0" in slim
-    assert "INBOUND" not in _aql_way_below("kh_ch", every_hop=True) and "INBOUND" not in _aql_way_below("kh_ch", every_hop=False)
+    assert "kh_xc" not in _aql_way_below("kh_ch", every_hop=True) and "kh_rq" not in _aql_way_below("kh_ch", every_hop=True)
