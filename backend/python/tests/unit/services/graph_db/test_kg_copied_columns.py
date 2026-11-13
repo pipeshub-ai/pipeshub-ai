@@ -18,8 +18,9 @@ import re
 from pathlib import Path
 
 import pytest
+import sqlglot
 import yaml
-from sqlglot import exp, parse_one
+from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, build_scope
 
 # sqlglot is a dev dependency: imported, not skipped, so the guard cannot go missing
@@ -63,9 +64,10 @@ def _key(sql: str) -> str:
     return m.group(1) if m else " ".join(sql.split())[:60]
 
 
-def _parse(sql: str) -> exp.Expression:
+def _parse(sql: str) -> list[exp.Expression]:
+    """Every statement of a text (``a; b`` is two)."""
     try:
-        return parse_one(re.sub(r"\$(\d+)", r":p\1", sql), read="postgres")
+        return [t for t in sqlglot.parse(re.sub(r"\$(\d+)", r":p\1", sql), read="postgres") if t is not None]
     except Exception as e:      # any parse error: the statement is named
         raise Unparsed(sql) from e
 
@@ -117,12 +119,12 @@ def _stars(scope: Scope, node: exp.Expression) -> list[str | None]:
 
 
 def _returns_read(scope: Scope) -> bool:
-    """Whether what a scope returns is read as such: the statement's, a union branch of such a scope, a subquery in an expression. A derived table's, a CTE's or a lateral
-    subquery's columns are read only through what reads them."""
+    """Whether what a scope returns is read as such: the statement's, a subquery in an expression, and a union branch when its union's is. A derived table's, a CTE's or a
+    lateral subquery's columns are read only through what reads them."""
     parent = scope.parent
     if parent is None:
         return True
-    if parent.is_union:
+    if scope.is_union:          # a branch: as visible as the union it is part of (the parent scope holds the union)
         return _returns_read(parent)
     return not (scope.is_derived_table or scope.is_cte or (scope.is_subquery and parent.is_udtf))
 
@@ -131,27 +133,38 @@ def _children(scope: Scope) -> list[Scope]:
     return [*scope.union_scopes, *scope.subquery_scopes, *scope.derived_table_scopes, *scope.udtf_scopes]
 
 
+def _leaves(scope: Scope) -> list[Scope]:
+    """The SELECTs of a union, nested unions included; the scope itself otherwise."""
+    return [leaf for u in scope.union_scopes for leaf in _leaves(u)] if scope.union_scopes else [scope]
+
+
+def _target(tree: exp.Expression) -> exp.Table | None:
+    """The table an INSERT, UPDATE or DELETE writes."""
+    t = tree.this
+    return t.this if isinstance(t, exp.Schema) else t if isinstance(t, exp.Table) else None
+
+
 def copied_reads(tree: exp.Expression) -> set[str]:
-    """The copied columns of kg.records (and "*" for the whole row) that a statement reads: into what it returns, or into a condition, a join, a grouping or an order."""
+    """The copied columns of kg.records (and "*" for the whole row) that a statement reads: into what it returns (a query's columns, a RETURNING list), or into a condition,
+    a join (ON or USING), a grouping, a DISTINCT ON or an order."""
     found: set[str] = set()
+    if isinstance(tree, (exp.Insert, exp.Update, exp.Delete)):
+        target = _target(tree)
+        if target is not None and _is_table(target):
+            names = {"", target.name, target.alias_or_name}
+            ret = tree.args.get("returning")
+            for r in ret.expressions if ret is not None else []:
+                if isinstance(r, exp.Star) or (isinstance(r, exp.Column) and isinstance(r.this, exp.Star) and r.table in names):
+                    found.add("*")
+            found |= {c.name for c in (ret.find_all(exp.Column) if ret is not None else []) if c.name in COPIED and c.table in names}
+            if not isinstance(tree, exp.Insert):        # its condition and the values it sets (a column set is written, not read)
+                read = [tree.args.get("where"), *(a.expression for a in tree.args.get("expressions") or [] if isinstance(a, exp.EQ))]
+                found |= {c.name for w in read if w is not None for c in w.find_all(exp.Column) if c.name in COPIED and c.table in names}
     root = build_scope(tree)
-    if root is None:            # a statement with no query (an insert of values, an update or a delete of the table): its condition and the values it sets
-        if any(_is_table(t) for t in tree.find_all(exp.Table)):
-            read = [tree.args.get("where"), *(a.expression for a in tree.args.get("expressions") or [] if isinstance(a, exp.EQ))]
-            found |= {c.name for w in read if w is not None for c in w.find_all(exp.Column) if c.name in COPIED}
+    if root is None:
         return found
     work: list[tuple[Scope, exp.Expression]] = []
     seen: set[tuple[int, int]] = set()
-    for scope in root.traverse():
-        e = scope.expression
-        if isinstance(e, exp.Select):
-            work += [(scope, n) for n in (e.args.get(k) for k in ("where", "group", "having", "order", "qualify", "distinct")) if n is not None]
-            work += [(scope, j.args["on"]) for j in e.args.get("joins") or [] if j.args.get("on") is not None]
-            if _returns_read(scope):
-                work += [(scope, p) for p in _projections(scope)]
-    if isinstance(tree, (exp.Insert, exp.Update, exp.Delete)) and tree.args.get("where") is not None and root is not None:
-        work.append((root, tree.args["where"]))
-
     followed: set[tuple[int, str | None]] = set()
 
     def follow(src: object, name: str | None) -> None:
@@ -164,20 +177,45 @@ def copied_reads(tree: exp.Expression) -> set[str]:
                 found.add("*")
             elif name in COPIED:
                 found.add(name)
-        elif isinstance(src, Scope):
-            # a union's branches, a lateral's subquery: the scopes that make the columns
-            branches = [src] if isinstance(src.expression, exp.Select) else [c for c in _children(src) if c.parent is src or src.is_union]
-            for b in branches:
-                if not isinstance(b.expression, exp.Select):
-                    follow(b, name)
-                    continue
+            return
+        if not isinstance(src, Scope):
+            return
+        if not isinstance(src.expression, (exp.Select, exp.Union)):     # a lateral: its subquery makes the columns
+            for c in _children(src):
+                follow(c, name)
+            return
+        leaves = _leaves(src)
+        first = _projections(leaves[0])
+        if any(_stars(leaves[0], p) for p in first):         # the columns come from a star: by name, through it
+            for b in leaves:
                 for p in _projections(b):
-                    if _stars(b, p):
-                        for t in _stars(b, p):
-                            for s in _source(b, t or ""):
-                                follow(s, name)
-                    elif name is None or p.alias_or_name == name:
+                    for t in _stars(b, p):
+                        for x in _source(b, t or ""):
+                            follow(x, None if src.outer_columns else name)
+                    if not _stars(b, p) and (name is None or p.alias_or_name == name):
                         work.append((b, p))
+            return
+        # the names the scope exports (its alias list, ``c(v)`` or ``x(v)``, else its first SELECT's), and the position each has in every SELECT of it
+        names = list(src.outer_columns) or [p.alias_or_name for p in first]
+        positions = range(len(names)) if name is None else [i for i, n in enumerate(names) if n == name]
+        for b in leaves:
+            projs = _projections(b)
+            work.extend((b, projs[i]) for i in positions if i < len(projs))
+
+    for scope in root.traverse():
+        e = scope.expression
+        if isinstance(e, exp.Select):
+            work += [(scope, n) for n in (e.args.get(k) for k in ("where", "group", "having", "order", "qualify", "distinct")) if n is not None]
+            for j in e.args.get("joins") or []:
+                if j.args.get("on") is not None:
+                    work.append((scope, j.args["on"]))
+                for u in j.args.get("using") or []:         # USING (a): the column a of both sides
+                    for x in scope.sources.values():
+                        follow(x, u.name)
+            if _returns_read(scope):
+                work += [(scope, p) for p in _projections(scope)]
+    if isinstance(tree, (exp.Insert, exp.Update, exp.Delete)) and tree.args.get("where") is not None:
+        work.append((root, tree.args["where"]))
 
     while work:
         scope, node = work.pop()
@@ -185,13 +223,13 @@ def copied_reads(tree: exp.Expression) -> set[str]:
             continue
         seen.add((id(scope), id(node)))
         for t in _stars(scope, node):
-            for s in _source(scope, t or ""):
-                follow(s, None)
+            for x in _source(scope, t or ""):
+                follow(x, None)
         for c in _own_columns(node):
             if isinstance(c.this, exp.Star):
                 continue
-            for s in _source(scope, c.table):
-                follow(s, c.name)
+            for x in _source(scope, c.table):
+                follow(x, c.name)
     return found
 
 
@@ -211,7 +249,8 @@ def reads(texts: list[str], consts: dict[str, str] | None = None) -> set[str]:
     found: set[str] = set()
     for s in stmts:
         if TABLE in s.lower():
-            found |= copied_reads(_parse(s))
+            for tree in _parse(s):
+                found |= copied_reads(tree)
     return found
 
 
@@ -410,6 +449,23 @@ def test_the_scan_finds_the_sources_and_statements_it_must_read() -> None:
     (["SELECT id FROM kg.records GROUP BY id HAVING max(record_type) = 'FILE'"], {"record_type"}),           # a bare column in an aggregate of HAVING
     (["SELECT DISTINCT ON (record_type) id FROM kg.records ORDER BY record_type, id"], {"record_type"}),
     (["SELECT DISTINCT ON (r.rule) r.id FROM kg.records r"], {"rule"}),
+    (["SELECT sk FROM kg.records; SELECT origin FROM kg.records"], {"origin"}),                               # every statement of a text
+    (["SELECT x.sk FROM (SELECT sk, rule FROM kg.records UNION ALL SELECT sk, rule FROM kg.records) x"], set()),   # a union's column the outer query does not read
+    (["SELECT x.rule FROM (SELECT sk, rule FROM kg.records UNION ALL SELECT sk, rule FROM kg.records) x"], {"rule"}),
+    (["SELECT x.v FROM (SELECT sk AS v FROM kg.records UNION ALL SELECT origin FROM kg.records) x"], {"origin"}),   # by position, in every branch
+    (["SELECT sk FROM kg.records UNION SELECT model FROM kg.records"], {"model"}),
+    (["UPDATE kg.records SET sk = sk WHERE org_id = $1 RETURNING rule"], {"rule"}),                         # RETURNING is what a statement returns
+    (["UPDATE kg.records SET sk = sk WHERE org_id = $1 RETURNING *"], {"*"}),
+    (["DELETE FROM kg.records WHERE org_id = $1 RETURNING origin"], {"origin"}),
+    (["INSERT INTO kg.records (org_id, sk) VALUES ($1, $2) RETURNING vrid"], {"vrid"}),
+    (["UPDATE kg.records SET sk = sk WHERE org_id = $1 RETURNING sk, id"], set()),
+    (["SELECT n.id FROM graph.nodes n JOIN kg.records r USING (external_id)"], {"external_id"}),            # USING reads the column of both sides
+    (["SELECT r.sk FROM kg.records r JOIN kg.records s USING (external_id)"], {"external_id"}),
+    (["SELECT r.sk FROM kg.records r JOIN kg.records s USING (sk)"], set()),
+    (["WITH c(v) AS (SELECT rule FROM kg.records) SELECT v FROM c"], {"rule"}),                             # a CTE's alias list, by position
+    (["WITH c(v, w) AS (SELECT sk, rule FROM kg.records) SELECT v FROM c"], set()),
+    (["SELECT x.v FROM (SELECT rule FROM kg.records) x(v)"], {"rule"}),                                     # a derived table's alias list
+    (["SELECT x.v FROM (SELECT sk, rule FROM kg.records) x(v, w)"], set()),
     (["WITH RECURSIVE c AS (SELECT r.sk FROM kg.records r UNION SELECT x.sk FROM c JOIN kg.records x ON x.parent_sk = c.sk) SELECT c.sk FROM c"], set()),
 ])
 def test_the_scan_names_each_way_of_reading_a_copied_column(texts: list[str], found: set[str]) -> None:
