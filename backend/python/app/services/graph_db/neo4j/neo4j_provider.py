@@ -21572,11 +21572,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             below = self._kh_v3_child_rule(
                 "kh_xs", "kh_xp", from_app="kh_xfa", opens=app_opens, state=state, grant_once=grant_once)
             # Or a child of the stub the walk from the App reaches by another parent: opening the stub lists it (the check admits it).
-            reached_kid = (f"EXISTS {{ MATCH ({v})-[kh_xd:NODE_RELATION]->(kh_xc:Record|RecordGroup) WHERE kh_xd.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']"
+            stub = self._kh_placeholder(v, state=state)
+            reached_kid = (f"EXISTS {{ WITH * WHERE {stub}"
+                           f" MATCH ({v})-[kh_xd:NODE_RELATION]->(kh_xc:Record|RecordGroup) WHERE kh_xd.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']"
                            f" AND kh_xc.orgId = $org_id AND {reached_child('kh_xc')} }}")
-            return (f"AND CASE WHEN NOT {self._kh_placeholder(v, state=state)} THEN true ELSE EXISTS {{ WITH app, {v} AS kh_xv, {reached} AS kh_xfa MATCH (kh_xv) "
+            # The stub test opens each subquery, so the walk runs for a stub alone even where the planner evaluates the whole disjunction. Not a
+            # CASE around the subquery: Neo4j plans that as a nested plan, three times the planning time of a page statement, past a small heap.
+            return (f"AND (NOT {stub} OR EXISTS {{ WITH * WHERE {stub} WITH app, {v} AS kh_xv, {reached} AS kh_xfa MATCH (kh_xv) "
                     f"((kh_xp)-[kh_xr:NODE_RELATION]->(kh_xs) WHERE kh_xr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
-                    f"AND ({below})){{1,50}} (kh_xz) WHERE NOT {self._kh_placeholder('kh_xz', state=state)} }} OR {reached_kid} END")
+                    f"AND ({below})){{1,50}} (kh_xz) WHERE NOT {self._kh_placeholder('kh_xz', state=state)} }} OR {reached_kid})")
 
         def reached_child(v: str) -> str:
             """Whether ``v``, a child of a node being opened, is one the opening lists though the rule does not pass the hop: a child of this App

@@ -73,8 +73,11 @@ async def test_past_the_cap_the_browse_asks_about_the_first_children_and_logs_it
 
 async def test_a_browse_walks_below_a_child_for_the_stub_test_only_when_the_child_is_a_stub() -> None:
     """The stub test (is anything readable below a placeholder?) walks down from the node. Written as `NOT stub OR EXISTS {walk}` the planner
-    ran the walk for every child of every row (60k db hits per row of a 250-file folder); a CASE runs it for a stub alone."""
+    ran the walk for every child of every row (60k db hits per row of a 250-file folder), so each subquery opens with the stub test. Not a
+    CASE around the subquery: Neo4j plans that as a nested plan, and a page statement took three times main's planning time and ran a 768 MB
+    heap out of memory."""
     provider = _provider(_payload([]), admits=set())
     await _browse(provider, "g1")
     statement = provider._kh_query.await_args_list[0].args[0]
-    assert "THEN true ELSE EXISTS { WITH app, " in statement and " OR EXISTS { WITH app, " not in statement
+    assert " OR EXISTS { WITH * WHERE " in statement and " OR EXISTS { WITH app, " not in statement
+    assert "THEN true ELSE EXISTS" not in statement
