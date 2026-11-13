@@ -11802,6 +11802,56 @@ components:
             Upserted by `principalId`: existing members get their `role`
             updated, new ids are added. The project owner is silently
             skipped if included (ownership is implicit).
+    ConversationForkOrigin:
+      type: object
+      additionalProperties: false
+      description: |
+        Where a forked conversation was copied from. Present only on a fork.
+      required:
+        - conversationId
+        - messageId
+        - title
+      properties:
+        conversationId:
+          type: string
+          format: objectId
+          description: The conversation this one was forked from
+        messageId:
+          type: string
+          format: objectId
+          description: The message of the original the fork was made at
+        title:
+          type: string
+          nullable: true
+          description: |
+            Title of the original. `null` when the caller cannot open it: it was
+            deleted or archived, or it belongs to someone else (a fork shared with
+            another user never names the original).
+        atMessageId:
+          type: string
+          format: objectId
+          description: |
+            This conversation's copy of the fork point; the "forked from here" line
+            goes after it. Absent on forks made before it was recorded.
+    ConversationFork:
+      type: object
+      additionalProperties: false
+      description: A fork the caller made of this conversation.
+      required:
+        - conversationId
+        - title
+        - fromMessageId
+      properties:
+        conversationId:
+          type: string
+          format: objectId
+          description: The fork
+        title:
+          type: string
+        fromMessageId:
+          type: string
+          format: objectId
+          description: The message of this conversation the fork was made at; the link goes after it.
     ForkConversationResponse:
       type: object
       additionalProperties: false
@@ -16200,6 +16250,13 @@ components:
           type: string
         sharedBy:
           $ref: '#/components/schemas/ConversationSharedBy'
+        forkedFrom:
+          $ref: '#/components/schemas/ConversationForkOrigin'
+        forks:
+          type: array
+          description: The caller's own forks of this conversation, oldest first. Absent when there are none.
+          items:
+            $ref: '#/components/schemas/ConversationFork'
         messages:
           type: array
           items:
@@ -45138,6 +45195,13 @@ paths:
                         type: string
                         enum: [private, project]
                         description: Who in the project sees the conversation. Absent when never set.
+                      forkedFrom:
+                        $ref: '#/components/schemas/ConversationForkOrigin'
+                      forks:
+                        type: array
+                        description: The caller's own forks of this conversation, oldest first. Absent when there are none.
+                        items:
+                          $ref: '#/components/schemas/ConversationFork'
                       messages:
                         type: array
                         description: Page of messages, sliced by `pagination` and ordered by `sortingMessages`

@@ -985,6 +985,11 @@
     "copy": "Kopírovat",
     "fork": "Rozvětvit chat",
     "forkFromHere": "Rozvětvit odtud",
+    "forkedHere": "Rozvětveno zde",
+    "untitledChat": "Nepojmenovaný chat",
+    "forkedFrom": "Rozvětveno z",
+    "copiedUpToHere": "Zkopírováno až sem · nové zprávy začínají níže",
+    "forkOriginUnavailable": "původní chat již není dostupný",
     "regenerate": "Vygenerovat znovu",
     "answerHidden": {
       "lost": "Tato odpověď použila obsah, ke kterému již nemáte přístup.",

@@ -939,6 +939,11 @@
     "copy": "Copy",
     "fork": "Fork chat",
     "forkFromHere": "Fork from here",
+    "forkedHere": "Forked here",
+    "untitledChat": "Untitled chat",
+    "forkedFrom": "Forked from",
+    "copiedUpToHere": "Copied up to here · new messages start below",
+    "forkOriginUnavailable": "the original chat is no longer available",
     "regenerate": "Regenerate",
     "answerHidden": {
       "lost": "This answer used content you can no longer access.",

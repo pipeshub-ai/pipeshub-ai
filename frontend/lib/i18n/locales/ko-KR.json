@@ -939,6 +939,11 @@
     "copy": "복사",
     "fork": "채팅 분기",
     "forkFromHere": "여기서 분기",
+    "forkedHere": "여기서 분기됨",
+    "untitledChat": "제목 없는 채팅",
+    "forkedFrom": "분기 원본:",
+    "copiedUpToHere": "여기까지 복사됨 · 새 메시지는 아래부터 시작됩니다",
+    "forkOriginUnavailable": "원본 채팅을 더 이상 사용할 수 없습니다",
     "regenerate": "다시 생성",
     "answerHidden": {
       "lost": "이 답변은 더 이상 접근할 수 없는 콘텐츠를 사용했습니다.",

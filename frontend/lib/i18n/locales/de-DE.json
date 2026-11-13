@@ -850,6 +850,11 @@
     "copy": "Kopieren",
     "fork": "Chat abzweigen",
     "forkFromHere": "Ab hier abzweigen",
+    "forkedHere": "Hier abgezweigt",
+    "untitledChat": "Unbenannter Chat",
+    "forkedFrom": "Abgezweigt von",
+    "copiedUpToHere": "Bis hier kopiert · neue Nachrichten beginnen unten",
+    "forkOriginUnavailable": "der ursprüngliche Chat ist nicht mehr verfügbar",
     "regenerate": "Neu generieren",
     "answerHidden": {
       "lost": "Diese Antwort verwendete Inhalte, auf die Sie nicht mehr zugreifen können.",

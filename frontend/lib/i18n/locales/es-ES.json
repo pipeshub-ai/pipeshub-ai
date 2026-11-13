@@ -863,6 +863,11 @@
     "copy": "Copiar",
     "fork": "Bifurcar chat",
     "forkFromHere": "Bifurcar desde aquí",
+    "forkedHere": "Bifurcado aquí",
+    "untitledChat": "Chat sin título",
+    "forkedFrom": "Bifurcado de",
+    "copiedUpToHere": "Copiado hasta aquí · los mensajes nuevos empiezan abajo",
+    "forkOriginUnavailable": "el chat original ya no está disponible",
     "regenerate": "Regenerar",
     "answerHidden": {
       "lost": "Esta respuesta usó contenido al que ya no tienes acceso.",

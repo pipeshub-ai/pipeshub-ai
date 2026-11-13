@@ -166,6 +166,7 @@ const stubConversation = (messages: unknown[]) => {
   sinon.stub(ChatSession, 'findOne').returns(
     chain({ _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
   )
+  sinon.stub(ChatSession, 'find').returns(chain([]))
   sinon.stub(ChatSessionMessage, 'countDocuments').resolves(messages.length)
   sinon.stub(ChatSessionMessage, 'find').returns(chain(messages))
 }
@@ -321,6 +322,7 @@ describe('shared chats: per-viewer citations', () => {
     sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
     sinon.stub(Users, 'find').returns(chain([]))
     sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', initiator: OWNER, isShared: true, sharedWith: [], status: 'complete' }))
+    sinon.stub(ChatSession, 'find').returns(chain([]))
     sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([{ ...richAnswer(), messageType: 'user_query' }]))
     const r = res()
