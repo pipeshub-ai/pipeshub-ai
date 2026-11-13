@@ -97,7 +97,7 @@ def _own_columns(node: exp.Expression) -> list[exp.Column]:
     out = []
     for c in node.find_all(exp.Column):
         a = c
-        while a is not node and a is not None and not isinstance(a, (exp.Select, exp.Union)):
+        while a is not node and a is not None and not isinstance(a, (exp.Select, exp.SetOperation)):
             a = a.parent
         if a is node or a is None:          # no query lies between the column and the node
             out.append(c)
@@ -151,7 +151,7 @@ def _whole_row(scope: Scope, c: exp.Column) -> bool:
         return False
     s: Scope | None = scope
     while s is not None:
-        if any(c.name in _exported(x) for x in s.sources.values() if isinstance(x, Scope) and isinstance(x.expression, (exp.Select, exp.Union))):
+        if any(c.name in _exported(x) for x in s.sources.values() if isinstance(x, Scope) and isinstance(x.expression, (exp.Select, exp.SetOperation))):
             return False
         if c.name in s.sources:
             return _is_table(s.sources[c.name])
@@ -179,12 +179,12 @@ def copied_reads(tree: exp.Expression) -> set[str]:
                     found.add("*")
             # the target's alias or name as a value (``RETURNING kg_row``, ``WHERE kg_row IS NOT NULL``) is the whole row
             for w in (ret, tree.args.get("where")):
-                if w is not None and any(not c.table and c.name in names - {""} for c in w.find_all(exp.Column)):
+                if w is not None and any(not c.table and c.name in names - {""} for c in _own_columns(w)):
                     found.add("*")
-            found |= {c.name for c in (ret.find_all(exp.Column) if ret is not None else []) if c.name in COPIED and c.table in names}
+            found |= {c.name for c in (_own_columns(ret) if ret is not None else []) if c.name in COPIED and c.table in names}
             if not isinstance(tree, exp.Insert):        # its condition and the values it sets (a column set is written, not read)
                 read = [tree.args.get("where"), *(a.expression for a in tree.args.get("expressions") or [] if isinstance(a, exp.EQ))]
-                found |= {c.name for w in read if w is not None for c in w.find_all(exp.Column) if c.name in COPIED and c.table in names}
+                found |= {c.name for w in read if w is not None for c in _own_columns(w) if c.name in COPIED and c.table in names}
     root = build_scope(tree)
     if root is None:
         return found
@@ -205,7 +205,7 @@ def copied_reads(tree: exp.Expression) -> set[str]:
             return
         if not isinstance(src, Scope):
             return
-        if not isinstance(src.expression, (exp.Select, exp.Union)):     # a lateral: its subquery makes the columns
+        if not isinstance(src.expression, (exp.Select, exp.SetOperation)):     # a lateral: its subquery makes the columns
             for c in _children(src):
                 follow(c, name)
             return
@@ -239,8 +239,6 @@ def copied_reads(tree: exp.Expression) -> set[str]:
                         follow(x, u.name)
             if _returns_read(scope):
                 work += [(scope, p) for p in _projections(scope)]
-    if isinstance(tree, (exp.Insert, exp.Update, exp.Delete)) and tree.args.get("where") is not None:
-        work.append((root, tree.args["where"]))
 
     while work:
         scope, node = work.pop()
@@ -486,6 +484,14 @@ def test_the_scan_finds_the_sources_and_statements_it_must_read() -> None:
     (["DELETE FROM kg.records WHERE org_id = $1 RETURNING origin"], {"origin"}),
     (["INSERT INTO kg.records (org_id, sk) VALUES ($1, $2) RETURNING vrid"], {"vrid"}),
     (["UPDATE kg.records SET sk = sk WHERE org_id = $1 RETURNING sk, id"], set()),
+    (["SELECT x.v FROM (SELECT sk AS v FROM kg.records INTERSECT SELECT origin FROM kg.records) x"], {"origin"}),   # INTERSECT and EXCEPT as UNION
+    (["SELECT x.v FROM (SELECT sk AS v FROM kg.records EXCEPT SELECT origin FROM kg.records) x"], {"origin"}),
+    (["SELECT x.sk FROM (SELECT sk, rule FROM kg.records INTERSECT SELECT sk, rule FROM kg.records) x"], set()),
+    (["UPDATE kg.records SET name = 'x' WHERE id IN (SELECT id FROM graph.nodes WHERE rule = 'a')"], set()),   # an inner query's columns are its own
+    (["DELETE FROM kg.records WHERE id IN (SELECT id FROM graph.nodes WHERE records IS NOT NULL)"], set()),
+    (["UPDATE kg.records SET name = 'x' WHERE rule = 'a' AND id IN (SELECT id FROM graph.nodes)"], {"rule"}),
+    (["UPDATE graph.nodes SET doc = $1 WHERE coll = 'records' AND id IN (SELECT id FROM kg.records WHERE origin = $2)"], {"origin"}),
+    (["UPDATE graph.nodes SET doc = $1 WHERE rule = $2 AND id IN (SELECT id FROM kg.records)"], set()),
     (["UPDATE kg.records AS kg_row SET name = 'x' RETURNING kg_row"], {"*"}),                              # a bare alias is the whole row as a value
     (["SELECT r FROM kg.records r"], {"*"}),
     (["SELECT to_jsonb(r) FROM kg.records r WHERE r.org_id = $1"], {"*"}),
