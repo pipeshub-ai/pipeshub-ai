@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from docling_core.types.doc.document import DoclingDocument
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from app.config import file_types
 from app.config.constants.service import TokenScopes
 from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.models.blocks import BlocksContainer
@@ -37,7 +38,6 @@ from app.services.parsing.interface import (
     ParserProvider,
 )
 from app.utils.converters.caption_map import apply_caption_map
-from app.utils.image_utils import get_extension_from_mimetype
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
@@ -155,7 +155,7 @@ class ParsingClient(BaseServiceClient):
         Raises :class:`ServiceCallError` on connection / retry exhaustion.
         """
         if not extension:
-            extension = get_extension_from_mimetype(mime_type)
+            extension = file_types.extension_for_mime(mime_type)
             if not extension and "." in record_name:
                 extension = record_name.rsplit(".", 1)[-1]
 
