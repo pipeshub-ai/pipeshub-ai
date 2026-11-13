@@ -68,23 +68,28 @@ jobs:
       matrix:
         pg: ['17', '18']
         # The graph suite took ~46 min in one job (over 60 on PostgreSQL 18), so it is split by measured time. graph_tests
-        # are the pytest paths; graph_k splits one file by -k into a test set and its complement; graph_cases is the shard's
-        # case count. Shard 4 runs the folder minus what the others name, so a new test file runs there.
+        # are the pytest paths; graph_k splits one file by -k into sets that together hold each of its tests once; graph_cases
+        # is the shard's case count. Shard 5 runs the folder minus what the others name, so a new test file runs there.
         # scripts/test_pg_runtime_shards.py checks that every case runs exactly once and that the counts add up.
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
         include:
+          # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own
           - shard: 1
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not_current
-            graph_cases: 7
+            graph_k: '[not_current-adversarial]'
+            graph_cases: 1
           # also runs tests/integration/db and tests/integration/pg_runtime
           - shard: 2
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not not_current
-            graph_cases: 8
-          # test_kg_read.py stays in shard 4, behind most of the files that run before it in the whole folder: its plan gate
-          # depends on the statistics they leave.
+            graph_k: not [not_current-adversarial] and [current-adversarial]
+            graph_cases: 1
           - shard: 3
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: not [not_current-adversarial] and not [current-adversarial]
+            graph_cases: 13
+          # test_kg_read.py stays in shard 5, behind most of the files that run before it in the whole folder: its plan gate
+          # depends on the statistics they leave.
+          - shard: 4
             graph_tests: >-
               tests/integration/graph_db/postgres/test_accessible_scope_differential.py
               tests/integration/graph_db/postgres/test_conformance.py
@@ -95,7 +100,7 @@ jobs:
               tests/integration/graph_db/postgres/test_robustness.py
               tests/integration/graph_db/postgres/test_role_batch.py
             graph_cases: 244
-          - shard: 4
+          - shard: 5
             graph_tests: >-
               tests/integration/graph_db/postgres
               --ignore=tests/integration/graph_db/postgres/test_conformance_kh_pg.py
