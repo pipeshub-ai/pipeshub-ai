@@ -22,11 +22,12 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from app.connectors.sources.localKB.handlers.kh_search import search_page
 
+from . import oracle
 from .runner import OracleLayer
 
 if TYPE_CHECKING:
@@ -131,6 +132,45 @@ def _ancestors(world: World, node: Node) -> list[Parent]:
     return out
 
 
+def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> set[str]:
+    """The granted rows a browse of ``node`` (an App or a group) lists beside its hierarchy children, by the placement rule the stores share
+    (``GraphDBProvider._kh_v3_chain_tops``, ``place_chain_tops``): a live, OPEN, non-placeholder record or group of the App the viewer is
+    granted, with no hierarchy parent the viewer may open and not the App's hierarchy child, outside a group that hides its children. It is
+    listed under each of its own groups (a record's groups, a group's parent groups) the viewer may open; with none, under the App when it
+    has no own group or one that hangs from the App. A group's browse places only the records that belong to it. None in an App that opens
+    everything."""
+    target = world.node(node)
+    app_id = node if target.kind == "app" else target.connector
+    app = world.node(app_id)
+    if target.kind not in ("app", "group") or app.model == "APP_LEVEL" or app.app_type == "KB":
+        return set()
+    _, store = reference._store(world)
+    granted = {reference._ns.local(i) for i in oracle.viewer(store, reference._ns.id(viewer), reference._ns.org).granted}
+
+    def hier(n: Node) -> list[str]:
+        return [p.id for p in n.parents if p.rel in HIERARCHY]
+
+    def own(n: Node) -> list[str]:
+        return [g for g in (n.belongs if n.kind == "record" else hier(n)) if g != n.id and world.node(g).kind == "group"]
+
+    cands = [n for n in world.nodes if n.id in granted and n.connector == app_id and n.kind in ("record", "group") and not n.deleted
+             and not n.placeholder and (n.rule or "OPEN") == "OPEN" and app_id not in hier(n) and not hidden_by_navigation(world, n)
+             and (target.kind == "app" or (n.kind == "record" and node in n.belongs))]
+    asked = sorted({i for n in cands for i in [n.id, *hier(n), *own(n)]})
+    # the stores' check admits a placeholder asked by id where it would admit a real node there (the oracle refuses every placeholder): asked as one
+    real = replace(world, nodes=tuple(replace(n, placeholder=False) for n in world.nodes))
+    ok = {i for i, v in reference.explain(real, viewer, asked).items() if v.admitted}
+    out = set()
+    for n in cands:
+        if n.id not in ok or set(hier(n)) & ok:
+            continue
+        openable = set(own(n)) & ok
+        if node in openable or (target.kind == "app" and not openable and (
+                not own(n) or any(not world.node(g).deleted and app_id in {a.id for a in _ancestors(world, world.node(g))} for g in own(n)))):
+            out.add(n.id)
+    return out
+
+
 async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "", *, browse_apps: bool = False) -> list[KhFinding]:
     """``browse_apps``: also browse each App the viewer is gated to directly, as the folders are (its children are the nodes that hang from it)."""
     reference = OracleLayer(layer.shape)
@@ -229,7 +269,9 @@ async def _browse(
         return {i for i, row in rows.items() if i not in seen and not (i in on_the_way and getattr(row, "isPlaceholder", False))}
 
     def children(node: str) -> list[Node]:
-        return [n for n in world.nodes if not n.deleted and any(p.id == node and p.rel in HIERARCHY for p in n.parents)]
+        """Its hierarchy children, and the chain-tops a browse of it places there."""
+        tops = chain_tops(reference, world, viewer, node)
+        return [n for n in world.nodes if not n.deleted and (n.id in tops or any(p.id == node and p.rel in HIERARCHY for p in n.parents))]
 
     async def open_(node: str, parent_type: str) -> dict[str, Any] | None:
         """What opening ``node`` lists, {id: row}, held to one row per node over every page and a total that counts each once."""

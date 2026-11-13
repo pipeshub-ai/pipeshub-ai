@@ -1,4 +1,5 @@
-"""The knowledge hub's browse of one node (the App, a record group or a record) on PostgreSQL: its children by a hierarchy edge that the viewer may open.
+"""The knowledge hub's browse of one node (the App, a record group or a record) on PostgreSQL: its children by a hierarchy edge that the viewer may open, and, for the App or a
+group, the viewer's chain-tops placed there (granted rows whose hierarchy parents they may not open: ``GraphDBProvider._kh_v3_chain_tops``, the rule every store shares).
 
 A child is listed when the access decision admits it (the same decision as the flat listing's: the stamped classes for a connector kg serves, the live walk otherwise), it is not hidden by a group
 that hides its children, and, when it is a placeholder, a path of nodes the viewer may open leads from it to a node that is no placeholder. A group that hides its children lists none. An arrow is on
@@ -14,6 +15,7 @@ import functools
 import time
 from typing import TYPE_CHECKING, Any
 
+from app.core.org_context import current_org_id
 from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingNotReady,
     KnowledgeHubListingTooLarge,
@@ -34,6 +36,7 @@ from app.services.graph_db.postgres.kh_listing import (
     UNDECIDED_MAX,
     WINDOW_MAX,
     _node_type,
+    chain_tops_apply,
     filtered_out,
     head,
     where_of,
@@ -66,9 +69,8 @@ class KhBrowseMixin(PgBase):
         at_app = start_id == app_id      # the connector itself: kg keeps it as the hierarchy parent of its top nodes, so it is browsed by its own key
         gated = set(gated_app_ids)
 
-        async def unit(tx: Tx) -> dict[str, Any] | str:
-            """Everything up to the page, in one read: the start and its connector, the viewer's grants in it, the listing state, the breadcrumbs' trail, the children of a node
-            held whole, and the access check's answer for the start, its ancestors and the children the classes do not decide."""
+        async def resolve(tx: Tx) -> tuple[Any, str, list[str]] | str:
+            """The start and its connector, and the viewer's grants in it."""
             start, aid = None, app_id
             if not at_app:      # a browse of a node names no connector: it is the one the node belongs to (from the graph when kg has not copied the node)
                 found = await tx.fetch(kgl.BROWSE_START, org, start_id)
@@ -77,11 +79,25 @@ class KhBrowseMixin(PgBase):
             if aid not in gated:
                 return "refused"
             if grants_by_connector is not None:
-                granted = list(grants_by_connector.get(aid) or [])
-            elif granted_ids is None and user_key:
-                granted = await connector_grants(tx, org, user_key, grantee_ids, aid)
-            else:
-                granted = list(granted_ids or [])
+                return start, aid, list(grants_by_connector.get(aid) or [])
+            if granted_ids is None and user_key:
+                return start, aid, await connector_grants(tx, org, user_key, grantee_ids, aid)
+            return start, aid, list(granted_ids or [])
+
+        resolved = await self._q(resolve, transaction)
+        if resolved == "refused":
+            return refused()
+        start, aid, granted = resolved
+        access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {aid: granted}}
+        tops: list[int] = []
+        if at_app or (start is not None and start["kind"] == 2):
+            # The viewer's chain-tops placed here (granted rows whose hierarchy parents they may not open), by the rule every store shares: read beside the node's linked children.
+            placed = await self._kh_v3_chain_tops(aid, org, access, transaction, only_group=None if at_app else start_id)
+            tops = [c["sk"] for c in placed.get(aid if at_app else start_id, [])]
+
+        async def unit(tx: Tx) -> dict[str, Any] | str:
+            """Everything up to the page, in one read: the listing state, the breadcrumbs' trail, the children of a node held whole, and the access check's answer for the start,
+            its ancestors and the children the classes do not decide."""
             app_sk, app_doc, hidden, served, sets = await head(tx, org, aid, granted, by_class=by_class)
             if app_sk is None:      # a connector the viewer may browse that kg holds no current copy of: not ready, as the flat listing says
                 return "not_ready"
@@ -90,11 +106,13 @@ class KhBrowseMixin(PgBase):
                 return "refused"
             key = app_sk if at_app else start["sk"]
             links = [r["child_sk"] for r in await tx.fetch(kgl.LINKED_CHILDREN, org, key, kgl.LINKS_MAX + 1, hidden)]      # read once: every statement below is handed them
+            linked = set(links)
+            by_key = [*links, *(sk for sk in tops if sk not in linked)]      # the chain-tops are read by their keys, as the linked children are
             base, where = where_of(org, app_sk, app_doc, filters, hidden)
             where += "" if self._kh_lists_placeholders(flatten=False, filters=filters) else " AND NOT r.placeholder"
             p = kgl.Params(list(base.values))
             p.values[1], p.values[2] = key, BROWSE_MEMORY_MAX + 1
-            links_param = p.add(links) if links else None
+            links_param = p.add(by_key) if by_key else None
             trail = await self._kh_browse_trail(tx, org, start) if include_scope and not at_app else None
             if at_app:      # the node every row names as its parent
                 under = {"id": aid, "name": app_doc.get("name"), "nodeType": "app", "isInternal": False}
@@ -107,7 +125,6 @@ class KhBrowseMixin(PgBase):
             if len(links) <= kgl.LINKS_MAX and (at_app or not start["hide_children"]):
                 got = await tx.fetch(kgl.children_held_sql(where, links_param), *p.values)
                 rows = None if got[0]["n"] > BROWSE_MEMORY_MAX else [r for r in got if r["sk"] is not None]
-            access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {aid: granted}}
             gs = set(granted)
             ok, left = self._kh_class_split(rows or [], sets, gs)
             # the children the classes do not decide are asked here only when they are few; otherwise (kg does not serve the connector, or it is mid-sync) they are asked a page at a time
@@ -130,7 +147,7 @@ class KhBrowseMixin(PgBase):
                 # held whole with no placeholder to follow: the page and its rows in this read too
                 listed = [r for r in rows if r["id"] in ok]
                 page = self._kh_order(listed, sort_field, order, after, direction)[:limit + 1]
-                out, read = await self._kh_flat_rows(org, aid, app_doc, page, sort_field, transaction, also=lambda t: self._kh_arrows_read(t, org, page, hidden, sets, gs, access),
+                out, read = await self._kh_flat_rows(org, aid, app_doc, page, sort_field, transaction, also=lambda t: self._kh_arrows_read(t, org, page, hidden, sets, gs, access, tops=chain_tops_apply(app_doc)),
                                                      under=under, tx=tx)
                 u["done"] = (page, len(listed), self._kh_counts(listed), out, read)
             return u
@@ -140,12 +157,12 @@ class KhBrowseMixin(PgBase):
             return refused()
         if u == "not_ready":
             raise KnowledgeHubListingNotReady
-        app_id, granted, app_sk, app_doc, hidden, served, sets = (u[k] for k in ("app_id", "granted", "app_sk", "app_doc", "hidden", "served", "sets"))
+        app_id, app_sk, app_doc, hidden, served, sets = (u[k] for k in ("app_id", "app_sk", "app_doc", "hidden", "served", "sets"))
         if grants_out is not None:
             grants_out[app_id] = granted
         if u["filtered"]:      # the start is admitted; the filters leave its connector out
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=True)
-        access, where, links, p, trail, rows, opened = u["access"], u["where"], u["links"], u["p"], u["trail"], u["rows"], u["opened"]
+        where, links, p, trail, rows, opened = u["where"], u["links"], u["p"], u["trail"], u["rows"], u["opened"]
         gset = set(granted)
         admitted_of = self._kh_admitted_of(sets, gset, self._kh_admitter(org, access, transaction, served=served))
         resume, capped, out, read = None, False, None, None
@@ -163,11 +180,13 @@ class KhBrowseMixin(PgBase):
             page, resume = await self._kh_browse_wide(p, where, links, limit, sort_field, order, after, direction, admitted_of, hidden, org, transaction)
             total, counts, capped = (await self._kh_browse_total(p, where, links, sets, gset, hidden, admitted_of, org, transaction)) if include_total else (0, dict(NO_COUNTS), False)
         if out is None:      # the rows and their arrows in one read
-            out, read = await self._kh_flat_rows(org, app_id, app_doc, page, sort_field, transaction, also=lambda tx: self._kh_arrows_read(tx, org, page, hidden, sets, gset, access),
+            out, read = await self._kh_flat_rows(org, app_id, app_doc, page, sort_field, transaction, also=lambda tx: self._kh_arrows_read(tx, org, page, hidden, sets, gset, access,
+                                                                                                                  tops=chain_tops_apply(app_doc)),
                                                  under=u["under"])
         lists = await self._kh_lists(read, hidden, admitted_of, org, transaction) if read else set()
         for row, c in zip(out, page, strict=True):
             row["hasChildren"] = c["sk"] in lists
+            row["khHeld"] = bool(read) and c["sk"] in read[3]      # settled by the chain-top walk (``_kh_v3_page_result``)
         payload: dict[str, Any] = {"rows": out, "total": total if include_total else None, "nRecord": counts["record"], "nFolder": counts["folder"], "nGroup": counts["recordGroup"]}
         if at_app:      # the App's own breadcrumb, from the document already read
             payload["crumbNodes"], payload["crumbEdges"] = [self._kh_app_crumb(app_id, app_doc)], []
@@ -337,3 +356,89 @@ class KhBrowseMixin(PgBase):
             nodes.append({"id": app_id, "name": app_doc.get("name"), "nodeType": "app", "subType": app_doc.get("type"), "isInternal": False, "admitted": True, "ownGroups": []})
         edges = [{"parentId": ids[a], "childId": ids[b], "lists": True} for a, b in sorted(set(sk_edges)) if a in ids and b in ids]
         return nodes, edges
+
+    # The chain-top walk (``GraphDBProvider._kh_v3_chain_tops``) reads these three; the rule that places what they return is the one every store shares.
+    async def _kh_v3_chain_top_groups(self, app_id: str, org_id: str, granted_ids: list[str], only_group: str | None, transaction: str | None) -> list[dict[str, Any]]:
+        org = current_org_id()
+        if org_id != org or not granted_ids:
+            return []
+
+        async def read(tx: Tx) -> list[dict[str, Any]]:
+            app = await tx.fetchval("/* pipeshub:kg.chain_app */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = $2", org, app_id)
+            if app is None or not chain_tops_apply(_doc(app)):
+                return []
+            rows = await tx.fetch(kgl.CHAIN_GRANTED, org, sorted(set(granted_ids)), app_id)
+            nodes = await _chain_nodes(tx, org, rows)
+            by: dict[tuple[str, ...], list[str]] = {}
+            for n in nodes.values():
+                own = tuple(g for g, _ in n["own"])
+                if only_group is None or (n["kind"] == 3 and only_group in own):
+                    by.setdefault(own, []).append(n["id"])
+            return [{"ownGroups": list(g), "ids": ids} for g, ids in by.items()]
+        return await self._kq(read, transaction)
+
+    async def _kh_v3_chain_top_candidates(self, app_id: str, node_ids: list[str], transaction: str | None) -> list[dict[str, Any]]:
+        org = current_org_id()
+
+        async def read(tx: Tx) -> list[dict[str, Any]]:
+            nodes = await _chain_nodes(tx, org, await tx.fetch(kgl.CHAIN_ROWS, org, sorted(set(node_ids))))
+            return [{"id": n["id"], "handle": n["id"], "sk": n["sk"], "parents": n["parents"], "ownGroups": [{"id": g, "deleted": d} for g, d in n["own"]]} for n in nodes.values()]
+        return await self._kq(read, transaction) if node_ids else []
+
+    async def _kh_v3_chain_top_facts(self, app_id: str, node_ids: list[str], group_ids: list[str], transaction: str | None) -> dict[str, set[str]]:
+        org = current_org_id()
+
+        async def read(tx: Tx) -> dict[str, set[str]]:
+            app_sk = await tx.fetchval(kgl.APP_KEY, org, app_id)
+            if app_sk is None:
+                return {"hidden": set(node_ids), "underApp": set()}
+            hidden: set[int] = set(await tx.fetchval(kgl.HIDDEN, org, app_sk)) if await tx.fetchval(kgl.HAS_HIDER, org, app_sk) else set()
+            nodes = {r["id"]: r["sk"] for r in await tx.fetch(kgl.CHAIN_ROWS, org, sorted({*node_ids, *group_ids}))}
+            # up the hierarchy from the groups (the primary parent and the hierarchy links), as far as the check's walk goes: the groups that reach the App
+            starts = {nodes[g] for g in group_ids if g in nodes}
+            up: dict[int, set[int]] = {}
+            frontier, seen = set(starts), set(starts)
+            for _ in range(access_sql.MAX_HOPS):
+                if not frontier:
+                    break
+                for r in await tx.fetch(kgl.CHAIN_BY_SK, org, sorted(frontier)):
+                    if r["parent_sk"] is not None:
+                        up.setdefault(r["sk"], set()).add(r["parent_sk"])
+                for r in await tx.fetch(LINKS, org, sorted(frontier)):
+                    if r["kind"] == 1:
+                        up.setdefault(r["child_sk"], set()).add(r["parent_sk"])
+                frontier = {p for sk in frontier for p in up.get(sk, ())} - seen - {app_sk}
+                seen |= frontier
+
+            def reaches(sk: int) -> bool:
+                level, met = {sk}, {sk}
+                for _ in range(access_sql.MAX_HOPS):
+                    level = {p for x in level for p in up.get(x, ())} - met
+                    if app_sk in level:
+                        return True
+                    met |= level
+                return False
+            return {"hidden": {i for i, sk in nodes.items() if sk in hidden and i in set(node_ids)},
+                    "underApp": {g for g in group_ids if g in nodes and reaches(nodes[g])}}
+        return await self._kq(read, transaction)
+
+
+async def _chain_nodes(tx: Tx, org: str, rows: list[Any]) -> dict[int, dict[str, Any]]:
+    """Rows of kg.records (``sk, id, kind, parent_sk, group_sk``) with their hierarchy parents (ids, the App included) and their own groups (``(id, deleted)``): a record's
+    groups (its group and its group links), a group's parent groups."""
+    if not rows:
+        return {}
+    links = await tx.fetch(LINKS, org, [r["sk"] for r in rows])
+    hier = {r["sk"]: [s for s in [r["parent_sk"]] if s is not None] for r in rows}
+    groups = {r["sk"]: [s for s in [r["group_sk"]] if s is not None] for r in rows}
+    for lk in links:
+        (hier if lk["kind"] == 1 else groups)[lk["child_sk"]].append(lk["parent_sk"])
+    refs = sorted({s for d in (hier, groups) for v in d.values() for s in v})
+    keys = {r["sk"]: (r["coll"], r["id"]) for r in await tx.fetch(KEYS, org, refs)} if refs else {}
+    deleted = {r["sk"]: r["deleted"] for r in await tx.fetch(kgl.CHAIN_BY_SK, org, [s for s in refs if keys.get(s, (0,))[0] == 2])} if refs else {}
+    out = {}
+    for r in rows:
+        own = hier[r["sk"]] if r["kind"] == 2 else groups[r["sk"]]
+        out[r["sk"]] = {"sk": r["sk"], "id": r["id"], "kind": r["kind"], "parents": [keys[s][1] for s in hier[r["sk"]] if s in keys],
+                        "own": [(keys[s][1], bool(deleted.get(s))) for s in dict.fromkeys(own) if s in keys and keys[s][0] == 2 and s != r["sk"]]}
+    return out

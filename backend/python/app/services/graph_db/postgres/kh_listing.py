@@ -94,6 +94,11 @@ def origin_of(app_doc: dict) -> str:
     return "COLLECTION" if app_doc.get("type") == "KB" else "CONNECTOR"
 
 
+def chain_tops_apply(app_doc: dict) -> bool:
+    """Whether a browse of the connector places chain-tops: not in an App that opens everything (``_kh_v3_chain_top_groups``)."""
+    return not (app_doc.get("permissionModel") == "APP_LEVEL" or app_doc.get("type") == "KB")
+
+
 def filtered_out(app_id: str, app_doc: dict, filters: dict[str, Any]) -> bool:
     """Whether the connector and origin filters leave the whole connector out."""
     return bool((filters.get("connector_ids") and app_id not in filters["connector_ids"]) or (filters.get("origins") and origin_of(app_doc) not in filters["origins"]))
@@ -213,10 +218,11 @@ class KhListingMixin(PgBase):
         # the arrow of a group or a folder: on exactly when a browse of it lists something
         containers = [c for c in kept[:need] if c["kind"] == 2 or c["folder"]]
         rows, read = await self._kh_flat_rows(org, app_id, app_doc, kept[:need], sort_field, transaction,
-                                              also=lambda tx: self._kh_arrows_read(tx, org, containers, hidden, sets, gset, access))
+                                              also=lambda tx: self._kh_arrows_read(tx, org, containers, hidden, sets, gset, access, tops=chain_tops_apply(app_doc)))
         lists = await self._kh_lists(read, hidden, admitted_of, org, transaction) if read else set()
         for row, c in zip(rows, kept[:need], strict=True):
             row["hasChildren"] = c["sk"] in lists
+            row["khHeld"] = bool(read) and c["sk"] in read[3]      # settled by the chain-top walk (``_kh_v3_page_result``)
         payload = {"rows": rows, "total": total, "nRecord": (counts or {}).get("record", 0), "nFolder": (counts or {}).get("folder", 0), "nGroup": (counts or {}).get("recordGroup", 0)}
         page = await self._kh_v3_page_result(
             payload, limit=limit, direction=direction, include_total=include_total, include_scope=include_scope, scoped_start=False, start_id=start_id, app_id=app_id,
@@ -305,13 +311,17 @@ class KhListingMixin(PgBase):
                     todo.append(parent)
         return led & stubs
 
-    async def _kh_arrows_read(self, tx: Tx, org: str, page: list[Any], hidden: list[int], sets: dict[str, Any] | None, gset: set[str], access: dict[str, Any]) -> tuple[set[int], list[Any], set[str]]:
+    async def _kh_arrows_read(self, tx: Tx, org: str, page: list[Any], hidden: list[int], sets: dict[str, Any] | None, gset: set[str], access: dict[str, Any], *,
+                              tops: bool) -> tuple[set[int], list[Any], set[str], set[int]]:
         """The read behind the arrows of a page's rows, in the caller's unit: the rows a statement over the classes finds a child for (a connector kg serves: exact), and for the
-        others a sample of their children with the ones the viewer may open (the classes, then the live check for what they do not decide)."""
+        others a sample of their children with the ones the viewer may open (the classes, then the live check for what they do not decide). Last, with ``tops``, the groups that
+        hold a granted record that may be a chain-top listed under them (``kgl.HELD``)."""
         asked = [c["sk"] for c in page if not c["hide_children"]]
         lists: set[int] = set()
         if not asked:
-            return lists, [], set()
+            return lists, [], set(), set()
+        groups = [c["sk"] for c in page if c["kind"] == 2 and not c["hide_children"]]
+        held = {r["sk"] for r in await tx.fetch(kgl.HELD, org, groups, sorted(gset))} if tops and groups and gset else set()
         rest = asked
         if sets is not None:
             q = kgl.Params([org, asked, hidden])
@@ -325,13 +335,13 @@ class KhListingMixin(PgBase):
         ok, left = self._kh_class_split(kids, sets, gset)
         for i in range(0, len(left), ADMIT_CHUNK):
             ok |= {r["id"] for r in await access_sql.accessible_rows(tx, org, [r["id"] for r in left[i:i + ADMIT_CHUNK]], [], access)}
-        return lists, kids, ok
+        return lists, kids, ok, held
 
-    async def _kh_lists(self, read: tuple[set[int], list[Any], set[str]], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str,
+    async def _kh_lists(self, read: tuple[set[int], list[Any], set[str], set[int]], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str,
                         transaction: str | None) -> set[int]:
         """The rows of the page whose opening lists something (from :meth:`_kh_arrows_read`): a child the viewer may open, a placeholder only when it leads to one that is no
         placeholder; none for a group that hides its children."""
-        lists, kids, ok = read
+        lists, kids, ok, _ = read
         by_stub: dict[int, set[int]] = {}
         for r in kids:
             if r["id"] not in ok:

@@ -202,7 +202,7 @@ def undecided_child(p: Params, unvouched: list[int], app_sk: int) -> str:
 
 def arrows_sql(admit: str, undecided: str = "false", sample: int = 200) -> str:
     """For each container among ``$2`` (sks): whether it lists something when opened (``lists``): some child by a hierarchy edge (the primary parent or a hierarchy link: what a browse
-    of the row lists; a record that only belongs to a group is not listed under it) that is live, not hidden (``$3``) and open to the viewer (``admit``, a condition on a row ``c`` with
+    of the row lists; a granted record that only belongs to a group is the chain-top walk's, ``HELD``) that is live, not hidden (``$3``) and open to the viewer (``admit``, a condition on a row ``c`` with
     the columns of the listing's window), exactly, with no sample of the children; and whether it has a child, a placeholder included, that ``undecided`` (a condition on ``c``) says
     the classes do not decide among its first ``sample`` children (``undecided``: the rows whose sample the access check has to be asked about)."""
     live = "c.org_id = $1 AND c.kind IN (2, 3) AND NOT c.deleted AND NOT c.alien AND c.sk <> ALL($3::bigint[])"
@@ -278,3 +278,18 @@ def children_of_sql(only: str = "", *, total: bool = False) -> str:
             f"UNION ALL {_linked('p.sk', 'SELECT ' + COLS.replace('r.', 'c.') + ' FROM kg.records c', linked.replace('l_parent', 'p.sk'), ' LIMIT $3', ordered=True)}) c"
             + (" LIMIT $5" if total else ""))
 
+
+# The granted rows of a connector (``$3``) among ids ``$2`` that a browse may list as chain-tops: live, of the organisation, no placeholder, OPEN (``_kh_v3_chain_top_groups``).
+CHAIN_GRANTED = """/* pipeshub:kg.chain_granted */ SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk FROM kg.records r JOIN kg.node_keys a ON a.org_id = r.org_id AND a.sk = r.app_sk
+    WHERE r.org_id = $1 AND r.coll = ANY('{2,3}'::smallint[]) AND r.id = ANY($2::text[]) AND a.coll = 1 AND a.id = $3
+      AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND coalesce(r.rule, 'OPEN') = 'OPEN'"""
+CHAIN_ROWS = """/* pipeshub:kg.chain_rows */ SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk, r.deleted FROM kg.records r
+    WHERE r.org_id = $1 AND r.coll = ANY('{2,3}'::smallint[]) AND r.id = ANY($2::text[])"""
+CHAIN_BY_SK = "/* pipeshub:kg.chain_by_sk */ SELECT r.sk, r.kind, r.parent_sk, r.deleted FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[])"
+APP_KEY = "/* pipeshub:kg.app_key */ SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = $2"
+# The groups among ``$2`` that hold a record among ids ``$3`` (as its group or by a group link) that could be a chain-top: the cheap test behind a group's arrow, settled by the
+# chain-top walk (``_kh_v3_settle_held_arrows``); it never says no to a real chain-top.
+HELD = """/* pipeshub:kg.listing_held */ SELECT DISTINCT g.sk FROM kg.records c
+    CROSS JOIN LATERAL (SELECT c.group_sk AS sk UNION ALL SELECT l.parent_sk FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = c.sk AND l.kind = 2) g
+    WHERE c.org_id = $1 AND c.coll = 3 AND c.id = ANY($3::text[]) AND NOT c.deleted AND NOT c.placeholder AND NOT c.alien AND coalesce(c.rule, 'OPEN') = 'OPEN'
+      AND g.sk = ANY($2::bigint[])"""

@@ -17,7 +17,16 @@ from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
 from tests.permissions.kh_layer import KhFinding, check_world, children_of, listing
-from tests.permissions.kh_worlds import KH_WORLDS, OPENGRANT, OPENGRANTTEAM, STUBREACH
+from tests.permissions.kh_worlds import (
+    APPCHAIN,
+    CHAIN,
+    CHAINLINK,
+    KH_WORLDS,
+    OPENGRANT,
+    OPENGRANTTEAM,
+    STUBHELD,
+    STUBREACH,
+)
 from tests.permissions.scenario import load_all
 
 from .test_conformance import PgLayer
@@ -198,3 +207,16 @@ async def test_a_granted_strict_group_below_a_seed_the_app_does_not_reach_is_rea
             assert {ns.local(n) for n in found.node_ids} == {"k", "go"}, kh_layer.name
             assert {r["id"] for r in (await listing(kh_layer, world, "u")).rows} == {"k", "go", "d"}, kh_layer.name
         assert not _bad(await check(kh_layer, world, "opengrant")), kh_layer.name
+
+
+async def test_a_browse_lists_the_chain_tops_the_stores_place_under_it_and_their_arrows(kh_layer) -> None:
+    """A granted record with no hierarchy parent the viewer may open is listed under its own group, else under the App (the placement rule Neo4j and
+    ArangoDB share). APPCHAIN: opening h lists r, and h's arrow is on in All Records and under the App. CHAIN, CHAINLINK and STUBHELD have the same shape."""
+    worlds = [APPCHAIN, CHAIN, CHAINLINK, STUBHELD]
+    await kh_layer.preload(worlds)
+    with bind(OrgContext((await kh_layer._ns(APPCHAIN)).org, None, "job", "job:test", "t")):
+        assert await children_of(kh_layer, APPCHAIN, "u", "h", "recordGroup") == {"r": False}, kh_layer.name
+        assert await children_of(kh_layer, APPCHAIN, "u", "A", "app") == {"h": True}, kh_layer.name
+        assert {r["id"]: r["hasChildren"] for r in (await listing(kh_layer, APPCHAIN, "u")).rows}["h"] is True, kh_layer.name
+    bad = [f for world in worlds for f in _bad(await check(kh_layer, world, "chain"))]
+    assert not bad, _describe(bad)

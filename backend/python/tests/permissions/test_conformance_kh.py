@@ -56,6 +56,9 @@ KNOWN_BROWSE_GAPS = {
     ('proptest-7-18', 'B-s1: the browse leaves out B-r4, which the viewer may open'),
     ('proptest-7-31', 'B-s1: the browse leaves out B-r0, which the viewer may open'),
     ('proptest-7-5', 'A-s1: the browse leaves out A-r0, which the viewer may open'),
+    # Chain-tops granted through a role of another connector: Neo4j's browse reads its grantees per connector, so it does not place them; ArangoDB lists them.
+    ('adversarial-7-28', 'B-c0: the browse leaves out B-c16, which the viewer may open'),
+    ('proptest-7-46', 'B-s0: the browse leaves out B-r7, which the viewer may open'),
 }
 
 
