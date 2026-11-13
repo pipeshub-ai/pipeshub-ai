@@ -209,13 +209,15 @@ def arrows_sql(admit: str, undecided: str = "false", sample: int = 200) -> str:
     """For each container among ``$2`` (sks): whether it lists something when opened (``lists``): some child by a hierarchy edge (the primary parent or a hierarchy link: what a browse
     of the row lists; a granted record that only belongs to a group is the chain-top walk's, ``HELD``) that is live, not hidden (``$3``) and open to the viewer (``admit``, a condition on a row ``c`` with
     the columns of the listing's window), exactly, with no sample of the children; and whether it has a child, a placeholder included, that ``undecided`` (a condition on ``c``) says
-    the classes do not decide among its first ``sample`` children (``undecided``: the rows whose sample the access check has to be asked about)."""
+    the classes do not decide among its first ``sample`` children, read in the order :func:`children_of_sql` samples them (``undecided``: the rows whose sample the access check
+    has to be asked about; the probe and the sample are the same children)."""
     live = "c.org_id = $1 AND c.kind IN (2, 3) AND NOT c.deleted AND NOT c.alien AND c.sk <> ALL($3::bigint[])"
     cols = "SELECT c.sk, c.id, c.placeholder, c.app_sk, c.r13, c.path IS NOT NULL AS has_path, c.class_id, c.fence_job IS NOT NULL AS fenced FROM kg.records c"
-    def some(cond: str, limit: str = _FENCE) -> str:      # the row's children first, the condition on them after (never a class read of the organisation)
-        return (f"EXISTS (SELECT 1 FROM ({cols} WHERE {live} AND c.parent_sk = p.sk{limit}) c WHERE {cond}) "
-                f"OR EXISTS (SELECT 1 FROM {_linked('p.sk', cols, live, limit)} c WHERE {cond} OFFSET 0)")
-    return (f"/* pipeshub:kg.listing_arrows */ SELECT p.sk, {some(f'NOT c.placeholder AND {admit}')} AS lists, {some(undecided, f' LIMIT {int(sample)}')} AS undecided "
+    def some(cond: str, limit: str = _FENCE, *, ordered: bool = False) -> str:      # the row's children first, the condition on them after (never a class read of the organisation)
+        order = f' ORDER BY {name_prefix("c")}, c.id COLLATE "C"' if ordered else ""
+        return (f"EXISTS (SELECT 1 FROM ({cols} WHERE {live} AND c.parent_sk = p.sk{order}{limit}) c WHERE {cond}) "
+                f"OR EXISTS (SELECT 1 FROM {_linked('p.sk', cols, live, limit, ordered=ordered)} c WHERE {cond} OFFSET 0)")
+    return (f"/* pipeshub:kg.listing_arrows */ SELECT p.sk, {some(f'NOT c.placeholder AND {admit}')} AS lists, {some(undecided, _limit(str(int(sample))), ordered=True)} AS undecided "
             "FROM unnest($2::bigint[]) AS p(sk)")
 
 
@@ -264,11 +266,13 @@ def browse_undecided_sql(where: str, classes_param: str, app_param: str, links: 
     return f"/* pipeshub:kg.browse_undecided */ SELECT * FROM ({_children(COLS, where, links, _FENCE)}) r WHERE {undecided} LIMIT $3"
 
 
-def browse_count_sql(where: str, plain: str, own: str, granted: str, unvouched: str, links: str | None) -> str:
-    """:func:`count_sql` over the children of the start: the ones kg admits by class, by type, ``$3`` at most."""
+def browse_count_sql(where: str, plain: str, own: str, granted: str, unvouched: str, app: str, links: str | None) -> str:
+    """:func:`count_sql` over the children of the start: the ones of the connector ``app`` kg admits by class, by type, ``$3`` at most (another connector's child is the access
+    check's, as :func:`browse_undecided_sql` hands it over: a class can be shared by two connectors)."""
     admitted = (f"NOT c.placeholder AND c.r13 IS FALSE AND c.has_path AND c.class_id IS NOT NULL AND NOT c.fenced AND NOT c.class_id = ANY({unvouched}::bigint[]) "
+                f"AND c.app_sk = {app}::bigint "
                 f"AND (c.class_id = ANY({plain}::bigint[]) OR (c.class_id = ANY({own}::bigint[]) AND c.id = ANY({granted}::text[])))")
-    cols = "r.kind, r.folder, r.id, r.placeholder, r.r13, r.path IS NOT NULL AS has_path, r.class_id, r.fence_job IS NOT NULL AS fenced"
+    cols = "r.kind, r.folder, r.id, r.placeholder, r.r13, r.path IS NOT NULL AS has_path, r.class_id, r.fence_job IS NOT NULL AS fenced, r.app_sk"
     return (f"/* pipeshub:kg.browse_count */ SELECT t.kind, t.folder, count(*) AS n FROM (SELECT c.kind, c.folder FROM ({_children(cols, where, links, _FENCE)}) c "
             f"WHERE {admitted} LIMIT $3) t GROUP BY t.kind, t.folder")
 

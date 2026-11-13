@@ -469,7 +469,7 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                 cnt, _, cnt_links = params(10_001)
                 statements += [(f"children {at}", kgl.children_sql(where, links), ch.values), (f"children_held {at}", kgl.children_held_sql(where, links), held.values),
                                (f"undecided {at}", kgl.browse_undecided_sql(where, und.add([3]), und.add(app_sk), und_links), und.values),
-                               (f"count {at}", kgl.browse_count_sql(where, cnt.add([1]), cnt.add([2]), cnt.add(["x"]), cnt.add([3]), cnt_links), cnt.values)]
+                               (f"count {at}", kgl.browse_count_sql(where, cnt.add([1]), cnt.add([2]), cnt.add(["x"]), cnt.add([3]), cnt.add(app_sk), cnt_links), cnt.values)]
         q = kgl.Params([org, [sk, g1], hide])
         admit = kgl.class_admit("c", q, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()})
         arrows = kgl.arrows_sql(admit, kgl.undecided_child(q, [3], app_sk))      # as the listing asks it
@@ -729,3 +729,78 @@ async def test_a_request_reads_at_most_its_budget_over_all_its_placeholder_walks
         pages[size] = seen
     assert requests and max(requests) <= 100, requests
     assert pages[3] == pages[50] == pages[100] == stubs, pages
+
+
+async def test_a_window_the_request_cannot_decide_at_all_resumes_before_it(pg_db, monkeypatch) -> None:
+    """Asked a window at a time (kg does not serve the connector), the first window holds a placeholder whose walk spends the whole request's budget (100 children the viewer
+    may not open) and the next window starts with a placeholder that leads somewhere: the request decides nothing of that window, so the page resumes where the first window
+    ended, never past the second one, and the next page lists the placeholder."""
+    p, org = prov(pg_db), new_org()
+    plain = [f"a{i:03d}" for i in range(99)]
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        recs = [{"_key": "fold", "recordName": "Folder", "mimeType": "application/vnd.folder"}, *({"_key": a, "recordName": a} for a in plain),
+                {"_key": "a050s", "recordName": "a050s", "isPlaceholder": True}, *({"_key": f"w{j:03d}", "recordName": f"w{j:03d}"} for j in range(100)),
+                {"_key": "b000", "recordName": "b000", "isPlaceholder": True}, {"_key": "leaf", "recordName": "leaf"}]
+        await p.batch_upsert_nodes([{**r, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for r in recs], "records")
+        await p.batch_create_edges([*(edge("fold", "records", a, "records", relationshipType="PARENT_CHILD") for a in [*plain, "a050s", "b000"]),
+                                    *(edge("a050s", "records", f"w{j:03d}", "records", relationshipType="PARENT_CHILD") for j in range(100)),
+                                    edge("b000", "records", "leaf", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        granted = ["fold", "a050s", "b000", "leaf"]
+        await p.batch_create_edges([edge("u1", "users", i, "records", type="USER", role="READER") for i in granted], "permission")
+    await flip(pg_db, org)
+    await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)      # the rows are asked of the check a window at a time
+    monkeypatch.setattr(kh_listing, "LEAD_NODES", 100)
+    seen, after = [], None
+    for _ in range(10):
+        page = await browse(p, org, "fold", granted, limit=3, after=after)
+        seen += [r["id"] for r in page["rows"]]
+        if not page["hasMore"]:
+            break
+        last = page["rows"][-1] if page["rows"] else None
+        after = page.get("resume") or {"nullRank": last["nullRank"], "sortKey": last["sortKey"], "id": last["id"]}
+    assert seen == ["b000"], seen
+
+
+async def test_a_wide_nodes_total_counts_by_class_only_the_children_of_its_own_connector(pg_db, monkeypatch) -> None:
+    """A child of another connector hangs under the folder and carries one of this connector's classes (a class is shared when its clauses hash the same). Read in windows,
+    the folder's total counts by class only its own connector's children: the other connector's child goes to the access check, which does not admit it."""
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 8, readable_kids=KIDS[:8])
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app2", "name": "Other", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "alien", "recordName": "Alien", "connectorId": "app2", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
+        await p.batch_create_edges([edge("fold", "records", "alien", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+    await flip(pg_db, org)
+    await _admin("UPDATE kg.records a SET class_id = c.class_id, r13 = c.r13, path = c.path FROM kg.records c WHERE a.org_id = $1 AND c.org_id = $1 AND a.id = 'alien' AND a.coll = 3 "
+                 "AND c.id = 'c0000' AND c.coll = 3", org)
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 3)      # wide: the total is counted by class where the rows are
+    page = await browse(p, org, "fold", ["fold", *KIDS[:8], "alien"])      # its id among the grants too: the class's own-grant arm would take it
+    assert "alien" not in [r["id"] for r in page["rows"]] and page["total"] == 8, (page["total"], [r["id"] for r in page["rows"]])
+
+
+async def test_an_arrow_samples_the_same_children_it_asks_about(pg_db, monkeypatch) -> None:
+    """A folder of 250 children the classes decide (none readable) and one placeholder, first by name and written last, that leads to a readable record. The arrow's probe and
+    its sample read the same first children (the children index's order), so the placeholder is in both and the folder's arrow is on, as opening it lists the placeholder."""
+    p, org = prov(pg_db), new_org()
+    kids = [f"z{i:03d}" for i in range(250)]
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        recs = [{"_key": "top", "recordName": "Top", "mimeType": "application/vnd.folder"}, {"_key": "fold", "recordName": "Folder", "mimeType": "application/vnd.folder"},
+                *({"_key": k, "recordName": k} for k in kids)]
+        await p.batch_upsert_nodes([{**r, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for r in recs], "records")
+        await p.batch_upsert_nodes([{"_key": "stub", "recordName": "aaa", "isPlaceholder": True, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"},
+                                    {"_key": "leaf", "recordName": "leaf", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
+        await p.batch_create_edges([edge("top", "records", "fold", "records", relationshipType="PARENT_CHILD"),
+                                    *(edge("fold", "records", k, "records", relationshipType="PARENT_CHILD") for k in kids),
+                                    edge("fold", "records", "stub", "records", relationshipType="PARENT_CHILD"), edge("stub", "records", "leaf", "records", relationshipType="PARENT_CHILD")],
+                                   "nodeRelations")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        granted = ["top", "fold", "stub", "leaf"]
+        await p.batch_create_edges([edge("u1", "users", i, "records", type="USER", role="READER") for i in granted], "permission")
+    await flip(pg_db, org)
+    assert [r["id"] for r in (await browse(p, org, "fold", granted))["rows"]] == ["stub"]
+    assert {r["id"]: r["hasChildren"] for r in (await browse(p, org, "top", granted))["rows"]} == {"fold": True}

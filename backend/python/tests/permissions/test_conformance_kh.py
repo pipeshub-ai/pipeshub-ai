@@ -58,7 +58,9 @@ KNOWN_BROWSE_GAPS = {
     ('proptest-7-18', 'B-s1: the browse leaves out B-r4, which the viewer may open'),
     ('proptest-7-31', 'B-s1: the browse leaves out B-r0, which the viewer may open'),
     ('proptest-7-5', 'A-s1: the browse leaves out A-r0, which the viewer may open'),
-    # Chain-tops granted through a role of another connector: Neo4j's browse reads its grantees per connector, so it does not place them; ArangoDB lists them.
+}
+# Chain-tops granted through a role of another connector: Neo4j's browse reads its grantees per connector, so it does not place them. ArangoDB lists them, and is held to it.
+KNOWN_BROWSE_GAPS_NEO4J = {
     ('adversarial-7-28', 'B-c0: the browse leaves out B-c16, which the viewer may open'),
     ('proptest-7-46', 'B-s0: the browse leaves out B-r7, which the viewer may open'),
 }
@@ -250,6 +252,7 @@ async def test_generated_worlds_count_what_the_viewer_may_read(graph_layers, kin
                 chunk = worlds[start:start + CHUNK]
                 await layer.preload(chunk)
                 for offset, world in enumerate(chunk):
-                    bad += _bad(await check_world(layer, world, f"{kind}-{seed}-{start + offset}"), KNOWN_BROWSE_GAPS)
+                    bad += _bad(await check_world(layer, world, f"{kind}-{seed}-{start + offset}"),
+                                KNOWN_BROWSE_GAPS | (KNOWN_BROWSE_GAPS_NEO4J if layer.name == "neo4j" else set()))
                 await layer.release(chunk)
             assert not bad, f"{layer.name} {kind} seed {seed}\n{_describe(bad)}"

@@ -141,6 +141,8 @@ def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> 
     everything."""
     target = world.node(node)
     app_id = node if target.kind == "app" else target.connector
+    if app_id is None:      # a group of no App: nothing is placed under it
+        return set()
     app = world.node(app_id)
     if target.kind not in ("app", "group") or app.model == "APP_LEVEL" or app.app_type == "KB":
         return set()

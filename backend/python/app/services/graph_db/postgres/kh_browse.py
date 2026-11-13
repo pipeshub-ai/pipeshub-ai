@@ -255,15 +255,16 @@ class KhBrowseMixin(PgBase):
     async def _kh_held_page(self, rows: list[Any], limit: int, sort_field: str, order: str, after: dict[str, Any] | None, direction: str, walk: tuple) -> tuple[list[Any], dict[str, Any] | None]:
         """The page of children held whole that the check has to be asked about: in the page's order, a window at a time, as the flat listing reads a connector kg does not serve."""
         ordered = self._kh_order(rows, sort_field, order, after, direction)
-        need, kept, at = limit + 1, [], 0
+        need, kept, at, before = limit + 1, [], 0, after
         window, t0 = min(WINDOW_MAX, max(need * 4, 100)), time.monotonic()
         while at < len(ordered) and len(kept) < need:
             got = ordered[at:at + window]
             at += len(got)
             listed, n = await self._kh_listed(got, *walk)
             kept += listed[:need - len(kept)]
-            if len(kept) < need and n < len(got):      # the walks stopped before a placeholder: resume there
-                return kept, _edge(got[n - 1], sort_field)
+            if len(kept) < need and n < len(got):      # the walks stopped before a placeholder: resume there (where the window began, if they decided none of it)
+                return kept, _edge(got[n - 1], sort_field) if n else before
+            before = _edge(got[-1], sort_field)
             if len(kept) < need and at < len(ordered) and time.monotonic() - t0 > BUDGET_S:
                 return kept, _edge(got[-1], sort_field)
             window = min(WINDOW_MAX, window * 8)
@@ -283,8 +284,8 @@ class KhBrowseMixin(PgBase):
             got = list(await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction))
             listed, n = await self._kh_listed(got, *walk)
             kept += listed[:need - len(kept)]
-            if len(kept) < need and n < len(got):      # the walks stopped before a placeholder: resume there
-                return kept, _edge(got[n - 1], sort_field)
+            if len(kept) < need and n < len(got):      # the walks stopped before a placeholder: resume there (where the window began, if they decided none of it)
+                return kept, _edge(got[n - 1], sort_field) if n else boundary
             if len(got) < window or len(kept) >= need:
                 return kept, None
             scanned += len(got)
@@ -306,7 +307,8 @@ class KhBrowseMixin(PgBase):
             if len(left) <= UNDECIDED_MAX:
                 c = kgl.Params(list(p.values))
                 c.values[2] = COUNT_CAP + 1
-                sql = kgl.browse_count_sql(where, c.add(sorted(sets["plain"])), c.add(sorted(sets["own"])), c.add(sorted(gset)), c.add(sorted(sets["unvouched"])), links)
+                sql = kgl.browse_count_sql(where, c.add(sorted(sets["plain"])), c.add(sorted(sets["own"])), c.add(sorted(gset)), c.add(sorted(sets["unvouched"])),
+                                           c.add(sets["app_sk"]), links)
                 listed, n = await self._kh_listed(left, *walk)
                 counts = self._kh_counts(listed)
                 for r in await self._kq(lambda tx, s=sql, v=tuple(c.values): tx.fetch(s, *v), transaction):
