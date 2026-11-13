@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import pytest
 
+from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg.locks import lock_apps
 from app.services.graph_db.postgres.kg.model import edge_ends
 from app.services.graph_db.postgres.kg.project import Stats, decode, project
 
 from .pg_support import new_org
 from .test_kg_derivation import FOCUS, ctx, edge, held, load_world, prov
+from .test_kg_read import flip
 
 pytestmark = pytest.mark.integration
 
@@ -183,6 +186,30 @@ async def test_a_projection_of_one_connector_waits_for_another_holding_its_lock(
     release.set()
     await task
     await asyncio.wait_for(other, 20)
+
+
+async def test_a_row_the_writer_refuses_is_left_out_and_logged_and_the_rest_of_the_batch_is_written(pg_db, caplog) -> None:
+    """A record whose access rule is none of the three the records writer takes, in one batch with a renamed record: the renamed row is written, the refused one is left out
+    with an error that names it, and its connector, which kg served, is taken off the readers. The copy of the connector then runs to its end instead of failing on that row."""
+    p, org = prov(pg_db), new_org()
+    await load_world(p, org)
+    assert await flip(pg_db, org) == (1, 1)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "bad", "recordName": "Bad", "connectorId": "app1", "orgId": org, "accessRule": "ADMIN"}], "records")
+        await p.batch_upsert_nodes([{"_key": "f1", "recordName": "Renamed", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
+    with caplog.at_level(logging.ERROR, logger="app.services.graph_db.postgres.kg.project"):
+        st = await run(p, org, {("records", "bad"), ("records", "f1")})
+    assert st.refused == {("records", "bad")}
+    assert any("rule column of records bad" in r.getMessage() for r in caplog.records)
+    rows = (await held(p, org))["records"]
+    assert "bad" not in rows and rows["f1"][4] == "Renamed"
+
+    async def mode(tx) -> str:
+        return await tx.fetchval("SELECT s.mode FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk WHERE s.org_id = $1 AND k.coll = 1 AND k.id = 'app1'", org)
+    with ctx(org):
+        assert await p._q(mode, None) == "legacy"
+    out = await bf.backfill(pg_db, org, "app1", page=2)      # every page projects; the verify finds the row kg cannot hold
+    assert not out.flipped
 
 
 async def test_the_other_organisation_is_not_touched(pg_db) -> None:

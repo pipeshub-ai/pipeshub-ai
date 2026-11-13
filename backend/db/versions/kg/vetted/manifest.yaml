@@ -50,8 +50,8 @@ functions:
       - {"name": "p_rules", "type": "text[]", "max_items": 5000, "item_enum": ["OPEN", "STRICT", "RESTRICTED"]}
       - {"name": "p_models", "type": "text[]", "max_items": 5000, "item_enum": ["APP_LEVEL", "RECORD_LEVEL", "RECORD_GROUP_LEVEL"]}
       - {"name": "p_vrids", "type": "text[]", "max_items": 5000, "item_length": [0, 256]}
-      - {"name": "p_names", "type": "text[]", "max_items": 5000, "item_length": [0, 4000]}
-      - {"name": "p_name_keys", "type": "text[]", "max_items": 5000, "item_length": [0, 4000]}
+      - {"name": "p_names", "type": "text[]", "max_items": 5000}
+      - {"name": "p_name_keys", "type": "text[]", "max_items": 5000}
       - {"name": "p_updated", "type": "bigint[]", "max_items": 5000}
       - {"name": "p_created", "type": "bigint[]", "max_items": 5000}
       - {"name": "p_sizes", "type": "bigint[]", "max_items": 5000}

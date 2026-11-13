@@ -6,6 +6,7 @@ after the lock is taken.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -40,10 +41,14 @@ from app.services.graph_db.postgres.kg.reader import (
     snapshot,
 )
 from app.services.graph_db.postgres.kg.stamp import StampStats, stamp
-from app.services.graph_db.postgres.kg.writers import KgWriter
+from app.services.graph_db.postgres.kg.writers import KgWriter, record_refusal
+from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import Tx
+
+logger = logging.getLogger(__name__)
+REFUSED = METRICS_BACKEND.counter("pipeshub_kg_refused_rows_total", "Nodes whose kg.records row the records writer would refuse: left out, and their connector taken off the readers", ["coll"])
 
 
 @dataclass
@@ -56,6 +61,7 @@ class Stats:
     closure: int = 0
     apps: set[str] = field(default_factory=set)
     orphaned: set[str] = field(default_factory=set)           # connectors this call read a node of while their own node was missing (their rows were taken off the readers)
+    refused: set[Key] = field(default_factory=set)            # nodes whose row the records writer would refuse: not written, and their connector taken off the readers
     stamps: StampStats = field(default_factory=StampStats)    # what the stamping after the structural rows did
     wide: bool = False                                        # the unit held the organization-wide lock
     keys: set[Key] = field(default_factory=set)               # the nodes this call took as its focus and looked at the dependants of: a change-log row naming only these is satisfied by it
@@ -221,6 +227,17 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
 
     snap = await snapshot(tx, org, every, allocate, known_children=expand_neighbours)
     d = derive(every, snap)
+    # A row the writer refuses would fail the whole unit, and with it every other row of the batch, every time it is retried. It is left out instead, said in the log, and its
+    # connector is taken off the readers below: kg no longer holds an exact copy of it, and a verify finds the difference while the node stays refused.
+    st.refused = {k for k in every if (sk := snap.sk.get(k)) in d.records and record_refusal(d.records[sk])}
+    if st.refused:
+        for k in sorted(st.refused):
+            REFUSED.inc(k[0])
+            logger.error("kg: the records writer refuses the %s column of %s %s; its row is left out and its connector is taken off the readers", record_refusal(d.records[snap.sk[k]]), *k)
+        every -= st.refused
+        focus -= st.refused
+        leaf_only -= st.refused
+        d = derive(every, snap)
     if d.gone and not org_wide:      # gone since `_held`: its key can already be another connector's, and only the whole org holds that connector off
         raise NeedLocks(set(), wide=True)
     st.focus = len(every)
@@ -243,7 +260,8 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     # A node read while its connector's node is missing is written without an app (grants too: they carry the app of the node they are on). If the node comes back before anything
     # projects the deletion, nothing re-derives those rows and the connector would stay verified over them.
     st.orphaned = {a for k, doc in snap.nodes.items() if (org_wide or k in every) and k[0] != "apps" and (a := app_id_of(k, doc)) and ("apps", a) not in snap.nodes}
-    off = {*gone_apps, *(snap.sk[("apps", a)] for a in st.orphaned if ("apps", a) in snap.sk)}
+    refused_apps = {a for k in st.refused if (a := app_id_of(k, snap.nodes[k]))}
+    off = {*gone_apps, *(snap.sk[("apps", a)] for a in st.orphaned | refused_apps if ("apps", a) in snap.sk)}
     if off:
         # What was verified for a connector is the state of a node that no longer exists: it is taken off the readers in the same commit, and must be copied and verified again.
         for r in await tx.fetch("""/* pipeshub:kg.gone_app_state */ SELECT app_sk FROM kg.projection_state WHERE org_id = $1 AND app_sk = ANY($2::bigint[])

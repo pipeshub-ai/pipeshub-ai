@@ -72,3 +72,26 @@ async def test_the_listing_columns_go_out_sorted_by_key_and_in_the_writers_argum
     n = await KgWriter(tx).listing_set([(2, 3, "b", 3, True, False, False, b"b"), (1, 2, "a", 2, False, True, True, None)])
     assert n == 2 and "kg.w_listing_set" in tx.calls[0][0]
     assert tx.calls[0][1] == ([1, 2], [2, 3], ["a", "b"], [2, 3], [False, True], [True, False], [True, False], [None, b"b"])
+
+
+def test_the_projectors_copy_of_the_records_writers_checks_is_the_manifests() -> None:
+    """``record_refusal`` must refuse exactly what ``w_records_upsert`` refuses of a document's values, or a refused row fails its whole batch again."""
+    from pathlib import Path
+
+    import yaml
+
+    from app.services.graph_db.postgres.kg.writers import RECORD_ENUMS, RECORD_LENGTHS
+    manifest = Path(__file__).resolve().parents[5] / "db" / "versions" / "kg" / "vetted" / "manifest.yaml"
+    fn = next(f for f in yaml.safe_load(manifest.read_text(encoding="utf-8"))["functions"] if f["name"] == "kg.w_records_upsert")
+    args = list(zip(RECORD_COLS, fn["args"], strict=True))      # the writer takes its arguments in the order of RECORD_COLS
+    lengths = {c: tuple(a["item_length"]) for c, a in args if "item_length" in a}
+    enums = {c: tuple(a["item_enum"]) for c, a in args if "item_enum" in a}
+    assert lengths == RECORD_LENGTHS and enums == RECORD_ENUMS
+
+
+@pytest.mark.parametrize("over, refused", [({}, None), ({"name": "\U00020000" * 5000, "name_key": "\U00020000" * 5000}, None), ({"rule": "ADMIN"}, "rule"),
+                                           ({"external_id": "e" * 2001}, "external_id"), ({"id": ""}, "id"), ({"rule": None, "model": None, "origin": None}, None)])
+def test_a_records_row_is_refused_by_the_column_the_writer_would_refuse(over: dict, refused: str | None) -> None:
+    from app.services.graph_db.postgres.kg.writers import record_refusal
+    base = {**row(1), "rule": "OPEN", "model": "RECORD_LEVEL", "origin": "CONNECTOR"}
+    assert record_refusal({**base, **over}) == refused
