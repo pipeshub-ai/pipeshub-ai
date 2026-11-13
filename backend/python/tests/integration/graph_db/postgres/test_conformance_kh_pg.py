@@ -109,10 +109,7 @@ async def kh_layer(request, pg_provider, pg_db) -> AsyncIterator[KhPgLayer]:
 
 # `gap`: the shapes the flatten listing leaves out on purpose (kh_layer.declared_gap). The browse is held to the oracle in full: a folder it does not open or leaves nodes out of (`browse_gap`),
 # a row it lists that the oracle does not admit (`browse_extra`) and an arrow that is not on exactly when opening the row lists something (`arrow`) fail, as on Neo4j and ArangoDB.
-# shortcut: `sidebar` (the layer holds a browse's sidebar, the rows with children, to the browse's arrows) is reported, not failed: the PostgreSQL
-# sidebar leaves out records with children that the browse shows with an arrow (a page with child pages). Fail it once the PostgreSQL listing keeps a
-# record in the sidebar by the row's own arrow, as Neo4j and ArangoDB do.
-GAPS = {"gap", "sidebar"}
+GAPS = {"gap"}
 
 
 async def check(layer: KhPgLayer, world, scenario: str) -> list[KhFinding]:
