@@ -534,25 +534,28 @@ def _aql_way_below(v: str, *, every_hop: bool = True, from_app: str = "false", a
     reached. A stub only filed in a node is not reached (``false``)."""
     gate = (f"LENGTH(FOR kh_gp IN ({v}.isPlaceholder == true ? [1] : []) LET kh_wfa = {from_app}"
             + (f" FILTER kh_wfa OR ({admit})" if admit else ""))
+    # Or a child of the stub the walk from the App reaches by another parent: opening the stub lists it (the check admits it).
+    reached_kid = (f"LENGTH(FOR kh_xc, kh_xe IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
+                   f" FILTER kh_xe.relationshipType IN {_HIERARCHY_AQL}"
+                   f' AND (IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", kh_xc) OR IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", kh_xc))'
+                   f" AND kh_xc.orgId == @org_id AND {_aql_reached_child('kh_xc')} LIMIT 1 RETURN 1) > 0")
     # Only a stub starts the walk (the loop over an empty list reads nothing for any other node), and it follows
     # hierarchy edges only: PRUNE stops it at any other. shortcut: PRUNE cannot hold the browse rule (AQL refuses a subquery in it), so a way cut at
     # the first hop is still enumerated to its end before the post-filter; bounded by 50 hops, and only for a stub row, upgrade if a stub holds a huge subtree.
     if not every_hop:
-        return (gate
-                + f" FOR kh_pd, kh_pe IN 1..50 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
+        walk = (f"FOR kh_pd, kh_pe IN 1..50 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
                 f" PRUNE kh_pe != null AND kh_pe.relationshipType NOT IN {_HIERARCHY_AQL}"
                 f" FILTER kh_pe.relationshipType IN {_HIERARCHY_AQL} AND kh_pd.isPlaceholder != true"
                 f" LET kh_pp = DOCUMENT(kh_pe._from)"
-                f" FILTER {_aql_browse_child('kh_pd', 'kh_pp', 'pb', 'kh_wfa')}"
-                f" LIMIT 1 RETURN 1) > 0")
-    return (gate
-            + f" FOR kh_pd, kh_pe, kh_pt IN 1..50 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
-            f" PRUNE kh_pe != null AND kh_pe.relationshipType NOT IN {_HIERARCHY_AQL}"
-            f" FILTER kh_pt.edges[*].relationshipType ALL IN {_HIERARCHY_AQL} AND kh_pd.isPlaceholder != true"
-            f" FILTER LENGTH(FOR kh_wi IN 0..LENGTH(kh_pt.edges) - 1"
-            f" LET kh_wc = kh_pt.vertices[kh_wi + 1] LET kh_wp = kh_pt.vertices[kh_wi]"
-            f" FILTER NOT {_aql_browse_child('kh_wc', 'kh_wp', 'pb', 'kh_wfa')} LIMIT 1 RETURN 1) == 0"
-            f" LIMIT 1 RETURN 1) > 0")
+                f" FILTER {_aql_browse_child('kh_pd', 'kh_pp', 'pb', 'kh_wfa')}")
+    else:
+        walk = (f"FOR kh_pd, kh_pe, kh_pt IN 1..50 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
+                f" PRUNE kh_pe != null AND kh_pe.relationshipType NOT IN {_HIERARCHY_AQL}"
+                f" FILTER kh_pt.edges[*].relationshipType ALL IN {_HIERARCHY_AQL} AND kh_pd.isPlaceholder != true"
+                f" FILTER LENGTH(FOR kh_wi IN 0..LENGTH(kh_pt.edges) - 1"
+                f" LET kh_wc = kh_pt.vertices[kh_wi + 1] LET kh_wp = kh_pt.vertices[kh_wi]"
+                f" FILTER NOT {_aql_browse_child('kh_wc', 'kh_wp', 'pb', 'kh_wfa')} LIMIT 1 RETURN 1) == 0")
+    return gate + f" FILTER LENGTH({walk} LIMIT 1 RETURN 1) > 0 OR {reached_kid} LIMIT 1 RETURN 1) > 0"
 
 
 def _aql_browse_child(c: str, p: str, tag: str, from_app: str, p_member: str | None = None) -> str:
@@ -741,6 +744,13 @@ def _aql_reach_walk(v: str, t: str) -> str:
                         RETURN 1) == 0"""
 
 
+def _aql_reached_child(v: str) -> str:
+    """Whether ``v``, a child of a node being opened, is one the opening lists though the rule does not pass the hop: a child of this App the
+    browse asks the check about (`_aql_undecided`), which the walk from the App reaches by its own routes (the check's walk arm)."""
+    return (f"({v}.isPlaceholder != true AND {_aql_read_by_app(v)} AND {v}.isDeleted != true"
+            f' AND NOT {_aql_in_hidden_group(v, "rc")} AND {_aql_row_from_app(v)})')
+
+
 def _aql_row_from_app(v: str, *, gate: str | None = None) -> str:
     """Whether a browse of ``v`` starts from the App (``_aql_reach_walk``): what a row's arrow, a stub's way below it and the listing of a stub read,
     so that each lists what opening the node lists. ``gate``: the walk runs only where it holds (a subquery runs for every row, so the loop over an
@@ -767,6 +777,9 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
     if own_reach and not exact:
         seeded = f"(({seeded}) OR {_aql_row_from_app(v, gate=f'NOT ({seeded})')})"
     rule = _aql_browse_child("kh_ch", v, "hc", "kh_row_from_app" if exact else seeded, "kh_pm")
+    if own_reach and not exact:
+        # The sidebar decides before the page's arrows are settled: a child the check admits by its own reach is one opening the row lists.
+        rule = f"({rule} OR {_aql_reached_child('kh_ch')})"
     # A stub child is read as opening it reads it, from its own reach; the walk waits on the way-below loop (`kh_gp`), so only a stub child walks.
     stub_reach = _aql_row_from_app("kh_ch", gate="kh_gp != null") if exact else "false"
     records, groups = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value

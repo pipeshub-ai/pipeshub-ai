@@ -441,6 +441,7 @@ def _cypher_kh_held(v: str, stub: Callable[[str], str], container: str) -> str:
 def _cypher_kh_has_children(
     v: str, rule: str, filed: str, stub: Callable[[str], str], container: str, *, exact: bool = False, chain_tops: bool = True,
     reached: str = "true", stub_filed: Callable[[str], str] | None = None, reached_stub: Callable[[str], str] | None = None,
+    reached_child: Callable[[str], str] | None = None,
 ) -> str:
     """Whether expanding ``v`` would list a child: a hierarchy child that passes
     the browse's own ``rule`` (``_kh_v3_child_rule``), or, where ``filed`` says
@@ -457,7 +458,8 @@ def _cypher_kh_has_children(
     when the viewer is granted it (a member of a declared group with no hierarchy edge is not listed by its
     browse, so it lights no arrow);
     and ``stub(node)`` hides a placeholder with nothing readable below it, wherever it comes from. ``reached_stub(node)``: a stub child the rule does
-    not pass that a browse of it reaches from the App (the folder listing lists it too)."""
+    not pass that a browse of it reaches from the App (the folder listing lists it too). ``reached_child(node)`` (the sidebar, which decides
+    before the page's arrows are settled): a child the rule does not pass that the check admits by its own reach, which opening ``v`` lists."""
     # A declaration is its own scope only where the check reads it: the viewer is granted it or the walk from the App reaches it (``reached``).
     declared = (f"({v}:RecordGroup AND coalesce({v}.permissionModel, '') = 'RECORD_GROUP_LEVEL'"
                 f" AND coalesce({v}.connectorId, '') = app.id AND ({v}.id IN $grantedIds OR {reached}))") if exact else "false"
@@ -476,15 +478,18 @@ def _cypher_kh_has_children(
                 f" OR EXISTS {{ (kh_ch)-[:BELONGS_TO]->({v}) }}))")
     stub_arm = f" OR ({reached_stub('kh_ch')})" if exact and reached_stub else ""
     stub_kept = " OR coalesce(kh_ch.isPlaceholder, false)" if stub_arm else ""
+    child_arm = f" OR ({reached_child('kh_ch')})" if reached_child else ""
+    # A child the check admits by its own reach passes no cheap test: the reject is skipped where it is asked.
+    child_kept = " OR true" if reached_child else ""
     body = (
         f"({holds} OR "
         f"EXISTS {{ ({v})-[kh_hr:NODE_RELATION]->(kh_ch) "
         f"WHERE kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
         # Cheap reject first: a child no arm of the rule can open is skipped before the full rule.
         f"AND ({filed} OR size($declaredScope) > 0 OR kh_ch.id IN $grantedIds OR {declared} "
-        f"OR EXISTS {{ (kh_ch)-[:INHERIT_PERMISSIONS]->({v}) }}{stub_kept}) "
+        f"OR EXISTS {{ (kh_ch)-[:INHERIT_PERMISSIONS]->({v}) }}{stub_kept}{child_kept}) "
         f"AND (kh_ch:Record OR kh_ch:RecordGroup) AND kh_ch.orgId = $org_id AND kh_ch.id IS NOT NULL "
-        f"{stub('kh_ch')} AND ({rule} OR {in_scope}{stub_arm}) }} "
+        f"{stub('kh_ch')} AND ({rule} OR {in_scope}{stub_arm}{child_arm}) }} "
         f"OR ({filed} AND {'NOT coalesce(' + container + ', false)' if exact else 'true'} AND {held('kh_bc')}))"
     )
     if exact:
@@ -21566,9 +21571,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # browse rule, ending at a node that is no stub. `reached` is read once, not at every hop.
             below = self._kh_v3_child_rule(
                 "kh_xs", "kh_xp", from_app="kh_xfa", opens=app_opens, state=state, grant_once=grant_once)
+            # Or a child of the stub the walk from the App reaches by another parent: opening the stub lists it (the check admits it).
+            reached_kid = (f"EXISTS {{ MATCH ({v})-[kh_xd:NODE_RELATION]->(kh_xc:Record|RecordGroup) WHERE kh_xd.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']"
+                           f" AND kh_xc.orgId = $org_id AND {reached_child('kh_xc')} }}")
             return (f"AND CASE WHEN NOT {self._kh_placeholder(v, state=state)} THEN true ELSE EXISTS {{ WITH app, {v} AS kh_xv, {reached} AS kh_xfa MATCH (kh_xv) "
                     f"((kh_xp)-[kh_xr:NODE_RELATION]->(kh_xs) WHERE kh_xr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
-                    f"AND ({below})){{1,50}} (kh_xz) WHERE NOT {self._kh_placeholder('kh_xz', state=state)} }} END")
+                    f"AND ({below})){{1,50}} (kh_xz) WHERE NOT {self._kh_placeholder('kh_xz', state=state)} }} OR {reached_kid} END")
+
+        def reached_child(v: str) -> str:
+            """Whether ``v``, a child of a node being opened, is one the opening lists though the rule does not pass the hop: a child of this App
+            the browse asks the check about (`_kh_v3_undecided`), which the walk from the App reaches by its own routes (the check's walk arm)."""
+            return (f"(NOT {self._kh_placeholder(v, state=state)} AND {_cypher_read_by_app(v)} AND NOT {self._kh_deleted(v, state=state)}"
+                    f" AND NOT {self._kh_v3_in_hidden_group(v, 'kz')} AND {walked_from_app(v)})")
 
         def walked_from_app(v: str) -> str:
             """What a browse of ``v`` itself would start from (`fromApp`): a row below two parents may be reached from the App by one and not the
@@ -21590,7 +21604,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         app_opens = _CYPHER_APP_OPENS
         grant_once = probe is not None and listing_by_probe
 
-        def has_children(row_from_app: str, *, row: bool = False) -> str:
+        def has_children(row_from_app: str, *, row: bool = False, sidebar: bool = False) -> str:
             if row and not flatten:
                 row_from_app = "kh_row_from_app"
             rule = self._kh_v3_child_rule(
@@ -21604,7 +21618,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "node", rule, app_opens, lambda v: placeholder_test(v, walked_from_app(v)), container, exact=not flatten, chain_tops=not row,
                 stub_filed=placeholder_test,
                 reached_stub=lambda v: f"{self._kh_placeholder(v, state=state)} AND {_cypher_read_by_app(v)} AND {walked_from_app(v)}",
-                reached=row_from_app if row and not flatten else "true")
+                reached=row_from_app if row and not flatten else "true", reached_child=reached_child if sidebar else None)
             if row and not flatten:
                 # A browse of a declared group reads its own scope beside the page's (`_kh_v3_scoped_start_access`): the groups under it, and the
                 # records that belong to them as members, so a stub below one leads on only through a seed. The row's arrow reads the same.
@@ -21965,7 +21979,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # filter on it, so they skip the expand.
             "hasChildren": (
                 # The sidebar: a row below a start the walk does not reach may be reached itself, by another parent; opening it reads its own reach.
-                has_children(slim_from_app if flatten else f"({slim_from_app} OR {walked_from_app('node')})")
+                has_children(slim_from_app if flatten else f"({slim_from_app} OR {walked_from_app('node')})", sidebar=not flatten)
                 if any("node.hasChildren" in c for c in conditions) else "false"
             ),
         }

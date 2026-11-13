@@ -16,6 +16,7 @@ import pytest
 from . import gen
 from .kh_layer import KhFinding, browse_pages, check_world, children_of, refused_by_cap
 from .kh_worlds import (
+    APPSIDE,
     CROSSREACH,
     DECLDEEP,
     DECLSTUB,
@@ -28,6 +29,8 @@ from .kh_worlds import (
     OPENGROUP,
     OPENSTUB,
     SCOPEDTWO,
+    SIDEKID,
+    STUBQ,
     TWOWAY,
     XDECL,
     XGRANT,
@@ -211,6 +214,23 @@ async def test_review_shapes_list_what_the_oracle_admits(graph_layers) -> None:
             assert await children_of(layer, XSTUB, "u", "g", "recordGroup") == {"r": False}, layer.name
             assert await children_of(layer, CROSSREACH, "u", "s", "record", only_containers=True) == {"R": True}, layer.name
             bad = [f for i, world in enumerate(worlds) for f in _bad(await check_world(layer, world, f"review-{i}"))]
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release(worlds)
+
+
+async def test_a_child_the_check_admits_by_its_own_reach_keeps_its_row_and_its_stub(graph_layers) -> None:
+    """A child the rule does not pass under its parent, which the walk from the App reaches by another parent, is listed when the parent is
+    opened (the check admits it). So the sidebar keeps the parent row before the page's arrows are settled (SIDEKID, APPSIDE), and a stub whose
+    only child it is is listed (STUBQ)."""
+    for layer in graph_layers:
+        worlds = [SIDEKID, APPSIDE, STUBQ]
+        await layer.preload(worlds)
+        try:
+            assert await children_of(layer, SIDEKID, "u", "f", "recordGroup", only_containers=True) == {"R": True}, layer.name
+            assert (await children_of(layer, APPSIDE, "u", "A", "app", only_containers=True) or {}).get("R") is True, layer.name
+            assert await children_of(layer, STUBQ, "u", "h", "recordGroup") == {"S": True}, layer.name
+            bad = [f for i, world in enumerate(worlds) for f in _bad(await check_world(layer, world, f"ownreach-{i}"))]
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
             await layer.release(worlds)

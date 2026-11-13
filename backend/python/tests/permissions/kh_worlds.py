@@ -501,6 +501,46 @@ grants: []
 gates: [[u, A], [u, B]]
 """))
 
+# SIDEKID: a record R whose only child C the walk reaches through another parent q (C does not inherit from R): opening R lists C (the check
+# admits it), so R shows an arrow, and the sidebar (rows with children) keeps R.
+SIDEKID = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: C, kind: record, connector: A, rule: STRICT, parents: [R, q], inherits: [q]}
+grants: [[u, f], [u, q]]
+gates: [[u, A]]
+"""))
+
+# APPSIDE: a record R under the App that the App's hop does not pass (the check admits it through q), with a strict child that inherits from it:
+# opening R lists the child, so the App's sidebar keeps R.
+APPSIDE = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: STRICT, parents: [A, q], inherits: [q]}
+  - {id: c, kind: record, connector: A, rule: STRICT, parents: [R], inherits: [R]}
+grants: [[u, q]]
+gates: [[u, A]]
+"""))
+
+# STUBQ: a stub S whose only child C the walk reaches through another parent Q (C does not inherit from S): opening S lists C, so S is listed.
+STUBQ = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: h, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: S, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [h], inherits: [h]}
+  - {id: Q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: C, kind: record, connector: A, rule: STRICT, parents: [S, Q], inherits: [Q]}
+grants: [[u, h], [u, Q]]
+gates: [[u, A]]
+"""))
+
 # KEYCLASH: an App that opens everything, and a strict record m below a seed the walk does not reach, which belongs to no App. The test adds, on
 # ArangoDB only, a record group whose key is the App's key and files m in it: m belongs to that group, not to the App, so it is not listed.
 KEYCLASH = world_from_data(yaml.safe_load("""
@@ -516,4 +556,4 @@ gates: [[u, A]]
 
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
-             SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB]
+             SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ]
