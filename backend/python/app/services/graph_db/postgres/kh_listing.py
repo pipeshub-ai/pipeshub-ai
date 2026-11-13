@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES
@@ -49,6 +50,14 @@ LEAD_NODES = 5_000
 LEAD_DEPTH = 50
 LEAD_PER = 1_000
 ANY_GROUP = ""      # ``only_group`` of the chain-top walk for the records of every group at once (``_kh_tops_under``): each is placed under its own groups, as for one
+
+@dataclass
+class LeadBudget:
+    """One request's placeholder walks (its page, its total and its arrows): the answers it holds, the rows and group checks they read against LEAD_NODES, and when it began."""
+    decided: dict[int, bool] = field(default_factory=dict)
+    spent: int = 0
+    t0: float = field(default_factory=time.monotonic)
+
 
 LINKS = "/* pipeshub:kg.listing_links */ SELECT child_sk, parent_sk, kind FROM kg.links WHERE org_id = $1 AND child_sk = ANY($2::bigint[])"
 KEYS = "/* pipeshub:kg.listing_keys */ SELECT sk, coll, id FROM kg.node_keys WHERE org_id = $1 AND sk = ANY($2::bigint[])"
@@ -304,33 +313,40 @@ class KhListingMixin(PgBase):
         return await tops(held) if tops and held else set()
 
     async def _kh_leads(self, stubs: list[Any], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str, transaction: str | None, *,
-                        tops: Callable[[list[Any]], Awaitable[set[int]]] | None = None, decided: dict[int, bool] | None = None) -> tuple[set[int], set[int]]:
+                        tops: Callable[[list[Any]], Awaitable[set[int]]] | None = None, budget: LeadBudget | None = None) -> tuple[set[int], set[int]]:
         """Of placeholders the viewer may open (rows, in the caller's order), the sks that lead somewhere (:meth:`_kh_lead`), and the sks left undecided. Each placeholder is decided by
-        a walk of its own, so its answer is the same in any window, page or cursor. The request reads LEAD_NODES rows at most over all its walks (and stops starting them after
-        BUDGET_S): the first placeholder is walked alone with all of it, so a caller that resumes at the first undecided one always moves on; the next ones share what is left
-        (their first level in one statement), and one the request cannot finish within it is left undecided, never taken as leading nowhere. ``decided``: the answers this
-        request already holds, filled in."""
-        memo = {} if decided is None else decided
+        a walk of its own, so its answer is the same in any window, page or cursor. ``budget`` is the request's (:class:`LeadBudget`, shared by every call of one page: its rows,
+        its total and its arrows): LEAD_NODES rows at most over all their walks, none started after BUDGET_S. The request's first walk has all of it, so a caller that resumes at
+        the first undecided placeholder always moves on; the next ones share what is left (their first level in one statement), and one the request cannot finish within it is
+        left undecided, never taken as leading nowhere."""
+        budget = budget or LeadBudget()
+        memo = budget.decided
         todo = [r for r in {r["sk"]: r for r in stubs}.values() if r["sk"] not in memo]
-        t0, spent = time.monotonic(), 0
-        if todo:
-            memo[todo[0]["sk"]], spent = await self._kh_lead(todo[0], hidden, admitted_of, org, transaction, tops, allowance=LEAD_NODES)
-        rest = todo[1:]
-        if rest and spent < LEAD_NODES and time.monotonic() - t0 <= BUDGET_S:
-            got = await self._kq(lambda tx, f=[r["sk"] for r in rest], b=LEAD_NODES - spent: tx.fetch(kgl.children_of_sql(total=True), org, f, LEAD_PER, hidden, b), transaction)
-            spent += len(got)
+
+        def may_start() -> bool:
+            return budget.spent == 0 or (budget.spent < LEAD_NODES and time.monotonic() - budget.t0 <= BUDGET_S)
+        if todo and may_start():
+            found, used = await self._kh_lead(todo[0], hidden, admitted_of, org, transaction, tops, allowance=LEAD_NODES - budget.spent)
+            budget.spent += used
+            if found is not None:
+                memo[todo[0]["sk"]] = found
+        rest = todo[1:] if todo and todo[0]["sk"] in memo else []
+        if rest and may_start():
+            b = LEAD_NODES - budget.spent
+            got = await self._kq(lambda tx, f=[r["sk"] for r in rest]: tx.fetch(kgl.children_of_sql(total=True), org, f, LEAD_PER, hidden, b), transaction)
+            budget.spent += len(got)
             kids: dict[int, list[Any]] = {}
             for r in got:
                 kids.setdefault(r["parent"], []).append(r)
             # the statement reads the placeholders in the order asked: cut at its bound, the last one read may be partial and those after it are unread (undecided)
-            whole = rest if len(got) < LEAD_NODES - (spent - len(got)) else rest[:[r["sk"] for r in rest].index(got[-1]["parent"])]
+            whole = rest if len(got) < b else rest[:[r["sk"] for r in rest].index(got[-1]["parent"])]
             read = {w["sk"] for w in whole}
             ok = await admitted_of([r for r in got if r["parent"] in read]) if whole else set()
             for r in whole:
-                if spent >= LEAD_NODES or time.monotonic() - t0 > BUDGET_S:
+                if not may_start():
                     break
-                found, used = await self._kh_lead(r, hidden, admitted_of, org, transaction, tops, allowance=LEAD_NODES - spent, first=(kids.get(r["sk"], []), ok))
-                spent += used
+                found, used = await self._kh_lead(r, hidden, admitted_of, org, transaction, tops, allowance=LEAD_NODES - budget.spent, first=(kids.get(r["sk"], []), ok))
+                budget.spent += used
                 if found is None:      # the request's rows ran out before this walk ended: it and the ones after it wait for the next page
                     break
                 memo[r["sk"]] = found
@@ -412,7 +428,7 @@ class KhListingMixin(PgBase):
         return lists, kids, ok, held
 
     async def _kh_lists(self, read: tuple[set[int], list[Any], set[str], set[int]], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str,
-                        transaction: str | None, tops: Callable[[list[Any]], Awaitable[set[int]]] | None = None) -> set[int]:
+                        transaction: str | None, tops: Callable[[list[Any]], Awaitable[set[int]]] | None = None, budget: LeadBudget | None = None) -> set[int]:
         """The rows of the page whose opening lists something (from :meth:`_kh_arrows_read`): a child the viewer may open, a placeholder only when it leads somewhere
         (:meth:`_kh_leads`); none for a group that hides its children."""
         lists, kids, ok, _ = read
@@ -428,7 +444,7 @@ class KhListingMixin(PgBase):
                 stubs.append(r)
         if by_stub:
             # shortcut: a placeholder the request's budget leaves undecided lights no arrow; opening the row resumes before it. Upgrade if rows of many wide placeholders are common.
-            led, _ = await self._kh_leads([r for r in stubs if by_stub[r["sk"]] - lists], hidden, admitted_of, org, transaction, tops=tops)
+            led, _ = await self._kh_leads([r for r in stubs if by_stub[r["sk"]] - lists], hidden, admitted_of, org, transaction, tops=tops, budget=budget)
             for sk in led:
                 lists |= by_stub[sk]
         return lists

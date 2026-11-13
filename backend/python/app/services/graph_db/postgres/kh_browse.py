@@ -36,6 +36,7 @@ from app.services.graph_db.postgres.kh_listing import (
     MAX_SCANNED,
     UNDECIDED_MAX,
     WINDOW_MAX,
+    LeadBudget,
     _node_type,
     chain_tops_apply,
     filtered_out,
@@ -167,18 +168,18 @@ class KhBrowseMixin(PgBase):
         gset = set(granted)
         admitted_of = self._kh_admitted_of(sets, gset, self._kh_admitter(org, access, transaction, served=served))
         tops = self._kh_tops_under(org, app_id, access, gset, transaction, apply=chain_tops_apply(app_doc))
-        walk = (hidden, admitted_of, org, transaction, tops)      # what deciding a placeholder reads (``_kh_listed``)
+        lead = LeadBudget()      # the request's placeholder walks: its page, its total and its arrows share one budget
+        walk = (hidden, admitted_of, org, transaction, tops, lead)      # what deciding a placeholder reads (``_kh_listed``)
         resume, capped, out, read = None, False, None, None
         if u["done"] is not None:
             page, total, counts, out, read = u["done"]
         elif rows is not None and not u["windowed"]:
-            memo: dict[int, bool] = {}
             ordered = self._kh_order(rows, sort_field, order, after, direction)
-            listed, n = await self._kh_listed(ordered, *walk, ok=opened, decided=memo)
+            listed, n = await self._kh_listed(ordered, *walk, ok=opened)
             page = listed[:limit + 1]
             if len(page) <= limit and n < len(ordered):      # the walks stopped before a placeholder: the page ends there, and the next starts there
                 resume = _edge(ordered[n - 1], sort_field)
-            every, m = await self._kh_listed(self._kh_order(rows, sort_field, order, None, "next"), *walk, ok=opened, decided=memo)
+            every, m = await self._kh_listed(self._kh_order(rows, sort_field, order, None, "next"), *walk, ok=opened)
             total, counts, capped = len(every), self._kh_counts(every), m < len(rows)
         elif rows is not None:      # held, its rows asked of the check a window at a time in the page's order; the total as for a wide node
             page, resume = await self._kh_held_page(rows, limit, sort_field, order, after, direction, walk)
@@ -192,7 +193,7 @@ class KhBrowseMixin(PgBase):
             out, read = await self._kh_flat_rows(org, app_id, app_doc, page, sort_field, transaction, also=lambda tx: self._kh_arrows_read(tx, org, page, hidden, sets, gset, access,
                                                                                                                   tops=chain_tops_apply(app_doc)),
                                                  under=u["under"])
-        lists = await self._kh_lists(read, hidden, admitted_of, org, transaction, tops) if read else set()
+        lists = await self._kh_lists(read, hidden, admitted_of, org, transaction, tops, lead) if read else set()
         lists |= await self._kh_held_lists(page, read, lists, tops)
         for row, c in zip(out, page, strict=True):
             row["hasChildren"] = c["sk"] in lists
@@ -224,12 +225,12 @@ class KhBrowseMixin(PgBase):
         return counts
 
     async def _kh_listed(self, rows: list[Any], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str, transaction: str | None,
-                         tops: Callable[[list[Any]], Awaitable[set[int]]] | None, ok: set[str] | None = None, decided: dict[int, bool] | None = None) -> tuple[list[Any], int]:
+                         tops: Callable[[list[Any]], Awaitable[set[int]]] | None, budget: LeadBudget, ok: set[str] | None = None) -> tuple[list[Any], int]:
         """Of children in the caller's order, those a browse lists: the ones the viewer may open (``ok`` when already asked), a placeholder only when it leads somewhere
         (:meth:`_kh_leads`); and how many of ``rows`` are decided, a prefix that ends before the first placeholder the request's budget left undecided (the caller resumes there)."""
         ok = await admitted_of(rows) if ok is None else ok
         stubs = [r for r in rows if r["placeholder"] and r["id"] in ok]
-        led, undecided = await self._kh_leads(stubs, hidden, admitted_of, org, transaction, tops=tops, decided=decided) if stubs else (set(), set())
+        led, undecided = await self._kh_leads(stubs, hidden, admitted_of, org, transaction, tops=tops, budget=budget) if stubs else (set(), set())
         n = next((i for i, r in enumerate(rows) if r["sk"] in undecided and r["placeholder"] and r["id"] in ok), len(rows))
         return [r for r in rows[:n] if r["id"] in ok and (not r["placeholder"] or r["sk"] in led)], n
 
@@ -256,12 +257,12 @@ class KhBrowseMixin(PgBase):
     async def _kh_held_page(self, rows: list[Any], limit: int, sort_field: str, order: str, after: dict[str, Any] | None, direction: str, walk: tuple) -> tuple[list[Any], dict[str, Any] | None]:
         """The page of children held whole that the check has to be asked about: in the page's order, a window at a time, as the flat listing reads a connector kg does not serve."""
         ordered = self._kh_order(rows, sort_field, order, after, direction)
-        need, kept, at, memo = limit + 1, [], 0, {}
+        need, kept, at = limit + 1, [], 0
         window, t0 = min(WINDOW_MAX, max(need * 4, 100)), time.monotonic()
         while at < len(ordered) and len(kept) < need:
             got = ordered[at:at + window]
             at += len(got)
-            listed, n = await self._kh_listed(got, *walk, decided=memo)
+            listed, n = await self._kh_listed(got, *walk)
             kept += listed[:need - len(kept)]
             if len(kept) < need and n < len(got):      # the walks stopped before a placeholder: resume there
                 return kept, _edge(got[n - 1], sort_field)
@@ -273,7 +274,7 @@ class KhBrowseMixin(PgBase):
     async def _kh_browse_wide(self, p: kgl.Params, where: str, links: str | None, limit: int, sort_field: str, order: str, after: dict[str, Any] | None, direction: str,
                               walk: tuple) -> tuple[list[Any], dict[str, Any] | None]:
         """The page of a node too wide to hold: its children read in windows of the children index of the sort, as the flat listing reads a connector."""
-        need, kept, boundary, scanned, memo = limit + 1, [], after, 0, {}
+        need, kept, boundary, scanned = limit + 1, [], after, 0
         window, t0 = min(WINDOW_MAX, max(need * 4, 100)), time.monotonic()
         transaction = walk[3]
         while True:
@@ -282,7 +283,7 @@ class KhBrowseMixin(PgBase):
             branches = kgl.after(sort_field, order, direction, boundary, q) if boundary is not None else None
             sql = kgl.page_sql(sort_field, order, direction, where, branches, None, kgl.browse_scopes(links))
             got = list(await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction))
-            listed, n = await self._kh_listed(got, *walk, decided=memo)
+            listed, n = await self._kh_listed(got, *walk)
             kept += listed[:need - len(kept)]
             if len(kept) < need and n < len(got):      # the walks stopped before a placeholder: resume there
                 return kept, _edge(got[n - 1], sort_field)

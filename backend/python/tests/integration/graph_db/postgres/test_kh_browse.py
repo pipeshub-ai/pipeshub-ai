@@ -571,32 +571,31 @@ async def test_placeholder_walks_read_at_most_their_budget_and_list_the_same_pla
         await p.batch_create_edges([edge("u1", "users", i, "records", type="USER", role="READER") for i in granted], "permission")
     await flip(pg_db, org)
     monkeypatch.setattr(kh_listing, "LEAD_NODES", 100)
-    walks: list[int] = []
-    real_leads, real_kq = kh_listing.KhListingMixin._kh_leads, kh_listing.KhListingMixin._kq
-
-    async def leads(self, *a, **kw) -> set[int]:
-        walks.append(0)
-        return await real_leads(self, *a, **kw)
+    requests: list[int] = []      # the placeholder-walk rows of each browse request (its page, its total and its arrows together)
+    real_kq = kh_listing.KhListingMixin._kq
 
     async def kq(self, fn, transaction) -> object:
         got = await real_kq(self, fn, transaction)
-        if walks and isinstance(got, list) and got and "parent" in got[0]:      # a level of the placeholder walk
-            walks[-1] += len(got)
+        if requests and isinstance(got, list) and got and "parent" in got[0]:      # rows of a placeholder walk
+            requests[-1] += len(got)
         return got
-    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_leads", leads)
     monkeypatch.setattr(kh_listing.KhListingMixin, "_kq", kq)
+
+    async def request(**kw) -> dict:
+        requests.append(0)
+        return await browse(p, org, "fold", granted, **kw)
     pages: dict[int, list[str]] = {}
     for size in (3, 50, 100):
         seen, after = [], None
         for _ in range(60):
-            page = await browse(p, org, "fold", granted, limit=size, after=after)
+            page = await request(limit=size, after=after)
             seen += [r["id"] for r in page["rows"]]
             if not page["hasMore"]:
                 break
             last = page["rows"][-1] if page["rows"] else None
             after = page.get("resume") or {"nullRank": last["nullRank"], "sortKey": last["sortKey"], "id": last["id"]}
         pages[size] = seen
-    assert walks and max(walks) <= 100, walks
+    assert requests and max(requests) <= 100, requests
     assert pages[3] == pages[50] == pages[100] == stubs, pages
 
 
@@ -679,7 +678,7 @@ async def test_a_browse_of_many_chain_top_holders_resolves_the_chain_tops_once(p
 
 async def test_a_request_reads_at_most_its_budget_over_all_its_placeholder_walks_and_resumes_at_one_it_cannot_finish(pg_db, monkeypatch) -> None:
     """Ten placeholders in one batch; the second leads only two levels down (30 placeholders, of which only the last has a child the viewer may open). With LEAD_NODES at 100 a
-    request reads at most 100 rows over every walk, the batch included; the deep placeholder it cannot finish is left undecided (the page resumes at it) and decided by the
+    request reads at most 100 rows over every walk of its page, its total and its arrows together, the batches included; the deep placeholder it cannot finish is left undecided (the page resumes at it) and decided by the
     next request's own walk. Paged at 3, 50 or 100 rows, the browse lists all ten, each once, in order."""
     p, org = prov(pg_db), new_org()
     stubs = [f"s{i:02d}" for i in range(10)]
@@ -701,32 +700,32 @@ async def test_a_request_reads_at_most_its_budget_over_all_its_placeholder_walks
         await p.batch_create_edges([edge("u1", "users", i, "records", type="USER", role="READER") for i in granted], "permission")
     await flip(pg_db, org)
     monkeypatch.setattr(kh_listing, "LEAD_NODES", 100)
-    walks: list[int] = []
-    real_leads, real_kq = kh_listing.KhListingMixin._kh_leads, kh_listing.KhListingMixin._kq
-
-    async def leads(self, *a, **kw) -> tuple[set[int], set[int]]:
-        walks.append(0)
-        return await real_leads(self, *a, **kw)
+    requests: list[int] = []      # the placeholder-walk rows of each browse request (its page, its total and its arrows together)
+    real_kq = kh_listing.KhListingMixin._kq
 
     async def kq(self, fn, transaction) -> object:
         got = await real_kq(self, fn, transaction)
-        if walks and isinstance(got, list) and got and "parent" in got[0]:      # rows of a placeholder walk
-            walks[-1] += len(got)
+        if requests and isinstance(got, list) and got and "parent" in got[0]:      # rows of a placeholder walk
+            requests[-1] += len(got)
         return got
-    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_leads", leads)
     monkeypatch.setattr(kh_listing.KhListingMixin, "_kq", kq)
-    first = await browse(p, org, "fold", granted, limit=50)
+
+    async def request(**kw) -> dict:
+        requests.append(0)
+        return await browse(p, org, "fold", granted, **kw)
+    first = await request(limit=50)
     assert [r["id"] for r in first["rows"]] == ["s00"] and first.get("resume"), first["rows"]      # s01 waits for the next request
+    assert first["totalCapped"] is True and first["total"] >= 1, first      # the total met placeholders the request's budget left undecided: at least, not exact
     pages: dict[int, list[str]] = {}
     for size in (3, 50, 100):
         seen, after = [], None
         for _ in range(40):
-            page = await browse(p, org, "fold", granted, limit=size, after=after)
+            page = await request(limit=size, after=after)
             seen += [r["id"] for r in page["rows"]]
             if not page["hasMore"]:
                 break
             last = page["rows"][-1] if page["rows"] else None
             after = page.get("resume") or {"nullRank": last["nullRank"], "sortKey": last["sortKey"], "id": last["id"]}
         pages[size] = seen
-    assert walks and max(walks) <= 100, walks
+    assert requests and max(requests) <= 100, requests
     assert pages[3] == pages[50] == pages[100] == stubs, pages
