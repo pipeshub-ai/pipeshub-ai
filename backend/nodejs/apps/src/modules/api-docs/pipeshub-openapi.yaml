@@ -835,6 +835,7 @@ components:
         disabledTools: [pipeshub_download_record]
     McpAccessTool:
       type: object
+      additionalProperties: false
       required:
         - name
         - title
