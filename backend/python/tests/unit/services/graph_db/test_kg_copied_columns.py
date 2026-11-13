@@ -36,9 +36,20 @@ ALLOWED = {
 # (source, tag or start of the statement): statements that name kg.records and that sqlglot does not parse, with the reason they need no reading
 UNPARSED: dict[tuple[str, str], str] = {}
 
-_START = re.compile(r"^\s*(?:/\*.*?\*/\s*)*(?:SELECT|WITH|INSERT|UPDATE|DELETE)\b", re.I | re.S)
+_VERB = re.compile(r"(?:SELECT|WITH|INSERT|UPDATE|DELETE)\b", re.I)
 _CONTINUES = re.compile(r"^\s*(?:FROM|WHERE|AND|OR|JOIN|LEFT|RIGHT|INNER|CROSS|FULL|ON|ORDER|GROUP|HAVING|LIMIT|OFFSET|RETURNING|USING)\b", re.I)
 _TAG = re.compile(r"/\*\s*pipeshub:([\w.]+)\s*\*/")
+
+
+def _starts_statement(text: str) -> bool:
+    """The text starts a statement, after any leading ``/* ... */`` comments. A scan, not a regex: a run of comments takes linear time whatever it holds."""
+    s = text.lstrip()
+    while s.startswith("/*"):
+        end = s.find("*/", 2)
+        if end < 0:
+            return False
+        s = s[end + 2:].lstrip()
+    return _VERB.match(s) is not None
 
 
 class Unparsed(Exception):
@@ -78,9 +89,17 @@ def _source(scope: Scope, alias: str) -> list[object]:
     return []
 
 
-def _own_columns(scope: Scope, node: exp.Expression) -> list[exp.Column]:
-    mine = {id(c) for c in scope.columns}
-    return [c for c in node.find_all(exp.Column) if id(c) in mine]
+def _own_columns(node: exp.Expression) -> list[exp.Column]:
+    """The columns of ``node`` that are not inside a query nested in it (those are their own scope's). Read from the tree, not from ``Scope.columns``, which leaves out a
+    bare column it takes for a possible alias (``HAVING max(record_type) = ...``)."""
+    out = []
+    for c in node.find_all(exp.Column):
+        a = c
+        while a is not node and a is not None and not isinstance(a, (exp.Select, exp.Union)):
+            a = a.parent
+        if a is node or a is None:          # no query lies between the column and the node
+            out.append(c)
+    return out
 
 
 def _projections(scope: Scope) -> list[exp.Expression]:
@@ -126,7 +145,7 @@ def copied_reads(tree: exp.Expression) -> set[str]:
     for scope in root.traverse():
         e = scope.expression
         if isinstance(e, exp.Select):
-            work += [(scope, n) for n in (e.args.get(k) for k in ("where", "group", "having", "order", "qualify")) if n is not None]
+            work += [(scope, n) for n in (e.args.get(k) for k in ("where", "group", "having", "order", "qualify", "distinct")) if n is not None]
             work += [(scope, j.args["on"]) for j in e.args.get("joins") or [] if j.args.get("on") is not None]
             if _returns_read(scope):
                 work += [(scope, p) for p in _projections(scope)]
@@ -168,7 +187,7 @@ def copied_reads(tree: exp.Expression) -> set[str]:
         for t in _stars(scope, node):
             for s in _source(scope, t or ""):
                 follow(s, None)
-        for c in _own_columns(scope, node):
+        for c in _own_columns(node):
             if isinstance(c.this, exp.Star):
                 continue
             for s in _source(scope, c.table):
@@ -185,7 +204,7 @@ def reads(texts: list[str], consts: dict[str, str] | None = None) -> set[str]:
     stmts: list[str] = []
     for text in texts:
         t = re.sub(r"\{(\w+)\}", lambda m: consts.get(m.group(1), m.group(0)), text) if consts else text
-        if _START.match(t):
+        if _starts_statement(t):
             stmts.append(t)
         elif stmts and _CONTINUES.match(t):
             stmts[-1] += t
@@ -269,7 +288,7 @@ def python_statements(path: Path) -> tuple[list[str], list[str]]:
             texts.append(v)
             continue
         shape = _shape(n, consts, mods)
-        if (_START.match(shape) or _TAG.match(shape.lstrip())) and (TABLE in shape.lower() or "{}" in shape):
+        if (_starts_statement(shape) or _TAG.match(shape.lstrip())) and (TABLE in shape.lower() or "{}" in shape):
             composed.append(_key(shape))
     return texts, composed
 
@@ -388,6 +407,9 @@ def test_the_scan_finds_the_sources_and_statements_it_must_read() -> None:
     (["SELECT 1 FROM graph.nodes n WHERE EXISTS (SELECT 1 FROM kg.records r WHERE r.id = n.id AND r.model = $1)"], {"model"}),
     (["UPDATE kg.records SET rule = $1 WHERE org_id = $2"], set()),                                         # a column set is written, not read
     (["UPDATE kg.records SET name = origin WHERE vrid = $2"], {"origin", "vrid"}),
+    (["SELECT id FROM kg.records GROUP BY id HAVING max(record_type) = 'FILE'"], {"record_type"}),           # a bare column in an aggregate of HAVING
+    (["SELECT DISTINCT ON (record_type) id FROM kg.records ORDER BY record_type, id"], {"record_type"}),
+    (["SELECT DISTINCT ON (r.rule) r.id FROM kg.records r"], {"rule"}),
     (["WITH RECURSIVE c AS (SELECT r.sk FROM kg.records r UNION SELECT x.sk FROM c JOIN kg.records x ON x.parent_sk = c.sk) SELECT c.sk FROM c"], set()),
 ])
 def test_the_scan_names_each_way_of_reading_a_copied_column(texts: list[str], found: set[str]) -> None:
@@ -409,3 +431,11 @@ def test_a_module_s_constants_fill_its_f_strings_and_a_computed_statement_is_nam
                    '    return f"/* pipeshub:kg.b */ SELECT r.sk FROM kg.records r WHERE {cond}"\n', encoding="utf-8")
     texts, composed = python_statements(mod)
     assert reads(texts) == {"rule"} and composed == ["kg.b"]
+
+
+def test_a_run_of_comments_is_scanned_in_linear_time() -> None:
+    import time
+    t0 = time.perf_counter()
+    assert not _starts_statement("/*" + "*//*" * 5000) and not reads(["/*" + "*//*" * 5000])
+    assert _starts_statement("/* a */ /* b */ SELECT 1") and not _starts_statement("/* never closed SELECT 1")
+    assert time.perf_counter() - t0 < 1.0
