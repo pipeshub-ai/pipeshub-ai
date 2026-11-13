@@ -97,6 +97,11 @@ def _s(v: object) -> str | None:
     return None if v is None else str(v)
 
 
+def _stored_org(doc: dict) -> object:
+    """The organisation a stored node says it belongs to: a field of the copied data, compared with the org the copy is made for (never the caller's org)."""
+    return doc.get("orgId")
+
+
 def app_id_of(key: Key, doc: dict) -> str | None:
     """The connector (app) a node belongs to: an app is its own."""
     if key[0] == "apps":
@@ -182,7 +187,7 @@ def record_row(k: Key, doc: dict, snap: Snapshot) -> dict:
         "size_bytes": _ms(doc.get("sizeInBytes")), "record_type": _s(doc.get("recordType")), "origin": _s(doc.get("origin")),
         "external_id": _s(doc.get("externalRecordId")), "deleted": flag(doc.get("isDeleted")), "placeholder": flag(doc.get("isPlaceholder")), "granted": granted,
         # a node of another organisation is no row of a listing (the walk reads its nodes by the viewer's orgId)
-        "alien": doc.get("orgId") != snap.org,
+        "alien": _stored_org(doc) != snap.org,
         # the listing's order of names: a string by UTF-16 code unit (what the merge that pages the listing compares by), kept as the bytes of it
         "name_sort": name.lower().encode("utf-16-be", "surrogatepass") if name is not None else None,
         # the hub's node type 'folder': neo4j_provider._cypher_hub_type (mimeType in FOLDER_MIME_TYPES, or recordType FOLDER), of a record only
@@ -256,7 +261,7 @@ def derive(focus: set[Key], snap: Snapshot) -> Derived:
                         # as the walk reads it: an edge to a user, in a connector of this organisation (an app of another organisation is no gate)
                         cid = e.doc.get("connectorId")
                         app = snap.sk.get(("apps", cid)) if isinstance(cid, str) else None
-                        if app is None or e.to_coll != "users" or (snap.org and snap.nodes.get(("apps", cid), {}).get("orgId") != snap.org):
+                        if app is None or e.to_coll != "users" or (snap.org and _stored_org(snap.nodes.get(("apps", cid), {})) != snap.org):
                             continue
                         if not snap.exists(e.to):                    # an account that is not a node has no badges: an edge written for it after it was deleted must not give them
                             continue
