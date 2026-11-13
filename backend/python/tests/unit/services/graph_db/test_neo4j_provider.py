@@ -5258,8 +5258,23 @@ class TestExternalCollaboratorBrowse:
         )
 
         call = provider.client.execute_query.await_args
-        assert "WITH app, allNodes + kh_placed AS allNodes" in call.args[0]
+        assert "WITH app, allNodes + [kh_x IN kh_placed WHERE NOT kh_x IN allNodes] AS allNodes" in call.args[0]      # each once
         assert call.kwargs["parameters"]["kh_lists"]["kh_placed"] == ["r9", "g9"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("start", [None, "f1"])
+    async def test_the_stubs_are_read_once_after_the_children_are_collected(self, provider, start) -> None:
+        """Joined to the collect in one WITH, the planner read the start's children for the stubs once per child: 25M rows and a timeout
+        on a 5k-record folder. In a WITH of its own it runs once per page."""
+        provider._kh_v3_connector_and_size = AsyncMock(return_value=("app1", 1))
+        await provider.get_knowledge_hub_connector_page_v3(
+            "app1", "org1", ["uk1"], ["app1"], ["r9"], flatten=False,
+            **({"start_id": start, "start_type": "folder"} if start else {}),
+        )
+        query = next(c.args[0] for c in provider.client.execute_query.await_args_list if "kh_sn IN" in c.args[0])
+        with_stubs = next(line for line in query.splitlines() if "kh_sn IN" in line)
+        assert "collect(" not in with_stubs
+        assert ("collect(DISTINCT na) AS rawNodes" if start else "collect(DISTINCT ca) AS allNodes") in query
 
 
     @pytest.mark.asyncio
