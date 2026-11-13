@@ -46,6 +46,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.services.vector_cleanup_events import (
     build_stored_document_cleanup_events,
 )
+from app.core import org_context
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import FileRecord, RecordType
 from app.models.source_dates import upload_origin
@@ -109,6 +110,33 @@ HEAL_TIMEOUT_S = 10.0
 def _deny() -> PushRefusal:
     """The one answer for a reference that cannot be used, whatever the cause (absent, foreign, deleted, not an image...)."""
     return PushRefusal(422, "IMAGE_REF_INVALID", "An image reference in this record cannot be used.", extra={"code": "IMAGE_REF_INVALID"})
+
+
+async def _make_off_loop(make: Callable[..., str], *args: object, undo: Callable[[str], object]) -> str:
+    """``make(*args)`` in a thread. A cancel cannot stop the thread, so what it makes after one is undone (in a thread too)."""
+    loop = asyncio.get_running_loop()
+    made = org_context.spawn_in_request(asyncio.to_thread(make, *args))
+    try:
+        return await asyncio.shield(made)
+    except asyncio.CancelledError:
+        made.add_done_callback(
+            lambda f: f.cancelled() or f.exception() is not None or loop.run_in_executor(None, undo, f.result())
+        )
+        raise
+
+
+async def _run_to_the_end(work: asyncio.Future[None]) -> None:
+    """Wait for ``work`` even through a cancel, then re-raise the cancel. An awaited executor job that is cancelled
+    while still queued is dropped, never run."""
+    cancel: asyncio.CancelledError | None = None
+    while not work.done():
+        try:
+            await asyncio.shield(work)
+        except asyncio.CancelledError as e:
+            cancel = e
+    work.result()
+    if cancel is not None:
+        raise cancel
 
 
 def _mib(n: int) -> str:
@@ -247,7 +275,8 @@ class KbPushService:
             body_key = "b:" + await asyncio.to_thread(lambda: hashlib.sha256(body).hexdigest())
             self.ledger.check_pair(user, body_key)
             report = self.ledger.accountant(user, body_key, TEXT)
-        in_path = self.spool.write(body)
+        # The spool's file work runs in threads: a slow disk must not stall the loop every connector shares.
+        in_path = await _make_off_loop(self.spool.write, body, undo=self.spool.remove)
         out_path = self.spool.new_path("out")
         img: ImagePush | None = None
         try:
@@ -261,21 +290,27 @@ class KbPushService:
                 if self.ledger is not None:
                     self.ledger.check_images(user)
                     self.ledger.check_pair(user, "r:" + request_key)
-                img = self._begin_images(user_id, org_id)
+                img = await self._begin_images(user_id, org_id)
                 img.request_key = request_key
                 validated = await self._authorise_images(img, validated, user_id=user_id, org_id=org_id)
             return await self._write(kb_id=kb_id, user_id=user_id, org_id=org_id, v=validated, folder_id=folder_id, img=img)
         finally:
-            self.spool.remove(in_path, out_path)
-            if img is not None:
-                if img.out_path:
-                    self.spool.remove(img.out_path)
-                self.materialiser.remove_dir(img.work_dir)  # type: ignore[union-attr]
-                img.slot.release()
+            try:
+                await _run_to_the_end(org_context.spawn_in_request(asyncio.to_thread(self._remove_files, in_path, out_path, img)))
+            finally:
+                if img is not None:
+                    img.slot.release()
+
+    def _remove_files(self, in_path: str, out_path: str, img: ImagePush | None) -> None:
+        self.spool.remove(in_path, out_path)
+        if img is not None:
+            if img.out_path:
+                self.spool.remove(img.out_path)
+            self.materialiser.remove_dir(img.work_dir)  # type: ignore[union-attr]
 
     # ---- images -----------------------------------------------------------------------------
 
-    def _begin_images(self, user_id: str, org_id: str) -> ImagePush:
+    async def _begin_images(self, user_id: str, org_id: str) -> ImagePush:
         if self.materialiser is None and self.image_admission is not None:
             # A deployment whose materialiser could not be made (a malformed origin list): an operator fault, not the caller's.
             raise _refuse(503, "IMAGES_UNAVAILABLE", "Images in pushes are unavailable on this deployment.")
@@ -284,7 +319,8 @@ class KbPushService:
                               extra={"code": "BLOCKS_INVALID"})
         slot = self.image_admission.reserve(user_id, org_id)
         try:
-            return ImagePush(slot=slot, work_dir=self.materialiser.make_dir(self.spool.dir))
+            work_dir = await _make_off_loop(self.materialiser.make_dir, self.spool.dir, undo=self.materialiser.remove_dir)
+            return ImagePush(slot=slot, work_dir=work_dir)
         except BaseException:
             slot.release()
             raise
@@ -352,7 +388,8 @@ class KbPushService:
         # Arithmetic from what storage says, before any download: a refusal here costs no bytes.
         sizes = {r: (i.object_size if i.object_size is not None else i.declared_size or 0) for r, i in img.infos.items()}
         refs = I.ImageRefs(order=ids, counts=dict(v.refs))
-        lower = I.inlined_size_lower_bound(os.path.getsize(v.stored_path), v.image_nonce or "", refs, sizes)
+        stored_size = await asyncio.to_thread(os.path.getsize, v.stored_path)
+        lower = I.inlined_size_lower_bound(stored_size, v.image_nonce or "", refs, sizes)
         cap, limit = await self._cap(authoritative=False)
         if lower > cap:
             raise resolved_too_large(cap, limit)

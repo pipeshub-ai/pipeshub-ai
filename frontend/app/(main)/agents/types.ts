@@ -2,6 +2,8 @@ import type {
   Conversation,
   ConversationMessage,
   ConversationPagination,
+  ForkChild,
+  ForkOrigin,
   ModelInfo,
   ReasoningEffort,
   SharedWithEntry,
@@ -395,6 +397,8 @@ export interface AgentConversationDetailApi {
   status: string;
   messages: ConversationMessage[];
   modelInfo: ModelInfo;
+  forkedFrom?: ForkOrigin;
+  forks?: ForkChild[];
   access: { isOwner: boolean; accessLevel: string };
   /** Optional: present when the API returns paginated messages. */
   pagination?: ConversationPagination;

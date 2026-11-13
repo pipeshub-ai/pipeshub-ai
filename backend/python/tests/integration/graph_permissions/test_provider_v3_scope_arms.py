@@ -358,7 +358,8 @@ async def _page(provider, *, app_id: str = APP, **overrides) -> dict:
         "app_id": app_id, "org_id": ORG,
         "grantee_ids": access["grantee_ids"],
         "gated_app_ids": access["gated_app_ids"],
-        "granted_ids": access["by_connector"].get(app_id) or [],
+        # Every gated connector's grants: a walk can pass through a node of another (an App's own grants alone are refused).
+        "grants_by_connector": {**access["by_connector"], **({app_id: overrides.pop("granted_ids")} if "granted_ids" in overrides else {})},
         "limit": 500, "flatten": True, "sort_field": "name", "sort_dir": "ASC",
         "include_total": True,
     }
@@ -529,7 +530,7 @@ async def test_the_total_matches_the_rows(v3_graph, neo4j_provider) -> None:
         app_id=APP, org_id=ORG,
         grantee_ids=access["grantee_ids"],
         gated_app_ids=access["gated_app_ids"],
-        granted_ids=access["by_connector"].get(APP) or [],
+        grants_by_connector=access["by_connector"],
         limit=3, flatten=True, sort_field="name", sort_dir="ASC",
         include_total=True,
     )
@@ -552,7 +553,7 @@ async def test_a_user_with_no_grants_sees_nothing_here(
         app_id=APP, org_id=ORG,
         grantee_ids=access["grantee_ids"],
         gated_app_ids=access["gated_app_ids"],
-        granted_ids=access["by_connector"].get(APP) or [],
+        grants_by_connector=access["by_connector"],
         limit=500, flatten=True, sort_field="name", sort_dir="ASC",
         include_total=True,
     )

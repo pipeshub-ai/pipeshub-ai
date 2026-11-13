@@ -333,7 +333,9 @@ async def _run(
     each page reads its connector's grants itself and leaves them there."""
     gate = _gate(max_concurrency)
     granted = access.get("by_connector") or {}
-    own_grants = {} if grants_read is None else {"user_key": user_key, "grants_out": grants_read}
+    # Every connector's grants, or the user to read them: the walk from one App can pass through a node of another, whose grant counts.
+    own_grants = ({"user_key": user_key, "grants_by_connector": granted} if grants_read is None
+                  else {"user_key": user_key, "grants_out": grants_read})
 
     async def run(app_id: str) -> dict[str, Any]:
         async def call() -> dict[str, Any]:
