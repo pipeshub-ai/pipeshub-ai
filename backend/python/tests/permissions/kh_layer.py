@@ -188,9 +188,9 @@ def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> 
     return out
 
 
-async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "") -> list[KhFinding]:
-    """Every listing the viewer sees, held to the oracle; the browse starts at every App of the world (`_browse`), so an App's own children are
-    held to it as a folder's are."""
+async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "", *, browse_apps: bool = True) -> list[KhFinding]:
+    """Every listing the viewer sees, held to the oracle. The browse starts at every App of the world (`_browse`), so an App's own children are
+    held to it as a folder's are, whatever ``browse_apps`` (kept for its callers) says."""
     reference = OracleLayer(layer.shape)
     found: list[KhFinding] = []
     for viewer in world.users():
