@@ -56,7 +56,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `zendesk` | item-acl | override | - | `app/connectors/sources/zendesk/connector.py:2057` | grep, to confirm |
 | `zammad` | item-acl | override | - | `app/connectors/sources/zammad/connector.py:2003` | grep, to confirm |
 | `zoom` | item-acl | override | - | `app/connectors/sources/zoom/connector.py:907` | grep, to confirm |
-| `drupal_wiki` | item-acl | override | - | `app/connectors/sources/drupal_wiki/connector.py:769` | grep, to confirm |
+| `drupal_wiki` | item-acl | override | - | `app/connectors/sources/drupal_wiki/connector.py:997` | grep, to confirm |
 | `bookstack` | item-acl | override | - | `app/connectors/sources/bookstack/connector.py:1224` | grep, to confirm |
 | `demo` | item-acl | override | - | `app/connectors/sources/demo/connector.py:202` | grep, to confirm |
 

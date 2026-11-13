@@ -3346,7 +3346,14 @@
         "badge": "Acción necesaria",
         "title": "Acción necesaria",
         "openAuthentication": "Actualizar autenticación",
-        "viewSteps": "Ver los pasos de configuración"
+        "viewSteps": "Ver los pasos de configuración",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki rechaza las consultas de miembros y de estructura de páginas",
+            "message": "Los espacios privados solo se sincronizan con el acceso confirmado en una sincronización anterior, y solo durante {{days}} días después de confirmarse. Los espacios privados nunca sincronizados, o confirmados hace más tiempo, se omiten y la jerarquía de páginas no está disponible. Los espacios abiertos no se ven afectados. Una sincronización completa, incluida la que se inicia al cambiar los filtros, pone fin a esto para los espacios privados hasta que Drupal Wiki vuelva a listar sus miembros.",
+            "message_dated": "Los espacios privados solo se sincronizan con el acceso confirmado en una sincronización anterior, y solo durante {{days}} días después de confirmarse. Los espacios privados nunca sincronizados, o confirmados hace más tiempo, se omiten y la jerarquía de páginas no está disponible. Los espacios abiertos no se ven afectados. Una sincronización completa, incluida la que se inicia al cambiar los filtros, pone fin a esto para los espacios privados hasta que Drupal Wiki vuelva a listar sus miembros. El acceso más antiguo en uso se confirmó el {{confirmedOn}}."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Todos en tu organización verán estos datos",

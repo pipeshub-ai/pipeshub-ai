@@ -3312,7 +3312,14 @@
         "badge": "Handlung erforderlich",
         "title": "Handlung erforderlich",
         "openAuthentication": "Authentifizierung aktualisieren",
-        "viewSteps": "Einrichtungsschritte ansehen"
+        "viewSteps": "Einrichtungsschritte ansehen",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki verweigert Abfragen zu Mitgliedern und Seitenstruktur",
+            "message": "Private Spaces werden nur mit den bei einer früheren Synchronisierung bestätigten Zugriffsrechten synchronisiert, und nur bis {{days}} Tage nach der Bestätigung. Nie synchronisierte oder länger zurück bestätigte private Spaces werden übersprungen, und die Seitenhierarchie ist nicht verfügbar. Offene Spaces sind nicht betroffen. Eine vollständige Synchronisierung, auch eine durch geänderte Filter ausgelöste, beendet dies für private Spaces, bis Drupal Wiki deren Mitglieder wieder auflistet.",
+            "message_dated": "Private Spaces werden nur mit den bei einer früheren Synchronisierung bestätigten Zugriffsrechten synchronisiert, und nur bis {{days}} Tage nach der Bestätigung. Nie synchronisierte oder länger zurück bestätigte private Spaces werden übersprungen, und die Seitenhierarchie ist nicht verfügbar. Offene Spaces sind nicht betroffen. Eine vollständige Synchronisierung, auch eine durch geänderte Filter ausgelöste, beendet dies für private Spaces, bis Drupal Wiki deren Mitglieder wieder auflistet. Die älteste verwendete Zugriffsbestätigung stammt vom {{confirmedOn}}."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Alle in Ihrer Organisation sehen diese Daten",
