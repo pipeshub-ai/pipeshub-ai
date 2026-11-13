@@ -460,7 +460,11 @@ _KH_V3_BATCH = 50_000
 # Seconds before the server kills a check or listing query. Far above what they
 # take (a 99k-record flatten reads everything in ~2 s); it bounds a pathological
 # graph, and a killed check fails closed (PermissionVerificationUnavailableError).
-_KH_V3_QUERY_OPTIONS = {"maxRuntime": 120.0}
+# Planning, not execution, is most of a browse statement's time, and `move-calculations-up` is most of the planning (about 60% of it, growing
+# faster than the statement): it hoists each calculation above the loops it does not read, which these statements undo on purpose (every costly
+# subquery sits in a loop over a list that is empty unless it applies, so it runs only where it is asked). Measured on the browse, sidebar and
+# flatten statements: the same results and execution time without it.
+_KH_V3_QUERY_OPTIONS = {"maxRuntime": 120.0, "optimizer": {"rules": ["-move-calculations-up", "-move-calculations-up-2"]}}
 
 
 def _aql_access_rule(v: str) -> str:
