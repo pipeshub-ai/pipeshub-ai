@@ -21165,9 +21165,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         below_member = f"(NOT {member_p} OR {p}.id IN $grantedIds OR {seed})"
         # Below a node the walk from the App does not reach (admitted by the check as a seed, or by a declaration) only a seed lists on: a group
         # inside a declaration or a member of one is admitted by it, is no seed, and what hangs under it is not read through it.
-        # An App that opens everything reads a record that belongs to it as a member, wherever it hangs; what only hangs below a node the walk does not
-        # reach is read as below a seed.
-        member_of_open_app = f"({opens} AND EXISTS {{ ({c})-[:BELONGS_TO]->(app) }})"
+        # An App that opens everything reads a record that belongs to it as a member, wherever it hangs (a record only, as the check: a group is
+        # read by its hops); what only hangs below a node the walk does not reach is read as below a seed.
+        member_of_open_app = f"({opens} AND {c}:Record AND EXISTS {{ ({c})-[:BELONGS_TO]->(app) }})"
         walk_seeded = f"(NOT ({declared_p} OR ({p}:RecordGroup AND {p}.id IN $declaredScope)) OR {seed})"
         below_member_seeded = f"(NOT {member_p} OR {seed})"
         return f"""{_cypher_read_by_app(c)} AND ((({from_app} OR {member_of_open_app}) AND ({hop}) AND {walk} AND {below_member})
@@ -21603,7 +21603,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             expr = _cypher_kh_has_children(
                 "node", rule, app_opens, lambda v: placeholder_test(v, walked_from_app(v)), container, exact=not flatten, chain_tops=not row,
-                stub_filed=placeholder_test, reached_stub=lambda v: f"{self._kh_placeholder(v, state=state)} AND {walked_from_app(v)}",
+                stub_filed=placeholder_test,
+                reached_stub=lambda v: f"{self._kh_placeholder(v, state=state)} AND {_cypher_read_by_app(v)} AND {walked_from_app(v)}",
                 reached=row_from_app if row and not flatten else "true")
             # $grantedIds holds only the App's direct children here: every grant test, the rule's and the
             # cheap reject's alike, is read from the node.
@@ -21618,15 +21619,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return by_probe(walked_from_app("node"))
 
         def reached_stubs(start: str, ruled: str) -> str:
-            """Beside the stubs the rule selects (``ruled``, the rule's test written over ``kh_sn``), each stub child of ``start`` that a browse of it
-            reaches from the App, once: opening it lists what its own reach reads, whatever the hop from ``start`` says. None the rule selects, so the
-            two lists join without a repeat."""
+            """Beside the stubs the rule selects (``ruled``, the rule's test written over ``kh_sn``), each stub child of ``start`` of this App that a
+            browse of it reaches from the App, once: opening it lists what its own reach reads, whatever the hop from ``start`` says. None the rule
+            selects, so the two lists join without a repeat."""
             if not lists_placeholders:
                 return "[]"
             # The stubs are picked first, and once each (two edges may join the same pair), so that only a stub makes the walk (the planner would
             # otherwise walk from every child).
             stubs = (f"reduce(kh_sa = [], kh_sx IN [({start})-[kh_sr:NODE_RELATION]->(kh_sy) WHERE kh_sr.relationshipType {hierarchy}"
-                     f" AND NOT coalesce({start}.hideChildren, false) AND {self._kh_placeholder('kh_sy', state=state)} | kh_sy]"
+                     f" AND NOT coalesce({start}.hideChildren, false) AND {self._kh_placeholder('kh_sy', state=state)} AND {_cypher_read_by_app('kh_sy')} | kh_sy]"
                      f" | CASE WHEN kh_sx IN kh_sa THEN kh_sa ELSE kh_sa + kh_sx END)")
             return by_probe(f"[kh_sn IN {stubs} WHERE NOT ({ruled}) AND {walked_from_app('kh_sn')}]")
 
