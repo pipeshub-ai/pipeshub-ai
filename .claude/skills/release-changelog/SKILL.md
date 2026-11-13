@@ -46,7 +46,7 @@ Polyglot system: Python FastAPI microservices (Connectors :8088, Indexing :8091,
 Query/RAG :8000, Docling parsing :8081, Embedding :8002, Parsing :8092,
 Extraction :8093), 1 Node.js Express API (auth/users/knowledge-base/storage), a
 React/Next.js frontend, and an Electron desktop app. Stateful backends are pluggable:
-graph (Neo4j/ArangoDB/PostgreSQL), vector (Qdrant/OpenSearch/Redis), MongoDB, KV (Redis/etcd),
+graph (Neo4j/ArangoDB/PostgreSQL), vector (Qdrant/OpenSearch/Redis/pgvector), documents (MongoDB/PostgreSQL), KV (Redis/etcd/PostgreSQL),
 broker (Kafka/Redis Streams). 30+ enterprise connectors (Google Workspace,
 Microsoft 365, Slack, Jira, Confluence, GitLab, Notion, Salesforce, Zoom, OneDrive,
 Outlook, SharePoint, S3, local filesystem…). AI layer: RAG pipeline, agent loop and
