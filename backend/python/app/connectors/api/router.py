@@ -137,14 +137,14 @@ from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.address_policy import public_only_for_scope
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
-from app.connectors.core.registry.filters import sync_filter_selection_problems
+from app.connectors.core.registry.filters import SyncFilterKey, sync_filter_selection_problems
 from app.connectors.core.registry.sync_field_validation import sync_custom_field_problems
 from app.connectors.sources.atlassian.core.auth_fields import apply_confluence_jira_scope
 from app.connectors.core.sync.sync_coordinator import get_coordinator
 from app.edition_services import max_connector_workers, sync_executor_enabled
 from app.connectors.core.sync.sync_dispatcher import get_dispatcher
 from app.connectors.core.sync.sync_runner import write_app_status
-from app.connectors.core.registry.folder_scope import folder_path_problems
+from app.connectors.core.registry.folder_scope import folder_path_problems, saved_folder_values
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.event_service import evict_cached_connector
 from app.connectors.services.vector_cleanup_events import (
@@ -1155,6 +1155,14 @@ def _require_filter_sections_are_objects(filters: object) -> None:
             )
 
 
+def _saved_sync_values(config: object) -> dict[str, Any]:
+    """A copy of the sync filter values saved in ``config``, taken before a save merges into it."""
+    filters = config.get("filters") if isinstance(config, dict) else None
+    sync = filters.get("sync") if isinstance(filters, dict) else None
+    values = sync.get("values") if isinstance(sync, dict) else None
+    return copy.deepcopy(values) if isinstance(values, dict) else {}
+
+
 def _require_valid_auth_config(connector_type: str, auth_config: dict[str, Any]) -> None:
     """400 when the connector rejects the auth settings a save would store."""
     connector_cls = ConnectorFactory.get_connector_class(connector_type.replace(" ", ""))
@@ -1170,10 +1178,18 @@ async def _validate_sync_filter_selections(
     connector_type: str,
     config: dict[str, Any],
     action: str,
+    *,
+    stored_sync_values: object = None,
+    new_folder_rules: bool = False,
 ) -> None:
     """400 when a required sync filter (e.g. the one repository) is not set in ``config``.
 
     Save routes pass the *merged* config so a partial PUT cannot clear the field.
+
+    With ``new_folder_rules`` (the save routes) folder values that are not in
+    ``stored_sync_values`` (the sync filter values read before the merge) are
+    also held to the newer folder rules. A saved value keeps working as before,
+    so it never blocks a save that keeps it, nor enabling the connector.
 
     ``connector_type`` must be the instance's ``type`` verbatim: registry lookup is
     exact-match on the registered name ("GitHub Teams"), so an upper- or lower-cased
@@ -1192,7 +1208,16 @@ async def _validate_sync_filter_selections(
     schema_fields = [f for f in schema_fields if isinstance(f, dict)]
     sync_values = ((config.get("filters") or {}).get("sync") or {}).get("values") or {}
     sync_values = sync_values if isinstance(sync_values, dict) else {}
-    problems = sync_filter_selection_problems(schema_fields, sync_values, action) + folder_path_problems(sync_values)
+    folder_field = next(
+        (f for f in schema_fields if f.get("name") == SyncFilterKey.FOLDER_PATHS.value), None,
+    )
+    problems = sync_filter_selection_problems(schema_fields, sync_values, action) + folder_path_problems(
+        sync_values,
+        path_style=str((folder_field or {}).get("pathStyle") or "posix"),
+        wildcards=bool((folder_field or {}).get("folderWildcards")),
+        stored=saved_folder_values(stored_sync_values, sync_values),
+        new_rules=new_folder_rules and folder_field is not None,
+    )
     if problems:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problems[0])
 
@@ -5680,6 +5705,7 @@ async def update_connector_instance_filters_sync_config(
         # Snapshot old sync filters before merge
         old_sync_filters = existing_config.get("filters", {}).get("sync", {})
         old_indexing_filters = existing_config.get("filters", {}).get("indexing", {})
+        stored_sync_values = _saved_sync_values(existing_config)
 
         # Update sync section if provided
         if "sync" in body and isinstance(body["sync"], dict):
@@ -5702,7 +5728,8 @@ async def update_connector_instance_filters_sync_config(
         await _validate_sync_custom_fields(connector_registry, instance.get("type", ""), body.get("sync"), new_config)
         if isinstance((body.get("filters") or {}).get("sync"), dict):
             await _validate_sync_filter_selections(
-                connector_registry, instance.get("type", ""), new_config, "saving"
+                connector_registry, instance.get("type", ""), new_config, "saving",
+                stored_sync_values=stored_sync_values, new_folder_rules=True,
             )
 
         # Only delete sync points and edges when sync filters change
@@ -5843,6 +5870,8 @@ async def update_connector_instance_config(
         existing_config = await config_service.get_config(config_path)
         if not existing_config:
             existing_config = {}
+        # Read before the merge below, which writes into this config's filters dict.
+        stored_sync_values = _saved_sync_values(existing_config)
 
         # Merge new configuration with existing config
         # Only update sections that are provided in the request
@@ -5909,7 +5938,8 @@ async def update_connector_instance_config(
         await _validate_sync_custom_fields(connector_registry, instance.get("type", ""), body.get("sync"), new_config)
         if isinstance((body.get("filters") or {}).get("sync"), dict):
             await _validate_sync_filter_selections(
-                connector_registry, instance.get("type", ""), new_config, "saving"
+                connector_registry, instance.get("type", ""), new_config, "saving",
+                stored_sync_values=stored_sync_values, new_folder_rules=True,
             )
 
         if auth_updated and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
