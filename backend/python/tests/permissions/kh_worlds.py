@@ -426,6 +426,45 @@ grants: [[u, d]]
 gates: [[u, A], [u, B]]
 """))
 
+# What the check admits by an arm the browse's own rules do not read is listed too: a node below two parents is read through the one the walk from the
+# App reaches (SECOND); a member of an App that opens everything is read as one wherever it hangs (APPMEMBER).
+SECOND = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: h, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: c, kind: record, connector: A, rule: OPEN, parents: [d, h], inherits: [h]}
+grants: [[u, h], [u, d]]
+gates: [[u, A]]
+"""))
+
+APPMEMBER = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: m, kind: record, connector: A, rule: STRICT, parents: [d], belongs: [A]}
+grants: []
+gates: [[u, A]]
+"""))
+
+# A grant to a principal of another connector opens the node as any grant does: a record of App B granted only to a role of App A (a role
+# belongs to the first App) that the viewer holds is listed in its folder, opens, and passes the record check (XGRANT). Every principal's grants
+# count, as in the oracle and the batch check.
+XGRANT = world_from_data(yaml.safe_load("""
+principals: [{id: u}, {id: r, kind: role}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: B, kind: app, app_type: GMAIL}
+  - {id: f, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B]}
+  - {id: m, kind: record, connector: B, rule: OPEN, parents: [f], belongs: [f]}
+  - {id: n, kind: record, connector: B, rule: OPEN, parents: [f], belongs: [f]}
+grants: [[u, f], [r, m]]
+memberships: [[u, r]]
+gates: [[u, A], [u, B]]
+"""))
+
 # OPENGROUP: an App that opens everything reads a record that belongs to it as a member wherever it hangs, but not a group: a strict group that
 # belongs to the App, below a seed the walk from the App does not reach, is not listed; an OPEN group that inherits from the seed is (below a seed).
 OPENGROUP = world_from_data(yaml.safe_load("""
@@ -437,6 +476,37 @@ nodes:
   - {id: gs, kind: group, connector: A, rule: STRICT, parents: [k], belongs: [A]}
   - {id: go, kind: group, connector: A, rule: OPEN, parents: [k], inherits: [k], belongs: [A]}
 grants: [[u, k]]
+gates: [[u, A]]
+"""))
+
+# DECLDEEP: a declaration the walk from the App reaches through a group (App -> G -> D), not granted, is a scope: its member M, which hangs under
+# a folder F it does not inherit from, is listed there; M is no seed and the walk does not reach it, so what hangs under it is not read through it
+# (a node below M that only inherits from it is not listed, and M shows no arrow).
+DECLDEEP = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: G, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: D, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [G], inherits: [G], belongs: [G]}
+  - {id: F, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: M, kind: record, connector: A, rule: STRICT, parents: [F], belongs: [D]}
+  - {id: c, kind: record, connector: A, rule: OPEN, parents: [M], inherits: [M]}
+grants: [[u, G], [u, F]]
+gates: [[u, A]]
+"""))
+
+# CROSSREACH: a record R the walk from the App reaches through a second parent q, listed under a seed s the walk does not reach; a strict child of
+# R that inherits from it is what opening R lists, so the folder listing that keeps only rows with children (the sidebar) keeps R.
+CROSSREACH = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: x, kind: group, connector: A, rule: RESTRICTED, parents: [A], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: OPEN, parents: [x]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: OPEN, parents: [s, q], inherits: [s, q]}
+  - {id: t, kind: record, connector: A, rule: STRICT, parents: [R], inherits: [R]}
+grants: [[u, s], [u, q]]
 gates: [[u, A]]
 """))
 
@@ -455,6 +525,196 @@ nodes:
   - {id: zb, kind: record, connector: A, rule: OPEN, parents: [sb]}
 grants: []
 gates: [[u, A], [u, B]]
+"""))
+
+# SIDEKID: a record R whose only child C the walk reaches through another parent q (C does not inherit from R): opening R lists C (the check
+# admits it), so R shows an arrow, and the sidebar (rows with children) keeps R.
+SIDEKID = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: C, kind: record, connector: A, rule: STRICT, parents: [R, q], inherits: [q]}
+grants: [[u, f], [u, q]]
+gates: [[u, A]]
+"""))
+
+# APPSIDE: a record R under the App that the App's hop does not pass (the check admits it through q), with a strict child that inherits from it:
+# opening R lists the child, so the App's sidebar keeps R.
+APPSIDE = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: STRICT, parents: [A, q], inherits: [q]}
+  - {id: c, kind: record, connector: A, rule: STRICT, parents: [R], inherits: [R]}
+grants: [[u, q]]
+gates: [[u, A]]
+"""))
+
+# STUBQ: a stub S whose only child C the walk reaches through another parent Q (C does not inherit from S): opening S lists C, so S is listed.
+STUBQ = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: h, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: S, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [h], inherits: [h]}
+  - {id: Q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: C, kind: record, connector: A, rule: STRICT, parents: [S, Q], inherits: [Q]}
+grants: [[u, h], [u, Q]]
+gates: [[u, A]]
+"""))
+
+# SIDESEED: a record R under a granted folder f, whose only child C inherits only from a seed s the walk from the App does not reach (s hangs under
+# a restricted group the viewer is not granted): the check admits C below the seed, so opening R lists C, R shows an arrow, and the sidebar of f
+# (rows with children) keeps R.
+SIDESEED = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]}
+  - {id: x, kind: group, connector: A, rule: RESTRICTED, parents: [A], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: OPEN, parents: [x]}
+  - {id: C, kind: record, connector: A, rule: OPEN, parents: [R, s], inherits: [s]}
+grants: [[u, f], [u, s]]
+gates: [[u, A]]
+"""))
+
+# STUBSEED: the same below a stub: a stub S under a granted group h whose only child C inherits only from a seed s the walk does not reach. Opening
+# S lists C (the check admits it below the seed), so S is listed and h shows an arrow.
+STUBSEED = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: h, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: S, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [h], inherits: [h]}
+  - {id: x, kind: group, connector: A, rule: RESTRICTED, parents: [A], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: OPEN, parents: [x]}
+  - {id: C, kind: record, connector: A, rule: OPEN, parents: [S, s], inherits: [s]}
+grants: [[u, h], [u, s]]
+gates: [[u, A]]
+"""))
+
+# NESTSTUB: a stub S whose only child is a stub T, whose only child C the check admits through another parent q (C does not inherit from T).
+# Opening T lists C, so T is listed under S, so S is listed under h and h shows an arrow.
+NESTSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: h, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: S, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [h], inherits: [h]}
+  - {id: T, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [S], inherits: [S]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: C, kind: record, connector: A, rule: STRICT, parents: [T, q], inherits: [q]}
+grants: [[u, h], [u, q]]
+gates: [[u, A]]
+"""))
+
+# CAPSTUB: a stub S with one child more than the check is asked about per node (`_KH_UNDECIDED_MAX`, the first by id): none of the first is
+# readable, and the last, k200, is (through q). Opening S asks about the first ones only and lists nothing, so S is not listed (and k200, left out
+# under S by the cap, is reported); it is listed under q.
+CAP_KIDS = 201
+CAPSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: h, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: S, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [h], inherits: [h]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+""" + "".join(f"  - {{id: k{i:03d}, kind: record, connector: A, rule: STRICT, parents: [S]}}\n" for i in range(CAP_KIDS - 1)) + f"""\
+  - {{id: k{CAP_KIDS - 1:03d}, kind: record, connector: A, rule: STRICT, parents: [S, q], inherits: [q]}}
+grants: [[u, h], [u, q]]
+gates: [[u, A]]
+"""))
+
+# HIDESEED: SIDESEED where C also hangs under a group H that hides its children. The check admits C below the seed (it does not read the display
+# flag), but a browse of C refuses to open it (only the walk from the App, which never passes H, opens a node below a group that hides its
+# children), so a browse of R does not list C, and R shows no arrow.
+HIDESEED = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]}
+  - {id: H, kind: group, connector: A, rule: OPEN, hide_children: true, parents: [A], belongs: [A]}
+  - {id: x, kind: group, connector: A, rule: RESTRICTED, parents: [A], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: OPEN, parents: [x]}
+  - {id: C, kind: record, connector: A, rule: OPEN, parents: [R, s, H], inherits: [s]}
+grants: [[u, f], [u, s]]
+gates: [[u, A]]
+"""))
+
+# FLATSIDE: a record f of a declared group D, with a member y as its hierarchy child. The flatten's sidebar keeps a record by the flatten's own
+# arrow (the stricter rule): f's is off there, so the flatten's sidebar holds D alone, though a browse of D shows f with an arrow.
+FLATSIDE = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: D, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: f, kind: record, connector: A, rule: OPEN, parents: [D], belongs: [D]}
+  - {id: y, kind: record, connector: A, rule: OPEN, parents: [f], belongs: [D]}
+grants: [[u, D]]
+gates: [[u, A]]
+"""))
+
+# REACHSTUB: a stub S under R and q, and its child C, both inheriting only from q: the hops R -> S -> C fail, but the walk from the App reaches S
+# through q, so a browse of R lists S (`reached_stubs`), as opening S lists C (the check admits it). R shows an arrow, and the sidebar of f keeps it.
+REACHSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: S, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [R, q], inherits: [q]}
+  - {id: C, kind: record, connector: A, rule: STRICT, parents: [S, q], inherits: [q]}
+grants: [[u, f], [u, q]]
+gates: [[u, A]]
+"""))
+
+# SCOPEDSIDE: FLATSIDE's twin below a folder. R under a granted group G holds a strict child c that inherits from it. A flatten of G reads its rows'
+# arrows from G's reach (the walk reaches G), so R shows an arrow there, and that flatten's sidebar keeps R.
+SCOPEDSIDE = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: G, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: OPEN, parents: [G], inherits: [G]}
+  - {id: c, kind: record, connector: A, rule: STRICT, parents: [R], inherits: [R]}
+grants: [[u, G]]
+gates: [[u, A]]
+"""))
+
+# DECLHIDE: HIDESEED's twin through the declared scope. c hangs under the granted folder f, which the walk from the App reaches, and under a group H
+# that hides its children; the hop f -> c fails (c is strict and does not inherit from f), and c is a member of the granted declaration D. The
+# check admits c by its declared arm, but a browse of c refuses to open it (the walk does not reach it, and the declared arm opens only where no
+# hiding group lies above), so a browse of f does not list it, though the walk reaches f.
+DECLHIDE = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: D, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: H, kind: group, connector: A, rule: OPEN, hide_children: true, parents: [A], belongs: [A]}
+  - {id: c, kind: record, connector: A, rule: STRICT, parents: [f, H], belongs: [D]}
+grants: [[u, D], [u, f]]
+gates: [[u, A]]
+"""))
+
+# KEYCLASH: an App that opens everything, and a strict record m below a seed the walk does not reach, which belongs to no App. The test adds, on
+# ArangoDB only, a record group whose key is the App's key and files m in it: m belongs to that group, not to the App, so it is not listed.
+KEYCLASH = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: k, kind: record, connector: A, rule: OPEN, parents: [d]}
+  - {id: m, kind: record, connector: A, rule: STRICT, parents: [k]}
+grants: [[u, k]]
+gates: [[u, A]]
 """))
 
 # OPENGRANT / OPENGRANTTEAM: OPENGROUP with the strict group granted to the viewer, directly or through a group of users. A grant does not open a strict group
@@ -520,4 +780,6 @@ links: [[u, s, B]]
 
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
-             OPENGROUP, XSTUB, OPENGRANT, OPENGRANTTEAM, XHOP, XLINK]
+             SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ, OPENGRANT, OPENGRANTTEAM, SIDESEED,
+             STUBSEED, NESTSTUB, CAPSTUB, HIDESEED, FLATSIDE, REACHSTUB,
+             SCOPEDSIDE, XHOP, XLINK, DECLHIDE]
