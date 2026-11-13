@@ -279,23 +279,18 @@ async def test_the_record_group_filter_narrows_a_collections_groups_only(pg_db, 
 NODE_COND = re.compile(r"\b(parent_sk|sk|child_sk|id|app_sk|group_sk)\b\)?(::text)?\s*=")
 
 
-def _generic_plan(sql: str) -> object:
-    """``EXPLAIN (GENERIC_PLAN)`` of a statement with its ``$n`` unbound: sent as a simple query (a client-side cursor), which the extended protocol of asyncpg cannot."""
-    import os
-
-    import psycopg
-    with psycopg.connect(os.environ["PG_ADMIN_URL"], autocommit=True) as c, psycopg.ClientCursor(c) as cur:
-        cur.execute("SET enable_seqscan = off")
-        cur.execute("EXPLAIN (GENERIC_PLAN, FORMAT JSON) " + sql.replace("%", "%%"))
-        plan = cur.fetchone()[0]
-    return json.loads(plan) if isinstance(plan, str) else plan
+async def _generic_plan(con, sql: str) -> object:
+    """``EXPLAIN (GENERIC_PLAN)`` of a statement with its ``$n`` unbound. The extended protocol would bind the parameters, so the EXPLAIN runs in plpgsql
+    (``EXECUTE`` with no ``USING``) and hands its text back through a session setting."""
+    assert "$kh_q$" not in sql
+    await con.execute(f"DO $kh_do$ DECLARE r text; BEGIN EXECUTE $kh_q$EXPLAIN (GENERIC_PLAN, FORMAT JSON) {sql}$kh_q$ INTO r; PERFORM set_config('kh.plan', r, false); END $kh_do$")
+    return json.loads(await con.fetchval("SELECT current_setting('kh.plan')"))
 
 
 @pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
 async def test_the_hidden_rows_the_arrows_and_their_sample_read_by_key_and_never_walk_the_organisation(pg_db, analyzed) -> None:
     """On an organisation whose rows mostly lie elsewhere, with groups that hide their children and children that hang by links: the hidden rows, the arrows and the arrows' sample
     read the nodes they ask about by their keys, in the plan for the values and in the generic one, so their cost is the nodes', never the organisation's."""
-    import asyncio
     import os
 
     from asyncpg import connect
@@ -319,7 +314,7 @@ async def test_the_hidden_rows_the_arrows_and_their_sample_read_by_key_and_never
                       ("children", kh_listing.CHILDREN, [org, sks, 200, []])]
         for name, sql, args in statements:
             await con.execute("SET enable_seqscan = off")
-            for kind, plan in (("custom", json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args))), ("generic", await asyncio.to_thread(_generic_plan, sql))):
+            for kind, plan in (("custom", json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args))), ("generic", await _generic_plan(con, sql))):
                 at = f"{name} {kind} ({'after' if analyzed else 'before'} ANALYZE)"
                 seq = [n["Relation Name"] for n in _nodes(plan) if n.get("Node Type") == "Seq Scan" and n.get("Relation Name") in ("records", "links", "node_keys")]
                 assert not seq, f"{at}: sequential scan of {seq}"
@@ -517,24 +512,25 @@ async def test_a_page_in_a_callers_transaction_never_admits_by_a_stamp_hidden_af
     """In a caller's own transaction (read committed: each statement reads a new commit) the page's statements are not one snapshot. A change to the connector as a whole
     that commits just before the page reads its rows (it hides the connector and a stamp written under that hiding opens r0010 to everyone) must not admit r0010: such a
     page asks the access check about its rows, not the classes."""
-    import os
-
-    import psycopg
     p, org = prov(pg_db), new_org()
     await seed(p, pg_db, org, 12, readable=7)
     await _admin("INSERT INTO kg.scope_classes (org_id, id, app_sk, group_sk, clauses, hash) SELECT $1, 990001, k.sk, NULL, '[[]]'::jsonb, $2 FROM kg.node_keys k "
                  "WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'app1'", org, secrets.token_bytes(16))
-    real, fired = kgl.page_sql, []
+    real_sql, real_kq, armed, fired = kgl.page_sql, kh_listing.KhListingMixin._kq, [], []
 
-    def change_commits_now(*a, **kw) -> str:
-        if not fired:
+    def page_sql(*a, **kw) -> str:       # the next read unit is the page statement
+        armed.append(True)
+        return real_sql(*a, **kw)
+
+    async def change_commits_now(self, fn, transaction) -> object:
+        if armed and not fired:
             fired.append(True)
-            with psycopg.connect(os.environ["PG_ADMIN_URL"], autocommit=True) as c:
-                c.execute("INSERT INTO kg.restamp_queue (org_id, id, app_sk, kind, reason, fenced, enqueued_ms) SELECT %s, 990002, k.sk, 'app', 'test', true, 0 FROM kg.node_keys k "
-                          "WHERE k.org_id = %s AND k.coll = 1 AND k.id = 'app1'", (org, org))
-                c.execute("UPDATE kg.records SET class_id = 990001 WHERE org_id = %s AND id = 'r0010' AND coll = 3", (org,))
-        return real(*a, **kw)
-    monkeypatch.setattr(kgl, "page_sql", change_commits_now)
+            await _admin("INSERT INTO kg.restamp_queue (org_id, id, app_sk, kind, reason, fenced, enqueued_ms) SELECT $1, 990002, k.sk, 'app', 'test', true, 0 FROM kg.node_keys k "
+                         "WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'app1'", org)
+            await _admin("UPDATE kg.records SET class_id = 990001 WHERE org_id = $1 AND id = 'r0010' AND coll = 3", org)
+        return await real_kq(self, fn, transaction)
+    monkeypatch.setattr(kgl, "page_sql", page_sql)
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kq", change_commits_now)
     with ctx(org):
         tid = await p.begin_transaction([], [])
         try:
