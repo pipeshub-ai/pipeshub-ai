@@ -175,15 +175,19 @@ class _Config:
         return {"scopedJwtSecret": "kh-layer-secret"}
 
 
-async def children_of(layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str) -> dict[str, bool] | None:
-    """What opening ``node`` lists for the viewer, as {id: expand arrow}; None when the browse does not open it."""
+async def children_of(
+    layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str, *, only_containers: bool = False,
+) -> dict[str, bool] | None:
+    """What opening ``node`` lists for the viewer, as {id: expand arrow}; None when the browse does not open it. ``only_containers``: the
+    sidebar's listing, the rows with children."""
     from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
         KnowledgeHubService,
     )
 
     ns = await layer._ns(world)
     page = await KnowledgeHubService(logging.getLogger("kh-layer"), layer._provider, _Config()).get_nodes(
-        user_id=ns.id(viewer), org_id=ns.org, parent_id=ns.id(node), parent_type=parent_type, limit=PAGE, sort_by="name", sort_order="asc")
+        user_id=ns.id(viewer), org_id=ns.org, parent_id=ns.id(node), parent_type=parent_type, limit=PAGE, sort_by="name", sort_order="asc",
+        only_containers=only_containers)
     return {ns.local(i.id): bool(i.hasChildren) for i in page.items} if page.success else None
 
 
@@ -263,6 +267,10 @@ async def _browse(
             add("browse", f"{node}: totalItems per page {sorted(set(totals))}, counts.total {sorted(set(counted))}, rows {len(got)}")
         for extra in sorted(extras(got)):
             add("gap" if refused_by_cap(reference, world, viewer, extra) else "browse_extra", f"{node}: lists {extra}, which the oracle does not let the viewer open")
+        # A row is listed only in its own App, a stub too (the check decides a node in its own App).
+        app = node if world.node(node).kind == "app" else world.node(node).connector
+        for foreign in sorted(i for i in got if world.node(i).connector != app):
+            add("browse_extra", f"{node}: lists {foreign}, a node of another App")
         # A readable child the browse leaves out is an under-admit. The one exemption is a folder that hides its children (a display flag).
         for missing in sorted(n.id for n in children(node) if n.id in seen and n.id not in got):
             if not hidden_by_navigation(world, world.node(missing)):

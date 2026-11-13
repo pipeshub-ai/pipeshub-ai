@@ -16,17 +16,22 @@ import pytest
 from . import gen
 from .kh_layer import KhFinding, browse_pages, check_world, children_of, refused_by_cap
 from .kh_worlds import (
+    CROSSREACH,
+    DECLDEEP,
     DECLSTUB,
     DEEP_CHAIN,
     DEEPOPEN,
     DEEPSEED,
     FOLDERSTUB,
+    KEYCLASH,
     KH_WORLDS,
+    OPENGROUP,
     OPENSTUB,
     SCOPEDTWO,
     TWOWAY,
     XDECL,
     XGRANT,
+    XSTUB,
 )
 from .runner import OracleLayer
 from .scenario import Scenario, load_all
@@ -190,6 +195,44 @@ async def test_a_group_of_another_connector_under_a_declared_group_is_not_listed
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
             await layer.release([XDECL])
+
+
+async def test_review_shapes_list_what_the_oracle_admits(graph_layers) -> None:
+    """The listing arms, held to the oracle: an open App reads a record that belongs to it as a member, not a group (OPENGROUP); a declaration the
+    walk from the App reaches below a group is a scope (DECLDEEP); a stub of another connector is not listed in this App, nor lights an arrow
+    (XSTUB); and the sidebar keeps a record a seed lists when its own reach opens a child (CROSSREACH)."""
+    for layer in graph_layers:
+        worlds = [OPENGROUP, DECLDEEP, XSTUB, CROSSREACH]
+        await layer.preload(worlds)
+        try:
+            assert await children_of(layer, OPENGROUP, "u", "k", "record") == {"go": False}, layer.name
+            assert await children_of(layer, DECLDEEP, "u", "F", "recordGroup") == {"M": False}, layer.name
+            assert await children_of(layer, XSTUB, "u", "A", "app") == {"g": True}, layer.name
+            assert await children_of(layer, XSTUB, "u", "g", "recordGroup") == {"r": False}, layer.name
+            assert await children_of(layer, CROSSREACH, "u", "s", "record", only_containers=True) == {"R": True}, layer.name
+            bad = [f for i, world in enumerate(worlds) for f in _bad(await check_world(layer, world, f"review-{i}"))]
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release(worlds)
+
+
+async def test_an_open_apps_member_is_matched_by_the_apps_handle_not_its_key(graph_layers) -> None:
+    """ArangoDB keys are unique only within a collection: a record filed in a record group whose key is the App's key belongs to that group, not
+    to the App, so an App that opens everything does not read it as a member. The browse of the seed lists nothing, as the oracle says."""
+    layer = next((layer for layer in graph_layers if layer.name == "arango"), None)
+    if layer is None:
+        pytest.skip("ArangoDB only")
+    await layer.preload([KEYCLASH])
+    try:
+        ns = await layer._ns(KEYCLASH)
+        group = next(n for n in layer._compiled(KEYCLASH)["nodes"] if n["id"] == ns.id("d"))
+        props = {k: v for k, v in group["props"].items() if k not in ("id", "permissionModel")}
+        await layer._provider.http_client.execute_aql(
+            "INSERT MERGE(@props, {_key: @key}) INTO recordGroups INSERT {_from: @record, _to: CONCAT('recordGroups/', @key)} INTO belongsTo",
+            bind_vars={"props": props, "key": ns.id("A"), "record": f"records/{ns.id('m')}"})
+        assert await children_of(layer, KEYCLASH, "u", "k", "record") == {}, layer.name
+    finally:
+        await layer.release([KEYCLASH])
 
 
 @pytest.mark.parametrize("kind", sorted(gen.GENERATORS))

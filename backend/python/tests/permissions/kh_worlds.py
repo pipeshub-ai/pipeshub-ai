@@ -439,6 +439,81 @@ memberships: [[u, r]]
 gates: [[u, A], [u, B]]
 """))
 
+# OPENGROUP: an App that opens everything reads a record that belongs to it as a member wherever it hangs, but not a group: a strict group that
+# belongs to the App, below a seed the walk from the App does not reach, is not listed; an OPEN group that inherits from the seed is (below a seed).
+OPENGROUP = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: k, kind: record, connector: A, rule: OPEN, parents: [d]}
+  - {id: gs, kind: group, connector: A, rule: STRICT, parents: [k], belongs: [A]}
+  - {id: go, kind: group, connector: A, rule: OPEN, parents: [k], inherits: [k], belongs: [A]}
+grants: [[u, k]]
+gates: [[u, A]]
+"""))
+
+# DECLDEEP: a declaration the walk from the App reaches through a group (App -> G -> D), not granted, is a scope: its member M, which hangs under
+# a folder F it does not inherit from, is listed there; M is no seed and the walk does not reach it, so what hangs under it is not read through it
+# (a node below M that only inherits from it is not listed, and M shows no arrow).
+DECLDEEP = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: G, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: D, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [G], inherits: [G], belongs: [G]}
+  - {id: F, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: M, kind: record, connector: A, rule: STRICT, parents: [F], belongs: [D]}
+  - {id: c, kind: record, connector: A, rule: OPEN, parents: [M], inherits: [M]}
+grants: [[u, G], [u, F]]
+gates: [[u, A]]
+"""))
+
+# CROSSREACH: a record R the walk from the App reaches through a second parent q, listed under a seed s the walk does not reach; a strict child of
+# R that inherits from it is what opening R lists, so the folder listing that keeps only rows with children (the sidebar) keeps R.
+CROSSREACH = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: x, kind: group, connector: A, rule: RESTRICTED, parents: [A], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: OPEN, parents: [x]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: OPEN, parents: [s, q], inherits: [s, q]}
+  - {id: t, kind: record, connector: A, rule: STRICT, parents: [R], inherits: [R]}
+grants: [[u, s], [u, q]]
+gates: [[u, A]]
+"""))
+
+# XSTUB: stubs of another connector inside this App's hierarchy (one a direct child of the App, one below a record), each over a record of this App
+# the walk reaches: a row is listed only in its own App, so neither stub is listed here, and the record above the second shows no arrow.
+XSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: B, kind: app, app_type: DRIVE}
+  - {id: sa, kind: record, connector: B, rule: OPEN, placeholder: true, parents: [A]}
+  - {id: za, kind: record, connector: A, rule: OPEN, parents: [sa]}
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: r, kind: record, connector: A, rule: OPEN, parents: [g]}
+  - {id: sb, kind: record, connector: B, rule: OPEN, placeholder: true, parents: [r]}
+  - {id: zb, kind: record, connector: A, rule: OPEN, parents: [sb]}
+grants: []
+gates: [[u, A], [u, B]]
+"""))
+
+# KEYCLASH: an App that opens everything, and a strict record m below a seed the walk does not reach, which belongs to no App. The test adds, on
+# ArangoDB only, a record group whose key is the App's key and files m in it: m belongs to that group, not to the App, so it is not listed.
+KEYCLASH = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: k, kind: record, connector: A, rule: OPEN, parents: [d]}
+  - {id: m, kind: record, connector: A, rule: STRICT, parents: [k]}
+grants: [[u, k]]
+gates: [[u, A]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
-             SECOND, APPMEMBER, XGRANT]
+             SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB]

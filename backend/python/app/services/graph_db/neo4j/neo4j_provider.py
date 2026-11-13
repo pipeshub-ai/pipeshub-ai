@@ -21166,9 +21166,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         below_member = f"(NOT {member_p} OR {p}.id IN $grantedIds OR {seed})"
         # Below a node the walk from the App does not reach (admitted by the check as a seed, or by a declaration) only a seed lists on: a group
         # inside a declaration or a member of one is admitted by it, is no seed, and what hangs under it is not read through it.
-        # An App that opens everything reads a record that belongs to it as a member, wherever it hangs; what only hangs below a node the walk does not
-        # reach is read as below a seed.
-        member_of_open_app = f"({opens} AND EXISTS {{ ({c})-[:BELONGS_TO]->(app) }})"
+        # An App that opens everything reads a record that belongs to it as a member, wherever it hangs (a record only, as the check: a group is
+        # read by its hops); what only hangs below a node the walk does not reach is read as below a seed.
+        member_of_open_app = f"({opens} AND {c}:Record AND EXISTS {{ ({c})-[:BELONGS_TO]->(app) }})"
         walk_seeded = f"(NOT ({declared_p} OR ({p}:RecordGroup AND {p}.id IN $declaredScope)) OR {seed})"
         below_member_seeded = f"(NOT {member_p} OR {seed})"
         return f"""{_cypher_read_by_app(c)} AND ((({from_app} OR {member_of_open_app}) AND ({hop}) AND {walk} AND {below_member})
@@ -21348,23 +21348,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self, app_id: str, granted_ids: list[str], *, state: bool, transaction: str | None,
         probe: dict[str, Any] | None = None,
     ) -> list[str]:
-        """The ids of the groups the declared groups of the App granted to the viewer reach, themselves included:
+        """The ids of the groups the declared groups of the App the check reads (granted, or reached by the walk from the App) hold, themselves included:
         the scope a scoped browse carries, which the arrows of the App's own rows read as well, so that an
         arrow follows the same rule as the expansion it opens."""
         hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
         query = f"""
         MATCH (app:App {{id: $app_id}})
-        // The declared groups the App's own listing admits: granted to the viewer, or reached by the listing's
-        // first hop (an App that opens everything admits all of them).
+        // The declared groups the check's declared arm reads: granted to the viewer, or reached by the walk from
+        // the App (`_kh_v3_reach_pattern`), at any depth.
         MATCH (dg:RecordGroup)
         WHERE dg.connectorId = app.id AND dg.permissionModel = 'RECORD_GROUP_LEVEL'
           AND NOT {self._kh_hides("dg", state=state)} AND NOT {self._kh_deleted("dg", state=state)}
           // As the flatten and the check: a declaration below a group that hides its children stays hidden.
           AND NOT {self._kh_v3_hidden_above("dg", "d")}
-          AND (dg.id IN $grantedIds OR EXISTS {{
-              (app)-[kh_ra:NODE_RELATION]->(dg)
-              WHERE kh_ra.relationshipType {hierarchy}
-                AND {self._kh_v3_granted_hop("dg", "app", state=state, opens=_CYPHER_APP_OPENS)} }})
+          AND (dg.id IN $grantedIds OR {self._kh_v3_row_from_app(
+              "dg", hop=self._kh_v3_granted_hop("kh_oc", "kh_op", state=state, opens=_CYPHER_APP_OPENS), hierarchy=hierarchy)})
         WITH collect(DISTINCT dg) AS declared
         CALL (declared) {{
             UNWIND declared AS db
@@ -21604,7 +21602,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             expr = _cypher_kh_has_children(
                 "node", rule, app_opens, lambda v: placeholder_test(v, walked_from_app(v)), container, exact=not flatten, chain_tops=not row,
-                stub_filed=placeholder_test, reached_stub=lambda v: f"{self._kh_placeholder(v, state=state)} AND {walked_from_app(v)}",
+                stub_filed=placeholder_test,
+                reached_stub=lambda v: f"{self._kh_placeholder(v, state=state)} AND {_cypher_read_by_app(v)} AND {walked_from_app(v)}",
                 reached=row_from_app if row and not flatten else "true")
             if row and not flatten:
                 # A browse of a declared group reads its own scope beside the page's (`_kh_v3_scoped_start_access`): the groups under it, and the
@@ -21627,15 +21626,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return by_probe(walked_from_app("node"))
 
         def reached_stubs(start: str, ruled: str) -> str:
-            """Beside the stubs the rule selects (``ruled``, the rule's test written over ``kh_sn``), each stub child of ``start`` that a browse of it
-            reaches from the App, once: opening it lists what its own reach reads, whatever the hop from ``start`` says. None the rule selects, so the
-            two lists join without a repeat."""
+            """Beside the stubs the rule selects (``ruled``, the rule's test written over ``kh_sn``), each stub child of ``start`` of this App that a
+            browse of it reaches from the App, once: opening it lists what its own reach reads, whatever the hop from ``start`` says. None the rule
+            selects, so the two lists join without a repeat."""
             if not lists_placeholders:
                 return "[]"
             # The stubs are picked first, and once each (two edges may join the same pair), so that only a stub makes the walk (the planner would
             # otherwise walk from every child).
             stubs = (f"reduce(kh_sa = [], kh_sx IN [({start})-[kh_sr:NODE_RELATION]->(kh_sy) WHERE kh_sr.relationshipType {hierarchy}"
-                     f" AND NOT coalesce({start}.hideChildren, false) AND {self._kh_placeholder('kh_sy', state=state)} | kh_sy]"
+                     f" AND NOT coalesce({start}.hideChildren, false) AND {self._kh_placeholder('kh_sy', state=state)} AND {_cypher_read_by_app('kh_sy')} | kh_sy]"
                      f" | CASE WHEN kh_sx IN kh_sa THEN kh_sa ELSE kh_sa + kh_sx END)")
             return by_probe(f"[kh_sn IN {stubs} WHERE NOT ({ruled}) AND {walked_from_app('kh_sn')}]")
 
@@ -21965,7 +21964,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # that on this map, before the page is cut. Other listings never
             # filter on it, so they skip the expand.
             "hasChildren": (
-                has_children(slim_from_app)
+                # The sidebar: a row below a start the walk does not reach may be reached itself, by another parent; opening it reads its own reach.
+                has_children(slim_from_app if flatten else f"({slim_from_app} OR {walked_from_app('node')})")
                 if any("node.hasChildren" in c for c in conditions) else "false"
             ),
         }
