@@ -93,6 +93,7 @@ class KhListingMixin(PgBase):
         filters = filters or {}
         if org_id != org or app_id not in set(gated_app_ids):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=False)
+        self._kh_v3_require_other_grants(app_id, gated_app_ids, granted_ids, grants_by_connector, user_key)      # before any read
         if transaction is None:
             # One snapshot for the page: whether kg serves the connector and the rows its classes admit are read at one commit. A change to the connector as a whole hides it
             # from kg without marking its rows (restamp.py), so a page read after such a commit, by a check made before it, would admit by stamps that are hidden.
@@ -106,16 +107,8 @@ class KhListingMixin(PgBase):
                     via_parent_id=via_parent_id, transaction=snap, name_parents=name_parents, user_key=user_key, grants_out=grants_out, max_depth=max_depth)
             finally:
                 await self.rollback_transaction(snap)
-        # The grants of every gated connector, by connector: the walk from this App can pass through a node of another, and a grant counts on a node of any gated App (a source
-        # account's inside its own connector only, as the buckets hold them). Reading this App's grants already reads them all (`get_knowledge_hub_connector_grants`).
-        if grants_by_connector is not None:
-            every = grants_by_connector
-        elif granted_ids is None and user_key:
-            every = (await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction))["by_connector"]
-        else:
-            every = {app_id: list(granted_ids or [])}
-        gated = set(gated_app_ids)
-        every = {a: list(ids or []) for a, ids in every.items() if a in gated}
+        # Every gated connector's grants (`_kh_v3_page_grants`); a row's own grant is this App's.
+        every = await self._kh_v3_page_grants(app_id, org_id, gated_app_ids, granted_ids, grants_by_connector, user_key, transaction)
         granted = every.get(app_id) or []
         held = {g for ids in every.values() for g in ids}
         if grants_out is not None:

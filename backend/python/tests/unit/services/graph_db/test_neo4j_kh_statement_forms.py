@@ -39,10 +39,10 @@ def test_a_name_that_is_a_prefix_of_another_is_not_taken_for_it() -> None:
 
 _CROSS_CA = (
     " OR (ca.connectorId IN $kh_x.probe AND (ca:Record OR ca:RecordGroup) AND NOT coalesce(ca.isDeleted, false)"
-    " AND EXISTS { (ca)<-[kh_xp_ca:PERMISSION]-(kh_xg_ca)"
+    " AND (ca.id IN $kh_x.held OR EXISTS { (ca)<-[kh_xp_ca:PERMISSION]-(kh_xg_ca)"
     " WHERE (kh_xg_ca:User OR kh_xg_ca:Group OR kh_xg_ca:Role OR kh_xg_ca:Teams"
     " OR (kh_xg_ca:Organization AND kh_xp_ca.type IN ['ORG', 'ORGANIZATION']))"
-    " AND (kh_xg_ca.id IN $kh_x.common OR kh_xg_ca.id IN coalesce($kh_x.scoped[ca.connectorId], [])) })"
+    " AND (kh_xg_ca.id IN $kh_x.common OR kh_xg_ca.id IN coalesce($kh_x.scoped[ca.connectorId], [])) }))"
 )
 
 

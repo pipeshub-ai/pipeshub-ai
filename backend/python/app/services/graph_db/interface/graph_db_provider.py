@@ -8124,6 +8124,40 @@ class IGraphDBProvider(ABC):
         ``max_depth`` bounds a flatten's walk below the start (hops)."""
         raise NotImplementedError
 
+    @staticmethod
+    def _kh_v3_require_other_grants(
+        app_id: str, gated_app_ids: list[str], granted_ids: list[str] | None,
+        grants_by_connector: dict[str, list[str]] | None, user_key: str | None,
+    ) -> None:
+        """Refuse a page asked with ``granted_ids`` alone while another connector is gated: the walk from the App can pass through
+        a node of that connector, whose grant counts, and neither its grants (``grants_by_connector``) nor the user to read them
+        (``user_key``) were given. Answering would leave out what such a node opens, with no sign of it."""
+        if granted_ids is not None and grants_by_connector is None and not user_key and any(a != app_id for a in gated_app_ids):
+            raise ValueError(
+                "granted_ids holds one connector's grants and another connector is gated: pass grants_by_connector or user_key")
+
+    async def _kh_v3_page_grants(
+        self, app_id: str, org_id: str, gated_app_ids: list[str], granted_ids: list[str] | None,
+        grants_by_connector: dict[str, list[str]] | None, user_key: str | None, transaction: str | None,
+    ) -> dict[str, list[str]]:
+        """The grants of every gated connector, by connector, for a page of ``app_id`` (a source account's inside its own connector
+        only, as ``get_knowledge_hub_access_v3`` buckets them): the walk from the App can pass through a node of another, and a grant
+        counts on a node of any gated App. An explicit ``granted_ids`` is the App's own bucket; the others are read for ``user_key``."""
+        self._kh_v3_require_other_grants(app_id, gated_app_ids, granted_ids, grants_by_connector, user_key)
+        if grants_by_connector is not None:
+            every = dict(grants_by_connector)
+        elif user_key:
+            access = await (
+                self._kh_v3_shared(("access", user_key, org_id), lambda: self.get_knowledge_hub_access_v3(user_key, org_id))
+                if transaction is None else self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction))
+            every = dict(access["by_connector"])
+            if granted_ids is not None:
+                every[app_id] = list(granted_ids)
+        else:
+            every = {app_id: list(granted_ids or [])}
+        gated = set(gated_app_ids)
+        return {a: list(ids or []) for a, ids in every.items() if a in gated}
+
     async def _kh_v3_shared(self, key: tuple, compute: Callable[[], Awaitable[_T]]) -> _T:
         """``compute()``, shared by the callers that ask for ``key`` while it runs:
         one click sends the main pane and the sidebar together, and both need the

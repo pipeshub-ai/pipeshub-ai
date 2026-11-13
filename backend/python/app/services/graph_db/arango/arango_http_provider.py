@@ -20377,20 +20377,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             app_id = resolved
         if not org_id or app_id not in set(gated_app_ids):
             return empty()
-        # The grants of every gated connector, by connector: the walk from this App can pass through a node of another, and a grant counts
-        # on a node of any gated App (a source account's inside its own connector only, as the buckets hold them). Reading this App's
-        # grants already reads them all (`get_knowledge_hub_connector_grants`); `granted_ids` stays this App's own (seeds, chain-tops).
-        if grants_by_connector is not None:
-            every = grants_by_connector
-        elif granted_ids is None and user_key:
-            every = (await (
-                self._kh_v3_shared(("access", user_key, org_id), lambda: self.get_knowledge_hub_access_v3(user_key, org_id))
-                if transaction is None else self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
-            ))["by_connector"]
-        else:
-            every = {app_id: list(granted_ids or [])}
-        gated = set(gated_app_ids)
-        every = {a: list(ids or []) for a, ids in every.items() if a in gated}
+        # Every gated connector's grants (`_kh_v3_page_grants`); `granted_ids` stays this App's own (seeds, chain-tops).
+        every = await self._kh_v3_page_grants(app_id, org_id, gated_app_ids, granted_ids, grants_by_connector, user_key, transaction)
         granted_ids = every.get(app_id) or []
         apps = await self._kh_v3_run("app", {"app_id": app_id, "org_id": org_id}, transaction)
         if not apps:
