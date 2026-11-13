@@ -528,6 +528,7 @@
     "created": "创建时间",
     "updated": "更新时间",
     "source": "来源",
+    "actions": "操作",
     "noData": "没有可用数据",
     "loading": "正在加载数据...",
     "selectAll": "全选",

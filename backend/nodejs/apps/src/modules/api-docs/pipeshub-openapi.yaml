@@ -42337,6 +42337,7 @@ paths:
               - updatedAt
               - size
               - type
+              - origin
             default: updatedAt
         - name: sortOrder
           in: query
@@ -42888,7 +42889,7 @@ paths:
             Any other value is answered `400` ("Invalid sort_by: ...").
           schema:
             type: string
-            enum: [name, createdAt, updatedAt, size, type]
+            enum: [name, createdAt, updatedAt, size, type, origin]
             default: updatedAt
         - name: sortOrder
           in: query

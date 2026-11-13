@@ -145,7 +145,9 @@ export function ColumnResizeHandle({
   onReset: () => void;
 }) {
   return (
-    <Box style={{ position: 'relative', width: 0, alignSelf: 'stretch', flexShrink: 0 }}>
+    // Pointer-only (no focus, no keys), so assistive tech is not offered a control it cannot use;
+    // inside a table row it would also sit where only cells belong.
+    <Box aria-hidden style={{ position: 'relative', width: 0, alignSelf: 'stretch', flexShrink: 0 }}>
       <Box
         role="separator"
         aria-orientation="vertical"

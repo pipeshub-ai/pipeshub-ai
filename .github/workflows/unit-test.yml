@@ -17,6 +17,8 @@ on:
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
       - 'backend/python/.coveragerc'
+      # The knowledge-hub sort-field parity test reads it (pr_changes.py python_unit).
+      - 'frontend/app/(main)/knowledge-base/sort-fields.json'
       - 'scripts/unit_shards.py'
       - 'scripts/unit_shard_durations.json'
       - 'deployment/docker-compose/docker-compose.integration.redis-cluster.yml'

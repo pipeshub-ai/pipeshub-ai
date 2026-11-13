@@ -10,6 +10,7 @@ import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { clearSessionCache } from '@/lib/api/session-cache';
 import { useKnowledgeBaseStore } from '../store';
 import { resetKnowledgeBaseSession } from '../utils/sidebar-session';
+import axe from 'axe-core';
 import KnowledgeBasePage from '../page';
 import KnowledgeBaseSidebarSlot from '../../@sidebar/knowledge-base/page';
 import { loadMoreNodeChildrenPage, loadMoreRootAppList } from '../utils/sidebar-paginated-fetch';
@@ -1216,6 +1217,34 @@ describe('Knowledge base page — working with files', () => {
     expect(queryRow('spec.pdf')).toBeNull();
   });
 
+  it('sorts a collection by file name from the column header, ascending then descending', async () => {
+    await openEngineering();
+    const lastSort = () => {
+      const [, , params] = api.hub.loadFolderData.mock.calls.at(-1)!;
+      return { sortBy: params.sortBy, sortOrder: params.sortOrder };
+    };
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(lastSort()).toEqual({ sortBy: 'name', sortOrder: 'asc' }));
+    expect(useKnowledgeBaseStore.getState().sort).toEqual({ field: 'name', order: 'asc' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(lastSort()).toEqual({ sortBy: 'name', sortOrder: 'desc' }));
+  });
+
+  it.each([
+    ['the type sort', 'type'],
+    ['the older name of the type sort', 'nodeType'],
+  ])('opens a collection link with %s and asks the API for its type sort', async (_what, field) => {
+    withCollections();
+    api.hub.loadFolderData.mockResolvedValue(engineeringContents());
+    openAt(`/knowledge-base?nodeType=app&nodeId=kb-eng&sortField=${field}&sortOrder=asc`);
+    await screen.findByRole('row', { name: 'spec.pdf' });
+
+    const [, , params] = api.hub.loadFolderData.mock.calls.at(-1)!;
+    expect({ sortBy: params.sortBy, sortOrder: params.sortOrder }).toEqual({ sortBy: 'type', sortOrder: 'asc' });
+  });
+
   it('loads the next page of a large collection', async () => {
     withCollections();
     api.hub.loadFolderData.mockImplementation(pagedByCursor(async (_type: string, _id: string, params: { page: number }) => {
@@ -1800,6 +1829,61 @@ describe('Knowledge base page — All Records', () => {
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
+  });
+
+  it('sorts by file name from the column header, ascending then descending', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+    const lastSort = () => {
+      const [params] = api.hub.getAllRootItems.mock.calls.at(-1)!;
+      return { sortBy: params.sortBy, sortOrder: params.sortOrder };
+    };
+    expect(lastSort()).toEqual({ sortBy: 'updatedAt', sortOrder: 'desc' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(lastSort()).toEqual({ sortBy: 'name', sortOrder: 'asc' }));
+    expect(useKnowledgeBaseStore.getState().allRecordsSort).toEqual({ field: 'name', order: 'asc' });
+    await waitFor(() => expect(currentUrl()).toContain('sortField=name'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(lastSort()).toEqual({ sortBy: 'name', sortOrder: 'desc' }));
+    expect(useKnowledgeBaseStore.getState().allRecordsSort).toEqual({ field: 'name', order: 'desc' });
+  });
+
+  it('tells assistive tech which column the records are sorted by, and which way', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+    const sortState = (label: string) => screen.getByRole('columnheader', { name: label }).getAttribute('aria-sort');
+
+    // The button is named by its label alone, not by the icon's ligature text.
+    expect(screen.getByRole('button', { name: 'Updated' })).toBeTruthy();
+    expect([sortState('File name'), sortState('Updated'), sortState('Size')]).toEqual(['none', 'descending', 'none']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(sortState('File name')).toBe('ascending'));
+    expect(sortState('Updated')).toBe('none');
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(sortState('File name')).toBe('descending'));
+    // A column that cannot sort states no order at all.
+    expect(screen.getByRole('columnheader', { name: 'Status' }).hasAttribute('aria-sort')).toBe(false);
+  });
+
+  it.each([
+    ['a sort the records API refuses', 'indexingStatus', { sortBy: 'updatedAt', sortOrder: 'asc' }],
+    ['the source sort', 'origin', { sortBy: 'origin', sortOrder: 'asc' }],
+  ])('opens a link with %s as the sort it can serve', async (_what, field, expected) => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
+    openAt(`/knowledge-base?view=all-records&sortField=${field}&sortOrder=asc`);
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    const [params] = api.hub.getAllRootItems.mock.calls.at(-1)!;
+    expect({ sortBy: params.sortBy, sortOrder: params.sortOrder }).toEqual(expected);
   });
 
   it('shows the latest filter results when an earlier request finishes last', async () => {
@@ -2405,5 +2489,42 @@ describe('Knowledge base page — asking from the chat box', () => {
     expect(usePendingChatStore.getState().pending?.pageContext.selectedNodes).toEqual([
       { id: 'app-conf', name: 'QA Confluence', nodeType: 'app', connector: 'Confluence' },
     ]);
+  });
+});
+
+describe('Knowledge base page — the records list is an accessible table', () => {
+  // jsdom computes no colours, and the page is mounted without the app's landmarks.
+  const AXE_OPTIONS: axe.RunOptions = { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } };
+
+  async function violations() {
+    const result = await axe.run(document.body, AXE_OPTIONS);
+    return result.violations.map((v) => ({ rule: v.id, nodes: v.nodes.map((n) => n.target.join(' ')) }));
+  }
+
+  it('has no axe violations in All Records', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(
+      hubResponse([hubNode({ id: 'rec-drive', name: 'Budget.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE', indexingStatus: 'COMPLETED' })]),
+    );
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    expect(await violations()).toEqual([]);
+  });
+
+  it('has no axe violations in a collection', async () => {
+    await openEngineering();
+
+    expect(await violations()).toEqual([]);
+  });
+
+  it('announces loading outside the table and has no axe violations while rows load', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockReturnValue(new Promise(() => {}));
+    openAt('/knowledge-base?view=all-records');
+
+    const status = await screen.findByRole('status');
+    expect(screen.getByRole('table').contains(status)).toBe(false);
+    expect(await violations()).toEqual([]);
   });
 });
