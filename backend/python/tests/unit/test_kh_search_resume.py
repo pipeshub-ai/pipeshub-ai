@@ -107,6 +107,66 @@ def test_a_connector_not_ready_is_left_out_and_named_on_every_page_the_others_ar
     assert ids == [r["id"] for r in c1] and len(notices) == 3 and all(n == ["c2"] for n in notices)
 
 
+def test_a_connector_that_becomes_ready_mid_listing_stays_out_of_it_and_a_new_listing_takes_it_in() -> None:
+    """c2 is not ready on the first page and ready from the second on; its rows lie on both sides of the first page's boundary. The listing it was left out of goes on without
+    it, both ways, with the total it began with; a listing begun afterwards has it."""
+    c1 = [row(f"a{i:02d}", f"n{2 * i:02d}") for i in range(9)]
+    c2 = [row(f"b{i:02d}", f"n{2 * i + 1:02d}") for i in range(9)]
+    provider = NotReadyProvider({"c1": c1, "c2": c2}, {"c2"})
+
+    def page_at(token: str | None) -> SearchPage:
+        return asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4, cursor_token=token))
+    first = page_at(None)
+    provider.not_ready = set()
+    ids, pages, token = [r["id"] for r in first.rows], [first], first.next_cursor
+    while token:
+        page = page_at(token)
+        ids, token = ids + [r["id"] for r in page.rows], page.next_cursor
+        pages.append(page)
+    assert ids == [r["id"] for r in c1]
+    assert all(p.not_ready == ["c2"] and p.total == 9 for p in pages)
+    back = page_at(pages[1].prev_cursor)
+    assert [r["id"] for r in back.rows] == [r["id"] for r in c1[:4]] and back.not_ready == ["c2"]
+    fresh = page_at(None)
+    assert fresh.total == 18 and fresh.not_ready == [] and [r["id"] for r in fresh.rows] == ["a00", "b00", "a01", "b01"]
+
+
+@pytest.mark.parametrize("way", ["next", "prev"])
+def test_a_connector_that_stops_being_ready_mid_listing_restarts_it_counted_afresh(way: str) -> None:
+    """c2 is counted and listed from page 1 on and stops being ready before the next request, either way. The listing it was counted in refuses its cursor (a 400: start
+    again) instead of going on with a total that counts rows it can no longer list; the listing begun again names c2 and counts c1 alone."""
+    from app.utils.kh_cursor import CursorError
+    c1 = [row(f"a{i:02d}", f"n{2 * i:02d}") for i in range(9)]
+    c2 = [row(f"b{i:02d}", f"n{2 * i + 1:02d}") for i in range(9)]
+    provider = NotReadyProvider({"c1": c1, "c2": c2}, set())
+
+    def page_at(token: str | None) -> SearchPage:
+        return asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4, cursor_token=token))
+    first = page_at(None)
+    second = page_at(first.next_cursor)
+    assert first.total == 18 and [r["id"] for r in second.rows] == ["a02", "b02", "a03", "b03"]
+    provider.not_ready = {"c2"}
+    with pytest.raises(CursorError):
+        page_at(second.next_cursor if way == "next" else second.prev_cursor)
+    again = page_at(None)
+    assert again.total == 9 and again.not_ready == ["c2"] and [r["id"] for r in again.rows] == ["a00", "a01", "a02", "a03"]
+
+
+@pytest.mark.parametrize("connectors", [["c1"], ["c1", "c2"]], ids=["only_one", "every_one"])
+def test_a_walk_whose_every_queried_connector_stops_being_ready_is_restarted_not_retried(connectors: list[str]) -> None:
+    """Every connector the next page asks stops being ready: the cursor is refused (a 400, start again), not answered as not ready (a 503 the caller
+    retries with the same cursor and its stale total). A first page with nothing ready is still the not-ready answer."""
+    from app.utils.kh_cursor import CursorError
+    rows = {c: [row(f"{c}-{i:02d}", f"{c}{i:02d}") for i in range(9)] for c in connectors}
+    provider = NotReadyProvider(rows, set())
+    first = asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4))
+    provider.not_ready = set(connectors)
+    with pytest.raises(CursorError):
+        asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4, cursor_token=first.next_cursor))
+    with pytest.raises(KnowledgeHubListingNotReady):
+        asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4))
+
+
 def test_when_every_connector_is_not_ready_the_page_is_refused() -> None:
     provider = NotReadyProvider({"c1": [row("a", "a")], "c2": [row("b", "b")]}, {"c1", "c2"})
     with pytest.raises(KnowledgeHubListingNotReady):

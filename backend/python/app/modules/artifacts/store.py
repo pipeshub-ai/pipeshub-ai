@@ -5,6 +5,7 @@ S3 or Azure (or, on local storage, to a storage-service route). A signed URL
 is a bearer credential: nothing here logs one or puts one in an error.
 """
 
+import itertools
 import json
 import logging
 import threading
@@ -46,6 +47,20 @@ class ArtifactRoutesUnavailable(Exception):
 
 class ArtifactStoreError(Exception):
     """A storage reply this client cannot use. Never carries a signed URL."""
+
+
+class SetPerWriteUnsupported(Exception):
+    """The storage service did not give the write a set of its own (it ignores ``writeId``, e.g. mid-upgrade).
+
+    It would file every write of the revision in one shared set, where a late or concurrent write of another
+    process can overwrite this one's files and no lock here could fence it. Nothing is written there; reads
+    keep serving the stored record. Asked again at every presign, so an upgraded storage service is used as
+    soon as it answers.
+    """
+
+
+#: Writes this process skipped because storage gave them no set of their own.
+_UNSUPPORTED_SKIPS = itertools.count(1)
 
 
 class _Availability:
@@ -156,11 +171,18 @@ class NodeArtifactStore:
         virtual_record_id: str,
         rev: str,
         files: Sequence[tuple[str, str]],
+        *,
+        write_id: str | None = None,
     ) -> RevisionUploadPlan:
         """Upload URLs for ``(path, content_type)`` files of one revision.
 
+        ``write_id`` names the stored write the set is of (``stored_write.write_id``): each write
+        of a revision then has a document and file root of its own, so no write can overwrite
+        another's files, and a reply that does not echo it with a root of its own raises
+        ``SetPerWriteUnsupported`` (an older storage service ignores it). Without it the files go
+        to the revision's one shared set.
         More files than one call takes are asked for in several calls; the
-        storage service files them all under the revision's one document.
+        storage service files them all under the one document.
         Raises ``ArtifactRoutesUnavailable`` (and stops asking for the rest of
         the process) when the storage service has no artifact routes.
         """
@@ -179,6 +201,7 @@ class NodeArtifactStore:
                     {
                         "virtualRecordId": virtual_record_id,
                         "rev": rev,
+                        **({"writeId": write_id} if write_id else {}),
                         "files": [{"path": p, "contentType": ct} for p, ct in chunk],
                     },
                     missing_route=True,
@@ -196,6 +219,10 @@ class NodeArtifactStore:
             if document_id is not None and chunk_doc != document_id:
                 raise ArtifactStoreError("presign calls for one revision answered different documents")
             document_id = chunk_doc
+            if write_id and (
+                body.get("writeId") != write_id or not str(body.get("root") or "").endswith(f"/{rev}-{write_id}")
+            ):
+                self._skip_unsupported(virtual_record_id, rev)
             root = body.get("root") if isinstance(body.get("root"), str) else root
             if isinstance(body.get("expiresInSeconds"), int):
                 expires = body["expiresInSeconds"]
@@ -211,6 +238,16 @@ class NodeArtifactStore:
         return RevisionUploadPlan(
             document_id=str(document_id), root=root or "", expires_in_seconds=expires, files=signed,
         )
+
+    def _skip_unsupported(self, virtual_record_id: str, rev: str) -> None:
+        skipped = next(_UNSUPPORTED_SKIPS)
+        log = self.logger.warning if skipped == 1 else self.logger.debug
+        log(
+            "Storage did not give a write of %s (rev %s) an artifact set of its own (it ignores writeId); "
+            "artifact writes are skipped and reads use the stored record until storage is upgraded "
+            "(%d skipped in this process)", virtual_record_id, rev, skipped,
+        )
+        raise SetPerWriteUnsupported
 
     async def put(self, entry: SignedFileUrl, data: bytes, content_type: str | None = None) -> None:
         """PUT ``data`` with exactly the headers the storage service signed.

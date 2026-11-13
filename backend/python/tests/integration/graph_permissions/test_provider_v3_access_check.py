@@ -33,10 +33,6 @@ BELOW_HIDE_CHILDREN = {"v3-hidden-r1", "v3-hide-folder-r1", "v3-dec-nested-hidde
 # Granted and STRICT, reachable from an accessible node only through a
 # link. Links are stored apart from the hierarchy, so neither side walks it.
 LINK_ONLY = "v3-linked-strict"
-# A node is judged under the App its own connectorId names. These two hang under
-# APP but name another connector or none -- fixture-only shapes -- so the check
-# fails closed where the listing, walking from APP, shows them.
-NAMES_NO_GATED_APP = {"v3-foreign-dec", "v3-noconn-dec"}
 # The placeholders of the graph the check admits when they are asked by id.
 ADMITTED_PLACEHOLDERS = {"v3-dec-placeholder"}
 
@@ -137,8 +133,9 @@ async def test_the_check_is_the_listing_up_to_decisions_81_56_82(
     a new listing arm the check lacks (or the reverse) fails here."""
     listing = await _visible(neo4j_provider) | await _visible(neo4j_provider, app_id=KB_APP)
     assert LINK_ONLY not in listing                  # a link is not hierarchy
-    expected = ((listing | BELOW_HIDE_CHILDREN | {APP, KB_APP, OWN_ATTACHMENT})
-                - NAMES_NO_GATED_APP)
+    # A node is judged under the App its own connectorId names, by the check and the listing alike: the two groups of the fixture that
+    # hang under APP but name another connector or none are in neither.
+    expected = listing | BELOW_HIDE_CHILDREN | {APP, KB_APP, OWN_ATTACHMENT}
     check = await provider.check_access(USER_U, ORG, node_ids=_node_ids(access_graph))
     # A placeholder asked by id is admitted (and flagged) where the listing never lists it: browsing reaches it
     # as a stub, and the routes that serve a record refuse it. Any other id the check admits must be in the listing.

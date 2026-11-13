@@ -67,7 +67,11 @@ export interface KnowledgeBaseFilter {
   searchQuery?: string;          // NEW: for search query
 }
 
-export type SortField = 'name' | 'createdAt' | 'updatedAt' | 'size' | 'nodeType';
+// Collections sorts, sent as-is as the API's `sortBy`: each must be a value of its
+// `SortField` enum. `sort-fields.json` mirrors both sort lists for the backend's parity
+// test (test_knowledge_hub_sort_matches_spec.py); __tests__/sort-fields.test.ts keeps it equal.
+export const SORT_FIELDS = ['name', 'createdAt', 'updatedAt', 'size', 'type'] as const;
+export type SortField = (typeof SORT_FIELDS)[number];
 
 export interface SortConfig {
   field: SortField;
@@ -381,6 +385,8 @@ export interface KnowledgeHubApiResponse {
   pagination: {
     limit: number;
     totalItems: number;
+    /** True when `totalItems` stopped at the server's cap: it is then a lower bound. */
+    totalCapped?: boolean;
     hasNext: boolean;
     hasPrev: boolean;
     /** 1-based position of this page's first and last item. */
@@ -515,8 +521,9 @@ export interface AllRecordItem extends KnowledgeHubNode {
   sourceIcon?: string; // Icon for the source
 }
 
-// Sort configuration for All Records
-export type AllRecordsSortField = 'name' | 'size' | 'createdAt' | 'updatedAt' | 'indexingStatus' | 'origin';
+// Sort configuration for All Records. Same rule: only values of the API's `SortField` enum.
+export const ALL_RECORDS_SORT_FIELDS = ['name', 'size', 'createdAt', 'updatedAt', 'origin'] as const;
+export type AllRecordsSortField = (typeof ALL_RECORDS_SORT_FIELDS)[number];
 
 export interface AllRecordsSortConfig {
   field: AllRecordsSortField;
@@ -541,6 +548,7 @@ export interface AllRecordsPagination {
   hasPrev: boolean;
   nextCursor: string | null;
   prevCursor: string | null;
+  totalCapped?: boolean;
 }
 
 // More Connectors link item (navigates to connectors page with the connector panel open)

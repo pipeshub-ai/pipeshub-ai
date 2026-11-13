@@ -19,27 +19,35 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import inspect
 import json
+import logging
 import os
 import statistics
 import time
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.config.constants.neo4j import collection_to_label
 from app.models.blocks import SemanticMetadata
 from app.modules.artifacts import store as store_module
+from app.modules.artifacts import writer as writer_module
 from app.modules.artifacts.reader import record_artifact_reader
+from app.modules.artifacts.record_backend import ArtifactRecordBackend
+from app.modules.artifacts.retention import RevisionRetentionSweep
+from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.transformers.blob_storage import StorageDocumentNotFoundError
+from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import TransformContext
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from tests.integration import stored_write_world
 from tests.integration.stored_write_world import MAPPING, PRESIGN, A, B, World, _rev
 
 if TYPE_CHECKING:
-    pass
+    from collections.abc import Awaitable, Callable
 
 STORAGE_URL = os.environ.get("ARTIFACTS_IT_STORAGE_URL", "")
 STORAGE_TYPE = os.environ.get("ARTIFACTS_IT_STORAGE_TYPE", "local")
@@ -51,6 +59,9 @@ pytestmark = [
     pytest.mark.timeout(600),
     pytest.mark.skipif(not STORAGE_URL, reason="set ARTIFACTS_IT_STORAGE_URL to a running storage service"),
 ]
+
+DAY_MS = 24 * 3600 * 1000
+logger_for_retention = logging.getLogger("artifact-stale-pointer-it.retention")
 
 #: The fixture every test below takes (it lives in the shared module).
 world = stored_write_world.world
@@ -298,6 +309,173 @@ async def test_a_write_stalled_before_its_set_does_not_overwrite_a_newer_writes_
     monkeypatch.setattr(writer_class, "write_revision", write_revision)
     await world.index(x, _rev(A))
 
+    world.reads.clear()
+    assert await world.read(vrid) == A
+    assert world.reads == ["served"]
+
+
+async def _read_set(world: World, vrid: str, document_id: str, run: str) -> list[str] | None:
+    """The record read from one set, named as the pointer would name it."""
+    lookup = {"currentRev": _rev(A), "storedRev": _rev(A), "manifestDocId": document_id, "currentRun": run, "storedRun": run}
+    record = await ArtifactRecordBackend(world.blob).read_record(vrid, world.org, lookup=lookup)
+    return None if record is None else [b.get("data") for b in record["block_containers"]["blocks"]]
+
+
+def _holding_the_first_write(
+    world: World, monkeypatch: pytest.MonkeyPatch, between: Callable[[], Awaitable[None]],
+) -> list[dict[str, Any]]:
+    """Run *between* after the first artifact write passed its check before its uploads, then let that write go on as if
+    every later check still said it was current: its files and its manifest land after *between*, as a write that
+    another process superseded, or uploads storage commits after their client gave up, land. Answers each write's
+    ``{"run", "document_id"}``."""
+    writer_class = type(world.sink.artifact_writer)
+    real_write = writer_class.write_revision
+    writes: list[dict[str, Any]] = []
+
+    async def write_revision(self: Any, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        entry: dict[str, Any] = {"run": kwargs["stored_run"]}
+        writes.append(entry)
+        if len(writes) == 1:
+            real_current, checks = kwargs["still_current"], 0
+
+            async def held() -> bool:
+                nonlocal checks
+                checks += 1
+                if checks == 1:
+                    assert await real_current()
+                    await between()
+                return True
+
+            kwargs["still_current"] = held
+        written = await real_write(self, *args, **kwargs)
+        entry["document_id"] = written.manifest_ref.document_id if written is not None else None
+        return written
+
+    monkeypatch.setattr(writer_class, "write_revision", write_revision)
+    return writes
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_writes_late_files_and_manifest_leave_the_newer_set_served(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """X passes its check, then Y stores the same content (its own identity) and writes its whole set and moves the
+    pointer; only then do X's uploads and its manifest land. Each stored write has a set of its own, so they land in
+    X's set: Y's set, the one the pointer names, is untouched and served."""
+    vrid = world.vrid()
+    x, y = world.record(vrid, A, name="x"), world.record(vrid, A, name="y")
+    await world.put_record_node(y, _rev(A))
+
+    async def y_writes() -> None:
+        await world.index(y, _rev(A))
+
+    writes = _holding_the_first_write(world, monkeypatch, y_writes)
+    await world.index(x, _rev(A))
+
+    [x_write, y_write] = writes
+    assert x_write["document_id"] and y_write["document_id"] and x_write["document_id"] != y_write["document_id"]
+    mapping = await world.mapping(vrid)
+    assert (mapping.get("manifestDocId"), mapping.get("currentRun")) == (y_write["document_id"], y_write["run"])
+    world.reads.clear()
+    assert await world.read(vrid) == A
+    assert world.reads == ["served"]
+    # X's late set is whole too, and never named.
+    assert await _read_set(world, vrid, x_write["document_id"], x_write["run"]) == A
+
+
+@pytest.mark.asyncio
+async def test_two_writers_of_one_revision_uploading_at_once_each_leave_a_valid_set(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two writers of one revision that share no state, as two indexing processes: X passes its check, Y takes over
+    the stored record, and both upload at once (X held until Y's first file is stored). Both sets end whole, and the
+    pointer's is served."""
+    vrid = world.vrid()
+    x, y = world.record(vrid, A, name="x"), world.record(vrid, A, name="y")
+    await world.put_record_node(y, _rev(A))
+    other_process = SinkOrchestrator(
+        graphdb=AsyncMock(), blob_storage=world.blob, vector_store=world.sink.vector_store,
+        graph_provider=world.provider, logger=world.sink.logger, config_service=world.blob.config_service,
+    )
+    store_class = type(world.sink.artifact_writer.store)
+    real_put = store_class.put
+    y_uploading = asyncio.Event()
+    y_task: asyncio.Task[None] | None = None
+    # Set inside Y's task: its upload tasks inherit it.
+    in_y: contextvars.ContextVar[bool] = contextvars.ContextVar("in_y", default=False)
+
+    async def put(self: Any, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        result = await real_put(self, *args, **kwargs)
+        if in_y.get():
+            y_uploading.set()
+        return result
+
+    monkeypatch.setattr(store_class, "put", put)
+
+    async def y_starts() -> None:
+        nonlocal y_task
+
+        async def index_y() -> None:
+            in_y.set(True)
+            await other_process.index(TransformContext(record=y.model_copy(deep=True), settings={}))
+
+        await world.put_record_node(y, _rev(A))
+        y_task = asyncio.create_task(index_y())
+        waiting = asyncio.create_task(y_uploading.wait())
+        await asyncio.wait({y_task, waiting}, return_when=asyncio.FIRST_COMPLETED)
+        waiting.cancel()
+
+    writes = _holding_the_first_write(world, monkeypatch, y_starts)
+    await world.index(x, _rev(A))
+    assert y_task is not None
+    await y_task
+
+    [x_write, y_write] = writes
+    assert x_write["document_id"] != y_write["document_id"]
+    for write in (x_write, y_write):
+        world.reads.clear()
+        assert await _read_set(world, vrid, write["document_id"], write["run"]) == A
+        assert world.reads == ["served"]
+    world.reads.clear()
+    assert await world.read(vrid) == A
+    assert world.reads == ["served"]
+
+
+@pytest.mark.asyncio
+async def test_a_set_from_before_writes_had_their_own_still_reads_and_retention_retires_it(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A set written without a write id (the revision's one shared set, as older writers file it) is served while the
+    pointer names it. Once a later write of the revision has a set of its own, retention retires the older set and the
+    set of a superseded write, and keeps the one the pointer names."""
+    vrid = world.vrid()
+    rec = world.record(vrid, A)
+    with monkeypatch.context() as older_writer:
+        # A writer from before writes had their own sets: it presigns without a write id.
+        older_writer.setattr(writer_module, "write_id", lambda run: "")
+        await world.index(rec, _rev(A))
+    legacy = (await world.mapping(vrid))["manifestDocId"]
+    [shared] = [d for d in await world.artifact_sets(vrid) if d["documentId"] == legacy]
+    assert "writeId" not in shared
+    world.reads.clear()
+    assert await world.read(vrid) == A
+    assert world.reads == ["served"]
+
+    await world.index(rec, _rev(A))
+    superseded = (await world.mapping(vrid))["manifestDocId"]
+    await world.index(rec, _rev(A))
+    current = (await world.mapping(vrid))["manifestDocId"]
+    assert len({legacy, superseded, current}) == 3
+
+    store = NodeArtifactStore(world.blob)
+    sweep = RevisionRetentionSweep(world.provider, store, logger_for_retention, now_ms=lambda: int(time.time() * 1000) + 2 * DAY_MS)
+    after: str | None = None
+    while True:
+        after, _ = await sweep.run_page(after)
+        if after is None:
+            break
+
+    assert {d["documentId"] for d in await world.artifact_sets(vrid)} == {current}
     world.reads.clear()
     assert await world.read(vrid) == A
     assert world.reads == ["served"]

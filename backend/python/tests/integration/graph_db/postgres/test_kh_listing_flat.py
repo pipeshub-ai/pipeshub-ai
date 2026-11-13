@@ -281,23 +281,18 @@ async def test_the_record_group_filter_narrows_a_collections_groups_only(pg_db, 
 NODE_COND = re.compile(r"\b(parent_sk|sk|child_sk|id|app_sk|group_sk)\b\)?(::text)?\s*=")
 
 
-def _generic_plan(sql: str) -> object:
-    """``EXPLAIN (GENERIC_PLAN)`` of a statement with its ``$n`` unbound: sent as a simple query (a client-side cursor), which the extended protocol of asyncpg cannot."""
-    import os
-
-    import psycopg
-    with psycopg.connect(os.environ["PG_ADMIN_URL"], autocommit=True) as c, psycopg.ClientCursor(c) as cur:
-        cur.execute("SET enable_seqscan = off")
-        cur.execute("EXPLAIN (GENERIC_PLAN, FORMAT JSON) " + sql.replace("%", "%%"))
-        plan = cur.fetchone()[0]
-    return json.loads(plan) if isinstance(plan, str) else plan
+async def _generic_plan(con, sql: str) -> object:
+    """``EXPLAIN (GENERIC_PLAN)`` of a statement with its ``$n`` unbound. The extended protocol would bind the parameters, so the EXPLAIN runs in plpgsql
+    (``EXECUTE`` with no ``USING``) and hands its text back through a session setting."""
+    assert "$kh_q$" not in sql
+    await con.execute(f"DO $kh_do$ DECLARE r text; BEGIN EXECUTE $kh_q$EXPLAIN (GENERIC_PLAN, FORMAT JSON) {sql}$kh_q$ INTO r; PERFORM set_config('kh.plan', r, false); END $kh_do$")
+    return json.loads(await con.fetchval("SELECT current_setting('kh.plan')"))
 
 
 @pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
 async def test_the_hidden_rows_the_arrows_and_their_sample_read_by_key_and_never_walk_the_organisation(pg_db, analyzed) -> None:
     """On an organisation whose rows mostly lie elsewhere, with groups that hide their children and children that hang by links: the hidden rows, the arrows and the arrows' sample
     read the nodes they ask about by their keys, in the plan for the values and in the generic one, so their cost is the nodes', never the organisation's."""
-    import asyncio
     import os
 
     from asyncpg import connect
@@ -321,7 +316,7 @@ async def test_the_hidden_rows_the_arrows_and_their_sample_read_by_key_and_never
                       ("children", kgl.children_of_sql(), [org, sks, 200, []])]
         for name, sql, args in statements:
             await con.execute("SET enable_seqscan = off")
-            for kind, plan in (("custom", json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args))), ("generic", await asyncio.to_thread(_generic_plan, sql))):
+            for kind, plan in (("custom", json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args))), ("generic", await _generic_plan(con, sql))):
                 at = f"{name} {kind} ({'after' if analyzed else 'before'} ANALYZE)"
                 seq = [n["Relation Name"] for n in _nodes(plan) if n.get("Node Type") == "Seq Scan" and n.get("Relation Name") in ("records", "links", "node_keys")]
                 assert not seq, f"{at}: sequential scan of {seq}"
@@ -406,3 +401,142 @@ async def test_a_folder_of_a_connector_this_process_distrusts_shows_the_walks_ar
     assert await folder_arrow(p, org, ["fold"]) is True                      # trusted: kg's class opens c0001
     monkeypatch.setattr(net, "DISTRUSTED", {(org, "app1"): None})
     assert await folder_arrow(p, org, ["fold"]) is False
+
+
+async def _seed_named(p, db, org: str, names: dict[str, str]) -> None:
+    """One connector whose records are named as ``names`` says (id -> name), every one granted to ``u1``."""
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "G", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+        await p.batch_upsert_nodes([{"_key": k, "recordName": n, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for k, n in names.items()], "records")
+        await p.batch_create_edges([edge(k, "records", "g1", "recordGroups") for k in names], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        await p.batch_create_edges([edge("u1", "users", k, "records", type="USER", role="READER") for k in names], "permission")
+    await flip(db, org)
+
+
+@pytest.mark.parametrize("sort_dir", ["ASC", "DESC"])
+async def test_names_longer_than_the_indexed_prefix_page_in_the_order_of_the_whole_name_both_ways(pg_db, sort_dir) -> None:
+    """The name indexes key on a prefix of the name: names that share it, end inside it, or split a surrogate pair at its edge still page, forward and back, in the order of the whole
+    name and then the id. Names of thousands of characters are copied and listed among names that share their prefix: the longest the copy takes (4,000 characters, ``w_records_upsert``),
+    here outside the BMP so 16,000 bytes of key that do not compress, and names of multi-byte characters inside the BMP."""
+    import random
+    rng = random.Random(5713)
+    stem = "x" * (kgl.NAME_PREFIX // 2)      # code units of UTF-16: exactly the indexed prefix
+    names: dict[str, str] = {}
+    for i in range(40):
+        tail = "".join(rng.choice("abé\U0001f600") for _ in range(rng.randint(0, 3)))
+        names[f"r{i:04d}"] = rng.choice([stem + tail, stem[:-1] + tail, stem[:-2] + tail, tail or "a"])
+    names["r0040"] = names["r0001"]           # the same name: the id decides
+    names["r0041"] = "".join(chr(rng.randint(0x20000, 0x2A6DF)) for _ in range(4000))
+    names["r0042"] = names["r0041"][:-1] + "a"       # shares the prefix (and all but the last character) with r0041
+    names["r0043"] = names["r0041"][:2000]           # shares the prefix and ends before r0041 does
+    names["r0044"] = "".join(chr(rng.randint(0x4E00, 0x9FFF)) for _ in range(3000))
+    names["r0045"] = names["r0044"][:2500] + "\u00e9"
+    p, org = prov(pg_db), new_org()
+    await _seed_named(p, pg_db, org, names)
+
+    def key(i: str) -> bytes:
+        return names[i].lower().encode("utf-16-be", "surrogatepass")
+    want = sorted(sorted(names), key=key, reverse=sort_dir == "DESC")       # a stable sort: equal names stay in id order, as the listing's tie-break
+    got, _, first = await walk(p, org, 3, granted_ids=sorted(names), sort_dir=sort_dir)
+    assert got == want and first["total"] == len(names)
+    back, after = [], {"nullRank": 0, "sortKey": names[want[-1]].lower(), "id": want[-1]}
+    for _ in range(100):
+        with ctx(org):
+            page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=sorted(names)), limit=3, after=after, direction="prev", sort_dir=sort_dir, include_total=False)
+        back = [r["id"] for r in page["rows"]] + back
+        if not page["hasMore"]:
+            break
+        after = page.get("resume") or {k: page["rows"][0][k] for k in ("nullRank", "sortKey", "id")}
+    assert back == want[:-1]
+
+
+async def test_a_change_to_the_whole_connector_that_commits_after_the_check_is_not_read_by_the_page(pg_db, monkeypatch) -> None:
+    """kg serves the connector when the page checks. Before the page reads its rows, a change to the connector as a whole commits: it hides the connector (an ``app`` job, no row
+    marks) and a stamp written under that hiding opens r0010 to everyone. The page reads the snapshot the check read, so the hidden stamp admits nothing; the next page is the walk's."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 12, readable=7)
+    await _admin("INSERT INTO kg.scope_classes (org_id, id, app_sk, group_sk, clauses, hash) SELECT $1, 990001, k.sk, NULL, '[[]]'::jsonb, $2 FROM kg.node_keys k "
+                 "WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'app1'", org, secrets.token_bytes(16))
+    real, fired = kg_read.class_verdicts, []
+
+    async def change_commits_now(tx, o, found, granted) -> object:
+        if not fired:
+            fired.append(True)
+            await _admin("INSERT INTO kg.restamp_queue (org_id, id, app_sk, kind, reason, fenced, enqueued_ms) SELECT $1, 990002, k.sk, 'app', 'test', true, 0 FROM kg.node_keys k "
+                         "WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'app1'", org)
+            await _admin("UPDATE kg.records SET class_id = 990001 WHERE org_id = $1 AND id = 'r0010' AND coll = 3", org)
+        return await real(tx, o, found, granted)
+    monkeypatch.setattr(kg_read, "class_verdicts", change_commits_now)
+    readable = [f"r{i:04d}" for i in range(7)]
+    with ctx(org):
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=7), limit=50)
+    assert fired and [r["id"] for r in page["rows"]] == readable and page["total"] == 7
+    with ctx(org):
+        again = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=7), limit=50)
+    assert [r["id"] for r in again["rows"]] == readable and again["total"] == 7
+
+
+@pytest.mark.parametrize("mode", ["served", "by_window", "not_served"])
+async def test_concurrent_pages_never_wait_for_a_second_pooled_connection(pg_db, monkeypatch, mode) -> None:
+    """A page holds one pooled connection (its snapshot) and reads everything on it, the access checks included (``by_window``: every window asked of the access check;
+    ``not_served``: the arrows' sample too). With a pool of two and four pages at once, a page that waited for a second connection would wait as long as the pool lets it:
+    every connection would be held by a page waiting the same way."""
+    import asyncio
+    import dataclasses
+
+    from app.core.db import DbConfig, KernelDB
+    p0, org = prov(pg_db), new_org()
+    await seed_folder(p0, pg_db, org, 25, readable_kids=["c0024"])
+    if mode == "not_served":
+        await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+    if mode == "by_window":
+        monkeypatch.setattr(kh_listing, "CLASS_MAX", 0)
+    small = KernelDB(dataclasses.replace(DbConfig.from_env("connectors"), pool_max=2))
+    await small.start()
+    try:
+        p = prov(small)
+
+        async def one() -> dict:
+            with ctx(org):
+                return await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=["fold", "c0024"]), limit=50)
+        pages = await asyncio.wait_for(asyncio.gather(*(one() for _ in range(4))), 30)
+    finally:
+        await small.close()
+    for page in pages:
+        assert {r["id"] for r in page["rows"]} == {"fold", "c0024"} and page["total"] == 2
+        assert next(r for r in page["rows"] if r["id"] == "fold")["hasChildren"] is True
+
+
+async def test_a_page_in_a_callers_transaction_never_admits_by_a_stamp_hidden_after_its_check(pg_db, monkeypatch) -> None:
+    """In a caller's own transaction (read committed: each statement reads a new commit) the page's statements are not one snapshot. A change to the connector as a whole
+    that commits just before the page reads its rows (it hides the connector and a stamp written under that hiding opens r0010 to everyone) must not admit r0010: such a
+    page asks the access check about its rows, not the classes."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 12, readable=7)
+    await _admin("INSERT INTO kg.scope_classes (org_id, id, app_sk, group_sk, clauses, hash) SELECT $1, 990001, k.sk, NULL, '[[]]'::jsonb, $2 FROM kg.node_keys k "
+                 "WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'app1'", org, secrets.token_bytes(16))
+    real_sql, real_kq, armed, fired = kgl.page_sql, kh_listing.KhListingMixin._kq, [], []
+
+    def page_sql(*a, **kw) -> str:       # the next read unit is the page statement
+        armed.append(True)
+        return real_sql(*a, **kw)
+
+    async def change_commits_now(self, fn, transaction) -> object:
+        if armed and not fired:
+            fired.append(True)
+            await _admin("INSERT INTO kg.restamp_queue (org_id, id, app_sk, kind, reason, fenced, enqueued_ms) SELECT $1, 990002, k.sk, 'app', 'test', true, 0 FROM kg.node_keys k "
+                         "WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'app1'", org)
+            await _admin("UPDATE kg.records SET class_id = 990001 WHERE org_id = $1 AND id = 'r0010' AND coll = 3", org)
+        return await real_kq(self, fn, transaction)
+    monkeypatch.setattr(kgl, "page_sql", page_sql)
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kq", change_commits_now)
+    with ctx(org):
+        tid = await p.begin_transaction([], [])
+        try:
+            page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=7), limit=50, transaction=tid)
+        finally:
+            await p.rollback_transaction(tid)
+    assert fired and [r["id"] for r in page["rows"]] == [f"r{i:04d}" for i in range(7)] and page["total"] == 7

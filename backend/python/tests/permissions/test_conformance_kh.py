@@ -20,9 +20,14 @@ from .kh_worlds import (
     DEEPSEED,
     FOLDERSTUB,
     KH_WORLDS,
+    OPENGRANT,
+    OPENGRANTTEAM,
+    OPENGROUP,
     OPENSTUB,
     SCOPEDTWO,
     TWOWAY,
+    XDECL,
+    XSTUB,
 )
 from .runner import OracleLayer
 from .scenario import Scenario, load_all
@@ -159,6 +164,57 @@ async def test_the_declared_group_arm_lists_only_its_own_connectors_records(grap
             bad += _bad(await check_world(layer, world, f"declared-{i}"))
         await layer.release(worlds)
         assert not bad, f"{layer.name}\n{_describe(bad)}"
+
+
+async def test_a_group_of_another_connector_under_a_declared_group_is_not_listed_there(graph_layers) -> None:
+    """The check decides a group in its own App, so a group of App B filed under a declared group of App A is neither listed under it nor gives
+    it an arrow: the declared group opens to nothing, and shows no arrow."""
+    for layer in graph_layers:
+        await layer.preload([XDECL])
+        try:
+            assert (await children_of(layer, XDECL, "u", "A", "app") or {}).get("d") is False, layer.name
+            assert await children_of(layer, XDECL, "u", "d", "recordGroup") == {}, layer.name
+            bad = _bad(await check_world(layer, XDECL, "xdecl"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([XDECL])
+
+
+async def test_an_open_app_reads_only_its_records_as_members_and_lists_only_its_own_stubs(graph_layers) -> None:
+    """An App that opens everything reads a record that belongs to it as a member wherever it hangs, but not a group: below a seed the walk does
+    not reach, a strict group of the App is not listed and an OPEN one that inherits from the seed is (OPENGROUP). A stub of another connector
+    that hangs in this App's hierarchy is not listed here, nor lights the arrow of the row above it (XSTUB)."""
+    for layer in graph_layers:
+        await layer.preload([OPENGROUP, XSTUB])
+        try:
+            assert await children_of(layer, OPENGROUP, "u", "k", "record") == {"go": False}, layer.name
+            assert await children_of(layer, XSTUB, "u", "A", "app") == {"g": True}, layer.name
+            assert await children_of(layer, XSTUB, "u", "g", "recordGroup") == {"r": False}, layer.name
+            assert await children_of(layer, XSTUB, "u", "r", "record") == {}, layer.name
+            bad = [f for world in (OPENGROUP, XSTUB) for f in _bad(await check_world(layer, world, "openapp"))]
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([OPENGROUP, XSTUB])
+
+
+async def test_a_granted_strict_group_below_a_seed_the_app_does_not_reach_is_read_and_listed_nowhere(graph_layers) -> None:
+    """OPENGROUP with the strict group granted to the viewer, directly (OPENGRANT) or through a group of users (OPENGRANTTEAM). The oracle denies it: its
+    only chain to the App runs through a declaration (R7 skips it), and a strict node is no seed. The access check of each store says the same, and the
+    browse of the seed lists exactly what the check admits."""
+    oracle = OracleLayer()
+    for world in (OPENGRANT, OPENGRANTTEAM):
+        v = oracle.explain(world, "u", ["gs"])["gs"]
+        assert (v.admitted, v.reason) == (False, "R7:rgl-parent-skipped@d")
+    for layer in graph_layers:
+        await layer.preload([OPENGRANT, OPENGRANTTEAM])
+        try:
+            for world in (OPENGRANT, OPENGRANTTEAM):
+                assert await layer.admitted(world, "u", ["k", "gs", "go"]) == {"k", "go"}, layer.name
+                assert await children_of(layer, world, "u", "k", "record") == {"go": False}, layer.name
+                bad = _bad(await check_world(layer, world, "opengrant"))
+                assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([OPENGRANT, OPENGRANTTEAM])
 
 
 @pytest.mark.parametrize("kind", sorted(gen.GENERATORS))

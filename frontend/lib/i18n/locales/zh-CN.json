@@ -528,6 +528,7 @@
     "created": "创建时间",
     "updated": "更新时间",
     "source": "来源",
+    "actions": "操作",
     "noData": "没有可用数据",
     "loading": "正在加载数据...",
     "selectAll": "全选",
@@ -579,6 +580,8 @@
     "pagination": {
       "showing": "显示第 {{start}}-{{end}} 项，共 {{total}} 项",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "显示第 {{start}}-{{end}} 项，至少 {{total}} 项",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "每页 {{value}} 条"
     },
     "yes": "是",

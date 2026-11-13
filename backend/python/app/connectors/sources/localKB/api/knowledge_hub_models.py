@@ -27,6 +27,7 @@ class SortField(str, Enum):
     UPDATED_AT = "updatedAt"
     SIZE = "size"
     TYPE = "type"
+    ORIGIN = "origin"
 
 class SortOrder(str, Enum):
     """Valid sort order values"""

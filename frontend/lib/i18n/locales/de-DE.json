@@ -444,6 +444,7 @@
     "created": "Erstellt",
     "updated": "Aktualisiert",
     "source": "Quelle",
+    "actions": "Aktionen",
     "noData": "Keine Daten verfügbar",
     "loading": "Daten werden geladen...",
     "selectAll": "Alle auswählen",
@@ -495,6 +496,8 @@
     "pagination": {
       "showing": "{{start}}–{{end}} von {{total}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "{{start}}–{{end}} von mindestens {{total}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "{{value}} pro Seite"
     },
     "yes": "Ja",

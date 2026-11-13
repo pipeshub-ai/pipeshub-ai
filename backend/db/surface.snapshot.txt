@@ -1572,8 +1572,8 @@ index kg.principal_closure_by_principal on kg.principal_closure unique=false exc
 index kg.principal_closure_pkey on kg.principal_closure unique=true exclusion=false valid=true def=36e6794459f60325d29802e5fbe2bafd
 index kg.projection_state_pkey on kg.projection_state unique=true exclusion=false valid=true def=6c3a596dbc76e1bea0f0f52ea51235ae
 index kg.records_app on kg.records unique=false exclusion=false valid=true def=4fb41a24de7b34a871580791308043fc
-index kg.records_children_name_asc on kg.records unique=false exclusion=false valid=true def=114b71c955bb5c6d516653165bcf7cd3
-index kg.records_children_name_desc on kg.records unique=false exclusion=false valid=true def=c37087f423123857cb53f5e0e15fb761
+index kg.records_children_name_asc on kg.records unique=false exclusion=false valid=true def=3a9e3a2e3062bcb2f893958ba9521e24
+index kg.records_children_name_desc on kg.records unique=false exclusion=false valid=true def=7f9672dee90fb95483eb67efbbed96d4
 index kg.records_children_updated_asc on kg.records unique=false exclusion=false valid=true def=84cf4379c58cd3c42b788447233e2769
 index kg.records_children_updated_desc on kg.records unique=false exclusion=false valid=true def=fc59ac81553df71071705201bc0ddbbb
 index kg.records_fence on kg.records unique=false exclusion=false valid=true def=acd966d0d85df5042518c2d4790ed800
@@ -1584,8 +1584,8 @@ index kg.records_legacy on kg.records unique=false exclusion=false valid=true de
 index kg.records_list_class on kg.records unique=false exclusion=false valid=true def=8088cbfc93fea30cd83c10df3971ff3a
 index kg.records_list_created_asc on kg.records unique=false exclusion=false valid=true def=c71fff5fe3d4201893824ee354a3d769
 index kg.records_list_created_desc on kg.records unique=false exclusion=false valid=true def=c413006c214e554087e6eeff11554dda
-index kg.records_list_name_asc on kg.records unique=false exclusion=false valid=true def=8c3fce46d6d0b92b6192b14040498990
-index kg.records_list_name_desc on kg.records unique=false exclusion=false valid=true def=c1454426050b27cf87c96ecffe7a0c3c
+index kg.records_list_name_asc on kg.records unique=false exclusion=false valid=true def=0282eec9d846db228c321fd0689367b3
+index kg.records_list_name_desc on kg.records unique=false exclusion=false valid=true def=deb289473d3ed9e3141c965b7ddd163f
 index kg.records_list_size_asc on kg.records unique=false exclusion=false valid=true def=aab0eac05a50dc96148f10a60f45929b
 index kg.records_list_size_desc on kg.records unique=false exclusion=false valid=true def=c8e46afabf47f68af5b03866760d5fde
 index kg.records_list_updated_asc on kg.records unique=false exclusion=false valid=true def=6d3517893969d2a25708d7bb93f5a293

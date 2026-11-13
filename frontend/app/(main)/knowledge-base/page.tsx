@@ -670,11 +670,15 @@ function KnowledgeBasePageContent() {
       if (controller.signal.aborted || !stillSignedIn()) return;
       // A page with no rows that says more follows is the server having stopped looking for the moment, not the end: go on from where it got to. A cursor that did not move, or
       // too many such pages in a row, is the end (the empty state shows), never a silent stall. The cursors this page carries are kept, so the way back is not lost.
-      const emptyThenMore = data.items?.length === 0 && data.pagination?.hasNext && data.pagination.nextCursor;
-      if (emptyThenMore && data.pagination?.nextCursor !== currentPagination.cursor && allRecordsEmptyHops.current < MAX_EMPTY_ALL_RECORDS_PAGES) {
+      // It goes on the way it was asked: a page asked for with the previous page's cursor (Previous, or an empty page going back) goes on backwards.
+      const backwards = !!currentPagination.cursor && currentPagination.cursor === currentPagination.prevCursor;
+      const onward = backwards
+        ? data.pagination?.hasPrev && data.pagination.prevCursor
+        : data.pagination?.hasNext && data.pagination.nextCursor;
+      if (data.items?.length === 0 && onward && onward !== currentPagination.cursor && allRecordsEmptyHops.current < MAX_EMPTY_ALL_RECORDS_PAGES) {
         allRecordsEmptyHops.current += 1;
         syncAllRecordsPaginationMeta(toTablePagination(data.pagination!, currentPagination.cursor));
-        useKnowledgeBaseStore.getState().setAllRecordsCursor(data.pagination!.nextCursor!);
+        useKnowledgeBaseStore.getState().setAllRecordsCursor(onward);
         return;
       }
       allRecordsEmptyHops.current = 0;

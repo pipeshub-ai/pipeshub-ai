@@ -503,10 +503,10 @@ def _aql_open_hop(c: str, p: str, tag: str) -> str:
 
 
 def _aql_read_by_app(v: str) -> str:
-    """Whether ``v`` is read by this App's rules (``@app_id``). A record of another connector that a group
-    edge, a hierarchy edge or an app-level filing joins to this App is read by its own connector's rules,
-    so every listing arm ends in this test, once."""
-    return f'(NOT IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", {v}) OR {v}.connectorId == @app_id)'
+    """Whether ``v`` is read by this App's rules (``@app_id``). A record or group of another connector that a
+    group edge, a hierarchy edge or an app-level filing joins to this App is read by its own connector's
+    rules (the batch check decides a node in its own App), so every listing arm ends in this test, once."""
+    return f"({v}.connectorId == @app_id)"
 
 
 def _aql_in_scope(c: str, p: str) -> str:
@@ -574,8 +574,11 @@ def _aql_browse_child(c: str, p: str, tag: str, from_app: str, p_member: str | N
     # inside a declaration or a member of one is admitted by it, is no seed, and what hangs under it is not read through it.
     walk_seeded = f'(NOT ({declared_p} OR (IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", {p}) AND HAS(@kh_scope, {p}._key))) OR {seed})'
     below_member_seeded = f"(NOT {member_p} OR {seed})"
-    # An App that opens everything reads a record that belongs to it as a member, wherever it hangs (the loop over an empty list reads nothing otherwise).
-    member_of_open_app = (f"(kh_opens AND LENGTH(FOR kh_ma IN (kh_opens ? [1] : []) FOR kh_mb IN 1..1 OUTBOUND {c} {CollectionNames.BELONGS_TO.value}"
+    # An App that opens everything reads a record that belongs to it as a member, wherever it hangs (a record only, as the check: a group is read by
+    # its hops). The loop over an empty list reads nothing otherwise.
+    record_c = f'IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", {c})'
+    member_of_open_app = (f"(kh_opens AND {record_c} AND LENGTH(FOR kh_ma IN (kh_opens AND {record_c} ? [1] : [])"
+                          f" FOR kh_mb IN 1..1 OUTBOUND {c} {CollectionNames.BELONGS_TO.value}"
                           f" FILTER kh_mb._key == @app_id LIMIT 1 RETURN 1) > 0)")
     return (f"({_aql_read_by_app(c)} AND (({from_app} OR {member_of_open_app}) ? (({_aql_granted_hop(c, p, tag + 'h', navigation=True)}"
             f" AND {walk} AND {below_member}) ? true : ({_aql_in_scope(c, p)})) : ({p}.hideChildren != true AND (({_aql_open_hop(c, p, tag + 'o')}"
@@ -769,7 +772,7 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
             # A page's arrow leaves the stubs to `every_hop` (a second pass over the rows that have one), so its own plan holds no stub test. There a
             # stub child the rule does not pass is listed where a browse of it is reached (`browse_start`), as the folder listing lists it.
             + (f" FILTER {passes} FILTER kh_ch.isPlaceholder != true" if exact and not every_hop else
-               f" FILTER kh_ch.isPlaceholder == true OR ({passes})"
+               f" FILTER (kh_ch.isPlaceholder == true AND {_aql_read_by_app('kh_ch')}) OR ({passes})"
                f" FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch', every_hop=True, from_app=stub_reach, admit=passes)})"
                if exact else
                f" FILTER {passes} FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch', every_hop=every_hop)})")
@@ -779,7 +782,7 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
     # A declared group on the page was admitted by the listing, so it is its own scope: the groups below it and
     # the records that belong to it are what the rule reads from the scope an expansion carries.
     in_scope = children_of(
-        f'({rule} OR (kh_ch.isDeleted != true AND (IS_SAME_COLLECTION("{groups}", kh_ch) OR LENGTH('
+        f'({rule} OR (kh_ch.isDeleted != true AND {_aql_read_by_app("kh_ch")} AND (IS_SAME_COLLECTION("{groups}", kh_ch) OR LENGTH('
         f"FOR kh_sg IN 1..1 OUTBOUND kh_ch {CollectionNames.BELONGS_TO.value} FILTER kh_sg._id == {v}._id"
         f" LIMIT 1 RETURN 1) > 0)))")
     if not exact:

@@ -135,6 +135,7 @@ _SORT_FROM_PROVIDER = {
     "updatedAt": "updatedAt",
     "sizeInBytes": "size",
     "nodeType": "type",
+    "origin": "origin",
 }
 
 
@@ -175,6 +176,7 @@ class KnowledgeHubService:
         "updatedAt": "updatedAt",
         "size": "sizeInBytes",
         "type": "nodeType",
+        "origin": "origin",
     }
 
     def __init__(

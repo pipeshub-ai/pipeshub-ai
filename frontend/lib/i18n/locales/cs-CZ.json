@@ -564,6 +564,7 @@
     "created": "Vytvořeno",
     "updated": "Aktualizováno",
     "source": "Zdroj",
+    "actions": "Akce",
     "noData": "Žádná data k dispozici",
     "loading": "Načítání dat...",
     "selectAll": "Vybrat vše",
@@ -615,6 +616,8 @@
     "pagination": {
       "showing": "Zobrazeno {{start}}-{{end}} z {{total}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "Zobrazeno {{start}}-{{end}} z nejméně {{total}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "{{value}} na stránku"
     },
     "yes": "Ano",

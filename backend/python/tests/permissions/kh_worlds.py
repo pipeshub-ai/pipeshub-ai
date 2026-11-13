@@ -399,5 +399,78 @@ DEEP_CHAIN = 56
 DEEPSEED = _deep_chain("{id: A, kind: app, app_type: DRIVE}", grants=True)
 DEEPOPEN = _deep_chain("{id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}", grants=False)
 
+# A group of another connector filed under a declared group: the declared scope is read group to group, whatever the connector, but the check
+# decides a node in its own App, so the group is not listed in this App, and the declared group, which holds nothing else, has no arrow (XDECL).
+XDECL = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: B, kind: app, app_type: DRIVE}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: x, kind: group, connector: B, rule: OPEN, parents: [d], inherits: [d], belongs: [d]}
+  - {id: y, kind: record, connector: B, rule: OPEN, parents: [x], inherits: [x], belongs: [x]}
+grants: [[u, d]]
+gates: [[u, A], [u, B]]
+"""))
+
+# OPENGROUP: an App that opens everything reads a record that belongs to it as a member wherever it hangs, but not a group: a strict group that
+# belongs to the App, below a seed the walk from the App does not reach, is not listed; an OPEN group that inherits from the seed is (below a seed).
+OPENGROUP = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: k, kind: record, connector: A, rule: OPEN, parents: [d]}
+  - {id: gs, kind: group, connector: A, rule: STRICT, parents: [k], belongs: [A]}
+  - {id: go, kind: group, connector: A, rule: OPEN, parents: [k], inherits: [k], belongs: [A]}
+grants: [[u, k]]
+gates: [[u, A]]
+"""))
+
+# XSTUB: stubs of another connector inside this App's hierarchy (one a direct child of the App, one below a record), each over a record of this App
+# the walk reaches: a row is listed only in its own App, so neither stub is listed here, and the record above the second shows no arrow.
+XSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: B, kind: app, app_type: DRIVE}
+  - {id: sa, kind: record, connector: B, rule: OPEN, placeholder: true, parents: [A]}
+  - {id: za, kind: record, connector: A, rule: OPEN, parents: [sa]}
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: r, kind: record, connector: A, rule: OPEN, parents: [g]}
+  - {id: sb, kind: record, connector: B, rule: OPEN, placeholder: true, parents: [r]}
+  - {id: zb, kind: record, connector: A, rule: OPEN, parents: [sb]}
+grants: []
+gates: [[u, A], [u, B]]
+"""))
+
+# OPENGRANT / OPENGRANTTEAM: OPENGROUP with the strict group granted to the viewer, directly or through a group of users. A grant does not open a strict group
+# on its own: a strict node is read through a chain of passing hops from its App (R7) or a declaration (R8), and only an OPEN node can be a seed (R9) or lie
+# below one (R10). Here the only chain runs through d, a declaration of the App (skipped by the walk), so gs stays unread and unlisted however it is granted.
+OPENGRANT = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: k, kind: record, connector: A, rule: OPEN, parents: [d]}
+  - {id: gs, kind: group, connector: A, rule: STRICT, parents: [k], belongs: [A]}
+  - {id: go, kind: group, connector: A, rule: OPEN, parents: [k], inherits: [k], belongs: [A]}
+grants: [[u, k], [u, gs]]
+gates: [[u, A]]
+"""))
+OPENGRANTTEAM = world_from_data(yaml.safe_load("""
+principals: [{id: u}, {id: t, kind: group}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: k, kind: record, connector: A, rule: OPEN, parents: [d]}
+  - {id: gs, kind: group, connector: A, rule: STRICT, parents: [k], belongs: [A]}
+  - {id: go, kind: group, connector: A, rule: OPEN, parents: [k], inherits: [k], belongs: [A]}
+grants: [[u, k], [t, gs]]
+memberships: [[u, t]]
+gates: [[u, A]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
-             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB]
+             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
+             OPENGROUP, XSTUB, OPENGRANT, OPENGRANTTEAM]

@@ -113,7 +113,7 @@ def where_of(org: str, app_sk: int, app_doc: dict, filters: dict[str, Any], hidd
 
 class KhListingMixin(PgBase):
     async def _kq(self, fn: Any, transaction: str | None) -> Any:  # noqa: ANN401
-        """A read unit of the listing: custom plans (a statement that carries arrays of ids is planned for them, not generically after the fifth run), in the caller's explicit transaction when it has one."""
+        """A read unit of the listing: custom plans (a statement that carries arrays of ids is planned for them, not generically after the fifth run), in the page's transaction when it has one."""
         if transaction:
             return await self._q(fn, transaction)
         return await self._db.run(fn, jobs=current_or_system().kind == "system", custom_plan=True)
@@ -145,6 +145,19 @@ class KhListingMixin(PgBase):
                 include_scope=include_scope, via_parent_id=via_parent_id, transaction=transaction, name_parents=name_parents)
         if org_id != org or app_id not in set(gated_app_ids):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=False)
+        if transaction is None:
+            # One snapshot for the page: whether kg serves the connector and the rows its classes admit are read at one commit. A change to the connector as a whole hides it
+            # from kg without marking its rows (restamp.py), so a page read after such a commit, by a check made before it, would admit by stamps that are hidden.
+            # Every read of the page runs on this one connection, the access checks included: a page that held one pooled connection and waited for another would
+            # starve the pool under as many concurrent pages as it has connections.
+            snap = await self.begin_snapshot()
+            try:
+                return await self.get_knowledge_hub_connector_page_v3(
+                    app_id, org_id, grantee_ids, gated_app_ids, granted_ids, limit, flatten=flatten, sort_field=sort_field, sort_dir=sort_dir, after=after, direction=direction,
+                    filters=filters, include_total=include_total, start_id=start_id, start_type=start_type, grants_by_connector=grants_by_connector, include_scope=include_scope,
+                    via_parent_id=via_parent_id, transaction=snap, name_parents=name_parents, user_key=user_key, grants_out=grants_out, max_depth=max_depth)
+            finally:
+                await self.rollback_transaction(snap)
         if grants_by_connector is not None:
             granted = list(grants_by_connector.get(app_id) or [])
         elif granted_ids is None and user_key:
@@ -164,7 +177,10 @@ class KhListingMixin(PgBase):
         admit = self._kh_admitter(org, access, transaction, served=served)
         gset = set(granted)
         admitted_of = self._kh_admitted_of(sets, gset, admit)
-        viewer = await self._kh_flat_viewer(sets, where, base, admit, granted, transaction)
+        # Admission by class trusts that the stamps read are the ones the currency check saw: only in the page's snapshot. A caller's own transaction (read committed) reads
+        # each statement at a new commit, so its rows are asked of the access check, which reads kg's currency with the stamps it reads.
+        snapshot = getattr(self._txns.get(transaction), "snapshot", False)
+        viewer = await self._kh_flat_viewer(sets, where, base, admit, granted, transaction) if snapshot else None
         admit_sql, pbase = None, kgl.Params(list(base.values))
         if viewer is not None:      # a connector kg serves: the classes admit in the statement, so a window needs no question to the access check
             admit_sql = kgl.class_admit("w", pbase, viewer)

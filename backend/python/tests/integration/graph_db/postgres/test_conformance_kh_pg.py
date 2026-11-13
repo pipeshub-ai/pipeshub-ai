@@ -17,7 +17,7 @@ from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
 from tests.permissions.kh_layer import KhFinding, check_world, children_of, listing
-from tests.permissions.kh_worlds import KH_WORLDS, STUBREACH
+from tests.permissions.kh_worlds import KH_WORLDS, OPENGRANT, OPENGRANTTEAM, STUBREACH
 from tests.permissions.scenario import load_all
 
 from .test_conformance import PgLayer
@@ -185,3 +185,16 @@ async def test_a_connector_with_no_copy_is_refused_not_listed_as_empty(pg_provid
             await search_page(pg_provider, user_key=ns.id(viewer), user_id=ns.id(viewer), org_id=ns.org, limit=5, secret=None)
     finally:
         await lay.release(list(lay._prefix))
+
+
+async def test_a_granted_strict_group_below_a_seed_the_app_does_not_reach_is_read_and_listed_nowhere(kh_layer) -> None:
+    """The strict group of OPENGRANT / OPENGRANTTEAM, granted to the viewer directly or through a group of users: the access check denies it, as the oracle
+    does (its only chain to the App runs through a declaration), and the listing holds exactly what the check admits, from kg and from the walk."""
+    await kh_layer.preload([OPENGRANT, OPENGRANTTEAM])
+    for world in (OPENGRANT, OPENGRANTTEAM):
+        ns = await kh_layer._ns(world)
+        with bind(OrgContext(ns.org, None, "job", "job:test", "t")):
+            found = await kh_layer._provider.check_access(ns.id("u"), ns.org, node_ids=[ns.id(n) for n in ("k", "gs", "go")])
+            assert {ns.local(n) for n in found.node_ids} == {"k", "go"}, kh_layer.name
+            assert {r["id"] for r in (await listing(kh_layer, world, "u")).rows} == {"k", "go", "d"}, kh_layer.name
+        assert not _bad(await check(kh_layer, world, "opengrant")), kh_layer.name

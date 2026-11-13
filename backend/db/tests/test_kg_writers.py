@@ -1,6 +1,8 @@
 """The vetted writers of schema kg (kg_0002): another org cannot be targeted, no org does nothing, bad arguments are 22023, only the connectors
 service executes them, and the statements are the pinned shapes (the catalog is clean). The per-org row policy is in test_vetted_org_policy.py."""
 # ruff: noqa: F811
+import os
+
 import pytest
 from psycopg import errors as pg
 
@@ -502,6 +504,18 @@ def test_the_listing_columns_are_written_to_the_row_of_the_session_org_and_the_o
         assert bytes(c.execute("SELECT name_sort FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0]) == b"\x00n"
         call(c, "kg.w_listing_set", ORG_B, ([11], [3], ["rec-1"], [3], [False], [False], [False], [None]))                                # another org's call makes a row of its own
         assert tuple(c.execute("SELECT folder, hide_children, alien FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (True, True, True)
+        clean(c)
+
+
+def test_a_listed_row_with_a_long_name_that_does_not_compress_is_written(pdb):
+    """A name has no bound: the name indexes key on a prefix of it, so a 100 KB key of random bytes (no compression helps) is no index entry too large to write."""
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values(deleted=False))))
+        key = os.urandom(100_000)
+        assert call(c, "kg.w_listing_set", ORG_A, ([11], [3], ["rec-1"], [3], [False], [False], [False], [key])) == [(1,)]
+        assert bytes(c.execute("SELECT name_sort FROM kg.records WHERE org_id = %s AND sk = 11 AND kind IN (2, 3) AND NOT deleted AND NOT placeholder AND NOT alien",
+                               (ORG_A,)).fetchone()[0]) == key
         clean(c)
 
 

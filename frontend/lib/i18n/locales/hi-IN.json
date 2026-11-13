@@ -444,6 +444,7 @@
     "created": "बनाया गया",
     "updated": "अपडेटेड",
     "source": "स्रोत",
+    "actions": "क्रियाएँ",
     "noData": "कोई डेटा उपलब्ध नहीं",
     "loading": "डेटा लोड किया जा रहा है...",
     "selectAll": "सभी चुनें",
@@ -495,6 +496,8 @@
     "pagination": {
       "showing": "{{total}} में से {{start}}-{{end}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "कम से कम {{total}} में से {{start}}-{{end}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "प्रति पृष्ठ {{value}}"
     },
     "yes": "हाँ",
