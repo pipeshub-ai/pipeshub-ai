@@ -391,7 +391,8 @@ def _recover_invalid_tool_call(call: dict[str, Any]) -> ToolCall:
 def _is_truncated(ai_message: AIMessage) -> bool:
     metadata = ai_message.response_metadata or {}
     finish_reason = metadata.get("finish_reason") or metadata.get("stop_reason")
-    if finish_reason in _TRUNCATION_FINISH_REASONS:
+    # Some providers (Cohere v2, Gemini) report it upper-case, e.g. "MAX_TOKENS".
+    if isinstance(finish_reason, str) and finish_reason.lower() in _TRUNCATION_FINISH_REASONS:
         return True
     incomplete_details = metadata.get("incomplete_details")
     if not isinstance(incomplete_details, dict):
