@@ -624,11 +624,13 @@ def _get_test_image() -> str:
     return _TEST_IMAGE
 
 
-def _web_search_unhealthy(status_code: int, error: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={"status": "not healthy", "error": error, "timestamp": get_epoch_timestamp_in_ms()},
-    )
+def _web_search_unhealthy(status_code: int, error: str, error_type: str | None = None) -> JSONResponse:
+    content = {"status": "not healthy", "error": error, "timestamp": get_epoch_timestamp_in_ms()}
+    if error_type:
+        # Lets the caller tell a passing refusal (blocked, rate limited) from a real failure
+        # without matching the wording of the message.
+        content["errorType"] = error_type
+    return JSONResponse(status_code=status_code, content=content)
 
 
 _NOT_CONFIGURED_HINTS = {
@@ -652,12 +654,15 @@ def _web_search_failure(provider: str, error: WebError) -> JSONResponse:
     if isinstance(error, AuthFailed):
         return _web_search_unhealthy(400, f"{name} didn't accept the API key. Check the key in the web search settings, then try again.")
     if isinstance(error, RateLimited):
-        return _web_search_unhealthy(400, f"{name} is limiting requests right now. Wait a minute, then try again.")
+        return _web_search_unhealthy(
+            400, f"{name} is limiting requests right now. Wait a minute, then try again.", "rate_limited",
+        )
     if isinstance(error, QuotaExceeded):
         return _web_search_unhealthy(400, f"{name} says this account's search credits are used up. Check the plan, then try again.")
     if isinstance(error, Blocked):
         return _web_search_unhealthy(
             400, f"{name} blocked the test search as automated traffic. Try again later, or add a provider that uses an API key.",
+            "blocked",
         )
     if isinstance(error, UpstreamError) and error.status:
         return _web_search_unhealthy(

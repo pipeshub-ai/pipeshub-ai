@@ -451,6 +451,7 @@
     "created": "Creado",
     "updated": "Actualizado",
     "source": "Origen",
+    "actions": "Acciones",
     "noData": "No hay datos disponibles",
     "loading": "Cargando datos...",
     "selectAll": "Seleccionar todo",
@@ -502,6 +503,8 @@
     "pagination": {
       "showing": "Mostrando {{start}}-{{end}} de {{total}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "Mostrando {{start}}-{{end}} de al menos {{total}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "{{value}} por página"
     },
     "yes": "Sí",
@@ -717,7 +720,8 @@
     "nameRules": {
       "folderSeparator": "Los nombres de carpeta no pueden contener \"/\" ni \"\\\".",
       "collectionExists": "Ya tienes una colección llamada \"{{name}}\". Elige otro nombre."
-    }
+    },
+    "sourcesNotReady": "Algunas fuentes aún se están preparando y todavía no aparecen ({{count}}). Inténtalo de nuevo en un momento."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -859,6 +863,11 @@
     "copy": "Copiar",
     "fork": "Bifurcar chat",
     "forkFromHere": "Bifurcar desde aquí",
+    "forkedHere": "Bifurcado aquí",
+    "untitledChat": "Chat sin título",
+    "forkedFrom": "Bifurcado de",
+    "copiedUpToHere": "Copiado hasta aquí · los mensajes nuevos empiezan abajo",
+    "forkOriginUnavailable": "el chat original ya no está disponible",
     "regenerate": "Regenerar",
     "answerHidden": {
       "lost": "Esta respuesta usó contenido al que ya no tienes acceso.",
@@ -1549,6 +1558,15 @@
         "done": "Listo",
         "error": "Error"
       }
+    },
+    "webSearchSetup": {
+      "title": "La búsqueda web aún no está configurada",
+      "adminBody": "Tu organización no tiene ningún proveedor de búsqueda configurado. Elige uno en Workspace → Búsqueda web para activar la búsqueda web para todos.",
+      "memberBody": "Tu organización aún no ha configurado un proveedor de búsqueda web, por lo que las respuestas no pueden usar la web.",
+      "memberHint": "Pide a tu administrador que lo configure en Workspace → Búsqueda web.",
+      "setUp": "Configurar la búsqueda web",
+      "notNow": "Ahora no",
+      "gotIt": "Entendido"
     }
   },
   "workspaceMenu": {
@@ -3328,7 +3346,14 @@
         "badge": "Acción necesaria",
         "title": "Acción necesaria",
         "openAuthentication": "Actualizar autenticación",
-        "viewSteps": "Ver los pasos de configuración"
+        "viewSteps": "Ver los pasos de configuración",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki rechaza las consultas de miembros y de estructura de páginas",
+            "message": "Los espacios privados solo se sincronizan con el acceso confirmado en una sincronización anterior, y solo durante {{days}} días después de confirmarse. Los espacios privados nunca sincronizados, o confirmados hace más tiempo, se omiten y la jerarquía de páginas no está disponible. Los espacios abiertos no se ven afectados. Una sincronización completa, incluida la que se inicia al cambiar los filtros, pone fin a esto para los espacios privados hasta que Drupal Wiki vuelva a listar sus miembros.",
+            "message_dated": "Los espacios privados solo se sincronizan con el acceso confirmado en una sincronización anterior, y solo durante {{days}} días después de confirmarse. Los espacios privados nunca sincronizados, o confirmados hace más tiempo, se omiten y la jerarquía de páginas no está disponible. Los espacios abiertos no se ven afectados. Una sincronización completa, incluida la que se inicia al cambiar los filtros, pone fin a esto para los espacios privados hasta que Drupal Wiki vuelva a listar sus miembros. El acceso más antiguo en uso se confirmó el {{confirmedOn}}."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Todos en tu organización verán estos datos",
@@ -4005,6 +4030,11 @@
         "settingDefault": "Estableciendo…",
         "editConfiguration": "Editar configuración",
         "deleteConfiguration": "Eliminar configuración"
+      },
+      "duckduckgoWarning": "Puede bloquearse o limitarse en servidores compartidos. No recomendado para equipos.",
+      "notSetUp": {
+        "title": "La búsqueda web aún no está configurada.",
+        "description": "Elige un proveedor abajo para activarla. Hasta entonces, nadie de tu organización puede buscar en la web desde el chat."
       }
     },
     "profile": {

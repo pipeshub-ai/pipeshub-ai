@@ -202,6 +202,9 @@ class KnowledgeHubCursor:
     direction: str = "next"
     items_seen: int = 0
     total: int | None = None
+    # ``total`` is a lower bound (the provider stopped counting at its cap); carried with the
+    # total so every page of the listing says the same.
+    total_capped: bool = False
     counts_by_type: dict[str, int] | None = None
     filters: dict[str, Any] | None = None
     sort_by: str | None = None
@@ -217,6 +220,9 @@ class KnowledgeHubCursor:
     # The connection limit's own Apps when the listing was narrowed to one, so
     # its cursor resumes only under that limit; None for an unlimited listing.
     limit_apps: list[str] | None = None
+    # Connectors left out of the listing when it began because they were not ready: they stay out for every page of it, since a connector that joined
+    # mid-walk would be read only past the boundary, and the carried total would not count it.
+    not_ready: list[str] | None = None
 
     def to_wire(self) -> dict:
         wire: dict[str, Any] = {
@@ -230,11 +236,11 @@ class KnowledgeHubCursor:
         # unset fields are the common case.
         optional = (
             ("p", self.live.to_wire() if self.live else None),
-            ("tc", self.total), ("cb", self.counts_by_type), ("f", self.filters),
+            ("tc", self.total), ("tk", True if self.total_capped else None), ("cb", self.counts_by_type), ("f", self.filters),
             ("sb", self.sort_by), ("so", self.sort_order),
             ("pi", self.parent_id), ("pt", self.parent_type),
             ("vp", self.via_parent_id), ("m", self.mode),
-            ("u", self.user_id), ("o", self.org_id), ("la", self.limit_apps),
+            ("u", self.user_id), ("o", self.org_id), ("la", self.limit_apps), ("nx", self.not_ready or None),
         )
         wire.update({key: value for key, value in optional if value is not None})
         return wire
@@ -259,6 +265,7 @@ class KnowledgeHubCursor:
             direction=direction,
             items_seen=items_seen,
             total=wire.get("tc"),
+            total_capped=wire.get("tk") is True,
             counts_by_type=wire.get("cb"),
             filters=wire.get("f"),
             sort_by=wire.get("sb"),
@@ -271,7 +278,16 @@ class KnowledgeHubCursor:
             org_id=wire.get("o"),
             issued_at_ms=wire.get("ts", 0),
             limit_apps=wire.get("la"),
+            not_ready=_strings(wire.get("nx"), "not ready connectors"),
         )
+
+
+def _strings(raw: object, what: str) -> list[str] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise CursorError(f"{what} must be a list of strings")
+    return raw
 
 
 def encode(cursor: KnowledgeHubCursor, secret: str | bytes | None = None) -> str:

@@ -444,6 +444,7 @@
     "created": "Erstellt",
     "updated": "Aktualisiert",
     "source": "Quelle",
+    "actions": "Aktionen",
     "noData": "Keine Daten verfügbar",
     "loading": "Daten werden geladen...",
     "selectAll": "Alle auswählen",
@@ -495,6 +496,8 @@
     "pagination": {
       "showing": "{{start}}–{{end}} von {{total}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "{{start}}–{{end}} von mindestens {{total}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "{{value}} pro Seite"
     },
     "yes": "Ja",
@@ -705,7 +708,8 @@
     "nameRules": {
       "folderSeparator": "Ordnernamen dürfen kein \"/\" oder \"\\\" enthalten.",
       "collectionExists": "Sie haben bereits eine Sammlung namens \"{{name}}\". Wählen Sie einen anderen Namen."
-    }
+    },
+    "sourcesNotReady": "Einige Quellen werden noch vorbereitet und sind noch nicht aufgeführt ({{count}}). Versuchen Sie es gleich noch einmal."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -846,6 +850,11 @@
     "copy": "Kopieren",
     "fork": "Chat abzweigen",
     "forkFromHere": "Ab hier abzweigen",
+    "forkedHere": "Hier abgezweigt",
+    "untitledChat": "Unbenannter Chat",
+    "forkedFrom": "Abgezweigt von",
+    "copiedUpToHere": "Bis hier kopiert · neue Nachrichten beginnen unten",
+    "forkOriginUnavailable": "der ursprüngliche Chat ist nicht mehr verfügbar",
     "regenerate": "Neu generieren",
     "answerHidden": {
       "lost": "Diese Antwort verwendete Inhalte, auf die Sie nicht mehr zugreifen können.",
@@ -1526,6 +1535,15 @@
         "done": "Fertig",
         "error": "Fehlgeschlagen"
       }
+    },
+    "webSearchSetup": {
+      "title": "Die Websuche ist noch nicht eingerichtet",
+      "adminBody": "Für Ihre Organisation ist kein Suchanbieter konfiguriert. Wählen Sie unter Workspace → Websuche einen aus, um die Websuche für alle zu aktivieren.",
+      "memberBody": "Ihre Organisation hat noch keinen Anbieter für die Websuche eingerichtet, daher können Antworten das Web nicht nutzen.",
+      "memberHint": "Bitten Sie Ihren Admin, ihn unter Workspace → Websuche zu konfigurieren.",
+      "setUp": "Websuche einrichten",
+      "notNow": "Jetzt nicht",
+      "gotIt": "Verstanden"
     }
   },
   "workspaceMenu": {
@@ -3294,7 +3312,14 @@
         "badge": "Handlung erforderlich",
         "title": "Handlung erforderlich",
         "openAuthentication": "Authentifizierung aktualisieren",
-        "viewSteps": "Einrichtungsschritte ansehen"
+        "viewSteps": "Einrichtungsschritte ansehen",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki verweigert Abfragen zu Mitgliedern und Seitenstruktur",
+            "message": "Private Spaces werden nur mit den bei einer früheren Synchronisierung bestätigten Zugriffsrechten synchronisiert, und nur bis {{days}} Tage nach der Bestätigung. Nie synchronisierte oder länger zurück bestätigte private Spaces werden übersprungen, und die Seitenhierarchie ist nicht verfügbar. Offene Spaces sind nicht betroffen. Eine vollständige Synchronisierung, auch eine durch geänderte Filter ausgelöste, beendet dies für private Spaces, bis Drupal Wiki deren Mitglieder wieder auflistet.",
+            "message_dated": "Private Spaces werden nur mit den bei einer früheren Synchronisierung bestätigten Zugriffsrechten synchronisiert, und nur bis {{days}} Tage nach der Bestätigung. Nie synchronisierte oder länger zurück bestätigte private Spaces werden übersprungen, und die Seitenhierarchie ist nicht verfügbar. Offene Spaces sind nicht betroffen. Eine vollständige Synchronisierung, auch eine durch geänderte Filter ausgelöste, beendet dies für private Spaces, bis Drupal Wiki deren Mitglieder wieder auflistet. Die älteste verwendete Zugriffsbestätigung stammt vom {{confirmedOn}}."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Alle in Ihrer Organisation sehen diese Daten",
@@ -3964,6 +3989,11 @@
         "settingDefault": "Wird festgelegt…",
         "editConfiguration": "Konfiguration bearbeiten",
         "deleteConfiguration": "Konfiguration löschen"
+      },
+      "duckduckgoWarning": "Kann auf gemeinsam genutzten Servern blockiert oder gedrosselt werden. Für Teams nicht empfohlen.",
+      "notSetUp": {
+        "title": "Die Websuche ist noch nicht eingerichtet.",
+        "description": "Wählen Sie unten einen Anbieter, um sie zu aktivieren. Bis dahin kann in Ihrer Organisation niemand im Chat im Web suchen."
       }
     },
     "profile": {

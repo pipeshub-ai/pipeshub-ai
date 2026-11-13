@@ -4,9 +4,10 @@ import { Button, DropdownMenu, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import type { AllRecordsSortField, SortField } from '../types';
 
-/** The sorts the records API accepts that the table also offers on its column headers. */
-export type KbSortMenuField = 'name' | 'createdAt' | 'updatedAt' | 'size';
+/** The sorts both views accept that the table also offers on its column headers. */
+export type KbSortMenuField = Extract<SortField, AllRecordsSortField>;
 
 export interface KbSortMenuValue {
   field: string;

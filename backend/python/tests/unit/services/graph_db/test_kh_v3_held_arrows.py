@@ -182,10 +182,13 @@ def test_an_app_that_opens_everything_opens_only_its_own_members_below_a_node_th
     from app.services.graph_db.arango.arango_http_provider import _aql_browse_child
 
     cypher = Neo4jProvider.__new__(Neo4jProvider)._kh_v3_child_rule("c", "p", from_app="FROM", opens="OPENS", state=False)
-    member = "(OPENS AND EXISTS { (c)-[:BELONGS_TO]->(app) })"
+    # A record only, as the check's member arm: a group is read by its hops.
+    member = "(OPENS AND c:Record AND EXISTS { (c)-[:BELONGS_TO]->(app) })"
     assert f"(FROM OR {member})" in cypher and f"NOT FROM AND NOT {member}" in cypher and "FROM OR OPENS" not in cypher
     aql = _aql_browse_child("c", "p", "t", "FROM")
-    assert "(FROM OR (kh_opens AND LENGTH(" in aql and "kh_mb._key == @app_id" in aql and "FROM) OR kh_opens" not in aql
+    record = 'IS_SAME_COLLECTION("records", c)'
+    assert f"(FROM OR (kh_opens AND {record} AND LENGTH(FOR kh_ma IN (kh_opens AND {record} ? [1] : [])" in aql
+    assert "kh_mb._key == @app_id" in aql and "FROM) OR kh_opens" not in aql
 
 
 def test_every_listing_reads_the_reach_browse_start_reads() -> None:

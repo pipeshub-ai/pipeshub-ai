@@ -4,18 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import contextlib
 import errno
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 import pytest
 
 from app.connectors.sources.localKB.push import spool as S
 from app.connectors.sources.localKB.push.contract import PushRefusal
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 BACKEND_ROOT = Path(__file__).resolve().parents[6]
 OLD = 10_000.0  # seconds: past every floor and age used below
@@ -350,7 +355,11 @@ def test_an_unreadable_mountinfo_is_unknown_not_a_crash(tmp_path) -> None:
 # ---- the timer -----------------------------------------------------------------------------------
 
 
-async def test_sweep_does_not_stall_the_loop(root) -> None:
+async def test_sweep_does_not_stall_the_loop(root, monkeypatch) -> None:
+    """No directory listing or removal runs on the loop thread.
+
+    Checked by thread, not by timing the loop: a wall-clock gap also counts GC, a descheduled
+    runner and a readdir waiting on the directory lock the sweep holds, so it flakes."""
     for i in range(600):
         d = Path(root) / f"{S.RUN_PREFIX}dead{i}"
         d.mkdir(parents=True)
@@ -359,34 +368,40 @@ async def test_sweep_does_not_stall_the_loop(root) -> None:
             (d / f"f{j}.in").write_bytes(b"x" * 100)
         age(str(d), OLD)
     spool = S.Spool(root)
-    gaps: list[float] = []
-    stop = asyncio.Event()
+    loop_thread = threading.get_ident()
+    on_loop: list[str] = []
+    calls = {"rmtree": 0}
 
-    async def ticker() -> None:
-        last = time.monotonic()
-        while not stop.is_set():
-            await asyncio.sleep(0.01)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
+    def recorded(name: str, real: Callable[..., object]) -> Callable[..., object]:
+        def call(*a: object, **kw: object) -> object:
+            if threading.get_ident() == loop_thread:
+                on_loop.append(name)
+            calls[name] = calls.get(name, 0) + 1
+            return real(*a, **kw)
 
-    t = asyncio.create_task(ticker())
+        return call
+
+    monkeypatch.setattr(S.os, "scandir", recorded("scandir", os.scandir))
+    monkeypatch.setattr(S.shutil, "rmtree", recorded("rmtree", S.shutil.rmtree))
+
+    def any_dead() -> bool:
+        return any(Path(root).glob("run-dead*"))
+
     loop_task = asyncio.create_task(S.sweep_loop(spool, 0.01))
     try:
         for _ in range(600):
             await asyncio.sleep(0.05)
-            if not list(Path(root).glob("run-dead*")):
+            if not await asyncio.to_thread(any_dead):
                 break
     finally:
-        stop.set()
         loop_task.cancel()
-        await t
+        with contextlib.suppress(asyncio.CancelledError):
+            await loop_task
+        monkeypatch.undo()
         spool.close()
-    assert not list(Path(root).glob("run-dead*"))
-    print(f"sweep: worst loop gap {max(gaps) * 1000:.0f} ms")
-    assert (
-        max(gaps) < 0.25
-    )  # an inline rmtree of 600 dirs stalls for far longer; the margin is for a shared host
+    assert not any_dead()
+    assert calls["rmtree"] >= 600
+    assert on_loop == [], f"the sweep ran {sorted(set(on_loop))} on the event loop thread"
 
 
 async def test_timer_survives_a_failing_sweep_and_jitters(root, monkeypatch) -> None:

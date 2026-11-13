@@ -168,6 +168,25 @@ def _mode_state(policy: ChatModePolicy, **state: object) -> dict[str, Any]:
     return chat_state
 
 
+class TestWebSearchUnset:
+    """An org with no provider: the prompt must say so in the modes that would have used the web."""
+
+    @pytest.mark.parametrize(
+        ("policy", "config", "expected"),
+        [
+            (WEB_SEARCH_POLICY, None, True),
+            (AGENT_POLICY, None, True),
+            (INTERNAL_SEARCH_POLICY, None, False),
+            (WEB_SEARCH_POLICY, {"provider": "serper"}, False),
+        ],
+        ids=["web-mode", "agent-mode", "internal-mode-never-wanted-the-web", "provider-set-up"],
+    )
+    def test_flag(self, policy: ChatModePolicy, config: dict | None, expected: bool) -> None:
+        chat_state: dict[str, Any] = {}
+        _apply_policy_to_chat_state(chat_state, policy, config)
+        assert chat_state["web_search_unset"] is expected
+
+
 class TestAnswerRuleSwitches:
     def test_off_is_the_text_from_before_the_switches(self, answer_rule_env: SetEnv) -> None:
         chat_state = _mode_state(INTERNAL_SEARCH_POLICY, entity_vector_store=MagicMock())

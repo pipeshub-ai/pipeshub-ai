@@ -100,8 +100,11 @@ class _Txn:
     error, and later calls fail at once; a caller is never left awaiting a task that is gone. Cancelling the calling task rolls the unit back and
     gives the connection up."""
 
-    def __init__(self, db: KernelDB, ctx: OrgContext) -> None:
+    def __init__(self, db: KernelDB, ctx: OrgContext, *, snapshot: bool = False) -> None:
         self._db = db
+        # a read-only repeatable-read unit: every call reads one snapshot (custom plans, as the listing's own reads)
+        self.snapshot = snapshot
+        self._opts: dict[str, Any] = {"isolation": "repeatable_read", "custom_plan": True} if snapshot else {"write": True}
         self._who = (ctx.kind, ctx.org_id)       # the org the transaction began under; every call must run under it
         self._q: asyncio.Queue | None = None
         self._task: asyncio.Task | None = None
@@ -110,7 +113,7 @@ class _Txn:
 
     async def _main(self) -> None:
         try:
-            async with (self._db.jobs_uow(write=True) if current_or_system().kind == "system" else self._db.uow(write=True)) as tx:
+            async with (self._db.jobs_uow(**self._opts) if current_or_system().kind == "system" else self._db.uow(**self._opts)) as tx:
                 while True:
                     item = await self._q.get()
                     if item in ("commit", "rollback"):
@@ -267,6 +270,12 @@ class PgBase:
     async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         tid = str(uuid.uuid4())
         self._txns[tid] = _Txn(self._db, current_or_system())     # the org is fixed here
+        return tid
+
+    async def begin_snapshot(self) -> str:
+        """A read-only transaction whose calls all read one snapshot; ended by :meth:`rollback_transaction`."""
+        tid = str(uuid.uuid4())
+        self._txns[tid] = _Txn(self._db, current_or_system(), snapshot=True)
         return tid
 
     async def commit_transaction(self, transaction: str) -> None:

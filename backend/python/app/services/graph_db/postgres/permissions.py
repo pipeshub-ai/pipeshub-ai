@@ -189,11 +189,16 @@ class PermissionsMixin(PgBase):
 
         async def walk(i: list[str], v: list[str], acc: dict[str, Any]) -> list[dict[str, Any]]:
             return await self._q(lambda tx: access_sql.accessible_rows(tx, org, i, v, acc), transaction)
-        # an explicit transaction sees its own writes before kg has been given them; the system role has no read on kg
-        if transaction is None and kg_read.enabled() and current_or_system().kind != "system":
-            def run(fn: Callable[[Tx], Awaitable[Any]]) -> Awaitable[Any]:
+        # an explicit transaction sees its own writes before kg has been given them (a read-only snapshot has none: kg answers in it); the system role has no read on kg
+        snapshot = getattr(self._txns.get(transaction), "snapshot", False) if transaction else False
+        if (transaction is None or snapshot) and kg_read.enabled() and current_or_system().kind != "system":
+            def unit(fn: Callable[[Tx], Awaitable[Any]]) -> Awaitable[Any]:
                 return self._db.run(fn, isolation="repeatable_read", custom_plan=True)
-            return await kg_read.accessible_rows(run, org, ids, vrids, access, walk, self._db)
+
+            def in_snapshot(fn: Callable[[Tx], Awaitable[Any]]) -> Awaitable[Any]:
+                return self._q(lambda tx: kg_read.in_savepoint(tx, fn), transaction)
+            # in a snapshot, on its connection: a read that holds a pooled connection never waits for a second one. The samples run after the call, in units of their own.
+            return await kg_read.accessible_rows(in_snapshot if snapshot else unit, org, ids, vrids, access, walk, self._db, sample_run=unit)
         return await walk(ids, vrids, access)
 
     async def get_selection_nodes(self, org_id: str, *, group_ids: list[str], record_ids: list[str],

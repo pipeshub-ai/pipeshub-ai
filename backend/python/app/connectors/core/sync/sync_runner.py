@@ -23,6 +23,7 @@ from app.services.permissions.structure_generation import note_structure_change
 from app.connectors.core.base.connector.connector_service import (
     ConnectorSyncSkippedError,
     IncompleteSyncError,
+    action_items_json,
     connector_sync_lock,
     dispose_connector,
 )
@@ -265,10 +266,7 @@ async def _finalize(
         if outcome is not None else {}
     )
     if isinstance(action_items, list):
-        # Text, as the summary is; None when nothing is left to do, which clears the card's badge.
-        ended[ConnectorStateKeys.ACTION_ITEMS] = (
-            json.dumps([item.model_dump(by_alias=True) for item in action_items]) if action_items else None
-        )
+        ended[ConnectorStateKeys.ACTION_ITEMS] = action_items_json(action_items)
     if lease is None or not lease.lost.is_set():
         # Not over a delete: the status is an upsert, so writing it after the
         # delete removed the doc resurrected a ghost App node, and writing it

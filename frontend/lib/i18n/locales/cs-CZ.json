@@ -564,6 +564,7 @@
     "created": "Vytvořeno",
     "updated": "Aktualizováno",
     "source": "Zdroj",
+    "actions": "Akce",
     "noData": "Žádná data k dispozici",
     "loading": "Načítání dat...",
     "selectAll": "Vybrat vše",
@@ -615,6 +616,8 @@
     "pagination": {
       "showing": "Zobrazeno {{start}}-{{end}} z {{total}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "Zobrazeno {{start}}-{{end}} z nejméně {{total}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "{{value}} na stránku"
     },
     "yes": "Ano",
@@ -840,7 +843,8 @@
     "nameRules": {
       "folderSeparator": "Názvy složek nesmí obsahovat \"/\" ani \"\\\".",
       "collectionExists": "Kolekci s názvem \"{{name}}\" už máte. Zvolte jiný název."
-    }
+    },
+    "sourcesNotReady": "Některé zdroje se ještě připravují a zatím nejsou uvedeny ({{count}}). Zkuste to za chvíli znovu."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -981,6 +985,11 @@
     "copy": "Kopírovat",
     "fork": "Rozvětvit chat",
     "forkFromHere": "Rozvětvit odtud",
+    "forkedHere": "Rozvětveno zde",
+    "untitledChat": "Nepojmenovaný chat",
+    "forkedFrom": "Rozvětveno z",
+    "copiedUpToHere": "Zkopírováno až sem · nové zprávy začínají níže",
+    "forkOriginUnavailable": "původní chat již není dostupný",
     "regenerate": "Vygenerovat znovu",
     "answerHidden": {
       "lost": "Tato odpověď použila obsah, ke kterému již nemáte přístup.",
@@ -1683,6 +1692,15 @@
         "done": "Hotovo",
         "error": "Selhalo"
       }
+    },
+    "webSearchSetup": {
+      "title": "Vyhledávání na webu zatím není nastaveno",
+      "adminBody": "Vaše organizace nemá nastaveného žádného poskytovatele vyhledávání. Vyberte jej v Workspace → Vyhledávání na webu a zapněte tak vyhledávání pro všechny.",
+      "memberBody": "Vaše organizace zatím nenastavila poskytovatele vyhledávání na webu, takže odpovědi nemohou web používat.",
+      "memberHint": "Požádejte správce, aby jej nastavil v Workspace → Vyhledávání na webu.",
+      "setUp": "Nastavit vyhledávání na webu",
+      "notNow": "Teď ne",
+      "gotIt": "Rozumím"
     }
   },
   "workspaceMenu": {
@@ -3556,7 +3574,14 @@
         "badge": "Vyžaduje akci",
         "title": "Vyžaduje akci",
         "openAuthentication": "Aktualizovat ověření",
-        "viewSteps": "Zobrazit postup nastavení"
+        "viewSteps": "Zobrazit postup nastavení",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki odmítá dotazy na členy a strukturu stránek",
+            "message": "Soukromé prostory se synchronizují jen s přístupem potvrzeným při dřívější synchronizaci, a to jen {{days}} dní po jeho potvrzení. Soukromé prostory, které nikdy nebyly synchronizovány nebo byly potvrzeny dříve, se přeskočí a hierarchie stránek není k dispozici. Otevřených prostorů se to netýká. Úplná synchronizace, včetně té spuštěné změnou filtrů, to pro soukromé prostory ukončí, dokud Drupal Wiki znovu nevypíše jejich členy.",
+            "message_dated": "Soukromé prostory se synchronizují jen s přístupem potvrzeným při dřívější synchronizaci, a to jen {{days}} dní po jeho potvrzení. Soukromé prostory, které nikdy nebyly synchronizovány nebo byly potvrzeny dříve, se přeskočí a hierarchie stránek není k dispozici. Otevřených prostorů se to netýká. Úplná synchronizace, včetně té spuštěné změnou filtrů, to pro soukromé prostory ukončí, dokud Drupal Wiki znovu nevypíše jejich členy. Nejstarší používaný přístup byl potvrzen {{confirmedOn}}."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Tato data uvidí všichni ve vaší organizaci",
@@ -4396,6 +4421,11 @@
         "settingDefault": "Nastavuje se…",
         "editConfiguration": "Upravit konfiguraci",
         "deleteConfiguration": "Smazat konfiguraci"
+      },
+      "duckduckgoWarning": "Na sdílených serverech může být blokován nebo omezován. Pro týmy nedoporučujeme.",
+      "notSetUp": {
+        "title": "Vyhledávání na webu zatím není nastaveno.",
+        "description": "Vyberte níže poskytovatele a zapněte ho. Do té doby nikdo ve vaší organizaci nemůže v chatu vyhledávat na webu."
       }
     },
     "profile": {

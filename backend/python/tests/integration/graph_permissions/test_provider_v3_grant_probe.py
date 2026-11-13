@@ -34,7 +34,7 @@ _PROBED = Neo4jProvider._kh_grants_by_probe("""
 async def _by_probe(provider, user_key: str, app_id: str) -> set[str]:
     grantees = await provider._kh_v3_connector_grantees(user_key, app_id, None)
     rows = await provider.client.execute_query(
-        _PROBED, parameters={"kh_conn": app_id, "kh_grantees": grantees},
+        _PROBED, parameters={"kh_conn": app_id, "kh_grantees": grantees, "kh_x": Neo4jProvider._KH_NO_CROSS},
     )
     return set(rows[0]["ids"])
 

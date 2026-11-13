@@ -19,6 +19,16 @@ CAP = 5000
 STAMP_COLS = ("sk", "coll", "id", "kind", "path", "class_id", "self_lit", "seed", "own_grant", "under_deleted", "legacy_reason", "leaf")
 RECORD_COLS = ("sk", "coll", "id", "kind", "app_sk", "group_sk", "parent_sk", "rule", "model", "vrid", "name", "name_key", "updated_ms", "created_ms",
                "size_bytes", "record_type", "origin", "external_id", "deleted", "placeholder", "granted")
+# The per-item checks of w_records_upsert (kg manifest) on the values a node's document supplies: one row that fails a check refuses the whole call. The id is not here: a key
+# the node-key writer took (``w_nodes_upsert``, the same bound) is one this writer takes.
+RECORD_LENGTHS = {"vrid": (0, 256), "record_type": (0, 64), "external_id": (0, 2000)}
+RECORD_ENUMS = {"rule": ("OPEN", "STRICT", "RESTRICTED"), "model": ("APP_LEVEL", "RECORD_LEVEL", "RECORD_GROUP_LEVEL"), "origin": ("CONNECTOR", "UPLOAD")}
+
+
+def record_refusals(row: dict) -> list[str]:
+    """The columns of a records row that ``w_records_upsert`` would refuse (none: it takes the row)."""
+    return [c for c, (lo, hi) in RECORD_LENGTHS.items() if row[c] is not None and not lo <= len(row[c]) <= hi] + \
+        [c for c, allowed in RECORD_ENUMS.items() if row[c] is not None and row[c] not in allowed]
 
 
 def _chunks(rows: list, n: int = CAP) -> Iterator[list]:
@@ -48,6 +58,14 @@ class KgWriter:
         for part in _chunks(sorted(rows, key=lambda r: r["sk"])):       # key order: two writers that overlap take their row locks in the same order
             args = [[r[c] for r in part] for c in RECORD_COLS]
             n += await self.tx.fetchval("/* pipeshub:kg.w_records_upsert */ SELECT kg.w_records_upsert($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)", *args)
+        return n
+
+    async def listing_set(self, rows: list[tuple[int, int, str, int, bool, bool, bool, bytes | None]]) -> int:
+        """The listing columns: (sk, coll code, id, kind code, folder, hide_children, alien, name_sort), of rows the caller has just written (the writer is an upsert)."""
+        n = 0
+        for part in _chunks(sorted(rows)):
+            n += await self.tx.fetchval("/* pipeshub:kg.w_listing_set */ SELECT kg.w_listing_set($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::boolean[], $6::boolean[], $7::boolean[], $8::bytea[])",
+                                        *[[r[i] for r in part] for i in range(8)])
         return n
 
     async def classes_set(self, rows: list[tuple[int, int, int | None, str, bytes]]) -> int:

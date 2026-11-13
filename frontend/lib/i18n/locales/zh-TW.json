@@ -528,6 +528,7 @@
     "created": "建立時間",
     "updated": "更新時間",
     "source": "來源",
+    "actions": "動作",
     "noData": "沒有可用的資料",
     "loading": "正在載入資料…",
     "selectAll": "全選",
@@ -579,6 +580,8 @@
     "pagination": {
       "showing": "顯示第 {{start}}-{{end}} 項，共 {{total}} 項",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "顯示第 {{start}}-{{end}} 項，至少 {{total}} 項",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "每頁 {{value}} 筆"
     },
     "yes": "是",
@@ -793,7 +796,8 @@
     "nameRules": {
       "folderSeparator": "資料夾名稱不能包含「/」或「\\」。",
       "collectionExists": "你已有名為「{{name}}」的集合。請換一個名稱。"
-    }
+    },
+    "sourcesNotReady": "部分來源仍在準備中，尚未列出（{{count}}）。請稍後再試。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -935,6 +939,11 @@
     "copy": "複製",
     "fork": "分叉對話",
     "forkFromHere": "從此處分叉",
+    "forkedHere": "已在此處分叉",
+    "untitledChat": "未命名聊天",
+    "forkedFrom": "分叉自",
+    "copiedUpToHere": "已複製到此處 · 新訊息從下方開始",
+    "forkOriginUnavailable": "原始對話已無法使用",
     "regenerate": "重新產生",
     "answerHidden": {
       "lost": "此回答使用了您已無權存取的內容。",
@@ -1611,6 +1620,15 @@
         "done": "已完成",
         "error": "失敗"
       }
+    },
+    "webSearchSetup": {
+      "title": "網頁搜尋尚未設定",
+      "adminBody": "您的組織尚未設定搜尋供應商。請在 Workspace → 網頁搜尋 中選擇一個，為所有人開啟網頁搜尋。",
+      "memberBody": "您的組織尚未設定網頁搜尋供應商，因此回答無法使用網路。",
+      "memberHint": "請聯絡管理員在 Workspace → 網頁搜尋 中進行設定。",
+      "setUp": "設定網頁搜尋",
+      "notNow": "暫時不要",
+      "gotIt": "知道了"
     }
   },
   "workspaceMenu": {
@@ -3435,7 +3453,14 @@
         "badge": "需要處理",
         "title": "需要處理",
         "openAuthentication": "更新驗證",
-        "viewSteps": "查看設定步驟"
+        "viewSteps": "查看設定步驟",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki 拒絕成員與頁面結構查詢",
+            "message": "私人空間只能使用先前同步時確認的存取權限進行同步，且僅限確認後的 {{days}} 天內。從未同步過或確認時間更早的私人空間會被略過，且頁面階層無法使用。開放空間不受影響。 完整同步（包括因變更篩選條件而啟動的同步）會使私人空間停止這樣同步，直到 Drupal Wiki 再次列出其成員。",
+            "message_dated": "私人空間只能使用先前同步時確認的存取權限進行同步，且僅限確認後的 {{days}} 天內。從未同步過或確認時間更早的私人空間會被略過，且頁面階層無法使用。開放空間不受影響。 完整同步（包括因變更篩選條件而啟動的同步）會使私人空間停止這樣同步，直到 Drupal Wiki 再次列出其成員。 正在使用的最早存取權限確認於 {{confirmedOn}}。"
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "組織中的所有人都會看到這些資料",
@@ -4254,6 +4279,11 @@
         "settingDefault": "正在設定…",
         "editConfiguration": "編輯設定",
         "deleteConfiguration": "刪除設定"
+      },
+      "duckduckgoWarning": "在共用伺服器上可能被封鎖或限速，不建議團隊使用。",
+      "notSetUp": {
+        "title": "網路搜尋尚未設定。",
+        "description": "請在下方選擇一個供應商來開啟。在此之前，組織中的任何人都無法在聊天中搜尋網路。"
       }
     },
     "profile": {

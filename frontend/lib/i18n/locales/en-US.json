@@ -528,6 +528,7 @@
     "created": "Created",
     "updated": "Updated",
     "source": "Source",
+    "actions": "Actions",
     "noData": "No data available",
     "loading": "Loading data...",
     "selectAll": "Select all",
@@ -579,6 +580,8 @@
     "pagination": {
       "showing": "Showing {{start}}-{{end}} of {{total}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "Showing {{start}}-{{end}} of at least {{total}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "{{value}} per page"
     },
     "yes": "Yes",
@@ -794,7 +797,8 @@
     "nameRules": {
       "folderSeparator": "Folder names cannot contain \"/\" or \"\\\".",
       "collectionExists": "You already have a collection named \"{{name}}\". Choose a different name."
-    }
+    },
+    "sourcesNotReady": "Some sources are still being prepared and are not listed yet ({{count}}). Try again in a moment."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -935,6 +939,11 @@
     "copy": "Copy",
     "fork": "Fork chat",
     "forkFromHere": "Fork from here",
+    "forkedHere": "Forked here",
+    "untitledChat": "Untitled chat",
+    "forkedFrom": "Forked from",
+    "copiedUpToHere": "Copied up to here · new messages start below",
+    "forkOriginUnavailable": "the original chat is no longer available",
     "regenerate": "Regenerate",
     "answerHidden": {
       "lost": "This answer used content you can no longer access.",
@@ -1615,6 +1624,15 @@
         "done": "Done",
         "error": "Failed"
       }
+    },
+    "webSearchSetup": {
+      "title": "Web search isn’t set up yet",
+      "adminBody": "No search provider is configured for your organization. Choose one in Workspace → Web search to turn web search on for everyone.",
+      "memberBody": "Your organization hasn’t set up a web search provider yet, so answers can’t use the web.",
+      "memberHint": "Ask your admin to configure it under Workspace → Web search.",
+      "setUp": "Set up web search",
+      "notNow": "Not now",
+      "gotIt": "Got it"
     }
   },
   "workspaceMenu": {
@@ -3454,7 +3472,14 @@
         "badge": "Action needed",
         "title": "Action needed",
         "openAuthentication": "Update authentication",
-        "viewSteps": "View setup steps"
+        "viewSteps": "View setup steps",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki refuses member and page structure queries",
+            "message": "Private spaces sync only with the access confirmed on an earlier sync, and only for {{days}} days after it was confirmed. Private spaces never synced, or confirmed longer ago, are skipped, and the page hierarchy is not available. Open spaces are not affected. A full sync, including one started by changing the filters, ends this for private spaces until Drupal Wiki lists their members again.",
+            "message_dated": "Private spaces sync only with the access confirmed on an earlier sync, and only for {{days}} days after it was confirmed. Private spaces never synced, or confirmed longer ago, are skipped, and the page hierarchy is not available. Open spaces are not affected. A full sync, including one started by changing the filters, ends this for private spaces until Drupal Wiki lists their members again. The oldest access in use was confirmed on {{confirmedOn}}."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Everyone in your organization will see this data",
@@ -4276,6 +4301,11 @@
         "settingDefault": "Setting…",
         "editConfiguration": "Edit configuration",
         "deleteConfiguration": "Delete configuration"
+      },
+      "duckduckgoWarning": "It can be blocked or rate-limited on shared servers. Not recommended for teams.",
+      "notSetUp": {
+        "title": "Web search isn't set up yet.",
+        "description": "Pick a provider below to turn it on. Until then, people in your organization can't search the web in chat."
       }
     },
     "profile": {

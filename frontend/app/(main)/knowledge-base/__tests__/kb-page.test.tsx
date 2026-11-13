@@ -10,6 +10,7 @@ import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { clearSessionCache } from '@/lib/api/session-cache';
 import { useKnowledgeBaseStore } from '../store';
 import { resetKnowledgeBaseSession } from '../utils/sidebar-session';
+import axe from 'axe-core';
 import KnowledgeBasePage from '../page';
 import KnowledgeBaseSidebarSlot from '../../@sidebar/knowledge-base/page';
 import { loadMoreNodeChildrenPage, loadMoreRootAppList } from '../utils/sidebar-paginated-fetch';
@@ -1216,6 +1217,34 @@ describe('Knowledge base page — working with files', () => {
     expect(queryRow('spec.pdf')).toBeNull();
   });
 
+  it('sorts a collection by file name from the column header, ascending then descending', async () => {
+    await openEngineering();
+    const lastSort = () => {
+      const [, , params] = api.hub.loadFolderData.mock.calls.at(-1)!;
+      return { sortBy: params.sortBy, sortOrder: params.sortOrder };
+    };
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(lastSort()).toEqual({ sortBy: 'name', sortOrder: 'asc' }));
+    expect(useKnowledgeBaseStore.getState().sort).toEqual({ field: 'name', order: 'asc' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(lastSort()).toEqual({ sortBy: 'name', sortOrder: 'desc' }));
+  });
+
+  it.each([
+    ['the type sort', 'type'],
+    ['the older name of the type sort', 'nodeType'],
+  ])('opens a collection link with %s and asks the API for its type sort', async (_what, field) => {
+    withCollections();
+    api.hub.loadFolderData.mockResolvedValue(engineeringContents());
+    openAt(`/knowledge-base?nodeType=app&nodeId=kb-eng&sortField=${field}&sortOrder=asc`);
+    await screen.findByRole('row', { name: 'spec.pdf' });
+
+    const [, , params] = api.hub.loadFolderData.mock.calls.at(-1)!;
+    expect({ sortBy: params.sortBy, sortOrder: params.sortOrder }).toEqual({ sortBy: 'type', sortOrder: 'asc' });
+  });
+
   it('loads the next page of a large collection', async () => {
     withCollections();
     api.hub.loadFolderData.mockImplementation(pagedByCursor(async (_type: string, _id: string, params: { page: number }) => {
@@ -1622,6 +1651,141 @@ describe('Knowledge base page — All Records', () => {
     );
   });
 
+  it('goes on from an empty page that says more follows instead of showing no records', async () => {
+    withCollections();
+    const later = hubNode({ id: 'rec-later', name: 'Later.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) => {
+      const second = params?.cursor === 'scan2';
+      return hubResponse(second ? [later] : [], {
+        pagination: {
+          page: 1,
+          limit: 50,
+          totalItems: 1,
+          totalPages: 1,
+          hasNext: !second,
+          hasPrev: false,
+          nextCursor: second ? null : 'scan2',
+          prevCursor: null,
+        },
+      });
+    });
+    openAt('/knowledge-base?view=all-records');
+
+    expect(await screen.findByRole('row', { name: 'Later.xlsx' })).toBeTruthy();
+    expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'scan2' }), expect.anything());
+  });
+
+  it('says that sources still being prepared are not listed yet, so the list does not look complete', async () => {
+    withCollections();
+    const one = hubNode({ id: 'rec-one', name: 'One.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockResolvedValue({ ...hubResponse([one]), notReady: ['app-2'] });
+    openAt('/knowledge-base?view=all-records');
+
+    expect(await screen.findByRole('row', { name: 'One.xlsx' })).toBeTruthy();
+    expect((await screen.findByRole('status')).textContent).toContain('still being prepared');
+  });
+
+  const emptyPage = (nextCursor: string | null, extra: Record<string, unknown> = {}) =>
+    hubResponse([], {
+      pagination: { page: 1, limit: 50, totalItems: 0, totalPages: 0, hasNext: nextCursor !== null, hasPrev: false, nextCursor, prevCursor: null, ...extra },
+    });
+
+  it('treats an empty page that hands back the cursor it was asked with as the end, not a stall', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) => (params?.cursor === 'same' ? emptyPage('same') : emptyPage('same')));
+    openAt('/knowledge-base?view=all-records');
+    await waitFor(() => expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'same' }), expect.anything()));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(api.hub.getAllRootItems.mock.calls.length).toBeLessThanOrEqual(3);      // the first page, the page of 'same', and no more
+  });
+
+  it('stops going on from empty pages after a bounded number of them', async () => {
+    withCollections();
+    let n = 0;
+    api.hub.getAllRootItems.mockImplementation(async () => emptyPage(`c${++n}`));
+    openAt('/knowledge-base?view=all-records');
+    await waitFor(() => expect(api.hub.getAllRootItems.mock.calls.length).toBeGreaterThan(5));
+    await new Promise((r) => setTimeout(r, 300));
+    const calls = api.hub.getAllRootItems.mock.calls.length;
+    expect(calls).toBeLessThanOrEqual(25);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(api.hub.getAllRootItems.mock.calls.length).toBe(calls);
+  });
+
+  it('keeps the cursors of an empty page it goes on from', async () => {
+    withCollections();
+    let release: (v: unknown) => void = () => {};
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) =>
+      params?.cursor === 'ahead' ? new Promise((r) => { release = r; }) : emptyPage('ahead', { hasPrev: true, prevCursor: 'back1' }));
+    openAt('/knowledge-base?view=all-records');
+    await waitFor(() => expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'ahead' }), expect.anything()));
+    expect(useKnowledgeBaseStore.getState().allRecordsPagination.prevCursor).toBe('back1');
+    release(hubResponse([CONNECTOR_FILE]));
+  });
+
+  it('offers Next on the empty state once it stops going on from empty pages, and Next goes on', async () => {
+    withCollections();
+    const later = hubNode({ id: 'rec-later', name: 'Later.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) =>
+      params?.cursor === 'c21' ? hubResponse([later]) : emptyPage(`c${Number(params?.cursor?.slice(1) ?? 0) + 1}`));
+    openAt('/knowledge-base?view=all-records');
+    await waitFor(() => expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'c20' }), expect.anything()));
+    expect(await screen.findByText('No records found')).toBeTruthy();
+    expect(api.hub.getAllRootItems).not.toHaveBeenCalledWith(expect.objectContaining({ cursor: 'c21' }), expect.anything());
+    // The footer sits beside the empty body, not in it, and the body may shrink below its content: a short viewport clips the body, never the footer.
+    const next = await screen.findByRole('button', { name: /Next/ });
+    const body = screen.getByTestId('kb-empty-state');
+    expect(body.contains(next)).toBe(false);
+    expect(body.style.minHeight).toBe('0');
+
+    fireEvent.click(next);
+
+    expect(await screen.findByRole('row', { name: 'Later.xlsx' })).toBeTruthy();
+  });
+
+  it('starts again from the first page when a cursor is refused, and a first page that is not ready is retried a few times, not for ever', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) => {
+      if (params?.cursor === 'n2') throw { type: 'VALIDATION_ERROR', message: 'start the listing from its first page', statusCode: 400 };
+      if (api.hub.getAllRootItems.mock.calls.length > 1) {
+        throw { type: 'SERVER_ERROR', message: 'This source is still being prepared.', statusCode: 503, originalError: { response: { headers: { 'retry-after': '1' } } } };
+      }
+      return hubResponse([CONNECTOR_FILE], { pagination: { page: 1, limit: 50, totalItems: 60, totalPages: 2, startIndex: 1, endIndex: 50, hasNext: true, hasPrev: false, nextCursor: 'n2', prevCursor: null } });
+    });
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    fireEvent.click(screen.getByRole('button', { name: /Next/ }));
+
+    await waitFor(() => expect(api.hub.getAllRootItems.mock.calls.length).toBeGreaterThanOrEqual(3));
+    expect(api.hub.getAllRootItems.mock.calls[2][0]).not.toHaveProperty('cursor');      // the refused cursor is dropped: the listing starts again
+    expect(await screen.findByText(/busy right now/)).toBeTruthy();
+    // the first page, the refused cursor, the first page again and three retries of it, a second apart; then no more
+    await waitFor(() => expect(api.hub.getAllRootItems.mock.calls.length).toBe(6), { timeout: 8000 });
+    await new Promise((r) => setTimeout(r, 2500));
+    expect(api.hub.getAllRootItems.mock.calls.length).toBe(6);
+    expect(api.hub.getAllRootItems.mock.calls.slice(2).every(([params]) => !(params as { cursor?: string })?.cursor)).toBe(true);
+  }, 20000);
+
+  it('goes on backwards from an empty page reached by Previous', async () => {
+    withCollections();
+    const earlier = hubNode({ id: 'rec-earlier', name: 'Earlier.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) => {
+      if (params?.cursor === 'back1') return emptyPage('ahead', { hasPrev: true, prevCursor: 'back2' });
+      if (params?.cursor === 'back2') return hubResponse([earlier]);
+      if (params?.cursor === 'ahead') return hubResponse([CONNECTOR_FILE]);
+      return hubResponse([CONNECTOR_FILE], { pagination: { page: 2, limit: 50, totalItems: 2, totalPages: 2, startIndex: 51, endIndex: 51, hasNext: false, hasPrev: true, nextCursor: null, prevCursor: 'back1' } });
+    });
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    fireEvent.click(screen.getByRole('button', { name: /Previous/ }));
+
+    expect(await screen.findByRole('row', { name: 'Earlier.xlsx' })).toBeTruthy();
+    expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'back2' }), expect.anything());
+    expect(api.hub.getAllRootItems).not.toHaveBeenCalledWith(expect.objectContaining({ cursor: 'ahead' }), expect.anything());
+  });
+
   it('requests the next page number when the response has no cursor', async () => {
     withCollections();
     const later = hubNode({ id: 'rec-later', name: 'Later.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
@@ -1800,6 +1964,61 @@ describe('Knowledge base page — All Records', () => {
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
+  });
+
+  it('sorts by file name from the column header, ascending then descending', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+    const lastSort = () => {
+      const [params] = api.hub.getAllRootItems.mock.calls.at(-1)!;
+      return { sortBy: params.sortBy, sortOrder: params.sortOrder };
+    };
+    expect(lastSort()).toEqual({ sortBy: 'updatedAt', sortOrder: 'desc' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(lastSort()).toEqual({ sortBy: 'name', sortOrder: 'asc' }));
+    expect(useKnowledgeBaseStore.getState().allRecordsSort).toEqual({ field: 'name', order: 'asc' });
+    await waitFor(() => expect(currentUrl()).toContain('sortField=name'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(lastSort()).toEqual({ sortBy: 'name', sortOrder: 'desc' }));
+    expect(useKnowledgeBaseStore.getState().allRecordsSort).toEqual({ field: 'name', order: 'desc' });
+  });
+
+  it('tells assistive tech which column the records are sorted by, and which way', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+    const sortState = (label: string) => screen.getByRole('columnheader', { name: label }).getAttribute('aria-sort');
+
+    // The button is named by its label alone, not by the icon's ligature text.
+    expect(screen.getByRole('button', { name: 'Updated' })).toBeTruthy();
+    expect([sortState('File name'), sortState('Updated'), sortState('Size')]).toEqual(['none', 'descending', 'none']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(sortState('File name')).toBe('ascending'));
+    expect(sortState('Updated')).toBe('none');
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(sortState('File name')).toBe('descending'));
+    // A column that cannot sort states no order at all.
+    expect(screen.getByRole('columnheader', { name: 'Status' }).hasAttribute('aria-sort')).toBe(false);
+  });
+
+  it.each([
+    ['a sort the records API refuses', 'indexingStatus', { sortBy: 'updatedAt', sortOrder: 'asc' }],
+    ['the source sort', 'origin', { sortBy: 'origin', sortOrder: 'asc' }],
+  ])('opens a link with %s as the sort it can serve', async (_what, field, expected) => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
+    openAt(`/knowledge-base?view=all-records&sortField=${field}&sortOrder=asc`);
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    const [params] = api.hub.getAllRootItems.mock.calls.at(-1)!;
+    expect({ sortBy: params.sortBy, sortOrder: params.sortOrder }).toEqual(expected);
   });
 
   it('shows the latest filter results when an earlier request finishes last', async () => {
@@ -2405,5 +2624,42 @@ describe('Knowledge base page — asking from the chat box', () => {
     expect(usePendingChatStore.getState().pending?.pageContext.selectedNodes).toEqual([
       { id: 'app-conf', name: 'QA Confluence', nodeType: 'app', connector: 'Confluence' },
     ]);
+  });
+});
+
+describe('Knowledge base page — the records list is an accessible table', () => {
+  // jsdom computes no colours, and the page is mounted without the app's landmarks.
+  const AXE_OPTIONS: axe.RunOptions = { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } };
+
+  async function violations() {
+    const result = await axe.run(document.body, AXE_OPTIONS);
+    return result.violations.map((v) => ({ rule: v.id, nodes: v.nodes.map((n) => n.target.join(' ')) }));
+  }
+
+  it('has no axe violations in All Records', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(
+      hubResponse([hubNode({ id: 'rec-drive', name: 'Budget.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE', indexingStatus: 'COMPLETED' })]),
+    );
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    expect(await violations()).toEqual([]);
+  });
+
+  it('has no axe violations in a collection', async () => {
+    await openEngineering();
+
+    expect(await violations()).toEqual([]);
+  });
+
+  it('announces loading outside the table and has no axe violations while rows load', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockReturnValue(new Promise(() => {}));
+    openAt('/knowledge-base?view=all-records');
+
+    const status = await screen.findByRole('status');
+    expect(screen.getByRole('table').contains(status)).toBe(false);
+    expect(await violations()).toEqual([]);
   });
 });

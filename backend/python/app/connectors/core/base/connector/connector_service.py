@@ -3,6 +3,7 @@ import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 import copy
+import json
 from logging import Logger
 from typing import Any, Dict, List, Literal, Optional
 import weakref
@@ -84,6 +85,18 @@ class ActionItem(BaseModel):
     message: str
     action: Literal["authenticate"] | None = None
     docs_url: str | None = Field(default=None, serialization_alias="docsUrl")
+    # Values for the UI's own wording of a known item (``actionItems.known.<code>``).
+    params: dict[str, str] | None = None
+
+
+def action_items_json(items: list[ActionItem]) -> str | None:
+    """Action items as the app doc stores them: JSON text, or None when nothing is left
+    to do, which clears the card's badge."""
+    return json.dumps([
+        # params is newer than the stored shape; other items keep exactly the keys they had.
+        item.model_dump(by_alias=True, exclude={"params"} if item.params is None else None)
+        for item in items
+    ]) if items else None
 
 
 class ConnectorSyncSkippedError(Exception):
