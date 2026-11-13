@@ -3,7 +3,7 @@
 import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Box, Flex } from '@radix-ui/themes';
+import { Box, Flex, Text } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import {
   // Legacy components (for collections mode)
@@ -123,6 +123,9 @@ import { isRejectedCursorError } from './utils/cursor-recovery';
 import { useUserPermission } from '@/config';
 import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
 import { canOpenRecentlyDeleted } from './recently-deleted/utils';
+
+/** Empty pages in a row that All Records goes on from before it shows the empty state (a page the server stopped scanning early has no rows and a cursor to go on with). */
+const MAX_EMPTY_ALL_RECORDS_PAGES = 20;
 
 // Outlives a remount. The abort ref does not, so an older request's finally
 // would otherwise clear the loading flag a newer fetch just set.
@@ -603,6 +606,7 @@ function KnowledgeBasePageContent() {
   // A busy answer (503) is retried by itself, a few times, after the seconds the server asked for.
   const allRecordsBusyTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const allRecordsBusyTries = useRef(0);
+  const allRecordsEmptyHops = useRef(0);
   const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean) => Promise<void>) | null>(null);
   const collectionsFetchRef = useRef<AbortController | null>(null);
 
@@ -664,6 +668,20 @@ function KnowledgeBasePageContent() {
         data = await KnowledgeHubApi.getAllRootItems(params, { signal: controller.signal });
       }
       if (controller.signal.aborted || !stillSignedIn()) return;
+      // A page with no rows that says more follows is the server having stopped looking for the moment, not the end: go on from where it got to. A cursor that did not move, or
+      // too many such pages in a row, is the end (the empty state shows), never a silent stall. The cursors this page carries are kept, so the way back is not lost.
+      // It goes on the way it was asked: a page asked for with the previous page's cursor (Previous, or an empty page going back) goes on backwards.
+      const backwards = !!currentPagination.cursor && currentPagination.cursor === currentPagination.prevCursor;
+      const onward = backwards
+        ? data.pagination?.hasPrev && data.pagination.prevCursor
+        : data.pagination?.hasNext && data.pagination.nextCursor;
+      if (data.items?.length === 0 && onward && onward !== currentPagination.cursor && allRecordsEmptyHops.current < MAX_EMPTY_ALL_RECORDS_PAGES) {
+        allRecordsEmptyHops.current += 1;
+        syncAllRecordsPaginationMeta(toTablePagination(data.pagination!, currentPagination.cursor));
+        useKnowledgeBaseStore.getState().setAllRecordsCursor(onward);
+        return;
+      }
+      allRecordsEmptyHops.current = 0;
       setAllRecordsTableData(data);
       // An app's tree lives in the app children cache, which this does not fill.
       if (nodeType && nodeId && nodeType !== 'app') {
@@ -3157,6 +3175,13 @@ function KnowledgeBasePageContent() {
             {/* KB Filter Bar - mode-aware */}
             <FilterBar pageViewMode={pageViewMode} />
           </>
+        )}
+
+        {/* Sources still being prepared are left off All Records and named on every page: say so, so the list does not look complete. */}
+        {isAllRecordsMode && (allRecordsTableData?.notReady?.length ?? 0) > 0 && (
+          <Flex role="status" px="4" py="2">
+            <Text size="2" color="gray">{t('kb.sourcesNotReady', { count: allRecordsTableData?.notReady?.length ?? 0 })}</Text>
+          </Flex>
         )}
 
         {/* Data Table - shows appropriate items based on mode */}

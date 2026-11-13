@@ -361,6 +361,8 @@ export interface AppliedFilters {
  */
 export interface KnowledgeHubApiResponse {
   success: boolean;
+  /** Sources left out of this page because they are still being prepared; they are asked again on the next page. */
+  notReady?: string[];
   error: string | null;
   id: string | null;
   currentNode: {
@@ -383,6 +385,8 @@ export interface KnowledgeHubApiResponse {
   pagination: {
     limit: number;
     totalItems: number;
+    /** True when `totalItems` stopped at the server's cap: it is then a lower bound. */
+    totalCapped?: boolean;
     hasNext: boolean;
     hasPrev: boolean;
     /** 1-based position of this page's first and last item. */
@@ -544,6 +548,7 @@ export interface AllRecordsPagination {
   hasPrev: boolean;
   nextCursor: string | null;
   prevCursor: string | null;
+  totalCapped?: boolean;
 }
 
 // More Connectors link item (navigates to connectors page with the connector panel open)

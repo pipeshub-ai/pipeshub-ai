@@ -98,6 +98,11 @@ async def class_verdicts(tx: Tx, org: str, classes: dict[int, list[list[Any]]], 
     return out
 
 
+async def serves(tx: Tx, org: str, app: str) -> bool:
+    """Whether kg answers access for the connector's rows: ``drainer.serves`` and not distrusted by this process (:mod:`net`). Every reader that decides access from kg asks this."""
+    return not (net.DISTRUSTED and await net.distrusted(tx, org, app)) and await drainer.serves(tx, org, app)
+
+
 async def decide(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> Decision:
     """Classify the asked nodes: admitted by kg, denied by kg, or left to the walk (module docstring). Runs in one snapshot."""
     d = Decision()
@@ -130,7 +135,7 @@ async def decide(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> De
             to_walk(i, "no_app")
             continue
         if app not in served:
-            served[app] = not (net.DISTRUSTED and await net.distrusted(tx, org, app)) and await drainer.serves(tx, org, app)
+            served[app] = await serves(tx, org, app)
         if not served[app]:
             to_walk(i, "not_current")
         elif r["deleted"]:
@@ -170,10 +175,27 @@ async def _read(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> tup
     return d, (await access_sql.admitted_rows(tx, org, sorted(d.admit)) if d.admit else [])
 
 
+class _Kept(Exception):
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+
+async def in_savepoint(tx: Tx, fn: Callable[[Tx], Awaitable[Any]]) -> Any:  # noqa: ANN401
+    """``fn`` inside a longer read-only transaction, in a savepoint that is always rolled back: the settings it makes (:data:`PROFILE`) end with it, and a statement
+    of it that fails (its own timeout) leaves the transaction usable."""
+    try:
+        async with tx.savepoint("kg_read"):
+            raise _Kept(await fn(tx))
+    except _Kept as k:
+        return k.value
+
+
 async def accessible_rows(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaitable[Any]], org: str, ids: list[str], vrids: list[str], access: dict[str, Any],
-                          walk: Callable[[list[str], list[str], dict[str, Any]], Awaitable[list[dict[str, Any]]]], db: KernelDB | None = None) -> list[dict[str, Any]]:
+                          walk: Callable[[list[str], list[str], dict[str, Any]], Awaitable[list[dict[str, Any]]]], db: KernelDB | None = None,
+                          sample_run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaitable[Any]] | None = None) -> list[dict[str, Any]]:
     """``access.accessible_rows`` with kg answering for the nodes it may. ``run`` opens a read unit (one snapshot, the kg planner profile); ``walk(ids, vrids, access)`` is the walk.
-    With ``db``, a share of the answers kg gave is repeated by the walk off this call's path (:mod:`net`), and a difference takes the connector back to the walk."""
+    With ``db``, a share of the answers kg gave is repeated by the walk off this call's path (:mod:`net`), and a difference takes the connector back to the walk; the samples
+    read by ``sample_run`` (default ``run``), which must outlive the call."""
     if access.get("probe"):                                            # the walk refuses a grant probe; kg does not guess
         return await walk(ids, vrids, access)
     try:
@@ -189,5 +211,5 @@ async def accessible_rows(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaita
     ANSWERS.inc("kg", value=len(d.admit) + d.denied)
     ANSWERS.inc("walk", value=len(d.walk))
     if db is not None and (d.admit or d.denied):
-        net.maybe_sample(run, db, org, d.admit | d.deny, access)
+        net.maybe_sample(sample_run or run, db, org, d.admit | d.deny, access)
     return list(rows.values())

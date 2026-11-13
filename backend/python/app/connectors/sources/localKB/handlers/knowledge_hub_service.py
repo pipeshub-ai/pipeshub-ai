@@ -5,6 +5,7 @@ import inspect
 import logging
 import math
 import re
+import time
 import traceback
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
@@ -40,6 +41,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
 from app.connectors.sources.localKB.handlers.kh_search import SearchPage, search_page
 from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingBusy,
+    KnowledgeHubListingNotReady,
     KnowledgeHubListingTooLarge,
     is_out_of_memory,
 )
@@ -58,6 +60,9 @@ from app.utils.kh_cursor import (
 from app.utils.user_messages import action_failed
 
 _T = TypeVar("_T")
+
+
+SCAN_BUDGET_S = 1.0     # how long one request keeps going on from an empty page whose scan stopped at a bound
 
 
 class BrowseRequestError(Exception):
@@ -313,6 +318,17 @@ class KnowledgeHubService:
         page: int,
     ) -> SearchPage:
         """One page, by cursor if given, otherwise by walking forward to `page`."""
+        raw_fetch = fetch_page
+
+        async def fetch(token: str | None) -> SearchPage:
+            # A provider that stopped looking at a bound before it had a page leaves a page with no rows and a cursor to go on with: go on, within a time budget,
+            # so that in practice a caller sees rows or the end. Only if the budget runs out is the empty page returned (with its cursor).
+            started = time.monotonic()
+            got = await raw_fetch(token)
+            while not got.rows and got.scan_cursor and time.monotonic() - started < SCAN_BUDGET_S:
+                got = await raw_fetch(got.scan_cursor)
+            return got
+        fetch_page = fetch
         if cursor_token:
             return await fetch_page(cursor_token)
         if page > MAX_PAGE_WALK:
@@ -358,8 +374,9 @@ class KnowledgeHubService:
         direction = cursor.direction if cursor else "next"
 
         if cursor is not None and cursor.total is not None:
-            total, counts = cursor.total, cursor.counts_by_type
+            total, counts, total_capped = cursor.total, cursor.counts_by_type, cursor.total_capped
         else:
+            total_capped = bool(part.get("totalCapped"))
             total = part["total"] if part["total"] is not None else len(rows)
             if want_counts and part.get("counts") is not None:
                 counts = part["counts"]
@@ -386,6 +403,7 @@ class KnowledgeHubService:
                     direction=next_direction,
                     items_seen=items_seen,
                     total=total,
+                    total_capped=total_capped,
                     counts_by_type=counts,
                     filters=filters,
                     sort_by=sort_field,
@@ -401,16 +419,22 @@ class KnowledgeHubService:
                 secret,
             )
 
+        # A scan that stopped at a bound before it had a page says where it got to: the page may have no rows and still has somewhere to go.
+        resume = part.get("resume")
+        next_edge = (rows[-1] if rows else None) if direction == "prev" else (resume or (rows[-1] if rows else None))
+        prev_edge = (resume or (rows[0] if rows else None)) if direction == "prev" else (rows[0] if rows else None)
+        next_cursor = issue(next_edge, "next", seen_before + len(rows)) if next_edge and has_next else None
+        prev_cursor = issue(prev_edge, "prev", seen_before) if prev_edge and has_prev else None
         return SearchPage(
             rows=rows,
             total=total,
             counts_by_type=counts,
             start_index=seen_before + 1 if rows else 0,
             end_index=seen_before + len(rows),
-            next_cursor=issue(rows[-1], "next", seen_before + len(rows))
-            if rows and has_next else None,
-            prev_cursor=issue(rows[0], "prev", seen_before)
-            if rows and has_prev else None,
+            next_cursor=next_cursor,
+            prev_cursor=prev_cursor,
+            total_capped=total_capped,
+            scan_cursor=(next_cursor if direction == "next" else prev_cursor) if not rows and resume else None,
         )
 
     async def _v2_nodes(
@@ -559,6 +583,9 @@ class KnowledgeHubService:
                         "total": page["total"],
                         "ids": [],
                         "counts": page.get("counts"),
+                        # A scan that stopped early says where it got to, and a capped total says so: both reach the cursor.
+                        "resume": page.get("resume"),
+                        "totalCapped": page.get("totalCapped"),
                     }],
                     "scope": page.get("scope"),
                 }
@@ -835,6 +862,8 @@ class KnowledgeHubService:
                 raise BrowseRequestError(str(too_large), 422) from too_large
             except KnowledgeHubListingBusy as busy:
                 raise BrowseRequestError(str(busy), 503) from busy
+            except KnowledgeHubListingNotReady as not_ready:
+                raise BrowseRequestError(str(not_ready), 503) from not_ready
 
             # The start node's own admission decides this, and the 404 body is
             # constant: naming the node, or its type, would confirm it exists
@@ -899,6 +928,7 @@ class KnowledgeHubService:
                 pagination=PaginationInfo(
                     limit=limit,
                     totalItems=total_count,
+                    totalCapped=page_result.total_capped,
                     hasNext=has_next,
                     hasPrev=has_prev,
                     startIndex=page_result.start_index,
@@ -914,6 +944,9 @@ class KnowledgeHubService:
             )
 
             # Fetch typed records if requested (for LLM context enrichment)
+            if page_result.not_ready:
+                response.notReady = page_result.not_ready
+
             if include_typed_records and items:
                 record_ids = [
                     item.id for item in items
@@ -971,6 +1004,7 @@ class KnowledgeHubService:
                     response.counts = CountsInfo(
                         items=count_items,
                         total=total_count,  # Use actual total count, not paginated length
+                        capped=page_result.total_capped,
                     )
 
                 if permissions_task is not None:

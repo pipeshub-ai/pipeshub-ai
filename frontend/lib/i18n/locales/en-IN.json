@@ -496,6 +496,8 @@
     "pagination": {
       "showing": "Showing {{start}}-{{end}} of {{total}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "Showing {{start}}-{{end}} of at least {{total}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "{{value}} per page"
     },
     "yes": "Yes",
@@ -706,7 +708,8 @@
     "nameRules": {
       "folderSeparator": "Folder names cannot contain \"/\" or \"\\\".",
       "collectionExists": "You already have a collection named \"{{name}}\". Choose a different name."
-    }
+    },
+    "sourcesNotReady": "Some sources are still being prepared and are not listed yet ({{count}}). Try again in a moment."
   },
   "connectorTypes": {
     "slack": "Slack",

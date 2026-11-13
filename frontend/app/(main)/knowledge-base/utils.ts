@@ -177,6 +177,7 @@ export function toTablePagination(
     hasPrev: pagination.hasPrev,
     nextCursor: pagination.nextCursor ?? null,
     prevCursor: pagination.prevCursor ?? null,
+    totalCapped: pagination.totalCapped ?? false,
   };
 }
 
