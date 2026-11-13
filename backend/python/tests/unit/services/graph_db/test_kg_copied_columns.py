@@ -138,6 +138,27 @@ def _leaves(scope: Scope) -> list[Scope]:
     return [leaf for u in scope.union_scopes for leaf in _leaves(u)] if scope.union_scopes else [scope]
 
 
+def _exported(scope: Scope) -> list[str]:
+    """The column names a derived table, CTE or union exports: its alias list, else its first SELECT's names (a star exports nothing it can name)."""
+    first = _projections(_leaves(scope)[0])
+    return list(scope.outer_columns) or [p.alias_or_name for p in first if not _stars(scope, p)]
+
+
+def _whole_row(scope: Scope, c: exp.Column) -> bool:
+    """A bare name that is the alias (or the name) of kg.records is the whole row as a value (``SELECT r``, ``to_jsonb(r)``, ``r IS NOT NULL``), unless a column of
+    that name is in reach first. Only the columns of a derived table or CTE are known here: beside a stored table whose columns are not, the name is taken as the row."""
+    if c.table:
+        return False
+    s: Scope | None = scope
+    while s is not None:
+        if any(c.name in _exported(x) for x in s.sources.values() if isinstance(x, Scope) and isinstance(x.expression, (exp.Select, exp.Union))):
+            return False
+        if c.name in s.sources:
+            return _is_table(s.sources[c.name])
+        s = s.parent
+    return False
+
+
 def _target(tree: exp.Expression) -> exp.Table | None:
     """The table an INSERT, UPDATE or DELETE writes."""
     t = tree.this
@@ -155,6 +176,10 @@ def copied_reads(tree: exp.Expression) -> set[str]:
             ret = tree.args.get("returning")
             for r in ret.expressions if ret is not None else []:
                 if isinstance(r, exp.Star) or (isinstance(r, exp.Column) and isinstance(r.this, exp.Star) and r.table in names):
+                    found.add("*")
+            # the target's alias or name as a value (``RETURNING kg_row``, ``WHERE kg_row IS NOT NULL``) is the whole row
+            for w in (ret, tree.args.get("where")):
+                if w is not None and any(not c.table and c.name in names - {""} for c in w.find_all(exp.Column)):
                     found.add("*")
             found |= {c.name for c in (ret.find_all(exp.Column) if ret is not None else []) if c.name in COPIED and c.table in names}
             if not isinstance(tree, exp.Insert):        # its condition and the values it sets (a column set is written, not read)
@@ -228,6 +253,8 @@ def copied_reads(tree: exp.Expression) -> set[str]:
         for c in _own_columns(node):
             if isinstance(c.this, exp.Star):
                 continue
+            if _whole_row(scope, c):
+                found.add("*")
             for x in _source(scope, c.table):
                 follow(x, c.name)
     return found
@@ -459,6 +486,13 @@ def test_the_scan_finds_the_sources_and_statements_it_must_read() -> None:
     (["DELETE FROM kg.records WHERE org_id = $1 RETURNING origin"], {"origin"}),
     (["INSERT INTO kg.records (org_id, sk) VALUES ($1, $2) RETURNING vrid"], {"vrid"}),
     (["UPDATE kg.records SET sk = sk WHERE org_id = $1 RETURNING sk, id"], set()),
+    (["UPDATE kg.records AS kg_row SET name = 'x' RETURNING kg_row"], {"*"}),                              # a bare alias is the whole row as a value
+    (["SELECT r FROM kg.records r"], {"*"}),
+    (["SELECT to_jsonb(r) FROM kg.records r WHERE r.org_id = $1"], {"*"}),
+    (["SELECT row_to_json(records) FROM kg.records"], {"*"}),
+    (["SELECT 1 FROM kg.records r WHERE r IS NOT NULL"], {"*"}),
+    (["SELECT r FROM (SELECT n.id AS r FROM graph.nodes n) x JOIN kg.records r ON r.id = x.r"], set()),       # a column of that name comes first
+    (["SELECT r.id FROM kg.records r"], set()),
     (["SELECT n.id FROM graph.nodes n JOIN kg.records r USING (external_id)"], {"external_id"}),            # USING reads the column of both sides
     (["SELECT r.sk FROM kg.records r JOIN kg.records s USING (external_id)"], {"external_id"}),
     (["SELECT r.sk FROM kg.records r JOIN kg.records s USING (sk)"], set()),
