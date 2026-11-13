@@ -19,6 +19,7 @@ RECORD_GROUPS = CollectionNames.RECORD_GROUPS.value
 ORG = "org-1"
 USER = "user-1"
 CONN = "conn-1"
+COMMIT = "0123456789abcdef0123456789abcdef01234567"  # every fake file synced at one commit
 
 
 def _block(key, record_id, file_path, symbol_id, name, kind="function") -> dict:
@@ -44,11 +45,14 @@ def _block(key, record_id, file_path, symbol_id, name, kind="function") -> dict:
 class FakeGraphProvider:
     """Implements only what the CodeGraph ops call."""
 
-    def __init__(self, *, allow_user=USER, deny_records=(), file_roles=None) -> None:
+    def __init__(self, *, allow_user=USER, deny_records=(), file_roles=None, commits=None) -> None:
         self.allow_user = allow_user
         self.deny_records = set(deny_records)
         # `fileRole` per record, as `codeFiles` stores it; absent means source.
         self.file_roles: dict[str, str] = dict(file_roles or {})
+        # `commitSha` per record, as the git connectors store it; None is a file with
+        # no commit (uploaded to a knowledge base).
+        self.commits: dict[str, str | None] = dict(commits or {})
         self.blocks = {
             "k_caller": _block("k_caller", "rec-a", "src/a.py", "src_a_caller", "caller"),
             "k_target": _block("k_target", "rec-b", "src/b.py", "src_b_target", "target"),
@@ -83,15 +87,20 @@ class FakeGraphProvider:
         # The owning `records` rows carry the connector; `codeFiles` does not,
         # so the listing re-applies repo scope and access from here.
         self.records = {
-            rid: {"_key": rid, "orgId": ORG, "connectorId": CONN, "virtualRecordId": f"v-{rid[-1]}"}
+            rid: {"_key": rid, "orgId": ORG, "connectorId": CONN, "virtualRecordId": f"v-{rid[-1]}",
+                  "recordGroupId": "repo-1"}
             for rid in ("rec-a", "rec-b", "rec-c", "rec-d")
         }
         self.record_groups = {"repo-1": {"_key": "repo-1", "orgId": ORG, "connectorId": CONN,
                                          "groupName": "acme/shop"}}
 
+    def commit_of(self, record_id: str) -> str | None:
+        return self.commits.get(record_id, COMMIT)
+
     def _code_file_docs(self) -> list[dict]:
         return [
             {"_key": record_id, "id": record_id, "orgId": ORG, "filePath": path,
+             "commitSha": self.commit_of(record_id),
              **({"fileRole": self.file_roles[record_id]} if record_id in self.file_roles else {})}
             for record_id, path in self.code_files.items()
         ]
@@ -100,6 +109,8 @@ class FakeGraphProvider:
         if collection == CODE_FILES:
             return [d for d in self._code_file_docs()
                     if all(d.get(k) == v for k, v in filters.items())]
+        if collection == RECORDS:
+            return [d for d in self.records.values() if all(d.get(k) == v for k, v in filters.items())]
         if collection != BLOCKS:
             return []
         return [d for d in self.blocks.values()
@@ -108,7 +119,7 @@ class FakeGraphProvider:
     async def get_file_paths_for_records(self, org_id, record_ids, transaction=None, raise_on_error=False) -> dict:
         wanted = set(record_ids)
         return {
-            r: CodeFileInfo(file_path=p, referenced_names=())
+            r: CodeFileInfo(file_path=p, referenced_names=(), commit_sha=self.commit_of(r))
             for r, p in self.code_files.items() if r in wanted
         }
 
@@ -125,6 +136,11 @@ class FakeGraphProvider:
             docs = self.blocks.values()
         return [d for d in docs if d.get(field_name) in wanted]
 
+    async def has_nodes_by_filters(self, collection, filters=None, in_filters=None, transaction=None) -> bool:
+        docs = self.records.values() if collection == RECORDS else self.blocks.values()
+        return any(all(d.get(k) == v for k, v in (filters or {}).items())
+                   and all(d.get(k) in vs for k, vs in (in_filters or {}).items()) for d in docs)
+
     async def get_document(self, document_key, collection, raise_on_error=False) -> dict | None:
         return self.records.get(document_key)
 
@@ -138,6 +154,39 @@ class FakeGraphProvider:
                        if all(d.get(k) == v for k, v in (filters or {}).items())),
                       key=lambda d: d["_key"])
         return rows[skip:skip + limit]
+
+    async def find_blocks_by_external_ref_prefix(self, org_id, connector_id, prefixes, limit,
+                                                 record_group_ids=None, transaction=None, *,
+                                                 raise_on_error=False) -> list[dict]:
+        """As the providers do it: the connector's blocks (in *record_group_ids*, if given) with a ref
+        starting with any prefix, by _key."""
+        self.external_groups = [*getattr(self, "external_groups", []), record_group_ids]
+        return sorted((d for d in self.blocks.values()
+                       if d.get("orgId") == org_id and d.get("connectorId") == connector_id
+                       and (record_group_ids is None or d.get("recordGroupId") in record_group_ids)
+                       and any(r.startswith(p) for r in d.get("externalRefs") or () for p in prefixes)),
+                      key=lambda d: d["_key"])[:limit]
+
+    async def find_uncalled_blocks(self, org_id, connector_id, record_ids, kinds, relations, limit,
+                                   after_key=None, uncounted_caller_records=None, transaction=None, *,
+                                   raise_on_error=False) -> tuple[list[dict], str | None]:
+        """As the providers do it: blocks of *kinds* in *record_ids* with no inbound edge of *relations* from a
+        node outside *uncounted_caller_records*."""
+        uncounted = set(uncounted_caller_records or ())
+
+        def record_of(node: str) -> str:
+            collection, _, key = node.partition("/")
+            return self.blocks[key]["recordId"] if collection == BLOCKS and key in self.blocks else key
+
+        targets = {e["_to"] for e in self.edges
+                   if e.get("relationshipType") in relations and record_of(e["_from"]) not in uncounted}
+        wanted = set(record_ids)
+        rows = sorted((d for d in self.blocks.values()
+                       if d.get("orgId") == org_id and d.get("connectorId") == connector_id
+                       and d.get("kind") in kinds and d.get("recordId") in wanted
+                       and (after_key is None or d["_key"] > after_key)
+                       and f"{BLOCKS}/{d['_key']}" not in targets), key=lambda d: d["_key"])[:limit]
+        return rows, (rows[-1]["_key"] if len(rows) == limit else None)
 
     async def search_nodes_by_field_terms(
         self, collection, field_name, terms, filters=None, limit=400,

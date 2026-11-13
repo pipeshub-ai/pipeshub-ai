@@ -17,15 +17,22 @@ import contextlib
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from app.config.configuration_service import delete_config_confirmed
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.connector_intents import ConnectorIntentStore
+from app.connectors.services.vector_cleanup_events import (
+    build_connector_cleanup_events,
+    log_cleanup_publish_failure,
+)
 from app.connectors.sources.localKB.handlers.delete_lease import lease_is_held
 from app.core.org_context import for_org, spawn_in_request
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
+from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
 from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -91,11 +98,7 @@ async def delete_connector_credentials(
     """Whether the connector's credentials are gone. Never raises."""
     key = f"/services/connectors/{connector_id}/config"
     try:
-        # delete_config answers False rather than raising, and Redis answers
-        # False for a key an earlier attempt already deleted.
-        if await config_service.delete_config(key) or await config_service.get_config(
-            key, raise_on_error=True
-        ) is None:
+        if await delete_config_confirmed(config_service, key):
             return True
     except Exception:
         logger.warning("Connector credentials not confirmed deleted | connector=%s", connector_id, exc_info=True)
@@ -165,11 +168,13 @@ class StorageReleaseReconciler:
         now_ms: Callable[[], int] = get_epoch_timestamp_in_ms,
         config_service_for: Callable[[str], Awaitable[ConfigurationService]] | None = None,
         finish_kb_delete: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+        finish_connector_delete: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
         lease_held: Callable[[str], Awaitable[bool]] | None = None,
         heartbeat_seconds: float = HEARTBEAT_SECONDS,
     ) -> None:
         self.logger = logger
         self.finish_kb_delete = finish_kb_delete
+        self.finish_connector_delete = finish_connector_delete
         self.lease_held = lease_held
         self.heartbeat_seconds = heartbeat_seconds
         self.graph = graph_provider
@@ -193,13 +198,16 @@ class StorageReleaseReconciler:
             if not org_id:
                 self.logger.warning("Storage release intent has no org; skipped | connector=%s", connector_id)
                 continue
-            # Raised, not None: a failed read must never pass for a gone app.
-            app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+            # Raised, not None: a failed read must never pass for a gone app. Read in the intent's org, where an
+            # id that only another org holds is gone.
+            with for_org(org_id, job="storage_release"):
+                app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
             if app is not None:
                 if app.get("status") == APP_STATUS_DELETING:
-                    if app.get("type") != Connectors.KNOWLEDGE_BASE.value or self.finish_kb_delete is None:
+                    finisher = self.finish_kb_delete if app.get("type") == Connectors.KNOWLEDGE_BASE.value else self.finish_connector_delete
+                    if finisher is None:
                         continue
-                    outcome = await self._finish_kb_delete(intent, org_id, connector_id)
+                    outcome = await self._finish_kb_delete(finisher, intent, org_id, connector_id)
                     if outcome is None:
                         continue
                     return outcome
@@ -243,9 +251,8 @@ class StorageReleaseReconciler:
         return "idle"
 
 
-    async def _finish_kb_delete(self, intent: dict[str, Any], org_id: str, kb_id: str) -> str | None:
-        """Complete the delete of a KB stuck DELETING, after the grace period. None: a delete is under way."""
-        assert self.finish_kb_delete is not None
+    async def _finish_kb_delete(self, finisher: Callable[[str, str], Awaitable[dict[str, Any]]], intent: dict[str, Any], org_id: str, kb_id: str) -> str | None:
+        """Complete the delete of a KB or connector stuck DELETING, after the grace period. None: a delete is under way."""
         # A hint only: correctness never depends on it (the cascade is idempotent).
         if self.lease_held is not None and await self.lease_held(kb_id):
             return None
@@ -263,7 +270,7 @@ class StorageReleaseReconciler:
         try:
             # This loop runs detached, with no ambient org; the delete's org-checked graph calls need the intent's.
             with for_org(org_id, job="storage_release"):
-                result = await self.finish_kb_delete(org_id, kb_id)
+                result = await finisher(org_id, kb_id)
         except Exception:
             self.logger.exception("KB delete could not be resumed | org=%s kb=%s", org_id, kb_id)
             result = {"success": False}
@@ -291,6 +298,45 @@ def _kb_finisher(
     from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 
     return KnowledgeBaseService(logger, graph_provider, kafka_service, config_service=config_service).finish_delete
+
+
+def _connector_finisher(
+    logger: Logger,
+    graph_provider: IGraphDBProvider,
+    kafka_service: KafkaService,
+) -> Callable[[str, str], Awaitable[dict[str, Any]]]:
+    """The rest of a connector delete whose event could not finish it: the graph delete (it picks up where it stopped), then the vector-cleanup events.
+    The storage release is the next pass's. Never raises."""
+    async def finish(org_id: str, connector_id: str) -> dict[str, Any]:
+        try:
+            try:
+                result = await graph_provider.delete_connector_instance(connector_id=connector_id, org_id=org_id)
+            finally:
+                await notify_principals_changed(org_id)
+            if not result.get("success"):
+                # gone already (a redelivery finished it): nothing left to do here
+                gone = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) is None
+                return {"success": gone}
+            events = build_connector_cleanup_events(
+                org_id=org_id, connector_id=connector_id,
+                vector_membership_backfilled=result.get("vector_membership_backfilled", False),
+                vector_membership_backfill_exhausted=result.get("vector_membership_backfill_exhausted", False),
+                connector_name=result.get("connector_name"), record_group_ids=result.get("record_group_ids"),
+                virtual_record_ids=result.get("virtual_record_ids", []),
+            )
+            for event in events:
+                try:
+                    if await kafka_service.publish_event("record-events", event) is False:
+                        raise RuntimeError("the message broker did not accept the event")
+                except Exception as e:
+                    log_cleanup_publish_failure(logger, event, f"connector {connector_id}", e)
+            await free_lane_of_deleted_connector(logger, connector_id)
+            return {"success": True}
+        except Exception:
+            logger.exception("Connector delete could not be finished | org=%s connector=%s", org_id, connector_id)
+            return {"success": False}
+
+    return finish
 
 
 async def run_storage_release_loop(
@@ -323,6 +369,7 @@ async def run_storage_release_loop(
                     finish_kb_delete=_kb_finisher(
                         logger, graph_provider, app_container.kafka_service(), app_container.config_service(),
                     ),
+                    finish_connector_delete=_connector_finisher(logger, graph_provider, app_container.kafka_service()),
                     lease_held=lambda kb_id: lease_is_held(app_container.config_service(), kb_id),
                 )
                 outcome = await reconciler.tick()

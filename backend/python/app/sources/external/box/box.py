@@ -123,7 +123,7 @@ class BoxDataSource:
         except Exception as e:
             raise Exception(f"Failed to clear As-User context: {e}")
 
-    async def files_get_file_by_id(self, file_id: str, **kwargs) -> BoxResponse:
+    async def files_get_file_by_id(self, file_id: str, fields: Optional[str] = None, **kwargs) -> BoxResponse:
         """Get file information by ID
 
         API Endpoint: files.get_file_by_id
@@ -146,7 +146,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_by_id(file_id))
+            response = await loop.run_in_executor(None, lambda: manager.get_file_by_id(file_id, fields=fields.split(',') if fields else None))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -455,7 +455,7 @@ class BoxDataSource:
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
 
-    async def folders_get_folder_by_id(self, folder_id: str, **kwargs) -> BoxResponse:
+    async def folders_get_folder_by_id(self, folder_id: str, fields: Optional[str] = None, **kwargs) -> BoxResponse:
         """Get folder information by ID
 
         API Endpoint: folders.get_folder_by_id
@@ -478,7 +478,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_folder_by_id(folder_id))
+            response = await loop.run_in_executor(None, lambda: manager.get_folder_by_id(folder_id, fields=fields.split(',') if fields else None))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))

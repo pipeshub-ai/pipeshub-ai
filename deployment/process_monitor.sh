@@ -34,6 +34,119 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
+# Startup limits. A service is waited on while it is alive and using CPU, because on a slow machine
+# importing the Python services takes minutes and a fixed window kills them half way through. It is
+# given up on when it died, when it used no CPU for STARTUP_STALL_SECONDS (hung), or when
+# STARTUP_MAX_SECONDS passed (bounded even if something spins).
+STARTUP_STALL_SECONDS=${STARTUP_STALL_SECONDS:-120}
+STARTUP_MAX_SECONDS=${STARTUP_MAX_SECONDS:-900}
+STARTUP_POLL_SECONDS=${STARTUP_POLL_SECONDS:-2}
+
+# A mistyped limit must not disable the wait or turn it into a busy loop, so anything unusable falls back to the default.
+check_startup_limits() {
+    local name default floor value
+    # Each limit is checked against the one before it, which has already been repaired.
+    for spec in "STARTUP_POLL_SECONDS 2 1" "STARTUP_STALL_SECONDS 120 STARTUP_POLL_SECONDS" "STARTUP_MAX_SECONDS 900 STARTUP_STALL_SECONDS"; do
+        read -r name default floor <<< "$spec"
+        [ "$floor" = "1" ] || floor=${!floor}
+        value=${!name}
+        case $value in
+            ''|*[!0-9]*) value=bad ;;
+        esac
+        if [ "$value" = "bad" ] || [ "$value" -lt "$floor" ]; then
+            log "WARNING: ${name}=${!name} is not an integer of at least ${floor}; using ${default}"
+            printf -v "$name" '%s' "$default"
+        fi
+    done
+}
+check_startup_limits
+
+# CPU ticks (user + system, including reaped children) used by a process and all its live descendants; empty
+# when it is gone. Descendants count because a service may sit in a wrapper while a child does the work.
+cpu_ticks() {
+    # The command name may contain spaces and parentheses, so cut up to the last ") " before splitting fields.
+    cat /proc/[0-9]*/stat 2>/dev/null | sed 's/^\([0-9]*\) (.*) \(.*\)/\1 \2/' | awk -v root="$1" '
+        { ppid[$1] = $3; t[$1] = $13 + $14 + $15 + $16 }
+        END {
+            if (!(root in t)) exit
+            mark[root] = 1
+            do {
+                grew = 0
+                for (p in ppid) if (!(p in mark) && (ppid[p] in mark)) { mark[p] = 1; grew = 1 }
+            } while (grew)
+            for (p in mark) sum += t[p]
+            print sum
+        }'
+}
+
+# wait_ready <name> <pid> <health url>: 0 once the URL answers, 1 if the process died, hung or took too long.
+wait_ready() {
+    local name=$1 pid=$2 url=$3
+    local began=$SECONDS last_move=$SECONDS last_ticks="" ticks request_limit
+
+    log "Waiting for $name health check..."
+    while true; do
+        # A service that takes the connection and never answers must not hold this past the limits below.
+        request_limit=$((STARTUP_MAX_SECONDS - (SECONDS - began)))
+        [ "$request_limit" -le "$STARTUP_STALL_SECONDS" ] || request_limit=$STARTUP_STALL_SECONDS
+        [ "$request_limit" -ge 1 ] || request_limit=1
+        if curl -s -f --max-time "$request_limit" "$url" > /dev/null 2>&1; then
+            log "$name health check passed after $((SECONDS - began))s!"
+            return 0
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+            log "ERROR: $name (PID: $pid) exited before it became healthy"
+            return 1
+        fi
+        ticks=$(cpu_ticks "$pid")
+        # Unreadable CPU counters count as progress: only the overall bound applies then.
+        if [ -z "$ticks" ] || [ "$ticks" != "$last_ticks" ]; then
+            last_ticks=$ticks
+            last_move=$SECONDS
+        fi
+        if [ $((SECONDS - last_move)) -ge "$STARTUP_STALL_SECONDS" ]; then
+            log "ERROR: $name (PID: $pid) used no CPU for ${STARTUP_STALL_SECONDS}s and is not healthy"
+            return 1
+        fi
+        if [ $((SECONDS - began)) -ge "$STARTUP_MAX_SECONDS" ]; then
+            log "ERROR: $name (PID: $pid) not healthy after ${STARTUP_MAX_SECONDS}s"
+            return 1
+        fi
+        sleep "$STARTUP_POLL_SECONDS"
+    done
+}
+
+# await_services <name> <pid> <url> ...: waits for every service at once. Returns 1 as soon as one fails, without
+# waiting for the others; only the waiters started here are stopped.
+await_services() {
+    local dir i=0 pids=() names=() done_count=0 total result
+    dir=$(mktemp -d)
+    while [ $# -ge 3 ]; do
+        ( set +e; wait_ready "$1" "$2" "$3"; echo $? > "$dir/$i" ) &      # errexit would end the waiter at its failure, before the status is written
+        pids+=($!)
+        i=$((i + 1))
+        shift 3
+    done
+    total=$i
+    while [ "$done_count" -lt "$total" ]; do
+        done_count=0
+        for ((i = 0; i < total; i++)); do
+            [ -s "$dir/$i" ] || continue
+            done_count=$((done_count + 1))
+            read -r result < "$dir/$i"
+            if [ "$result" != "0" ]; then
+                kill "${pids[@]}" 2>/dev/null || true
+                wait "${pids[@]}" 2>/dev/null || true
+                rm -rf "$dir"
+                return 1
+            fi
+        done
+        [ "$done_count" -lt "$total" ] && sleep 0.5
+    done
+    rm -rf "$dir"
+    return 0
+}
+
 start_nodejs() {
     log "Starting Node.js service..."
     cd /app/backend
@@ -70,32 +183,17 @@ start_slackbot() {
     log "Slack Bot started with PID: $SLACKBOT_PID"
 }
 
-start_embedding() {
+spawn_embedding() {
     log "Starting Embedding service..."
     cd /app/python
     python -m app.embedding_main &
     EMBEDDING_PID=$!
     log "Embedding service started with PID: $EMBEDDING_PID"
+}
 
-    log "Waiting for Embedding service health check..."
-    local MAX_RETRIES=120
-    local RETRY_COUNT=0
-    local HEALTH_CHECK_URL="http://localhost:${EMBEDDING_PORT}/health"
-
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        if curl -s -f "$HEALTH_CHECK_URL" > /dev/null 2>&1; then
-            log "Embedding service health check passed!"
-            break
-        fi
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
-        sleep 2
-    done
-
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        log "ERROR: Embedding service health check failed after $MAX_RETRIES attempts"
-        return 1
-    fi
+start_embedding() {
+    spawn_embedding
+    wait_ready "Embedding service" "$EMBEDDING_PID" "http://localhost:${EMBEDDING_PORT}/health"
 }
 
 start_docling() {
@@ -119,7 +217,8 @@ use_own_pg_login() {
     url_var="PG_CORE_${up}_URL"
     pool_var="PG_${up}_POOL_MAX"
     [ -n "${!url_var:-}" ] || return 0
-    export PG_RUNTIME_SERVICE="$1" PG_CORE_URL="${!url_var}"
+    # The pgvector store connects with the same login (it reads PGVECTOR_DSN, else a DSN in the configuration store, which every service would share).
+    export PG_RUNTIME_SERVICE="$1" PG_CORE_URL="${!url_var}" PGVECTOR_DSN="${!url_var}"
     if [ -n "${!pool_var:-}" ]; then export PG_POOL_MAX="${!pool_var}"; fi
 }
 
@@ -131,32 +230,17 @@ start_indexing() {
     log "Indexing started with PID: $INDEXING_PID"
 }
 
-start_connector() {
+spawn_connector() {
     log "Starting Connector service..."
     cd /app/python
     (use_own_pg_login connectors; exec python -m app.connectors_main) &
     CONNECTOR_PID=$!
     log "Connector started with PID: $CONNECTOR_PID"
-    
-    log "Waiting for Connector health check..."
-    local MAX_RETRIES=60
-    local RETRY_COUNT=0
-    local HEALTH_CHECK_URL="http://localhost:8088/health"
-    
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        if curl -s -f "$HEALTH_CHECK_URL" > /dev/null 2>&1; then
-            log "Connector health check passed!"
-            break
-        fi
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
-        sleep 2
-    done
-    
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        log "ERROR: Connector health check failed after $MAX_RETRIES attempts"
-        return 1
-    fi
+}
+
+start_connector() {
+    spawn_connector
+    wait_ready "Connector" "$CONNECTOR_PID" "http://localhost:8088/health"
 }
 
 start_query() {
@@ -167,56 +251,30 @@ start_query() {
     log "Query started with PID: $QUERY_PID"
 }
 
-start_parsing() {
+spawn_parsing() {
     log "Starting Parsing service (port ${PARSING_PORT})..."
     cd /app/python
     PARSING_SERVICE_PORT=${PARSING_PORT} python -m app.parsing_main &
     PARSING_PID=$!
     log "Parsing service started with PID: $PARSING_PID"
-
-    log "Waiting for Parsing service health check..."
-    local MAX_RETRIES=60
-    local RETRY_COUNT=0
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        if curl -s -f "http://localhost:${PARSING_PORT}/health" > /dev/null 2>&1; then
-            log "Parsing service health check passed!"
-            break
-        fi
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
-        sleep 2
-    done
-
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        log "ERROR: Parsing service health check failed after $MAX_RETRIES attempts"
-        return 1
-    fi
 }
 
-start_extraction() {
+start_parsing() {
+    spawn_parsing
+    wait_ready "Parsing service" "$PARSING_PID" "http://localhost:${PARSING_PORT}/health"
+}
+
+spawn_extraction() {
     log "Starting Extraction service (port ${EXTRACTION_PORT})..."
     cd /app/python
     EXTRACTION_SERVICE_PORT=${EXTRACTION_PORT} python -m app.extraction_main &
     EXTRACTION_PID=$!
     log "Extraction service started with PID: $EXTRACTION_PID"
+}
 
-    log "Waiting for Extraction service health check..."
-    local MAX_RETRIES=60
-    local RETRY_COUNT=0
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        if curl -s -f "http://localhost:${EXTRACTION_PORT}/health" > /dev/null 2>&1; then
-            log "Extraction service health check passed!"
-            break
-        fi
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
-        sleep 2
-    done
-
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        log "ERROR: Extraction service health check failed after $MAX_RETRIES attempts"
-        return 1
-    fi
+start_extraction() {
+    spawn_extraction
+    wait_ready "Extraction service" "$EXTRACTION_PID" "http://localhost:${EXTRACTION_PORT}/health"
 }
 
 check_process() {
@@ -257,22 +315,37 @@ if [ "${PIPESHUB_SKIP_SLACKBOT:-false}" = "true" ]; then
 else
     start_slackbot
 fi
-start_embedding
-start_connector
+# Python services import for minutes on a small machine and the embedding server also loads its model
+# before it listens, so start them all first and wait for them together instead of one behind another.
+spawn_embedding
+spawn_connector
 start_query
 start_docling
 # Conditionally start the standalone Parsing and Extraction services.
 # Set USE_PARSING_SERVICE=true in the environment to enable them.
-# Must start (and pass health checks) *before* Indexing: on startup Indexing
+# Must be healthy *before* Indexing: on startup Indexing
 # recovers in-progress records immediately and, when USE_PARSING_SERVICE=true,
 # routes them through the Parsing service — if that service isn't up yet those
 # recovery calls fail with connection errors / 503s.
 if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
     log "USE_PARSING_SERVICE=true — starting Parsing and Extraction services"
-    start_parsing
-    start_extraction
+    spawn_parsing
+    spawn_extraction
 else
     log "USE_PARSING_SERVICE not set — skipping Parsing and Extraction services"
+fi
+
+# The first failed wait ends the monitor, as it did when the waits were serial.
+if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
+    await_services \
+        "Embedding service" "$EMBEDDING_PID" "http://localhost:${EMBEDDING_PORT}/health" \
+        "Connector" "$CONNECTOR_PID" "http://localhost:8088/health" \
+        "Parsing service" "$PARSING_PID" "http://localhost:${PARSING_PORT}/health" \
+        "Extraction service" "$EXTRACTION_PID" "http://localhost:${EXTRACTION_PORT}/health" || exit 1
+else
+    await_services \
+        "Embedding service" "$EMBEDDING_PID" "http://localhost:${EMBEDDING_PORT}/health" \
+        "Connector" "$CONNECTOR_PID" "http://localhost:8088/health" || exit 1
 fi
 
 start_indexing

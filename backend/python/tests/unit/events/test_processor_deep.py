@@ -991,6 +991,25 @@ class TestMarkRecord:
         assert fields["isDirty"] is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("status, clears", [
+        ("EMPTY", True), ("FAILED", True), ("FILE_TYPE_NOT_SUPPORTED", True), ("QUEUED", False),
+    ])
+    async def test_a_terminal_status_clears_the_resume_marker(self, status: str, clears: bool) -> None:
+        from app.config.constants.arangodb import ProgressStatus
+        from app.modules.indexing.embed_resume import EMBED_FIELDS
+        proc = _make_processor()
+        proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
+        proc.graph_provider.update_node = AsyncMock(return_value=True)
+
+        await proc._mark_record("r1", ProgressStatus(status))
+
+        fields = proc.graph_provider.update_node.await_args.args[2]
+        if clears:
+            assert {name: fields.get(name, "missing") for name in EMBED_FIELDS} == dict.fromkeys(EMBED_FIELDS)
+        else:
+            assert not set(EMBED_FIELDS) & set(fields)
+
+    @pytest.mark.asyncio
     async def test_record_not_found_raises(self):
         """_mark_record raises when record is missing."""
         from app.config.constants.arangodb import ProgressStatus

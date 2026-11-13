@@ -148,10 +148,11 @@ def test_the_first_docx_imports_docling_off_the_loop_and_does_not_stall_it() -> 
     assert not result["import_thread_is_loop"], "docling was imported on the event loop thread"
     imp, conv = result["import"], result["convert"]
     assert imp["n"] >= 50, f"the probe barely ran during the import: {imp}"
-    # `import torch` initialises native code holding the GIL for about 0.4 s, so the import
-    # shows a few late ticks; none may approach the import's own 10 s or more.
+    # `import torch` initialises native code holding the GIL for about 0.4 s idle and up to about
+    # 0.8 s on a loaded runner, so the import shows a few late ticks. An import on the loop would be
+    # one stall as long as the import itself, 10 s or more; the bound sits far below that.
     assert imp["p99"] < 0.25, f"event loop lag p99 during the first import: {imp}"
-    assert imp["max"] < 0.75, f"event loop stalled during the first import: {imp}"
+    assert imp["max"] < 2.5, f"event loop stalled during the first import: {imp}"
     assert conv["p95"] < 0.25 and conv["max"] < 1.0, f"event loop lag during the first conversion: {conv}"
     joined = " ".join(result["texts"])
     assert "Quarterly plan" in joined and "first paragraph" in joined

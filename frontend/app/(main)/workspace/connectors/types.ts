@@ -668,3 +668,58 @@ export interface LastSyncSummary {
   stopReason?: 'max_pages' | 'time_limit' | 'stalled' | 'rate_limited' | null;
   resumed?: boolean;
 }
+
+/** A container in an access explanation; a null name is one the admin asking cannot read. */
+export interface AccessExplanationContainer {
+  name: string | null;
+  restricted: boolean;
+}
+
+export type AccessExplanationCode =
+  | 'granted'
+  | 'not_linked'
+  | 'no_grant'
+  | 'restricted_container'
+  | 'item_restricted'
+  | 'parent_not_readable'
+  | 'pending_rewrite'
+  | 'syncing'
+  | 'scheme_unreadable'
+  | 'deleted_at_source'
+  | 'unexplained';
+
+/** GET /connectors/{connectorId}/permissions/explain */
+export interface AccessExplanation {
+  admitted: boolean;
+  code: AccessExplanationCode;
+  container: AccessExplanationContainer | null;
+  path: AccessExplanationContainer[];
+  reference: string;
+}
+
+/** What the card shows first; the server picks it (see GET /connectors/:id/permissions/status). */
+export type PermissionState = 'healthy' | 'running' | 'failed' | 'pending' | 'overflow' | 'never';
+
+/** GET /connectors/:id/permissions/status. Counts, codes and times only: the server names no record or user. */
+export interface PermissionStatus {
+  asOf: string;
+  state: PermissionState;
+  /** How soon a change at the source reaches PipesHub (the sync interval); null when the connector is not scheduled. */
+  reachWithinMinutes: number | null;
+  serving: { current: boolean; served: boolean };
+  lastPermissionSync: {
+    finishedAt: string | null;
+    outcome: 'succeeded' | 'failed' | 'stopped' | 'skipped' | 'never' | 'running';
+  };
+  pending: { roots: number; unreadable: boolean; oldestChangesAgo: number | null };
+  coverage: { records: number | null; stale: number } | null;
+  /** Codes of what needs a person; the UI words them. */
+  attention: string[];
+  warnings: Array<{
+    code: string;
+    items?: number | null;
+    /** Only when a connector can name it safely. */
+    container?: string | null;
+    fix?: { vendor?: string; permission?: string } | null;
+  }>;
+}

@@ -881,6 +881,22 @@ describe('log-redaction.utils', () => {
 })
 
 describe('redactSecretsInText', () => {
+  it('masks a JWT anywhere in the text, with or without a signature, and keeps what is around it', () => {
+    const jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFAYi5jIn0.c2lnbmF0dXJlLXZhbHVl';
+    expect(redactSecretsInText(`Invalid token signature: ${jwt}`)).to.equal('Invalid token signature: [REDACTED]');
+    expect(redactSecretsInText(`seen (${jwt}) and eyJhbGciOiJub25lIn0.eyJzdWIiOiIxIn0.`)).to.equal('seen ([REDACTED]) and [REDACTED]');
+    expect(redactSecretsInText('version 1.2.3 of eyJ-lib, file a.b.c')).to.equal('version 1.2.3 of eyJ-lib, file a.b.c');
+    expect(redactSecretsInText(`Authorization: Bearer ${jwt}`)).to.equal('Authorization: Bearer [REDACTED]');
+    expect(redactSecretsInText(`{"error":"bad","token_hint":"${jwt}"}`)).to.equal('{"error":"bad","token_hint":"[REDACTED]"}');
+  });
+
+  it('stays linear on a long run of eyJ- (a JWT match can only start where no token character precedes)', () => {
+    const text = 'eyJ-'.repeat(25_000) + 'x';
+    const started = process.hrtime.bigint();
+    expect(redactSecretsInText(text)).to.equal(text);
+    expect(Number(process.hrtime.bigint() - started) / 1e6).to.be.below(200);
+  });
+
   it('redacts a secret in free text and keeps the rest readable', () => {
     const out = redactSecretsInText('GET https://x.example/cb?code=s3cr3t failed; Authorization: Bearer abc.def at foo (a.ts:1:2)');
 

@@ -33,6 +33,7 @@ Express/koa-style wrap middleware: a middleware that does work before
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Generic, TypeVar
 
@@ -42,8 +43,11 @@ from app.agent_loop_lib.hooks.middleware.routing import (
     prefixed,
     to_matcher,
 )
+from app.utils.error_class import log_failure
 
 __all__ = ["Pipeline", "Next", "Middleware"]
+
+logger = logging.getLogger(__name__)
 
 TCtx = TypeVar("TCtx")
 
@@ -145,14 +149,19 @@ class Pipeline(Generic[TCtx]):
             except self._propagate:
                 raise
             except Exception as exc:
-                self._handle_middleware_error(ctx, exc)
+                self._handle_middleware_error(ctx, exc, matched[idx])
                 if not self._is_terminal(ctx):
                     await next_fn()
 
         await next_fn()
         return ctx
 
-    def _handle_middleware_error(self, ctx: TCtx, exc: Exception) -> None:
+    def _handle_middleware_error(self, ctx: TCtx, exc: Exception, middleware: object = None) -> None:
+        # Nothing else logs it: the pipeline swallows it. No error text (a middleware's error can quote the call's input).
+        log_failure(
+            logger, "middleware.failed", exc, include_error_text=False,
+            middleware=getattr(middleware, "__qualname__", None), context=type(ctx).__name__,
+        )
         metadata = getattr(ctx, "metadata", None)
         if isinstance(metadata, dict):
             metadata.setdefault("middleware_errors", []).append(str(exc))
@@ -160,7 +169,7 @@ class Pipeline(Generic[TCtx]):
         if self._fail_closed:
             deny = getattr(ctx, "deny", None)
             if callable(deny):
-                deny(f"middleware error: {exc}")
+                deny(f"middleware error: {exc}", code="middleware_error")
             # If the context type has no `deny` (e.g. a future event whose
             # decision model differs), the error is still recorded above;
             # callers should supply an `is_terminal` predicate appropriate

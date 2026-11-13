@@ -1,8 +1,9 @@
+import re
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
+from typing import TYPE_CHECKING, Any, Literal, Optional
 from uuid import uuid4
-import hashlib
+
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 if TYPE_CHECKING:
@@ -197,6 +198,13 @@ class CodeMetadata(BaseModel):
     signature: Optional[str] = None
     docstring: Optional[str] = None
     decorators: Optional[list[str]] = None
+    # A property / getter: naming it on `self`/`this` reads it rather than handing it over.
+    is_accessor: Optional[bool] = None
+    # Words resolution reads (C/C++: "declaration" for no body, "static", "returns:<Class>"; C#: "declaration",
+    # "partial", "extension", "this:<Type>", "explicit:<Interface>").
+    modifiers: Optional[list[str]] = None
+    # Type parameters the declaration takes (`Foo<T, U>`: 2); None when it takes none.
+    type_param_count: Optional[int] = None
     # Repo-unique, human-readable resolution identity. The graph block key is
     # hashed from this, so the blob and the graph must agree on it exactly.
     qualified_name: Optional[str] = None  # "method:Outer.Inner.run"
@@ -208,6 +216,9 @@ class CodeMetadata(BaseModel):
     # Receiver-variable -> declared type for the whole file. Cannot be rebuilt
     # without re-parsing, so the file-summary block carries it.
     type_table: Optional[dict[str, str]] = None
+    # C/C++ function-like macro -> [line, names its body calls]; on the file-summary block, and resident on its
+    # node, as a header's macros are read for files an incremental build is not re-resolving.
+    macro_table: Optional[dict[str, list]] = None
 
 class MediaMetadata(BaseModel):
     """Metadata for media blocks (image, video, audio)"""
@@ -232,6 +243,18 @@ class FileMetadata(BaseModel):
     mime_type: Optional[str] = None
     file_extension: Optional[str] = None
     file_path: Optional[str] = None
+
+class FileChangeMetadata(BaseModel):
+    """One file a pull or merge request changed, as data beside the group's markdown (PR_FILE_CHANGE groups).
+
+    The connectors fill it where they read the PR's file list; readers use it instead of parsing the markdown.
+    GitLab gives no line counts, so they stay None (unknown), never 0.
+    """
+    path: str
+    previous_path: Optional[str] = None
+    status: Optional[str] = None  # GitHub's words: added, removed, modified, renamed, copied, changed
+    additions: Optional[int] = None
+    deletions: Optional[int] = None
 
 class LinkMetadata(BaseModel):
     """Metadata specific to link blocks"""
@@ -307,6 +330,31 @@ class GroupSubType(str, Enum):
     SQL_TABLE = "sql_table"
     SQL_VIEW = "sql_view"
     CODE_CLASS = "code_class"  # class / interface / enum group in a source file
+
+
+# The labels connectors put before an author: "Comment by", "Post by",
+# "Review by", "Review comment by", "System Comment by".
+_AUTHOR_LABEL = re.compile(r"(?:system |review )?(?:comment|post|review) by \S", re.IGNORECASE)
+
+
+def group_caption(sub_type: object, name: object, description: object) -> str:
+    """The author line a comment group shows in its rendered header.
+
+    The group's children hold only the comment text, so without this a reader
+    sees what was said but not who said it. Most connectors name a comment
+    "Comment by <author>". Confluence and Notion put only the author in the
+    name, and Zammad puts the article subject there, so a field that starts
+    with an author label wins, the description first: it never holds free text
+    such as a subject ("Edited by Bob - Tammy").
+    """
+    if str(getattr(sub_type, "value", sub_type) or "") != GroupSubType.COMMENT.value:
+        return ""
+    fields = [f.strip() for f in (description, name) if isinstance(f, str) and f.strip()]
+    labelled = next((f for f in fields if _AUTHOR_LABEL.match(f)), None)
+    if labelled:
+        return labelled
+    return name.strip() if isinstance(name, str) and name.strip() else (fields[0] if fields else "")
+
 
 class SemanticMetadata(BaseModel):
     entities: Optional[list[dict[str, Any]]] = None
@@ -396,9 +444,9 @@ class Block(BaseModel):
     link_metadata: Optional[LinkMetadata] = None
     image_metadata: Optional[ImageMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
-    children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block")
+    children_records: Optional[list[ChildRecord]] = Field(default=None, description="List of child records associated with this block")
     content_hash: Optional[str] = Field(default=None, description="Hash of the content")
-    
+
 
 class Blocks(BaseModel):
     blocks: list[Block] = Field(default_factory=list)
@@ -516,9 +564,10 @@ class BlockGroup(BaseModel):
     code_metadata: Optional[CodeMetadata] = None
     media_metadata: Optional[MediaMetadata] = None
     file_metadata: Optional[FileMetadata] = None
+    file_change_metadata: Optional[FileChangeMetadata] = None
     link_metadata: Optional[LinkMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
-    children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block group")
+    children_records: Optional[list[ChildRecord]] = Field(default=None, description="List of child records associated with this block group")
     content_hash: Optional[str] = Field(default=None, description="Hash of the content for reconciliation")
     children: Optional[BlockGroupChildren] = None
     data: Optional[Any] = None

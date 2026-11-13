@@ -20,6 +20,8 @@ import {
   isSearchNoAccessibleDocumentsNotFound,
 } from '@/lib/api';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
+import { i18n } from '@/lib/i18n';
+import { readAccessNotices } from '@/app/components/feedback/access-notice';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
@@ -106,7 +108,17 @@ export function ChatInputWrapper() {
       if (isRequestCancelledError(error) || isStale()) return;
       if (isSearchNoAccessibleDocumentsNotFound(error)) {
         // Keep the server's reason ("No documents are available…") for the empty state.
-        store.setSearchResults([], null, query, { message: (error as Error).message });
+        store.setSearchResults([], null, query, {
+          message: (error as Error).message,
+          // Codes say whether "nothing" is because a source is still syncing.
+          searchResponse: { searchResults: [], accessNotices: (error as { details?: { accessNotices?: unknown } }).details?.accessNotices },
+        });
+        return;
+      }
+      // "We couldn't check which documents you have access to": said in the reader's language, not the server's.
+      const noticed = readAccessNotices((error as { details?: { accessNotices?: unknown } }).details?.accessNotices);
+      if (noticed.some((n) => n.code === 'check_unavailable')) {
+        store.setSearchError(i18n.t('accessNotice.check_unavailable'));
         return;
       }
       store.setSearchError((error as Error)?.message || 'Search failed');

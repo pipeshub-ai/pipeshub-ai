@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -36,11 +37,28 @@ from app.exceptions.indexing_exceptions import (
     RecordDeletedError,
 )
 from app.models.entities import Record
+from app.modules.indexing.embed_resume import (
+    DELIVERY_ID_KEY,
+    EMBED_DELIVERY_ID,
+    EMBED_DONE,
+    EMBED_SECONDS,
+    EMBED_UNCOUNTED,
+    EMBED_VRID,
+    EmbedAttempt,
+    begin_attempt,
+    chain_end_fields,
+    cleared_fields,
+    end_attempt,
+    marker_of,
+    may_resume,
+)
 from app.modules.indexing.parse_now_marker import (
+    current_run,
     run_settings,
     shape_status_write,
     store_only_active,
 )
+from app.modules.indexing.record_progress import carried_counters, current_progress
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
@@ -76,7 +94,9 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.parsing.client import ParsingClient
-from app.services.parsing.interface import ParserProvider
+from app.services.parsing.interface import ParserProvider, UnsupportedFormatError
+from app.services.permissions.mode import scope_fields_enabled
+from app.services.permissions.structure_generation import leaving_vrid
 from app.services.resource_governor import classify
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import (
@@ -89,6 +109,7 @@ from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import RETRY_SCHEDULED
 
 
 def _record_key(doc: dict[str, Any] | None) -> str | None:
@@ -204,6 +225,23 @@ class EventProcessor:
             self.logger.error(
                 "Failed to rewrite/delete vectors for %s: %s", virtual_record_id, e
             )
+
+    async def _discard_embed_marker(self, doc: dict[str, Any], marker: dict[str, Any], org_id: str) -> None:
+        """End an interrupted run's marker when the record turns out to need no indexing.
+
+        The record now sits on another vrid (it was attached to a finished twin), so the points the
+        interrupted run wrote under the marker's vrid belong to nobody; the cleanup removes them
+        once it has confirmed that no record uses that vrid.
+        """
+        self._require_persisted(
+            await self.update_record_fields(doc, cleared_fields()),
+            "Failed to clear the embedding marker of record",
+            doc,
+        )
+        orphaned = marker.get(EMBED_VRID)
+        if orphaned and orphaned != doc.get("virtualRecordId"):
+            self._spawn_abandoned_vrid_cleanup(org_id, orphaned)
+            await self._rewrite_or_delete_vrid_vectors(orphaned)
 
     def _spawn_abandoned_vrid_cleanup(self, org_id: str, virtual_record_id: str) -> asyncio.Task:
         task = asyncio.create_task(
@@ -531,6 +569,7 @@ class EventProcessor:
                         # parsingStatus is already COMPLETED from the write above.
                         "indexingStatus": ProgressStatus.EMPTY.value,
                         **indexed_copy_fields(ProgressStatus.EMPTY),
+                        **cleared_fields(),
                         "extractionStatus": ProgressStatus.NOT_STARTED.value,
                         "isDirty": False,
                     },
@@ -612,25 +651,82 @@ class EventProcessor:
             data=PipelineEventData(record_id=record_id),
         )
 
+    def _cut_writer(self, record_id: str, delivery_id: str) -> Callable[[float, int], Awaitable[bool]]:
+        """The one conditional write that hands a cut record back to its queue.
+
+        It applies only while the node still names this delivery and is still IN_PROGRESS, so a
+        record that finished, was taken over or was restarted since is left alone.
+        """
+
+        async def write(embed_seconds: float, uncounted: int) -> bool:
+            # An unreadable record must not read as an empty one: that would reset a finished extraction.
+            current = await self.graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            ) or {}
+            updates: dict[str, Any] = {
+                "indexingStatus": ProgressStatus.QUEUED.value,
+                "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "processingStartedAt": None,
+                "reason": RETRY_SCHEDULED,
+                EMBED_SECONDS: embed_seconds,
+                EMBED_UNCOUNTED: uncounted,
+            }
+            if current.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
+                updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
+            if current.get("extractionStatus") != ProgressStatus.COMPLETED.value:
+                updates["extractionStatus"] = ProgressStatus.NOT_STARTED.value
+            return bool(
+                await self.graph_provider.update_node_fields_if_match(
+                    record_id,
+                    CollectionNames.RECORDS.value,
+                    updates,
+                    {EMBED_DELIVERY_ID: delivery_id, "indexingStatus": ProgressStatus.IN_PROGRESS.value},
+                )
+            )
+
+        return write
+
+    def _display_writer(self, record_id: str, delivery_id: str) -> Callable[[int], Awaitable[None]]:
+        async def write(done: int) -> None:
+            # A late write from an attempt that lost the record must not touch one that finished or moved on.
+            await self.graph_provider.update_node_fields_if_match(
+                record_id,
+                CollectionNames.RECORDS.value,
+                {EMBED_DONE: done},
+                {EMBED_DELIVERY_ID: delivery_id, "indexingStatus": ProgressStatus.IN_PROGRESS.value},
+            )
+
+        return write
+
     async def update_record_fields(self, doc: dict[str, Any], fields: dict[str, Any]) -> bool:
         """Persist a partial record update or fail the current attempt."""
         record_id = _record_key(doc) or "unknown"
         # In a parse-now run the status fields become the marker (see parse_now_marker).
         fields = shape_status_write(fields)
+        left_vrid = doc.get("virtualRecordId") if "virtualRecordId" in fields else None
+        leaving = bool(left_vrid) and left_vrid != fields["virtualRecordId"] and scope_fields_enabled()
         doc.update(fields)
         if not fields:
             return True
-        success = await self.graph_provider.update_node(
-            record_id,
-            CollectionNames.RECORDS.value,
-            fields,
-        )
+        # Records that keep sharing the id being left are fenced around the write (see leaving_vrid)
+        success = False
+        try:
+            async with leaving_vrid(self.graph_provider, record_id, left_vrid, self.logger) if leaving else contextlib.nullcontext():
+                success = await self.graph_provider.update_node(
+                    record_id,
+                    CollectionNames.RECORDS.value,
+                    fields,
+                )
+        except Exception as e:
+            if not success:
+                raise
+            # The write landed, so a retry sees the new id and cannot redo this; the failed connector stays not current, and the caller still owes the old id's clean-up.
+            self.logger.error("Could not register the records still sharing VRID %s after updating %s: %s", left_vrid, record_id, e)
         if not success:
             self.logger.warning(
                 f"❌ Failed to update record {record_id} fields {tuple(fields)}"
             )
             return False
-        
         return True
 
     def _require_persisted(self, success: bool, what: str, doc: dict[str, Any]) -> None:
@@ -715,6 +811,7 @@ class EventProcessor:
         fields = {
             "indexingStatus": status.value,
             **indexed_copy_fields(status),
+            **chain_end_fields(status.value),
             "processingStartedAt": (
                 get_epoch_timestamp_in_ms()
                 if status == ProgressStatus.IN_PROGRESS
@@ -1271,6 +1368,7 @@ class EventProcessor:
         attached_vrid: str | None,
     ) -> None:
         """Best effort: the event is already failing, and its retry redoes the attach."""
+        restored = False
         try:
             current = await self.graph_provider.get_document(
                 record_key, CollectionNames.RECORDS.value, raise_on_error=True
@@ -1282,19 +1380,32 @@ class EventProcessor:
                 # attach is complete; taking its identity away now would leave
                 # a finished record with no VRID and nothing to retry it.
                 return
-            if not await self.graph_provider.update_node(
-                record_key, CollectionNames.RECORDS.value, prior_identity
-            ):
+            left_vrid = (current or {}).get("virtualRecordId")
+            leaving = bool(left_vrid) and "virtualRecordId" in prior_identity and left_vrid != prior_identity["virtualRecordId"] and scope_fields_enabled()
+            # The record leaves the virtual record it attached to: fenced like any other move off a shared one (see leaving_vrid)
+            async with leaving_vrid(self.graph_provider, record_key, left_vrid, self.logger) if leaving else contextlib.nullcontext():
+                restored = await self.graph_provider.update_node(
+                    record_key, CollectionNames.RECORDS.value, prior_identity
+                )
+            if not restored:
                 raise IndexingError("record no longer exists")
         except Exception as e:
+            if not restored:
+                self.logger.error(
+                    "Could not restore the previous content identity of %s after a failed "
+                    "duplicate attach; it may still hold VRID %s until its retry: %s",
+                    record_key,
+                    attached_vrid,
+                    e,
+                )
+                return
+            # The identity is back and only the fence failed, which leaves the connector not current: the re-sync is still owed.
             self.logger.error(
-                "Could not restore the previous content identity of %s after a failed "
-                "duplicate attach; it may still hold VRID %s until its retry: %s",
+                "Restored the previous content identity of %s, but could not register the "
+                "records still sharing its VRID: %s",
                 record_key,
-                attached_vrid,
                 e,
             )
-            return
         if not attached_vrid:
             return
         try:
@@ -1395,6 +1506,9 @@ class EventProcessor:
             virtual_record_id = record.get("virtualRecordId") or virtual_record_id
 
             doc: dict[str, Any] = dict(record)
+            # Read here, from the node as it was before this event wrote anything: `doc` is rewritten
+            # (status, revision) before the vrid is chosen, so a marker read from it would match any event.
+            embed_marker = marker_of(record)
 
             # A successful attempt never clears `reason` (the status writer only
             # sets it when non-empty), so drop the previous failure text here or
@@ -1502,6 +1616,8 @@ class EventProcessor:
                 )
                 if dedup_decision.skip_indexing:
                     self.logger.info("Duplicate record detected, skipping processing")
+                    if embed_marker:
+                        await self._discard_embed_marker(doc, embed_marker, org_id)
                     await notify_record_indexed(
                         connector_name=doc.get("connectorName"),
                         connector_id=doc.get("connectorId"),
@@ -1604,6 +1720,32 @@ class EventProcessor:
 
             prev_virtual_record_id = None
             abandoned_virtual_record_id = None
+            from app.config.constants.arangodb import (
+                RECONCILIATION_ENABLED_EXTENSIONS,
+                RECONCILIATION_ENABLED_MIME_TYPES,
+            )
+            delivery_id = event_data.get(DELIVERY_ID_KEY)
+            # Kinds whose stored blocks are not the whole content (code is read from the bytes, SQL
+            # tables keep a few rows), and runs that do not index, never resume or leave a marker.
+            resumable_kind = (
+                not store_only
+                and not is_code
+                and not reads_as_code_file
+                and mime_type not in (MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value)
+                and current_run() is None
+                and bool(delivery_id)
+                and not rebuild_shared_vrid
+                and not dedup_decision.virtual_record_id
+            )
+            checkpoint = None
+            if resumable_kind and may_resume(
+                embed_marker,
+                delivery_id=delivery_id,
+                rev=content_rev,
+                node_vrid=doc.get("virtualRecordId"),
+                force_reindex=bool(event_data.get("forceReindex")),
+            ):
+                checkpoint = await self.processor.load_checkpoint(embed_marker[EMBED_VRID], org_id, content_rev)
             if store_only:
                 # Nothing is reconciled and nothing is cleaned up: a record with automatic indexing off holds no
                 # vectors, so its content is stored under its own id, or a new one when others share it.
@@ -1611,6 +1753,14 @@ class EventProcessor:
                     await self.graph_provider.get_records_by_virtual_record_id(virtual_record_id)
                 ) > 1:
                     virtual_record_id = str(uuid4())
+            elif checkpoint is not None:
+                # The same event again: keep the vrid its points are under instead of minting one.
+                virtual_record_id = embed_marker[EMBED_VRID]
+                if event_type in (EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value) and (
+                    mime_type in RECONCILIATION_ENABLED_MIME_TYPES
+                    or extension in RECONCILIATION_ENABLED_EXTENSIONS
+                ):
+                    prev_virtual_record_id = virtual_record_id
             elif rebuild_shared_vrid:
                 # Identical content under a VRID that lost its stored content:
                 # isolating would fix only this record and leave the others
@@ -1622,10 +1772,6 @@ class EventProcessor:
                 prev_virtual_record_id = virtual_record_id
             elif event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
                 # For reconciliation-enabled types, decide whether to keep or generate new vrid
-                from app.config.constants.arangodb import (
-                    RECONCILIATION_ENABLED_EXTENSIONS,
-                    RECONCILIATION_ENABLED_MIME_TYPES,
-                )
                 is_reconciliation_type = (
                     mime_type in RECONCILIATION_ENABLED_MIME_TYPES
                     or extension in RECONCILIATION_ENABLED_EXTENSIONS
@@ -1683,6 +1829,47 @@ class EventProcessor:
                 # still uses the vrid, and backs off on errors, before deleting.
                 self._spawn_abandoned_vrid_cleanup(org_id, abandoned_virtual_record_id)
                 await self._rewrite_or_delete_vrid_vectors(abandoned_virtual_record_id)
+
+            if resumable_kind:
+                begin_attempt(EmbedAttempt(
+                    delivery_id=str(delivery_id),
+                    rev=content_rev,
+                    vrid=virtual_record_id,
+                    prior=embed_marker,
+                    resume=checkpoint is not None,
+                ))
+                progress = current_progress()
+                if progress is not None:
+                    prior_seconds, prior_uncounted = carried_counters(embed_marker, str(delivery_id))
+                    progress.bind(
+                        record_id=record_id,
+                        delivery_id=str(delivery_id),
+                        prior_seconds=prior_seconds,
+                        prior_uncounted=prior_uncounted or 0,
+                        commit=self._cut_writer(record_id, str(delivery_id)),
+                        display=self._display_writer(record_id, str(delivery_id)),
+                    )
+            else:
+                end_attempt()
+                if embed_marker:
+                    # A marker only an attempt that embeds under it can use; this kind of run never will.
+                    self._require_persisted(
+                        await self.update_record_fields(doc, cleared_fields()),
+                        "Failed to clear the embedding marker of record",
+                        doc,
+                    )
+            if checkpoint is not None:
+                # No parse permit is taken: the START_DOWNLOAD reservation already covers this record's
+                # size until INDEXING_COMPLETE, and the loaded blocks are the parse output it was sized for.
+                self.logger.info(
+                    "Record %s: resuming from the stored blocks of an interrupted attempt", record_id
+                )
+                file_content = None
+                async for event in self.processor.resume_from_checkpoint(
+                    record_id, checkpoint, virtual_record_id, event_type, prev_virtual_record_id,
+                ):
+                    yield event
+                return
 
             # Ask the consumer for a nested parsing slot only after the record
             # is already IN_PROGRESS under the outer indexing gate. Tier/size
@@ -2231,7 +2418,9 @@ class EventProcessor:
                     yield event
 
             else:
-                raise Exception(f"Unsupported file extension: {extension}")
+                raise UnsupportedFormatError(
+                    extension, f"Unsupported file extension: {extension} (mime type {mime_type})"
+                )
 
             self.logger.info(
                 f"✅ Successfully processed document for record {record_id}"

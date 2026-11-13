@@ -125,6 +125,15 @@ jobs:
               exit 1
             fi
           done
+          # The base is published by hand, so it can lag the Node the backend is built with and needs.
+          # Read from the image's build history, so the arm64 image needs no emulation here.
+          for platform in linux/amd64 linux/arm64; do
+            node_major=$(docker buildx imagetools inspect "${BASE_IMAGE}:runtime" --format "{{json (index .Image \"${platform}\")}}" | grep -o 'setup_[0-9]*' | tail -n 1 | tr -dc '0-9' || true)
+            if [ "${node_major:-0}" -lt 22 ]; then
+              echo "::error::${BASE_IMAGE}:runtime for ${platform} has Node ${node_major:-of an unknown version}, below the backend's minimum of 22. Build and publish it from Dockerfile.base first (see its header)."
+              exit 1
+            fi
+          done
 
       - name: Build and push candidate
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0

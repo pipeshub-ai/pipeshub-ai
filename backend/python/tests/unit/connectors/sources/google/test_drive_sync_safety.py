@@ -131,7 +131,11 @@ _CORRUPT_KEY = json.dumps({
 class TestUnreadableServiceAccountKey:
     """Turning on a connector whose saved key is not a usable key file says so, instead of 'try again'."""
 
-    @pytest.mark.parametrize("saved_key", ["this is not a key file", _CORRUPT_KEY], ids=["not-json", "corrupt-key"])
+    @pytest.mark.parametrize(
+        "saved_key",
+        ["this is not a key file", _CORRUPT_KEY, "[]", '"a key file"', "null"],
+        ids=["not-json", "corrupt-key", "json-list", "json-string", "json-null"],
+    )
     async def test_init_names_the_key_as_the_problem(self, saved_key: str) -> None:
         from unittest.mock import AsyncMock, MagicMock
 
@@ -382,6 +386,21 @@ class TestRunReport:
 
 
 class TestUserStatus:
+    @pytest.mark.asyncio
+    async def test_a_suspension_a_cut_listing_shows_is_kept_by_a_later_cut_listing_and_undone_by_a_complete_one(self) -> None:
+        sync_point = _SyncPoint()
+        tracker = UserStatusTracker(sync_point)
+        await tracker.compare([_user("a@x.com"), _user("b@x.com")])
+        await tracker.save()
+
+        # a cut listing shows b unable to sign in: b is saved as inactive at once
+        assert await tracker.inactive_on_partial_listing([_user("b@x.com", active=False)]) == {"b@x.com"}
+        # a later cut listing that does not show b at all still treats b as unable to sign in
+        assert await UserStatusTracker(sync_point).inactive_on_partial_listing([_user("a@x.com")]) == {"b@x.com"}
+        # a complete listing that shows b active again restores b
+        change = await UserStatusTracker(sync_point).compare([_user("a@x.com"), _user("b@x.com")])
+        assert change.restore == {"b@x.com"} and not change.inactive
+
     async def test_suspended_and_deleted_accounts_are_withdrawn_once(self) -> None:
         sync_point = _SyncPoint()
         tracker = UserStatusTracker(sync_point)
@@ -404,6 +423,20 @@ class TestUserStatus:
         await tracker.save()
         third = await tracker.compare([_user("a@x")])
         assert third.restore == {"a@x"} and not third.withdraw
+
+    async def test_the_domains_of_the_last_complete_listing_are_kept_and_the_fingerprint_follows_the_listing(self) -> None:
+        sync_point = _SyncPoint()
+        tracker = UserStatusTracker(sync_point)
+        await tracker.compare([_user("a@x.com"), _user("b@alias.org")])
+        await tracker.save()
+        assert await tracker.known_domains() == {"x.com", "alias.org"}
+
+        same = tracker.fingerprint([_user("a@x.com"), _user("b@alias.org")])
+        assert same == tracker.fingerprint([_user("b@alias.org"), _user("a@x.com")])
+        assert same != tracker.fingerprint([_user("a@x.com")])
+        assert not await tracker.fingerprint_is_remembered(same)
+        await tracker.remember_fingerprint(same)
+        assert await tracker.fingerprint_is_remembered(same)
 
     async def test_nothing_is_saved_until_asked(self) -> None:
         sync_point = _SyncPoint()

@@ -312,6 +312,12 @@ class TestMarker:
     def test_unreadable_marker_has_no_fingerprint(self, value: object) -> None:
         assert fingerprint_of(value) is None
 
+    def test_marker_carries_the_page_order_only_when_a_store_sets_one(self) -> None:
+        assert entity_index_marker(FP, "s1", order="") == entity_index_marker(FP, "s1")          # a store paging as before keeps its marker
+        assert entity_index_marker(FP, "s1", order="c") == f"v{ENTITY_INDEX_VERSION}@s1.c:{FP}"
+        assert fingerprint_of(entity_index_marker(FP, "s1", order="c")) == FP
+        assert fingerprint_of(entity_index_marker(FP, order="c")) == FP
+
     def test_marker_carries_the_collection_stamp(self) -> None:
         assert entity_index_marker(FP, "s3fa9c21b7d0") == f"v{ENTITY_INDEX_VERSION}@s3fa9c21b7d0:{FP}"
         assert entity_index_marker(FP, "s1") != entity_index_marker(FP, "s2")
@@ -612,6 +618,28 @@ class TestMarkerChangeMidPass:
         assert app[EntityIndexState.TARGET] == MARKER
         assert app[EntityIndexState.PHASE] == RECORDS and app[EntityIndexState.AFTER_KEY] is None
         assert app[EntityIndexState.FAILURES] == 0
+
+    async def test_a_cursor_saved_before_the_store_changed_its_page_order_restarts_the_pass(self) -> None:
+        """A store whose records now page in another order: a cursor saved under the old one could skip rows."""
+        graph, store = FakeGraph(), FakeStore()
+        graph.ENTITY_INDEX_PAGE_ORDER = "c"
+        graph.docs[APPS]["app-1"] = _app(**{
+            EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: RECORDS, EntityIndexState.AFTER_KEY: "r2",
+        })
+        graph.sources[(GROUPS, "app-1")] = [{"_key": "g1", "name": "Eng", "orgId": "org-1"}]
+        graph.sources[(RECORDS, "app-1")] = [_rec("r1"), _rec("r2"), _rec("r3")]
+        await _rebuilder(graph, store, page_size=10).tick()
+        assert graph.page_calls[0][:3] == (GROUPS, "app-1", None)                                  # from the start, not after "r2"
+        assert graph.docs[APPS]["app-1"][EntityIndexState.TARGET] == entity_index_marker(FP, order="c")
+
+    async def test_a_store_that_kept_its_page_order_resumes_its_cursor(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[APPS]["app-1"] = _app(**{
+            EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: RECORDS, EntityIndexState.AFTER_KEY: "r2",
+        })
+        graph.sources[(RECORDS, "app-1")] = [_rec("r1"), _rec("r2"), _rec("r3")]
+        await _rebuilder(graph, store, page_size=10).tick()
+        assert graph.page_calls[0][:3] == (RECORDS, "app-1", "r2")
 
     async def test_exhausted_document_gets_full_attempts_under_a_new_marker(self) -> None:
         graph, store = FakeGraph(), FakeStore()

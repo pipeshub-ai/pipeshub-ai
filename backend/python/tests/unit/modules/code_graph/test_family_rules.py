@@ -24,8 +24,36 @@ def test_the_rows_reproduce_the_former_family_branches() -> None:
     assert go.bare_call_reaches_method == "never" and not go.bare_names_from_imported_modules
     js = rules_for("js")
     assert js.lexical_module_scope and js.bare_call_reaches_method == "any"
-    for family in ("py", "c", "rust", "php", "ruby", None, "no-such-family"):
+    # The rust row: test_rust_resolution; php's: test_php_resolution.
+    for family in ("ruby", None, "no-such-family"):
         assert rules_for(family) == FamilyRules(), family
+    # C/C++: includes seen transitively, a header's source as INFERRED, `this->` first, out-of-line methods
+    # repo-wide with their owner class, types through includes (test_c_includes, test_cpp_receivers).
+    c = rules_for("c")
+    assert (c.bare_call_reaches_method, c.out_of_line_methods) == ("same_class", "repo")
+    assert c.out_of_line_under_namespaces and not rules_for("rust").out_of_line_under_namespaces
+    assert all((c.implicit_scope, c.inferred_scope, c.enclosing_type, c.type_scope))
+    # Only C/C++ keeps its imports (includes) on the nodes; Rust's `use` and the rest stay in the blob.
+    assert c.resident_imports
+    assert not any(rules_for(f).resident_imports for f in ("py", "js", "go", "jvm", "csharp", "php", "rust"))
+    # Only C/C++ expands wrapper macros (test_c_wrapper_macros).
+    assert c.macro_scope is not None
+    # Only C/C++ re-selects transitive includers when a file's include list changes (test_incremental_equivalence).
+    assert c.includers is not None
+    assert all(rules_for(f).includers is None for f in ("py", "js", "go", "jvm", "csharp", "php", "rust"))
+    assert all(rules_for(f).macro_scope is None for f in ("py", "js", "go", "jvm", "csharp", "php", "rust"))
+    # Only C/C++ has internal linkage, a `static` function's translation unit (test_c_static_linkage).
+    assert c.same_unit is not None
+    assert all(rules_for(f).same_unit is None for f in ("py", "js", "go", "jvm", "csharp", "php", "rust"))
+    # C++ field receivers, namespace-qualified calls and evaluated initializers (test_cpp_calls).
+    assert c.implicit_member_receivers and c.evaluated_receivers and c.qualified_callees is not None
+    others = ("py", "js", "go", "jvm", "csharp", "php", "rust")
+    assert not any(rules_for(f).implicit_member_receivers or rules_for(f).evaluated_receivers
+                   or rules_for(f).qualified_callees for f in others)
+    assert replace(c, bare_call_reaches_method="any", out_of_line_methods="same_folder", implicit_scope=None,
+                   inferred_scope=None, enclosing_type=None, type_scope=None, resident_imports=False,
+                   macro_scope=None, includers=None, out_of_line_under_namespaces=False, same_unit=None,
+                   implicit_member_receivers=False, qualified_callees=None, evaluated_receivers=False) == FamilyRules()
 
 
 def test_the_defaults_are_the_builders_former_shared_behaviour() -> None:
@@ -34,6 +62,8 @@ def test_the_defaults_are_the_builders_former_shared_behaviour() -> None:
     assert rules.bare_names_from_imported_modules and not rules.lexical_module_scope
     assert rules.out_of_line_methods == "same_folder"
     assert rules.enclosing_type is None and rules.implicit_scope is None
+    assert rules.qualified_path_separator is None and not rules.impl_blocks_name_their_type
+    assert not rules.uncallable_kinds and not rules.typed_receiver_chains and rules.file_wide_receiver_types
 
 
 @pytest.fixture
@@ -91,7 +121,7 @@ async def test_the_enclosing_type_hook_gives_a_block_its_type(graph, index_file,
     await _build(graph)
     assert _targets(graph, CALLS, "pkg/a.py") == set()
 
-    def class_a(index, block_id) -> str:
+    def class_a(index, block_id, bindings) -> str:
         return next(c for c in index.candidates("A") if c in index.type_blocks)
     override("py", enclosing_type=class_a)
     await _build(graph)
@@ -121,6 +151,7 @@ HEADER = b"class Foo {\n public:\n  int baz() { this->bar(); return 1; }\n};\n"
 async def test_out_of_line_methods_are_looked_for_where_the_rule_says(graph, index_file, override) -> None:
     await index_file("h", "include/foo.hpp", HEADER, "cpp")
     await index_file("s", "src/foo.cpp", b"void Foo::bar() {}\n", "cpp")
+    override("c", out_of_line_methods="same_folder")
     await _build(graph)
     assert "src/foo.cpp::method:Foo.bar" not in _targets(graph, CALLS, "include/foo.hpp")   # same folder only
 

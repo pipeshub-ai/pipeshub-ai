@@ -736,6 +736,8 @@
     "indexingStatus": {
       "completed": "완료",
       "inProgress": "진행 중",
+      "embeddingProgress_one": "임베딩 중 {{done, number}} / {{total, number}}개 청크",
+      "embeddingProgress_other": "임베딩 중 {{done, number}} / {{total, number}}개 청크",
       "failed": "실패",
       "fileTypeNotSupported": "지원되지 않는 파일 형식",
       "notStarted": "시작 전",
@@ -934,6 +936,11 @@
     "fork": "채팅 분기",
     "forkFromHere": "여기서 분기",
     "regenerate": "다시 생성",
+    "answerHidden": {
+      "lost": "이 답변은 더 이상 접근할 수 없는 콘텐츠를 사용했습니다.",
+      "unconfirmed": "접근 권한을 확인하지 못했습니다. 다시 시도하세요.",
+      "askAgain": "다시 질문하기"
+    },
     "readAloud": "소리 내어 읽기",
     "stopReading": "읽기 중지",
     "ttsNotSupported": "이 브라우저에서는 텍스트 음성 변환이 지원되지 않습니다",
@@ -1473,6 +1480,11 @@
     "stopListening": "듣기 중지",
     "voiceInput": "음성 입력",
     "regenerateResponse": "응답 다시 생성",
+    "quoteSelection": "인용",
+    "quoteSelectionHint": "이 내용에 대해 묻기",
+    "quotedExcerpt": "인용됨",
+    "quotedExcerptTruncated": "인용됨 (잘림)",
+    "dismissQuote": "인용 제거",
     "editQuery": "질문 편집",
     "queryOptions": "질문 옵션",
     "models": "모델",
@@ -3433,6 +3445,104 @@
         "cancel": "취소",
         "continueTeam": "팀 커넥터로 계속",
         "goToPersonal": "개인 커넥터 설정"
+      },
+      "accessCheck": {
+        "open": "사용자의 접근 권한 확인",
+        "title": "사용자의 접근 권한 확인",
+        "description": "이 커넥터의 레코드를 특정 사용자가 읽을 수 있는지, 읽을 수 없다면 이유가 무엇인지 확인합니다.",
+        "personLabel": "사용자",
+        "personPlaceholder": "사용자 선택",
+        "peopleLoading": "사용자를 불러오는 중...",
+        "peopleFailed": "사용자 목록을 불러오지 못했습니다.",
+        "recordLabel": "레코드 ID",
+        "recordHint": "레코드를 열어 ID를 복사하세요.",
+        "check": "확인",
+        "checking": "확인하는 중...",
+        "close": "닫기",
+        "resultHeading": "결과",
+        "restrictedArea": "제한된 영역",
+        "theyFallback": "이 사용자",
+        "pathLabel": "위치: {{path}}",
+        "reference": "참조: {{ref}} (이유가 잘못된 것 같으면 지원팀에 전달하세요)",
+        "verdict": {
+          "granted": "{{name}}님은 이 레코드를 볼 수 있습니다.",
+          "denied": "{{name}}님은 이 레코드를 볼 수 없습니다."
+        },
+        "reason": {
+          "granted": "검색에 나타나지 않는다면 아직 색인되지 않았거나 커넥터가 아직 동기화 중일 수 있습니다.",
+          "not_linked": "{{name}}님의 계정이 이 커넥터에 연결되어 있지 않습니다.",
+          "no_grant": "{{container}}의 어떤 항목도 {{name}}님에게 접근 권한을 주지 않습니다.",
+          "restricted_container": "{{container}}은(는) 다른 사용자로 제한되어 있습니다.",
+          "item_restricted": "이 레코드에는 자체 제한이 있으며 {{name}}님은 포함되어 있지 않습니다.",
+          "parent_not_readable": "{{name}}님은 이 레코드에 필요한 상위 항목을 열 수 없습니다.",
+          "pending_rewrite": "이 레코드가 있는 폴더를 업데이트하는 중입니다.",
+          "syncing": "커넥터가 이 부분의 동기화를 아직 끝내지 않았습니다.",
+          "scheme_unreadable": "커넥터가 이 영역의 접근 규칙을 읽을 수 없어 모든 사용자에게 숨겨져 있습니다.",
+          "deleted_at_source": "이 레코드는 원본에서 삭제되었습니다.",
+          "unexplained": "이유를 표시할 수 없습니다."
+        },
+        "next": {
+          "not_linked": "원본에서 계정을 수정한 다음 동기화하세요.",
+          "no_grant": "원본에서 {{name}}님을 추가하세요.",
+          "restricted_container": "소유자에게 {{name}}님을 추가해 달라고 요청하세요.",
+          "item_restricted": "소유자에게 {{name}}님을 추가해 달라고 요청하세요.",
+          "parent_not_readable": "상위 항목을 {{name}}님과 공유하세요.",
+          "pending_rewrite": "몇 분 기다린 후 다시 확인하세요.",
+          "syncing": "동기화가 끝날 때까지 기다리세요.",
+          "scheme_unreadable": "원본에서 동기화 계정의 권한을 수정하세요.",
+          "deleted_at_source": "할 일이 없습니다.",
+          "unexplained": "지원팀에 문의하고 참조를 알려 주세요."
+        },
+        "errors": {
+          "failed": "확인하지 못했습니다. 다시 시도하세요.",
+          "notFound": "이 커넥터에서 해당 사용자 또는 레코드를 찾을 수 없습니다.",
+          "rateLimited": "확인 요청이 너무 많습니다. 1분 후에 다시 시도하세요."
+        },
+        "peopleRetry": "다시 시도",
+        "askedAbout": "레코드 {{record}} 관련"
+      },
+      "access": {
+        "title": "접근",
+        "loading": "접근 세부 정보를 불러오는 중…",
+        "loadError": "접근 세부 정보를 불러오지 못했습니다.",
+        "retry": "다시 시도",
+        "reach": "{{connector}}의 변경 사항은 {{interval}} 이내에 PipesHub에 반영됩니다.",
+        "reachUnknown": "{{connector}}의 변경 사항은 다음 동기화 때 PipesHub에 반영됩니다.",
+        "syncNow": "지금 권한 동기화",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "권한",
+          "succeeded": "마지막 새로 고침: {{when}}.",
+          "failed": "마지막 권한 새로 고침에 실패했으므로 원본의 최근 변경 사항이 아직 반영되지 않았을 수 있습니다. 다시 시도하려면 '지금 권한 동기화'를 선택하세요.",
+          "never": "권한을 아직 새로 고치지 않았습니다. 첫 동기화가 끝날 때까지 이 커넥터의 콘텐츠는 숨겨집니다.",
+          "running": "권한을 새로 고치는 중입니다.",
+          "incomplete": "마지막 권한 새로 고침이 끝까지 실행되지 않았습니다."
+        },
+        "pending": {
+          "label": "적용 대기 중",
+          "none": "대기 중인 항목이 없습니다.",
+          "some_other": "폴더 {{count}}개를 업데이트하는 중입니다. 업데이트가 끝날 때까지(보통 몇 분) 모든 사용자에게 숨겨집니다.",
+          "overflow": "변경 사항이 커넥터 전체에 영향을 주어 권한 인덱스를 완전히 다시 만들어야 합니다. 그때까지 검색은 각 결과를 확인하므로 이 때문에 숨겨지는 것은 없습니다.",
+          "unknown": "알 수 없음: 업데이트를 기다리는 폴더 목록을 읽을 수 없습니다. '확인 필요'를 참고하세요."
+        },
+        "attention": {
+          "label": "확인 필요 ({{count}})",
+          "none": "확인할 항목이 없습니다.",
+          "warning": "{{container}}의 항목 {{items}}개가 숨겨져 있습니다. 동기화 계정이 이 컨테이너의 권한을 읽을 수 없습니다.",
+          "fix": "해결: {{vendor}}에서 동기화 계정에 {{permission}} 권한을 부여한 다음 '지금 권한 동기화'를 선택하세요.",
+          "showAll": "{{count}}개 더 보기",
+          "warningNoContainer": "동기화 계정이 권한을 읽을 수 없어 일부 항목이 숨겨져 있습니다.",
+          "rebuild": "이 커넥터의 권한 인덱스를 완전히 다시 만들어야 합니다. 그때까지 검색은 각 결과를 확인하므로 이 때문에 숨겨지는 것은 없습니다.",
+          "unfinished": "권한 변경이 깔끔하게 끝나지 않았습니다. PipesHub를 운영하는 담당자에게 이 커넥터의 권한 인덱스를 확인해 달라고 요청하세요.",
+          "stale": "일부 항목은 빠른 검색으로 확인할 수 없어 기본 검색으로 찾습니다.",
+          "sweep": "이 커넥터의 권한 업데이트가 계속 실패하고 있습니다. PipesHub를 운영하는 담당자에게 로그를 확인해 달라고 요청하세요.",
+          "other": "이 커넥터의 권한에 대해 사람이 확인해야 할 사항이 있습니다.",
+          "unreadable": "업데이트를 기다리는 폴더 목록을 읽을 수 없습니다. PipesHub를 운영하는 담당자에게 이 커넥터의 권한 인덱스를 다시 만들어 달라고 요청하세요. 그동안 검색은 각 결과를 확인합니다."
+        }
       }
     },
     "mcpServers": {
@@ -5715,6 +5825,123 @@
       "offDescription": "모든 사용자의 답변, 검색, 레코드에서 제외되었고 샘플 계정은 로그인할 수 없습니다. 프로필 → 데모 데이터에서 다시 켜세요.",
       "onTitle": "모두에 대해 데모 데이터를 다시 켰습니다",
       "errorTitle": "모두에 대한 데모 데이터를 변경하지 못했습니다"
+    }
+  },
+  "graph": {
+    "status": {
+      "stale": "그래프를 업데이트하는 중이며 최근 변경 사항이 누락되었을 수 있습니다.",
+      "building": "그래프를 생성하는 중이므로 표시되는 내용이 불완전할 수 있습니다.",
+      "retrying": "그래프 생성 중 문제가 발생하여 다시 시도하는 중입니다.",
+      "failed": "마지막 그래프 생성이 실패하여 이 보기가 최신이 아닐 수 있습니다.",
+      "unknown": "이 그래프의 상태를 읽을 수 없습니다."
+    },
+    "empty": {
+      "neverBuilt": "이 저장소에는 아직 코드 그래프가 없습니다.",
+      "tooLarge": "이 저장소는 그래프로 만들기에 너무 큽니다."
+    },
+    "incomplete": "일부 연결이 누락되었을 수 있습니다. 엣지 유형이나 방향으로 범위를 좁혀 보세요.",
+    "simplified": "부드러운 이동을 위해 단순화된 보기입니다.",
+    "verify": {
+      "degraded": "지금은 접근 권한을 확인할 수 없습니다. 마지막으로 확인된 내용을 표시합니다.",
+      "blank": "몇 분 동안 접근 권한을 확인하지 못해 그래프를 지웠습니다. 다시 연결하는 중…"
+    },
+    "error": {
+      "unavailable": "지금은 불러올 수 없습니다. 다시 시도해 주세요.",
+      "notAvailable": "이 항목을 사용할 수 없습니다.",
+      "unexpected": "문제가 발생했습니다.",
+      "ambiguous": "이름이 같은 저장소가 여러 개입니다. 검색 상자에서 저장소를 선택하세요.",
+      "full": "이 보기가 가득 찼습니다. 노드를 열어 새 보기를 시작하세요.",
+      "revoked": "보고 있던 항목을 더 이상 사용할 수 없습니다."
+    },
+    "title": "코드 그래프",
+    "ui": {
+      "back": "뒤로",
+      "forward": "앞으로",
+      "fit": "화면에 맞추기",
+      "showTable": "표로 보기",
+      "showGraph": "그래프로 보기",
+      "direction": {
+        "any": "둘 다",
+        "inbound": "호출자",
+        "outbound": "피호출자"
+      },
+      "includeTests": "테스트 포함",
+      "showMore": "더 보기",
+      "expand": "확장",
+      "open": "열기",
+      "nothingSelected": "세부 정보를 보려면 노드를 선택하세요.",
+      "details": "세부 정보",
+      "links": "링크: {{n}}",
+      "table": {
+        "caption": "이 보기의 노드",
+        "name": "이름",
+        "kind": "종류",
+        "file": "파일",
+        "actions": "작업",
+        "moreRows": "행 더 보기",
+        "callersShown": "표시된 호출자",
+        "calleesShown": "표시된 피호출자",
+        "focus": "중심"
+      },
+      "emptyPrompt": "위에서 함수, 메서드 또는 클래스를 검색하여 무엇이 호출하고 무엇을 호출하는지 확인하세요.",
+      "disclosure": "접근할 수 있는 항목만 표시합니다.",
+      "legendInferred": "점선은 이름으로 추정한 링크입니다.",
+      "disabled": "코드 그래프가 사용 설정되어 있지 않습니다.",
+      "search": {
+        "repo": "저장소",
+        "repoPlaceholder": "저장소를 선택하세요",
+        "placeholder": "이름으로 함수, 메서드 또는 클래스 찾기",
+        "label": "코드 검색",
+        "results": "검색 결과",
+        "noRepos": "읽을 수 있는 코드 저장소가 없습니다.",
+        "noMatches": "일치하는 항목이 없습니다.",
+        "chooseFirst": "먼저 저장소를 선택하세요",
+        "minChars": "2자 이상 입력하세요.",
+        "more": "처음 일치 항목만 표시합니다. 검색을 좁히려면 더 입력하세요."
+      },
+      "action": {
+        "retry": "다시 시도",
+        "restore": "전체 품질 사용"
+      },
+      "loading": "불러오는 중…",
+      "legend": {
+        "functions": "함수와 메서드",
+        "classes": "클래스와 인터페이스",
+        "focus": "이 보기의 중심"
+      },
+      "openHint": "열기: 이것을 새 보기의 중심으로 만듭니다.",
+      "expandHint": "확장: 화면의 내용을 유지한 채 이웃을 여기에 표시합니다.",
+      "announce": {
+        "opened": "항목 {{n}}개를 표시하는 중입니다.",
+        "added": "항목 {{n}}개를 추가했습니다."
+      },
+      "canvasHint": "그래프 그림은 화면 낭독기에서 사용할 수 없습니다. 모든 노드를 읽고 사용하려면 ‘표로 보기’ 버튼을 사용하세요.",
+      "selectionGone": "선택한 항목을 더 이상 사용할 수 없습니다.",
+      "viewGraph": "그래프 보기",
+      "viewGraphOf": "{{repo}} 그래프 보기",
+      "fillerNode": "{{file}}의 {{kind}}"
+    },
+    "capped": "그림에는 이 보기의 일부만 표시됩니다. 표에는 모두 나열됩니다.",
+    "crowded": "이 보기가 복잡해지고 있습니다. 필터로 좁히세요.",
+    "hint": {
+      "testsOff": "테스트 파일은 숨겨져 있습니다. 항목이 테스트 코드에 있으면 “테스트 포함”을 켜세요."
+    },
+    "nothingNew": "이 노드에 더 표시할 항목이 없습니다.",
+    "tableOnly": "원활한 동작을 위해 표만 표시합니다."
+  },
+  "accessNotice": {
+    "permissions_updating": "일부 소스가 권한을 업데이트하고 있어 몇 분 동안 일부 결과가 보이지 않을 수 있습니다.",
+    "connector_syncing": "{{name}}이(가) 아직 동기화 중이므로 해당 결과가 불완전할 수 있습니다.",
+    "connector_syncing_unnamed": "소스가 아직 동기화 중이므로 해당 결과가 불완전할 수 있습니다.",
+    "check_unavailable": "지금은 접근할 수 있는 문서를 확인하지 못해 결과를 표시하지 않습니다. 1분 후에 다시 시도하세요.",
+    "emptySyncing": "아직 검색할 항목이 없습니다. {{name}}이(가) 동기화 중입니다.",
+    "emptySyncing_unnamed": "아직 검색할 항목이 없습니다. 소스가 동기화 중입니다.",
+    "noAccess": {
+      "title": "이 항목에 접근할 수 없습니다",
+      "body": "이동, 삭제 또는 제한되었을 수 있습니다. 소유자에게 문의하거나, 링크가 있다면 원래 위치에서 여세요.",
+      "justGotAccess": "방금 원본에서 접근 권한을 받으셨나요? 새 권한은 다음 동기화 후에 표시됩니다.",
+      "copyDetails": "관리자용 세부 정보 복사",
+      "copied": "세부 정보를 복사했습니다"
     }
   }
 }

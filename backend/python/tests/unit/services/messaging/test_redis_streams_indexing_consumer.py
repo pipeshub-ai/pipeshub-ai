@@ -48,6 +48,7 @@ from app.services.messaging.redis_streams.indexing_consumer import (
 from app.services.resource_governor import Pool
 from app.services.resource_governor.models import ParseTier
 from app.utils import indexing_timing as timing
+from tests.support.undecodable_json import DEEP, UNDECODABLE
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 # ---------------------------------------------------------------------------
@@ -674,8 +675,9 @@ class TestParseMessage:
         result = await consumer._parse_message("1-0", {}, "records")
         assert result is None
 
-    async def test_invalid_json_returns_none(self, consumer):
-        result = await consumer._parse_message("1-0", {"value": "not-json{{{"}, "records")
+    @pytest.mark.parametrize("value", ["not-json{{{", *UNDECODABLE.values()], ids=["syntax", *UNDECODABLE])
+    async def test_invalid_json_returns_none(self, consumer, value):
+        result = await consumer._parse_message("1-0", {"value": value}, "records")
         assert result is None
 
     async def test_valid_json_invalid_schema_returns_none(self, consumer):
@@ -1452,7 +1454,8 @@ class TestProcessMessageWrapper:
         assert consumer.indexing_semaphore._value == 1
 
     @pytest.mark.asyncio
-    async def test_unparseable_message_is_acked(self, consumer):
+    @pytest.mark.parametrize("value", ["not-json{{{", DEEP], ids=["syntax", "nesting_too_deep"])
+    async def test_unparseable_message_is_acked(self, consumer, value):
         """Poison (unparseable) messages must be ACKed so they leave the PEL.
 
         Regression: a parse failure previously returned without XACK, leaving
@@ -1475,7 +1478,7 @@ class TestProcessMessageWrapper:
             side_effect=_submit_without_running(ack_future),
         ):
             result = await consumer._process_message_wrapper(
-                "stream-a", "1-0", {"value": "not-json{{{"}
+                "stream-a", "1-0", {"value": value}
             )
 
         assert result is False

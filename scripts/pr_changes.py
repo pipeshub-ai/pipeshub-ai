@@ -154,8 +154,11 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/permissions/mutations.py",
     f"{PYTHON}/tests/permissions/oracle.py",
     f"{PYTHON}/tests/permissions/scope_corpus.py",
+    f"{PYTHON}/tests/permissions/serving_corpus.py",
     f"{PYTHON}/tests/permissions/scope_layer.py",
     f"{PYTHON}/tests/permissions/stamp_world.py",
+    f"{PYTHON}/tests/permissions/store_harness.py",
+    f"{PYTHON}/tests/permissions/rewrite_kit.py",
     f"{PYTHON}/tests/permissions/scenarios/**",
 )
 
@@ -173,6 +176,8 @@ MATRIX_PYTHON = (
     f"{COMPOSE}/docker-compose.integration.graph-db.yml",
     f"{COMPOSE}/docker-compose.integration.kv.yml",
     ".github/workflows/backend-matrix.yml",
+    # Which test files each suite runs.
+    "scripts/integration_discovery.py",
 ) + INTEGRATION_HELPERS + PYTHON_PACKAGING
 
 for _suite in ("messaging", "vector", "kv", "graph", "gitlab"):

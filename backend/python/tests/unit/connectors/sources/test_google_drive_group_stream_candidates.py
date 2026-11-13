@@ -84,3 +84,13 @@ class TestGroupMemberCandidates:
         connector.data_entities_processor.get_groups_with_access_to_record = AsyncMock(side_effect=RuntimeError("db down"))
 
         assert await connector._group_member_candidates(MagicMock(id="rec-1")) == []
+
+    @pytest.mark.asyncio
+    async def test_an_audience_group_is_not_asked_of_the_directory(self, connector) -> None:
+        connector.data_entities_processor.get_groups_with_access_to_record = AsyncMock(
+            return_value=[_group("workspace-members"), _group("domain-members:x.com"), _group("ok@x.com")]
+        )
+        connector._fetch_group_members = AsyncMock(return_value=[{"email": "bo@x.com", "type": "USER"}])
+
+        assert [c.email for c in await connector._group_member_candidates(MagicMock(id="rec-1"))] == ["bo@x.com"]
+        connector._fetch_group_members.assert_awaited_once_with("ok@x.com", include_derived=True)

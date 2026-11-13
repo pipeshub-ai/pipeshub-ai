@@ -10,6 +10,7 @@ from app.events.processor import convert_record_dict_to_record
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import Record
 from app.modules.named_entities.domain.models import NamedEntityExtraction
+from app.modules.pipeline.connector_gate import ConnectorBeingDeleted
 from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import Priority, StageJob
 from app.modules.pipeline.policy import DEFAULT_POLICY
@@ -491,3 +492,44 @@ async def test_entities_files_its_sidecar_only_for_a_written_extraction(outcome:
     assert call["at"] == ("org-1", "vr-1", "rev-a", "entities", 1)
     assert call["held"] is True and call["payload"] == extraction.model_dump(mode="json")
     assert blob.saves == 0
+
+
+def _deleting_classify_io(blob: _Blob, deleting: set[str]) -> GraphClassifyIO:
+    async def connector_deleting(connector_id: str) -> bool:
+        return connector_id in deleting
+
+    return GraphClassifyIO(
+        _job(), Deadline(30), policy=DEFAULT_POLICY, graph=_graph("rev-a"), blob_storage=blob,  # type: ignore[arg-type]
+        sink=_sink(), classifier=AsyncMock(), config_service=MagicMock(),
+        record_from_document=_record, record_leases=RecordLeases(), connector_deleting=connector_deleting,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_connector_being_deleted_is_raised_not_reported_as_no_record() -> None:
+    """No record would end the run STALE, which is terminal; a delete that is put back must leave it runnable."""
+    io = _deleting_classify_io(_Blob({"block_containers": {"blocks": [], "block_groups": []}}), {"conn-1"})
+    with pytest.raises(ConnectorBeingDeleted):
+        await io.current_record_ids(_job())
+
+
+@pytest.mark.asyncio
+async def test_a_delete_that_starts_mid_run_stops_the_next_write() -> None:
+    """The lease checks the record is still current before every write; a connector being deleted is not."""
+    deleting: set[str] = set()
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    io = _deleting_classify_io(blob, deleting)
+    assert await io.current_record_ids(_job()) == ["rec-1"]
+    deleting.add("conn-1")
+    with pytest.raises(ConnectorBeingDeleted):
+        await io.save(_job(), ["rec-1"], SemanticMetadata(summary="s"))
+    assert blob.saves == 0
+
+
+@pytest.mark.asyncio
+async def test_a_live_connector_is_written_as_before() -> None:
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    io = _deleting_classify_io(blob, {"conn-other"})
+    assert await io.current_record_ids(_job()) == ["rec-1"]
+    await io.save(_job(), ["rec-1"], SemanticMetadata(summary="s"))
+    assert blob.saves == 1

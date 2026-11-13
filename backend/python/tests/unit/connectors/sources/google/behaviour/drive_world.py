@@ -111,6 +111,13 @@ LIST_RESPONSE_FIELDS = {
 }
 
 
+# The fields of a shared drive in the Drive API v3 reference: an unknown one in a field mask is a 400.
+DRIVE_RESOURCE_FIELDS = frozenset({
+    "kind", "id", "name", "colorRgb", "backgroundImageLink", "capabilities", "themeId", "backgroundImageFile",
+    "createdTime", "hidden", "restrictions", "orgUnitId",
+})
+
+
 def top_level_fields(fields: str) -> list[str]:
     names, depth, current = [], 0, ""
     for ch in fields:
@@ -135,6 +142,10 @@ def _invalid_field_selection(req: ApiRequest, resource: str) -> Optional[tuple[i
     for name in top_level_fields(fields):
         if name not in allowed:
             return google_error(400, "invalidParameter", f"Invalid field selection {name}")
+    if resource == "drives" and (nested := re.search(r"drives\((.*)\)", fields)):
+        for name in top_level_fields(nested.group(1)):
+            if name not in DRIVE_RESOURCE_FIELDS:
+                return google_error(400, "invalidParameter", f"Invalid field selection {name}")
     return None
 
 
@@ -171,6 +182,22 @@ class DriveWorld:
         self.aliases: dict[str, str] = {}
         self.groups: dict[str, dict[str, Any]] = {}
         self.drives: dict[str, dict[str, Any]] = {}
+        # Drive answers without the restrictions of a drive, and cannot be asked for them directly.
+        self.restrictions_unlisted = False
+        # Groups whose members the directory refuses to list, by status (404 or 403 forbidden), and the
+        # account's other domains: {"example.org": ["alias.example.org"]}.
+        self.unlistable_groups: dict[str, int] = {}
+        self.other_domains: dict[str, list[str]] = {}
+        self.domains_unreadable = False
+        # When set, the user listing is cut: these people are left out of it.
+        self.cut_user_listing: Optional[set[str]] = None
+        # Whether a domain share reaches the people of the account's other domains, which Google does not document.
+        self.domain_share_reaches_all = False
+        # Or only from one domain to another: {("example.com", "labs.example.org")}.
+        self.domain_share_reaches: set[tuple[str, str]] = set()
+        self.restrictions_unreadable = False
+        # drives.get answers too, but without the restrictions object.
+        self.restrictions_omitted = False
         self.hide_unreadable_parents = False
         self.files: dict[str, FileState] = {}
         self.log: list[_Change] = []
@@ -191,8 +218,11 @@ class DriveWorld:
     def add_group(self, email: str, members: list[str], name: Optional[str] = None) -> None:
         self.groups[email] = {"id": f"gid-{next(self._ids)}", "email": email, "name": name or email.split("@")[0], "members": list(members)}
 
-    def add_drive(self, drive_id: str, name: str, members: dict[str, str]) -> None:
-        self.drives[drive_id] = {"id": drive_id, "name": name, "members": dict(members), "createdTime": "2024-01-01T00:00:00.000Z"}
+    def add_drive(self, drive_id: str, name: str, members: dict[str, str], restrictions: Optional[dict[str, bool]] = None) -> None:
+        self.drives[drive_id] = {
+            "id": drive_id, "name": name, "members": dict(members), "createdTime": "2024-01-01T00:00:00.000Z",
+            "restrictions": dict(restrictions or {}),
+        }
         self.files[drive_id] = FileState({"id": drive_id, "name": name, "mimeType": FOLDER, "driveId": drive_id, "parents": [], "trashed": False})
 
     def add_item(
@@ -414,9 +444,20 @@ class DriveWorld:
             for perm in node.perms:
                 if perm.get("type") == "anyone":
                     return True
-                if perm.get("type") == "domain" and email.rpartition("@")[2] == perm.get("domain"):
+                if perm.get("type") == "domain" and perm.get("domain") in {
+                    a.rpartition("@")[2] for a in (email, *(a for a, e in self.aliases.items() if e == email))
+                }:
+                    return True  # an alias address on the domain counts too
+                if perm.get("type") == "domain" and self.domain_share_reaches_all and {
+                    perm.get("domain"), email.rpartition("@")[2]
+                } <= self.account_domains():
+                    return True
+                if perm.get("type") == "domain" and (perm.get("domain"), email.rpartition("@")[2]) in self.domain_share_reaches:
                     return True
         return False
+
+    def account_domains(self) -> set[str]:
+        return {self.domain, *self.other_domains, *(a for aliases in self.other_domains.values() for a in aliases)}
 
     def _access_set(self, file_id: str) -> set[str]:
         return {email for email in self.users if self.direct_role(file_id, email) or self.member_role(file_id, email)}
@@ -443,6 +484,7 @@ class DriveWorld:
         r("GET", f"{ADMIN_API}/users/([^/]+)", self._admin_user)
         r("GET", f"{ADMIN_API}/groups", self._admin_groups)
         r("GET", f"{ADMIN_API}/groups/([^/]+)/members", self._admin_members)
+        r("GET", f"{ADMIN_API}/customer/([^/]+)/domains", self._admin_domains)
 
     def _caller(self, req: ApiRequest) -> str:
         email = self.email_of(req.identity)
@@ -661,10 +703,13 @@ class DriveWorld:
             role = self.drive_role(drive["id"], email)
             if not admin and not role:
                 continue
+            if admin and drive.get("foreign"):
+                continue  # another organization's drive: its admin listing does not have it
             drives.append({
                 "id": drive["id"],
                 "name": drive["name"],
                 "createdTime": drive["createdTime"],
+                **({} if self.restrictions_unlisted else {"restrictions": dict(drive["restrictions"])}),
                 "capabilities": {
                     "canEdit": role in ("organizer", "fileOrganizer", "writer"),
                     "canManageMembers": role == "organizer",
@@ -680,21 +725,31 @@ class DriveWorld:
         drive = self.drives.get(req.path.split("/drives/")[1])
         if drive is None:
             return google_error(404, "notFound")
-        return {"id": drive["id"], "name": drive["name"], "createdTime": drive["createdTime"]}
+        if self.restrictions_unreadable:
+            return google_error(500, "backendError")
+        answer = {"id": drive["id"], "name": drive["name"], "createdTime": drive["createdTime"]}
+        return answer if self.restrictions_omitted else {**answer, "restrictions": dict(drive["restrictions"])}
 
     def _admin_guard(self, req: ApiRequest) -> Optional[object]:
         if self._caller(req) != self.admin_email:
             return google_error(403, "forbidden", "Not Authorized to access this resource/api")
         return None
 
-    @staticmethod
-    def _directory_user(u: DriveUser) -> dict[str, Any]:
-        return {"id": u.user_id, "primaryEmail": u.email, "name": {"fullName": u.name}, "suspended": u.suspended, "creationTime": "2023-01-01T00:00:00.000Z"}
+    def _directory_user(self, u: DriveUser) -> dict[str, Any]:
+        return {
+            "id": u.user_id, "primaryEmail": u.email, "name": {"fullName": u.name}, "suspended": u.suspended,
+            "creationTime": "2023-01-01T00:00:00.000Z", "aliases": sorted(a for a, e in self.aliases.items() if e == u.email),
+        }
 
     def _admin_users(self, req: ApiRequest) -> object:
         if denied := self._admin_guard(req):
             return denied
         users = [self._directory_user(u) for u in sorted(self.users.values(), key=lambda u: u.email)]
+        if self.cut_user_listing is not None:
+            # A cut listing: an empty page that still has a next token, then a listing without these people.
+            if not req.query.get("pageToken"):
+                return {"users": [], "nextPageToken": "0"}
+            users = [u for u in users if u["primaryEmail"] not in self.cut_user_listing]
         return paginate(users, req.query, default_size=self.admin_page_size, key="users")
 
     def _admin_user(self, req: ApiRequest) -> object:
@@ -718,13 +773,28 @@ class DriveWorld:
         ]
         return paginate(groups, req.query, default_size=self.admin_page_size, key="groups")
 
+    def _admin_domains(self, req: ApiRequest) -> object:
+        if denied := self._admin_guard(req):
+            return denied
+        if self.domains_unreadable:
+            return google_error(500, "backendError")
+        domains = [{"domainName": self.domain, "isPrimary": True, "verified": True}]
+        for name, aliases in self.other_domains.items():
+            domains.append({
+                "domainName": name, "isPrimary": False, "verified": True,
+                "domainAliases": [{"domainAliasName": a, "verified": True} for a in aliases],
+            })
+        return {"domains": domains}
+
     def _admin_members(self, req: ApiRequest) -> object:
         if denied := self._admin_guard(req):
             return denied
         group_key = req.path.split("/groups/")[1].split("/")[0]
         group = self.groups.get(group_key)
-        if group is None:
+        if group is None or self.unlistable_groups.get(group_key) == 404:
             return google_error(404, "notFound")
+        if self.unlistable_groups.get(group_key) == 403:
+            return google_error(403, "forbidden")
         emails = list(group["members"])
         if req.query.get("includeDerivedMembership") == "true":
             # Like the directory, members of nested groups are listed alongside the direct ones.

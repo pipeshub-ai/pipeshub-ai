@@ -247,22 +247,29 @@ CLASSIFICATION: dict[str, str] = {
     **dict.fromkeys(["batch_update_connector_status", "compare_and_set_indexing_status", "update_indexing_status_for_record_ids",
                      "stage_state_compare_and_set", "soft_delete_records", "restore_records", "record_purge_failure", "retag_push_record",
                      "claim_push_record", "take_back_kept_record_group", "update_kb_permission", "reset_indexing_status_for_connector",
-                     "update_drive_sync_state"], "targeted"),
+                     "update_drive_sync_state", "stamp_external_org_parents"], "targeted"),
     **dict.fromkeys(["batch_create_edges", "create_edges_if_absent", "batch_upsert_node_relations", "ensure_app_membership", "ensure_team_app_edge",
-                     "upsert_authenticated_as", "link_record_to_group", "batch_update_team_member_roles", "update_edge", "update_user_sync_state"], "edge"),
+                     "upsert_authenticated_as", "link_record_to_group", "batch_update_team_member_roles", "update_edge", "update_user_sync_state",
+                     "batch_create_entity_relations", "replace_record_entity_relations"], "edge"),
     "create_named_entities_if_absent": "create", "replace_named_entity_values": "replace",
     **dict.fromkeys(["schedule_named_entity_persist_retry", "schedule_named_entity_reextract", "schedule_named_entity_reproject"], "create"),
     **dict.fromkeys(["add_named_entity_aliases", "mark_orphan_named_entities"], "targeted"),
     **dict.fromkeys(["copy_named_entity_mentions", "delete_dangling_named_entity_mentions", "delete_dangling_named_entity_values", "delete_orphan_named_entities",
                      "clear_orphan_named_entity_marks", "clear_named_entity_persist_retry"], "none"),
+    # taxonomy.py: the taxonomy collections have no schema; the hierarchy edge is built from a timestamp; a move carries the stored edge with a provenance key
+    "create_taxonomy_node_if_absent": "create", "add_taxonomy_aliases": "targeted", "ensure_taxonomy_hierarchy_edge": "edge", "move_taxonomy_edges": "none",
     "batch_upsert_app_users": "delegates",       # builds users and edges, then calls batch_upsert_nodes and batch_create_edges
+    # the legacy migrations write what is already stored and constants (no caller payload); they validate what they build anyway
+    **dict.fromkeys(["migrate_legacy_kb_to_app", "migrate_agent_hub_knowledge", "migrate_legacy_relation_edge"], "none"),
+    "migrate_person_to_user": "none",            # moves a person's stored edges onto a user
     **dict.fromkeys([
         "backfill_block_name_folded", "backfill_indexed_copy_flags", "batch_delete_edges", "copy_document_relationships", "delete_all_edges_for_node",
         "delete_blocks_for_records", "delete_edges_between_collections", "delete_edges_by_relationship_types", "delete_edges_by_source_keys",
         "delete_all_team_permissions", "remove_kb_permission", "delete_kb_hub_app", "delete_connector_sync_edges", "reap_stale_external_app_relations", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups", "delete_edges_touching_nodes", "delete_nodes", "delete_parent_child_edge_to_record",
         "delete_connector_instance", "delete_record", "delete_records_and_relations", "delete_records_recursive", "delete_single_record", "delete_team_member_edges",
+        "delete_record_entity_relations",
         "increment_node_field", "purge_trash_kept_record_groups", "purge_trashed_records", "remove_authenticated_as", "remove_nodes_by_field",
-        "remove_sync_point", "stage_states_delete_for_virtual_records", "stage_states_delete_unheld_revisions",
+        "remove_sync_point", "stage_states_delete_for_virtual_records", "stage_states_delete_unheld_revisions", "sweep_deleted_connector_writes",
         "unlink_nodes_missed_by_full_sync", "update_sync_point_if", "upsert_sync_point",
     ], "none"),
 }
@@ -270,7 +277,9 @@ CLASSIFICATION: dict[str, str] = {
 #: input can be invalid; they are classified for completeness and exercised only by the valid-path matrix where that is cheap.
 TYPED_ONLY = {"restore_records", "record_purge_failure", "retag_push_record", "claim_push_record", "take_back_kept_record_group",
               "update_kb_permission",      # its role is checked against OWNER/WRITER/READER first and its timestamps are generated
-              "update_drive_sync_state"}   # drives have no schema
+              "update_drive_sync_state",   # drives have no schema
+              "add_taxonomy_aliases",       # neither have the taxonomy collections
+              "stamp_external_org_parents"}   # its one value is the ambient org's id, checked against it first
 
 
 def test_every_writer_of_the_registry_is_classified_and_nothing_else_is() -> None:
@@ -344,6 +353,13 @@ INVALID: list[tuple[str, str, tuple, dict]] = [
     ("schedule reextract bad record id", "schedule_named_entity_reextract", (ORG, 12345), {}),
     ("schedule reproject bad record id", "schedule_named_entity_reproject", (ORG, 12345), {}),
     ("upsert_authenticated_as bad connector id", "upsert_authenticated_as", ("u1", "u2", 12345, ORG), {}),
+    ("batch_create_entity_relations bad type", "batch_create_entity_relations",
+     ([{"_from": "records/a1", "_to": "users/b1", "edgeType": "ASSIGNED_TO", "createdAtTimestamp": 1},
+       {"_from": "records/a1", "_to": "users/b1", "edgeType": "NOT_A_TYPE", "createdAtTimestamp": 1}],), {}),
+    ("batch_create_entity_relations missing required", "batch_create_entity_relations",
+     ([{"from_id": "a1", "from_collection": "records", "to_id": "b1", "to_collection": "users", "edgeType": "ASSIGNED_TO"}],), {}),
+    ("replace_record_entity_relations bad type", "replace_record_entity_relations",
+     ("a1", ["users"], "INFERRED", [{"_from": "records/a1", "_to": "users/b1", "edgeType": "NOT_A_TYPE", "createdAtTimestamp": 1}]), {}),
 ]
 
 #: payloads the app legitimately writes: (id, method, args, kwargs)
@@ -390,6 +406,17 @@ VALID: list[tuple[str, str, tuple, dict]] = [
     ("ensure_team_app_edge", "ensure_team_app_edge", ("c1", ORG), {}),
     ("upsert_authenticated_as", "upsert_authenticated_as", ("u1", "u2", "c1", ORG), {}),
     ("link_record_to_group", "link_record_to_group", ("r1", "g1"), {"inherit": True, "leaving_group_id": "g0", "browse_root": True}),
+    ("create_taxonomy_node_if_absent", "create_taxonomy_node_if_absent",
+     ("topics", {"id": "t1", "name": "Pricing", "normalizedName": "pricing", "orgId": ORG, "createdAtTimestamp": 1}), {}),
+    ("add_taxonomy_aliases", "add_taxonomy_aliases", ("topics", "t1", ["Prices"], ["prices"]), {"org_id": ORG}),
+    ("ensure_taxonomy_hierarchy_edge", "ensure_taxonomy_hierarchy_edge", ("subcategories1", "s1", "c1"), {}),
+    ("batch_create_entity_relations", "batch_create_entity_relations",
+     ([{"_from": "records/a1", "_to": "users/b1", "edgeType": "ASSIGNED_TO", "origin": "INFERRED", "createdAtTimestamp": 1},
+       {"from_id": "a1", "from_collection": "records", "to_id": "o1", "to_collection": "organizations", "edgeType": "FOR_ACCOUNT", "createdAtTimestamp": 1}],), {}),
+    ("replace_record_entity_relations", "replace_record_entity_relations",
+     ("a1", ["users", "organizations"], "INFERRED",
+      [{"_from": "records/a1", "_to": "users/b1", "edgeType": "ASSIGNED_TO", "origin": "INFERRED", "createdAtTimestamp": 1}]), {}),
+    ("stamp_external_org_parents", "stamp_external_org_parents", (ORG,), {}),
 ]
 
 
@@ -403,7 +430,9 @@ def test_every_payload_writer_has_an_invalid_and_a_valid_case() -> None:
     needing = {n for n, c in CLASSIFICATION.items() if c in {"create", "upsert", "update", "replace", "edge", "targeted"} and n not in TYPED_ONLY}
     # the two status writers that swallow errors have their own tests; these two build their edge properties from constants, so no argument
     # can make them invalid (their edges are checked in test_edge_helpers_validate_the_edges_they_build_before_writing)
-    exempt = {"batch_update_connector_status", "update_indexing_status_for_record_ids", "link_record_to_group", "ensure_team_app_edge"}
+    exempt = {"batch_update_connector_status", "update_indexing_status_for_record_ids", "link_record_to_group", "ensure_team_app_edge",
+              "ensure_taxonomy_hierarchy_edge",     # its edge too; and a taxonomy node has no schema to break
+              "create_taxonomy_node_if_absent"}
     assert needing - {m for _, m, _, _ in INVALID} - exempt == set(), "writers with no invalid-payload case"
     assert needing - {m for _, m, _, _ in VALID} == set(), "writers with no valid-payload case"
     assert {m for _, m, _, _ in INVALID} <= set(CLASSIFICATION)

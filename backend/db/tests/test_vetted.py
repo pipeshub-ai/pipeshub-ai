@@ -988,6 +988,18 @@ def test_lines_of_another_postgresql_major_are_ignored():
     assert surface.for_major(lines, 18) == {"sysfuncs@18 count=2 md5=b", "role x"}
 
 
+def test_any_reviewed_sysfuncs_line_of_a_major_passes_and_nothing_else_is_relaxed():
+    reviewed = {"sysfuncs@17 count=1 md5=a", "sysfuncs@17 count=2 md5=b", "role x"}      # two minor releases of one major
+    assert surface.diff({"sysfuncs@17 count=1 md5=a", "role x"}, reviewed) == []
+    assert surface.diff({"sysfuncs@17 count=2 md5=b", "role x"}, reviewed) == []
+    assert surface.diff({"sysfuncs@17 count=3 md5=c", "role x"}, reviewed) == [
+        ("50 surface: unexpected", "sysfuncs@17 count=3 md5=c"),
+        ("50 surface: missing", "sysfuncs@17 count=1 md5=a"), ("50 surface: missing", "sysfuncs@17 count=2 md5=b")]
+    secdef = "sysfunc pg_catalog.f() language=c secdef=true config=-"                      # its own line: a matching hash does not cover it
+    assert surface.diff({"sysfuncs@17 count=2 md5=b", "role x", secdef}, reviewed) == [("50 surface: unexpected", secdef)]
+    assert surface.diff({"sysfuncs@17 count=2 md5=b"}, reviewed) == [("50 surface: missing", "role x")]
+
+
 def test_an_allowlist_can_remove_a_line_of_the_base_state(tmp_path):
     f = tmp_path / "allowlist.yaml"
     f.write_text('surface:\n  - "new line"\nremove:\n  - "old line"\n')

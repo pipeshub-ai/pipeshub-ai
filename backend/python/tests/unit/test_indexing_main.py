@@ -1672,6 +1672,41 @@ class TestLifespan:
             assert parse_pool._State.governor is None
             assert parse_pool._State.pool is None
 
+    async def test_the_class_units_backfill_runs_on_the_record_consumers_loop_on_every_store(self) -> None:
+        """It embeds through the consumers' VectorStore, whose clients belong to their loop, so it is
+        scheduled there on ArangoDB too, not only on Neo4j."""
+        from app.indexing_main import _all_org_ids, lifespan
+
+        mock_container = _make_container()
+        mock_container._graph_provider = _make_graph_provider()
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+        consumer_loop = MagicMock(name="record consumer loop")
+        scheduled = []
+
+        def schedule(coro: object, loop: object) -> MagicMock:
+            scheduled.append((coro, loop))
+            if hasattr(coro, "close"):
+                coro.close()
+            return MagicMock(done=MagicMock(return_value=True))
+
+        backfill = MagicMock(return_value="class-units-run")
+        with (
+            patch("app.indexing_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.indexing_main.recover_in_progress_records", new_callable=AsyncMock),
+            patch("app.indexing_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[("record", MagicMock())]),
+            patch("app.indexing_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.indexing_main.record_consumer_loop", return_value=consumer_loop),
+            patch("app.indexing_main.asyncio.run_coroutine_threadsafe", side_effect=schedule),
+            patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
+            patch("app.indexing_main.run_class_units_backfill", backfill),
+            patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
+        ):
+            async with lifespan(mock_app):
+                pass
+        assert ("class-units-run", consumer_loop) in scheduled
+        backfill.assert_called_once_with(mock_container, mock_container._graph_provider, _all_org_ids)
+
     async def test_graph_provider_fallback(self):
         """When _graph_provider is not set, it falls back to graph_provider()."""
         from app.indexing_main import lifespan
@@ -2033,6 +2068,7 @@ class TestRun:
             host="0.0.0.0",
             port=8091,
             log_level="info",
+            access_log=False,
             reload=True,
             workers=1,
             timeout_worker_healthcheck=60,
@@ -2050,6 +2086,7 @@ class TestRun:
             host="127.0.0.1",
             port=9000,
             log_level="info",
+            access_log=False,
             reload=False,
             workers=1,
             timeout_worker_healthcheck=60,
@@ -2061,6 +2098,14 @@ class TestRun:
 # ---------------------------------------------------------------------------
 class TestModuleLevelCode:
     """Tests for module-level attributes."""
+
+    def test_the_request_line_sits_just_inside_the_request_context(self) -> None:
+        from app.api.middlewares.request_context import RequestContextMiddleware
+        from app.api.middlewares.request_log import RequestLogMiddleware
+        from app.indexing_main import app
+
+        classes = [m.cls for m in app.user_middleware]
+        assert classes.index(RequestContextMiddleware) + 1 == classes.index(RequestLogMiddleware)
 
     def test_app_is_fastapi_instance(self):
         """The module-level app is a FastAPI instance."""
@@ -2197,6 +2242,7 @@ class TestRunWorkersWarning:
                 host="0.0.0.0",
                 port=8091,
                 log_level="info",
+                access_log=False,
                 reload=True,
                 workers=1,
                 timeout_worker_healthcheck=60,
@@ -2217,6 +2263,7 @@ class TestRunWorkersWarning:
             host="0.0.0.0",
             port=8091,
             log_level="info",
+            access_log=False,
             reload=False,
             workers=4,
             timeout_worker_healthcheck=60,
@@ -2994,18 +3041,106 @@ class TestRepublishStrandedRecords:
         assert [c.kwargs["payload"]["recordId"] for c in producer.send_event.await_args_list] == ["r2"]
 
     @pytest.mark.asyncio
-    async def test_a_dedup_parked_duplicate_is_left_to_its_twin(self):
+    @staticmethod
+    def _with_twins(graph: AsyncMock, *twins: dict, apps: dict | None = None) -> AsyncMock:
+        """The holders of vr-1: the parked record r1 and ``twins``. ``apps`` overrides an app's document."""
+        records = {t["_key"]: t for t in twins}
+        apps = apps or {}
+
+        async def get_document(key: str, collection: str, **_kwargs: object) -> dict | None:
+            if collection == CollectionNames.RECORDS.value:
+                return records.get(key)
+            if key in apps:
+                return apps[key]
+            return {"isActive": key == "live" or key == "twin-connector"}
+
+        graph.get_document = AsyncMock(side_effect=get_document)
+        graph.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", *records])
+        return graph
+
+    def _parked_graph(self, *twins: dict, apps: dict | None = None) -> AsyncMock:
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record(md5Checksum="abc", virtualRecordId="vr-1")]},
+            active_ids={"live"},
+        )
+        return self._with_twins(graph, *twins, apps=apps)
+
+    @staticmethod
+    def _twin(status: str, connector_id: str = "twin-connector", **fields: object) -> dict:
+        return {"_key": "t1", "orgId": "org-1", "connectorId": connector_id, "indexingStatus": status, **fields}
+
+    @pytest.mark.asyncio
+    async def test_a_dedup_parked_duplicate_is_left_to_its_twin(self) -> None:
         """A record parked behind an in-flight md5 twin is legitimately QUEUED.
 
         It is released when the twin completes, not by re-publishing it.
         """
-        graph = _sweep_graph(
-            {
-                ProgressStatus.QUEUED.value: [
-                    self._old_record(md5Checksum="abc", virtualRecordId="vr-1")
-                ]
-            },
-            active_ids={"live"},
+        graph = self._parked_graph(self._twin(ProgressStatus.IN_PROGRESS.value))
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "twin_fields",
+        [
+            pytest.param({"indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value},
+                         id="finished"),
+            pytest.param({"indexingStatus": ProgressStatus.FAILED.value}, id="failed"),
+            pytest.param({"indexingStatus": ProgressStatus.EMPTY.value}, id="empty"),
+            pytest.param({"indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.IN_PROGRESS.value,
+                          "processingStartedAt": 1}, id="enrichment-abandoned-long-ago"),
+        ],
+    )
+    async def test_a_parked_copy_whose_twin_is_done_is_sent(self, twin_fields: dict) -> None:
+        """Promotion runs once, when the twin's processing ends: a twin that is done never releases
+        the copy again. The re-send's dedup reuses a finished twin rather than indexing it twice."""
+        graph = self._parked_graph({**self._twin(ProgressStatus.QUEUED.value), "virtualRecordId": "vr-1", **twin_fields})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "twin_fields",
+        [
+            pytest.param({"extractionStatus": ProgressStatus.QUEUED.value}, id="classify-stage-owns-it"),
+            pytest.param({"extractionStatus": ProgressStatus.IN_PROGRESS.value, "processingStartedAt": 10**15},
+                         id="enrichment-running"),
+        ],
+    )
+    async def test_a_parked_copy_whose_twin_is_still_enriching_stays_parked(self, twin_fields: dict) -> None:
+        """Indexed, with its enrichment still ahead: its end promotes the copy."""
+        graph = self._parked_graph(
+            {**self._twin(ProgressStatus.COMPLETED.value), "virtualRecordId": "vr-1", **twin_fields}
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+    @pytest.mark.asyncio
+    async def test_a_parked_copy_whose_twin_was_deleted_is_sent(self) -> None:
+        """Its twin went with its connector before its enrichment ended, so nothing will
+        release it: it is sent like any stranded record, to be indexed on its own."""
+        graph = self._parked_graph()
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+        producer.send_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_parked_copy_whose_twin_is_held_for_a_delete_stays_parked(self) -> None:
+        """A delete can be put back, and the twin's completion then releases the copy."""
+        graph = self._parked_graph(
+            self._twin(ProgressStatus.QUEUED.value),
+            apps={"twin-connector": {"isActive": False, "status": "DELETING"}},
         )
         producer = AsyncMock()
 
@@ -3013,6 +3148,35 @@ class TestRepublishStrandedRecords:
             assert await _run_stranded(graph, producer) == 0
 
         producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_copies_left_with_no_twin_but_each_other_are_sent(self) -> None:
+        """Only QUEUED copies on live connectors are left: none can release another."""
+        graph = self._parked_graph(self._twin(ProgressStatus.QUEUED.value))
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_twin_in_another_org_or_the_trash_does_not_keep_a_copy_parked(self) -> None:
+        graph = self._parked_graph(
+            self._twin(ProgressStatus.COMPLETED.value, orgId="org-2"),
+            {**self._twin(ProgressStatus.IN_PROGRESS.value), "_key": "t2", "isDeleted": True},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_parked_copy_whose_twins_cannot_be_read_stays_parked(self) -> None:
+        graph = self._parked_graph()
+        graph.get_records_by_virtual_record_id = AsyncMock(side_effect=ConnectionError("graph unavailable"))
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
 
     @pytest.mark.asyncio
     async def test_uploads_are_not_swept(self):
@@ -3142,16 +3306,30 @@ class TestRepublishStrandedRecords:
         producer.send_event.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_metadata_saves_do_not_keep_a_lost_event_from_recovery(self) -> None:
-        """A QUEUED row whose event was lost, saved again and again by syncs, is still recovered."""
+    async def test_a_resave_does_not_hide_a_lost_event(self) -> None:
+        """A sync rewrites updatedAtTimestamp on every save, changed or not, and sends
+        nothing for a record already queued. Aged on it, a record on a source synced
+        more often than the minimum age would never be re-sent."""
         graph = _sweep_graph(
             {
                 ProgressStatus.QUEUED.value: [
-                    self._old_record(
-                        queuedAtTimestamp=1, updatedAtTimestamp=get_epoch_timestamp_in_ms()
-                    )
+                    self._old_record(queuedAtTimestamp=1, updatedAtTimestamp=get_epoch_timestamp_in_ms())
                 ]
             },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stamp", ["not-a-number", "inf", "-inf", "nan", 10**400])
+    async def test_a_malformed_queue_stamp_falls_back_to_the_row_clock(self, stamp: object) -> None:
+        """An unreadable queue stamp is not a clock: the row is aged on updatedAt as a
+        row without one would be, instead of having no clock and never being looked at."""
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record(queuedAtTimestamp=stamp)]},
             active_ids={"live"},
         )
         producer = AsyncMock()
@@ -3163,6 +3341,24 @@ class TestRepublishStrandedRecords:
     async def test_a_stale_queue_stamp_is_still_recovered(self) -> None:
         graph = _sweep_graph(
             {ProgressStatus.NOT_STARTED.value: [self._old_record(queuedAtTimestamp=1)]},
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    def test_a_non_finite_queue_stamp_does_not_reset_the_republish_count(self) -> None:
+        from app.indexing_main import _republishes_since_queued
+
+        record = {"lastRepublishedAt": 100.0, "queuedAtTimestamp": "inf", "republishCount": 3}
+        assert _republishes_since_queued(record) == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("clock", ["inf", "nan"])
+    async def test_a_non_finite_republish_clock_does_not_block_recovery(self, clock: str) -> None:
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record(queuedAtTimestamp=1, lastRepublishedAt=clock)]},
             active_ids={"live"},
         )
         producer = AsyncMock()
@@ -3677,6 +3873,17 @@ class TestRateLimitedRecordsAreSentWhenTheirWaitEnds:
 
         producer.send_event.assert_not_awaited()
         assert any("waiting out their source's rate limit" in c.args[0] for c in logger.info.call_args_list)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("offset", "sent"), [(-1000, 1), (HOUR_MS, 0)])
+    async def test_an_oversized_queue_time_does_not_stop_the_sweep_or_the_wait(self, offset: int, sent: int) -> None:
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, retryNotBefore=now + offset, queuedAtTimestamp=10**400)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == sent
 
     @pytest.mark.asyncio
     async def test_neither_the_queue_nor_the_duplicate_rule_holds_it_back(self) -> None:

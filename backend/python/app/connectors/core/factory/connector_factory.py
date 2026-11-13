@@ -29,6 +29,9 @@ from app.connectors.core.sync.sync_coordinator import Admission, get_coordinator
 from app.connectors.core.sync.sync_dispatcher import SyncSpec
 from app.connectors.core.sync.sync_runner import run_sync_task
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
+from app.utils import error_class
+from app.utils.logging_fields import log_fields
+from app.connectors.sources.local_repo.connector import LocalRepoConnector
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
@@ -143,6 +146,7 @@ class ConnectorFactory:
         "demo": DemoConnector,
         "bookstack": BookStackConnector,
         "drupalwiki": DrupalWikiConnector,
+        "localrepository": LocalRepoConnector,
         "github": GithubConnector,
         "s3": S3Connector,
         "minio": MinIOConnector,
@@ -356,7 +360,7 @@ class ConnectorFactory:
             return connector
         except Exception as e:
             logger.error(
-                f"❌ Failed to create {name} {connector_id} connector: {str(e)}",
+                f"Failed to create {name} {connector_id} connector: {str(e)}",
                 exc_info=True,
             )
             if owned_processor is not None:
@@ -400,7 +404,7 @@ class ConnectorFactory:
                 success = await connector.init()
                 if not success:
                     logger.error(
-                        f"❌ Failed to initialize {name} {connector_id} connector"
+                        f"Failed to initialize {name} {connector_id} connector"
                     )
                     await connector.on_background_init_failed(None)
                     await cls._dispose_failed(connector, name, connector_id, logger)
@@ -409,7 +413,7 @@ class ConnectorFactory:
                 return connector
             except Exception as e:
                 logger.error(
-                    f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}",
+                    f"Failed to initialize {name} {connector_id} connector: {str(e)}",
                     exc_info=True,
                 )
                 await connector.on_background_init_failed(e)
@@ -470,130 +474,130 @@ class ConnectorFactory:
         caller keeps a warm connector for the API's own routes and publishes a
         resync event instead of starting one here.
         """
-        connector = await cls.initialize_connector(
-            name=name,
-            logger=logger,
-            data_store_provider=data_store_provider,
-            config_service=config_service,
-            connector_id=connector_id,
-            scope=scope,
-            created_by=created_by,
-            **kwargs,
-        )
+        # The boot path's lines, and the run it starts, name the instance; `name` is the stored type.
+        with log_fields(connector_id=connector_id, connector_type=name):
+            connector = await cls.initialize_connector(
+                name=name,
+                logger=logger,
+                data_store_provider=data_store_provider,
+                config_service=config_service,
+                connector_id=connector_id,
+                scope=scope,
+                created_by=created_by,
+                **kwargs,
+            )
 
-        config = await config_service.get_config(
-            f"/services/connectors/{connector_id}/config"
-        )
-        sync_strategy = (config or {}).get("sync", {}).get("selectedStrategy")
-        if connector and not start_sync:
-            return connector
+            config = await config_service.get_config(
+                f"/services/connectors/{connector_id}/config"
+            )
+            sync_strategy = (config or {}).get("sync", {}).get("selectedStrategy")
+            if connector and not start_sync:
+                return connector
 
-        if connector:
-            # Bound before the try so the handler below cannot raise
-            # UnboundLocalError over the real failure.
-            coordinator = None
-            lease = None
-            try:
-                if sync_strategy == SyncStrategy.MANUAL.value:
-                    logger.info(
-                        f"Skipping sync for {name} {connector_id} connector because selected strategy is MANUAL"
-                    )
-                else:
-                    # run_sync_task writes SYNCING/IDLE around run_sync, so a
-                    # startup-resumed sync is visible in the stored status
-                    # rather than looking IDLE while it runs.
-                    #
-                    # Every sync task holds a lease, this path included —
-                    # otherwise a boot-time resume would race a resync event
-                    # already in flight on another process.
-                    coordinator = get_coordinator()
-                    if coordinator is None:
-                        logger.warning(
-                            f"No sync coordinator configured; not starting "
-                            f"{name} {connector_id}"
-                        )
-                        return connector
-
-                    admission, lease = await coordinator.begin(connector_id)
-                    if admission is not Admission.GRANTED or lease is None:
-                        # AT_CAPACITY matters here as much as the rest: boot
-                        # resumes every enabled connector at once, and this path
-                        # used to bypass the limit entirely, so the ceiling only
-                        # ever applied to the event traffic that came afterwards.
+            if connector:
+                # Bound before the try so the handler below cannot raise
+                # UnboundLocalError over the real failure.
+                coordinator = None
+                lease = None
+                try:
+                    if sync_strategy == SyncStrategy.MANUAL.value:
                         logger.info(
-                            "Not starting %s %s at boot: %s",
-                            name, connector_id, admission.value,
+                            f"Skipping sync for {name} {connector_id} connector because selected strategy is MANUAL"
                         )
-                        if admission is Admission.AT_CAPACITY:
-                            # Leave it QUEUED and flagged, or nothing can ever
-                            # find it again: the drain selects on status, the
-                            # sweep on pendingResync, and the status sweep on SYNCING.
-                            # Logging and returning would strand it until someone
-                            # pressed resync.
-                            try:
-                                await data_store_provider.graph_provider.update_node(
-                                    connector_id,
-                                    CollectionNames.APPS.value,
-                                    {
-                                        "status": AppStatus.QUEUED.value,
-                                        ConnectorStateKeys.PENDING_RESYNC: True,
-                                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                                    },
-                                )
-                            except Exception as mark_err:
-                                logger.error(
-                                    "Could not queue %s at boot: %s",
-                                    connector_id, mark_err,
-                                )
-                        return connector
+                    else:
+                        # run_sync_task writes SYNCING/IDLE around run_sync, so a
+                        # startup-resumed sync is visible in the stored status
+                        # rather than looking IDLE while it runs.
+                        #
+                        # Every sync task holds a lease, this path included —
+                        # otherwise a boot-time resume would race a resync event
+                        # already in flight on another process.
+                        coordinator = get_coordinator()
+                        if coordinator is None:
+                            logger.warning(
+                                f"No sync coordinator configured; not starting "
+                                f"{name} {connector_id}"
+                            )
+                            return connector
 
-                    # Carry a spec so this sync can hand back any resync that
-                    # gets declined while it holds the lease. Without it a
-                    # request declined against a factory-started sync is
-                    # recorded and never re-issued, and the connector can end up
-                    # never syncing at all.
-                    task = await coordinator.spawn(
-                        lease,
-                        run_sync_task(
-                            connector,
-                            connector_id,
-                            data_store_provider.graph_provider,
-                            logger,
-                            lease=lease,
-                            coordinator=coordinator,
-                            resync_spec=SyncSpec(
-                                connector_id=connector_id,
-                                connector_name=name,
-                                # The processor is where org_id is actually set (see
-                                # create_connector); the OSS data store has no such attribute,
-                                # and an empty orgId makes the re-issued event undeliverable.
-                                org_id=(
-                                    getattr(
-                                        getattr(connector, "data_entities_processor", None),
-                                        "org_id",
-                                        None,
+                        admission, lease = await coordinator.begin(connector_id)
+                        if admission is not Admission.GRANTED or lease is None:
+                            # AT_CAPACITY matters here as much as the rest: boot
+                            # resumes every enabled connector at once, and this path
+                            # used to bypass the limit entirely, so the ceiling only
+                            # ever applied to the event traffic that came afterwards.
+                            logger.info(
+                                "Not starting %s %s at boot: %s",
+                                name, connector_id, admission.value,
+                            )
+                            if admission is Admission.AT_CAPACITY:
+                                # Leave it QUEUED and flagged, or nothing can ever
+                                # find it again: the drain selects on status, the
+                                # sweep on pendingResync, and the status sweep on SYNCING.
+                                # Logging and returning would strand it until someone
+                                # pressed resync.
+                                try:
+                                    await data_store_provider.graph_provider.update_node(
+                                        connector_id,
+                                        CollectionNames.APPS.value,
+                                        {
+                                            "status": AppStatus.QUEUED.value,
+                                            ConnectorStateKeys.PENDING_RESYNC: True,
+                                            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                                        },
                                     )
-                                    or getattr(data_store_provider, "org_id", "")
-                                    or ""
+                                except Exception as mark_err:
+                                    logger.error(
+                                        "Could not queue %s at boot: %s",
+                                        connector_id, mark_err,
+                                    )
+                            return connector
+
+                        # Carry a spec so this sync can hand back any resync that
+                        # gets declined while it holds the lease. Without it a
+                        # request declined against a factory-started sync is
+                        # recorded and never re-issued, and the connector can end up
+                        # never syncing at all.
+                        task = await coordinator.spawn(
+                            lease,
+                            run_sync_task(
+                                connector,
+                                connector_id,
+                                data_store_provider.graph_provider,
+                                logger,
+                                lease=lease,
+                                coordinator=coordinator,
+                                resync_spec=SyncSpec(
+                                    connector_id=connector_id,
+                                    connector_name=name,
+                                    # The processor is where org_id is actually set (see
+                                    # create_connector); the OSS data store has no such attribute,
+                                    # and an empty orgId makes the re-issued event undeliverable.
+                                    org_id=(
+                                        getattr(
+                                            getattr(connector, "data_entities_processor", None),
+                                            "org_id",
+                                            None,
+                                        )
+                                        or getattr(data_store_provider, "org_id", "")
+                                        or ""
+                                    ),
                                 ),
                             ),
-                        ),
-                    )
-                    if task is None:
-                        await coordinator.end(lease)
-                    else:
-                        logger.info(f"Started sync for {name} {connector_id} connector")
-                return connector
-            except Exception as e:
-                # spawn() assigns lease.task; if it raised before that, nothing
-                # else will ever release the claim and the connector becomes
-                # permanently un-startable.
-                if coordinator is not None and lease is not None and lease.task is None:
-                    with contextlib.suppress(Exception):
-                        await coordinator.end(lease)
-                logger.error(
-                    f"❌ Failed to start sync for {name} {connector_id} connector: {str(e)}"
-                )
-                return None
+                        )
+                        if task is None:
+                            await coordinator.end(lease)
+                        else:
+                            logger.info(f"Started sync for {name} {connector_id} connector")
+                    return connector
+                except Exception as e:
+                    # spawn() assigns lease.task; if it raised before that, nothing
+                    # else will ever release the claim and the connector becomes
+                    # permanently un-startable.
+                    if coordinator is not None and lease is not None and lease.task is None:
+                        with contextlib.suppress(Exception):
+                            await coordinator.end(lease)
+                    error_class.log_failure(logger, "sync_run.start_failed", e)
+                    return None
 
-        return None
+            return None

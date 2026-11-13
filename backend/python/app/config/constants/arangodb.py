@@ -88,6 +88,7 @@ class Connectors(Enum):
 
     RSS = "RSS"
     LOCAL_FS = "LOCAL_FS"
+    LOCAL_REPO = "LOCAL REPOSITORY"
     DEMO = "DEMO"
     SMB = "SMB"
     CIFS = "CIFS"
@@ -735,6 +736,10 @@ class RecordRelations(Enum):
     # properties). A link like any other type outside the hierarchy: stored on
     # RECORD_LINK in Neo4j and in recordLinks in Arango.
     DERIVED_FROM = "DERIVED_FROM"
+    # A pull or merge request changed this code file: pull request -> code-file record, written where the
+    # PR's file list is read (the index/stream path), with its own per-PR cleanup -- not among the processor's
+    # LINK_RELATION_TYPES, which every PR save deletes and rewrites. A link: RECORD_LINK / recordLinks.
+    MODIFIES = "MODIFIES"
 
     # --- code knowledge graph ---
     # Structural, written at parse time because both endpoints are in one file.
@@ -743,6 +748,9 @@ class RecordRelations(Enum):
     METHOD = "METHOD"          # class -> method
     # Cross-file, written by the edge-resolution pass once a repo is indexed.
     CALLS = "CALLS"
+    # A function named as a value (a callback, a table entry, a returned handler):
+    # it may run later, which is not a call, so it is never written as CALLS.
+    INDIRECT_CALL = "INDIRECT_CALL"
     IMPORTS = "IMPORTS"            # file -> imported symbol
     IMPORTS_FROM = "IMPORTS_FROM"  # file -> imported module file
     RE_EXPORTS = "RE_EXPORTS"

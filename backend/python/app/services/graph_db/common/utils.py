@@ -262,16 +262,28 @@ PERSON_EDGES_FROM_USER: tuple[str, ...] = tuple(r.value for r in (
 ))
 
 
+_FULL_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s.]+")
+
+
+def is_full_address(text: str) -> bool:
+    """Whether ``text`` is one whole email address, not a fragment such as "@acme" or "acme.com"."""
+    return _FULL_ADDRESS.fullmatch(text) is not None
+
+
 def person_query_ref(ref: dict[str, Any]) -> dict[str, list[str]]:
     """The person fields of a ``person`` ref as a candidate query reads them:
     its user ids, and its edge types kept to the allow-list of each direction
     (Record->User ``outTypes``, User->Record ``inTypes``). A ref naming
     neither (a person entity from search) links by every person relation."""
-    user_ids = list(dict.fromkeys(str(i) for i in ref.get("userIds") or [ref.get("id")] if i))
+    person_ids = list(dict.fromkeys(str(i) for i in ref.get("personIds") or () if i))
+    # A person from search is a User node: the ref id stands for it when no node list is given.
+    user_ids = list(dict.fromkeys(str(i) for i in ref.get("userIds") or ([] if person_ids else [ref.get("id")]) if i))
     if "outTypes" not in ref and "inTypes" not in ref:
-        return {"userIds": user_ids, "outTypes": list(PERSON_EDGES_TO_USER), "inTypes": list(PERSON_EDGES_FROM_USER)}
+        return {"userIds": user_ids, "personIds": person_ids,
+                "outTypes": list(PERSON_EDGES_TO_USER), "inTypes": list(PERSON_EDGES_FROM_USER)}
     return {
         "userIds": user_ids,
+        "personIds": person_ids,
         "outTypes": [t for t in PERSON_EDGES_TO_USER if t in (ref.get("outTypes") or ())],
         "inTypes": [t for t in PERSON_EDGES_FROM_USER if t in (ref.get("inTypes") or ())],
     }
@@ -454,6 +466,16 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "propsGen",
     "propsSrc",
     "propsVer",
+    "embedVrid",
+    "embedRev",
+    "embedKey",
+    "embedDigest",
+    "embedTotal",
+    "embedDeliveryId",
+    "embedStartedMs",
+    "embedSeconds",
+    "embedUncounted",
+    "embedDone",
 })
 
 #: A projected property value on a Neo4j record node (``p_<name>``); never part of a record the API returns.

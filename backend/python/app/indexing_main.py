@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import logging
+import math
 import os
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -11,10 +12,12 @@ from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # must precede all ML library imports
-from app.api.middlewares.request_context import RequestContextMiddleware
+from app.api.middlewares.request_log import install_request_logging
+from app.api.validation_errors import input_free_422
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -32,12 +35,15 @@ from app.core.org_context import (
 )
 from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
+from app.events.dedup import will_promote_queued_copies
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import NodeArtifactStore
+from app.modules.indexing.class_units_backfill import run_class_units_backfill
 from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
     retry_pending_duplicate_reconciles,
 )
+from app.modules.indexing.embed_resume import EMBED_DELIVERY_ID, RESUME_DELIVERY_ID_KEY
 from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
 from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
 from app.modules.indexing.named_entity_completion import (
@@ -62,6 +68,7 @@ from app.modules.indexing.recovery_budget import (
     recovery_exhausted,
     recovery_tracking_id,
 )
+from app.modules.indexing.scope_sweep_loop import run_scope_sweep_loop
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_loop,
 )
@@ -107,6 +114,7 @@ from app.telemetry.modules.record_storage_metrics import record_recovery_org_pas
 from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+from app.utils.indexing_workers import indexing_worker_count
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.logger import install_log_redaction
 from app.utils.loop_lag_monitor import LoopLagMonitor
@@ -435,6 +443,10 @@ async def recover_in_progress_records(
                         # Failures of every recovery of this version share one budget.
                         "_retry_tracking_id": tracking_id,
                     }
+                    if record.get(EMBED_DELIVERY_ID):
+                        # A recovered record continues the run that was interrupted, so an
+                        # embedding it left half done is resumed rather than started over.
+                        payload[RESUME_DELIVERY_ID_KEY] = record[EMBED_DELIVERY_ID]
 
                     # Determine event type - default to NEW_RECORD for recovery
                     # Only treat as REINDEX if version > 0 AND virtualRecordId exists
@@ -1326,7 +1338,7 @@ async def _sweep_queued_records_for_inactive_connectors(
 
     IN_PROGRESS rows are included past a short grace period. The main scan waits
     for `is_stale`'s cutoff — one lease interval with a concurrency manager,
-    else stale_recovery_after_seconds (~122 min) — which is right for a
+    else stale_recovery_after_seconds (~182 min) — which is right for a
     pipeline that might still finish and wrong here: the connector has already
     been popped from connectors_map, so nothing in flight can succeed. One lease
     interval is enough to be sure no worker still owns the row.
@@ -1462,24 +1474,28 @@ def _republishes_since_queued(record: dict[str, Any], enabled_at: object = None)
     was turned on again, which puts the record in line again without moving
     its queuedAtTimestamp.
     """
-    try:
-        last_republished_at = float(record.get("lastRepublishedAt"))
-    except (TypeError, ValueError):
+    if not _is_clock(record.get("lastRepublishedAt")):
         return 0
+    last_republished_at = float(record["lastRepublishedAt"])
     for put_in_line_at in (record.get("queuedAtTimestamp"), enabled_at):
-        try:
-            if float(put_in_line_at) > last_republished_at:
-                # Put in line again since: an earlier wait's re-sends say
-                # nothing about this one.
-                return 0
-        except (TypeError, ValueError):
-            continue
+        if _is_clock(put_in_line_at) and float(put_in_line_at) > last_republished_at:
+            # Put in line again since: an earlier wait's re-sends say
+            # nothing about this one.
+            return 0
     try:
         count = int(record.get("republishCount") or 0)
     except (TypeError, ValueError):
         count = 0
     # A row re-sent before the counter existed has still been re-sent once.
     return max(1, count)
+
+
+def _is_clock(value: object) -> bool:
+    """Whether a stored timestamp can be read as epoch milliseconds: not "inf" or "nan", which parse but order nothing."""
+    try:
+        return math.isfinite(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def _republish_wait_ms(after_seconds: float, republishes: int) -> float:
@@ -1599,6 +1615,41 @@ async def _republish_stranded_records(
                 )
         # Unreadable is not active either: the record waits for the next pass.
         return connector_active[connector_id] is True
+
+    async def _still_parked_behind_a_twin(record: dict[str, Any], record_key: str) -> bool:
+        """Whether something can still release this parked copy: another live record of its org
+        holding the same content whose processing is still ahead (``will_promote_queued_copies``:
+        in flight, or indexed with its enrichment still running), unless it is itself only QUEUED
+        on an active connector, a copy like this one. A QUEUED one on a connector that is not
+        active counts (off, or being deleted: a delete can be put back). Promotion runs once, so
+        a finished or failed twin never releases the copy again; the copy is then sent like any
+        stranded record, and dedup reuses a finished twin rather than indexing it twice. A copy
+        whose twin was deleted, say with its connector, is sent the same way, as are the copies
+        left behind with it: the handler parks all but one behind that one. A failed read keeps
+        it parked."""
+        enrichment_live_after_ms = get_epoch_timestamp_in_ms() - int(
+            messaging_env.stale_recovery_after_seconds * 1000
+        )
+        try:
+            holders = await graph_provider.get_records_by_virtual_record_id(
+                str(record["virtualRecordId"]), raise_on_error=True
+            )
+            for key in holders or []:
+                if key == record_key:
+                    continue
+                twin = await graph_provider.get_document(key, CollectionNames.RECORDS.value, raise_on_error=True)
+                # The lookup spans orgs; this pass is the copy's org.
+                if not twin or twin.get("orgId") != org_id or not is_live_record(twin):
+                    continue
+                if twin.get("indexingStatus") == ProgressStatus.QUEUED.value:
+                    if not await _is_active(str(twin.get("connectorId") or "")):
+                        return True
+                elif will_promote_queued_copies(twin, enrichment_live_after_ms):
+                    return True
+        except Exception as e:
+            logger.warning("Could not look up the twins of parked record %s, so leaving it parked: %s", record_key, e)
+            return True
+        return False
 
     async def _resend(
         record: dict[str, Any],
@@ -1813,15 +1864,17 @@ async def _republish_stranded_records(
                             rate_limited_resent += 1
                     continue
 
-                # Aged from the newest of three clocks, so any one being fresh
-                # keeps the row out. queuedAtTimestamp is the platform's own
-                # "put in line for indexing" time. updatedAt cannot carry this
-                # alone: connectors may fill it with source-system time (a Jira
-                # issue last edited a year ago), which made every freshly synced
-                # row look stranded and sent it twice. Nor can it join the max: a
-                # metadata save moves it, and a row whose event was lost would
-                # never age while its source keeps changing. It stands in only
-                # for rows written before queuedAtTimestamp existed.
+                # Aged from the newest of the platform's own clocks, so any one
+                # being fresh keeps the row out. queuedAtTimestamp is when the
+                # row was last put in line for indexing (a connector save that
+                # asks for indexing, the compare-and-set to QUEUED after a
+                # publish, a retry). updatedAtTimestamp counts only for a
+                # row without one (written before it existed): it says nothing
+                # about the row's event. Connectors may fill it with
+                # source-system time (a Jira issue last edited a year ago), and
+                # a sync rewrites it on every save, changed or not, so on a
+                # source synced more often than the minimum age a lost event
+                # was never re-sent.
                 # lastRepublishedAt is our own: publishing changes nothing about
                 # the row, so without it a record stays eligible and every tick
                 # sends another copy of the same event -- worst precisely when
@@ -1832,19 +1885,19 @@ async def _republish_stranded_records(
                 # appEnabled re-queue is sending it, and a copy from here
                 # would reach the consumer twice. Its own clocks are of the
                 # park, often hours older.
-                clocks: list[float] = []
-                for value in (
-                    record.get("queuedAtTimestamp")
-                    if record.get("queuedAtTimestamp") is not None
-                    else record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
-                    record.get("lastRepublishedAt"),
-                    enabled_at.get(connector_id) if parked_while_off else None,
-                ):
-                    try:
-                        clocks.append(float(value))
-                    except (TypeError, ValueError):
-                        # Unset or malformed: one bad clock must not hide the others.
-                        continue
+                queued_at = record.get("queuedAtTimestamp")
+                # Unset or malformed: one bad clock must not hide the others.
+                clocks = [
+                    float(value)
+                    for value in (
+                        queued_at,
+                        None if _is_clock(queued_at)
+                        else record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
+                        record.get("lastRepublishedAt"),
+                        enabled_at.get(connector_id) if parked_while_off else None,
+                    )
+                    if _is_clock(value)
+                ]
                 if not clocks:
                     continue
                 last_touched_at = max(clocks)
@@ -1856,8 +1909,13 @@ async def _republish_stranded_records(
                     continue
 
                 # A parked copy is released by its twin's completion only while
-                # QUEUED; one parked while its connector was off never is.
-                if not parked_while_off and is_parked_duplicate(record, restored_upload=restored_upload):
+                # QUEUED; one parked while its connector was off never is. One
+                # whose twin is gone has nothing left to release it.
+                if (
+                    not parked_while_off
+                    and is_parked_duplicate(record, restored_upload=restored_upload)
+                    and await _still_parked_behind_a_twin(record, record_key)
+                ):
                     continue
 
                 considered += 1
@@ -2121,7 +2179,7 @@ async def _ensure_pipeline_schema(graph_provider: IGraphDBProvider, logger: logg
 
 def _indexing_worker_count() -> int:
     """Uvicorn worker processes running this service side by side (each with its own consumers)."""
-    return max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1")))
+    return indexing_worker_count()
 
 
 def _distributed_leases_wanted() -> bool:
@@ -2622,6 +2680,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_named_entity_sweep_loop(app_container, graph_provider),
             worker_loop,
         )
+        app.state.scope_sweep_future = asyncio.run_coroutine_threadsafe(
+            run_scope_sweep_loop(app_container, graph_provider, _all_org_ids),
+            worker_loop,
+        )
     else:
         app.state.recovery_task = spawn_detached(
             run_stale_recovery_loop(app_container, graph_provider)
@@ -2638,18 +2700,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.named_entity_sweep_task = spawn_detached(
             run_named_entity_sweep_loop(app_container, graph_provider)
         )
+        app.state.scope_sweep_task = spawn_detached(
+            run_scope_sweep_loop(app_container, graph_provider, _all_org_ids)
+        )
 
     # On every store, not only Neo4j: on the loop records are indexed on, beside the
-    # consumers whose slot use (process-wide, see LLMGateway) it yields to.
+    # consumers whose slot use (process-wide, see LLMGateway) it yields to. The class-units
+    # backfill too: it embeds through their VectorStore, whose clients belong to that loop.
     completion_loop = record_consumer_loop(consumers)
     if completion_loop is not None:
         app.state.named_entity_completion_future = asyncio.run_coroutine_threadsafe(
             run_named_entity_completion_loop(app_container, graph_provider),
             completion_loop,
         )
+        app.state.class_units_future = asyncio.run_coroutine_threadsafe(
+            run_class_units_backfill(app_container, graph_provider, _all_org_ids),
+            completion_loop,
+        )
     else:
         app.state.named_entity_completion_task = spawn_detached(
             run_named_entity_completion_loop(app_container, graph_provider)
+        )
+        app.state.class_units_task = spawn_detached(
+            run_class_units_backfill(app_container, graph_provider, _all_org_ids)
         )
 
     yield
@@ -2690,6 +2763,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"❌ Error during recovery future shutdown: {str(e)}")
 
+    scope_sweep_task = getattr(app.state, "scope_sweep_task", None)
+    if scope_sweep_task:
+        if not scope_sweep_task.done():
+            scope_sweep_task.cancel()
+        try:
+            await scope_sweep_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error during scope sweep shutdown: {str(e)}")
+
+    scope_sweep_future = getattr(app.state, "scope_sweep_future", None)
+    if scope_sweep_future:
+        if not scope_sweep_future.done():
+            scope_sweep_future.cancel()
+        try:
+            await asyncio.wrap_future(scope_sweep_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"Error during scope sweep future shutdown: {str(e)}")
+
     backfill_task = getattr(app.state, "backfill_task", None)
     if backfill_task:
         if not backfill_task.done():
@@ -2711,6 +2806,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         except Exception as e:
             logger.error(f"❌ Error during vector membership backfill future shutdown: {str(e)}")
+
+    class_units_task = getattr(app.state, "class_units_task", None)
+    if class_units_task:
+        if not class_units_task.done():
+            class_units_task.cancel()
+        try:
+            await class_units_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error during class units backfill shutdown: {str(e)}")
+
+    class_units_future = getattr(app.state, "class_units_future", None)
+    if class_units_future:
+        if not class_units_future.done():
+            class_units_future.cancel()
+        try:
+            await asyncio.wrap_future(class_units_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"Error during class units backfill future shutdown: {str(e)}")
 
     entity_index_task = getattr(app.state, "entity_index_task", None)
     if entity_index_task:
@@ -2871,11 +2988,12 @@ app = FastAPI(
     title="Vector Search API",
     description="API for semantic search and document retrieval with message consumer",
     version="1.0.0",
+    exception_handlers={RequestValidationError: input_free_422},
 )
 configure_app(app, "indexing")
 
-# Trace context — outermost.
-app.add_middleware(RequestContextMiddleware)
+# Trace context and the request line.
+install_request_logging(app)
 # Telemetry: metrics middleware + pusher (started/stopped in lifespan).
 telemetry = setup_telemetry(app, service_name="indexing_service")
 
@@ -2968,7 +3086,7 @@ async def health_check(request: Request) -> JSONResponse:
 def run(host: str = "0.0.0.0", port: int = 8091, workers: int | None = None, *, reload: bool = True) -> None:
     """Run the application"""
     import warnings
-    workers = workers or max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1")))
+    workers = workers or indexing_worker_count()
     if reload and workers > 1:
         warnings.warn(
             "INDEXING_UVICORN_WORKERS>1 is not compatible with reload=True; falling back to 1 worker.",
@@ -2981,6 +3099,7 @@ def run(host: str = "0.0.0.0", port: int = 8091, workers: int | None = None, *, 
         host=host,
         port=port,
         log_level="info",
+        access_log=False,
         reload=reload,
         workers=workers,
         timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),

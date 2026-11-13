@@ -341,6 +341,28 @@ describe('XSS Sanitization Middleware', () => {
       expect(next.firstCall.args).to.have.length(0)
     })
 
+    it('passes the files and manifest of a pushed repository through, but not its name or any other path under it', () => {
+      for (const [path, method, exempt] of [
+        ['/api/v1/local-repos/key12345/files', 'PUT', true],
+        ['/api/v1/local-repos/key12345/manifest', 'POST', true],
+        ['/api/v1/local-repos/key12345', 'PUT', false],
+        ['/api/v1/local-repos/key12345/commit', 'POST', false],
+        ['/api/v1/local-repos/key12345/files/', 'PUT', true],
+        ['/api/v1/Local-Repos/key12345/FILES', 'PUT', true],
+        ['/api/v1/local-repos/key12345/manifest/', 'POST', true],
+        ['/api/v1/local-repos/key12345/files/extra', 'PUT', false],
+        ['/api/v1/local-repos/key12345/files', 'GET', false],
+      ] as const) {
+        const req = createMockRequest({ path, method, body: { name: '<img src=x onerror=alert(1)>' } })
+        const next = createMockNext()
+
+        xssSanitizationMiddleware(req, createMockResponse(), next)
+
+        const passed = next.calledOnce && next.firstCall.args.length === 0
+        expect(passed, `${method} ${path}`).to.equal(exempt)
+      }
+    })
+
     it('should skip validation for POST to /api/v1/conversations/ paths', () => {
       const req = createMockRequest({
         path: '/api/v1/conversations/new',
@@ -1047,6 +1069,25 @@ describe('XSS Sanitization Middleware', () => {
 
       const bad = await post('/api/v1/search/grep', { pattern: 'x', paths: ['<script>alert(1)</script>'] })
       expect(bad.status).to.equal(400)
+    })
+
+    it('accepts source text in the code search, read and resolve fields, unchanged, but not in their other fields', async () => {
+      const cases: Array<[string, Record<string, string>]> = [
+        ['/api/v1/code-graph/search', { pattern: 'vector<int>::push_back', path: 'src/a<b>.cpp' }],
+        ['/api/v1/code-graph/semantic-search', { query: 'where is List<String> built' }],
+        ['/api/v1/code-graph/read', { qualified_name: 'operator<<', file_path: 'src/x.cpp' }],
+        ['/api/v1/code-graph/outline', { file_path: 'src/a<b>.cpp' }],
+        ['/api/v1/graph/resolve', { qualifiedName: 'Map<K, V>::get', filePath: 'src/a<b>.java' }],
+      ]
+      for (const [route, fields] of cases) {
+        const ok = await post(route, fields)
+        expect(ok.status, route).to.equal(200)
+        for (const [key, value] of Object.entries(fields)) {
+          expect(ok.body.received[key], `${route} ${key}`).to.equal(value)
+        }
+        const bad = await post(route, { ...fields, repo: '<script>alert(1)</script>' })
+        expect(bad.status, `${route} other field`).to.equal(400)
+      }
     })
 
     it('accepts <id> in the query of POST /api/v1/search/entities, unchanged, but not in its other fields', async () => {

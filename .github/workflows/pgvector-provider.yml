@@ -20,6 +20,7 @@ on:
       - 'backend/python/app/services/resource_governor/**'
       - 'backend/python/tests/integration/db/**'
       - 'backend/python/tests/integration/vector_db/test_pgvector_*.py'
+      - 'backend/python/tests/integration/vector_db/test_scope_rewrite_stores.py'
       - 'backend/python/app/services/permissions/**'
       - 'backend/python/tests/permissions/scope_corpus.py'
       - 'backend/python/tests/permissions/graph.py'
@@ -28,8 +29,11 @@ on:
       - 'backend/python/tests/permissions/oracle.py'
       - 'backend/python/tests/permissions/runner.py'
       - 'backend/python/tests/permissions/scenario.py'
+      - 'backend/python/tests/permissions/serving_corpus.py'
       - 'backend/python/tests/permissions/scope_layer.py'
       - 'backend/python/tests/permissions/stamp_world.py'
+      - 'backend/python/tests/permissions/store_harness.py'
+      - 'backend/python/tests/permissions/rewrite_kit.py'
       - 'backend/python/tests/permissions/scenarios/**'
       - 'backend/python/pyproject.toml'
       - 'scripts/assert_no_skips.py'
@@ -100,16 +104,22 @@ jobs:
           tests/integration/vector_db/test_pgvector_search.py
           tests/integration/vector_db/test_pgvector_scope_filter.py
           tests/integration/vector_db/test_pgvector_pending_corpus.py
+          tests/integration/vector_db/test_pgvector_scope_rewrite.py
+          tests/integration/vector_db/test_pgvector_serving.py
+          tests/integration/vector_db/test_pgvector_serving_search.py
           -m integration --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/pgvector-junit.xml"
 
       - name: No unexpected skips, and every case ran
         if: ${{ always() }}
         run: >
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pgvector-junit.xml" --min-tests 342
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pgvector-junit.xml" --min-tests 444
           --expect-suite 'tests.integration.vector_db.test_pgvector_provider_core=8'
           --expect-suite 'tests.integration.vector_db.test_pgvector_probe=2'
-          --expect-suite 'tests.integration.vector_db.test_pgvector_writes=58'
+          --expect-suite 'tests.integration.vector_db.test_pgvector_writes=62'
           --expect-suite 'tests.integration.vector_db.test_pgvector_reads=16'
           --expect-suite 'tests.integration.vector_db.test_pgvector_search=18'
           --expect-suite 'tests.integration.vector_db.test_pgvector_scope_filter=224'
           --expect-suite 'tests.integration.vector_db.test_pgvector_pending_corpus=16'
+          --expect-suite 'tests.integration.vector_db.test_pgvector_scope_rewrite=10'
+          --expect-suite 'tests.integration.vector_db.test_pgvector_serving=88'
+          --expect-suite 'tests.integration.vector_db.test_pgvector_serving_search=6'

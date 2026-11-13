@@ -16,7 +16,12 @@ from app.services.graph_db.postgres.kg.dependents import (
     moved_parents,
     parents_of,
 )
-from app.services.graph_db.postgres.kg.locks import MAX_ROUNDS, NeedLocks, lock_apps
+from app.services.graph_db.postgres.kg.locks import (
+    MAX_ROUNDS,
+    NeedLocks,
+    bump,
+    lock_apps,
+)
 from app.services.graph_db.postgres.kg.model import (
     CODE_COLL,
     COLL_CODE,
@@ -52,6 +57,7 @@ class Stats:
     apps: set[str] = field(default_factory=set)
     orphaned: set[str] = field(default_factory=set)           # connectors this call read a node of while their own node was missing (their rows were taken off the readers)
     stamps: StampStats = field(default_factory=StampStats)    # what the stamping after the structural rows did
+    wide: bool = False                                        # the unit held the organization-wide lock
     keys: set[Key] = field(default_factory=set)               # the nodes this call took as its focus and looked at the dependants of: a change-log row naming only these is satisfied by it
 
 
@@ -166,7 +172,9 @@ async def project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | Non
     for _ in range(MAX_ROUNDS):
         try:
             async with tx.savepoint("kg_project"):
-                return await _project(tx, org, focus, lock_for=lock_for, expand_neighbours=expand_neighbours, stamps=stamps, extra=extra, wide=wide)
+                st = await _project(tx, org, focus, lock_for=lock_for, expand_neighbours=expand_neighbours, stamps=stamps, extra=extra, wide=wide)
+            bump(org, st.apps, wide=st.wide)
+            return st
         except NeedLocks as e:
             extra |= e.apps
             wide = wide or e.wide
@@ -186,6 +194,7 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     org_wide = wide or "" in locked or any(k[0] not in RECORD_COLLS or k not in docs for k in focus) or not locked
     await lock_apps(tx, org, locked, org_wide=org_wide)
     st.apps = locked - {""}
+    st.wide = org_wide
     leaf_only: set[Key] = set()
     if expand_neighbours:
         focus = await _expanded(tx, org, focus)
@@ -212,6 +221,8 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
 
     snap = await snapshot(tx, org, every, allocate, known_children=expand_neighbours)
     d = derive(every, snap)
+    if d.gone and not org_wide:      # gone since `_held`: its key can already be another connector's, and only the whole org holds that connector off
+        raise NeedLocks(set(), wide=True)
     st.focus = len(every)
     st.keys = set(focus)
     cur_links, cur_grants, cur_closure = await current(tx, org, d)
@@ -221,6 +232,7 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
         st.records = len(d.records)
     if d.gone:
         st.records_deleted = await w.records_delete(sorted(d.gone))
+        await w.scopes_delete(sorted(d.gone))              # the access list of a node that is gone goes with it
     if d.cross_apps:
         done = {r["app_sk"] for r in await tx.fetch("/* pipeshub:kg.cross_read */ SELECT app_sk FROM kg.projection_state WHERE org_id = $1 AND cross_app AND app_sk = ANY($2::bigint[])",
                                                     org, sorted(d.cross_apps))}

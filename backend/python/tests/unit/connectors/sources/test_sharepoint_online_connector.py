@@ -2552,7 +2552,7 @@ class TestRunSync:
         c._reinitialize_credential_if_needed = AsyncMock()
         _mock_run_sync_state(c)
         c.msgraph_client = MagicMock()
-        c.msgraph_client.get_all_users = AsyncMock(return_value=[])
+        c._sync_users = AsyncMock()  # the users are not what this run test is about
         c._sync_user_groups = AsyncMock()
         c._get_all_sites = AsyncMock(return_value=[])
 
@@ -2566,7 +2566,7 @@ class TestRunSync:
         c._reinitialize_credential_if_needed = AsyncMock()
         _mock_run_sync_state(c)
         c.msgraph_client = MagicMock()
-        c.msgraph_client.get_all_users = AsyncMock(return_value=[])
+        c._sync_users = AsyncMock()  # the users are not what this run test is about
         c._sync_user_groups = AsyncMock()
         c._pass_site_ids_filters = MagicMock(return_value=True)
         c._get_site_permissions = AsyncMock(return_value=[])
@@ -2601,7 +2601,7 @@ class TestRunSync:
         c._reinitialize_credential_if_needed = AsyncMock()
         _mock_run_sync_state(c)
         c.msgraph_client = MagicMock()
-        c.msgraph_client.get_all_users = AsyncMock(return_value=[])
+        c._sync_users = AsyncMock()  # the users are not what this run test is about
         c._sync_azure_ad_groups = AsyncMock(side_effect=Exception("group fail"))
         c._get_all_sites = AsyncMock(return_value=[])
 
@@ -2620,7 +2620,7 @@ class TestRunSync:
         c._reinitialize_credential_if_needed = AsyncMock()
         _mock_run_sync_state(c)
         c.msgraph_client = MagicMock()
-        c.msgraph_client.get_all_users = AsyncMock(return_value=[])
+        c._sync_users = AsyncMock()  # the users are not what this run test is about
         c._sync_user_groups = AsyncMock()
 
         # Real _get_all_sites path: discover one root site, then drop it via SITE_IDS IN (other ids only)
@@ -2665,7 +2665,7 @@ class TestRunSync:
         c._reinitialize_credential_if_needed = AsyncMock()
         _mock_run_sync_state(c)
         c.msgraph_client = MagicMock()
-        c.msgraph_client.get_all_users = AsyncMock(return_value=[])
+        c._sync_users = AsyncMock()  # the users are not what this run test is about
         c._sync_user_groups = AsyncMock()
         c._pass_site_ids_filters = MagicMock(return_value=True)
 
@@ -2695,7 +2695,7 @@ class TestRunSync:
         c._reinitialize_credential_if_needed = AsyncMock()
         _mock_run_sync_state(c)
         c.msgraph_client = MagicMock()
-        c.msgraph_client.get_all_users = AsyncMock(return_value=[])
+        c._sync_users = AsyncMock()  # the users are not what this run test is about
         c._sync_user_groups = AsyncMock()
         c._pass_site_ids_filters = MagicMock(return_value=True)
         c._get_site_permissions = AsyncMock(return_value=[])

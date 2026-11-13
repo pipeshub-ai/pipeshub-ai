@@ -54,6 +54,10 @@ function sanitizeString(value: string): string {
   }
 }
 
+// As the router matches: a trailing slash and any letter case reach the same handler.
+const LOCAL_REPO_PUSH_PATH =
+  /^\/api\/v1\/local-repos\/[^/]+\/(files|manifest)\/?$/i;
+
 // Field paths are built from the request's own keys, so only plain names are
 // repeated back; anything else (a key that is itself markup) is not echoed.
 const SAFE_FIELD_PATH = /^[A-Za-z0-9_.[\]-]{1,200}$/;
@@ -123,7 +127,8 @@ function xssRejectionMessage(value: string, field: string): string {
  */
 interface QuestionField {
   holder: Record<string, unknown>;
-  key: string;
+  /** A route can carry several such fields (a code search has a pattern and a path). */
+  keys: readonly string[];
 }
 
 /** MCP tools with a free-text argument typed for chat or search, and its name.
@@ -136,12 +141,18 @@ const MCP_QUESTION_TOOLS = new Map([
 ]);
 
 /** The routes behind those tools, and the field each reads. */
-const SEARCH_QUESTION_ROUTES = new Map([
-  ['/api/v1/search', 'query'],
+const SEARCH_QUESTION_ROUTES = new Map<string, readonly string[]>([
+  ['/api/v1/search', ['query']],
   // /retrieve takes the same plain-text query and renders nothing.
-  ['/api/v1/retrieve', 'query'],
-  ['/api/v1/search/entities', 'query'],
-  ['/api/v1/search/grep', 'pattern'],
+  ['/api/v1/retrieve', ['query']],
+  ['/api/v1/search/entities', ['query']],
+  ['/api/v1/search/grep', ['pattern']],
+  // Source text: a symbol such as `vector<int>::push_back` or `operator<<`, a pattern, a path.
+  ['/api/v1/code-graph/search', ['pattern', 'path']],
+  ['/api/v1/code-graph/semantic-search', ['query']],
+  ['/api/v1/code-graph/read', ['qualified_name', 'file_path']],
+  ['/api/v1/code-graph/outline', ['file_path']],
+  ['/api/v1/graph/resolve', ['qualifiedName', 'filePath']],
 ]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -180,11 +191,9 @@ function findQuestionField(req: Request): QuestionField | undefined {
   const body = req.body;
 
   // The search route MCP's pipeshub_search calls, and the web search box.
-  const routeField = SEARCH_QUESTION_ROUTES.get(req.path.replace(/\/$/, ''));
-  if (routeField !== undefined) {
-    return typeof body[routeField] === 'string'
-      ? { holder: body, key: routeField }
-      : undefined;
+  const routeFields = SEARCH_QUESTION_ROUTES.get(req.path.replace(/\/$/, ''));
+  if (routeFields !== undefined) {
+    return { holder: body, keys: routeFields };
   }
 
   // A JSON-RPC tool call to the MCP endpoint.
@@ -201,7 +210,7 @@ function findQuestionField(req: Request): QuestionField | undefined {
     const args = params.arguments;
     const field = MCP_QUESTION_TOOLS.get(params.name) as string;
     return isPlainObject(args) && typeof args[field] === 'string'
-      ? { holder: args, key: field }
+      ? { holder: args, keys: [field] }
       : undefined;
   }
 
@@ -222,7 +231,7 @@ function isQuestionField(
   if (
     question === undefined ||
     holder !== question.holder ||
-    key !== question.key
+    !question.keys.includes(key)
   ) {
     return false;
   }
@@ -423,6 +432,16 @@ export const xssSanitizationMiddleware = (
     }
 
     if (req.path.startsWith('/api/v1/conversations/') && (req.method === 'POST' || req.method === 'PUT')) {
+      next();
+      return;
+    }
+
+    // A pushed repository's files and manifest are source text (markup in it is not markup here: it is stored as a file and shown as text).
+    // Python validates every path and checks each file's sha256. The repository's name is not exempt: it is sanitised like any other name.
+    if (
+      LOCAL_REPO_PUSH_PATH.test(req.path) &&
+      (req.method === 'POST' || req.method === 'PUT')
+    ) {
       next();
       return;
     }

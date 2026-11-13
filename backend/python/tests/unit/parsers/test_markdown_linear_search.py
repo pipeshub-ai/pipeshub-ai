@@ -120,6 +120,13 @@ def _cpu(fn, text: str) -> float:
     return time.thread_time() - start
 
 
+def _best_of_three(fn, small: str, large: str) -> tuple[float, float]:
+    # Interleaved, so a slow stretch on a busy runner falls on both sizes instead of on the larger one alone (8.06x measured
+    # once on CI for a pattern that doubles in 2.0x locally).
+    times = [(_cpu(fn, small), _cpu(fn, large)) for _ in range(3)]
+    return min(t for t, _ in times), min(t for _, t in times)
+
+
 @pytest.mark.parametrize("name", sorted(REFERENCE))
 @pytest.mark.parametrize("unit", FAMILIES)
 def test_doubling_the_input_does_not_quadruple_the_time(name: str, unit: str) -> None:
@@ -127,8 +134,7 @@ def test_doubling_the_input_does_not_quadruple_the_time(name: str, unit: str) ->
     small, large = unit * (24_000 // len(unit)), unit * (96_000 // len(unit))
     run = lambda t: list(ours.finditer(t))  # noqa: E731
     # Best of three, so one scheduling hiccup cannot fail the ratio.
-    t_small = min(_cpu(run, small) for _ in range(3))
-    t_large = min(_cpu(run, large) for _ in range(3))
+    t_small, t_large = _best_of_three(run, small, large)
     # Four times the input: linear is 4x and quadratic 16x. A 2x step left too
     # little room between them on a busy two-core runner (2.6x measured once).
     assert t_large <= max(t_small, 0.004) * 8, (name, unit, t_small, t_large)
@@ -141,8 +147,7 @@ def test_data_destination_with_unmatched_title_tail_is_linear(unit: str, tail: s
     ours = lis.MD_IMAGE_NESTED
     small, large = unit * (24_000 // len(unit)) + tail, unit * (96_000 // len(unit)) + tail
     run = lambda t: list(ours.finditer(t))  # noqa: E731
-    t_small = min(_cpu(run, small) for _ in range(3))
-    t_large = min(_cpu(run, large) for _ in range(3))
+    t_small, t_large = _best_of_three(run, small, large)
     assert t_large <= max(t_small, 0.004) * 8, (unit, t_small, t_large)
     assert t_large < 1.5, (unit, t_small, t_large)
 
@@ -157,8 +162,7 @@ def test_one_scan_is_shared_by_searches_over_the_same_text() -> None:
         while (m := ours.search(t, pos, scan)) is not None:
             pos = m.end()
     small, large = text, text * 4
-    t_small = min(_cpu(loop, small) for _ in range(3))
-    t_large = min(_cpu(loop, large) for _ in range(3))
+    t_small, t_large = _best_of_three(loop, small, large)
     assert t_large <= max(t_small, 0.004) * 8, (t_small, t_large)
 
 

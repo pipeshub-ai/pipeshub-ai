@@ -257,6 +257,15 @@ tags:
       way a browser's `maxLength` does, so an emoji counts as two characters.
   - name: Code Graph
     description: Code repositories indexed into a navigable code graph, and each one's graph status
+  - name: Local Repositories
+    description: |
+      Push a repository from a developer's machine (`pipeshub index`) so its code is indexed into the code
+      graph. The caller sends a manifest (path and sha256 of each file), uploads only the files the server
+      lacks, then commits to start indexing. The repository is identified by a key the client chooses; the
+      organization and user come from the token, and the repository is visible only to the user who pushed it.
+      Files are UTF-8 text; binaries, files over the size limit and the server's default ignore list
+      (`node_modules/`, `dist/`, lockfiles, images, archives) are rejected per file. The limits are returned
+      when the repository is registered.
   - name: Semantic Search
     description: Enterprise semantic search across all indexed knowledge with relevance scoring
   - name: Agents
@@ -587,6 +596,14 @@ x-pipeshub-nav:
           - API Documentation
 components:
   parameters:
+    LocalRepoKey:
+      name: repoKey
+      in: path
+      required: true
+      description: A key the client chooses and keeps for the working copy (8-64 letters, digits, `-` or `_`).
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]{8,64}$'
     RevealStoredSecrets:
       name: reveal
       in: query
@@ -740,6 +757,7 @@ components:
             connector:sync: Trigger connector synchronization
             connector:delete: Delete connectors
             code:read: Read indexed code repositories and their code graph
+            code:write: Push local repositories to be indexed into the code graph
             config:read: Read system configuration
             config:write: Update system configuration
             crawl:read: Read crawling jobs
@@ -792,6 +810,7 @@ components:
             connector:sync: Trigger connector synchronization
             connector:delete: Delete connectors
             code:read: Read indexed code repositories and their code graph
+            code:write: Push local repositories to be indexed into the code graph
             config:read: Read system configuration
             config:write: Update system configuration
             crawl:read: Read crawling jobs
@@ -2496,6 +2515,80 @@ components:
           type: string
           description: Human-readable explanation. Present only when `success` is false.
           example: Invalid or expired authorization state.
+    GraphExpandResponse:
+      type: object
+      additionalProperties: false
+      required: [nodes, edges, anchors, page, graphStatus]
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id]
+            properties:
+              id: { type: string, example: 'block:9f2c' }
+              kind: { type: string, example: function }
+              label: { type: string, example: parse_token }
+              recordId: { type: string, description: "The file the symbol is in." }
+              file: { type: string, example: src/auth.py }
+              line: { type: integer }
+        edges:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, from, to, type]
+            properties:
+              id: { type: string, example: 'e:51' }
+              from: { type: string }
+              to: { type: string }
+              type: { type: string, example: CALLS }
+              confidence: { type: string, example: INFERRED }
+              line: { type: integer }
+        anchors:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, total]
+            properties:
+              id: { type: string }
+              total: { type: integer, description: "Edges the read held for this anchor, counted up to the first edge after the page. Exact when `page.truncated` is false; a lower bound when it is true." }
+        page:
+          type: object
+          additionalProperties: false
+          required: [truncated, incomplete]
+          properties:
+            truncated: { type: boolean, description: "Another edge the caller can see follows this page. Hidden edges and edges outside a connected app's limit never make it true, except past the most rows one walk reads, where it is never true on an empty page." }
+            incomplete: { type: boolean, description: "The scan budget ran out before every edge was seen, so `anchors[].total` is a lower bound." }
+            nextCursor: { type: string, description: "Opaque. Present only when `truncated` is true." }
+        graphStatus:
+          type: string
+          enum: [never_built, building, ready, stale, waiting_on_indexing, retrying, failed, too_large, unknown]
+          description: The least ready state among the anchors' repositories.
+    PermissionExplainContainer:
+      type: object
+      required: [name, restricted]
+      properties:
+        name:
+          type: string
+          nullable: true
+          description: Null when the admin asking cannot read the container.
+        restricted:
+          type: boolean
+    PermissionExplainContainerOrNull:
+      type: object
+      nullable: true
+      description: The container the reason is about, when it names one; null when it names none.
+      required: [name, restricted]
+      properties:
+        name:
+          type: string
+          nullable: true
+          description: Null when the admin asking cannot read the container.
+        restricted:
+          type: boolean
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -2505,6 +2598,8 @@ components:
         The `code` field is a machine-readable string identifying the error type (e.g.
         `HTTP_UNAUTHORIZED`, `HTTP_NOT_FOUND`, `VALIDATION_ERROR`, `INTERNAL_ERROR`).
       properties:
+        accessNotices:
+          $ref: '#/components/schemas/AccessNotices'
         error:
           type: object
           additionalProperties: false
@@ -6446,6 +6541,29 @@ components:
                 starts; absent on records not indexed since pipeline stages
                 were introduced.
               example: "78f3f276290c9f81"
+            parseNowStatus:
+              type: string
+              nullable: true
+              description: |
+                Outcome of the latest "parse now" request for the record:
+                QUEUED, IN_PROGRESS, STORED, FAILED, EMPTY, PASSWORD_PROTECTED,
+                FILE_TYPE_NOT_SUPPORTED or NEEDS_MULTIMODAL. STORED means the
+                parsed content is readable for the revision in parseNowRev.
+                Absent on records never asked for with parse now.
+              example: STORED
+            parseNowRev:
+              type: string
+              nullable: true
+              description: The contentRev that parseNowStatus applies to.
+            parseNowReason:
+              type: string
+              nullable: true
+              description: Why, for a parseNowStatus other than STORED.
+            parseNowAt:
+              type: integer
+              format: int64
+              nullable: true
+              description: When parseNowStatus was written, in epoch milliseconds (UTC).
             summaryDocumentId:
               type: string
               nullable: true
@@ -8114,6 +8232,8 @@ components:
         - recordGroupType
         - indexingStatus
         - reason
+        - embedDone
+        - embedTotal
         - createdAt
         - updatedAt
         - sizeInBytes
@@ -8195,6 +8315,18 @@ components:
           type: string
           nullable: true
           description: Failure or status reason when set; otherwise `null`.
+        embedDone:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 9007199254740991
+          description: Vector points written so far (one per chunk or image). Set only while `indexingStatus` is `IN_PROGRESS` and the record is embedding; `null` for every other status. Never greater than `embedTotal`.
+        embedTotal:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Distinct vector points the record needs (one per chunk or image). Set only while `indexingStatus` is `IN_PROGRESS` and the record is embedding; `null` for every other status. `embedDone` and `embedTotal` are both set or both `null`.
+          maximum: 9007199254740991
         isInternal:
           type: boolean
           description: True for internal/system nodes that do not originate from a source.
@@ -9418,6 +9550,8 @@ components:
             duration:
               type: integer
               minimum: 0
+            accessNotices:
+              $ref: '#/components/schemas/AccessNotices'
             searchDegraded:
               type: boolean
               description: |
@@ -9456,6 +9590,8 @@ components:
               type: integer
               minimum: 0
               description: Total handler duration in milliseconds.
+            accessNotices:
+              $ref: '#/components/schemas/AccessNotices'
             searchDegraded:
               type: boolean
               description: |
@@ -10049,6 +10185,8 @@ components:
               description: |
                 Same value as the top-level `recordsUsed`. Duplicated inside
                 `meta` for client convenience.
+            accessNotices:
+              $ref: '#/components/schemas/AccessNotices'
             searchDegraded:
               type: boolean
               description: |
@@ -10440,19 +10578,27 @@ components:
           description: Ordered agent-activity transcript for this turn.
           items:
             $ref: '#/components/schemas/MessagePart'
+        answerHidden:
+          $ref: '#/components/schemas/HiddenAnswer'
         createdAt:
           type: string
           format: date-time
         updatedAt:
           type: string
           format: date-time
-    RedactedSource:
+    HiddenAnswer:
       type: object
       additionalProperties: false
       description: |
-        Stands in for a source the viewer of a shared chat or search cannot read:
-        a citation, reference, filter node or search hit with no id, name, link or
-        text. Only the owner of a conversation or search sees every source.
+        Present on an assistant message whose answer is withheld from the reader,
+        and on the `tool_call` rows of that answer's turn.
+        An answer is shown only while its reader can read every record it used
+        (citations, attachments, reference data, applied filters). If any one is
+        out of reach, the whole answer is replaced: `content` carries a short
+        notice, and citations, attachments, reference data, follow-up questions,
+        reasoning, tools and parts are empty. The user's own question is kept.
+        Ask the question again to get an answer built from what the reader can
+        read now.
       required:
         - redacted
         - reason
@@ -10462,7 +10608,35 @@ components:
           enum: [true]
         reason:
           type: string
-          enum: [no_access]
+          enum: [no_longer_accessible, access_check_unavailable]
+          description: |
+            `no_longer_accessible`: a record the answer used can no longer be read
+            by the reader. `access_check_unavailable`: access could not be
+            confirmed; try again.
+    RedactedSource:
+      type: object
+      additionalProperties: false
+      description: |
+        Stands in for a source the viewer of a shared chat or search cannot read:
+        a citation, reference, filter node or search hit with no id, name, link or
+        text. Only the owner of a conversation or search sees every source. An
+        assistant answer that used a record its reader cannot read is withheld as
+        a whole (`HiddenAnswer`), the owner's included.
+      required:
+        - redacted
+        - reason
+      properties:
+        redacted:
+          type: boolean
+          enum: [true]
+        reason:
+          type: string
+          enum: [no_access, no_longer_accessible, access_check_unavailable]
+          description: |
+            `no_access`: the source is not the viewer's to read (shared chats and
+            searches). `no_longer_accessible`: the viewer's own saved search holds
+            a hit on a record they can no longer read. `access_check_unavailable`:
+            access could not be confirmed; try again.
         name:
           type: string
           description: A neutral label (`Restricted source`).
@@ -12578,6 +12752,8 @@ components:
           $ref: '#/components/schemas/SemanticSearchTimeline'
         outsideDates:
           $ref: '#/components/schemas/SemanticSearchOutsideDates'
+        accessNotices:
+          $ref: '#/components/schemas/AccessNotices'
         searchDegraded:
           type: boolean
           description: |
@@ -12605,6 +12781,29 @@ components:
             results may miss documents: says how many parts failed, for example
             `1 of 3 parts of the search index could not be searched, so this search may
             have missed documents.`
+    AccessNotices:
+      type: array
+      description: |
+        Present only when a source the caller can reach is syncing or updating permissions, or the check of what the
+        caller may read could not be made, so results may be incomplete. Codes only; the client words them. A notice
+        names only a connector the caller can already see, never a record, container or person.
+      items:
+        type: object
+        additionalProperties: false
+        required: [code]
+        properties:
+          code:
+            type: string
+            enum: [permissions_updating, connector_syncing, check_unavailable]
+          connectorId:
+            type: string
+          connectorName:
+            type: string
+          firstSync:
+            type: boolean
+            description: |
+              On `connector_syncing`: `true` when the connector has never finished a sync, so there is nothing to
+              search yet. Absent for a routine resync of a connector that has synced before.
     SemanticSearchUnindexedMatch:
       type: object
       additionalProperties: false
@@ -15903,6 +16102,8 @@ components:
           description: Ordered agent-activity transcript for this turn.
           items:
             $ref: '#/components/schemas/MessagePart'
+        answerHidden:
+          $ref: '#/components/schemas/HiddenAnswer'
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:
@@ -21639,7 +21840,7 @@ components:
           example: "Skill 'deploy-runbook' not found"
     SkillsValidationErrorItem:
       type: object
-      description: One failed field, in Pydantic's error format with `msg` reworded in plain language.
+      description: One failed field, in Pydantic's error format with `msg` reworded in plain language. The rejected value is never sent back.
       required: [type, loc, msg]
       properties:
         type:
@@ -21657,11 +21858,6 @@ components:
         msg:
           type: string
           example: Description is required.
-        input:
-          description: |
-            The rejected value exactly as the caller sent it. It can be any JSON type, so its
-            shape is not constrained; it is `null` when a required query parameter is missing.
-          additionalProperties: true
         ctx:
           type: object
           description: |
@@ -23851,6 +24047,8 @@ components:
               type: integer
               minimum: 0
               description: Same value as the top-level `recordsUsed`.
+            accessNotices:
+              $ref: '#/components/schemas/AccessNotices'
             searchDegraded:
               type: boolean
               description: |
@@ -24715,7 +24913,120 @@ components:
         relatedNote:
           type: string
           description: Set when `relatedEntities` covers only the records on this page.
+    LocalRepoRejected:
+      type: array
+      items:
+        type: object
+        properties:
+          path:
+            type: string
+          reason:
+            type: string
+            enum: [ignored, too_large, invalid_path, too_many_files, hash_mismatch, binary, user_quota]
+    LocalRepoStatus:
+      type: object
+      properties:
+        repoKey:
+          type: string
+        name:
+          type: string
+        connectorId:
+          type: string
+        state:
+          type: string
+          enum: [empty, syncing, indexing, ready, partial, failed, stuck]
+        note:
+          type: string
+          description: Present when the state is `partial`; says how many files failed to index.
+        error:
+          type: string
+          description: Why the state is `failed` or `stuck`.
+        generation:
+          type: integer
+        syncedGeneration:
+          type: integer
+        files:
+          type: integer
+        lastCommitAt:
+          type: integer
+          nullable: true
+        indexing:
+          type: object
+          properties:
+            total:
+              type: integer
+            notStarted:
+              type: integer
+            queued:
+              type: integer
+            inProgress:
+              type: integer
+            completed:
+              type: integer
+            failed:
+              type: integer
+            skipped:
+              type: integer
+            excluded:
+              type: object
+              additionalProperties:
+                type: integer
+              description: Files left out altogether, by reason (the client's counts and the files a generator's header proved to be generated output).
+        codeGraph:
+          type: string
+          description: Status of the repository's code graph (`ready`, `building`, `no_code`, ...)
+    LocalRepoRegistered:
+      allOf:
+        - $ref: '#/components/schemas/LocalRepoStatus'
+        - type: object
+          properties:
+            created:
+              type: boolean
+            limits:
+              type: object
+              properties:
+                maxFiles:
+                  type: integer
+                maxFileBytes:
+                  type: integer
+                maxBatchFiles:
+                  type: integer
+                maxBatchBytes:
+                  type: integer
+                maxManifestEntries:
+                  type: integer
+                maxTotalBytes:
+                  type: integer
+                maxReposPerUser:
+                  type: integer
+                maxUserBytes:
+                  type: integer
   responses:
+    CodeToolResult:
+      description: The code tool's result, as the matching `pipeshub_code_*` MCP tool returns it.
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+    CodeGraphUnauthorized:
+      description: Missing, malformed or expired bearer token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    CodeGraphNotFound:
+      description: No indexed repository or file the caller can read matches. The same answer for unreadable and missing.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    CodeGraphUnavailable:
+      description: The query service could not be reached, or could not check access or read the graph. Never an empty result.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     XssRejected:
       description: >-
         Refused before authentication because a query value, or any string in a JSON or form-encoded
@@ -49508,6 +49819,10 @@ paths:
             selected below app level exists or is readable by the caller
             ("Nothing in your selection is available to search"). The
             search is not persisted in this case.
+
+            The body is the usual error envelope. When a source the caller can search is still
+            syncing or updating permissions, it also carries `accessNotices` (codes only, no
+            record, container or person), so a client can say why nothing was found.
           content:
             application/json:
               schema:
@@ -49540,6 +49855,9 @@ paths:
           description: |
             The upstream AI search service is temporarily unavailable, or
             could not be reached (for example, it is still starting).
+
+            When the service could not check what the caller may read, the usual error envelope
+            also carries `accessNotices` with the code `check_unavailable`, and no results are shown.
           content:
             application/json:
               schema:
@@ -54747,6 +55065,289 @@ paths:
             Internal server error.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/permissions/explain:
+    get:
+      tags:
+        - Connector Instances
+      summary: Explain why a person can or cannot read a record
+      description: |
+        For organization admins. Says whether a person can read a record of this
+        connector and, when they cannot, the reason. The answer always equals the
+        access check search and browsing use.
+
+        A container is named only if the admin asking can read it; any other is
+        returned with `name: null` and `restricted: true` (a restricted area).
+        The record's own title is never returned.
+
+        Anyone who is not an org admin gets `404`, as for a route that does not
+        exist. At most 30 checks per admin per minute. Each check is logged with
+        the admin, the person, the record and the reason code.
+      operationId: explainConnectorRecordAccess
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID (`_key` of the instance).
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+        - name: userId
+          in: query
+          required: true
+          description: The person the question is about.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+        - name: recordId
+          in: query
+          required: true
+          description: The record, by id.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+      responses:
+        '200':
+          description: The verdict and the reason.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [admitted, code, container, path, reference]
+                properties:
+                  admitted:
+                    type: boolean
+                    description: Whether the person can read the record.
+                  code:
+                    type: string
+                    enum:
+                      - granted
+                      - not_linked
+                      - no_grant
+                      - restricted_container
+                      - item_restricted
+                      - parent_not_readable
+                      - pending_rewrite
+                      - syncing
+                      - scheme_unreadable
+                      - deleted_at_source
+                      - unexplained
+                  container:
+                    $ref: '#/components/schemas/PermissionExplainContainerOrNull'
+                  path:
+                    type: array
+                    description: Containers from the connector down to the record's parent.
+                    items:
+                      $ref: '#/components/schemas/PermissionExplainContainer'
+                  reference:
+                    type: string
+                    description: Quote this to support when the reason looks wrong.
+        '400':
+          description: A query value is missing or too long.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            The caller is not an org admin, or the person or the record is unknown or
+            not of this connector.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: More than 30 checks in a minute.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The access check could not answer. Try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/permissions/status:
+    get:
+      tags:
+        - Connector Instances
+      summary: Get how fresh a connector's permissions are
+      description: |
+        What an admin needs to know about one connector's permissions: whether its
+        last permission sync worked, how soon a change at the source reaches
+        PipesHub, whether any rewrite of its permissions is still waiting, and
+        whether search reads its stored permissions now. The answer holds counts,
+        codes and times only; it names no record, container or user.
+
+        <b>Who can read it:</b> org admins, for a connector they may open: a personal
+        connector only by the user who created it. A connected app whose grant limits it to
+        part of the knowledge gets it only when that limit names this connector whole,
+        because the counts cover the whole connector; an app with no such limit gets it as
+        any admin does. Anyone else, an ID no instance of the caller's organization has,
+        another user's personal connector, and a connected app whose limit does not name
+        this connector whole get <code>404</code>.
+      operationId: getConnectorPermissionStatus
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID (`_key` of the instance).
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+      responses:
+        '200':
+          description: The connector's permission freshness
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asOf, state, reachWithinMinutes, serving, lastPermissionSync, pending, coverage, attention, warnings]
+                properties:
+                  asOf:
+                    type: string
+                    format: date-time
+                  state:
+                    type: string
+                    description: |
+                      The one state to read first: `running` (a sync is running), `never` (no sync has ended),
+                      `failed` (the last sync failed), `overflow` (a change reached the whole connector and no subtree was
+                      registered for it, so the connector's permission index needs a full pass; the pass may wait, for example while a
+                      write is still open, and until it runs search checks each result), `pending` (subtrees are being
+                      rewritten and hidden until then) or `healthy`. Other reasons the stored permissions are not usable
+                      (an unfinished back-fill, an unreadable list of waiting subtrees) are codes in `attention`, not states;
+                      search reads such a connector with the classic check, which hides nothing.
+                    enum: [healthy, running, failed, pending, overflow, never]
+                  reachWithinMinutes:
+                    type: integer
+                    nullable: true
+                    description: The connector's sync interval, which is how soon a change at the source reaches PipesHub. `null` when it is not scheduled.
+                  serving:
+                    type: object
+                    required: [current, served]
+                    properties:
+                      current:
+                        type: boolean
+                        description: The connector's stored permissions are complete and up to date.
+                      served:
+                        type: boolean
+                        description: Search reads the stored permissions of this connector now (current, nothing pending, no sync running).
+                  lastPermissionSync:
+                    type: object
+                    required: [finishedAt, outcome]
+                    properties:
+                      finishedAt:
+                        type: string
+                        format: date-time
+                        nullable: true
+                      outcome:
+                        type: string
+                        description: '`running`, `never`, or how the last run ended (`succeeded`, `failed`, `stopped`, `skipped`).'
+                  pending:
+                    type: object
+                    required: [roots, unreadable, oldestChangesAgo]
+                    properties:
+                      roots:
+                        type: integer
+                        description: Subtrees waiting for a rewrite.
+                      unreadable:
+                        type: boolean
+                        description: The list of waiting subtrees could not be read.
+                      oldestChangesAgo:
+                        type: integer
+                        nullable: true
+                        description: How many structural changes ago the oldest waiting subtree was registered.
+                  coverage:
+                    type: object
+                    nullable: true
+                    description: What the last back-fill of the stored permissions covered; `null` when none has run.
+                    properties:
+                      records:
+                        type: integer
+                        nullable: true
+                      stale:
+                        type: integer
+                        description: Virtual records that search reads by the classic check.
+                  attention:
+                    type: array
+                    description: Codes of what needs a person or hides content.
+                    items:
+                      type: string
+                  warnings:
+                    type: array
+                    description: What the connector reported at the end of its last sync (empty when it reports none).
+                    items:
+                      type: object
+                      required: [code]
+                      properties:
+                        code:
+                          type: string
+                        items:
+                          type: integer
+                          nullable: true
+                        container:
+                          type: string
+                          nullable: true
+                        fix:
+                          type: object
+                          nullable: true
+                          additionalProperties: true
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: |
+            The connector instance ID does not match the pattern (`VALIDATION_ERROR`). An ID with an encoded
+            path separator or a dot segment is refused before that, by the path guard, with `HTTP_BAD_REQUEST`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The OAuth client's token lacks the `connector:read` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            No connector instance of the caller's organization has this ID, the caller
+            is not an org admin, the connector is another user's personal connector, or
+            the caller is a connected app whose knowledge limit does not name this connector whole.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The connector service could not be reached. Safe to retry.
           content:
             application/json:
               schema:
@@ -62632,6 +63233,318 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  # -------------------- Local repositories --------------------
+  /local-repos:
+    get:
+      tags:
+        - Local Repositories
+      summary: List the caller's local repositories
+      description: Only repositories pushed by the caller are listed.
+      operationId: listLocalRepos
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      responses:
+        '200':
+          description: Repositories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repos:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LocalRepoStatus'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+  /local-repos/{repoKey}:
+    parameters:
+      - $ref: '#/components/parameters/LocalRepoKey'
+    put:
+      tags:
+        - Local Repositories
+      summary: Register a local repository (idempotent)
+      description: |
+        Creates the repository the first time (201) and returns it afterwards (200). The response carries the
+        limits to batch by. The body may name the repository; it may not name anything else.
+      operationId: registerLocalRepo
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+      responses:
+        '200':
+          description: The repository (already registered)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalRepoRegistered'
+        '201':
+          description: The repository was created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalRepoRegistered'
+        '400':
+          description: Invalid repository key
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '409':
+          description: The repository is being deleted, or the user already has the most repositories one person may keep (`limits.maxReposPerUser`)
+        '411':
+          description: The request has no Content-Length (a chunked body)
+        '413':
+          description: The request body is over the size limit
+        '422':
+          description: The body names a field this API does not accept, or the name has markup, control or format characters
+    get:
+      tags:
+        - Local Repositories
+      summary: Get a local repository and its indexing status
+      description: |
+        `state` is `empty` (nothing committed), `syncing`, `indexing`, `ready`, `partial` (searchable, but some files failed to index; see `indexing.failed`), `failed` or `stuck` (the commit is
+        more than two minutes old and no sync is running; commit again). Polling also restarts a sync that was
+        coalesced with a newer commit.
+      operationId: getLocalRepo
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      responses:
+        '200':
+          description: The repository
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalRepoStatus'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
+    delete:
+      tags:
+        - Local Repositories
+      summary: Delete a local repository
+      description: Deletes the repository's connector (records, symbols, edges, vectors) and the server's copy of the files.
+      operationId: deleteLocalRepo
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      responses:
+        '202':
+          description: Deletion started
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
+        '500':
+          description: The repository was removed from the index but its files could not be removed from the server
+  /local-repos/{repoKey}/manifest:
+    parameters:
+      - $ref: '#/components/parameters/LocalRepoKey'
+    post:
+      tags:
+        - Local Repositories
+      summary: Compare a manifest with the server's copy
+      description: |
+        Returns the paths to upload. With `complete: true` the server deletes every path the list leaves out;
+        `deleted` removes paths explicitly (a rename is a deleted path plus a new one).
+      operationId: diffLocalRepoManifest
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [path, sha256, size]
+                    properties:
+                      path:
+                        type: string
+                        description: Repo-relative, slash separated, NFC
+                      sha256:
+                        type: string
+                        pattern: '^[0-9a-f]{64}$'
+                      size:
+                        type: integer
+                        minimum: 0
+                complete:
+                  type: boolean
+                  default: false
+                deleted:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: What to upload and what was deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upload:
+                    type: array
+                    items:
+                      type: string
+                  deleted:
+                    type: array
+                    items:
+                      type: string
+                  unchanged:
+                    type: integer
+                  rejected:
+                    $ref: '#/components/schemas/LocalRepoRejected'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
+        '413':
+          description: Too many manifest entries
+  /local-repos/{repoKey}/files:
+    parameters:
+      - $ref: '#/components/parameters/LocalRepoKey'
+    put:
+      tags:
+        - Local Repositories
+      summary: Upload changed files
+      description: |
+        A batch of UTF-8 files, each with its sha256. Good files are stored even when others in the batch are rejected.
+      operationId: uploadLocalRepoFiles
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [path, sha256, content]
+                    properties:
+                      path:
+                        type: string
+                      sha256:
+                        type: string
+                        pattern: '^[0-9a-f]{64}$'
+                      content:
+                        type: string
+      responses:
+        '200':
+          description: Stored and rejected paths
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stored:
+                    type: array
+                    items:
+                      type: string
+                  rejected:
+                    $ref: '#/components/schemas/LocalRepoRejected'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
+        '413':
+          description: |
+            Two different refusals. A batch over `limits.maxBatchFiles` or `limits.maxBatchBytes`, or a body over the size limit, stores nothing and
+            answers `{ "detail": "..." }`. An upload that would take the user's repositories past `limits.maxUserBytes` stores the files that fit
+            and answers with the body below: send the files in `rejected` again only after removing something, and do not commit a repository
+            believing that every file arrived.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                  stored:
+                    type: array
+                    items:
+                      type: string
+                  rejected:
+                    $ref: '#/components/schemas/LocalRepoRejected'
+  /local-repos/{repoKey}/commit:
+    parameters:
+      - $ref: '#/components/parameters/LocalRepoKey'
+    post:
+      tags:
+        - Local Repositories
+      summary: Start indexing the pushed files
+      description: Bumps the repository generation and starts a sync. Safe to call after every burst of changes.
+      operationId: commitLocalRepo
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                excluded:
+                  type: object
+                  additionalProperties:
+                    type: integer
+                  description: What the client left out before sending, as a count per reason (`ignored_folder`, `binary`, `too_large`, `linked`, `unreadable`). Shown in the status.
+      responses:
+        '202':
+          description: Accepted; the current status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalRepoStatus'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
+
   # -------------------- Skills --------------------
   /api-toolsets/validate:
     post:
@@ -63363,8 +64276,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The API could not be reached, or answered with something that is not HTTP. The connectors
-            service answers `502`, which the gateway reports as `500 INTERNAL_ERROR`.
+            One of:
+            - the API could not be reached, or answered with something that is not HTTP;
+            - for an OAuth scheme (a person's sign-in or client credentials), the OAuth server is down
+              or rate-limiting (5xx or 429) when an access token is needed: before the call, or when
+              refreshing after the API answered `401`. The call, or its retry, was not sent.
+
+            The connectors service answers `502`, which the gateway reports as `500 INTERNAL_ERROR`.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -68287,7 +69205,14 @@ paths:
             than the path parameter; or the model is the embedding model in use while
             the vector store holds its vectors (standard error envelope, message
             "This model is embedding your indexed content. Delete the embeddings in
-            Labs first, then change or delete the model and re-embed."); or `VALIDATION_ERROR`
+            Labs first, then change or delete the model and re-embed."; when it is the
+            only embedding model, "This is the only embedding model, so deleting it would
+            switch embedding to the built-in model, which cannot use the vectors already
+            stored. To keep your embeddings, first add the same model from another provider,
+            at the same size, then delete this one. To use a different model, delete the
+            embeddings in Labs first, then change or delete this model and re-embed.";
+            a vector store that cannot change model in place, such as pgvector, answers
+            with its own message instead); or `VALIDATION_ERROR`
             naming `params.modelType`; or the request-wide HTML filter (`HTTP_BAD_REQUEST`)
             when the query string looks like markup or script, before the token is checked.
 
@@ -68310,6 +69235,12 @@ paths:
                     error:
                       code: HTTP_BAD_REQUEST
                       message: "This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed."
+                lastEmbeddingModel:
+                  summary: The only embedding model, with vectors stored
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "This is the only embedding model, so deleting it would switch embedding to the built-in model, which cannot use the vectors already stored. Add the model that should take over first, then delete this one. The same model from another provider, at the same size, keeps your embeddings."
         '401':
           description: Unauthorized
           content:
@@ -72189,6 +73120,9 @@ paths:
                         connector_id:
                           type: string
                           description: Id of that connector instance.
+                        indexed_commit:
+                          type: string
+                          description: The commit the connector last synced the repository to. Absent until a sync records it.
                         graph_status:
                           type: string
                           enum: [never_built, building, ready, stale, waiting_on_indexing, retrying, failed, too_large, unknown]
@@ -72238,6 +73172,369 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /code-graph/search:
+    post:
+      tags:
+        - Code Graph
+      summary: Search a repository's code
+      description: |
+        Finds symbols by identifier, or text and regex matches, in one indexed repository. Relayed from
+        the query service with the caller's own token, so only files the caller can read are searched.
+        The result is the `pipeshub_code_search` tool's result.
+      operationId: searchCodeGraph
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pattern]
+              properties:
+                repo: { type: string, maxLength: 300, description: "`owner/name`, `name` or `<connector>:owner/name`. Required unless the request names a `record_id`." }
+                include_tests: { type: boolean, default: false }
+                pattern: { type: string, minLength: 1, maxLength: 200 }
+                mode: { type: string, enum: [identifier, text, regex], default: identifier }
+                path: { type: string, maxLength: 1000, description: "Only files under this repo-relative path." }
+                limit: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          $ref: '#/components/responses/CodeToolResult'
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/CodeGraphNotFound'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
+  /code-graph/semantic-search:
+    post:
+      tags:
+        - Code Graph
+      summary: Search a repository's code by meaning
+      description: |
+        Finds code by what it does, in one indexed repository. Relayed from the query service with the
+        caller's own token. The result is the `pipeshub_code_semantic_search` tool's result.
+      operationId: semanticSearchCodeGraph
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                repo: { type: string, maxLength: 300 }
+                include_tests: { type: boolean, default: false }
+                query: { type: string, minLength: 1, maxLength: 500 }
+                limit: { type: integer, minimum: 1, maximum: 50, default: 15 }
+      responses:
+        '200':
+          $ref: '#/components/responses/CodeToolResult'
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/CodeGraphNotFound'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
+  /code-graph/read:
+    post:
+      tags:
+        - Code Graph
+      summary: Read source from a repository
+      description: |
+        Reads one symbol, a line range, or a whole file. Relayed from the query service with the caller's
+        own token. The result is the `pipeshub_code_read` tool's result.
+      operationId: readCodeGraph
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                repo: { type: string, maxLength: 300 }
+                include_tests: { type: boolean, default: false }
+                file_path: { type: string, maxLength: 1000 }
+                record_id: { type: string, maxLength: 200, description: "A code file's record id, instead of `file_path`." }
+                qualified_name: { type: string, maxLength: 1000 }
+                lines: { type: string, maxLength: 40, description: "A range such as `40-80`." }
+                max_lines: { type: integer, minimum: 1, maximum: 2000 }
+      responses:
+        '200':
+          $ref: '#/components/responses/CodeToolResult'
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/CodeGraphNotFound'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
+  /code-graph/outline:
+    post:
+      tags:
+        - Code Graph
+      summary: Outline a file's symbols
+      description: |
+        Lists the symbols a file defines. Relayed from the query service with the caller's own token. The
+        result is the `pipeshub_code_outline` tool's result.
+      operationId: outlineCodeGraph
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                repo: { type: string, maxLength: 300 }
+                include_tests: { type: boolean, default: false }
+                file_path: { type: string, maxLength: 1000 }
+                record_id: { type: string, maxLength: 200 }
+      responses:
+        '200':
+          $ref: '#/components/responses/CodeToolResult'
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/CodeGraphNotFound'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
+  /graph/expand:
+    post:
+      tags:
+        - Code Graph
+      summary: Expand a graph node's neighbours
+      description: |
+        One hop from up to 20 anchor nodes, as nodes and edges a graph explorer can draw. Every node and edge
+        is checked against what the caller may read; hidden data changes nothing in the answer (no count, flag,
+        order or page), except `page.incomplete`.
+
+        A node id is `block:<key>` for a code symbol. An anchor the caller cannot read, one that is in test code
+        while `includeTests` is false, and one that does not exist are all dropped alike; when none remains the
+        answer is `404` with the same body every time.
+
+        `limit` caps the neighbours read, so a response holds at most 100 new nodes. `anchors[].total` counts the
+        edges the read held for each anchor, up to the first edge after the page: exact when `page.truncated` is
+        false and a lower bound when it is true. Page with
+        `page.nextCursor`: an opaque offset into the same deterministic walk, so a cursor from another request
+        is harmless; a malformed one is `400`. Paging ends about 5,100 rows into one walk: past that `page.truncated`
+        stays true with no `page.nextCursor`. `page.incomplete` is true only when the scan budget ran out before
+        every edge was seen. The scope is the source's own: `code:read` for `code`. A failed access check or store
+        read is `503`, never an empty graph. Large bodies are gzip-compressed when the client accepts it.
+        Answers are never cached (`Cache-Control: private, no-store`).
+
+        Edges run between code symbols only. An `IMPORTS_FROM` edge that ends at a whole file is not returned.
+      operationId: expandGraph
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source, nodeIds]
+              properties:
+                source: { type: string, enum: [code] }
+                nodeIds: { type: array, minItems: 1, maxItems: 20, items: { type: string, minLength: 1, maxLength: 200 } }
+                direction: { type: string, enum: [inbound, outbound, any], default: any }
+                edgeTypes:
+                  type: array
+                  maxItems: 20
+                  items: { type: string, maxLength: 40 }
+                  description: Relations to follow (`CALLS`, `IMPORTS_FROM`, `INHERITS`, `CONTAINS`, ...). Omit for all code relations; any other value is `400`.
+                includeTests: { type: boolean, default: false }
+                limit: { type: integer, minimum: 1, maximum: 100, default: 50 }
+                cursor: { type: string, maxLength: 256, description: "`page.nextCursor` of the previous response, with the same other fields." }
+      responses:
+        '200':
+          description: The neighbours the caller may see
+          headers:
+            Cache-Control:
+              schema: { type: string, example: 'private, no-store' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphExpandResponse'
+        '400':
+          description: A malformed `cursor`, an unknown edge type, or a body that fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: No anchor is readable. The same answer for hidden and missing anchors.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The connected app's knowledge limit is too large to check.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
+  /graph/resolve:
+    post:
+      tags:
+        - Code Graph
+      summary: Find the graph node for a code symbol or file
+      description: |
+        Turns the address a code search hit or a record page has into a node id for `/graph/expand`. Give
+        `recordId`, or `repo` and `filePath`. With `qualifiedName` the answer is that symbol; without it, the
+        file's first definition. A hit in test code needs `includeTests: true`. Anything the caller cannot read
+        and anything that does not exist is the same `404`. A `repo` that matches more than one repository the
+        caller can read is `409`. Answers are never cached (`Cache-Control: private, no-store`).
+      operationId: resolveGraphNode
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source]
+              properties:
+                source: { type: string, enum: [code] }
+                repo: { type: string, maxLength: 300, description: 'owner/name, name, or <connector>:owner/name' }
+                recordId: { type: string, minLength: 1, maxLength: 200 }
+                filePath: { type: string, minLength: 1, maxLength: 2000 }
+                qualifiedName: { type: string, minLength: 1, maxLength: 2000 }
+                includeTests: { type: boolean, default: false }
+      responses:
+        '200':
+          description: The node id
+          headers:
+            Cache-Control:
+              schema: { type: string, example: 'private, no-store' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nodeId]
+                properties:
+                  nodeId: { type: string }
+        '400':
+          description: The body fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: Nothing readable matches. The same answer for hidden and missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The `repo` matches more than one repository the caller can read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The connected app's knowledge limit is too large to check.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
+  /graph/revalidate:
+    post:
+      tags:
+        - Code Graph
+      summary: Check which graph nodes are still visible
+      description: |
+        Of up to 5,000 node ids a client kept from earlier responses, returns those the caller may still see,
+        in the order asked. Ids are checked in batches. Missing, malformed and hidden ids are all simply absent.
+        Pass `includeTests: true` when the client shows test code. Answers are never cached.
+      operationId: revalidateGraph
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source, nodeIds]
+              properties:
+                source: { type: string, enum: [code] }
+                nodeIds: { type: array, minItems: 1, maxItems: 5000, items: { type: string, minLength: 1, maxLength: 200 } }
+                includeTests: { type: boolean, default: false }
+      responses:
+        '200':
+          description: The ids that are still visible
+          headers:
+            Cache-Control:
+              schema: { type: string, example: 'private, no-store' }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [visible]
+                properties:
+                  visible: { type: array, items: { type: string } }
+        '400':
+          description: The body fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '422':
+          description: The connected app's knowledge limit is too large to check.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
+
   # ── MCP (Model Context Protocol) ──────────────────────────────────
   # These endpoints are mounted at /mcp (root-level, NOT under /api/v1).
   # Use the root server URL: {instance_url}/mcp
@@ -72252,9 +73549,17 @@ paths:
         - `tools/list` — List available tools
         - `tools/call` — Execute a tool (search, conversations, KB management, etc.)
 
-        The code-graph tools (`pipeshub_code_repos`, `pipeshub_code_symbols`, `pipeshub_code_read`
-        and the rest) are listed and callable only when the caller can read at least one indexed
-        code repository and, for an OAuth access token or personal access token, holds `code:read`.
+        The code-graph tools are `pipeshub_code_repos`, `pipeshub_code_symbols`,
+        `pipeshub_code_neighbours`, `pipeshub_code_read`, `pipeshub_code_path`,
+        `pipeshub_code_search`, `pipeshub_code_semantic_search`, `pipeshub_code_outline`,
+        `pipeshub_code_impact`, `pipeshub_code_impact_of_diff`, `pipeshub_code_history` and
+        `pipeshub_code_entry_points`. `pipeshub_code_impact`'s optional
+        `edge_types` takes any of `CALLS`, `INDIRECT_CALL`, `IMPORTS_FROM`, `INHERITS`, `IMPLEMENTS` and
+        `OVERRIDES`; another value is refused. Their usage guidance (call `pipeshub_code_impact`
+        before grep for who-calls and what-breaks questions) is sent in the `initialize` result's
+        `instructions`. They are listed and callable only when the caller can read at least one
+        indexed code repository and, for an OAuth access token or personal access token, holds
+        `code:read`.
         The repository check fails open: when the query service answers it with an error other
         than `401` or `403`, times out or cannot be reached, the tools are listed anyway.
 

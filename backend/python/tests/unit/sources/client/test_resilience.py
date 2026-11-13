@@ -1,10 +1,17 @@
 """Unit tests for app.sources.client.resilience.ResiliencePolicy."""
 
 import asyncio
+import contextlib
+from unittest.mock import patch
 
 import httpx
 import pytest
 
+from app.connectors.core.sync.run_context import (
+    SyncRunStats,
+    bind_run_stats,
+    reset_run_stats,
+)
 from app.sources.client.resilience import ResiliencePolicy, parse_retry_after
 
 
@@ -190,6 +197,128 @@ class TestBackoffGate:
         # Generous bound: this asserts "not blocked by the 0.3s pause", not a
         # precise timing, so scheduler jitter must not make it flaky.
         assert loop.time() - start < 0.25
+
+
+@contextlib.contextmanager
+def _run_stats() -> SyncRunStats:
+    stats = SyncRunStats()
+    token = bind_run_stats(stats)
+    try:
+        yield stats
+    finally:
+        reset_run_stats(token)
+
+
+def _pauses_at(policy: ResiliencePolicy, *pauses: tuple[float, float]) -> float:
+    """``pause(seconds)`` at each loop time ``at``; returns the run's backoff wait."""
+    loop = asyncio.get_running_loop()
+    clock = [0.0]
+    with _run_stats() as stats, patch.object(loop, "time", lambda: clock[0]):
+        for at, seconds in pauses:
+            clock[0] = at
+            policy.pause(seconds)
+    return stats.backoff_wait_s
+
+
+class TestPauseIsCounted:
+    """The run's backoff wait is how long its own pauses kept the gate shut: the union of the shut intervals."""
+
+    @pytest.mark.asyncio
+    async def test_one_pause(self) -> None:
+        assert _pauses_at(_policy(), (0, 2)) == 2
+
+    @pytest.mark.asyncio
+    async def test_capped_at_max_delay(self) -> None:
+        assert _pauses_at(_policy(max_delay=60), (0, 120)) == 60
+
+    @pytest.mark.asyncio
+    async def test_an_overlapping_pause_adds_only_its_extension(self) -> None:
+        assert _pauses_at(_policy(), (0, 2), (1, 3)) == 4
+
+    @pytest.mark.asyncio
+    async def test_a_pause_after_the_gate_reopened_adds_in_full(self) -> None:
+        assert _pauses_at(_policy(), (0, 2), (5, 2)) == 4
+
+    @pytest.mark.asyncio
+    async def test_concurrent_pauses_count_the_longest(self) -> None:
+        assert _pauses_at(_policy(), (0, 1), (0, 3), (0, 2)) == 3
+
+    @pytest.mark.asyncio
+    async def test_two_waiters_behind_one_pause_count_it_once(self) -> None:
+        policy = _policy()
+        loop = asyncio.get_running_loop()
+        released: list[float] = []
+
+        async def waiter() -> None:
+            await policy.acquire()
+            released.append(loop.time())
+
+        with _run_stats() as stats:
+            policy.pause(0.05)
+            resume_at = policy._resume_at
+            await asyncio.gather(waiter(), waiter())
+
+        assert len(released) == 2 and min(released) >= resume_at, "both waited behind the gate"
+        assert stats.backoff_wait_s == pytest.approx(0.05)
+
+    @pytest.mark.asyncio
+    async def test_a_pause_another_run_armed_is_not_counted_for_the_run_it_holds(self) -> None:
+        """Run A's call arms the shared gate; run B's call waits behind it and counts nothing."""
+        policy = _policy()
+        a_paused = asyncio.Event()
+        held: list[bool] = []
+
+        async def run_a() -> SyncRunStats:
+            with _run_stats() as stats:
+                policy.pause(0.05)
+                a_paused.set()
+            return stats
+
+        async def run_b() -> SyncRunStats:
+            with _run_stats() as stats:
+                await a_paused.wait()
+                held.append(policy._gate_is_closed())
+                await policy.acquire()
+            return stats
+
+        a, b = await asyncio.gather(asyncio.create_task(run_a()), asyncio.create_task(run_b()))
+
+        assert held == [True]
+        assert a.backoff_wait_s == pytest.approx(0.05) and b.backoff_wait_s == 0
+
+    def test_control_outside_a_run_zero_and_no_loop_count_nothing(self) -> None:
+        """Control: passes on main as behaviour (it fails there only on the import)."""
+        policy = _policy()
+        policy.pause(1)  # no running loop: the existing early return
+        assert policy._resume_at == 0
+
+    @pytest.mark.asyncio
+    async def test_a_zero_pause_counts_nothing(self) -> None:
+        with _run_stats() as stats:
+            _policy().pause(0)
+        assert stats.backoff_wait_s == 0
+
+    @pytest.mark.asyncio
+    async def test_a_policy_that_refuses_to_wait_counts_nothing(self) -> None:
+        from app.connectors.sources.atlassian.core.quota import (
+            AtlassianQuotaExhausted,
+            QuotaAwarePolicy,
+        )
+        from app.sources.client.servicenow.servicenow import (
+            ServiceNowRateLimited,
+            ServiceNowRateLimitPolicy,
+        )
+
+        atlassian = QuotaAwarePolicy(rate_limit=1000, base_delay=0.0, max_delay=60.0)
+        servicenow = ServiceNowRateLimitPolicy(rate_limit=1000, base_delay=0.0, max_delay=60.0)
+        with _run_stats() as stats:
+            atlassian.note_response_status(429)
+            with pytest.raises(AtlassianQuotaExhausted):
+                atlassian.note_retry(0, retry_after=3600)
+            servicenow.note_response_status(429, {})
+            with pytest.raises(ServiceNowRateLimited):
+                servicenow.note_retry(0, retry_after=3600)
+        assert stats.backoff_wait_s == 0
 
 
 class TestBackoffCalculation:

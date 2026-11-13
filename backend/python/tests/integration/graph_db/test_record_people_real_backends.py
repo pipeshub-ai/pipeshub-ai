@@ -13,6 +13,7 @@ import io
 import logging
 import uuid
 from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
 
 import pytest
 
@@ -138,19 +139,17 @@ async def test_backfill_links_member_sender_and_recipients_once(backend) -> None
         assert org_doc["entityIndexState"] is None
 
 
+@pytest.mark.parametrize("backend", ["neo4j"], indirect=True)
 async def test_neo4j_backfill_pages_walk_the_id_order_without_sorting(backend) -> None:
     """Review: each page filtered the org then sorted all of its records by
     id, so a large org paid its whole size on every page. An (orgId, id)
     index serves the order; the plan must not sort."""
-    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
     from tests.integration.graph_db.test_entity_graph_real_backends import (
         _capture_queries,
         _profile,
     )
 
     provider, org = backend
-    if not isinstance(provider, Neo4jProvider):
-        pytest.skip("Neo4j only")
     await provider.ensure_schema()
     await _seed(provider, org)
     captured = _capture_queries(provider)
@@ -163,15 +162,12 @@ async def test_neo4j_backfill_pages_walk_the_id_order_without_sorting(backend) -
         assert not [op for op in plan["operators"] if "Sort" in op or "Top" in op], plan["operators"]
 
 
+@pytest.mark.parametrize("backend", ["arango"], indirect=True)
 async def test_arango_backfill_pages_seek_the_orgs_keys_without_sorting(backend) -> None:
     """Review: no index served "this org's records in key order", so a page
     either sorted the org's records or walked every org's keys. An
     (orgId, _key) index, hinted, gives the order within the org."""
-    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
-
     provider, org = backend
-    if not isinstance(provider, ArangoHTTPProvider):
-        pytest.skip("ArangoDB only")
     await provider.ensure_schema()
     await _seed(provider, org)
     sent: list[dict[str, Any]] = []
@@ -374,12 +370,9 @@ class TestPeopleWithoutAnEmail:
         assert first and again == first
 
 
+@pytest.mark.parametrize("backend", ["arango"], indirect=True)
 async def test_arango_keeps_no_index_that_counts_a_missing_email(backend) -> None:
-    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
-
     provider, _ = backend
-    if not isinstance(provider, ArangoHTTPProvider):
-        pytest.skip("ArangoDB only")
     await provider.ensure_schema()
     indexes = await provider.http_client.get_indexes(CollectionNames.PEOPLE.value)
     by_fields = {tuple(i.get("fields", [])): i for i in indexes if i.get("type") == "persistent"}
@@ -626,3 +619,50 @@ async def _remove_users_of(provider: Neo4jProvider | ArangoHTTPProvider, org: st
         f"FOR u IN {CollectionNames.USERS.value} FILTER u.orgId == @org REMOVE u IN {CollectionNames.USERS.value}",
         {"org": org},
     )
+
+
+async def test_a_replace_whose_write_fails_keeps_the_old_links(backend) -> None:
+    """Neo4j without explicit transactions commits each statement, so the delete
+    and the write are one statement; ArangoDB rolls back the caller's transaction."""
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+    provider, org = backend
+    await provider.ensure_schema()
+    mail_id = await _seed(provider, org)
+    case_id = f"{org}-case"
+    store = GraphDataStore(logger, provider)
+    await backfill(provider, store, org, apply=True, logger=logger, out=io.StringIO())
+    before = await _edges(provider, case_id)
+    assert before == [(f"{org}-bob", "ASSIGNED_TO")]
+
+    edge = {
+        "_from": f"records/{case_id}", "_to": f"users/{org}-ann", "edgeType": "ASSIGNED_TO", "origin": "INFERRED",
+        "source": f"{org}-conn", "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+    }
+    users = [CollectionNames.USERS.value, CollectionNames.PEOPLE.value]
+    if isinstance(provider, Neo4jProvider):
+        # A property Neo4j cannot store fails inside the statement, after its delete clause.
+        with pytest.raises(Exception):  # noqa: B017
+            await provider.replace_record_entity_relations(case_id, users, "INFERRED", [{**edge, "extra": {"a": 1}}])
+    else:
+        with pytest.raises(Exception):  # noqa: B017
+            async with store.transaction() as tx:
+                await tx.replace_record_entity_relations(case_id, users, "INFERRED", [{**edge, "edgeType": "NOT_A_TYPE"}])
+    assert await _edges(provider, case_id) == before
+
+    if not isinstance(provider, Neo4jProvider):
+        # No caller's transaction: a delete that fails after the write leaves the old links only, not both sets.
+        real = provider.http_client.execute_aql
+
+        async def delete_fails(query: str, *a: object, **k: object) -> object:
+            if "REMOVE e IN" in query:
+                raise RuntimeError("store down")
+            return await real(query, *a, **k)
+        with patch.object(provider.http_client, "execute_aql", delete_fails), pytest.raises(RuntimeError):
+            await provider.replace_record_entity_relations(case_id, users, "INFERRED", [edge])
+        assert await _edges(provider, case_id) == before
+
+    # The same call with a good edge replaces the set, and INFERRED links of other collections stay.
+    await provider.replace_record_entity_relations(case_id, users, "INFERRED", [edge])
+    assert await _edges(provider, case_id) == [(f"{org}-ann", "ASSIGNED_TO")]
+    assert await _edges(provider, mail_id) == [(f"{org}-ann", "AUTHORED_BY"), (f"{org}-bob", "ADDRESSED_TO")]

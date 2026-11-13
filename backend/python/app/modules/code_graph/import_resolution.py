@@ -14,7 +14,8 @@ import sys
 from collections import Counter
 from typing import TYPE_CHECKING
 
-from app.modules.code_graph.resolvers import RESOLVERS
+from app.modules.code_graph.resolvers import IN_REPO, RESOLVERS
+from app.modules.code_graph.ts_config import TsConfigs
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -58,10 +59,13 @@ class ImportResolution:
     qualified names of the blocks, not by a path). The built-in branches never do.
     """
 
-    def __init__(self, file_paths: set[str], index: SymbolIndex | None = None) -> None:
-        """*file_paths*: every file of the repo; *index*: the build's symbol index, handed to registered resolvers."""
+    def __init__(self, file_paths: set[str], index: SymbolIndex | None = None,
+                 ts_configs: TsConfigs | None = None) -> None:
+        """*file_paths*: every file of the repo; *index*: the build's symbol index, handed to registered resolvers;
+        *ts_configs*: the repo's tsconfig/jsconfig settings."""
         self._files = file_paths
         self._index = index
+        self._ts_configs = ts_configs if ts_configs is not None else TsConfigs({})
         # Every trailing run of a Python module's path segments -> its files, so
         # an absolute import looks itself up instead of scanning all files with
         # the same basename (every `__init__.py`, per unresolved dotted import,
@@ -138,11 +142,21 @@ class ImportResolution:
                 if self._is_source_root(p[: -len(suffix)])
             ]
             if len(matches) == 1:
-                return matches[0]
+                # Only ever drops a match, never makes one: leaving a namespace folder out of an ambiguous set
+                # would hand `import asana` to whichever script folder (code-generator/asana.py) is left.
+                return None if self._inside_package(matches[0][: -len(suffix)], from_file) else matches[0]
         return None
 
     def _is_source_root(self, directory: str) -> bool:
         return f"{directory}/__init__.py" not in self._files
+
+    def _inside_package(self, directory: str, from_file: str) -> bool:
+        """A source root candidate that is a namespace folder somewhere inside a package (`app/modules/parsers`,
+        `app/agents/actions/dropbox`): `import yaml` is never its `yaml/`. The importer's own folder is the
+        exception, which a script run or pytest puts on sys.path (`from gcal_fakes import ...`)."""
+        parts = directory.split("/")
+        return directory != posixpath.dirname(from_file) and any(
+            f"{'/'.join(parts[:i])}/__init__.py" in self._files for i in range(1, len(parts)))
 
     def _python_candidates(self, base: str) -> str | None:
         for ext in _PY_EXTENSIONS:
@@ -155,6 +169,11 @@ class ImportResolution:
     # -- javascript / typescript ----------------------------------------
 
     def _resolve_js(self, specifier: str, from_file: str) -> str | None:
+        if not specifier.startswith("."):
+            for base in self._ts_configs.candidates(specifier, from_file):
+                hit = self._js_file(base)
+                if hit:
+                    return hit
         if specifier.startswith(_JS_ROOT_ALIASES):
             return self._resolve_js_alias(specifier[2:], from_file)
         if not specifier.startswith("."):
@@ -166,9 +185,9 @@ class ImportResolution:
     def _resolve_js_workspace(self, specifier: str) -> str | None:
         """`@excalidraw/element[/sub]` -> that workspace package's entry or sub-path.
 
-        tsconfig `paths` and package.json names are not read here (the build has
-        file paths only), so the package is matched by folder name, and only when
-        one workspace folder of that name holds the target.
+        Reached when no tsconfig `paths` entry placed it; package.json names are not
+        read, so the package is matched by folder name, and only when one workspace
+        folder of that name holds the target.
         """
         parts = specifier.split("/")
         if len(parts) < 2:
@@ -250,8 +269,9 @@ class ImportResolution:
     def _resolve_js_alias(self, rest: str, from_file: str) -> str | None:
         """`@/lib/http` against the importing file's ancestors, then their `src/`.
 
-        tsconfig is not read, so the alias root is taken to be the nearest
-        ancestor (or its `src/`) that holds the target.
+        Reached when no tsconfig `paths` entry placed it (none read, or a vite-only
+        alias), so the alias root is taken to be the nearest ancestor (or its `src/`)
+        that holds the target.
         """
         directory = posixpath.dirname(from_file)
         while True:
@@ -301,6 +321,11 @@ class ImportResolution:
             return resolver(specifier, from_file, self._files, self._index) if resolver else None
         except (ValueError, IndexError):
             return None
+
+    def in_repo(self, specifier: str, from_file: str, family: str | None) -> bool:
+        """Whether an unplaced specifier still names repo code, by the family's rule (none: it does not)."""
+        check = IN_REPO.get(family or "")
+        return bool(check and specifier and from_file and check(specifier, from_file, self._files, self._index))
 
     def walk_barrel_chain(self, target_file: str,
                           re_exports: dict[str, set[str]]) -> str:

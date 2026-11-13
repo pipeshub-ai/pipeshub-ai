@@ -9,6 +9,22 @@ export interface ICommand<T> {
   execute(): Promise<T>;
 }
 
+// Waits out a backoff, or less: it ends the moment the signal aborts.
+const backoffDelay = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const done = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
+
 export abstract class BaseCommand<T> implements ICommand<T> {
   protected uri: string;
   protected queryParams?: Record<string, string | number | boolean>;
@@ -109,20 +125,22 @@ export abstract class BaseCommand<T> implements ICommand<T> {
 
   /**
    * Retry helper method using exponential backoff.
-   * @param fn - A function returning a promise to retry.
+   * @param fn - A function returning a promise to retry; it gets the 1-based attempt number.
    * @param retries - Number of retries (default is 3).
    * @param backoff - Initial backoff delay in milliseconds (default is 300ms).
+   * @param signal - The caller's signal: once it aborts there is no further attempt and no wait.
    */
   protected async fetchWithRetry<T>(
-    fn: () => Promise<T>,
+    fn: (attempt: number) => Promise<T>,
     retries: number = 3,
     backoff: number = 300,
     shouldRetry: (error: unknown) => boolean = () => true,
+    signal?: AbortSignal,
   ): Promise<T> {
     let attempt = 0;
     while (attempt < retries) {
       try {
-        const response = await fn();
+        const response = await fn(attempt + 1);
         return response;
       } catch (error) {
         // A caller that aborted a request is not waiting for another try.
@@ -135,7 +153,9 @@ export abstract class BaseCommand<T> implements ICommand<T> {
         }
         // Calculate exponential backoff delay.
         const delay = backoff * Math.pow(2, attempt);
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await backoffDelay(delay, signal);
+        // The caller stopped waiting: throw its signal's reason, as fetch on that signal would.
+        signal?.throwIfAborted();
       }
     }
     // Should never reach here.

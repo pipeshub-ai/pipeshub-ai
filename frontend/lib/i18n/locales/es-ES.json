@@ -654,6 +654,9 @@
     "indexingStatus": {
       "completed": "Completado",
       "inProgress": "En curso",
+      "embeddingProgress_one": "Incrustando {{done, number}} / {{total, number}} fragmento",
+      "embeddingProgress_many": "Incrustando {{done, number}} / {{total, number}} fragmentos",
+      "embeddingProgress_other": "Incrustando {{done, number}} / {{total, number}} fragmentos",
       "failed": "Error",
       "fileTypeNotSupported": "Tipo de archivo no compatible",
       "notStarted": "No iniciado",
@@ -857,6 +860,11 @@
     "fork": "Bifurcar chat",
     "forkFromHere": "Bifurcar desde aquí",
     "regenerate": "Regenerar",
+    "answerHidden": {
+      "lost": "Esta respuesta usó contenido al que ya no tienes acceso.",
+      "unconfirmed": "No pudimos confirmar tu acceso. Inténtalo de nuevo.",
+      "askAgain": "Preguntar de nuevo"
+    },
     "readAloud": "Leer en voz alta",
     "stopReading": "Dejar de leer",
     "ttsNotSupported": "La conversión de texto a voz no es compatible con este navegador",
@@ -1405,6 +1413,11 @@
     "stopListening": "Dejar de escuchar",
     "voiceInput": "Entrada por voz",
     "regenerateResponse": "Regenerar la respuesta",
+    "quoteSelection": "Citar",
+    "quoteSelectionHint": "Preguntar por esto",
+    "quotedExcerpt": "Citado",
+    "quotedExcerptTruncated": "Citado (recortado)",
+    "dismissQuote": "Quitar cita",
     "editQuery": "Editar la consulta",
     "queryOptions": "Opciones de consulta",
     "models": "Modelos",
@@ -3325,6 +3338,106 @@
         "cancel": "Cancelar",
         "continueTeam": "Continuar con el conector de equipo",
         "goToPersonal": "Configurar conector personal"
+      },
+      "accessCheck": {
+        "open": "Comprobar el acceso de una persona",
+        "title": "Comprobar el acceso de una persona",
+        "description": "Compruebe si una persona puede leer un registro de este conector y, si no, por qué.",
+        "personLabel": "Persona",
+        "personPlaceholder": "Elegir una persona",
+        "peopleLoading": "Cargando personas...",
+        "peopleFailed": "No pudimos cargar la lista de personas.",
+        "recordLabel": "ID del registro",
+        "recordHint": "Abra el registro y copie su ID.",
+        "check": "Comprobar",
+        "checking": "Comprobando...",
+        "close": "Cerrar",
+        "resultHeading": "Resultado",
+        "restrictedArea": "un área restringida",
+        "theyFallback": "Esta persona",
+        "pathLabel": "Ubicación: {{path}}",
+        "reference": "Referencia: {{ref}} (facilítela al soporte si el motivo parece incorrecto)",
+        "verdict": {
+          "granted": "{{name}} puede ver este registro.",
+          "denied": "{{name}} no puede ver este registro."
+        },
+        "reason": {
+          "granted": "Si no aparece en la búsqueda, puede que aún no esté indexado o que el conector siga sincronizando.",
+          "not_linked": "{{name}} no tiene ninguna cuenta vinculada a este conector.",
+          "no_grant": "Nada en {{container}} da acceso a {{name}}.",
+          "restricted_container": "{{container}} está limitado a otras personas.",
+          "item_restricted": "Este registro tiene su propio límite y {{name}} no está incluido.",
+          "parent_not_readable": "{{name}} no puede abrir un elemento superior que este registro necesita.",
+          "pending_rewrite": "La carpeta de este registro se está actualizando.",
+          "syncing": "El conector no ha terminado de sincronizar esta parte.",
+          "scheme_unreadable": "El conector no puede leer las reglas de acceso de esta área, por lo que está oculta para todos.",
+          "deleted_at_source": "Este registro se eliminó en el origen.",
+          "unexplained": "No podemos mostrar el motivo."
+        },
+        "next": {
+          "not_linked": "Corrija la cuenta en el origen y luego sincronice.",
+          "no_grant": "Añada a {{name}} en el origen.",
+          "restricted_container": "Pida al propietario que añada a {{name}}.",
+          "item_restricted": "Pida al propietario que añada a {{name}}.",
+          "parent_not_readable": "Comparta el elemento superior con {{name}}.",
+          "pending_rewrite": "Espere unos minutos y vuelva a comprobar.",
+          "syncing": "Espere a que termine la sincronización.",
+          "scheme_unreadable": "Corrija el permiso de la cuenta de sincronización en el origen.",
+          "deleted_at_source": "No hay nada que hacer.",
+          "unexplained": "Póngase en contacto con el soporte y facilite la referencia."
+        },
+        "errors": {
+          "failed": "No pudimos comprobarlo. Inténtelo de nuevo.",
+          "notFound": "No encontramos esa persona o ese registro en este conector.",
+          "rateLimited": "Demasiadas comprobaciones. Inténtelo de nuevo en un minuto."
+        },
+        "peopleRetry": "Reintentar",
+        "askedAbout": "Sobre el registro {{record}}"
+      },
+      "access": {
+        "title": "Acceso",
+        "loading": "Cargando los detalles de acceso…",
+        "loadError": "No se pudieron cargar los detalles de acceso.",
+        "retry": "Reintentar",
+        "reach": "Los cambios en {{connector}} llegan a PipesHub en {{interval}}.",
+        "reachUnknown": "Los cambios en {{connector}} llegan a PipesHub en su próxima sincronización.",
+        "syncNow": "Sincronizar permisos ahora",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "Permisos",
+          "succeeded": "Última actualización: {{when}}.",
+          "failed": "La última actualización de permisos falló, así que puede que los cambios recientes en el origen aún no se hayan aplicado. Elija «Sincronizar permisos ahora» para volver a intentarlo.",
+          "never": "Los permisos aún no se han actualizado. El contenido de este conector permanece oculto hasta que termine la primera sincronización.",
+          "running": "Actualizando permisos ahora.",
+          "incomplete": "La última actualización de permisos no llegó a terminar."
+        },
+        "pending": {
+          "label": "Pendiente de aplicar",
+          "none": "No hay nada pendiente.",
+          "some_one": "Se está actualizando {{count}} carpeta. Permanece oculta para todos hasta que termine la actualización, normalmente unos minutos.",
+          "some_many": "Se están actualizando {{count}} de carpetas. Permanecen ocultas para todos hasta que termine la actualización, normalmente unos minutos.",
+          "some_other": "Se están actualizando {{count}} carpetas. Permanecen ocultas para todos hasta que termine la actualización, normalmente unos minutos.",
+          "overflow": "Un cambio afectó a todo el conector, por lo que su índice de permisos debe reconstruirse por completo. Hasta entonces la búsqueda comprueba cada resultado, así que no se oculta nada por esto.",
+          "unknown": "Desconocido: no se puede leer la lista de carpetas que esperan una actualización. Consulte «Requiere atención»."
+        },
+        "attention": {
+          "label": "Requiere atención ({{count}})",
+          "none": "Nada requiere atención.",
+          "warning": "{{items}} elementos de {{container}} están ocultos. La cuenta de sincronización no puede leer los permisos de este contenedor.",
+          "fix": "Solución: dé a la cuenta de sincronización el permiso {{permission}} en {{vendor}} y luego elija Sincronizar permisos ahora.",
+          "showAll": "Mostrar {{count}} más",
+          "warningNoContainer": "Algunos elementos están ocultos porque la cuenta de sincronización no puede leer sus permisos.",
+          "rebuild": "El índice de permisos de este conector necesita una reconstrucción completa. Hasta entonces la búsqueda comprueba cada resultado, así que no se oculta nada por esto.",
+          "unfinished": "Un cambio de permisos no terminó correctamente. Pida a quien administra PipesHub que revise el índice de permisos de este conector.",
+          "stale": "La búsqueda rápida no pudo comprobar algunos elementos; se encuentran con la búsqueda clásica.",
+          "sweep": "Las actualizaciones de permisos de este conector siguen fallando. Pida a quien administra PipesHub que revise sus registros.",
+          "other": "Algo en los permisos de este conector requiere que una persona lo revise.",
+          "unreadable": "No se puede leer la lista de carpetas que esperan una actualización. Pida a quien administra PipesHub que reconstruya el índice de permisos de este conector. Mientras tanto, la búsqueda comprueba cada resultado."
+        }
       }
     },
     "mcpServers": {
@@ -5822,6 +5935,123 @@
       "offDescription": "Han desaparecido de las respuestas, las búsquedas y los registros de todo el mundo, y las cuentas de ejemplo no pueden iniciar sesión. Vuelva a activarlos en Perfil → Datos de demostración.",
       "onTitle": "Datos de demostración reactivados para todos",
       "errorTitle": "No se han podido cambiar los datos de demostración para todos"
+    }
+  },
+  "graph": {
+    "status": {
+      "stale": "El grafo se está actualizando; puede que falten cambios recientes.",
+      "building": "El grafo se está generando, así que lo que ves puede estar incompleto.",
+      "retrying": "La generación del grafo tuvo un problema y se está reintentando.",
+      "failed": "La última generación del grafo falló, por lo que esta vista puede estar desactualizada.",
+      "unknown": "No se pudo leer el estado de este grafo."
+    },
+    "empty": {
+      "neverBuilt": "Este repositorio aún no tiene un grafo de código.",
+      "tooLarge": "Este repositorio es demasiado grande para crear un grafo."
+    },
+    "incomplete": "Puede que falten algunos enlaces. Acota por tipo de arista o dirección.",
+    "simplified": "Vista simplificada para un movimiento fluido.",
+    "verify": {
+      "degraded": "Ahora mismo no se puede verificar el acceso. Se muestra lo último confirmado.",
+      "blank": "No se pudo verificar el acceso durante varios minutos, así que se vació el grafo. Reconectando…"
+    },
+    "error": {
+      "unavailable": "No se pudo cargar ahora. Inténtalo de nuevo.",
+      "notAvailable": "Este elemento no está disponible.",
+      "unexpected": "Algo salió mal.",
+      "ambiguous": "Hay más de un repositorio con ese nombre. Elige el repositorio en el cuadro de búsqueda.",
+      "full": "Esta vista está llena. Abre un nodo para empezar otra.",
+      "revoked": "El elemento que estabas viendo ya no está disponible."
+    },
+    "title": "Grafo de código",
+    "ui": {
+      "back": "Atrás",
+      "forward": "Adelante",
+      "fit": "Ajustar a la vista",
+      "showTable": "Mostrar como tabla",
+      "showGraph": "Mostrar como grafo",
+      "direction": {
+        "any": "Ambos",
+        "inbound": "Llamantes",
+        "outbound": "Llamados"
+      },
+      "includeTests": "Incluir pruebas",
+      "showMore": "Mostrar más",
+      "expand": "Expandir",
+      "open": "Abrir",
+      "nothingSelected": "Selecciona un nodo para ver sus detalles.",
+      "details": "Detalles",
+      "links": "Enlaces: {{n}}",
+      "table": {
+        "caption": "Nodos de esta vista",
+        "name": "Nombre",
+        "kind": "Tipo",
+        "file": "Archivo",
+        "actions": "Acciones",
+        "moreRows": "Mostrar más filas",
+        "callersShown": "Llamantes mostrados",
+        "calleesShown": "Llamados mostrados",
+        "focus": "Centro"
+      },
+      "emptyPrompt": "Busca arriba una función, método o clase para ver qué la llama y a qué llama.",
+      "disclosure": "Solo muestra lo que puedes consultar.",
+      "legendInferred": "Las líneas discontinuas son enlaces inferidos por el nombre.",
+      "disabled": "El grafo de código no está habilitado.",
+      "search": {
+        "repo": "Repositorio",
+        "repoPlaceholder": "Elige un repositorio",
+        "placeholder": "Busca una función, método o clase por nombre",
+        "label": "Buscar código",
+        "results": "Resultados de búsqueda",
+        "noRepos": "No hay repositorios de código que puedas leer.",
+        "noMatches": "Sin coincidencias.",
+        "chooseFirst": "Elige primero un repositorio",
+        "minChars": "Escribe al menos 2 caracteres.",
+        "more": "Se muestran las primeras coincidencias. Escribe más para acotar la búsqueda."
+      },
+      "action": {
+        "retry": "Reintentar",
+        "restore": "Usar calidad completa"
+      },
+      "loading": "Cargando…",
+      "legend": {
+        "functions": "Funciones y métodos",
+        "classes": "Clases e interfaces",
+        "focus": "Centro de esta vista"
+      },
+      "openHint": "Abrir: convierte esto en el centro de una vista nueva.",
+      "expandHint": "Expandir: muestra sus vecinos aquí, conservando lo que hay en pantalla.",
+      "announce": {
+        "opened": "Se muestran {{n}} elementos.",
+        "added": "Se añadieron {{n}} elementos."
+      },
+      "canvasHint": "La imagen del grafo no está disponible para lectores de pantalla. Usa el botón «Mostrar como tabla» para leer y usar cada nodo.",
+      "selectionGone": "El elemento que seleccionaste ya no está disponible.",
+      "viewGraph": "Ver grafo",
+      "viewGraphOf": "Ver grafo de {{repo}}",
+      "fillerNode": "{{kind}} en {{file}}"
+    },
+    "capped": "La imagen muestra solo una parte de esta vista. La tabla lo lista todo.",
+    "crowded": "Esta vista se está llenando. Acótala con filtros.",
+    "hint": {
+      "testsOff": "Los archivos de prueba están ocultos. Si el elemento está en código de prueba, activa «Incluir pruebas»."
+    },
+    "nothingNew": "No hay nada más que mostrar para este nodo.",
+    "tableOnly": "Se muestra solo la tabla para mantener la fluidez."
+  },
+  "accessNotice": {
+    "permissions_updating": "Algunas fuentes están actualizando permisos, por lo que pueden faltar algunos resultados durante unos minutos.",
+    "connector_syncing": "{{name}} aún se está sincronizando, por lo que sus resultados pueden estar incompletos.",
+    "connector_syncing_unnamed": "Una fuente aún se está sincronizando, por lo que sus resultados pueden estar incompletos.",
+    "check_unavailable": "No pudimos comprobar a qué documentos tiene acceso en este momento, por lo que no se muestran resultados. Inténtelo de nuevo en un minuto.",
+    "emptySyncing": "Aún no hay nada que buscar. {{name}} se está sincronizando.",
+    "emptySyncing_unnamed": "Aún no hay nada que buscar. Una fuente se está sincronizando.",
+    "noAccess": {
+      "title": "No tiene acceso a este elemento",
+      "body": "Puede que se haya movido, eliminado o restringido. Pregunte al propietario o ábralo donde se originó si tiene el enlace.",
+      "justGotAccess": "¿Acaba de obtener acceso en el origen? El nuevo acceso aparece tras la próxima sincronización.",
+      "copyDetails": "Copiar los detalles para un administrador",
+      "copied": "Detalles copiados"
     }
   }
 }

@@ -34,7 +34,8 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Iterable
+import weakref
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -286,6 +287,20 @@ def build_revision(
     return built
 
 
+#: The set writes of this process, by ``(org, vrid, rev)``. Two stored writes of one revision (records
+#: sharing content) store their sets at the same paths with different bytes, so a write that lost its
+#: place must have finished its uploads before the current write sends its own.
+_SET_WRITES: "weakref.WeakValueDictionary[tuple[str, str, str], asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def _set_write_lock(org_id: str, virtual_record_id: str, rev: str) -> asyncio.Lock:
+    key = (org_id, virtual_record_id, rev)
+    lock = _SET_WRITES.get(key)
+    if lock is None:
+        lock = _SET_WRITES[key] = asyncio.Lock()
+    return lock
+
+
 #: What the storage service's validation says of a path an artifact set cannot hold.
 PATH_NOT_HELD_REFUSAL = "Not a file an artifact set can hold"
 
@@ -354,17 +369,24 @@ class ArtifactWriter:
         properties: RecordMetadata | None = None,
         *,
         stored_run: str,
+        still_current: Callable[[], Awaitable[bool]] | None = None,
     ) -> WrittenRevision | None:
         """Store every file of revision ``rev``, the manifest last.
 
         None when nothing was written because artifact writes are unavailable
-        (a storage service without the routes). Raises when a file could not
-        be stored; the manifest is then not written.
+        (a storage service without the routes), or because ``still_current``
+        said another stored write took over while the files went up: a manifest
+        written then would name this run over the newer write's set. Raises when
+        a file could not be stored; the manifest is then not written.
         """
         if not artifact_writes_available():
             return None
         if not REV_PATTERN.match(rev):
             raise ValueError("revision is not 8 to 64 lowercase hex digits")
+
+        async def current() -> bool:
+            return still_current is None or await still_current()
+
         # Off the event loop: encoding and hashing a large record takes a while.
         built = await asyncio.to_thread(
             build_revision,
@@ -378,41 +400,52 @@ class ArtifactWriter:
         )
         if not PROPERTIES_FILE.available:
             _drop_properties(built)
-        try:
-            plan = await self._presign(built, org_id, virtual_record_id, rev)
-        except ArtifactRoutesUnavailable:
-            return None
-        paths = sorted(built.files)
-
         limit = asyncio.Semaphore(max(1, self.upload_concurrency))
 
-        async def upload(path: str) -> None:
-            async with limit:
-                file = built.files[path]
-                await self.store.put(plan.files[path], file.data, file.content_type)
+        # shortcut: the lock serializes the writes of one set in this process only; two processes writing
+        # one revision at once can still leave a set its manifest does not match (the reader then serves
+        # the stored record). Close it with a set per stored write, or a conditional write if storage
+        # ever offers one, which would also close the window between a check and the write after it.
+        async with _set_write_lock(org_id, virtual_record_id, rev):
+            # Signed only once this write may use the URLs: waiting for another write must not expire them.
+            try:
+                plan = await self._presign(built, org_id, virtual_record_id, rev)
+            except ArtifactRoutesUnavailable:
+                return None
 
-        # A TaskGroup cancels the remaining uploads on the first failure.
-        try:
-            async with asyncio.TaskGroup() as uploads:
-                for path in paths:
-                    uploads.create_task(upload(path))
-        except ExceptionGroup as failed:
-            raise failed.exceptions[0] from None
+            async def upload(path: str) -> None:
+                async with limit:
+                    file = built.files[path]
+                    await self.store.put(plan.files[path], file.data, file.content_type)
 
-        manifest = Manifest(
-            virtualRecordId=virtual_record_id,
-            rev=rev,
-            orgId=org_id,
-            producedAt=get_epoch_timestamp_in_ms(),
-            storedRun=stored_run,
-            producerVersions=self.producer_versions,
-            artifacts=built.artifacts,
-        )
-        await self.store.put(
-            plan.files[MANIFEST_PATH],
-            canonical_json(manifest.model_dump(mode="json", exclude_none=True)),
-            _JSON,
-        )
+            # The files and the manifest are one set per revision: a write that lost its place must not overwrite them.
+            if not await current():
+                return None
+
+            # A TaskGroup cancels the remaining uploads on the first failure.
+            try:
+                async with asyncio.TaskGroup() as uploads:
+                    for path in sorted(built.files):
+                        uploads.create_task(upload(path))
+            except ExceptionGroup as failed:
+                raise failed.exceptions[0] from None
+
+            if not await current():
+                return None
+            manifest = Manifest(
+                virtualRecordId=virtual_record_id,
+                rev=rev,
+                orgId=org_id,
+                producedAt=get_epoch_timestamp_in_ms(),
+                storedRun=stored_run,
+                producerVersions=self.producer_versions,
+                artifacts=built.artifacts,
+            )
+            await self.store.put(
+                plan.files[MANIFEST_PATH],
+                canonical_json(manifest.model_dump(mode="json", exclude_none=True)),
+                _JSON,
+            )
         return WrittenRevision(
             manifest=manifest,
             manifest_ref=ArtifactRef(document_id=plan.document_id, root=plan.root, path=MANIFEST_PATH),

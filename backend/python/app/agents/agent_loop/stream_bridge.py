@@ -33,7 +33,6 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.context import CancellationToken
-from app.agent_loop_lib.events.base import EventType
 from app.agents.agent_loop import parked_turn, tool_approvals
 from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
@@ -48,6 +47,7 @@ from app.agents.agent_loop.factory import PipesHubAgentFactory, card_already_ans
 from app.agents.agent_loop.hooks import CitationCollector
 from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
+from app.agents.agent_loop.turn_log import AgentRunTiming
 from app.core.org_context import spawn_in_request
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
@@ -57,6 +57,8 @@ from app.modules.demo_data.chat import (
 )
 from app.modules.retrieval import degraded_notice
 from app.utils.conversation_tasks import begin_run, discard_tasks
+from app.utils.error_class import log_failure
+from app.utils.logging_fields import bind_log_fields
 from app.utils.stage_timer import RunTimer
 from app.utils.time_conversion import set_llm_time_zone
 
@@ -65,7 +67,6 @@ if TYPE_CHECKING:
 
     from langchain_core.language_models.chat_models import BaseChatModel
 
-    from app.agent_loop_lib.events.base import AgentEvent
     from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry
     from app.utils.stage_timer import StageTimer
 
@@ -75,52 +76,6 @@ logger = logging.getLogger(__name__)
 # dict — a private object identity check, not a value any real event could
 # collide with.
 _DONE = object()
-
-
-class _AgentRunTiming:
-    """Turns the top-level agent's events into `RunTimer` spans.
-
-    A model turn runs from TURN_START until its reply has finished streaming
-    (TEXT_MESSAGE_END), so it excludes the tool calls that follow; a turn
-    that never streams falls back to TURN_COMPLETE. A turn whose model call
-    raised (its TEXT_MESSAGE_END says `discarded`, and a retry may follow),
-    or a tool still running when the client disconnects, never gets its end
-    event; `RunTimer.emit` logs it as ``(open)``. Turns are numbered
-    from 1 in the order they start (``llm_turn_1``, ``llm_turn_2``, ...).
-    A tool span runs from TOOL_CALL to TOOL_RESULT or TOOL_BLOCKED, matched
-    on ``tool_call_id`` and named ``tool:<name>``. A sub-agent's events are
-    skipped: its whole run already sits inside the parent's ``spawn_agent``
-    tool span. Logging only — nothing here changes what the agent does.
-    """
-
-    __slots__ = ("_timer", "turns", "tool_calls")
-
-    def __init__(self, timer: RunTimer) -> None:
-        self._timer = timer
-        self.turns = 0
-        self.tool_calls = 0
-
-    def on_event(self, event: AgentEvent) -> None:
-        if not self._timer.enabled:
-            return
-        run_context = getattr(event, "run_context", None)
-        if run_context is not None and run_context.parent_run_id is not None:
-            return
-        event_type = getattr(event, "event_type", None)
-        payload = getattr(event, "payload", None) or {}
-        if event_type == EventType.TURN_START:
-            self.turns += 1
-            self._timer.start(("turn", payload.get("turn_index")), f"llm_turn_{self.turns}")
-        elif event_type in (EventType.TEXT_MESSAGE_END, EventType.TURN_COMPLETE):
-            if not payload.get("discarded"):
-                self._timer.stop(("turn", payload.get("turn_index")))
-        elif event_type == EventType.TOOL_CALL:
-            self.tool_calls += 1
-            self._timer.start(
-                ("tool", payload.get("tool_call_id")), f"tool:{payload.get('tool') or 'unknown'}",
-            )
-        elif event_type in (EventType.TOOL_RESULT, EventType.TOOL_BLOCKED):
-            self._timer.stop(("tool", payload.get("tool_call_id")))
 
 
 def _pre_stream_error_frame(protocol: str, message: str, code: str) -> str:
@@ -389,6 +344,11 @@ async def run_agent_loop_stream(
     )
     if cancellation_registry is not None:
         await cancellation_registry.register(run_id, cancellation_token, run_owner)
+    # `stage_timer` stops at the first agent event; this one times the rest
+    # of the run (turns, tools, pattern-match wait, finish) for the turn's
+    # end line. Same flag, so off together; the counts are kept either way.
+    run_timer = RunTimer(enabled=bool(stage_timer is not None and stage_timer.enabled))
+    run_timing = AgentRunTiming(run_timer, run_id=run_id, model=model_name, mode=query_info.get("chatMode"))
 
     try:
         # One query feeds every flag; they used to be one identical lookup each.
@@ -416,9 +376,12 @@ async def run_agent_loop_stream(
             sql_connector_instance_ids(connector_instances, user_info["orgId"])
             & agent_knowledge_sql_connector_ids(chat_state.get("agent_knowledge"))
         )
+    except asyncio.CancelledError:
+        run_timing.end(log, "client_disconnect")
+        raise
     except Exception as exc:
-        log.error("agent-loop stream: failed to build initial state: %s", exc, exc_info=True)
         error_code, user_message = classify_exception(exc)
+        run_timing.end(log, "error", exc=exc, code=error_code)
         if cancellation_registry is not None:
             await cancellation_registry.unregister(run_id)
         yield _pre_stream_error_frame(protocol, user_message, error_code)
@@ -433,10 +396,6 @@ async def run_agent_loop_stream(
     chat_state["sse_protocol"] = protocol
     # Picked up by PipesHubAgentFactory.create() for its own sub-stage marks.
     chat_state["_stage_timer"] = stage_timer
-    # `stage_timer` stops at the first agent event; this one times the rest
-    # of the run (turns, tools, pattern-match wait, finish) and logs it as a
-    # second line when the run ends. Same flag, so off together.
-    run_timer = RunTimer(enabled=bool(stage_timer is not None and stage_timer.enabled))
     chat_state["_run_timer"] = run_timer
     # Model profile fields from etcd llm_config go in at construction, not
     # after: `model_post_init` resolves this request's image policy from
@@ -451,18 +410,22 @@ async def run_agent_loop_stream(
     )
 
     async def _produce() -> None:
+        # Every line of the run carries run_id; the task dies with the turn, so no reset.
+        bind_log_fields(run_id=run_id)
         # Record headers rendered by tools show dates in the user's zone,
         # weekday included. Set inside this task so it reaches every tool
         # call of the run and nothing outside it.
         set_llm_time_zone(context.timezone)
         begin_run()
         agent: Any = None
-        run_timing = _AgentRunTiming(run_timer)
-        run_finished = False
+        result: Any = None
+        stop_reason: str | None = "error"
+        parked = False
+        failure: BaseException | None = None
         try:
             if card_already_answered(context.previous_conversations, query_info.get("query", "")):
                 await emit_already_answered(context, event_sink=context.event_sink)
-                run_finished = True
+                stop_reason = "done"
                 return
             factory = PipesHubAgentFactory()
             agent, _runtime, goal, clarifying_questions = await factory.create(
@@ -485,7 +448,7 @@ async def run_agent_loop_stream(
                 )
                 # The intent call that asked the question has been paid for.
                 await emit_run_usage(context, agent, model=model_name or None)
-                run_finished = True
+                stop_reason = "awaiting_input"
             else:
                 collector = CitationCollector(context)
                 streamer = TerminalAnswerStreamer(context, collector, context.event_sink)
@@ -497,6 +460,8 @@ async def run_agent_loop_stream(
                     run_timing.on_event(event)
                     await streamer.on_event(event)
                 result = agent.last_stream_result
+                stop_reason = None  # from `result`, inside `end()`
+                parked = tool_approvals.awaiting_approval(context)
                 # A run that stopped for the person keeps its turn for the answer to carry on from.
                 await tool_approvals.keep_stopped_turn(context, agent)
                 if result.needs_input:
@@ -537,12 +502,13 @@ async def run_agent_loop_stream(
                     agent_needs_input=result.needs_input,
                 )
                 run_timer.stop("finish")
-                # A run the agent itself failed or that was cancelled (a
-                # model call that raised, say) still gets a graceful error
-                # answer above, but its timing line says it did not finish.
-                run_finished = bool(result.success)
+        except asyncio.CancelledError:
+            stop_reason = "client_disconnect"
+            raise
         except Exception as exc:
-            log.error("agent-loop stream: run failed: %s", exc, exc_info=True)
+            # Before any await: a disconnect during the awaits below must not lose it.
+            failure = exc
+            stop_reason = "error"
             # What the turn spent before failing; nothing when the frame
             # already went out on the success path.
             await emit_run_usage(context, agent, model=model_name or None)
@@ -558,10 +524,8 @@ async def run_agent_loop_stream(
             discard_tasks(query_info.get("conversationId"))
             # Logged before _DONE so the line is written even when the
             # consumer stops waiting on this task after the last event.
-            run_timer.emit(
-                log, "agent chat run" if run_finished else "agent chat run (incomplete)",
-                mode=query_info.get("chatMode"), model=model_name,
-                turns=run_timing.turns, tool_calls=run_timing.tool_calls,
+            run_timing.end(
+                log, stop_reason, result=result, awaiting_approval=parked, ledger=context.usage_ledger, exc=failure,
             )
             # Flush any pending coalesced events and signal the SSE
             # consumer loop FIRST, so the HTTP response closes promptly
@@ -579,8 +543,8 @@ async def run_agent_loop_stream(
             if context.sandbox_manager is not None:
                 try:
                     await context.sandbox_manager.destroy_all()
-                except Exception:
-                    log.warning("agent-loop stream: sandbox cleanup failed", exc_info=True)
+                except Exception as exc:
+                    log_failure(log, "agent_turn.cleanup_failed", exc, step="sandbox")
             # Tears down every MCP session `MCPToolProvider`/`MCPToolAdapter`
             # opened this request (see `mcp_session.py`). Guarded on the cache
             # dict itself (rather than always constructing a manager) so a
@@ -592,8 +556,8 @@ async def run_agent_loop_stream(
                     from app.agents.agent_loop.mcp_session import MCPSessionManager
 
                     await MCPSessionManager(context).aclose_all()
-                except Exception:
-                    log.warning("agent-loop stream: MCP session cleanup failed", exc_info=True)
+                except Exception as exc:
+                    log_failure(log, "agent_turn.cleanup_failed", exc, step="mcp_sessions")
             await event_sink.flush()
             await queue.put(_DONE)
 
@@ -618,6 +582,10 @@ async def run_agent_loop_stream(
                         mode=query_info.get("chatMode"), model=model_name,
                     )
             yield f"event: {item['event']}\ndata: {json.dumps(item['data'])}\n\n"
+    except Exception as exc:
+        # A frame that cannot be written: the turn failed here, not by a disconnect.
+        run_timing.end(log, "error", exc=exc)
+        raise
     finally:
         # Idempotent: a stream that errored or was cancelled before its first
         # event still reports where the time went.

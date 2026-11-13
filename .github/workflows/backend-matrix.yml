@@ -71,6 +71,8 @@ on:
       # Where real-graph tests live.
       - 'backend/python/tests/integration/*.py'
       - 'backend/python/tests/integration/graph_db/**'
+      # Which test files each job runs.
+      - 'scripts/integration_discovery.py'
       - 'backend/python/tests/integration/compose/**'
       # The storage job: the storage routes and what they load (found by tracing
       # what tests/support/storage-it-server.ts requires), the SDK versions that
@@ -143,8 +145,11 @@ on:
       - 'backend/python/tests/permissions/mutations.py'
       - 'backend/python/tests/permissions/oracle.py'
       - 'backend/python/tests/permissions/scope_corpus.py'
+      - 'backend/python/tests/permissions/serving_corpus.py'
       - 'backend/python/tests/permissions/scope_layer.py'
       - 'backend/python/tests/permissions/stamp_world.py'
+      - 'backend/python/tests/permissions/store_harness.py'
+      - 'backend/python/tests/permissions/rewrite_kit.py'
       - 'backend/python/tests/permissions/scenarios/**'
       - 'backend/python/pyproject.toml'
       - 'deployment/docker-compose/docker-compose.integration.messaging.yml'
@@ -345,10 +350,14 @@ jobs:
         working-directory: backend/python
         run: |
           if [ -n "$DISCOVER" ]; then
+            # A file needs the store when it, a module it imports or a conftest above it names it.
             # Files that also need storage run in the storage job; files that need a server
-            # started at a memory preset (NEO4J_IT_PRESET) are run by hand against one.
-            TESTS=$(grep -rlE --include='*.py' "$DISCOVER" tests/integration | sort \
-              | xargs -r grep -LE 'ARTIFACTS_IT_STORAGE_URL|NEO4J_IT_PRESET' | tr '\n' ' ')
+            # started at a memory preset (NEO4J_IT_PRESET) are run by hand against one; the
+            # GitLab simulator and the PostgreSQL provider have jobs of their own.
+            TESTS=$(python3 ../../scripts/integration_discovery.py tests/integration --needs "$DISCOVER" \
+              --not 'ARTIFACTS_IT_STORAGE_URL|NEO4J_IT_PRESET' \
+              --exclude-dir tests/integration/gitlab_simulated --exclude-dir tests/integration/graph_db/postgres \
+              | tr '\n' ' ')
             echo "Discovered: $TESTS"
           fi
           # shellcheck disable=SC2086
@@ -451,7 +460,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 24
           cache: 'npm'
           cache-dependency-path: backend/nodejs/apps/package-lock.json
 
@@ -498,11 +507,10 @@ jobs:
         id: discover
         working-directory: backend/python
         run: |
-          TESTS=$(grep -rlE --include='*.py' 'ARTIFACTS_IT_STORAGE_URL' tests/integration | sort | tr '\n' ' ')
+          TESTS=$(python3 ../../scripts/integration_discovery.py tests/integration --needs 'ARTIFACTS_IT_STORAGE_URL' | tr '\n' ' ')
           echo "Discovered: $TESTS"
           echo "$TESTS" > "$RUNNER_TEMP/storage-discovered.txt"
-          # shellcheck disable=SC2086
-          if grep -lE 'NEO4J_IT_URI|ARANGO_IT_URL' $TESTS; then
+          if [ -n "$(python3 ../../scripts/integration_discovery.py tests/integration --needs 'ARTIFACTS_IT_STORAGE_URL' --also 'NEO4J_IT_URI|ARANGO_IT_URL')" ]; then
             echo "graph=true" >> "$GITHUB_OUTPUT"
           else
             echo "graph=false" >> "$GITHUB_OUTPUT"

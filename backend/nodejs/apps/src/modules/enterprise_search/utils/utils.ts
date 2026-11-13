@@ -1,3 +1,5 @@
+import type { AppConfig } from '../../tokens_manager/config/config';
+import { redactConversationFor, viewerOf } from './viewer-redaction';
 import {
   AIServiceResponse,
   IAIModel,
@@ -97,6 +99,8 @@ export const extractModelInfo = (
     reasoningEffort: body.reasoningEffort || undefined,
   };
 };
+
+export { conversationTitleFromQuery } from './quoted-selection';
 
 export const buildUserQueryMessage = (
   query: string,
@@ -2181,9 +2185,15 @@ export const sendSSEErrorEvent = async (
 
 /** The answer's search was served with less than the full search (the query service says so): the UI shows a note. */
 export const searchDegradedMeta = (
-  data: Pick<IAIResponse, 'searchDegraded'> | null | undefined,
-): { searchDegraded?: true } =>
-  data?.searchDegraded === true ? { searchDegraded: true } : {};
+  data:
+    Pick<IAIResponse, 'searchDegraded' | 'accessNotices'> | null | undefined,
+): {
+  searchDegraded?: true;
+  accessNotices?: NonNullable<IAIResponse['accessNotices']>;
+} => ({
+  ...(data?.searchDegraded === true ? { searchDegraded: true as const } : {}),
+  ...(data?.accessNotices?.length ? { accessNotices: data.accessNotices } : {}),
+});
 
 /**
  * Send complete event to client with conversation data — `RUN_FINISHED`
@@ -2569,8 +2579,10 @@ export const handleRegenerationError = async (
   conversationId: string,
   session: Tx | null,
   requestId: string,
-  errorType: string = 'regeneration_error',
-  protocol?: SSEProtocol,
+  errorType: string,
+  protocol: SSEProtocol | undefined,
+  /** Who the error event goes to: the conversation it carries is hidden for them as in a fetch. */
+  reader: { appConfig: AppConfig; userId: unknown; orgId: unknown },
 ): Promise<void> => {
   const errorMessage = userFacingChatError(error);
 
@@ -2593,7 +2605,11 @@ export const handleRegenerationError = async (
           { orgId: updatedConversation.orgId },
           session,
         );
-        const plainConversation = attachMessages(updatedConversation, messages);
+        const plainConversation = await redactConversationFor(
+          reader.appConfig,
+          viewerOf(reader.userId, reader.orgId),
+          attachMessages(updatedConversation, messages),
+        );
         await sendSSEErrorEvent(
           res,
           errorMessage,

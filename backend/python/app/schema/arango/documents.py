@@ -209,6 +209,8 @@ app_schema = {
             "queuedAtTimestamp": {"type": ["number", "null"]},
             # Set when sync is turned on; see toggle_connector_instance.
             "enabledAtTimestamp": {"type": ["number", "null"]},
+            # Moves with every sync toggle, whose events carry the value (_handle_app_disabled). Incremented in AQL, which computes in doubles.
+            "toggleSeq": {"type": ["number", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
@@ -218,8 +220,12 @@ app_schema = {
             # app.services.permissions.structure_generation: moves with every structural write of the connector
             "scopeProjectionGeneration": {"type": ["number", "null"]},  # incremented in AQL, which computes in doubles
             "scopeProjectionUnsafe": {"type": ["boolean", "number", "null"]},  # a mark: true (older code) or a time
+            "scopeProjectionPendingRoots": {"type": ["string", "null"]},  # {root: generation} awaiting a rewrite (see permissions.pending)
             "scopeProjectionOpened": {"type": ["number", "null"]},  # writes started that could not be undone, and finished (see unclosed_writes)
             "scopeProjectionClosed": {"type": ["number", "null"]},
+            "scopeProjectionOpenWrites": {"type": ["string", "null"]},  # {token: {deadline, roots}} of the writes counted as opened (see open_write)
+            "scopeSweepState": {"type": ["string", "null"]},  # {failures, error, retry time} of the sweep of this connector (see scope_sweep)
+            "scopeRewriteLease": {"type": ["string", "null"]},  # {holder, deadline} of the rewriter that holds the connector (see permissions.rewrite_lease)
             # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
             "scopeBackfillState": {"type": ["string", "null"]},
             "scopeBackfillAfter": {"type": ["string", "null"]},
@@ -230,6 +236,8 @@ app_schema = {
             "scopeBackfillRecords": {"type": ["integer", "null"]},
             "scopeBackfillStale": {"type": ["integer", "null"]},
             "scopeBackfillError": {"type": ["string", "null"]},
+            "scopeBackfillLegacy": {"type": ["integer", "null"]},
+            "scopeBackfillExact": {"type": ["boolean", "null"]},  # the pass ended with no stale or legacy point (see currency.app_is_exact)
             # app.modules.indexing.entity_index_rebuild
             "entityIndexState": {"type": ["string", "null"]},
             "entityIndexPhase": {"type": ["string", "null"]},
@@ -440,6 +448,26 @@ record_schema = {
             "propsGen": {"type": ["number", "null"]},
             "propsSrc": {"type": ["number", "null"]},
             "propsVer": {"type": ["number", "null"]},
+            # The parse-now marker (app.modules.indexing.parse_now_marker). A pattern, not an
+            # enum, for the same reason as entityExtractionStatus.
+            "parseNowStatus": {"type": ["string", "null"], "pattern": "^[A-Z_]{1,32}$"},
+            "parseNowRev": {"type": ["string", "null"]},
+            "parseNowReason": {"type": ["string", "null"]},
+            "parseNowAt": {"type": ["number", "null"]},
+            # The in-flight embedding marker (see app/modules/indexing/embed_resume.py): flat scalars, so
+            # a partial write leaves the others alone on every graph provider. Null once the record is indexed.
+            "embedVrid": {"type": ["string", "null"]},
+            "embedRev": {"type": ["string", "null"]},
+            "embedKey": {"type": ["string", "null"]},
+            "embedDigest": {"type": ["string", "null"]},
+            "embedTotal": {"type": ["number", "null"]},
+            "embedDeliveryId": {"type": ["string", "null"]},
+            "embedStartedMs": {"type": ["number", "null"]},
+            # Seconds of embedding spent by cut attempts of this chain, how many of those cuts were not
+            # counted as failures, and how many points are done (display only; never read to decide).
+            "embedSeconds": {"type": ["number", "null"]},
+            "embedUncounted": {"type": ["number", "null"]},
+            "embedDone": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",
@@ -858,8 +886,11 @@ block_schema = {
             "parserVersion": {"type": ["string", "null"]},
             "kind": {"type": ["string", "null"]},
             "subType": {"type": ["string", "null"]},
+            "modifiers": {"type": ["array", "null"], "items": {"type": "string"}},
+            "typeParamCount": {"type": ["number", "null"]},
             "isBlockGroup": {"type": "boolean"},
             "isExternal": {"type": "boolean"},
+            "isAccessor": {"type": ["boolean", "null"]},
             "index": {"type": ["number", "null"]},
             "startLine": {"type": ["number", "null"]},
             "endLine": {"type": ["number", "null"]},
@@ -868,7 +899,11 @@ block_schema = {
             "parentBlockId": {"type": ["string", "null"]},
             "pendingEdges": {"type": ["array", "null"], "items": {"type": "object"}},
             "typeTable": {"type": ["object", "null"]},
+            # C/C++ function-like macro -> [line, names its body calls], on the file-summary block.
+            "macroTable": {"type": ["object", "null"]},
             "referencedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            # `specifier:name` of the library calls the block makes, rewritten by each edge build.
+            "externalRefs": {"type": ["array", "null"], "items": {"type": "string"}},
             "createdAtTimestamp": {"type": ["number", "null"]},
             "updatedAtTimestamp": {"type": ["number", "null"]},
         },
@@ -1065,6 +1100,8 @@ record_group_schema = {
             "deletedAtSourceTimestamp": {"type": ["number", "null"]},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            # Code repository groups: the commit the git connector last synced the repo to.
+            "lastSyncedCommit": {"type": ["string", "null"]},
         },
         "required": [
             "groupName",

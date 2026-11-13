@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 _C = CollectionNames
+_ROLE_BATCH = 50      # candidates whose roles are read by one statement
 # entity type -> (edge collection from the record, the collections of the entity, how its org is matched)
 _TARGETS: dict[str, tuple[str, tuple[str, ...], str]] = {
     EntityType.DEPARTMENT.value: (_C.BELONGS_TO_DEPARTMENT.value, (_C.DEPARTMENTS.value,), "none"),
@@ -89,11 +90,13 @@ class EntityAccessMixin(PgBase):
                       r.doc->>'connectorId' IN (SELECT jsonb_array_elements_text(s->'apps')) OR r.id IN (SELECT jsonb_array_elements_text(s->'records'))
                       OR EXISTS (SELECT 1 FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = r.id AND b.to_coll = 'recordGroups'
                                    AND b.to_id IN (SELECT jsonb_array_elements_text(s->'groups'))), false)))
-                    AND r.id IN (SELECT e.from_id FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = 'users' AND p.id = e.to_id
-                                   WHERE e.org_id = $1 AND e.coll = 'entityRelations' AND e.from_coll = 'records' AND e.to_coll = 'users' AND e.to_id = ANY($10::text[])
+                    AND r.id IN (SELECT e.from_id FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = e.to_coll AND p.id = e.to_id
+                                   WHERE e.org_id = $1 AND e.coll = 'entityRelations' AND e.from_coll = 'records'
+                                     AND ((e.to_coll = 'users' AND e.to_id = ANY($10::text[])) OR (e.to_coll = 'person' AND e.to_id = ANY($13::text[])))
                                      AND p.doc->>'orgId' = $2 AND e.doc->>'edgeType' = ANY($11::text[])
-                                 UNION SELECT e.to_id FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = 'users' AND p.id = e.from_id
-                                   WHERE e.org_id = $1 AND e.coll = 'entityRelations' AND e.from_coll = 'users' AND e.to_coll = 'records' AND e.from_id = ANY($10::text[])
+                                 UNION SELECT e.to_id FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = e.from_coll AND p.id = e.from_id
+                                   WHERE e.org_id = $1 AND e.coll = 'entityRelations' AND e.to_coll = 'records'
+                                     AND ((e.from_coll = 'users' AND e.from_id = ANY($10::text[])) OR (e.from_coll = 'person' AND e.from_id = ANY($13::text[])))
                                      AND p.doc->>'orgId' = $2 AND e.doc->>'edgeType' = ANY($12::text[]))
                   ORDER BY r.id LIMIT $9),
                 o AS (SELECT s.id, s.doc, row_number() OVER (ORDER BY CASE WHEN $6::boolean AND s.doc->>'sourceTimestampOrigin' = 'upload' THEN 0::float8
@@ -101,7 +104,7 @@ class EntityAccessMixin(PgBase):
                                   CASE WHEN jsonb_typeof(s.doc->'updatedAtTimestamp') = 'number' THEN (s.doc->>'updatedAtTimestamp')::float8 END, 0) END DESC, s.id) AS ord FROM s)
                 SELECT o.id, o.doc, o.ord, (SELECT count(*) FROM s) AS scanned FROM o WHERE o.ord > $7::int AND o.ord <= $7::int + $8::int
                 UNION ALL SELECT NULL, NULL, 0, (SELECT count(*) FROM s) WHERE NOT EXISTS (SELECT 1 FROM o WHERE o.ord > $7::int AND o.ord <= $7::int + $8::int) ORDER BY ord""",
-                                  *args, ref["userIds"], ref["outTypes"], ref["inTypes"])
+                                  *args, ref["userIds"], ref["outTypes"], ref["inTypes"], ref["personIds"])
         else:
             edge, colls, scope = ("", (), "none") if typ == EntityType.RECORD.value else _TARGETS[typ]
             rows = await tx.fetch("""/* pipeshub:graph.get_entity_candidate_records */ WITH s AS (SELECT r.id, r.doc FROM graph.nodes r
@@ -163,8 +166,13 @@ class EntityAccessMixin(PgBase):
                         return None
                     found, capped = await self._scan(tx, org, org_id, typ, ref, record_types, scopes, max(0, offset), max(1, window))
                     hits = []
+                    roles: dict[str, Any] = {}
                     for pos, (rid, doc) in enumerate(found):
-                        if doc.get("connectorId") in apps or await self._role_on(tx, org, user_key, "records", rid):
+                        if doc.get("connectorId") not in apps and rid not in roles:      # the roles of the next candidates, as many as hits are still wanted (at most a batch): none is read past the limit
+                            # every candidate may be a hit, an app-level one too: only the next ``limit - len(hits)`` of them can be read before the limit
+                            ahead = [i for i, d in found[pos:pos + min(_ROLE_BATCH, limit - len(hits))] if d.get("connectorId") not in apps and i not in roles]
+                            roles.update(await self._roles_on(tx, org, user_key, "records", ahead))
+                        if doc.get("connectorId") in apps or roles[rid]:
                             hits.append({"pos": pos, "row": _row(rid, doc)})
                             if len(hits) >= limit:
                                 break
@@ -269,12 +277,26 @@ class EntityAccessMixin(PgBase):
         org = current_org_id()
         if spec.scope_field != "connectorId" and scope_id != org:      # an org-scoped source is the ambient org's: another org's rows are not this org's to page
             raise OrgMismatch("the scope names an org other than the ambient org")
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.page_entity_index_source */ SELECT n.id, n.doc FROM graph.nodes n
-            WHERE n.org_id = $1 AND n.coll = $2 AND (n.doc->>$3 = $4 OR ($5::boolean AND n.doc->>$3 IS NULL))
-              AND (NOT $6::boolean OR (n.doc->>'normalizedName' IS NOT NULL AND n.doc->>'mergedInto' IS NULL))
-              AND NOT EXISTS (SELECT 1 FROM unnest($7::text[]) f WHERE n.doc->f IS DISTINCT FROM 'true'::jsonb)
-              AND ($8::text IS NULL OR n.id > $8) ORDER BY n.id LIMIT $9""",
-                                             org, spec.collection, spec.scope_field, scope_id, spec.include_global, spec.canonical_only, list(spec.required_true), after_key or None, max(1, int(limit))), transaction)
+        n = max(1, int(limit))
+        # A connector's records are read by the vetted page of graph_0006, in byte order (the keyset the connector's index keeps), whose statement is the same filter. The other
+        # sources are small collections that the primary key pages. shortcut: record groups scan their collection past other connectors' rows, add a vetted page when one org holds
+        # hundreds of thousands of them.
+        records = spec.collection == CollectionNames.RECORDS.value
+        if records and 0 < len(scope_id) <= 200 and len(after_key or "") <= 200 and n <= 1000:
+            rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.records_page_by_connector_for_index */ SELECT node_id AS id, doc FROM graph.records_page_by_connector($1, $2, $3)",
+                                                     scope_id, after_key or "", n), transaction)
+        elif records:      # the vetted page's byte order, so a page after one of its keys is the next of the same sequence
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.page_entity_index_source_c */ SELECT n.id, n.doc FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND n.doc->>$3 = $4
+                  AND ($5::text IS NULL OR n.id COLLATE "C" > $5 COLLATE "C") ORDER BY n.id COLLATE "C" LIMIT $6""",
+                                                 org, spec.collection, spec.scope_field, scope_id, after_key or None, n), transaction)
+        else:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.page_entity_index_source */ SELECT n.id, n.doc FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND (n.doc->>$3 = $4 OR ($5::boolean AND n.doc->>$3 IS NULL))
+                  AND (NOT $6::boolean OR (n.doc->>'normalizedName' IS NOT NULL AND n.doc->>'mergedInto' IS NULL))
+                  AND NOT EXISTS (SELECT 1 FROM unnest($7::text[]) f WHERE n.doc->f IS DISTINCT FROM 'true'::jsonb)
+                  AND ($8::text IS NULL OR n.id > $8) ORDER BY n.id LIMIT $9""",
+                                                 org, spec.collection, spec.scope_field, scope_id, spec.include_global, spec.canonical_only, list(spec.required_true), after_key or None, n), transaction)
         return [self._index_row(spec, r["id"], _doc(r["doc"])) for r in rows]
 
     @staticmethod

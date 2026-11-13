@@ -92,7 +92,8 @@ ITEM = {"record_type": "FILE", "connector_id": APP}
 #   v3-dec-restricted  arm 4: RESTRICTED, but the declaration wins
 #   v3-dec-r3 / v3-dec-nested-granted  granted AND in the declared scope
 #   v3-dec-nested-hidden  arm 3: a nested group (its own flag hides only children)
-#   v3-foreign-dec(-r1) / v3-noconn-dec(-r1)  declarations the stop must NOT apply to
+#   v3-foreign-dec(-r1) / v3-noconn-dec(-r1)  declarations the stop must NOT apply to: the walk descends them to
+#                   their records, but a group is judged in the App its own connectorId names, so they are not listed
 #   v3-hide-folder  arm 1: an undeclared group that hides its children
 CORRECT_VISIBLE = {
     "v3-open", "v3-dec", "v3-dec-r1", "v3-dec-r2", "v3-dec-nested",
@@ -100,7 +101,7 @@ CORRECT_VISIBLE = {
     "v3-open-r1", "v3-dec-walked", "v3-dec-walked-r1", "v3-dec-folder",
     "v3-dec-attach-granted", "v3-dec-restricted", "v3-dec-r3",
     "v3-dec-nested-granted", "v3-dec-nested-hidden",
-    "v3-foreign-dec", "v3-foreign-dec-r1", "v3-noconn-dec", "v3-noconn-dec-r1",
+    "v3-foreign-dec-r1", "v3-noconn-dec-r1",
     "v3-hide-folder",
 }
 
@@ -115,6 +116,7 @@ PRUNE_GAP = {"v3-dec-attach", "v3-dec-via-rec"}
 OFF_CONNECTOR = {"v3-foreign-dec", "v3-noconn-dec", "v3-kb-r1", "v3-kb-deleted"}
 
 EXPECTED_HIDDEN = PRUNE_GAP | {
+    "v3-foreign-dec", "v3-noconn-dec",  # name another connector or none: the check refuses them under APP, so the listing does too
     "v3-dec-r3-child",         # inherits from a granted node that is not a seed
     "v3-dec-nested-granted-child",
     "v3-app-loose",            # BELONGS_TO a non-KB, non-APP_LEVEL app
@@ -703,7 +705,7 @@ async def test_direct_children_of_the_app(v3_graph, neo4j_provider) -> None:
     v3-dec-attach-granted has an open parent and stays under it."""
     assert await _visible(neo4j_provider, flatten=False) == {
         "v3-open", "v3-dec", "v3-hidden", "v3-hide-folder",
-        "v3-dec-walked", "v3-foreign-dec", "v3-noconn-dec", "v3-seed",
+        "v3-dec-walked", "v3-seed",
     }
 
 

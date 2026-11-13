@@ -23,12 +23,14 @@ from app.core.envelope import (
     DuplicateEnvelope,
     EnvelopeRejected,
     ctx_of,
+    decode_message,
     open_configured,
     open_stream_message,
 )
 from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
 from app.core.org_context import push as push_org
+from app.modules.indexing.embed_resume import stamp_delivery_id
 from app.services.messaging.config import (
     IndexingEvent,
     MessageHandler,
@@ -47,6 +49,7 @@ from app.services.messaging.error_classifier import (
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.postgres.queue import Delivery, PgQueue
 from app.services.pg_runtime import QUEUE_CHANNEL, PgListener, listen_dsn
+from app.utils import error_class
 from app.utils.request_context import bind_context, context_from_envelope, reset_context
 
 if TYPE_CHECKING:
@@ -75,16 +78,11 @@ def _handback_limit() -> int:
 class RecordHeld(RequeueWithoutAttempt):
     """The record's lease is held by another delivery (a stage rewriting the record, a duplicate): not a reason to pause a consumer."""
 
+    pauses_consumer = False
+
 
 def _retry_base_s() -> float:
     return float(os.getenv("PG_QUEUE_RETRY_BASE_S", "5"))
-
-
-def _loads(value: str) -> Any:  # noqa: ANN401
-    raw = json.loads(value)
-    return (
-        json.loads(raw) if isinstance(raw, str) else raw
-    )  # a double-encoded body, as the Redis consumers accept
 
 
 class _ExpectedOutcome(str):
@@ -399,7 +397,7 @@ class PgMessagingConsumer(IMessagingConsumer):
             reason = type(e).__name__
             self._handback_log[reason] = self._handback_log.get(reason, 0) + 1
             self.logger.debug("%s handed back without counting an attempt (%d so far, retry in %.1fs): %s", d.message_id, n, delay, e)
-            if self.stage_admission is not None and not isinstance(e, RecordHeld):
+            if self.stage_admission is not None and e.pauses_consumer:
                 self._paused_until = max(self._paused_until, time.monotonic() + delay)     # stop claiming until the stage can run
             if e.counts_toward_backstop and n > _handback_limit():
                 # handed back for ever (a lease that is never freed): charged as a failure, so the delivery limit ends it
@@ -434,7 +432,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if not self.indexing:
             return None
         try:
-            raw = _loads(d.value)
+            raw = decode_message(d.value)
             return await open_stream_message(d.topic, raw, StreamMessage) if isinstance(raw, dict) else None
         except Exception as e:
             self.logger.warning("Could not read the exhausted message %s for its record: %s", d.message_id, e)
@@ -462,7 +460,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if self.message_handler is None:
             return False, True, None, "no message handler"
         try:
-            raw = _loads(d.value)
+            raw = decode_message(d.value)
         except json.JSONDecodeError as e:
             return False, True, None, f"JSON parsing failed: {e}"
         if not isinstance(raw, dict):
@@ -480,6 +478,8 @@ class PgMessagingConsumer(IMessagingConsumer):
                 if parsed is None:
                     return False, True, None, "unparseable message"
                 parsed.is_final_failure = final
+                # A hand-back is a nack of the same row, so the row names the event across its retries.
+                stamp_delivery_id(parsed.payload, f"{d.topic}:{d.message_id}")
                 await self._drive_indexing(parsed, f"message:{d.message_id}")
                 return True, False, parsed, ""
             try:
@@ -504,8 +504,9 @@ class PgMessagingConsumer(IMessagingConsumer):
                     "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
                 )
             else:
-                self.logger.error(
-                    "Error in message handler for %s: %s", d.message_id, e, exc_info=True
+                # No error text: a pydantic ValidationError quotes the payload, and the handler's own line names the failure.
+                error_class.log_failure(
+                    self.logger, "message.handler_failed", e, include_error_text=False, message_id=d.message_id
                 )
             terminal = (
                 MessageErrorClassifier.classify_by_exception(e)
@@ -513,7 +514,7 @@ class PgMessagingConsumer(IMessagingConsumer):
             )
             if terminal and parsed is not None:
                 parsed.is_final_failure = True
-            reason = f"{type(e).__name__}: {e}"
+            reason = f"{error_class.classify_error(e)}: {type(e).__name__}"  # kept in last_error: no text, as above
             return False, terminal, parsed, _ExpectedOutcome(reason) if expected else reason
         finally:
             reset_context(token)

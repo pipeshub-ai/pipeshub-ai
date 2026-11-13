@@ -1,13 +1,15 @@
 'use client';
 
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
-import { Box, Flex, Text } from '@radix-ui/themes';
+import { Box, Button, Flex, Text } from '@radix-ui/themes';
 import { SelectedCollections } from '../selected-collections';
 import { AppliedFilters } from '../applied-filters';
 import { ResponseTabs } from './response-tabs';
 import { ConfidenceIndicator } from './confidence-indicator';
 import { SearchDegradedNote } from './search-degraded-note';
+import { AccessNotices, type AccessNotice } from '@/app/components/feedback/access-notice';
 import { AnswerContent } from './answer-content';
+import { QuoteSelectionLayer } from './quote-selection-toolbar';
 import { StatusMessageComponent } from './status-message';
 import { MessageActions } from './message-actions';
 import { SourcesTab } from './response-tabs/citations/sources-tab';
@@ -41,7 +43,7 @@ import { useChatStore } from '../../store';
 import { useRenderSlotId } from './render-slot';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, AppliedFilterNode, MessagePart } from '../../types';
+import { buildAssistantApiFilters, type ConversationMessage, type AskUserQuestionAnswer, type AskUserQuestionPayload, type AttachmentRef, type ConfidenceLevel, type ModelInfo, type StatusMessage, type ResponseTab, type ChatArtifact, type AppliedFilters as AppliedFiltersData, type AppliedFilterNode, type MessagePart } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
@@ -109,6 +111,7 @@ interface ChatResponseProps {
   confidence?: ConfidenceLevel;
   /** A search behind this answer was served with less than the full search. */
   searchDegraded?: boolean;
+  accessNotices?: AccessNotice[];
   isStreaming?: boolean;
   modelInfo?: ModelInfo;
   /** Collections attached to this message (e.g. KB filters the user selected) */
@@ -158,6 +161,8 @@ interface ChatResponseProps {
    * would all be empty controls over a reply that was never produced.
    */
   unanswered?: boolean;
+  /** The answer is withheld: show why, and a way to ask again. */
+  answerHidden?: ConversationMessage['answerHidden'];
   /**
    * A Compare column: the question is drawn once above both columns, and the
    * reply cannot be regenerated or re-answered while two answers compete.
@@ -184,6 +189,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   citationCallbacks,
   confidence,
   searchDegraded = false,
+  accessNotices,
   isStreaming = false,
   modelInfo,
   collections,
@@ -207,6 +213,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   status,
   streamError,
   unanswered = false,
+  answerHidden,
   columnMode = false,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
@@ -253,12 +260,42 @@ export const ChatResponse = React.memo(function ChatResponse({
   // Read the slot-level activeExpandedMessageId so we can reset to 'answer'
   // when a different message becomes the expanded one.
   const activeSlotId = useRenderSlotId();
+  // Asks the same question again as a new turn of this chat, answered with today's access.
+  const askAgain = useCallback(() => {
+    const slot = activeSlotId ? useChatStore.getState().slots[activeSlotId] : null;
+    // Two answers compete in a Compare column: one is chosen, not asked again.
+    if (columnMode || !activeSlotId || !slot || slot.isStreaming) return;
+    const request = buildStreamChatRequestForSlot(activeSlotId, question);
+    if (!request) return;
+    // The turn's own scope and files, not what the composer holds now. The server's usual
+    // checks apply: a file the person can no longer read is refused as always.
+    if (appliedFilters) {
+      request.appliedFilters = appliedFilters;
+      request.filters = buildAssistantApiFilters({
+        apps: appliedFilters.apps.map((a) => a.id),
+        kb: appliedFilters.kb.map((k) => k.id),
+        recordGroups: (appliedFilters.recordGroups ?? []).map((g) => g.id),
+        records: (appliedFilters.records ?? []).map((r) => r.id),
+        recordsExact: (appliedFilters.recordsExact ?? []).map((r) => r.id),
+      });
+    } else {
+      // An unscoped question stays unscoped, whatever the composer holds now.
+      delete request.appliedFilters;
+      request.filters = { apps: [], kb: [] };
+    }
+    if (attachments && attachments.length > 0) request.attachments = attachments;
+    void streamMessageForSlot(activeSlotId, question, request);
+  }, [activeSlotId, question, appliedFilters, attachments, columnMode]);
   const activeExpandedMessageId = useChatStore((s) =>
     activeSlotId ? s.slots[activeSlotId]?.activeExpandedMessageId ?? null : null
   );
   const updateSlot = useChatStore((s) => s.updateSlot);
   const setPreviewFile = useChatStore((s) => s.setPreviewFile);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
+  // Someone a chat was shared with reads it; the server only lets its owner edit or quote.
+  const isChatOwner = useChatStore((st) =>
+    activeSlotId ? st.slots[activeSlotId]?.isOwner !== false : true,
+  );
 
   /** Attachment currently shown in the lightweight text preview dialog (pasted-text attachments only). */
   const [textPreviewAttachment, setTextPreviewAttachment] = useState<AttachmentRef | null>(null);
@@ -870,16 +907,19 @@ export const ChatResponse = React.memo(function ChatResponse({
                       : undefined,
                 }}
               >
-                <AnswerContent
-                  content={answerShown}
-                  citationMaps={effectiveCitationMaps}
-                  citationCallbacks={wrappedCallbacks}
-                  isStreaming={isStreaming}
-                />
+                <QuoteSelectionLayer enabled={!isStreaming && isChatOwner}>
+                  <AnswerContent
+                    content={answerShown}
+                    citationMaps={effectiveCitationMaps}
+                    citationCallbacks={wrappedCallbacks}
+                    isStreaming={isStreaming}
+                  />
+                </QuoteSelectionLayer>
               </Box>
             )}
 
             {!isStreaming && searchDegraded && <SearchDegradedNote />}
+            {!isStreaming && <AccessNotices notices={accessNotices} />}
 
             {/* After an answered question the reply carries on in this row and can stop on an
                 approval: its card shows under the question. Only an unanswered question comes first. */}
@@ -998,10 +1038,6 @@ export const ChatResponse = React.memo(function ChatResponse({
   // asked again), never while the card is still waiting.
   const rowHasCard = askQuestionMatchesRow || Boolean(persistedAskUserQuestion);
   const cardAnswered = Object.keys(persistedAskUserQuestionAnswers ?? {}).length > 0;
-  // Someone a chat was shared with reads it; the server only lets its owner edit.
-  const isChatOwner = useChatStore((st) =>
-    activeSlotId ? st.slots[activeSlotId]?.isOwner !== false : true,
-  );
   const canEditQuestion =
     isChatOwner &&
     isLastMessage &&
@@ -1156,7 +1192,7 @@ export const ChatResponse = React.memo(function ChatResponse({
       {/* Tabs — hide Sources/Citations counts when the ask_user_question card
           (streaming or persisted) owns this row; those tabs reflect answer
           chunks that are suppressed. */}
-      {!unanswered && (
+      {!unanswered && !answerHidden && (
         <ResponseTabs
           activeTab={activeTab}
           onTabChange={setActiveTab}
@@ -1166,10 +1202,38 @@ export const ChatResponse = React.memo(function ChatResponse({
       )}
 
       {/* Tab Content */}
-      {!unanswered && renderTabContent()}
+      {!unanswered && !answerHidden && renderTabContent()}
+
+      {/* The answer is withheld (see `answerHidden`): say why, and offer to ask again with today's access. */}
+      {!unanswered && answerHidden && (
+        <Flex
+          data-testid="answer-hidden"
+          align="center"
+          justify="between"
+          gap="3"
+          wrap="wrap"
+          style={{
+            padding: 'var(--space-3)',
+            border: '1px solid var(--slate-5)',
+            borderRadius: 'var(--radius-2)',
+            backgroundColor: 'var(--slate-a2)',
+          }}
+        >
+          <Text size="2" color="gray">
+            {answerHidden.reason === 'access_check_unavailable'
+              ? t('chat.answerHidden.unconfirmed')
+              : t('chat.answerHidden.lost')}
+          </Text>
+          {isChatOwner && !columnMode && (
+            <Button size="1" variant="soft" onClick={askAgain}>
+              {t('chat.answerHidden.askAgain')}
+            </Button>
+          )}
+        </Flex>
+      )}
 
       {/* Message Actions (feedback, copy, regenerate, model info) */}
-      {!unanswered && !columnMode && activeTab === 'answer' && (
+      {!unanswered && !answerHidden && !columnMode && activeTab === 'answer' && (
         <MessageActions
           content={speakContent}
           citationMaps={effectiveCitationMaps}
