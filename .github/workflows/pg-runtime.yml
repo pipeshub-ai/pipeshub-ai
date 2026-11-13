@@ -82,18 +82,32 @@ jobs:
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
             graph_k: not not_current
             graph_cases: 8
+          # test_kg_read.py stays in shard 4, behind most of the files that run before it in the whole folder: its plan gate
+          # depends on the statistics they leave.
           - shard: 3
             graph_tests: >-
               tests/integration/graph_db/postgres/test_accessible_scope_differential.py
-              tests/integration/graph_db/postgres/test_kg_read.py
-            graph_cases: 48
+              tests/integration/graph_db/postgres/test_conformance.py
+              tests/integration/graph_db/postgres/test_kg_service.py
+              tests/integration/graph_db/postgres/test_kg_stamps.py
+              tests/integration/graph_db/postgres/test_kh_browse.py
+              tests/integration/graph_db/postgres/test_kh_listing_flat.py
+              tests/integration/graph_db/postgres/test_robustness.py
+              tests/integration/graph_db/postgres/test_role_batch.py
+            graph_cases: 244
           - shard: 4
             graph_tests: >-
               tests/integration/graph_db/postgres
               --ignore=tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-              --ignore=tests/integration/graph_db/postgres/test_kg_read.py
               --ignore=tests/integration/graph_db/postgres/test_accessible_scope_differential.py
-            graph_cases: 1651
+              --ignore=tests/integration/graph_db/postgres/test_conformance.py
+              --ignore=tests/integration/graph_db/postgres/test_kg_service.py
+              --ignore=tests/integration/graph_db/postgres/test_kg_stamps.py
+              --ignore=tests/integration/graph_db/postgres/test_kh_browse.py
+              --ignore=tests/integration/graph_db/postgres/test_kh_listing_flat.py
+              --ignore=tests/integration/graph_db/postgres/test_robustness.py
+              --ignore=tests/integration/graph_db/postgres/test_role_batch.py
+            graph_cases: 1455
     services:
       redis:
         image: redis:7.4-bookworm
