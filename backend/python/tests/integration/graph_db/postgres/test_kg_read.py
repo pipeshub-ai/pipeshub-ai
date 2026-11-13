@@ -538,7 +538,7 @@ async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(monk
                     assert await db.run(settings) == before
 
                     async def longer(tx) -> dict[str, Any]:
-                        await kg_read.accessible_rows(lambda fn: kg_read.in_savepoint(tx, fn), org, ["no-such-node"], [], access, walk)  # noqa: B023
+                        await kg_read.accessible_rows(lambda fn: kg_read.in_savepoint(tx, fn), org, ["no-such-node"], [], access, walk)
                         return await settings(tx)
                     assert await db.run(longer) == before
                     assert await db.run(settings) == before
