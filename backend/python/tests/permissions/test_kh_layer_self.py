@@ -1,6 +1,7 @@
 """The Knowledge Hub layer's whole-tree browse finds what it is meant to find: fed store answers that are wrong in each way it checks, it raises
-each class (`browse_extra`, `arrow`, `stub`, `browse_gap`, a row listed twice, a total that does not count the rows), and it counts the rows it
-leaves unopened past its cap instead of dropping them silently. No store: `browse_pages` is replaced by canned answers."""
+each class (`browse_extra`, `arrow`, `stub`, `browse_gap`, `sidebar`, a row listed twice, a total that does not count the rows; a failed browse of
+any node the viewer may open, a leaf too), and past its budget of opens it opens nothing more, counting the rows and the left-out stubs it does
+not open instead of dropping them silently. No store: `browse_pages` is replaced by canned answers."""
 
 from __future__ import annotations
 
@@ -38,8 +39,12 @@ class _Layer:
 
 
 async def _browse(monkeypatch, answers: dict) -> list[kh_layer.KhFinding]:
-    async def browse_pages(_layer, _world, _viewer, node, _parent_type, _page_size=kh_layer.PAGE) -> tuple | None:
-        return answers.get(node, ([], [0], [0]))
+    async def browse_pages(_layer, _world, _viewer, node, _parent_type, _page_size=kh_layer.PAGE, *, only_containers=False) -> tuple | None:
+        found = answers.get(node, ([], [0], [0]))
+        if not only_containers:
+            return found
+        # the sidebar: the canned one, else the rows with an arrow and every group
+        return answers.get((node, "sidebar")) or ([i for i in found[0] if i.nodeType != "record" or i.hasChildren], [0], [0])
     monkeypatch.setattr(kh_layer, "browse_pages", browse_pages)
     reference = OracleLayer()
     return await kh_layer._browse(_Layer(), reference, WORLD, "u", kh_layer.visible(reference, WORLD, "u"), "self")
@@ -60,8 +65,10 @@ async def test_a_right_store_gives_no_finding(monkeypatch) -> None:
     ({"f": ([_item("r1"), _item("r2"), _item("s", stub=True)], [3], [3])}, "stub", "f: lists the stub s, and opening it lists nothing"),
     ({"f": ([_item("r1")], [1], [1])}, "browse_gap", "f: the browse leaves out r2, which the viewer may open"),
     ({"f": None}, "browse_gap", "f: the browse does not open it"),
+    ({"r2": None}, "browse_gap", "r2: the browse does not open it"),
     ({"f": ([_item("r1"), _item("r2"), _item("r1")], [3], [3])}, "browse", "f: lists r1 more than once"),
     ({"f": ([_item("r1"), _item("r2")], [3], [2])}, "browse", "f: totalItems per page [3], counts.total [2], rows 2"),
+    ({("f", "sidebar"): ([_item("r1")], [1], [1])}, "sidebar", "f: the sidebar lists r1, and opening it lists nothing"),
 ])
 async def test_each_wrong_answer_raises_its_class(monkeypatch, wrong: dict, kind: str, detail: str) -> None:
     answers = {"A": ([_item("f", "recordGroup", arrow=True)], [1], [1]), "f": ([_item("r1"), _item("r2")], [2], [2]), **wrong}
@@ -75,5 +82,14 @@ async def test_the_rows_left_unopened_past_the_cap_are_counted(monkeypatch) -> N
         "A": ([_item("f", "recordGroup", arrow=True)], [1], [1]),
         "f": ([_item("r1"), _item("r2")], [2], [2]),
     })
-    # A and f, and the stub s opened to see whether leaving it out was right; r1 and r2 are counted, not opened
-    assert [(f.kind, f.detail) for f in found] == [("truncated", "opened 3 nodes (the cap); 2 listed rows not opened")]
+    # A and f; the stub s left out of f, and r1 and r2, are counted apart, not opened
+    assert [(f.kind, f.detail) for f in found] == [("truncated", "opened 2 nodes (the cap); 2 listed rows and 1 stubs left out not opened")]
+
+
+async def test_a_record_the_viewer_may_open_whose_browse_fails_is_an_under_admit(monkeypatch) -> None:
+    found = await _browse(monkeypatch, {
+        "A": ([_item("f", "recordGroup", arrow=True)], [1], [1]),
+        "f": ([_item("r1"), _item("r2")], [2], [2]),
+        "r1": None,
+    })
+    assert [(f.kind, f.detail) for f in found] == [("browse_gap", "r1: the browse does not open it")]

@@ -10,8 +10,9 @@ from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 
-def _payload(undecided: list[str]) -> list[dict]:
-    return [{"rows": [], "total": 0, "nRecord": 0, "nFolder": 0, "nGroup": 0, "crumbNodes": [], "crumbEdges": [], "khUndecided": undecided}]
+def _payload(undecided: list[str], probes: list | None = None) -> list[dict]:
+    return [{"rows": [], "total": 0, "nRecord": 0, "nFolder": 0, "nGroup": 0, "crumbNodes": [], "crumbEdges": [], "khUndecided": undecided,
+             "khProbes": probes or []}]
 
 
 def _provider(*answers: list[dict], admits: set[str]) -> Neo4jProvider:
@@ -81,3 +82,18 @@ async def test_a_browse_walks_below_a_child_for_the_stub_test_only_when_the_chil
     statement = provider._kh_query.await_args_list[0].args[0]
     assert " OR EXISTS { WITH * WHERE " in statement and " OR EXISTS { WITH app, " not in statement
     assert "THEN true ELSE EXISTS" not in statement
+
+
+async def test_a_row_kept_for_its_frontier_stays_only_where_the_check_admits_a_child_of_it() -> None:
+    """A row its rules list nothing under (a stub with no way below it, a sidebar record) is kept by the statement with its frontier; the check
+    is asked about the frontier once, and the page is read again only when it refuses one, with that row asked and not kept."""
+    provider = _provider(_payload([], [["s1", ["c1"]], ["s2", ["c2", "c3"]]]), _payload([], [["s1", ["c1"]]]), admits={"c3"})
+    await _browse(provider, "g1")
+    first, second = provider._kh_query.await_args_list
+    assert set(provider.check_access.await_args_list[0].kwargs["node_ids"]) == {"c1", "c2", "c3"}
+    assert provider.check_access.await_count == 1      # s1 is not asked twice
+    assert second.kwargs["parameters"]["kh_asked"] == ["s1", "s2"] and second.kwargs["parameters"]["kh_kept"] == ["s2"]
+
+    provider = _provider(_payload([], [["s2", ["c3"]]]), admits={"c3"})
+    await _browse(provider, "g1")
+    assert provider._kh_query.await_count == 1      # every row kept: the page stands

@@ -44,8 +44,10 @@ async def _browse_statement(filters: dict | None) -> str:
 async def test_neo4j_decides_the_container_filter_on_real_children() -> None:
     statement = await _browse_statement({"only_containers": True})
 
-    computed = statement.index("hasChildren: (CASE WHEN")
-    assert computed < statement.index(NEO4J_CONTAINER_FILTER)
+    # the rule's answer and the frontier the check is asked about, read before the filter that keeps the containers
+    computed = statement.index("AS khHas")
+    assert computed < statement.index("AS khProbe") < statement.index(NEO4J_CONTAINER_FILTER)
+    assert "hasChildren: (khHas OR node.id IN $kh_lists.kh_kept OR size(khProbe) > 0)" in statement
 
 
 @pytest.mark.asyncio
@@ -66,7 +68,8 @@ def test_arango_decides_the_container_filter_on_real_children() -> None:
 
     slim = ArangoHTTPProvider._kh_v3_slim_aql(tuple(conditions), "name")
 
-    assert "hasChildren: ((IS_SAME_COLLECTION(" in slim
+    assert "LET kh_has = (kh_sd.hideChildren != true" in slim and "LET kh_probe = kh_has ? [] :" in slim
+    assert "hasChildren: (kh_has OR LENGTH(kh_probe) > 0)" in slim and "RETURN [kh_h, node.nodeType, sortKey, kh_probe]" in slim
     assert "hasChildren: false" not in slim
 
 
@@ -74,3 +77,24 @@ def test_arango_main_list_does_not_read_children_before_the_page_is_cut() -> Non
     slim = ArangoHTTPProvider._kh_v3_slim_aql((), "name")
 
     assert "hasChildren: false" in slim
+
+
+async def test_arango_keeps_a_row_for_its_frontier_only_where_the_check_admits_a_child_of_it() -> None:
+    """The slim statement keeps a row its rules list nothing under with its frontier; the page asks the check about every frontier at once and
+    drops the rows it admits no child of, before the page is cut and counted."""
+    from app.services.graph_db.arango.arango_http_provider import _Visible
+    from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+    provider = _arango()
+    provider.http_client = MagicMock()
+    provider.http_client.execute_aql = AsyncMock(return_value=[
+        ["records/a", "record", "a", ["c1"]], ["records/b", "record", "b", ["c2"]], ["records/c", "record", "c", []]])
+    provider._kh_v3_run = AsyncMock(return_value=[])
+    provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"c2"})))
+    conditions, _ = provider._kh_v2_filters_aql(only_containers=True)
+    page = await provider._kh_v3_page_rows(
+        _Visible(nodes=["records/a", "records/b", "records/c"]), "app1", "org1", limit=10, sort_field="name", sort_dir="asc", after=None,
+        direction="next", filters={"only_containers": True}, lists_placeholders=True, exact_arrows=True,
+        row_ctx={"granted": {}, "kh_scope": {}, "kh_from_app": True, "kh_seeded": []}, transaction=None, access={"grantee_ids": []})
+    assert set(provider.check_access.await_args.kwargs["node_ids"]) == {"c1", "c2"}
+    assert page["total"] == 2 and provider._kh_v3_run.await_args.args[1]["kh_page"] == ["records/b", "records/c"]

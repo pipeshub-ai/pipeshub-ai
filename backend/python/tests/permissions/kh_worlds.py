@@ -541,6 +541,69 @@ grants: [[u, h], [u, Q]]
 gates: [[u, A]]
 """))
 
+# SIDESEED: a record R under a granted folder f, whose only child C inherits only from a seed s the walk from the App does not reach (s hangs under
+# a restricted group the viewer is not granted): the check admits C below the seed, so opening R lists C, R shows an arrow, and the sidebar of f
+# (rows with children) keeps R.
+SIDESEED = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]}
+  - {id: x, kind: group, connector: A, rule: RESTRICTED, parents: [A], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: OPEN, parents: [x]}
+  - {id: C, kind: record, connector: A, rule: OPEN, parents: [R, s], inherits: [s]}
+grants: [[u, f], [u, s]]
+gates: [[u, A]]
+"""))
+
+# STUBSEED: the same below a stub: a stub S under a granted group h whose only child C inherits only from a seed s the walk does not reach. Opening
+# S lists C (the check admits it below the seed), so S is listed and h shows an arrow.
+STUBSEED = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: h, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: S, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [h], inherits: [h]}
+  - {id: x, kind: group, connector: A, rule: RESTRICTED, parents: [A], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: OPEN, parents: [x]}
+  - {id: C, kind: record, connector: A, rule: OPEN, parents: [S, s], inherits: [s]}
+grants: [[u, h], [u, s]]
+gates: [[u, A]]
+"""))
+
+# NESTSTUB: a stub S whose only child is a stub T, whose only child C the check admits through another parent q (C does not inherit from T).
+# Opening T lists C, so T is listed under S, so S is listed under h and h shows an arrow.
+NESTSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: h, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: S, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [h], inherits: [h]}
+  - {id: T, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [S], inherits: [S]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: C, kind: record, connector: A, rule: STRICT, parents: [T, q], inherits: [q]}
+grants: [[u, h], [u, q]]
+gates: [[u, A]]
+"""))
+
+# CAPSTUB: a stub S with one child more than the check is asked about per node (`_KH_UNDECIDED_MAX`, the first by id): none of the first is
+# readable, and the last, k200, is (through q). Opening S asks about the first ones only and lists nothing, so S is not listed (and k200, left out
+# under S by the cap, is reported); it is listed under q.
+CAP_KIDS = 201
+CAPSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: h, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: S, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [h], inherits: [h]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+""" + "".join(f"  - {{id: k{i:03d}, kind: record, connector: A, rule: STRICT, parents: [S]}}\n" for i in range(CAP_KIDS - 1)) + f"""\
+  - {{id: k{CAP_KIDS - 1:03d}, kind: record, connector: A, rule: STRICT, parents: [S, q], inherits: [q]}}
+grants: [[u, h], [u, q]]
+gates: [[u, A]]
+"""))
+
 # KEYCLASH: an App that opens everything, and a strict record m below a seed the walk does not reach, which belongs to no App. The test adds, on
 # ArangoDB only, a record group whose key is the App's key and files m in it: m belongs to that group, not to the App, so it is not listed.
 KEYCLASH = world_from_data(yaml.safe_load("""
@@ -556,4 +619,5 @@ gates: [[u, A]]
 
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
-             SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ]
+             SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ, SIDESEED, STUBSEED, NESTSTUB,
+             CAPSTUB]

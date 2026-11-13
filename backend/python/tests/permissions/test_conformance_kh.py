@@ -17,6 +17,7 @@ from . import gen
 from .kh_layer import KhFinding, browse_pages, check_world, children_of, refused_by_cap
 from .kh_worlds import (
     APPSIDE,
+    CAPSTUB,
     CROSSREACH,
     DECLDEEP,
     DECLSTUB,
@@ -26,11 +27,14 @@ from .kh_worlds import (
     FOLDERSTUB,
     KEYCLASH,
     KH_WORLDS,
+    NESTSTUB,
     OPENGROUP,
     OPENSTUB,
     SCOPEDTWO,
     SIDEKID,
+    SIDESEED,
     STUBQ,
+    STUBSEED,
     TWOWAY,
     XDECL,
     XGRANT,
@@ -231,6 +235,27 @@ async def test_a_child_the_check_admits_by_its_own_reach_keeps_its_row_and_its_s
             assert (await children_of(layer, APPSIDE, "u", "A", "app", only_containers=True) or {}).get("R") is True, layer.name
             assert await children_of(layer, STUBQ, "u", "h", "recordGroup") == {"S": True}, layer.name
             bad = [f for i, world in enumerate(worlds) for f in _bad(await check_world(layer, world, f"ownreach-{i}"))]
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release(worlds)
+
+
+async def test_a_child_the_check_admits_by_any_arm_keeps_its_row_and_its_stub(graph_layers) -> None:
+    """Where a node's rules list nothing under it, opening it lists what the check admits of its frontier: the children its browse asks the check
+    about, and those of the stubs it lists on the way down. The sidebar keeps a record whose child the check admits below a seed (SIDESEED), a
+    stub is listed over such a child (STUBSEED) and over a stub that holds a child the check admits by another parent (NESTSTUB), and a stub
+    whose readable child is past the children its browse asks about is not listed, as opening it lists nothing (CAPSTUB)."""
+    for layer in graph_layers:
+        worlds = [SIDESEED, STUBSEED, NESTSTUB, CAPSTUB]
+        await layer.preload(worlds)
+        try:
+            assert await children_of(layer, SIDESEED, "u", "f", "recordGroup", only_containers=True) == {"R": True}, layer.name
+            assert await children_of(layer, STUBSEED, "u", "h", "recordGroup") == {"S": True}, layer.name
+            assert await children_of(layer, NESTSTUB, "u", "h", "recordGroup") == {"S": True}, layer.name
+            assert await children_of(layer, NESTSTUB, "u", "S", "record") == {"T": True}, layer.name
+            assert await children_of(layer, CAPSTUB, "u", "h", "recordGroup") == {}, layer.name
+            assert await children_of(layer, CAPSTUB, "u", "S", "record") == {}, layer.name
+            bad = [f for i, world in enumerate(worlds) for f in _bad(await check_world(layer, world, f"frontier-{i}"))]
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
             await layer.release(worlds)

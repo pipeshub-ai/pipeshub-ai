@@ -140,11 +140,12 @@ def test_past_the_cap_a_browse_asks_about_the_first_children_and_logs_that_it_le
 
 
 def test_a_browse_and_a_row_s_arrow_ask_about_the_same_children() -> None:
-    """The undecided children of a node, read by its browse (beside what its rules select) and by its arrow (when its rules select none):
-    one expression on each backend, the first ones by id, so the arrow is on exactly when the browse of the row lists one. A browse reads one
-    more, to tell when the cap leaves some out."""
+    """The undecided children of a node, read by its browse (beside what its rules select) and by its arrow (when its rules select none, as its
+    frontier: its own and those of the stubs it lists on the way down): one expression on each backend, the first ones by id, so the arrow is on
+    exactly when the browse of the row lists one. A browse reads one more, to tell when the cap leaves some out."""
     from app.services.graph_db.arango.arango_http_provider import (
         ArangoHTTPProvider,
+        _aql_frontier,
         _aql_undecided,
     )
 
@@ -158,7 +159,9 @@ def test_a_browse_and_a_row_s_arrow_ask_about_the_same_children() -> None:
     assert "SORT kh_uk" in aql and "LIMIT 200" in aql
     assert _aql_undecided("node", decided="@d").replace("FILTER kh_uc._id NOT IN @d", "").replace("LIMIT 201", "LIMIT 200") == aql
     queries = ArangoHTTPProvider._kh_v3_listing_aql()
-    assert aql in queries["enrich_exact"] and "khKids: []" in queries["enrich"]
+    assert _aql_undecided("kh_fy") in _aql_frontier("node", "kh_row_from_app") and "0..50 OUTBOUND node" in _aql_frontier("node", "kh_row_from_app")
+    assert _aql_frontier("node", "kh_row_from_app") in queries["enrich_exact"] and "khKids: []" in queries["enrich"]
+    assert neo._kh_v3_undecided("kh_fy") in neo._kh_v3_frontier("node", "kh_row_from_app", state=True, grant_once=False)
     # the children are read only for a row whose rules select none, or that is asked again for its stub child
     assert "(kh_row.hasChildren AND NOT kh_stub) ? [] :" in queries["enrich_exact"]
 
@@ -329,15 +332,19 @@ def test_neo4j_arrow_tests_a_child_stub_with_the_row_s_reach_and_a_filed_one_str
     assert "CHILD(kh_ch)" in expr and "STRICT(kh_bg)" in expr and "STRICT(kh_bc)" in expr and "CHILD(kh_bc)" not in expr
 
 
-def test_a_childs_own_reach_walks_only_inside_a_loop_over_the_children_that_can_be_listed() -> None:
-    """AQL lifts a subquery that reads no loop variable above the loop, so the own-reach walk of a child (the sidebar, a stub's way) is a FOR
-    inside a loop over a list that is empty unless the rule leaves the child out and it could be listed; written as a filter, it walked for every
-    child of every row and the sidebar page took four times main's. The last-hop stub test does not ask it."""
+def test_the_frontier_and_the_sidebar_reach_walk_only_for_a_node_with_a_child() -> None:
+    """The frontier (what the check is asked about where a node's rules list nothing) walks only inside a loop over a list that is empty unless
+    the node has a hierarchy child, and the sidebar reads a record's own reach (for the row's own arrow test) only then: the sidebar asks both of
+    every record of a folder, most of them leaves. A stub's way holds no copy of the check: what its rule leaves is the frontier's."""
     from app.services.graph_db.arango.arango_http_provider import (
-        _aql_kh_has_children,
+        ArangoHTTPProvider,
+        _aql_frontier,
         _aql_way_below,
     )
 
-    assert "FOR kh_rq IN (((NOT kh_rp) AND kh_ch.isPlaceholder != true" in _aql_kh_has_children("node", own_reach=True)
-    assert "FOR kh_rq IN (((NOT kh_wk) AND kh_xc.isPlaceholder != true" in _aql_way_below("kh_ch", every_hop=True)
-    assert "kh_xc" not in _aql_way_below("kh_ch", every_hop=False)
+    assert _aql_frontier("node", "X").startswith("UNIQUE(FLATTEN(FOR kh_fg IN (LENGTH(FOR kh_fx, kh_fxe IN 1..1 OUTBOUND node")
+    conditions, _ = ArangoHTTPProvider(MagicMock(), MagicMock())._kh_v2_filters_aql(only_containers=True)
+    slim = ArangoHTTPProvider._kh_v3_slim_aql(tuple(conditions), "name", stubs=True)
+    assert "LET kh_row_from_app = LENGTH(FOR kh_kx, kh_kxe IN 1..1 OUTBOUND kh_sd" in slim
+    assert "FILTER kh_way OR LENGTH(kh_probe) > 0" in slim
+    assert "INBOUND" not in _aql_way_below("kh_ch", every_hop=True) and "INBOUND" not in _aql_way_below("kh_ch", every_hop=False)

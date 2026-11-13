@@ -441,7 +441,6 @@ def _cypher_kh_held(v: str, stub: Callable[[str], str], container: str) -> str:
 def _cypher_kh_has_children(
     v: str, rule: str, filed: str, stub: Callable[[str], str], container: str, *, exact: bool = False, chain_tops: bool = True,
     reached: str = "true", stub_filed: Callable[[str], str] | None = None, reached_stub: Callable[[str], str] | None = None,
-    reached_child: Callable[[str], str] | None = None,
 ) -> str:
     """Whether expanding ``v`` would list a child: a hierarchy child that passes
     the browse's own ``rule`` (``_kh_v3_child_rule``), or, where ``filed`` says
@@ -458,8 +457,8 @@ def _cypher_kh_has_children(
     when the viewer is granted it (a member of a declared group with no hierarchy edge is not listed by its
     browse, so it lights no arrow);
     and ``stub(node)`` hides a placeholder with nothing readable below it, wherever it comes from. ``reached_stub(node)``: a stub child the rule does
-    not pass that a browse of it reaches from the App (the folder listing lists it too). ``reached_child(node)`` (the sidebar, which decides
-    before the page's arrows are settled): a child the rule does not pass that the check admits by its own reach, which opening ``v`` lists."""
+    not pass that a browse of it reaches from the App (the folder listing lists it too). What the rule leaves is the check's to decide
+    (`_kh_v3_frontier`), read beside this test by whoever asks it."""
     # A declaration is its own scope only where the check reads it: the viewer is granted it or the walk from the App reaches it (``reached``).
     declared = (f"({v}:RecordGroup AND coalesce({v}.permissionModel, '') = 'RECORD_GROUP_LEVEL'"
                 f" AND coalesce({v}.connectorId, '') = app.id AND ({v}.id IN $grantedIds OR {reached}))") if exact else "false"
@@ -478,18 +477,15 @@ def _cypher_kh_has_children(
                 f" OR EXISTS {{ (kh_ch)-[:BELONGS_TO]->({v}) }}))")
     stub_arm = f" OR ({reached_stub('kh_ch')})" if exact and reached_stub else ""
     stub_kept = " OR coalesce(kh_ch.isPlaceholder, false)" if stub_arm else ""
-    child_arm = f" OR ({reached_child('kh_ch')})" if reached_child else ""
-    # A child the check admits by its own reach passes no cheap test: the reject is skipped where it is asked.
-    child_kept = " OR true" if reached_child else ""
     body = (
         f"({holds} OR "
         f"EXISTS {{ ({v})-[kh_hr:NODE_RELATION]->(kh_ch) "
         f"WHERE kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
         # Cheap reject first: a child no arm of the rule can open is skipped before the full rule.
         f"AND ({filed} OR size($declaredScope) > 0 OR kh_ch.id IN $grantedIds OR {declared} "
-        f"OR EXISTS {{ (kh_ch)-[:INHERIT_PERMISSIONS]->({v}) }}{stub_kept}{child_kept}) "
+        f"OR EXISTS {{ (kh_ch)-[:INHERIT_PERMISSIONS]->({v}) }}{stub_kept}) "
         f"AND (kh_ch:Record OR kh_ch:RecordGroup) AND kh_ch.orgId = $org_id AND kh_ch.id IS NOT NULL "
-        f"{stub('kh_ch')} AND ({rule} OR {in_scope}{stub_arm}{child_arm}) }} "
+        f"{stub('kh_ch')} AND ({rule} OR {in_scope}{stub_arm}) }} "
         f"OR ({filed} AND {'NOT coalesce(' + container + ', false)' if exact else 'true'} AND {held('kh_bc')}))"
     )
     if exact:
@@ -20860,6 +20856,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH DISTINCT kh_u.id AS kh_uid ORDER BY kh_uid LIMIT {self._KH_UNDECIDED_MAX + (1 if decided else 0)}
             RETURN kh_uid }} END"""
 
+    # Reads of one page at most: each asks the check about the rows the last one kept for their frontier, and drops those it refuses. A page
+    # without a total reads only its own rows, so a refused row lets the next one in. shortcut: past this many a row still unasked is listed as
+    # the rules leave it (a row the viewer may open, whose arrow or stub test is then unsettled); raise it if the warning shows.
+    _KH_PROBE_ROUNDS = 8
+
+    def _kh_v3_frontier(self, v: str, from_app: str, *, state: bool, grant_once: bool) -> str:
+        """The children of ``v`` whose listing the batch check decides when ``v`` is opened: those a browse of ``v`` asks it about
+        (`_kh_v3_undecided`: the first ``_KH_UNDECIDED_MAX`` by id, as the browse reads them), and those a browse of each stub it lists on the way down
+        asks about (a stub below ``v`` by hops through stubs alone, each passing the browse rule read from ``from_app``). Opening ``v`` lists
+        something where the check admits one of them and its own rules list nothing, so an arrow, the sidebar and a stub's listing ask the check
+        about these and nothing else. ``app`` must be in scope."""
+        rule = self._kh_v3_child_rule("kh_fs", "kh_fp", from_app="kh_ffa", opens=_CYPHER_APP_OPENS, state=state, grant_once=grant_once)
+        return (f"COLLECT {{ WITH * WITH app, {v} AS kh_fv, {from_app} AS kh_ffa MATCH (kh_fv) ((kh_fp)-[kh_fr:NODE_RELATION]->(kh_fs)"
+                f" WHERE kh_fr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND {self._kh_placeholder('kh_fs', state=state)} AND {rule}){{0,50}} (kh_fy)"
+                f" WITH DISTINCT kh_fy UNWIND {self._kh_v3_undecided('kh_fy')} AS kh_fk RETURN DISTINCT kh_fk }}")
+
     async def _kh_v3_declared_scope(
         self, declared: list[str], app_id: str, granted: list[str], probe: dict[str, Any] | None, transaction: str | None,
     ) -> list[str]:
@@ -21561,32 +21573,34 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if transaction is None else self._kh_v3_name_matches(org_id, search, state=state, transaction=transaction)
             )
 
-        def placeholder_test(v: str, reached: str = "false") -> str:
-            """A stub is listed when a readable node lies below it. ``reached``: whether a browse of the stub itself starts from the App (its own
-            ``fromApp``, `walked_from_app`, as the page reads a row's); below it the hops read as that browse reads them. A stub only filed in a node
-            is not reached."""
-            if not lists_placeholders:
-                return f"AND NOT {self._kh_placeholder(v, state=state)}"
-            # A browse shows a stub only as the way to something readable below it: a path of hierarchy hops, each of which passes the
-            # browse rule, ending at a node that is no stub. `reached` is read once, not at every hop.
+        def stub_way(v: str, reached: str) -> str:
+            """Whether a readable node lies below the stub ``v`` by the browse rule: a path of hierarchy hops, each of which passes it, ending at a
+            node that is no stub. ``reached``: whether a browse of the stub itself starts from the App (its own ``fromApp``, `walked_from_app`, as the
+            page reads a row's), read once, not at every hop; below it the hops read as that browse reads them. A stub only filed in a node is not
+            reached. The test opens the subquery, so the walk runs for a stub alone even where the planner evaluates the whole disjunction. Not a
+            CASE around the subquery: Neo4j plans that as a nested plan, three times the planning time of a page statement, past a small heap."""
             below = self._kh_v3_child_rule(
                 "kh_xs", "kh_xp", from_app="kh_xfa", opens=app_opens, state=state, grant_once=grant_once)
-            # Or a child of the stub the walk from the App reaches by another parent: opening the stub lists it (the check admits it).
             stub = self._kh_placeholder(v, state=state)
-            reached_kid = (f"EXISTS {{ WITH * WHERE {stub}"
-                           f" MATCH ({v})-[kh_xd:NODE_RELATION]->(kh_xc:Record|RecordGroup) WHERE kh_xd.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']"
-                           f" AND kh_xc.orgId = $org_id AND {reached_child('kh_xc')} }}")
-            # The stub test opens each subquery, so the walk runs for a stub alone even where the planner evaluates the whole disjunction. Not a
-            # CASE around the subquery: Neo4j plans that as a nested plan, three times the planning time of a page statement, past a small heap.
-            return (f"AND (NOT {stub} OR EXISTS {{ WITH * WHERE {stub} WITH app, {v} AS kh_xv, {reached} AS kh_xfa MATCH (kh_xv) "
+            return (f"EXISTS {{ WITH * WHERE {stub} WITH app, {v} AS kh_xv, {reached} AS kh_xfa MATCH (kh_xv) "
                     f"((kh_xp)-[kh_xr:NODE_RELATION]->(kh_xs) WHERE kh_xr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
-                    f"AND ({below})){{1,50}} (kh_xz) WHERE NOT {self._kh_placeholder('kh_xz', state=state)} }} OR {reached_kid})")
+                    f"AND ({below})){{1,50}} (kh_xz) WHERE NOT {self._kh_placeholder('kh_xz', state=state)} }}")
 
-        def reached_child(v: str) -> str:
-            """Whether ``v``, a child of a node being opened, is one the opening lists though the rule does not pass the hop: a child of this App
-            the browse asks the check about (`_kh_v3_undecided`), which the walk from the App reaches by its own routes (the check's walk arm)."""
-            return (f"(NOT {self._kh_placeholder(v, state=state)} AND {_cypher_read_by_app(v)} AND NOT {self._kh_deleted(v, state=state)}"
-                    f" AND NOT {self._kh_v3_in_hidden_group(v, 'kz')} AND {walked_from_app(v)})")
+        def placeholder_test(v: str, reached: str = "false", *, listing: bool = False) -> str:
+            """A stub is listed when opening it lists something: a readable node below it by the rule (`stub_way`), or, for the listing that decides
+            the rows (``listing``), a child of its frontier the check admits (`_kh_v3_frontier`). The statement keeps a stub whose frontier holds a
+            child until the check is asked (``$kh_asked``), and then only one it admits (``$kh_kept``): see `get_knowledge_hub_connector_page_v3`.
+            An arrow reads the rule alone and asks the check about the frontier with the page (`_kh_v3_settle_held_arrows`)."""
+            stub = self._kh_placeholder(v, state=state)
+            if not lists_placeholders:
+                return f"AND NOT {stub}"
+            if not listing:
+                return f"AND (NOT {stub} OR {stub_way(v, reached)})"
+            frontier = f"EXISTS {{ WITH * WHERE {stub} AND NOT {v}.id IN $kh_asked UNWIND {frontier_of(v, reached)} AS kh_fz RETURN kh_fz }}"
+            return f"AND (NOT {stub} OR {stub_way(v, reached)} OR {v}.id IN $kh_kept OR {frontier})"
+
+        def frontier_of(v: str, reached: str) -> str:
+            return self._kh_v3_frontier(v, reached, state=state, grant_once=grant_once)
 
         def walked_from_app(v: str) -> str:
             """What a browse of ``v`` itself would start from (`fromApp`): a row below two parents may be reached from the App by one and not the
@@ -21608,7 +21622,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         app_opens = _CYPHER_APP_OPENS
         grant_once = probe is not None and listing_by_probe
 
-        def has_children(row_from_app: str, *, row: bool = False, sidebar: bool = False) -> str:
+        def has_children(row_from_app: str, *, row: bool = False) -> str:
             if row and not flatten:
                 row_from_app = "kh_row_from_app"
             rule = self._kh_v3_child_rule(
@@ -21622,7 +21636,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "node", rule, app_opens, lambda v: placeholder_test(v, walked_from_app(v)), container, exact=not flatten, chain_tops=not row,
                 stub_filed=placeholder_test,
                 reached_stub=lambda v: f"{self._kh_placeholder(v, state=state)} AND {_cypher_read_by_app(v)} AND {walked_from_app(v)}",
-                reached=row_from_app if row and not flatten else "true", reached_child=reached_child if sidebar else None)
+                reached=row_from_app if row and not flatten else "true")
             if row and not flatten:
                 # A browse of a declared group reads its own scope beside the page's (`_kh_v3_scoped_start_access`): the groups under it, and the
                 # records that belong to them as members, so a stub below one leads on only through a seed. The row's arrow reads the same.
@@ -21962,6 +21976,31 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # cannot silently lose its field. With listing state the name is the
         # stored lowercase one (`lowered` in the sort) and the type is two label
         # tests instead of two string reads.
+        # A row its rules list nothing under (a stub with no way below it by the rule; for the sidebar, a record with no child the rule passes)
+        # carries its frontier (`_kh_v3_frontier`) until the check is asked about it, and is then kept only where the check admits a child of it
+        # (`$kh_kept`), as opening it lists that child. `khHas` and `khProbe` are read for `node` (null for the scoped listing's sentinel).
+        sidebar = any("node.hasChildren" in c for c in conditions)
+        probing = lists_placeholders or sidebar
+        node_stub = self._kh_placeholder("node", state=state)
+
+        def probe_withs(carry: str) -> str:
+            if not probing:
+                return ""
+            # The sidebar keeps a row exactly where its arrow is on: the page row's own test, read from the row's own reach (`kh_row_from_app`),
+            # and where that lists nothing, the check's answer on its frontier, as the page settles the arrow (`_kh_v3_settle_held_arrows`).
+            reach = f"\n        WITH {carry}, node, CASE WHEN node IS NULL THEN false ELSE {own_from_app()} END AS kh_row_from_app" if sidebar else ""
+            has = f"({node_stub} OR {has_children('kh_row_from_app', row=True)})" if sidebar else "false"
+            stub_arm = (f" WHEN {node_stub} THEN CASE WHEN {by_probe(stub_way('node', walked_from_app('node')))} THEN []"
+                        f" ELSE {by_probe(frontier_of('node', walked_from_app('node')))} END") if lists_placeholders else ""
+            record_arm = f" WHEN NOT khHas THEN {by_probe(frontier_of('node', 'kh_row_from_app'))}" if sidebar else ""
+            row_reach = ", kh_row_from_app" if sidebar else ""
+            return (f"{reach}\n        WITH {carry}, node{row_reach}, CASE WHEN node IS NULL THEN false ELSE {has} END AS khHas"
+                    f"\n        WITH {carry}, node, khHas, CASE WHEN node IS NULL OR node.id IN $kh_asked OR node.id IN $kh_kept THEN []"
+                    f"{stub_arm}{record_arm} ELSE [] END AS khProbe")
+        probe_carry = ("khProbe",) if probing else ()
+        probe_field = ", probe: khProbe" if probing else ""
+        probes_of = "[kh_r IN {} WHERE size(kh_r.probe) > 0 | [kh_r.id, kh_r.probe]]" if probing else "[]"
+
         slim_fields = {
             "id": "node.id",
             "name": "node.khSortName" if state else "coalesce(node.name, node.recordName, node.groupName)",
@@ -21981,11 +22020,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # The sidebar keeps a record only when it has children, and decides
             # that on this map, before the page is cut. Other listings never
             # filter on it, so they skip the expand.
-            "hasChildren": (
-                # The sidebar: a row below a start the walk does not reach may be reached itself, by another parent; opening it reads its own reach.
-                has_children(slim_from_app if flatten else f"({slim_from_app} OR {walked_from_app('node')})", sidebar=not flatten)
-                if any("node.hasChildren" in c for c in conditions) else "false"
-            ),
+            # The sidebar keeps a row its rules list nothing under where the check admits a child of its frontier (`khProbe`, read before this map).
+            "hasChildren": "(khHas OR node.id IN $kh_kept OR size(khProbe) > 0)" if sidebar else "false",
         }
         needed = {"id"}
         # nodeType costs two string reads per node and only the per-type counts
@@ -22055,22 +22091,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # whole row list for every row it keeps (745 MB for 201 rows of 5650
             # matches); the sort is charged each row once.
             sort = self._kh_v2_sort_cypher(
-                sort_field, sort_dir, where=keyset, reverse=direction == "prev",
+                sort_field, sort_dir, carry=probe_carry, where=keyset, reverse=direction == "prev",
                 lowered=state,
             )
             tail = f"""
         {filter_clause}
         {sort}
         WITH collect({{id: node.id, nodeType: node.nodeType,
-                       sortKey: sortKey, nullRank: nullRank}}) AS rows
+                       sortKey: sortKey, nullRank: nullRank{probe_field}}}) AS rows
         WITH rows[0..$kh_limit] AS page, size(rows) AS total,
              size([n IN rows WHERE n.nodeType = 'record' | 1]) AS nRecord,
              size([n IN rows WHERE n.nodeType = 'folder' | 1]) AS nFolder,
-             size([n IN rows WHERE n.nodeType = 'recordGroup' | 1]) AS nGroup
+             size([n IN rows WHERE n.nodeType = 'recordGroup' | 1]) AS nGroup, {probes_of.format("rows")} AS khProbes
             """
         elif include_total:
             sort_key = self._kh_v2_sort_cypher(
-                sort_field, sort_dir, where=keyset, reverse=direction == "prev",
+                sort_field, sort_dir, carry=probe_carry, where=keyset, reverse=direction == "prev",
                 lowered=state, order=False,
             )
             # Ids only. The full record map is built after the page is cut.
@@ -22084,11 +22120,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         {filter_clause}
         {sort_key}
         WITH collect({{id: node.id, nodeType: node.nodeType,
-                       sortKey: sortKey, nullRank: nullRank}}) AS rows
+                       sortKey: sortKey, nullRank: nullRank{probe_field}}}) AS rows
         WITH rows, size(rows) AS total,
              size([n IN rows WHERE n.nodeType = 'record' | 1]) AS nRecord,
              size([n IN rows WHERE n.nodeType = 'folder' | 1]) AS nFolder,
-             size([n IN rows WHERE n.nodeType = 'recordGroup' | 1]) AS nGroup
+             size([n IN rows WHERE n.nodeType = 'recordGroup' | 1]) AS nGroup, {probes_of.format("rows")} AS khProbes
         CALL (rows) {{
             UNWIND rows AS pageItem
             WITH pageItem
@@ -22096,53 +22132,55 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LIMIT $kh_limit
             RETURN collect(pageItem) AS page
         }}
-        WITH total, nRecord, nFolder, nGroup, page
+        WITH total, nRecord, nFolder, nGroup, khProbes, page
             """
         else:
+            # Without a total only the page is read: a row of it the check refuses is dropped and the page read again (the caller's loop).
             sort = self._kh_v2_sort_cypher(
-                sort_field, sort_dir, where=keyset, reverse=direction == "prev",
+                sort_field, sort_dir, carry=probe_carry, where=keyset, reverse=direction == "prev",
                 lowered=state,
             )
             tail = f"""
         {filter_clause}
         {sort}
         LIMIT $kh_limit
-        WITH collect({{id: node.id, sortKey: sortKey, nullRank: nullRank}}) AS page
-        WITH page, null AS total, null AS nRecord, null AS nFolder, null AS nGroup
+        WITH collect({{id: node.id, sortKey: sortKey, nullRank: nullRank{probe_field}}}) AS page
+        WITH page, null AS total, null AS nRecord, null AS nFolder, null AS nGroup, {probes_of.format("page")} AS khProbes
             """
         enrich = f"""
         UNWIND range(0, size(page) - 1) AS idx
-        WITH page[idx] AS item, idx, total, nRecord, nFolder, nGroup
+        WITH page[idx] AS item, idx, total, nRecord, nFolder, nGroup, khProbes
         MATCH (node:Record|RecordGroup {{id: item.id}})
         MATCH (app:App {{id: $app_id}})
         OPTIONAL MATCH (linked)-[lr:NODE_RELATION]->(node)
         WHERE (linked:App OR linked:RecordGroup OR linked:Record)
           AND lr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
-        WITH node, app, item, idx, total, nRecord, nFolder, nGroup,
+        WITH node, app, item, idx, total, nRecord, nFolder, nGroup, khProbes,
              [p IN collect(linked) WHERE p IS NOT NULL] AS parents
         OPTIONAL MATCH (node)-[:IS_OF_TYPE]->(kh_f:File)
-        WITH node, app, item, idx, total, nRecord, nFolder, nGroup, parents,
+        WITH node, app, item, idx, total, nRecord, nFolder, nGroup, khProbes, parents,
              head(collect(kh_f.extension)) AS kh_ext, head(collect(kh_f.sizeInBytes)) AS kh_size
-        WITH node, app, item, idx, total, nRecord, nFolder, nGroup, parents, kh_ext, kh_size,
+        WITH node, app, item, idx, total, nRecord, nFolder, nGroup, khProbes, parents, kh_ext, kh_size,
              head([p IN parents WHERE NOT coalesce(p.isInternal, false) AND NOT p:App]) AS nested,
              head([p IN parents WHERE NOT coalesce(p.isInternal, false)]) AS realParent
         WITH node, coalesce(nested, realParent, app) AS parent,
-             item, idx, total, nRecord, nFolder, nGroup, app, kh_ext, kh_size,
+             item, idx, total, nRecord, nFolder, nGroup, khProbes, app, kh_ext, kh_size,
              // _kh_v3_name_parents picks among these with the access check.
              {parent_options} AS parentOptions, {"false" if flatten else own_from_app()} AS kh_row_from_app
-        WITH {row} AS built, node AS kh_node, item.sortKey AS sortKey, item.nullRank AS nullRank,
-             idx, total, nRecord, nFolder, nGroup, parentOptions,
+        WITH {row} AS built, node AS kh_node, item.sortKey AS sortKey, item.nullRank AS nullRank, kh_row_from_app,
+             idx, total, nRecord, nFolder, nGroup, khProbes, parentOptions,
              // as a scoped browse's rows: the chain-top question and the row's own reach, settled by the page (`_kh_v3_settle_held_arrows`)
              {"false" if flatten else held_by_row()} AS khHeld, {"true" if flatten else opened_row()} AS khFromApp
-        WITH built AS node, sortKey, nullRank, idx, total, nRecord, nFolder, nGroup, parentOptions, khHeld, khFromApp,
-             {"[]" if flatten else f"CASE WHEN built.hasChildren THEN [] ELSE {self._kh_v3_undecided('kh_node')} END"} AS khKids
+        WITH built AS node, sortKey, nullRank, idx, total, nRecord, nFolder, nGroup, khProbes, parentOptions, khHeld, khFromApp,
+             {"[]" if flatten else f"CASE WHEN built.hasChildren THEN [] ELSE {by_probe(frontier_of('kh_node', 'kh_row_from_app'))} END"} AS khKids
         ORDER BY idx
         RETURN collect(node{{.*, sortKey: sortKey, nullRank: nullRank,
                              parentOptions: parentOptions, khHeld: khHeld, khFromApp: khFromApp, khKids: khKids}}) AS rows,
                head(collect(total)) AS total,
                head(collect(nRecord)) AS nRecord,
                head(collect(nFolder)) AS nFolder,
-               head(collect(nGroup)) AS nGroup
+               head(collect(nGroup)) AS nGroup,
+               head(collect(khProbes)) AS khProbes
         """
         # Without the null-id guard a node would count in `total` and then fail
         # to re-match in `enrich`. `isDeleted` is not re-read here: every arm that
@@ -22155,8 +22193,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WHERE (node:Record OR node:RecordGroup)
           AND node.id IS NOT NULL
           AND node.orgId = $org_id
-          {by_probe(placeholder_test("node", walked_from_app("node")))}
-        WITH {slim} AS node
+          {by_probe(placeholder_test("node", walked_from_app("node"), listing=True))}{probe_withs("app")}
+        WITH {slim} AS node{", khProbe" if probing else ""}
         {tail}
         {enrich}
         """
@@ -22201,10 +22239,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                          AND n <> start
                          AND n.orgId = $org_id
                          AND n.id IS NOT NULL
-                         {placeholder_test("n", walked_from_app("n"))}] AS rawNodes, start
+                         {placeholder_test("n", walked_from_app("n"), listing=True)}] AS rawNodes, start
             WITH app, rawNodes, {undecided} AS khUndecided
-            UNWIND rawNodes + [null] AS node
-            WITH app, fromApp, khUndecided, CASE WHEN node IS NULL THEN true ELSE false END AS sentinel,
+            UNWIND rawNodes + [null] AS node{probe_withs("app, fromApp, khUndecided")}
+            WITH app, fromApp, khUndecided{", khProbe" if probing else ""}, CASE WHEN node IS NULL THEN true ELSE false END AS sentinel,
                  CASE WHEN node IS NULL THEN {{
                      id: '', nodeType: '', name: '', recordType: null,
                      indexingStatus: null, createdAt: 0, updatedAt: 0,
@@ -22213,24 +22251,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  }} ELSE {slim} END AS node
             {("WHERE sentinel OR (" + " AND ".join(conditions) + ")" ) if conditions else ""}
             {self._kh_v2_sort_cypher(
-                sort_field, sort_dir, carry=("sentinel", "fromApp", "khUndecided"),
+                sort_field, sort_dir, carry=("sentinel", "fromApp", "khUndecided", *probe_carry),
                 where=("sentinel OR (" + keyset + ")") if keyset else "",
                 reverse=direction == "prev", lowered=state,
             )}
             WITH khUndecided, collect({{id: node.id, nodeType: node.nodeType,
                            sortKey: sortKey, nullRank: nullRank,
-                           sentinel: sentinel, fa: fromApp}}) AS ordered
+                           sentinel: sentinel, fa: fromApp{probe_field}}}) AS ordered
             WITH khUndecided, [n IN ordered WHERE n.id <> ''] AS ordered
-            WITH khUndecided, ordered, size(ordered) AS total,
+            WITH khUndecided, ordered, {probes_of.format("ordered")} AS khProbes
+            WITH khUndecided, khProbes, ordered, size(ordered) AS total,
                  size([n IN ordered WHERE n.nodeType = 'record' | 1]) AS nRecord,
                  size([n IN ordered WHERE n.nodeType = 'folder' | 1]) AS nFolder,
                  size([n IN ordered WHERE n.nodeType = 'recordGroup' | 1]) AS nGroup
             UNWIND ordered[0..$kh_limit] + [null] AS pageItem
-            WITH khUndecided, total, nRecord, nFolder, nGroup, collect(pageItem) AS page
-            WITH khUndecided, total, nRecord, nFolder, nGroup,
+            WITH khUndecided, khProbes, total, nRecord, nFolder, nGroup, collect(pageItem) AS page
+            WITH khUndecided, khProbes, total, nRecord, nFolder, nGroup,
                  CASE WHEN size(page) = 0 THEN [null] ELSE page END AS page
             UNWIND page AS item
-            WITH khUndecided, item, total, nRecord, nFolder, nGroup,
+            WITH khUndecided, khProbes, item, total, nRecord, nFolder, nGroup,
                  CASE WHEN item IS NULL THEN true ELSE false END AS sentinel
             OPTIONAL MATCH (node:Record|RecordGroup {{id: item.id}})
             WHERE NOT sentinel
@@ -22239,15 +22278,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHERE node IS NOT NULL
               AND (linked:App OR linked:RecordGroup OR linked:Record)
               AND lr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
-            WITH khUndecided, node, app, item, sentinel, total, nRecord, nFolder, nGroup,
+            WITH khUndecided, khProbes, node, app, item, sentinel, total, nRecord, nFolder, nGroup,
                  [p IN collect(linked) WHERE p IS NOT NULL] AS parents
             OPTIONAL MATCH (node)-[:IS_OF_TYPE]->(kh_f:File)
-            WITH khUndecided, node, app, item, sentinel, total, nRecord, nFolder, nGroup, parents,
+            WITH khUndecided, khProbes, node, app, item, sentinel, total, nRecord, nFolder, nGroup, parents,
                  head(collect(kh_f.extension)) AS kh_ext, head(collect(kh_f.sizeInBytes)) AS kh_size
-            WITH khUndecided, node, app, item, sentinel, total, nRecord, nFolder, nGroup, parents, kh_ext, kh_size,
+            WITH khUndecided, khProbes, node, app, item, sentinel, total, nRecord, nFolder, nGroup, parents, kh_ext, kh_size,
                  head([p IN parents WHERE NOT coalesce(p.isInternal, false) AND NOT p:App]) AS nested,
                  head([p IN parents WHERE NOT coalesce(p.isInternal, false)]) AS realParent
-            WITH khUndecided, node, coalesce(nested, realParent, app) AS parent,
+            WITH khUndecided, khProbes, node, coalesce(nested, realParent, app) AS parent,
                  item, sentinel, total, nRecord, nFolder, nGroup, app, kh_ext, kh_size,
                  {parent_options} AS parentOptions,
                  {"CASE WHEN sentinel OR node IS NULL THEN false ELSE " + own_from_app() + " END" if scoped_start and not flatten else "false"} AS kh_row_from_app
@@ -22256,9 +22295,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  {"true" if flatten else opened_row()} AS khFromApp,
                  CASE WHEN item IS NULL THEN null ELSE item.sortKey END AS sortKey,
                  CASE WHEN item IS NULL THEN null ELSE item.nullRank END AS nullRank,
-                 total, nRecord, nFolder, nGroup, parentOptions, node, khUndecided
-            WITH khUndecided, built, khHeld, khFromApp, sortKey, nullRank, total, nRecord, nFolder, nGroup, parentOptions,
-                 {"[]" if flatten else f"CASE WHEN built IS NULL OR built.hasChildren THEN [] ELSE {self._kh_v3_undecided('node')} END"} AS khKids
+                 total, nRecord, nFolder, nGroup, parentOptions, node, kh_row_from_app, khUndecided, khProbes
+            WITH khUndecided, khProbes, built, khHeld, khFromApp, sortKey, nullRank, total, nRecord, nFolder, nGroup, parentOptions,
+                 {"[]" if flatten else f"CASE WHEN built IS NULL OR built.hasChildren THEN [] ELSE {by_probe(frontier_of('node', 'kh_row_from_app'))} END"} AS khKids
             RETURN [x IN collect(CASE WHEN built IS NULL THEN null
                     ELSE built{{.*, sortKey: sortKey, nullRank: nullRank,
                                 parentOptions: parentOptions, khHeld: khHeld, khFromApp: khFromApp, khKids: khKids}} END)
@@ -22267,10 +22306,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                    head(collect(nRecord)) AS nRecord,
                    head(collect(nFolder)) AS nFolder,
                    head(collect(nGroup)) AS nGroup,
-                   head(collect(khUndecided)) AS khUndecided
+                   head(collect(khUndecided)) AS khUndecided,
+                   head(collect(khProbes)) AS khProbes
         }}
         RETURN rows, total, nRecord, nFolder, nGroup,
-               crumbNodes, crumbEdges, true AS admitted, khUndecided
+               crumbNodes, crumbEdges, true AS admitted, khUndecided, khProbes
             """
         elif not flatten:
             # As below a start, the browse of the App lists every child of it the batch check admits: the statement hands back the children its
@@ -22286,7 +22326,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         CALL (app, allNodes) {{
         {listing}
         }}
-        RETURN rows, total, nRecord, nFolder, nGroup, khUndecided
+        RETURN rows, total, nRecord, nFolder, nGroup, khUndecided, khProbes
             """
         else:
             query = f"""
@@ -22311,6 +22351,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "declaredScope": declared_scope,
             "kh_placed": placed_ids,
             "kh_candidates": name_matches or [],
+            "kh_asked": [],
+            "kh_kept": [],
         })
         if probe:
             params.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})
@@ -22354,7 +22396,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             else:
                 scope_query = f"""
         WITH $kh_page AS page, $kh_total AS total, $kh_nRecord AS nRecord,
-             $kh_nFolder AS nFolder, $kh_nGroup AS nGroup
+             $kh_nFolder AS nFolder, $kh_nGroup AS nGroup, [] AS khProbes
         {enrich}
             """
                 scope_params = {**params, "kh_page": scope_info["page"], "kh_total": scope_info["total"],
@@ -22390,16 +22432,35 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 raise
         payload = rows[0] if rows else {}
-        if payload.get("khUndecided"):
-            # The second read lists them beside what the rules select; nothing the check refuses is listed.
-            undecided = self._kh_v3_capped(payload["khUndecided"], start_id)
-            admitted = await self._kh_v3_admitted(undecided, org_id=org_id, transaction=transaction,
-                                                  access={"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted_ids}, "probe": probe})
-            if admitted:
-                params["kh_placed"] = [*placed_ids, *(i for i in undecided if i in admitted)]
-                rows = await self._kh_query(query, parameters=params, txn_id=transaction)
-                payload = rows[0] if rows else {}
+        access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted_ids}, "probe": probe}
+        undecided_asked = False
+        for _ in range(self._KH_PROBE_ROUNDS):
+            again = False
+            if payload.get("khUndecided") and not undecided_asked:
+                # The next read lists them beside what the rules select; nothing the check refuses is listed.
+                undecided_asked = True
+                undecided = self._kh_v3_capped(payload["khUndecided"], start_id)
+                admitted = await self._kh_v3_admitted(undecided, org_id=org_id, transaction=transaction, access=access)
+                if admitted:
+                    params["kh_placed"] = [*placed_ids, *(i for i in undecided if i in admitted)]
+                    again = True
+            # The rows the statement kept for their frontier (`khProbe`): the next read keeps only those whose frontier the check admits a child of.
+            probes = {i: kids for i, kids in payload.get("khProbes") or [] if i not in params["kh_asked"]}
+            if probes:
+                admitted = await self._kh_v3_admitted(
+                    {k for kids in probes.values() for k in kids}, org_id=org_id, transaction=transaction, access=access)
+                kept = [i for i, kids in probes.items() if any(k in admitted for k in kids)]
+                params["kh_asked"] = [*params["kh_asked"], *probes]
+                params["kh_kept"] = [*params["kh_kept"], *kept]
+                again = again or len(kept) < len(probes)
+            if not again:
+                break
+            rows = await self._kh_query(query, parameters=params, txn_id=transaction)
+            payload = rows[0] if rows else {}
+        else:
+            self.logger.warning("kh browse of %s: rows still unasked after %d reads of the page", start_id, self._KH_PROBE_ROUNDS)
         payload.pop("khUndecided", None)
+        payload.pop("khProbes", None)
         if scope_query is not None and scope_mode == "verify":
             await self._kh_scope_verify(app_id, payload, scope_query, scope_params, scope_info, transaction)
         elif use_scope:

@@ -538,12 +538,6 @@ def _aql_way_below(v: str, *, every_hop: bool = True, from_app: str = "false", a
     reached. A stub only filed in a node is not reached (``false``)."""
     gate = (f"LENGTH(FOR kh_gp IN ({v}.isPlaceholder == true ? [1] : []) LET kh_wfa = {from_app}"
             + (f" FILTER kh_wfa OR ({admit})" if admit else ""))
-    # Or a child of the stub the walk from the App reaches by another parent: opening the stub lists it (the check admits it). Asked only
-    # where no way passes the rule (`kh_wk`).
-    reached_kid = (f"LENGTH(FOR kh_xc, kh_xe IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
-                   f" FILTER kh_xe.relationshipType IN {_HIERARCHY_AQL}"
-                   f' AND (IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", kh_xc) OR IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", kh_xc))'
-                   f" AND kh_xc.orgId == @org_id AND {_aql_reached_child('kh_xc', 'NOT kh_wk')} LIMIT 1 RETURN 1) > 0")
     # Only a stub starts the walk (the loop over an empty list reads nothing for any other node), and it follows
     # hierarchy edges only: PRUNE stops it at any other. shortcut: PRUNE cannot hold the browse rule (AQL refuses a subquery in it), so a way cut at
     # the first hop is still enumerated to its end before the post-filter; bounded by 50 hops, and only for a stub row, upgrade if a stub holds a huge subtree.
@@ -560,10 +554,8 @@ def _aql_way_below(v: str, *, every_hop: bool = True, from_app: str = "false", a
                 f" FILTER LENGTH(FOR kh_wi IN 0..LENGTH(kh_pt.edges) - 1"
                 f" LET kh_wc = kh_pt.vertices[kh_wi + 1] LET kh_wp = kh_pt.vertices[kh_wi]"
                 f" FILTER NOT {_aql_browse_child('kh_wc', 'kh_wp', 'pb', 'kh_wfa')} LIMIT 1 RETURN 1) == 0")
-    if not every_hop:
-        # The last-hop test (an arrow's first pass, the sidebar) leaves the stub's own children to the page's second pass (`khStub`).
-        return gate + f" {walk} LIMIT 1 RETURN 1) > 0"
-    return gate + f" LET kh_wk = LENGTH({walk} LIMIT 1 RETURN 1) > 0 FILTER kh_wk OR {reached_kid} LIMIT 1 RETURN 1) > 0"
+    # What the rule leaves below the stub is the check's to decide (`_aql_frontier`), read beside this test by whoever asks it.
+    return gate + f" {walk} LIMIT 1 RETURN 1) > 0"
 
 
 def _aql_browse_child(c: str, p: str, tag: str, from_app: str, p_member: str | None = None) -> str:
@@ -752,18 +744,6 @@ def _aql_reach_walk(v: str, t: str) -> str:
                         RETURN 1) == 0"""
 
 
-def _aql_reached_child(v: str, gate: str = "true") -> str:
-    """Whether ``v``, a child of a node being opened, is one the opening lists though the rule does not pass the hop: a child of this App the
-    browse asks the check about (`_aql_undecided`), which the walk from the App reaches by its own routes (the check's walk arm). Asked only
-    where ``gate`` holds."""
-    # AQL lifts a subquery that does not read a loop's variable above that loop, so each test is a FOR inside the loop over a list that is empty
-    # unless the child can be listed: only then does it walk.
-    groups, held = CollectionNames.RECORD_GROUPS.value, f"(({gate}) AND {v}.isPlaceholder != true AND {_aql_read_by_app(v)} AND {v}.isDeleted != true)"
-    return (f"(LENGTH(FOR kh_rq IN ({held} ? [1] : []) {_aql_reach_walk(v, 'kh_k')} LIMIT 1 RETURN 1) > 0"
-            f" AND LENGTH(FOR kh_rh IN ({held} ? [1] : []) FOR kh_rg IN 1..1 OUTBOUND {v} {CollectionNames.BELONGS_TO.value}"
-            f' FILTER IS_SAME_COLLECTION("{groups}", kh_rg) AND {_aql_hidden_above("kh_rg", "rc", from_depth=0)} LIMIT 1 RETURN 1) == 0)')
-
-
 def _aql_row_from_app(v: str, *, gate: str | None = None) -> str:
     """Whether a browse of ``v`` starts from the App (``_aql_reach_walk``): what a row's arrow, a stub's way below it and the listing of a stub read,
     so that each lists what opening the node lists. ``gate``: the walk runs only where it holds (a subquery runs for every row, so the loop over an
@@ -772,7 +752,24 @@ def _aql_row_from_app(v: str, *, gate: str | None = None) -> str:
     return f"(LENGTH({gated}{_aql_reach_walk(v, 'kh_o')} LIMIT 1 RETURN 1) > 0)"
 
 
-def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False, own_reach: bool = False) -> str:
+def _aql_frontier(v: str, from_app: str) -> str:
+    """The children of ``v`` whose listing the batch check decides when ``v`` is opened, as keys: those a browse of ``v`` asks it about
+    (`_aql_undecided`: the first ``_KH_UNDECIDED_MAX`` by key, as the browse reads them), and those a browse of each stub it lists on the way down
+    asks about (a stub below ``v`` by hops through stubs alone, each passing the browse rule read from ``from_app``). Opening ``v`` lists something
+    where the check admits one of them and its own rules list nothing, so an arrow, the sidebar and a stub's listing ask the check about these
+    and nothing else. Only a node with a hierarchy child walks."""
+    relations, h = CollectionNames.NODE_RELATIONS.value, _HIERARCHY_AQL
+    has_child = f"LENGTH(FOR kh_fx, kh_fxe IN 1..1 OUTBOUND {v} {relations} FILTER kh_fxe.relationshipType IN {h} LIMIT 1 RETURN 1) > 0"
+    return (f"UNIQUE(FLATTEN(FOR kh_fg IN ({has_child} ? [1] : []) FOR kh_fy, kh_fe, kh_fp IN 0..50 OUTBOUND {v} {relations}"
+            f" PRUNE kh_fe != null AND (kh_fe.relationshipType NOT IN {h} OR kh_fy.isPlaceholder != true)"
+            f' OPTIONS {{uniqueVertices: "path"}}'
+            f" FILTER kh_fe == null OR (kh_fy.isPlaceholder == true AND kh_fp.edges[*].relationshipType ALL IN {h}"
+            f" AND LENGTH(FOR kh_fi IN 0..LENGTH(kh_fp.edges) - 1 LET kh_fc = kh_fp.vertices[kh_fi + 1] LET kh_fq = kh_fp.vertices[kh_fi]"
+            f" FILTER NOT {_aql_browse_child('kh_fc', 'kh_fq', 'fb', from_app)} LIMIT 1 RETURN 1) == 0)"
+            f" RETURN {_aql_undecided('kh_fy')}[* RETURN PARSE_IDENTIFIER(CURRENT).key]))")
+
+
+def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False) -> str:
     """Whether expanding ``v`` would list a child: a hierarchy child that passes the browse's own rule
     (``_aql_browse_child``), or, where the App opens everything, a record filed in it. A group or folder
     always answers yes: finding out means reading every hidden child, which cost far more than the page
@@ -785,10 +782,6 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
     # A browse row decides its own children's way in from the row itself (below two parents it may be reached from the App by one and not the
     # other), not from the folder it is listed under: `kh_row_from_app`, set in the page's `enrich_exact` query (`_aql_row_from_app`).
     seeded = f"@kh_from_app AND {v}._id NOT IN @kh_seeded"
-    # ``own_reach`` (the sidebar, which keeps the rows with children): a row below a start the walk does not reach may be reached itself, by
-    # another parent, and opening it reads its own reach (`_aql_row_from_app`), walked only where the start's does not hold.
-    if own_reach and not exact:
-        seeded = f"(({seeded}) OR {_aql_row_from_app(v, gate=f'NOT ({seeded})')})"
     rule = _aql_browse_child("kh_ch", v, "hc", "kh_row_from_app" if exact else seeded, "kh_pm")
     # A stub child is read as opening it reads it, from its own reach; the walk waits on the way-below loop (`kh_gp`), so only a stub child walks.
     stub_reach = _aql_row_from_app("kh_ch", gate="kh_gp != null") if exact else "false"
@@ -806,12 +799,6 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
     # 180 ms), the rest of it the connector test and the rule's longer text per row; next, read the arrow of the
     # rows the page keeps only, after the sort, as the page's own rows already do.
     group = f'IS_SAME_COLLECTION("{groups}", {v})'
-    # The sidebar decides before the page's arrows are settled: a child the check admits by its own reach is one opening the row lists, asked
-    # only where the rule does not pass the child.
-    def passes_or_reached(passes: str) -> str:
-        if not (own_reach and not exact):
-            return f" FILTER {passes}"
-        return f" LET kh_rp = {passes} FILTER kh_rp OR {_aql_reached_child('kh_ch', 'NOT kh_rp')}"
 
     # The membership of ``v`` is tested after the first child is found, so a node with no child never pays for it.
     # The way-below test of a stub is a subquery, so it follows the rule's filter and runs only for a child that
@@ -829,8 +816,8 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
                f" FILTER (kh_ch.isPlaceholder == true AND {_aql_read_by_app('kh_ch')}) OR ({passes})"
                f" FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch', every_hop=True, from_app=stub_reach, admit=passes)})"
                if exact else
-               passes_or_reached(passes)
-               + f" FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch', every_hop=every_hop)})")
+               f" FILTER {passes}"
+               f" FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch', every_hop=every_hop)})")
         )
 
     children = children_of(rule)
@@ -20543,7 +20530,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             after=after, direction=direction, filters=filters or {},
             lists_placeholders=self._kh_lists_placeholders(flatten=flatten, filters=filters),
             exact_arrows=not flatten,
-            row_ctx=row_ctx, start_handle=start_handle, transaction=transaction,
+            row_ctx=row_ctx, start_handle=start_handle, transaction=transaction, access=access,
         ))
         self.logger.debug(
             "kh v3 page app=%s start=%s flatten=%s: %s visible (granted=%d)",
@@ -20767,6 +20754,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         row_ctx: dict[str, Any],
         transaction: str | None,
         start_handle: str | None = None,
+        access: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Filter the visible nodes, order them in the merge comparator's order,
         resume after ``after`` and project the page (``limit + 1`` rows, nearest
@@ -20805,14 +20793,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     **({"kh_placeholders": lists_placeholders, "granted": row_ctx["granted"],
                         "kh_scope": row_ctx["kh_scope"]} if lists_placeholders or sidebar else {}),
                     **({"kh_start": start_handle} if lists_placeholders else {}),
-                    **(row_ctx if sidebar else {}),
+                    # the sidebar reads each row's own reach, not the start's (an unused bind fails the statement)
+                    **({k: v for k, v in row_ctx.items() if k not in ("kh_from_app", "kh_seeded")} if sidebar else {}),
                     **({"kh_only": visible.only} if restricted else {}),
                 },
                 txn_id=transaction,
                 batch_size=_KH_V3_BATCH,
                 options=_KH_V3_QUERY_OPTIONS,
             ) or []
-        ordered = _kh_v3_ordered(slim, descending=descending)
+        # A row its rules list nothing under is listed (a stub) or kept by the sidebar (a record) where the check admits a child of its frontier
+        # (`_aql_frontier`), as opening it lists that child; decided here, before the page is cut, so the counts read the same rows.
+        probes = {r[0]: r[3] for r in slim if len(r) > 3 and r[3]}
+        if probes:
+            admitted = await self._kh_v3_admitted(
+                {k for kids in probes.values() for k in kids}, org_id=org_id, access=access, transaction=transaction)
+            slim = [r for r in slim if r[0] not in probes or any(k in admitted for k in probes[r[0]])]
+        ordered = _kh_v3_ordered([r[:3] for r in slim], descending=descending)
         if after is not None:
             boundary = key_for(
                 {"id": after["id"], "sortKey": after.get("sortKey"), "nullRank": after["nullRank"]},
@@ -21032,14 +21028,27 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The sidebar keeps a record only when it has children, and decides that
         # here, before the page is cut. Other listings never filter on it, so
         # they skip the edge reads.
-        has_children = (
-            _aql_kh_has_children("kh_n", own_reach=True) if any("node.hasChildren" in c for c in conditions) else "false"
-        )
+        sidebar = any("node.hasChildren" in c for c in conditions)
+        relations = CollectionNames.NODE_RELATIONS.value
+        # The sidebar keeps a record exactly where its arrow is on: the page row's own test, read from the record's own reach (walked only for a
+        # record with a hierarchy child), and where that lists nothing, the check's answer on its frontier (`_kh_v3_settle_held_arrows`).
+        kid = f"LENGTH(FOR kh_kx, kh_kxe IN 1..1 OUTBOUND kh_n {relations} FILTER kh_kxe.relationshipType IN {_HIERARCHY_AQL} LIMIT 1 RETURN 1) > 0"
+        # They read the record by `DOCUMENT`: ArangoDB 3.12.4 fails to plan the row's test over the joined loop variable ("missing variable kh_n
+        # ... while planning registers").
+        sidebar_record = (f"\n                    LET kh_sd = DOCUMENT(kh_h)"
+                          f"\n                    LET kh_row_from_app = {kid.replace('kh_n', 'kh_sd')} ? {_aql_row_from_app('kh_sd')} : false"
+                          f"\n                    LET kh_filed = {_aql_kh_filed('kh_sd', every_hop=True)}"
+                          f"\n                    LET kh_has = {_aql_kh_has_children('kh_sd', exact=True, every_hop=True)}"
+                          f"\n                    LET kh_probe = kh_has ? [] : {_aql_frontier('kh_sd', 'kh_row_from_app')}")
 
         # The rows the listing decides (a stub is listed only as the way to something readable), so every hop of the way is tested, unlike an arrow's.
         # A stub's way is read as a browse of the stub reads it, from the stub's own reach (`_aql_row_from_app`), so a stub is listed exactly where
-        # opening it lists something.
-        below = _aql_way_below("kh_n", every_hop=True, from_app=_aql_row_from_app("kh_n"))
+        # opening it lists something: where no way passes the rule, the stub is kept for the page to ask the check about its frontier
+        # (`_aql_frontier`, `_kh_v3_page_rows`), as opening it asks.
+        stub_way = (f"\n                    LET kh_nfa = {_aql_row_from_app('kh_n')}"
+                    f"\n                    LET kh_way = {_aql_way_below('kh_n', every_hop=True, from_app='kh_nfa')}"
+                    f"\n                    LET kh_probe = kh_way ? [] : {_aql_frontier('kh_n', 'kh_nfa')}"
+                    f"\n                    FILTER kh_way OR LENGTH(kh_probe) > 0")
         # Beside the stubs the rule selects, a stub child of the browsed node `@kh_start` that a browse of it reaches from the App: opening it lists
         # what its own reach reads, whatever the hop from `@kh_start` says.
         reached_stubs = (f"(FOR kh_sc, kh_sce IN 1..1 OUTBOUND @kh_start {CollectionNames.NODE_RELATIONS.value}"
@@ -21049,14 +21058,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         def rows(collection: str, *, stubs: bool = False) -> str:
             # Stubs are read apart so that the way-below test, a subquery, runs for them alone.
             stub_filter = ("kh_n.isPlaceholder == true AND @kh_placeholders" if stubs else "kh_n.isPlaceholder != true")
-            way = f"\n                    FILTER {below}" if stubs else ""
+            # A listed stub lists something, by its way or by the check (asked by the page); a group always answers yes.
+            if stubs:
+                pre, has_children = stub_way, "true"
+            elif sidebar and collection == records:
+                pre, has_children = sidebar_record, "(kh_has OR LENGTH(kh_probe) > 0)"
+            else:
+                pre, has_children = "", "true" if sidebar else "false"
+            probe = ", kh_probe" if pre else ""
             return f"""(
                 FOR kh_h IN {f"UNION_DISTINCT(kh_handles, {reached_stubs})" if stubs else "kh_handles"}
                     FILTER STARTS_WITH(kh_h, "{collection}/")
                     FOR kh_n IN {collection}
                         FILTER kh_n._id == kh_h AND kh_n.orgId == @org_id
                             AND kh_n.isDeleted != true AND {stub_filter}
-                            AND {_aql_read_by_app("kh_n")}{way}
+                            AND {_aql_read_by_app("kh_n")}{pre}
                     LET node = {{
                         id: kh_n._key,
                         name: NOT_NULL(kh_n.name, kh_n.recordName, kh_n.groupName),
@@ -21070,10 +21086,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         connector: NOT_NULL(kh_n.connector, kh_app.type),
                         connectorId: NOT_NULL(kh_n.connectorId, kh_app._key),
                         isPlaceholder: kh_n.isPlaceholder == true,
-                        hasChildren: {"true" if collection == groups and has_children != "false" else has_children}
+                        hasChildren: {has_children}
                     }}{where}
                     LET sortKey = {key_expr}
-                    RETURN [kh_h, node.nodeType, sortKey]
+                    RETURN [kh_h, node.nodeType, sortKey{probe}]
             )"""
 
         # A browse also lists the stubs that lead to something readable; no other listing reads that pass.
@@ -21535,10 +21551,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                       f' OR LENGTH(FOR kh_sf IN 1..1 INBOUND node {belongs}'
                       f' FILTER kh_sf.isPlaceholder == true LIMIT 1 RETURN 1) > 0')
         exact_row = exact_row.replace("KH_STUB", stub_child)
-        # A row's children the check is asked about where its rules select none (`_kh_v3_settle_held_arrows`); a row asked again for its stub
-        # child (`khStub`) may lose its arrow, so it reads them too.
+        # A row's children the check is asked about where its rules select none (`_kh_v3_settle_held_arrows`): its frontier (`_aql_frontier`), as
+        # opening it asks; a row asked again for its stub child (`khStub`) may lose its arrow, so it reads them too.
         exact_row = exact_row.replace(
-            "KH_KIDS", f"(kh_row.hasChildren AND NOT kh_stub) ? [] : {_aql_undecided('node')}[* RETURN PARSE_IDENTIFIER(CURRENT).key]")
+            "KH_KIDS", f"(kh_row.hasChildren AND NOT kh_stub) ? [] : {_aql_frontier('node', 'kh_row_from_app')}")
         # The second pass returns the arrow alone.
         stubs_pass = f"""
             LET kh_app = DOCUMENT("{apps}", @app_id)
