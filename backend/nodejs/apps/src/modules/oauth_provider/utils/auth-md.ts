@@ -62,6 +62,8 @@ Without the CLI: \`POST ${oauth}/device_authorization\` with \`client_id=${info.
 
 For when you know the person's email but cannot run the CLI. \`POST ${origin}/api/v1/agent/identity\` with JSON \`{"type": "service_auth", "login_hint": "<the person's email>"}\`. Show the person \`claim.verification_uri\` and \`claim.user_code\`: they sign in with that email, check the code and approve. Then poll \`POST ${oauth}/token\` with \`grant_type=${AGENT_CLAIM_GRANT}\` and \`claim_token\` (no \`client_id\`) every \`claim.interval\` seconds. Until the person approves, that call answers HTTP 400 with \`error: authorization_pending\`: keep polling. On \`slow_down\`, wait longer. Stop on \`access_denied\` or \`expired_token\`.
 
+The code and link last \`claim.expires_in\` seconds, but polling keeps answering \`authorization_pending\` after they lapse. If the person has not approved by then, \`POST\` the \`claim_url\` from the response with JSON \`{"claim_token": "<claim_token>", "email": "<the same email>"}\` for a new code and link in \`claim_attempt\`, show them, and keep polling with the same \`claim_token\`.
+
 The answer has an access token and an \`identity_assertion\` that lasts ${ASSERTION_TTL_SECONDS / 86400} days. When the access token expires, \`POST ${oauth}/token\` with \`grant_type=${JWT_BEARER_GRANT}\` and \`assertion=<identity_assertion>\` for a new one. Keep the assertion as secret as a token.`);
   }
 
@@ -104,7 +106,7 @@ An agent sign-in is granted these scopes: ${info.agentScopes.map((s) => `\`${s}\
 
 ## 4. When a call is refused
 
-- \`401\`: the token expired or was revoked. ${info.deviceRefreshes ? refresh : 'Sign'} in again or ask the person for a new token.
+- \`401\`: the token expired or was revoked. ${info.agentSignup ? `If you signed up with the person's email, get a new access token with your \`identity_assertion\` (\`grant_type=${JWT_BEARER_GRANT}\`) until the assertion expires. ` : ''}${info.deviceRefreshes ? refresh : 'Sign'} in again or ask the person for a new token.
 - \`403\` with \`Insufficient scope\`: the token lacks the scope it names. The person needs a new token with it; do not try another route to the same data.
 `;
 }

@@ -255,11 +255,18 @@ describe('OIDCProviderController', () => {
       expect(out).to.include('grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer')
       expect(out).to.include('lasts 30 days')
       expect(out).to.not.include('anonymous')
+      // The code lapses long before the claim window: without the restart step an agent polls a dead link for a day.
+      expect(out).to.include('polling keeps answering `authorization_pending` after they lapse')
+      expect(out).to.include('{"claim_token": "<claim_token>", "email": "<the same email>"}')
+      expect(out).to.include('`claim_attempt`')
+      // A 401 sends an email sign-up back to its assertion, not to signing in again.
+      expect(out).to.match(/- `401`: .*identity_assertion.*jwt-bearer/)
       process.env.PIPESHUB_ENABLE_DEVICE_GRANT = 'false'
       out = await md()
       expect((await discovery()).agent_auth).to.not.exist
       expect(out).to.not.include('/agent/identity')
       expect(out).to.not.include('service_auth')
+      expect(out).to.not.include('identity_assertion')
     })
 
     it('adds the edition\'s sections after the built-in ways in', async () => {
