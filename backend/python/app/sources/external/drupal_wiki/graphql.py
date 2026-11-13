@@ -8,14 +8,18 @@ here is unavailable through the public REST API:
 * space content structure        -> the page tree
 
 The API is undocumented, so every method returns plain Python structures and
-raises ``DrupalWikiGraphQLError`` on failure; callers decide whether to fail
-closed (permissions) or carry on without the data (tree).
+raises a ``DrupalWikiGraphQLError`` on failure; callers decide whether to fail
+closed (permissions) or carry on without the data (tree). Its subclasses tell a
+wiki that refuses the operation outright from a token it rejects and from a
+failure that may pass.
 """
 
 from typing import Any
 
+from app.config.constants.http_status_code import HttpStatusCode
 from app.sources.client.drupal_wiki.drupal_wiki import describe_exception
 from app.sources.client.drupal_wiki.graphql import DrupalWikiGraphQLClient
+from app.sources.client.graphql.response import GraphQLResponse
 
 # Only the fields the connector reads are selected: an unknown field fails the whole
 # operation, so asking for anything spare is a live failure trigger buying nothing.
@@ -44,8 +48,74 @@ query SpaceContentStructure($spaceId: ID!) {
 """
 
 
+# Drupal Wiki 8.44 accepts only the persisted queries its web UI ships (trusted
+# documents). It answers any inline query with HTTP 400 ``{"errors": [{"message":
+# "QueryNotAllowed", "extensions": {"code": "QUERY_NOT_ALLOWED"}}]}``, and a hash it does
+# not know with ``PERSISTED_QUERY_NOT_FOUND``. Older wikis put the inline verdict in
+# ``extensions.classification``.
+QUERY_NOT_ALLOWED_CODE = "QUERY_NOT_ALLOWED"
+PERSISTED_QUERY_NOT_FOUND_CODE = "PERSISTED_QUERY_NOT_FOUND"
+PERSISTED_QUERY_NOT_SUPPORTED_CODE = "PERSISTED_QUERY_NOT_SUPPORTED"
+REFUSAL_CODES = frozenset({
+    QUERY_NOT_ALLOWED_CODE, PERSISTED_QUERY_NOT_FOUND_CODE, PERSISTED_QUERY_NOT_SUPPORTED_CODE,
+})
+QUERY_NOT_ALLOWED_CLASSIFICATION = "QueryNotAllowed"
+AUTH_STATUSES = frozenset({HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value})
+
+
 class DrupalWikiGraphQLError(RuntimeError):
     """A GraphQL call failed or returned errors."""
+
+
+class DrupalWikiGraphQLRefusedError(DrupalWikiGraphQLError):
+    """The wiki does not allow this operation for the token. Asking again will not help.
+
+    ``kind`` is the wiki's code (one of ``REFUSAL_CODES``): an inline query refused, or a
+    persisted query it does not know or does not support. They need different fixes.
+    """
+
+    def __init__(self, message: str, kind: str = QUERY_NOT_ALLOWED_CODE) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+class DrupalWikiGraphQLAuthError(DrupalWikiGraphQLError):
+    """The wiki rejected the token on ``/graphql`` (HTTP 401 or 403)."""
+
+
+class DrupalWikiGraphQLTransientError(DrupalWikiGraphQLError):
+    """A failure that may pass: a 5xx or 429 left after the retries, a timeout, a dropped connection."""
+
+
+def _refusal_kind(response: GraphQLResponse) -> str | None:
+    for error in response.errors or []:
+        extensions = error.extensions or {}
+        if extensions.get("code") in REFUSAL_CODES:
+            return str(extensions["code"])
+        if extensions.get("classification") == QUERY_NOT_ALLOWED_CLASSIFICATION:
+            return QUERY_NOT_ALLOWED_CODE
+    return None
+
+
+def _response_error(response: GraphQLResponse, message: str) -> DrupalWikiGraphQLError:
+    """The refusal wins over the status: the wiki sends it with a 400 today, but may not tomorrow."""
+    kind = _refusal_kind(response)
+    if kind is not None:
+        return DrupalWikiGraphQLRefusedError(message, kind)
+    status = response.status_code
+    if status in AUTH_STATUSES:
+        return DrupalWikiGraphQLAuthError(message)
+    if status is not None and (
+        status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value
+        or status == HttpStatusCode.TOO_MANY_REQUESTS.value
+    ):
+        return DrupalWikiGraphQLTransientError(message)
+    return DrupalWikiGraphQLError(message)
+
+
+def _exception_type(error: BaseException) -> type[DrupalWikiGraphQLError]:
+    status = getattr(getattr(error, "response", None), "status_code", None)
+    return DrupalWikiGraphQLAuthError if status in AUTH_STATUSES else DrupalWikiGraphQLTransientError
 
 
 class DrupalWikiGraphQLDataSource:
@@ -65,10 +135,10 @@ class DrupalWikiGraphQLDataSource:
         except Exception as e:
             # A timeout or dropped connection is still a failure of this one query; the
             # caller decides per space.
-            raise DrupalWikiGraphQLError(f"{operation_name} failed: {describe_exception(e)}") from e
+            raise _exception_type(e)(f"{operation_name} failed: {describe_exception(e)}") from e
         if not response.success or response.data is None:
             reason = response.message or f"the reply carried no data (HTTP {response.status_code})"
-            raise DrupalWikiGraphQLError(f"{operation_name} failed: {reason}")
+            raise _response_error(response, f"{operation_name} failed: {reason}")
         return response.data
 
     async def get_space_members(self, space_id: int) -> dict[str, Any]:

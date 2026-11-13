@@ -3560,7 +3560,14 @@
         "badge": "Vyžaduje akci",
         "title": "Vyžaduje akci",
         "openAuthentication": "Aktualizovat ověření",
-        "viewSteps": "Zobrazit postup nastavení"
+        "viewSteps": "Zobrazit postup nastavení",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki odmítá dotazy na členy a strukturu stránek",
+            "message": "Soukromé prostory se synchronizují jen s přístupem potvrzeným při dřívější synchronizaci, a to jen {{days}} dní po jeho potvrzení. Soukromé prostory, které nikdy nebyly synchronizovány nebo byly potvrzeny dříve, se přeskočí a hierarchie stránek není k dispozici. Otevřených prostorů se to netýká. Úplná synchronizace, včetně té spuštěné změnou filtrů, to pro soukromé prostory ukončí, dokud Drupal Wiki znovu nevypíše jejich členy.",
+            "message_dated": "Soukromé prostory se synchronizují jen s přístupem potvrzeným při dřívější synchronizaci, a to jen {{days}} dní po jeho potvrzení. Soukromé prostory, které nikdy nebyly synchronizovány nebo byly potvrzeny dříve, se přeskočí a hierarchie stránek není k dispozici. Otevřených prostorů se to netýká. Úplná synchronizace, včetně té spuštěné změnou filtrů, to pro soukromé prostory ukončí, dokud Drupal Wiki znovu nevypíše jejich členy. Nejstarší používaný přístup byl potvrzen {{confirmedOn}}."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Tato data uvidí všichni ve vaší organizaci",

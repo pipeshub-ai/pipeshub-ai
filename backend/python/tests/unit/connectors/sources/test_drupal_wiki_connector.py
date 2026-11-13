@@ -4,9 +4,12 @@ The data source and processor are mocked, so these cover the sync rules themselv
 checkpoints, permissions, deletions, filters and streaming.
 """
 
+import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
-from contextlib import AbstractContextManager, ExitStack
+from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -22,15 +25,35 @@ from app.connectors.core.registry.filters import (
     MultiselectOperator,
 )
 from app.connectors.sources.drupal_wiki.connector import (
+    FULL_SYNC_ENDS_KEPT_ACCESS,
+    GRAPHQL_PROBE_TIMEOUT_S,
+    GRAPHQL_REFUSED_ACTION_CODE,
+    GRAPHQL_REFUSED_MESSAGE,
+    KEPT_ACCESS_MAX_AGE_DAYS,
+    KEPT_ACCESS_NOTICE_DAYS,
+    MEMBERS_REFUSED_KEPT,
+    MEMBERS_REFUSED_KEPT_ENDING,
+    MEMBERS_REFUSED_SKIPPED,
+    MEMBERS_REFUSED_STALE,
+    MEMBERS_REFUSED_UNVERIFIED,
     PAGE_SIZE,
+    TREE_UNREADABLE,
     DrupalWikiAuthError,
     DrupalWikiConnector,
     DrupalWikiSyncError,
+    _utc_date,
+    graphql_refused_action_item,
 )
 from app.models.entities import Record, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.notification.types import NotificationType
-from app.sources.external.drupal_wiki.graphql import DrupalWikiGraphQLError
+from app.services.notification.types import NotificationSeverity, NotificationType
+from app.sources.client.drupal_wiki.drupal_wiki import DrupalWikiRESTClientViaToken
+from app.sources.external.drupal_wiki.graphql import (
+    DrupalWikiGraphQLError,
+    DrupalWikiGraphQLRefusedError,
+    DrupalWikiGraphQLTransientError,
+)
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.url_fetcher import HostCheckError
 
 BASE_URL = "https://wiki.example.com"
@@ -1030,8 +1053,9 @@ class TestRunSync:
         ):
             await connector.run_sync()
 
-        connector.record_sync_point.update_sync_point.assert_awaited_once()
-        key, payload = connector.record_sync_point.update_sync_point.await_args.args
+        page_checkpoints = page_checkpoint_writes(connector)
+        assert len(page_checkpoints) == 1
+        key, payload = page_checkpoints[0]
         assert key == "WEBPAGE/space/12"
         # One second back, because the source filter is a strict ``>``.
         assert payload == {"last_modified": 999}
@@ -1271,12 +1295,20 @@ class TestSyncFailureNotification:
         for index in range(12):
             connector._fail(f"space {index}")
 
-        preview = connector._failure_preview()
+        preview = connector._failure_preview(connector._problem_lines())
 
         # A bulleted list, because a run can collect a dozen of these.
         assert preview.startswith("- space 0\n- space 1")
         assert preview.endswith("- ...and 2 more")
         assert preview.count("\n") == 10
+
+
+def page_checkpoint_writes(connector: DrupalWikiConnector) -> list[tuple]:
+    """Writes of a space's page checkpoint, not of the other sync points a run keeps."""
+    return [
+        call.args for call in connector.record_sync_point.update_sync_point.await_args_list
+        if call.args[0].startswith("WEBPAGE/")
+    ]
 
 
 def non_json(status: int = 200) -> MagicMock:
@@ -1807,3 +1839,762 @@ class TestAttachmentExtensionFilter:
         kept = {r.external_record_id for r in _written(processor) if r.external_record_id.startswith("attachment:")}
         assert kept == {f"attachment:{i}" for i in range(1, total + 1) if i % 3 != 0}
         connector.data_source.download_attachment.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Drupal Wiki 8.44 refuses the GraphQL queries for a personal access token
+# ---------------------------------------------------------------------------
+
+def refused(operation: str = "RoleMemberManagerData") -> DrupalWikiGraphQLRefusedError:
+    return DrupalWikiGraphQLRefusedError(
+        f"{operation} failed: QUERY_NOT_ALLOWED: QueryNotAllowed (HTTP 400)"
+    )
+
+
+PRIVATE_HR = {"id": 12, "name": "HR", "type": "BASIC", "accessStatus": "PRIVATE"}
+OPEN_TEAM = {"id": 3, "name": "Team", "type": "BASIC", "accessStatus": "AUTHENTICATED"}
+
+
+DAY_MS = 24 * 60 * 60 * 1000
+# The principal each grant type points at: the PipesHub user matched by alice's email,
+# the group stored for wiki group 5, and so on.
+GRANT_SOURCES = {"USER": "u-alice", "GROUP": "g-5", "ORG": "org-1", "DOMAIN": "domain-1"}
+
+
+def store_space_access(
+    connector: DrupalWikiConnector,
+    processor: MagicMock,
+    grant_types: list[str] | None,
+    *,
+    deleted_at_source: bool = False,
+    read_error: Exception | None = None,
+    confirmed_days_ago: float | None = 1,
+    confirmed_at_ms: int | None = None,
+    arango_edges: bool = False,
+) -> MagicMock:
+    """What an earlier run stored for space 12: its record group, the grants on it, and
+    when that access was last confirmed.
+
+    ``grant_types`` None stores no record group at all.
+    """
+    group = None
+    if grant_types is not None:
+        group = MagicMock(id="rg-12", is_deleted_at_source=deleted_at_source)
+    processor.get_record_group_by_external_id = AsyncMock(return_value=group)
+    tx_store = MagicMock()
+
+    def edge(kind: str) -> dict:
+        source = GRANT_SOURCES[kind]
+        if arango_edges:
+            return {"type": kind, "role": "READER", "_from": f"users/{source}"}
+        return {"type": kind, "role": "READER", "from_id": source, "from_collection": "users"}
+
+    tx_store.get_edges_to_node = AsyncMock(
+        side_effect=read_error, return_value=[edge(kind) for kind in grant_types or []]
+    )
+    tx_store.get_users = AsyncMock(return_value=[MagicMock(id="u-alice", email="Alice@Example.com")])
+    tx_store.get_user_groups = AsyncMock(return_value=[MagicMock(id="g-5", source_user_group_id="5")])
+    confirmed_at = confirmed_at_ms if confirmed_at_ms is not None else (
+        None if confirmed_days_ago is None
+        else get_epoch_timestamp_in_ms() - int(confirmed_days_ago * DAY_MS)
+    )
+    # The sync points, kept across runs; every space's access was confirmed at the same time.
+    points: dict[str, dict] = {}
+
+    async def read_sync_point(key: str) -> dict:
+        if key in points:
+            return points[key]
+        return {"confirmed_at": confirmed_at} if key.startswith("space_access/") and confirmed_at else {}
+
+    async def update_sync_point(key: str, data: dict) -> None:
+        points[key] = data
+
+    connector.record_sync_point.read_sync_point = AsyncMock(side_effect=read_sync_point)
+    connector.record_sync_point.update_sync_point = AsyncMock(side_effect=update_sync_point)
+    tx_store.confirmed_at = confirmed_at
+
+    @asynccontextmanager
+    async def transaction() -> AsyncIterator[MagicMock]:
+        yield tx_store
+
+    connector.data_store_provider = MagicMock()
+    connector.data_store_provider.transaction = transaction
+    return tx_store
+
+
+def wiki_with_spaces(connector: DrupalWikiConnector, *spaces: dict) -> None:
+    """A wiki with these spaces, one page each (page id = 100 + space id), no attachments."""
+    async def users() -> dict:
+        connector._disabled_emails = set()
+        connector._enabled_emails = {"alice@example.com"}
+        return {}
+
+    async def groups(_users: dict) -> None:
+        connector._groups_read = {"5"}
+
+    connector._sync_users = users
+    connector._sync_groups = groups
+    connector.notify = AsyncMock()
+    connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page(list(spaces))))
+    connector.data_source.list_pages = AsyncMock(side_effect=lambda space_id, **_: response(
+        spring_page([page_payload(100 + space_id, space_id=space_id)])
+    ))
+    connector.data_source.list_attachments = AsyncMock(return_value=response([]))
+
+
+def written_pages(processor: MagicMock) -> dict[str, tuple[Record, list[Permission]]]:
+    return {
+        record.external_record_id: (record, permissions)
+        for call in processor.on_new_records.await_args_list
+        for record, permissions in call.args[0]
+    }
+
+
+def written_groups(processor: MagicMock) -> dict[str, list[Permission]]:
+    return {
+        group.external_group_id: permissions
+        for call in processor.on_new_record_groups.await_args_list
+        for group, permissions in call.args[0]
+    }
+
+
+class TestConnectionTestProbesGraphQL:
+    """T2: the connection test reads both GraphQL operations on one space it can see."""
+
+    @staticmethod
+    def rest_ok(connector: DrupalWikiConnector) -> None:
+        connector.client = MagicMock()
+        connector._graphql_probe = lambda: (connector.graphql, AsyncMock())
+        connector.data_source.list_users = AsyncMock(return_value=response(spring_page([{"id": 1}])))
+        connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page([OPEN_TEAM])))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("refused_operation", ["get_space_members", "get_space_tree"])
+    async def test_a_refusal_passes_the_test_with_a_warning(
+        self, connector: DrupalWikiConnector, refused_operation: str
+    ) -> None:
+        self.rest_ok(connector)
+        connector.graphql.get_space_members = AsyncMock(return_value={"users": [], "groups": []})
+        connector.graphql.get_space_tree = AsyncMock(return_value=[])
+        setattr(connector.graphql, refused_operation, AsyncMock(side_effect=refused()))
+
+        assert await connector.test_connection_and_access() is True
+
+        assert connector.last_action_items == [graphql_refused_action_item()]
+        assert connector.last_action_items[0].code == GRAPHQL_REFUSED_ACTION_CODE
+        connector.graphql.get_space_members.assert_awaited_once_with(3)
+        connector.graphql.get_space_tree.assert_awaited_once_with(3)
+
+    @pytest.mark.asyncio
+    async def test_answered_queries_clear_the_warning(self, connector: DrupalWikiConnector) -> None:
+        self.rest_ok(connector)
+        connector.graphql.get_space_members = AsyncMock(return_value={"users": [], "groups": []})
+        connector.graphql.get_space_tree = AsyncMock(return_value=[])
+
+        assert await connector.test_connection_and_access() is True
+
+        assert connector.last_action_items == []
+
+    @pytest.mark.asyncio
+    async def test_a_failure_that_may_pass_leaves_the_card_as_it_is(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        self.rest_ok(connector)
+        connector.graphql.get_space_members = AsyncMock(side_effect=DrupalWikiGraphQLTransientError("502"))
+        connector.graphql.get_space_tree = AsyncMock(side_effect=DrupalWikiGraphQLTransientError("502"))
+
+        assert await connector.test_connection_and_access() is True
+
+        assert connector.last_action_items is None
+
+    @pytest.mark.asyncio
+    async def test_a_rest_failure_still_fails_without_asking_graphql(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.client = MagicMock()
+        connector.data_source.list_users = AsyncMock(return_value=response(spring_page([])))
+        connector.data_source.list_spaces = AsyncMock(return_value=response(status=500))
+
+        with pytest.raises(ConnectorInitError, match="could not list spaces"):
+            await connector.test_connection_and_access()
+
+        connector.graphql.get_space_members.assert_not_awaited()
+
+
+class TestPrivateSpaceWhenMembersAreRefused:
+    """T3, T4: a private space whose members the wiki refuses to list."""
+
+    @pytest.mark.asyncio
+    async def test_stored_grants_carry_its_pages_and_are_not_rewritten(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki_with_spaces(connector, PRIVATE_HR)
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+        tx_store = store_space_access(connector, processor, ["USER", "GROUP"])
+
+        await run_with_no_filters(connector)
+
+        # Not written: the stored grants are the space's access, exactly as they were.
+        assert "12" not in written_groups(processor)
+        record, permissions = written_pages(processor)["page:112"]
+        assert record.external_record_group_id == "12"
+        assert record.inherit_permissions is True
+        assert permissions == []
+        tx_store.get_edges_to_node.assert_awaited_once_with(
+            "recordGroups/rg-12", "permission", raise_on_error=True
+        )
+        assert connector.full_sync_coverage().complete is False
+        message = connector.notify.await_args.kwargs["message"]
+        confirmed_on = _utc_date(tx_store.confirmed_at)
+        assert MEMBERS_REFUSED_KEPT.message.format(spaces=f"'HR' (access as of {confirmed_on})") in message
+        assert connector.last_action_items == [graphql_refused_action_item(tx_store.confirmed_at)]
+        assert confirmed_on in connector.last_action_items[0].message
+        assert connector.last_action_items[0].params["confirmedOn"] == confirmed_on
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("grant_types", "deleted_at_source", "read_error"),
+        [
+            (None, False, None),                     # never synced before
+            ([], False, None),                       # stored with nobody on it
+            (["USER", "ORG"], False, None),          # it was open on the last good run
+            (["DOMAIN"], False, None),
+            (["USER"], True, None),                  # a group kept only for the trash
+            (["USER"], False, RuntimeError("graph down")),
+        ],
+    )
+    async def test_without_usable_stored_grants_it_is_skipped_and_reported(
+        self,
+        connector: DrupalWikiConnector,
+        processor: MagicMock,
+        grant_types: list[str] | None,
+        deleted_at_source: bool,
+        read_error: Exception | None,
+    ) -> None:
+        wiki_with_spaces(connector, PRIVATE_HR)
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+        store_space_access(
+            connector, processor, grant_types, deleted_at_source=deleted_at_source, read_error=read_error
+        )
+
+        await run_with_no_filters(connector)
+
+        processor.on_new_record_groups.assert_not_awaited()
+        processor.on_new_records.assert_not_awaited()
+        connector.data_source.list_pages.assert_not_awaited()
+        assert connector.full_sync_coverage().complete is False
+        message = connector.notify.await_args.kwargs["message"]
+        assert MEMBERS_REFUSED_SKIPPED.message.format(spaces="'HR'") in message
+
+    @pytest.mark.asyncio
+    async def test_a_failure_that_may_pass_still_skips_the_space(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Only a refusal falls back to stored grants: anything else clears on a later run.
+        wiki_with_spaces(connector, PRIVATE_HR)
+        connector.graphql.get_space_members = AsyncMock(side_effect=DrupalWikiGraphQLTransientError("502"))
+        store_space_access(connector, processor, ["USER"])
+
+        await run_with_no_filters(connector)
+
+        connector.data_source.list_pages.assert_not_awaited()
+        processor.get_record_group_by_external_id.assert_not_awaited()
+
+
+class TestTreeRefused:
+    """T5: a refused page tree keeps stored parents and is reported once for every space."""
+
+    @pytest.mark.asyncio
+    async def test_pages_keep_their_parents_and_one_line_names_every_space(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        spaces = [{"id": i, "name": f"S{i}", "type": "BASIC", "accessStatus": "AUTHENTICATED"} for i in (3, 4, 5)]
+        wiki_with_spaces(connector, *spaces)
+        connector.graphql.get_space_tree = AsyncMock(side_effect=refused("SpaceContentStructure"))
+        processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda _, external_id: stored_record(int(external_id.split(":")[1]), parent="page:700")
+        )
+
+        await run_with_no_filters(connector)
+
+        pages = written_pages(processor)
+        assert {pages[f"page:{100 + i}"][0].parent_external_record_id for i in (3, 4, 5)} == {"page:700"}
+        connector.notify.assert_awaited_once()
+        message = connector.notify.await_args.kwargs["message"]
+        assert message == "- " + TREE_UNREADABLE.message.format(spaces="'S3', 'S4', 'S5'")
+        assert "1 problem" in connector.notify.await_args.kwargs["title"]
+        # The structure says nothing about which records exist, so nothing is held back.
+        assert connector.full_sync_coverage().complete is True
+        assert len(page_checkpoint_writes(connector)) == 3
+
+
+class TestOpenSpaceUnaffectedByRefusal:
+    """T6: an open space syncs in full while the wiki refuses every GraphQL query."""
+
+    @pytest.mark.asyncio
+    async def test_open_space_syncs_with_its_org_grant(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki_with_spaces(connector, OPEN_TEAM, PRIVATE_HR)
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+        connector.graphql.get_space_tree = AsyncMock(side_effect=refused("SpaceContentStructure"))
+        store_space_access(connector, processor, None)
+
+        await run_with_no_filters(connector)
+
+        groups = written_groups(processor)
+        assert list(groups) == ["3"]
+        assert [p.entity_type for p in groups["3"]] == [EntityType.ORG]
+        assert set(written_pages(processor)) == {"page:103"}
+        connector.graphql.get_space_members.assert_awaited_once_with(12)
+        # The open space is complete, and the card still says why the private one is not.
+        assert connector.last_action_items == [graphql_refused_action_item()]
+
+
+class TestKeptAccessNamesOnlyLivePrincipals:
+    """R1-1: stored grants stand in for a refused member list only if every principal on
+    them is an enabled wiki user, or a group read in full, in this very run."""
+
+    async def run(self, connector: DrupalWikiConnector) -> None:
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+        await run_with_no_filters(connector)
+
+    def assert_skipped_as(self, connector: DrupalWikiConnector, processor: MagicMock, problem) -> None:
+        processor.on_new_records.assert_not_awaited()
+        processor.on_new_record_groups.assert_not_awaited()
+        message = connector.notify.await_args.kwargs["message"]
+        assert problem.message.split("{spaces}")[1] in message and "'HR'" in message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("arango_edges", [False, True])
+    async def test_live_principals_keep_the_space_on_every_edge_shape(
+        self, connector: DrupalWikiConnector, processor: MagicMock, arango_edges: bool
+    ) -> None:
+        wiki_with_spaces(connector, PRIVATE_HR)
+        store_space_access(connector, processor, ["USER", "GROUP"], arango_edges=arango_edges)
+
+        await self.run(connector)
+
+        assert "page:112" in written_pages(processor)
+
+    @pytest.mark.asyncio
+    async def test_a_group_deleted_in_the_wiki_skips_the_space(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki_with_spaces(connector, PRIVATE_HR)
+        store_space_access(connector, processor, ["USER", "GROUP"])
+
+        async def groups_without_5(_users: dict) -> None:
+            connector._groups_read = {"6"}
+
+        connector._sync_groups = groups_without_5
+        await self.run(connector)
+
+        self.assert_skipped_as(connector, processor, MEMBERS_REFUSED_UNVERIFIED)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enabled", [set(), {"bob@example.com"}])
+    async def test_a_user_no_longer_enabled_in_the_wiki_skips_the_space(
+        self, connector: DrupalWikiConnector, processor: MagicMock, enabled: set[str]
+    ) -> None:
+        # Disabled or deleted in the wiki while their PipesHub login stays active.
+        wiki_with_spaces(connector, PRIVATE_HR)
+        store_space_access(connector, processor, ["USER"])
+
+        async def users() -> dict:
+            connector._disabled_emails = set()
+            connector._enabled_emails = enabled
+            return {}
+
+        connector._sync_users = users
+        await self.run(connector)
+
+        self.assert_skipped_as(connector, processor, MEMBERS_REFUSED_UNVERIFIED)
+
+    @pytest.mark.asyncio
+    async def test_groups_not_read_in_full_skip_a_space_with_a_group_grant(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki_with_spaces(connector, PRIVATE_HR)
+        store_space_access(connector, processor, ["USER", "GROUP"])
+        connector._sync_groups = AsyncMock(side_effect=RuntimeError("groups down"))
+
+        await self.run(connector)
+
+        self.assert_skipped_as(connector, processor, MEMBERS_REFUSED_UNVERIFIED)
+
+    @pytest.mark.asyncio
+    async def test_one_group_whose_members_failed_marks_groups_not_read_in_full(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.data_source.list_groups = AsyncMock(return_value=response(spring_page([{"id": 5}, {"id": 6}])))
+        connector.data_source.get_group = AsyncMock(side_effect=[
+            response({"members": []}), response(status=500),
+        ])
+
+        await connector._sync_groups({})
+
+        assert connector._groups_read is None
+
+    @pytest.mark.asyncio
+    async def test_groups_read_in_full_are_named_by_their_wiki_ids(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.data_source.list_groups = AsyncMock(return_value=response(spring_page([{"id": 5}, {"id": 6}])))
+        connector.data_source.get_group = AsyncMock(return_value=response({"members": []}))
+
+        await connector._sync_groups({})
+
+        assert connector._groups_read == {"5", "6"}
+
+    @pytest.mark.asyncio
+    async def test_users_read_this_run_are_the_enabled_ones(self, connector: DrupalWikiConnector) -> None:
+        connector.data_source.list_users = AsyncMock(return_value=response(spring_page([
+            {"id": 1, "email": "Alice@Example.com", "status": "ENABLED"},
+            {"id": 2, "email": "carol@example.com", "status": "DISABLED"},
+        ])))
+
+        await connector._sync_users()
+
+        assert connector._enabled_emails == {"alice@example.com"}
+
+
+class TestKeptAccessIsBoundedInTime:
+    """R1-2: stored grants stand in for a refused member list only for a fixed time after
+    the space's members were last read."""
+
+    @pytest.mark.asyncio
+    async def test_access_confirmed_too_long_ago_skips_the_space_and_names_the_date(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki_with_spaces(connector, PRIVATE_HR)
+        tx_store = store_space_access(
+            connector, processor, ["USER"], confirmed_days_ago=KEPT_ACCESS_MAX_AGE_DAYS + 1
+        )
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+
+        await run_with_no_filters(connector)
+
+        processor.on_new_records.assert_not_awaited()
+        label = f"'HR' (access as of {_utc_date(tx_store.confirmed_at)})"
+        assert MEMBERS_REFUSED_STALE.message.format(spaces=label) in connector.notify.await_args.kwargs["message"]
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_access_confirmed_within_the_bound_keeps_the_space(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki_with_spaces(connector, PRIVATE_HR)
+        store_space_access(connector, processor, ["USER"], confirmed_days_ago=KEPT_ACCESS_MAX_AGE_DAYS - 1)
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+
+        await run_with_no_filters(connector)
+
+        assert "page:112" in written_pages(processor)
+
+    @pytest.mark.asyncio
+    async def test_no_confirmed_date_skips_the_space(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # A space stored before the date was recorded: nothing says how old its access is.
+        wiki_with_spaces(connector, PRIVATE_HR)
+        store_space_access(connector, processor, ["USER"], confirmed_days_ago=None)
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+
+        await run_with_no_filters(connector)
+
+        processor.on_new_records.assert_not_awaited()
+        assert MEMBERS_REFUSED_SKIPPED.message.format(spaces="'HR'") in connector.notify.await_args.kwargs["message"]
+
+    @pytest.mark.asyncio
+    async def test_reading_members_confirms_the_access_after_writing_it(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        connector._disabled_emails = set()
+        connector.graphql.get_space_members = AsyncMock(return_value={
+            "users": [{"email": "alice@example.com"}], "groups": [],
+        })
+        connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page([PRIVATE_HR, OPEN_TEAM])))
+        order: list[str] = []
+        processor.on_new_record_groups = AsyncMock(side_effect=lambda *_: order.append("grants"))
+        connector.record_sync_point.update_sync_point = AsyncMock(
+            side_effect=lambda key, data: order.append(key)
+        )
+
+        await connector._sync_spaces()
+
+        # Only the private space whose members were read; the open one has no member list.
+        assert order == ["grants", "space_access/space/12"]
+        data = connector.record_sync_point.update_sync_point.await_args.args[1]
+        assert abs(data["confirmed_at"] - get_epoch_timestamp_in_ms()) < 60_000
+
+    def test_the_action_item_names_the_bound_and_the_oldest_date(self) -> None:
+        item = graphql_refused_action_item(0)
+
+        assert f"{KEPT_ACCESS_MAX_AGE_DAYS} days" in item.message
+        assert "confirmed on 1970-01-01" in item.message
+        assert item.params == {"days": str(KEPT_ACCESS_MAX_AGE_DAYS), "confirmedOn": "1970-01-01", "context": "dated"}
+        assert graphql_refused_action_item().params == {"days": str(KEPT_ACCESS_MAX_AGE_DAYS)}
+
+
+class TestTheAdminIsToldAFullSyncEndsKeptAccess:
+    """R2-1: a full sync deletes the confirmed dates, so the admin is told it ends kept access."""
+
+    @pytest.mark.asyncio
+    async def test_the_kept_line_and_the_action_item_say_so(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki_with_spaces(connector, PRIVATE_HR)
+        store_space_access(connector, processor, ["USER"])
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+
+        await run_with_no_filters(connector)
+
+        assert "full sync" in FULL_SYNC_ENDS_KEPT_ACCESS and "filters" in FULL_SYNC_ENDS_KEPT_ACCESS
+        assert FULL_SYNC_ENDS_KEPT_ACCESS in connector.notify.await_args.kwargs["message"]
+        assert FULL_SYNC_ENDS_KEPT_ACCESS in connector.last_action_items[0].message
+        assert FULL_SYNC_ENDS_KEPT_ACCESS in graphql_refused_action_item().message
+
+    def test_the_ui_wording_is_the_connectors_wording(self) -> None:
+        # The UI shows its own copy of a known item; en-US must say exactly what the connector says.
+        locale = Path(__file__).resolve().parents[6] / "frontend/lib/i18n/locales/en-US.json"
+        if not locale.exists():
+            pytest.skip("the frontend is not checked out next to the backend")
+        known = json.loads(locale.read_text(encoding="utf-8"))["workspace"]["connectors"]["actionItems"]["known"]
+        item = known[GRAPHQL_REFUSED_ACTION_CODE]
+        days = str(KEPT_ACCESS_MAX_AGE_DAYS)
+        assert item["message"].replace("{{days}}", days) == GRAPHQL_REFUSED_MESSAGE
+        dated = graphql_refused_action_item(0)
+        assert item["message_dated"].replace("{{days}}", days).replace(
+            "{{confirmedOn}}", dated.params["confirmedOn"]
+        ) == dated.message
+
+
+class TestStoredPrincipalsAreReadOncePerRun:
+    """R2-2: however many private spaces are refused, stored people and groups are read once."""
+
+    @pytest.mark.asyncio
+    async def test_three_refused_spaces_read_users_and_groups_once(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        spaces = [{**PRIVATE_HR, "id": i, "name": f"P{i}"} for i in (12, 13, 14)]
+        wiki_with_spaces(connector, *spaces)
+        tx_store = store_space_access(connector, processor, ["USER", "GROUP"])
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+
+        await run_with_no_filters(connector)
+
+        assert {f"page:{100 + i}" for i in (12, 13, 14)} <= set(written_pages(processor))
+        tx_store.get_users.assert_awaited_once()
+        tx_store.get_user_groups.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_next_run_reads_them_again(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki_with_spaces(connector, PRIVATE_HR)
+        tx_store = store_space_access(connector, processor, ["USER"])
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+
+        await run_with_no_filters(connector)
+        await run_with_no_filters(connector)
+
+        assert tx_store.get_users.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_is_not_retried_and_skips_every_space(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        spaces = [{**PRIVATE_HR, "id": i, "name": f"P{i}"} for i in (12, 13)]
+        wiki_with_spaces(connector, *spaces)
+        tx_store = store_space_access(connector, processor, ["USER"])
+        tx_store.get_users = AsyncMock(side_effect=RuntimeError("graph down"))
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+
+        await run_with_no_filters(connector)
+
+        processor.on_new_records.assert_not_awaited()
+        tx_store.get_users.assert_awaited_once()
+
+
+class TestTheConnectionTestProbeIsBounded:
+    """QA-P1-2: the GraphQL check only adds a warning, so a wiki that hangs on it must not
+    hold the connection test for the sync's retries and timeouts."""
+
+    @pytest.mark.asyncio
+    async def test_a_hanging_wiki_still_passes_the_test_quickly(self, connector: DrupalWikiConnector) -> None:
+        TestConnectionTestProbesGraphQL.rest_ok(connector)
+        closer = AsyncMock()
+        connector._graphql_probe = lambda: (connector.graphql, closer)
+
+        async def hang(_space_id: int) -> dict:
+            await asyncio.sleep(3600)
+            return {}
+
+        connector.graphql.get_space_members = AsyncMock(side_effect=hang)
+        connector.graphql.get_space_tree = AsyncMock(side_effect=hang)
+
+        with patch("app.connectors.sources.drupal_wiki.connector.GRAPHQL_PROBE_TIMEOUT_S", 0.2):
+            assert await asyncio.wait_for(connector.test_connection_and_access(), timeout=5) is True
+
+        assert connector.last_action_items is None
+        closer.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_test_asks_the_probe_client_not_the_syncs_own(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        TestConnectionTestProbesGraphQL.rest_ok(connector)
+        probe = MagicMock()
+        probe.get_space_members = AsyncMock(side_effect=refused())
+        probe.get_space_tree = AsyncMock(return_value=[])
+        probe_rest = AsyncMock()
+        connector._graphql_probe = lambda: (probe, probe_rest)
+        # The sync's client retries for minutes; the test must never reach it.
+        connector.graphql.get_space_members = AsyncMock(side_effect=AssertionError("sync client used"))
+        connector.graphql.get_space_tree = AsyncMock(side_effect=AssertionError("sync client used"))
+
+        assert await connector.test_connection_and_access() is True
+
+        probe.get_space_members.assert_awaited_once_with(3)
+        probe.get_space_tree.assert_awaited_once_with(3)
+        connector.graphql.get_space_members.assert_not_awaited()
+        connector.graphql.get_space_tree.assert_not_awaited()
+        probe_rest.close.assert_awaited_once()
+        assert connector.last_action_items == [graphql_refused_action_item()]
+
+    def test_the_probe_tries_once_with_a_short_timeout(self, connector: DrupalWikiConnector) -> None:
+        connector.client = MagicMock()
+        connector.client.get_client.return_value = DrupalWikiRESTClientViaToken(
+            BASE_URL, "pat:secret", resilience=MagicMock()
+        )
+
+        _, probe_rest = connector._graphql_probe()
+
+        assert probe_rest.resilience is None
+        assert probe_rest.timeout == GRAPHQL_PROBE_TIMEOUT_S <= 10
+        assert (probe_rest.get_base_url(), probe_rest.get_token()) == (BASE_URL, "pat:secret")
+
+
+class TestKeptAccessDatesAreTrustedOnlyFromThePast:
+    """QA-P1-3, QA-P1-4: the bound is counted from a date that cannot run ahead of now."""
+
+    @pytest.mark.asyncio
+    async def test_a_date_in_the_future_is_no_confirmation(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki_with_spaces(connector, PRIVATE_HR)
+        store_space_access(connector, processor, ["USER"], confirmed_days_ago=-400)
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+
+        await run_with_no_filters(connector)
+
+        processor.on_new_records.assert_not_awaited()
+        assert MEMBERS_REFUSED_SKIPPED.message.format(spaces="'HR'") in connector.notify.await_args.kwargs["message"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("extra_ms", "kept"), [(0, True), (1, False)])
+    async def test_exactly_the_bound_is_kept_and_a_millisecond_more_is_not(
+        self, connector: DrupalWikiConnector, processor: MagicMock, extra_ms: int, kept: bool
+    ) -> None:
+        now = 1_800_000_000_000
+        wiki_with_spaces(connector, PRIVATE_HR)
+        store_space_access(
+            connector, processor, ["USER"], confirmed_at_ms=now - KEPT_ACCESS_MAX_AGE_DAYS * DAY_MS - extra_ms
+        )
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+
+        with patch("app.connectors.sources.drupal_wiki.connector.get_epoch_timestamp_in_ms", return_value=now):
+            await run_with_no_filters(connector)
+
+        assert ("page:112" in written_pages(processor)) is kept
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["PENDING", None, ""])
+    async def test_a_user_neither_enabled_nor_disabled_is_not_live(
+        self, connector: DrupalWikiConnector, status: str | None
+    ) -> None:
+        connector.data_source.list_users = AsyncMock(return_value=response(spring_page([
+            {"id": 1, "email": "alice@example.com", "status": "ENABLED"},
+            {"id": 3, "email": "dave@example.com", "status": status},
+        ])))
+
+        await connector._sync_users()
+
+        assert connector._enabled_emails == {"alice@example.com"}
+
+
+class TestAPersistentRefusalIsAnnouncedOnce:
+    """QA-P1-5: a wiki that keeps refusing is a steady state the card shows; it is announced
+    when it starts or changes, as a warning, and real failures still notify every run."""
+
+    @pytest.mark.asyncio
+    async def test_three_refused_runs_send_one_warning(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki_with_spaces(connector, PRIVATE_HR)
+        store_space_access(connector, processor, ["USER"])
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+
+        for _ in range(3):
+            await run_with_no_filters(connector)
+
+        connector.notify.assert_awaited_once()
+        assert connector.notify.await_args.kwargs["severity"] == NotificationSeverity.WARNING
+        assert connector.notify.await_args.kwargs["type"] == NotificationType.CONNECTOR_WARNING
+        # The card stays: every run sets the item.
+        assert connector.last_action_items[0].code == GRAPHQL_REFUSED_ACTION_CODE
+
+    @pytest.mark.asyncio
+    async def test_a_newly_affected_space_is_announced(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki_with_spaces(connector, PRIVATE_HR)
+        store_space_access(connector, processor, ["USER"])
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+        await run_with_no_filters(connector)
+
+        connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page([
+            PRIVATE_HR, {**PRIVATE_HR, "id": 13, "name": "Legal"},
+        ])))
+        await run_with_no_filters(connector)
+
+        assert connector.notify.await_count == 2
+        assert "'Legal'" in connector.notify.await_args.kwargs["message"]
+
+    @pytest.mark.asyncio
+    async def test_kept_access_ending_and_ended_are_announced(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        now = 1_800_000_000_000
+        wiki_with_spaces(connector, PRIVATE_HR)
+        store_space_access(connector, processor, ["USER"], confirmed_at_ms=now - DAY_MS)
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+        clock = "app.connectors.sources.drupal_wiki.connector.get_epoch_timestamp_in_ms"
+        messages: list[str | None] = []
+        for days_later in (0, 1, KEPT_ACCESS_MAX_AGE_DAYS - KEPT_ACCESS_NOTICE_DAYS + 1, KEPT_ACCESS_MAX_AGE_DAYS + 1):
+            sent = connector.notify.await_count
+            with patch(clock, return_value=now + days_later * DAY_MS):
+                await run_with_no_filters(connector)
+            messages.append(connector.notify.await_args.kwargs["message"] if connector.notify.await_count > sent else None)
+
+        assert messages[1] is None
+        assert MEMBERS_REFUSED_KEPT_ENDING.message.split("{spaces}")[1] in messages[2]
+        assert MEMBERS_REFUSED_STALE.message.split("{spaces}")[1] in messages[3]
+        assert connector.notify.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_a_failure_still_notifies_every_run_as_an_error(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki_with_spaces(connector, PRIVATE_HR, OPEN_TEAM)
+        store_space_access(connector, processor, ["USER"])
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+        connector.data_source.list_attachments = AsyncMock(return_value=response(status=500))
+
+        for _ in range(2):
+            await run_with_no_filters(connector)
+
+        assert [
+            (call.kwargs["type"], call.kwargs["severity"]) for call in connector.notify.await_args_list
+        ] == [(NotificationType.CONNECTOR_SYNC_ERROR, NotificationSeverity.ERROR)] * 2

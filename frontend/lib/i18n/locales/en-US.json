@@ -3458,7 +3458,14 @@
         "badge": "Action needed",
         "title": "Action needed",
         "openAuthentication": "Update authentication",
-        "viewSteps": "View setup steps"
+        "viewSteps": "View setup steps",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki refuses member and page structure queries",
+            "message": "Private spaces sync only with the access confirmed on an earlier sync, and only for {{days}} days after it was confirmed. Private spaces never synced, or confirmed longer ago, are skipped, and the page hierarchy is not available. Open spaces are not affected. A full sync, including one started by changing the filters, ends this for private spaces until Drupal Wiki lists their members again.",
+            "message_dated": "Private spaces sync only with the access confirmed on an earlier sync, and only for {{days}} days after it was confirmed. Private spaces never synced, or confirmed longer ago, are skipped, and the page hierarchy is not available. Open spaces are not affected. A full sync, including one started by changing the filters, ends this for private spaces until Drupal Wiki lists their members again. The oldest access in use was confirmed on {{confirmedOn}}."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Everyone in your organization will see this data",
