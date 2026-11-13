@@ -423,7 +423,7 @@ def _generic_plan(sql: str) -> object:
     return json.loads(plan) if isinstance(plan, str) else plan
 
 
-# the statements a browse runs outside its one read, in units that plan them for their values (custom plans): the windows of a wide node and its total
+# the statements checked for the plan of their values only (the page's snapshot plans each for its values): the windows of a wide node and its total
 CUSTOM_ONLY = ("wide ", "children ", "undecided ", "count ")
 
 
@@ -488,9 +488,9 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                        ("files", kh_listing.FILES, [org, ["fold"]])]
         for name, sql, args in statements:
             await con.execute("SET enable_seqscan = off")
-            # the plan for these values, and the generic plan the browse's read unit reuses after its fifth run (it plans once per connection, not once per statement)
+            # the plan for these values, and for the statements of a held node also the generic plan (a margin: a plan that does not depend on the values asked)
             plans = [("custom", json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args)))]
-            if not name.startswith(CUSTOM_ONLY):      # a statement of the browse's one read: planned generically after its fifth run
+            if not name.startswith(CUSTOM_ONLY):
                 plans.append(("generic", await asyncio.to_thread(_generic_plan, sql)))
             for kind, plan in plans:
                 at = f"{name} {kind} ({'after' if analyzed else 'before'} ANALYZE)"
@@ -505,3 +505,53 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                     assert any(str(u).startswith(("records_children_", "records_parent")) for u in used), f"{at}: {used}"
     finally:
         await con.close()
+
+
+@pytest.mark.parametrize("mode", ["held", "by_window", "not_served", "wide"])
+async def test_concurrent_browses_never_wait_for_a_second_pooled_connection(pg_db, monkeypatch, mode) -> None:
+    """A browse reads everything on its page's one snapshot connection: the start, the children, the access checks, the arrows and the total (``by_window``: the children asked of
+    the check a window at a time; ``not_served``: the walk; ``wide``: a node read in windows of the children index). With a pool of two and four browses at once, a browse that
+    held one connection and waited for another would wait as long as the pool lets it: every connection would be held by a browse waiting the same way."""
+    import dataclasses
+
+    from app.core.db import DbConfig, KernelDB
+    p0, org = prov(pg_db), new_org()
+    await seed_folder(p0, pg_db, org, 8, readable_kids=KIDS[1:6])
+    if mode == "not_served":
+        await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+    if mode == "by_window":
+        monkeypatch.setattr(kh_listing, "CLASS_MAX", 0)
+    if mode == "wide":
+        monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 5)
+    small = KernelDB(dataclasses.replace(DbConfig.from_env("connectors"), pool_max=2))
+    await small.start()
+    try:
+        p = prov(small)
+        pages = await asyncio.wait_for(asyncio.gather(*(browse(p, org, "fold", ["fold", *KIDS[1:6]]) for _ in range(4))), 30)
+    finally:
+        await small.close()
+    for page in pages:
+        assert [r["id"] for r in page["rows"]] == KIDS[1:6] and page["total"] == 5 and page["scope"]["admitted"] is True
+
+
+async def test_a_browse_in_a_callers_transaction_asks_the_check_and_never_admits_by_class(pg_db, monkeypatch) -> None:
+    """A caller's own transaction (read committed) is not one snapshot, so the classes it would read may be older than the rows: the browse asks the access check about every
+    row, as the flat listing's page does, and lists the same children."""
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 8, readable_kids=KIDS[1:6])
+    calls = []
+    real = kh_listing.class_sets
+
+    async def spy(*a, **kw) -> object:
+        calls.append(True)
+        return await real(*a, **kw)
+    monkeypatch.setattr(kh_listing, "class_sets", spy)
+    with ctx(org):
+        tid = await p.begin_transaction([], [])
+        try:
+            page = await p.get_knowledge_hub_connector_page_v3(app_id="", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=["fold", *KIDS[1:6]], limit=50,
+                                                               flatten=False, start_id="fold", start_type="folder", include_scope=True, transaction=tid)
+        finally:
+            await p.rollback_transaction(tid)
+    assert not calls and [r["id"] for r in page["rows"]] == KIDS[1:6] and page["total"] == 5
+    assert [r["id"] for r in (await browse(p, org, "fold", ["fold", *KIDS[1:6]]))["rows"]] == KIDS[1:6] and calls      # in the page's own snapshot the classes admit

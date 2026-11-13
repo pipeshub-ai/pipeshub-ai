@@ -76,9 +76,9 @@ async def class_sets(tx: Tx, org: str, app_sk: int, granted: list[str]) -> dict[
     return {"app_sk": app_sk, "plain": {c for c, v in verdicts.items() if v and v[0]}, "own": {c for c, v in verdicts.items() if v and v[1] and not v[0]}, "unvouched": {c for c, v in verdicts.items() if v is None}}
 
 
-async def head(tx: Tx, org: str, app_id: str, granted: list[str]) -> tuple[int | None, dict, list[int], bool, dict[str, set[int]] | None]:
+async def head(tx: Tx, org: str, app_id: str, granted: list[str], *, by_class: bool) -> tuple[int | None, dict, list[int], bool, dict[str, set[int]] | None]:
     """A connector's listing state: its node key (None when kg holds no current copy of it), its document, the rows groups that hide their children hide, whether kg serves it, and
-    what the viewer's grants open of it by class."""
+    what the viewer's grants open of it by class (None unless ``by_class``: the page reads one snapshot, so the stamps it admits by are the ones the currency check saw)."""
     k = await tx.fetchrow(kgl.STATE, org, app_id)
     hidden: list[int] = []
     ready = bool(k["sk"] is not None and k["mode"] != "legacy" and k["code_epoch"] == CODE_EPOCH and k["verified_at"] is not None)      # a copy of an older code lacks the listing columns: it is not listed from
@@ -87,7 +87,7 @@ async def head(tx: Tx, org: str, app_id: str, granted: list[str]) -> tuple[int |
         if len(hidden) > HIDDEN_MAX:
             raise KnowledgeHubListingTooLarge
     served = ready and kg_read.enabled() and await kg_read.serves(tx, org, app_id)      # PG_KG_READ=0, or a connector this process distrusts (as ``read.decide``): every row is the live check's
-    return (k["sk"] if ready else None), (_doc(k["app_doc"]) if k["app_doc"] else {}), hidden, served, (await class_sets(tx, org, k["sk"], granted) if served else None)
+    return (k["sk"] if ready else None), (_doc(k["app_doc"]) if k["app_doc"] else {}), hidden, served, (await class_sets(tx, org, k["sk"], granted) if served and by_class else None)
 
 
 def origin_of(app_doc: dict) -> str:
@@ -138,15 +138,10 @@ class KhListingMixin(PgBase):
             raise NotImplementedInPostgres("PostgresGraphProvider.get_knowledge_hub_connector_page_v3 flattens a whole connector only")
         org = current_org_id()
         filters = filters or {}
-        if not flatten:
-            return await self._kh_browse(
-                org=org, org_id=org_id, app_id=app_id, start_id=start_id, grantee_ids=grantee_ids, gated_app_ids=gated_app_ids, granted_ids=granted_ids, grants_by_connector=grants_by_connector,
-                user_key=user_key, grants_out=grants_out, limit=limit, sort_field=sort_field, order=order, after=after, direction=direction, filters=filters, include_total=include_total,
-                include_scope=include_scope, via_parent_id=via_parent_id, transaction=transaction, name_parents=name_parents)
-        if org_id != org or app_id not in set(gated_app_ids):
+        if flatten and (org_id != org or app_id not in set(gated_app_ids)):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=False)
         if transaction is None:
-            # One snapshot for the page: whether kg serves the connector and the rows its classes admit are read at one commit. A change to the connector as a whole hides it
+            # One snapshot for the page (a browse's too): whether kg serves the connector and the rows its classes admit are read at one commit. A change to the connector as a whole hides it
             # from kg without marking its rows (restamp.py), so a page read after such a commit, by a check made before it, would admit by stamps that are hidden.
             # Every read of the page runs on this one connection, the access checks included: a page that held one pooled connection and waited for another would
             # starve the pool under as many concurrent pages as it has connections.
@@ -158,6 +153,14 @@ class KhListingMixin(PgBase):
                     via_parent_id=via_parent_id, transaction=snap, name_parents=name_parents, user_key=user_key, grants_out=grants_out, max_depth=max_depth)
             finally:
                 await self.rollback_transaction(snap)
+        # Admission by class trusts that the stamps read are the ones the currency check saw: only in the page's snapshot. A caller's own transaction (read committed) reads
+        # each statement at a new commit, so its rows are asked of the access check, which reads kg's currency with the stamps it reads.
+        snapshot = bool(getattr(self._txns.get(transaction), "snapshot", False))
+        if not flatten:
+            return await self._kh_browse(
+                org=org, org_id=org_id, app_id=app_id, start_id=start_id, grantee_ids=grantee_ids, gated_app_ids=gated_app_ids, granted_ids=granted_ids, grants_by_connector=grants_by_connector,
+                user_key=user_key, grants_out=grants_out, limit=limit, sort_field=sort_field, order=order, after=after, direction=direction, filters=filters, include_total=include_total,
+                include_scope=include_scope, via_parent_id=via_parent_id, transaction=transaction, name_parents=name_parents, by_class=snapshot)
         if grants_by_connector is not None:
             granted = list(grants_by_connector.get(app_id) or [])
         elif granted_ids is None and user_key:
@@ -168,7 +171,7 @@ class KhListingMixin(PgBase):
             grants_out[app_id] = granted
         access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted}}
 
-        app_sk, app_doc, hidden, served, sets = await self._kq(lambda tx: head(tx, org, app_id, granted), transaction)
+        app_sk, app_doc, hidden, served, sets = await self._kq(lambda tx: head(tx, org, app_id, granted, by_class=snapshot), transaction)
         if app_sk is None:
             raise KnowledgeHubListingNotReady
         if filtered_out(app_id, app_doc, filters):
@@ -177,10 +180,7 @@ class KhListingMixin(PgBase):
         admit = self._kh_admitter(org, access, transaction, served=served)
         gset = set(granted)
         admitted_of = self._kh_admitted_of(sets, gset, admit)
-        # Admission by class trusts that the stamps read are the ones the currency check saw: only in the page's snapshot. A caller's own transaction (read committed) reads
-        # each statement at a new commit, so its rows are asked of the access check, which reads kg's currency with the stamps it reads.
-        snapshot = getattr(self._txns.get(transaction), "snapshot", False)
-        viewer = await self._kh_flat_viewer(sets, where, base, admit, granted, transaction) if snapshot else None
+        viewer = await self._kh_flat_viewer(sets, where, base, admit, granted, transaction)
         admit_sql, pbase = None, kgl.Params(list(base.values))
         if viewer is not None:      # a connector kg serves: the classes admit in the statement, so a window needs no question to the access check
             admit_sql = kgl.class_admit("w", pbase, viewer)

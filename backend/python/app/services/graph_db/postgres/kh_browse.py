@@ -14,7 +14,6 @@ import functools
 import time
 from typing import TYPE_CHECKING, Any
 
-from app.core.org_context import current_or_system
 from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingNotReady,
     KnowledgeHubListingTooLarge,
@@ -58,7 +57,8 @@ class KhBrowseMixin(PgBase):
     async def _kh_browse(self, *, org: str, org_id: str, app_id: str, start_id: str, grantee_ids: list[str], gated_app_ids: list[str], granted_ids: list[str] | None,
                          grants_by_connector: dict[str, list[str]] | None, user_key: str | None, grants_out: dict[str, list[str]] | None, limit: int, sort_field: str, order: str,
                          after: dict[str, Any] | None, direction: str, filters: dict[str, Any], include_total: bool, include_scope: bool, via_parent_id: str | None,
-                         transaction: str | None, name_parents: bool) -> dict[str, Any]:
+                         transaction: str, name_parents: bool, by_class: bool) -> dict[str, Any]:
+        """The browse of ``start_id``, in the page's transaction: the page's snapshot (``by_class``: the classes may admit), or a caller's own transaction (every row is asked of the check)."""
         def refused() -> dict[str, Any]:
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=False)
         if org_id != org:
@@ -82,7 +82,7 @@ class KhBrowseMixin(PgBase):
                 granted = await connector_grants(tx, org, user_key, grantee_ids, aid)
             else:
                 granted = list(granted_ids or [])
-            app_sk, app_doc, hidden, served, sets = await head(tx, org, aid, granted)
+            app_sk, app_doc, hidden, served, sets = await head(tx, org, aid, granted, by_class=by_class)
             if app_sk is None:      # a connector the viewer may browse that kg holds no current copy of: not ready, as the flat listing says
                 return "not_ready"
             # a start of this connector that kg holds and no group above hides (else the browse's 404)
@@ -135,7 +135,7 @@ class KhBrowseMixin(PgBase):
                 u["done"] = (page, len(listed), self._kh_counts(listed), out, read)
             return u
 
-        u = await (self._q(unit, transaction) if transaction else self._db.run(unit, jobs=current_or_system().kind == "system", custom_plan=False, isolation="repeatable_read"))
+        u = await self._q(unit, transaction)
         if u == "refused":
             return refused()
         if u == "not_ready":
