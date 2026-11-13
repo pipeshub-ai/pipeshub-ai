@@ -287,8 +287,13 @@ CHAIN_ROWS = """/* pipeshub:kg.chain_rows */ SELECT r.sk, r.id, r.kind, r.parent
     WHERE r.org_id = $1 AND r.coll = ANY('{2,3}'::smallint[]) AND r.id = ANY($2::text[])"""
 CHAIN_BY_SK = "/* pipeshub:kg.chain_by_sk */ SELECT r.sk, r.kind, r.parent_sk, r.deleted FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[])"
 APP_KEY = "/* pipeshub:kg.app_key */ SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = $2"
+# The groups that hold a record among ids ``$2`` (as its group or by a group link) that could be a chain-top: read once per request by key from the grants.
+HELD_ANY = """/* pipeshub:kg.listing_held_any */ SELECT DISTINCT g.sk FROM kg.records c
+    CROSS JOIN LATERAL (SELECT c.group_sk AS sk UNION ALL SELECT l.parent_sk FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = c.sk AND l.kind = 2) g
+    WHERE c.org_id = $1 AND c.coll = 3 AND c.id = ANY($2::text[]) AND NOT c.deleted AND NOT c.placeholder AND NOT c.alien AND coalesce(c.rule, 'OPEN') = 'OPEN'
+      AND g.sk IS NOT NULL"""
 # The groups among ``$2`` that hold a record among ids ``$3`` (as its group or by a group link) that could be a chain-top: the cheap test behind a group's arrow, settled by the
-# chain-top walk (``_kh_v3_settle_held_arrows``); it never says no to a real chain-top.
+# request's chain-top placements (``_kh_held_lists``); it never says no to a real chain-top.
 HELD = """/* pipeshub:kg.listing_held */ SELECT DISTINCT g.sk FROM kg.records c
     CROSS JOIN LATERAL (SELECT c.group_sk AS sk UNION ALL SELECT l.parent_sk FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = c.sk AND l.kind = 2) g
     WHERE c.org_id = $1 AND c.coll = 3 AND c.id = ANY($3::text[]) AND NOT c.deleted AND NOT c.placeholder AND NOT c.alien AND coalesce(c.rule, 'OPEN') = 'OPEN'

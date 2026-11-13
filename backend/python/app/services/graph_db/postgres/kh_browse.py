@@ -26,6 +26,7 @@ from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg.model import CODE_COLL
 from app.services.graph_db.postgres.kh_listing import (
     ADMIT_CHUNK,
+    ANY_GROUP,
     BUDGET_S,
     COUNT_CAP,
     COUNT_SCAN,
@@ -192,9 +193,9 @@ class KhBrowseMixin(PgBase):
                                                                                                                   tops=chain_tops_apply(app_doc)),
                                                  under=u["under"])
         lists = await self._kh_lists(read, hidden, admitted_of, org, transaction, tops) if read else set()
+        lists |= await self._kh_held_lists(page, read, lists, tops)
         for row, c in zip(out, page, strict=True):
             row["hasChildren"] = c["sk"] in lists
-            row["khHeld"] = bool(read) and c["sk"] in read[3]      # settled by the chain-top walk (``_kh_v3_page_result``)
         payload: dict[str, Any] = {"rows": out, "total": total if include_total else None, "nRecord": counts["record"], "nFolder": counts["folder"], "nGroup": counts["recordGroup"]}
         if at_app:      # the App's own breadcrumb, from the document already read
             payload["crumbNodes"], payload["crumbEdges"] = [self._kh_app_crumb(app_id, app_doc)], []
@@ -386,7 +387,7 @@ class KhBrowseMixin(PgBase):
             by: dict[tuple[str, ...], list[str]] = {}
             for n in nodes.values():
                 own = tuple(g for g, _ in n["own"])
-                if only_group is None or (n["kind"] == 3 and only_group in own):
+                if only_group is None or (n["kind"] == 3 and (only_group in own if only_group != ANY_GROUP else bool(own))):
                     by.setdefault(own, []).append(n["id"])
             return [{"ownGroups": list(g), "ids": ids} for g, ids in by.items()]
         return await self._kq(read, transaction)

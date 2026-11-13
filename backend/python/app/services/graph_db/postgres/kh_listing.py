@@ -48,6 +48,7 @@ ARROW_CHILDREN = 200         # the children of a row asked about for its arrow w
 LEAD_NODES = 5_000
 LEAD_DEPTH = 50
 LEAD_PER = 1_000
+ANY_GROUP = ""      # ``only_group`` of the chain-top walk for the records of every group at once (``_kh_tops_under``): each is placed under its own groups, as for one
 
 LINKS = "/* pipeshub:kg.listing_links */ SELECT child_sk, parent_sk, kind FROM kg.links WHERE org_id = $1 AND child_sk = ANY($2::bigint[])"
 KEYS = "/* pipeshub:kg.listing_keys */ SELECT sk, coll, id FROM kg.node_keys WHERE org_id = $1 AND sk = ANY($2::bigint[])"
@@ -221,9 +222,9 @@ class KhListingMixin(PgBase):
                                               also=lambda tx: self._kh_arrows_read(tx, org, containers, hidden, sets, gset, access, tops=chain_tops_apply(app_doc)))
         tops = self._kh_tops_under(org, app_id, access, gset, transaction, apply=chain_tops_apply(app_doc))
         lists = await self._kh_lists(read, hidden, admitted_of, org, transaction, tops) if read else set()
+        lists |= await self._kh_held_lists(kept[:need], read, lists, tops)
         for row, c in zip(rows, kept[:need], strict=True):
             row["hasChildren"] = c["sk"] in lists
-            row["khHeld"] = bool(read) and c["sk"] in read[3]      # settled by the chain-top walk (``_kh_v3_page_result``)
         payload = {"rows": rows, "total": total, "nRecord": (counts or {}).get("record", 0), "nFolder": (counts or {}).get("folder", 0), "nGroup": (counts or {}).get("recordGroup", 0)}
         page = await self._kh_v3_page_result(
             payload, limit=limit, direction=direction, include_total=include_total, include_scope=include_scope, scoped_start=False, start_id=start_id, app_id=app_id,
@@ -274,16 +275,33 @@ class KhListingMixin(PgBase):
         return ok, left
 
     def _kh_tops_under(self, org: str, app_id: str, access: dict[str, Any], gset: set[str], transaction: str | None, *, apply: bool) -> Callable[[list[Any]], Awaitable[set[int]]] | None:
-        """For the placeholder walk: of group rows, the sks the chain-top walk places something under (``_kh_v3_chain_tops``, the rule every store shares), asked only of the groups
-        that hold a granted record (``kgl.HELD``). None in an App that opens everything."""
+        """Of group rows, the sks the chain-top walk places a record under (``_kh_v3_chain_tops``, the rule every store shares), for the placeholder walk and the arrows. Resolved once
+        per request and held: the groups that hold a granted record (``kgl.HELD_ANY``, by key from the grants), then, only if there are any, the placements of every granted record
+        of the App in one pass; each question after that is answered from them. None in an App that opens everything."""
         if not apply or not gset:
             return None
+        held: set[int] | None = None
+        placed: set[str] | None = None
 
         async def under(groups: list[Any]) -> set[int]:
-            held = {r["sk"] for r in await self._kq(lambda tx: tx.fetch(kgl.HELD, org, [g["sk"] for g in groups], sorted(gset)), transaction)}
-            return {g["sk"] for g in groups if g["sk"] in held
-                    and (await self._kh_v3_chain_tops(app_id, org, access, transaction, only_group=g["id"])).get(g["id"])}
+            nonlocal held, placed
+            if held is None:
+                held = {r["sk"] for r in await self._kq(lambda tx: tx.fetch(kgl.HELD_ANY, org, sorted(gset)), transaction)}
+            asked = [g for g in groups if g["sk"] in held]
+            if not asked:
+                return set()
+            if placed is None:
+                by_groups = await self._kh_v3_chain_top_groups(app_id, org, sorted(gset), ANY_GROUP, transaction)
+                found = await self._kh_v3_chain_tops(app_id, org, access, transaction, only_group=ANY_GROUP, by_groups=by_groups) if by_groups else {}
+                placed = {g for g, rows in found.items() if rows and g != app_id}
+            return {g["sk"] for g in asked if g["id"] in placed}
         return under
+
+    @staticmethod
+    async def _kh_held_lists(page: list[Any], read: tuple | None, lists: set[int], tops: Callable[[list[Any]], Awaitable[set[int]]] | None) -> set[int]:
+        """Of the page's groups that hold a granted record (``read[3]``) and list nothing else, those a chain-top is placed under: their arrow is on too."""
+        held = [c for c in page if read and c["sk"] in read[3] and c["sk"] not in lists]
+        return await tops(held) if tops and held else set()
 
     async def _kh_leads(self, stubs: list[Any], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str, transaction: str | None, *,
                         tops: Callable[[list[Any]], Awaitable[set[int]]] | None = None, decided: dict[int, bool] | None = None) -> tuple[set[int], set[int]]:
@@ -293,6 +311,7 @@ class KhListingMixin(PgBase):
         answers this request already holds, filled in."""
         memo = {} if decided is None else decided
         todo = [r for r in {r["sk"]: r for r in stubs}.values() if r["sk"] not in memo]
+        t0 = time.monotonic()
         if todo:
             got = await self._kq(lambda tx, f=[r["sk"] for r in todo]: tx.fetch(kgl.children_of_sql(total=True), org, f, LEAD_PER, hidden, LEAD_NODES), transaction)
             kids: dict[int, list[Any]] = {}
@@ -303,7 +322,7 @@ class KhListingMixin(PgBase):
             ok = await admitted_of([r for r in got if r["parent"] in {w["sk"] for w in whole}]) if whole else set()
             paced = len(got)
             for i, r in enumerate(whole or todo[:1]):
-                if i and paced >= LEAD_NODES:
+                if i and (paced >= LEAD_NODES or time.monotonic() - t0 > BUDGET_S):      # the request's budget: the rest wait for the next page
                     break
                 memo[r["sk"]], used = await self._kh_lead(r, hidden, admitted_of, org, transaction, tops, first=(kids.get(r["sk"], []), ok) if whole else None)
                 paced += used

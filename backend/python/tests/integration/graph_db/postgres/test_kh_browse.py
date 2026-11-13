@@ -644,3 +644,34 @@ async def test_a_placeholder_walk_counts_the_groups_it_asks_about_chain_tops_aga
     page = await browse(p, org, "fold", granted)
     assert page["rows"] == [] and not page.get("resume"), page["rows"]
     assert walks and max(walks) <= 100 and sum(asked) == 40, (walks, asked)
+
+
+async def test_a_browse_of_many_chain_top_holders_resolves_the_chain_tops_once(pg_db, monkeypatch) -> None:
+    """A folder of 300 placeholder groups, each holding only a chain-top (a granted record that belongs to it and hangs from nothing). Every group is listed, with an arrow, and the
+    request resolves the App's chain-top placements once: a fixed number of chain-top reads, not one per group."""
+    p, org = prov(pg_db), new_org()
+    groups = [f"g{j:03d}" for j in range(300)]
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": g, "groupName": f"Group {g}", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL",
+                                     "isPlaceholder": True} for g in groups], "recordGroups")
+        recs = [{"_key": "fold", "recordName": "Folder", "mimeType": "application/vnd.folder"}, *({"_key": f"r{g}", "recordName": f"Rec {g}"} for g in groups)]
+        await p.batch_upsert_nodes([{**r, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for r in recs], "records")
+        await p.batch_create_edges([edge("fold", "records", g, "recordGroups", relationshipType="PARENT_CHILD") for g in groups], "nodeRelations")
+        await p.batch_create_edges([edge(f"r{g}", "records", g, "recordGroups") for g in groups], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        granted = ["fold", *groups, *(f"r{g}" for g in groups)]
+        await p.batch_create_edges([edge("u1", "users", i, "recordGroups" if i.startswith("g") else "records", type="USER", role="READER") for i in granted], "permission")
+    await flip(pg_db, org)
+    calls: dict[str, int] = {}
+    for name in ("_kh_v3_chain_top_groups", "_kh_v3_chain_top_candidates", "_kh_v3_chain_top_facts"):
+        real = getattr(kh_browse.KhBrowseMixin, name)
+
+        async def counted(self, *a, _real=real, _name=name, **kw) -> object:
+            calls[_name] = calls.get(_name, 0) + 1
+            return await _real(self, *a, **kw)
+        monkeypatch.setattr(kh_browse.KhBrowseMixin, name, counted)
+    page = await browse(p, org, "fold", granted, limit=50)
+    assert [r["id"] for r in page["rows"]] == groups[:50] and all(r["hasChildren"] for r in page["rows"]) and page["total"] == 300, page["rows"][:3]
+    assert calls == {"_kh_v3_chain_top_groups": 1, "_kh_v3_chain_top_candidates": 1, "_kh_v3_chain_top_facts": 1}, calls
