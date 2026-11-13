@@ -939,6 +939,11 @@
     "copy": "复制",
     "fork": "分叉对话",
     "forkFromHere": "从此处分叉",
+    "forkedHere": "已在此处分叉",
+    "untitledChat": "未命名聊天",
+    "forkedFrom": "分叉自",
+    "copiedUpToHere": "已复制到此处 · 新消息从下方开始",
+    "forkOriginUnavailable": "原始对话已不可用",
     "regenerate": "重新生成",
     "answerHidden": {
       "lost": "此回答使用了您已无权访问的内容。",
@@ -1615,6 +1620,15 @@
         "done": "已完成",
         "error": "失败"
       }
+    },
+    "webSearchSetup": {
+      "title": "网页搜索尚未设置",
+      "adminBody": "您的组织尚未配置搜索提供商。请在 Workspace → 网页搜索 中选择一个，为所有人开启网页搜索。",
+      "memberBody": "您的组织尚未设置网页搜索提供商，因此回答无法使用网络。",
+      "memberHint": "请联系管理员在 Workspace → 网页搜索 中进行配置。",
+      "setUp": "设置网页搜索",
+      "notNow": "暂不",
+      "gotIt": "知道了"
     }
   },
   "workspaceMenu": {
@@ -4258,6 +4272,11 @@
         "settingDefault": "正在设置…",
         "editConfiguration": "编辑配置",
         "deleteConfiguration": "删除配置"
+      },
+      "duckduckgoWarning": "在共享服务器上可能被封锁或限速，不建议团队使用。",
+      "notSetUp": {
+        "title": "网络搜索尚未设置。",
+        "description": "请在下方选择一个提供商来开启。在此之前，组织中的任何人都无法在聊天中搜索网络。"
       }
     },
     "profile": {

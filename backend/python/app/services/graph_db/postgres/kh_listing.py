@@ -75,20 +75,21 @@ def _node_type(coll: str, doc: dict) -> str:
     return "folder" if doc.get("mimeType") in FOLDER_MIME_TYPES or str(doc.get("recordType") or "").upper() == "FOLDER" else "record"
 
 
-async def class_sets(tx: Tx, org: str, app_sk: int, granted: list[str]) -> dict[str, Any] | None:
+async def class_sets(tx: Tx, org: str, app_sk: int, held: set[str]) -> dict[str, Any] | None:
     """What the viewer's grants open of a connector kg serves, per class: met with no grant of the row's own (``plain``), met with the row's own grant (``own``), and the classes kg cannot vouch
-    for (``unvouched``). None when the connector has too many classes to evaluate."""
+    for (``unvouched``). ``held``: every grant of every gated connector. None when the connector has too many classes to evaluate."""
     rows = await tx.fetch(kgl.CLASSES, org, app_sk, CLASS_MAX + 1)
     if len(rows) > CLASS_MAX:
         return None
     found = {r["id"]: (json.loads(r["clauses"]) if isinstance(r["clauses"], str) else list(r["clauses"])) for r in rows}
-    verdicts = await kg_read.class_verdicts(tx, org, found, set(granted))
+    verdicts = await kg_read.class_verdicts(tx, org, found, held)
     return {"app_sk": app_sk, "plain": {c for c, v in verdicts.items() if v and v[0]}, "own": {c for c, v in verdicts.items() if v and v[1] and not v[0]}, "unvouched": {c for c, v in verdicts.items() if v is None}}
 
 
-async def head(tx: Tx, org: str, app_id: str, granted: list[str], *, by_class: bool) -> tuple[int | None, dict, list[int], bool, dict[str, set[int]] | None]:
+async def head(tx: Tx, org: str, app_id: str, held: set[str], *, by_class: bool) -> tuple[int | None, dict, list[int], bool, dict[str, set[int]] | None]:
     """A connector's listing state: its node key (None when kg holds no current copy of it), its document, the rows groups that hide their children hide, whether kg serves it, and
-    what the viewer's grants open of it by class (None unless ``by_class``: the page reads one snapshot, so the stamps it admits by are the ones the currency check saw)."""
+    what the viewer's grants open of it by class (None unless ``by_class``: the page reads one snapshot, so the stamps it admits by are the ones the currency check saw). ``held``:
+    every grant of every gated connector, since a clause's literals are the nodes a walk passes through, of any connector; a row's own grant is still the App's."""
     k = await tx.fetchrow(kgl.STATE, org, app_id)
     hidden: list[int] = []
     ready = bool(k["sk"] is not None and k["mode"] != "legacy" and k["code_epoch"] == CODE_EPOCH and k["verified_at"] is not None)      # a copy of an older code lacks the listing columns: it is not listed from
@@ -97,7 +98,7 @@ async def head(tx: Tx, org: str, app_id: str, granted: list[str], *, by_class: b
         if len(hidden) > HIDDEN_MAX:
             raise KnowledgeHubListingTooLarge
     served = ready and kg_read.enabled() and await kg_read.serves(tx, org, app_id)      # PG_KG_READ=0, or a connector this process distrusts (as ``read.decide``): every row is the live check's
-    return (k["sk"] if ready else None), (_doc(k["app_doc"]) if k["app_doc"] else {}), hidden, served, (await class_sets(tx, org, k["sk"], granted) if served and by_class else None)
+    return (k["sk"] if ready else None), (_doc(k["app_doc"]) if k["app_doc"] else {}), hidden, served, (await class_sets(tx, org, k["sk"], held) if served and by_class else None)
 
 
 def origin_of(app_doc: dict) -> str:
@@ -155,6 +156,8 @@ class KhListingMixin(PgBase):
         filters = filters or {}
         if flatten and (org_id != org or app_id not in set(gated_app_ids)):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=False)
+        if flatten:      # a browse resolves its App from its start first (``_kh_browse``)
+            self._kh_v3_require_other_grants(app_id, gated_app_ids, granted_ids, grants_by_connector, user_key)      # before any read
         if transaction is None:
             # One snapshot for the page (a browse's too): whether kg serves the connector and the rows its classes admit are read at one commit. A change to the connector as a whole hides it
             # from kg without marking its rows (restamp.py), so a page read after such a commit, by a check made before it, would admit by stamps that are hidden.
@@ -176,17 +179,15 @@ class KhListingMixin(PgBase):
                 org=org, org_id=org_id, app_id=app_id, start_id=start_id, grantee_ids=grantee_ids, gated_app_ids=gated_app_ids, granted_ids=granted_ids, grants_by_connector=grants_by_connector,
                 user_key=user_key, grants_out=grants_out, limit=limit, sort_field=sort_field, order=order, after=after, direction=direction, filters=filters, include_total=include_total,
                 include_scope=include_scope, via_parent_id=via_parent_id, transaction=transaction, name_parents=name_parents, by_class=snapshot)
-        if grants_by_connector is not None:
-            granted = list(grants_by_connector.get(app_id) or [])
-        elif granted_ids is None and user_key:
-            granted = list(await self.get_knowledge_hub_connector_grants(user_key, org_id, app_id, transaction=transaction))
-        else:
-            granted = list(granted_ids or [])
+        # Every gated connector's grants (`_kh_v3_page_grants`); a row's own grant is this App's.
+        every = await self._kh_v3_page_grants(app_id, org_id, gated_app_ids, granted_ids, grants_by_connector, user_key, transaction)
+        granted = every.get(app_id) or []
+        held = {g for ids in every.values() for g in ids}
         if grants_out is not None:
             grants_out[app_id] = granted
-        access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted}}
+        access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": every}
 
-        app_sk, app_doc, hidden, served, sets = await self._kq(lambda tx: head(tx, org, app_id, granted, by_class=snapshot), transaction)
+        app_sk, app_doc, hidden, served, sets = await self._kq(lambda tx: head(tx, org, app_id, held, by_class=snapshot), transaction)
         if app_sk is None:
             raise KnowledgeHubListingNotReady
         if filtered_out(app_id, app_doc, filters):

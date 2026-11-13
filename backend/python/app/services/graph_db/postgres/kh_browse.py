@@ -43,7 +43,6 @@ from app.services.graph_db.postgres.kh_listing import (
     head,
     where_of,
 )
-from app.services.graph_db.postgres.permissions import connector_grants
 
 # The connector of a node kg holds no row for (not copied yet): from its document.
 START_CONNECTOR = """/* pipeshub:kg.browse_start_connector */ SELECT doc->>'connectorId' FROM graph.nodes WHERE org_id = $1 AND coll = ANY('{records,recordGroups}'::text[]) AND id = $2
@@ -71,26 +70,25 @@ class KhBrowseMixin(PgBase):
         at_app = start_id == app_id      # the connector itself: kg keeps it as the hierarchy parent of its top nodes, so it is browsed by its own key
         gated = set(gated_app_ids)
 
-        async def resolve(tx: Tx) -> tuple[Any, str, list[str]] | str:
-            """The start and its connector, and the viewer's grants in it."""
+        async def resolve(tx: Tx) -> tuple[Any, str] | str:
+            """The start and its connector."""
             start, aid = None, app_id
             if not at_app:      # a browse of a node names no connector: it is the one the node belongs to (from the graph when kg has not copied the node)
                 found = await tx.fetch(kgl.BROWSE_START, org, start_id)
                 start = found[0] if len(found) == 1 else None
                 aid = (start["app_id"] if start else None) or (await tx.fetchval(START_CONNECTOR, org, start_id) if not found else None) or ""
-            if aid not in gated:
-                return "refused"
-            if grants_by_connector is not None:
-                return start, aid, list(grants_by_connector.get(aid) or [])
-            if granted_ids is None and user_key:
-                return start, aid, await connector_grants(tx, org, user_key, grantee_ids, aid)
-            return start, aid, list(granted_ids or [])
+            return "refused" if aid not in gated else (start, aid)
 
         resolved = await self._q(resolve, transaction)
         if resolved == "refused":
             return refused()
-        start, aid, granted = resolved
-        access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {aid: granted}}
+        start, aid = resolved
+        # Every gated connector's grants, as the flat listing reads them (``_kh_v3_page_grants``): the access check and the class verdicts read them all, since a walk can pass
+        # through a node of another gated connector; a row's own grant, the seeds and the chain-tops are this App's.
+        every = await self._kh_v3_page_grants(aid, org_id, gated_app_ids, granted_ids, grants_by_connector, user_key, transaction)
+        granted = every.get(aid) or []
+        held = {g for ids in every.values() for g in ids}
+        access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": every}
         tops: list[int] = []
         if at_app or (start is not None and start["kind"] == 2):
             # The viewer's chain-tops placed here (granted rows whose hierarchy parents they may not open), by the rule every store shares: read beside the node's linked children.
@@ -100,7 +98,7 @@ class KhBrowseMixin(PgBase):
         async def unit(tx: Tx) -> dict[str, Any] | str:
             """Everything up to the page, in one read: the listing state, the breadcrumbs' trail, the children of a node held whole, and the access check's answer for the start,
             its ancestors and the children the classes do not decide."""
-            app_sk, app_doc, hidden, served, sets = await head(tx, org, aid, granted, by_class=by_class)
+            app_sk, app_doc, hidden, served, sets = await head(tx, org, aid, held, by_class=by_class)
             if app_sk is None:      # a connector the viewer may browse that kg holds no current copy of: not ready, as the flat listing says
                 return "not_ready"
             # a start of this connector that kg holds and no group above hides (else the browse's 404)

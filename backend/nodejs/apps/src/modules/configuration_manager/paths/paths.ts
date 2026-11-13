@@ -52,6 +52,8 @@ export const configPaths = {
   adminRoleMigration: '/migrations/admin_role_v1',
   documentOrgIdMigration: '/migrations/document_orgid_v1',
   signInMethodsRemovalMigration: '/migrations/sign_in_methods_removal_v1',
+  webSearchDuckDuckGoDefaultMigration:
+    '/migrations/web_search_duckduckgo_default_v1',
   serviceAccountKindBackfill: '/migrations/service_account_kind_v1',
   // Value: JSON.stringify({ conversationsMigrated, agentConversationsMigrated, ... }).
   // See chat_sessions.migration.ts.
