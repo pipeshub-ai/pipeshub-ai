@@ -192,10 +192,10 @@ class _Config:
 
 
 async def children_of(
-    layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str, *, only_containers: bool = False,
+    layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str, *, only_containers: bool = False, flattened: bool = False,
 ) -> dict[str, bool] | None:
     """What opening ``node`` lists for the viewer, as {id: expand arrow}; None when the browse does not open it. ``only_containers``: the
-    sidebar's listing, the rows with children."""
+    sidebar's listing, the rows with children; ``flattened``: everything below ``node``, not its children alone."""
     from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
         KnowledgeHubService,
     )
@@ -203,7 +203,7 @@ async def children_of(
     ns = await layer._ns(world)
     page = await KnowledgeHubService(logging.getLogger("kh-layer"), layer._provider, _Config()).get_nodes(
         user_id=ns.id(viewer), org_id=ns.org, parent_id=ns.id(node), parent_type=parent_type, limit=PAGE, sort_by="name", sort_order="asc",
-        only_containers=only_containers)
+        only_containers=only_containers, flattened=flattened)
     return {ns.local(i.id): bool(i.hasChildren) for i in page.items} if page.success else None
 
 
@@ -260,12 +260,15 @@ async def _browse(
     def children(node: str) -> list[Node]:
         return [n for n in world.nodes if not n.deleted and any(p.id == node and p.rel in HIERARCHY for p in n.parents)]
 
-    def capped(node: str, missing: str) -> bool:
+    def capped(node: str, missing: str, listed: dict[str, Any]) -> bool:
         """Whether a browse of ``node`` leaves ``missing`` out only for the cap on the children it asks the check about (`_KH_UNDECIDED_MAX`, the
-        first by id of its live children of its App that are no stub): reported, as the cap's known under-share, not failed."""
+        first by id of its live children of its App, no stub, that its rules leave undecided): reported, as the cap's known under-share, not
+        failed. A child the browse lists may be one its rules select, so only the unlisted ones ahead of ``missing`` are sure to be candidates
+        ahead of it: the cap is excused only when at least ``_KH_UNDECIDED_MAX`` of those precede it."""
         app = node if world.node(node).kind == "app" else world.node(node).connector
-        kids = sorted((n.id for n in children(node) if not n.placeholder and n.connector == app), key=ns.id)
-        return len(kids) > IGraphDBProvider._KH_UNDECIDED_MAX and missing not in kids[:IGraphDBProvider._KH_UNDECIDED_MAX]
+        ahead = [n.id for n in children(node)
+                 if not n.placeholder and not n.deleted and n.connector == app and n.id not in listed and ns.id(n.id) < ns.id(missing)]
+        return len(ahead) >= IGraphDBProvider._KH_UNDECIDED_MAX
 
     opened: dict[str, dict[str, Any] | None] = {}
     skipped: dict[str, set[str]] = {"rows": set(), "stubs": set()}
@@ -303,7 +306,7 @@ async def _browse(
         # A readable child the browse leaves out is an under-admit. The one exemption is a folder that hides its children (a display flag).
         for missing in sorted(n.id for n in children(node) if n.id in seen and n.id not in got):
             if not hidden_by_navigation(world, world.node(missing)):
-                add("gap" if capped(node, missing) else "browse_gap", f"{node}: the browse leaves out {missing}, which the viewer may open")
+                add("gap" if capped(node, missing, got) else "browse_gap", f"{node}: the browse leaves out {missing}, which the viewer may open")
         # A stub is no content the oracle judges: it is listed exactly where opening it lists something.
         for stub in sorted(n.id for n in children(node) if n.placeholder and n.id not in got):
             below = await open_(stub, "record", kind="stubs")
@@ -332,7 +335,10 @@ async def _browse(
         if node in expanded:
             continue
         expanded.add(node)
-        rows = await open_(node, parent_type) or {}
+        rows = await open_(node, parent_type)
+        if rows is SKIPPED:      # past the budget: counted, not opened (a second App, say)
+            continue
+        rows = rows or {}
         lists_of: dict[str, bool] = {}
         for row, item in rows.items():      # the expand arrow is on exactly when opening the row lists something
             row_type = type_of(item)

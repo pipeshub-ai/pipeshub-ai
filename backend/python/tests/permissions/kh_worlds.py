@@ -634,6 +634,34 @@ grants: [[u, D]]
 gates: [[u, A]]
 """))
 
+# REACHSTUB: a stub S under R and q, and its child C, both inheriting only from q: the hops R -> S -> C fail, but the walk from the App reaches S
+# through q, so a browse of R lists S (`reached_stubs`), as opening S lists C (the check admits it). R shows an arrow, and the sidebar of f keeps it.
+REACHSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: S, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [R, q], inherits: [q]}
+  - {id: C, kind: record, connector: A, rule: STRICT, parents: [S, q], inherits: [q]}
+grants: [[u, f], [u, q]]
+gates: [[u, A]]
+"""))
+
+# SCOPEDSIDE: FLATSIDE's twin below a folder. R under a granted group G holds a strict child c that inherits from it. A flatten of G reads its rows'
+# arrows from G's reach (the walk reaches G), so R shows an arrow there, and that flatten's sidebar keeps R.
+SCOPEDSIDE = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: G, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: R, kind: record, connector: A, rule: OPEN, parents: [G], inherits: [G]}
+  - {id: c, kind: record, connector: A, rule: STRICT, parents: [R], inherits: [R]}
+grants: [[u, G]]
+gates: [[u, A]]
+"""))
+
 # KEYCLASH: an App that opens everything, and a strict record m below a seed the walk does not reach, which belongs to no App. The test adds, on
 # ArangoDB only, a record group whose key is the App's key and files m in it: m belongs to that group, not to the App, so it is not listed.
 KEYCLASH = world_from_data(yaml.safe_load("""
@@ -677,4 +705,5 @@ gates: [[u, A]]
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
              SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ, OPENGRANT, OPENGRANTTEAM, SIDESEED,
-             STUBSEED, NESTSTUB, CAPSTUB, HIDESEED, FLATSIDE]
+             STUBSEED, NESTSTUB, CAPSTUB, HIDESEED, FLATSIDE, REACHSTUB,
+             SCOPEDSIDE]

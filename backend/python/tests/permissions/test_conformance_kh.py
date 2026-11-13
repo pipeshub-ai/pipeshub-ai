@@ -24,6 +24,7 @@ from .kh_worlds import (
     DEEP_CHAIN,
     DEEPOPEN,
     DEEPSEED,
+    FLATSIDE,
     FOLDERSTUB,
     HIDESEED,
     KEYCLASH,
@@ -33,6 +34,8 @@ from .kh_worlds import (
     OPENGRANTTEAM,
     OPENGROUP,
     OPENSTUB,
+    REACHSTUB,
+    SCOPEDSIDE,
     SCOPEDTWO,
     SIDEKID,
     SIDESEED,
@@ -247,9 +250,10 @@ async def test_a_child_the_check_admits_by_any_arm_keeps_its_row_and_its_stub(gr
     """Where a node's rules list nothing under it, opening it lists what the check admits of its frontier: the children its browse asks the check
     about, and those of the stubs it lists on the way down. The sidebar keeps a record whose child the check admits below a seed (SIDESEED), a
     stub is listed over such a child (STUBSEED) and over a stub that holds a child the check admits by another parent (NESTSTUB), and a stub
-    whose readable child is past the children its browse asks about is not listed, as opening it lists nothing (CAPSTUB)."""
+    whose readable child is past the children its browse asks about is not listed, as opening it lists nothing (CAPSTUB). A stub child the walk
+    from the App reaches by another parent counts with what lies below it (REACHSTUB)."""
     for layer in graph_layers:
-        worlds = [SIDESEED, STUBSEED, NESTSTUB, CAPSTUB]
+        worlds = [SIDESEED, STUBSEED, NESTSTUB, CAPSTUB, REACHSTUB]
         await layer.preload(worlds)
         try:
             assert await children_of(layer, SIDESEED, "u", "f", "recordGroup", only_containers=True) == {"R": True}, layer.name
@@ -258,6 +262,9 @@ async def test_a_child_the_check_admits_by_any_arm_keeps_its_row_and_its_stub(gr
             assert await children_of(layer, NESTSTUB, "u", "S", "record") == {"T": True}, layer.name
             assert await children_of(layer, CAPSTUB, "u", "h", "recordGroup") == {}, layer.name
             assert await children_of(layer, CAPSTUB, "u", "S", "record") == {}, layer.name
+            assert await children_of(layer, REACHSTUB, "u", "R", "record") == {"S": True}, layer.name
+            assert await children_of(layer, REACHSTUB, "u", "f", "recordGroup") == {"R": True}, layer.name
+            assert await children_of(layer, REACHSTUB, "u", "f", "recordGroup", only_containers=True) == {"R": True}, layer.name
             bad = [f for i, world in enumerate(worlds) for f in _bad(await check_world(layer, world, f"frontier-{i}"))]
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
@@ -280,6 +287,22 @@ async def test_a_child_below_a_group_that_hides_its_children_is_listed_only_wher
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
             await layer.release([HIDESEED])
+
+
+async def test_a_flattens_sidebar_keeps_a_record_exactly_where_its_arrow_is_on(graph_layers) -> None:
+    """The sidebar of a flatten keeps the rows the flatten shows with children, by the flatten's own arrow: from the App, the stricter rule
+    (FLATSIDE: f has no arrow, so the sidebar holds D alone); below a folder, read from the folder's reach (SCOPEDSIDE: R has an arrow, so the
+    sidebar keeps it)."""
+    for layer in graph_layers:
+        await layer.preload([FLATSIDE, SCOPEDSIDE])
+        try:
+            flat = await children_of(layer, SCOPEDSIDE, "u", "G", "recordGroup", flattened=True)
+            assert flat == {"R": True, "c": False}, layer.name
+            assert await children_of(layer, SCOPEDSIDE, "u", "G", "recordGroup", flattened=True, only_containers=True) == {"R": True}, layer.name
+            bad = [f for i, world in enumerate([FLATSIDE, SCOPEDSIDE]) for f in _bad(await check_world(layer, world, f"flatside-{i}"))]
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([FLATSIDE, SCOPEDSIDE])
 
 
 async def test_an_open_apps_member_is_matched_by_the_apps_handle_not_its_key(graph_layers) -> None:

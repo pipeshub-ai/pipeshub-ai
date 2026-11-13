@@ -159,7 +159,7 @@ def test_a_browse_and_a_row_s_arrow_ask_about_the_same_children() -> None:
     assert "SORT kh_uk" in aql and "LIMIT 200" in aql
     assert _aql_undecided("node", decided="@d").replace("FILTER kh_uc._id NOT IN @d", "").replace("LIMIT 201", "LIMIT 200") == aql
     queries = ArangoHTTPProvider._kh_v3_listing_aql()
-    assert _aql_undecided("kh_fy") in _aql_frontier("node", "kh_row_from_app") and "0..50 OUTBOUND node" in _aql_frontier("node", "kh_row_from_app")
+    assert _aql_undecided("kh_fy") in _aql_frontier("node", "kh_row_from_app") and "0..50 OUTBOUND kh_fz.n" in _aql_frontier("node", "kh_row_from_app")
     assert _aql_frontier("node", "kh_row_from_app") in queries["enrich_exact"] and "khKids: []" in queries["enrich"]
     assert neo._kh_v3_undecided("kh_fy") in neo._kh_v3_frontier("node", "kh_row_from_app", state=True, grant_once=False)
     # the children are read only for a row whose rules select none, or that is asked again for its stub child

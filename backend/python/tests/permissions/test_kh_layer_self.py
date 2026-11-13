@@ -95,3 +95,56 @@ async def test_a_record_the_viewer_may_open_whose_browse_fails_is_an_under_admit
     # an under-admit of the record, and a row listed that does not open
     assert sorted((f.kind, f.detail) for f in found) == [("browse", "f: lists r1, and the browse refuses to open it"),
                                                          ("browse_gap", "r1: the browse does not open it")]
+
+
+TWO_APPS = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: B, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: r1, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f], belongs: [f]}
+  - {id: g, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B]}
+grants: [[u, f], [u, g]]
+gates: [[u, A], [u, B]]
+"""))
+
+
+async def test_an_app_past_the_budget_is_counted_not_opened(monkeypatch) -> None:
+    """The budget runs out before the second App is opened: it is counted with the rows, and the browse goes on."""
+    monkeypatch.setattr(kh_layer, "MAX_OPENS", 2)
+
+    async def browse_pages(_layer, _world, _viewer, node, _parent_type, _page_size=kh_layer.PAGE, *, only_containers=False) -> tuple | None:
+        return {"A": ([_item("f", "recordGroup", arrow=True)], [1], [1]), "f": ([_item("r1")], [1], [1])}.get(node, ([], [0], [0]))
+    monkeypatch.setattr(kh_layer, "browse_pages", browse_pages)
+    reference = OracleLayer()
+    found = await kh_layer._browse(_Layer(), reference, TWO_APPS, "u", kh_layer.visible(reference, TWO_APPS, "u"), "self")
+    assert [(f.kind, f.detail) for f in found] == [("truncated", "opened 2 nodes (the cap); 2 listed rows and 0 stubs left out not opened")]
+
+
+def _capped_world(listed_first: bool) -> object:
+    """f holds 201 children, each readable (it inherits from f). ``listed_first``: the browse lists the first 200 (so its rules may select them)."""
+    kids = "".join(f"  - {{id: k{i:03d}, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]}}\n" for i in range(201))
+    return world_from_data(yaml.safe_load(f"""
+principals: [{{id: u}}]
+nodes:
+  - {{id: A, kind: app, app_type: DRIVE}}
+  - {{id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}}
+{kids}grants: [[u, f]]
+gates: [[u, A]]
+"""))
+
+
+@pytest.mark.parametrize("listed_first, kind", [(True, "browse_gap"), (False, "gap")])
+async def test_a_child_left_out_is_excused_by_the_cap_only_behind_two_hundred_unlisted_ones(monkeypatch, listed_first: bool, kind: str) -> None:
+    """k200 is left out of f. When the browse lists k000..k199 (its rules may select them, so they are no candidates of the cap), k200 is a
+    real under-admit; when it lists none of them, k200 is past the 200 the check is asked about, and the cap is reported."""
+    world = _capped_world(listed_first)
+    rows = [_item(f"k{i:03d}") for i in range(200)] if listed_first else []
+
+    async def browse_pages(_layer, _world, _viewer, node, _parent_type, _page_size=kh_layer.PAGE, *, only_containers=False) -> tuple | None:
+        return {"A": ([_item("f", "recordGroup", arrow=True)], [1], [1]), "f": (rows, [len(rows)], [len(rows)])}.get(node, ([], [0], [0]))
+    monkeypatch.setattr(kh_layer, "browse_pages", browse_pages)
+    reference = OracleLayer()
+    found = await kh_layer._browse(_Layer(), reference, world, "u", kh_layer.visible(reference, world, "u"), "self")
+    assert (kind, "f: the browse leaves out k200, which the viewer may open") in {(f.kind, f.detail) for f in found}

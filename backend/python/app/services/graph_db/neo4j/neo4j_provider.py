@@ -20868,10 +20868,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         (`_kh_v3_undecided`: the first ``_KH_UNDECIDED_MAX`` by id, as the browse reads them), and those a browse of each stub it lists on the way down
         asks about (a stub below ``v`` by hops through stubs alone, each passing the browse rule read from ``from_app``). Opening ``v`` lists
         something where the check admits one of them and its own rules list nothing, so an arrow, the sidebar and a stub's listing ask the check
-        about these and nothing else. ``app`` must be in scope."""
-        rule = self._kh_v3_child_rule("kh_fs", "kh_fp", from_app="kh_ffa", opens=_CYPHER_APP_OPENS, state=state, grant_once=grant_once)
-        return (f"COLLECT {{ WITH * WITH app, {v} AS kh_fv, {from_app} AS kh_ffa MATCH (kh_fv) ((kh_fp)-[kh_fr:NODE_RELATION]->(kh_fs)"
-                f" WHERE kh_fr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND {self._kh_placeholder('kh_fs', state=state)} AND {rule}){{0,50}} (kh_fy)"
+        about these and nothing else. A stub child of ``v`` its own walk from the App reaches is listed whatever the hop from ``v`` says, so what lies
+        below it counts too, read from that stub's reach. ``app`` must be in scope."""
+        hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
+        rule = self._kh_v3_child_rule("kh_fs", "kh_fp", from_app="kh_fa", opens=_CYPHER_APP_OPENS, state=state, grant_once=grant_once)
+        walked = self._kh_v3_row_from_app(
+            "kh_jv", hop=self._kh_v3_granted_hop("kh_oc", "kh_op", state=state, grant_once=grant_once, opens=_CYPHER_APP_OPENS), hierarchy=hierarchy)
+        # One walk, from ``v`` with its reach and from each stub child of ``v`` its own walk from the App reaches, with that reach.
+        starts = (f"[[{v}, {from_app}]] + [({v})-[kh_jd:NODE_RELATION]->(kh_jv) WHERE kh_jd.relationshipType {hierarchy}"
+                  f" AND {self._kh_placeholder('kh_jv', state=state)} AND NOT {self._kh_hides(v, state=state)} AND {_cypher_read_by_app('kh_jv')}"
+                  f" AND {walked} | [kh_jv, true]]")
+        return (f"COLLECT {{ WITH * UNWIND {starts} AS kh_fz WITH app, kh_fz[0] AS kh_fv, kh_fz[1] AS kh_fa"
+                f" MATCH (kh_fv) ((kh_fp)-[kh_fr:NODE_RELATION]->(kh_fs) WHERE kh_fr.relationshipType {hierarchy}"
+                f" AND {self._kh_placeholder('kh_fs', state=state)} AND {rule}){{0,50}} (kh_fy)"
                 f" WITH DISTINCT kh_fy UNWIND {self._kh_v3_undecided('kh_fy')} AS kh_fk RETURN DISTINCT kh_fk }}")
 
     async def _kh_v3_declared_scope(
@@ -21190,31 +21199,36 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         member_of_open_app = f"({opens} AND {c}:Record AND EXISTS {{ ({c})-[:BELONGS_TO]->(app) }})"
         walk_seeded = f"(NOT ({declared_p} OR ({p}:RecordGroup AND {p}.id IN $declaredScope)) OR {seed})"
         below_member_seeded = f"(NOT {member_p} OR {seed})"
-        # A child listed by any arm but a hop of the walk from the App opens only where no group that hides its children lies above it, or its
-        # own walk reaches it (`_kh_v3_opens_below_hidden`, as a browse of it opens it).
-        visible = self._kh_v3_opens_below_hidden(c, p, state=state, opens=opens)
+        # A child listed below a seed or in a declared scope opens only where no group that hides its children lies above it, as a browse of it
+        # reads its seed and admitted arms (`_kh_v3_hidden_elsewhere`; one the walk from the App reaches is listed by the parent the walk passes).
+        visible = f"NOT {self._kh_v3_hidden_elsewhere(c, p, state=state)}"
+        # The hop of the walk from the App needs no such test.
         return f"""{_cypher_read_by_app(c)} AND ((({from_app} OR {member_of_open_app}) AND ({hop}) AND {walk} AND {below_member}
                   AND ({from_app} OR {visible}))
-              OR (NOT {from_app} AND NOT {member_of_open_app}
+              OR (((NOT {from_app} AND NOT {member_of_open_app}
                   AND NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
                   AND coalesce({c}.accessRule, 'OPEN') = 'OPEN'
-                  AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds) AND {walk_seeded} AND {below_member_seeded} AND {visible})
-              OR (NOT {deleted(c, state=state)}
+                  AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds) AND {walk_seeded} AND {below_member_seeded})
+                OR (NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
                   AND ({c}.id IN $declaredScope
                        OR ({c}:Record AND EXISTS {{
                            ({c})-[:BELONGS_TO]->(sg:RecordGroup) WHERE sg.id IN $declaredScope
-                       }})) AND {visible}))"""
+                       }})))) AND {visible}))"""
+
+    def _kh_v3_hidden_elsewhere(self, c: str, p: str, *, state: bool = False) -> str:
+        """Whether a group that hides its children lies above ``c``, a child of ``p`` that ``p`` is opened to list. ``p`` is open, so only another
+        parent of ``c`` can put one there; a child with one parent costs one edge read."""
+        return (f"EXISTS {{ MATCH (kh_q)-[kh_qr:NODE_RELATION]->({c}) WHERE kh_qr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']"
+                f" AND kh_q <> {p} AND ({self._kh_hides('kh_q', state=state)} OR {self._kh_v3_hidden_above('kh_q', 'q')}) }}")
 
     def _kh_v3_opens_below_hidden(self, c: str, p: str, *, state: bool = False, opens: str = _CYPHER_APP_OPENS) -> str:
         """Whether a browse of ``c``, a child of ``p`` that ``p`` is opened to list, opens it: a node below a group that hides its children opens
-        only where the walk from the App reaches it, which never passes such a group. ``p`` is open, so only another parent of ``c`` can put such a
-        group above it; a child with one parent costs one edge read. ``app`` must be in scope."""
+        only where the walk from the App reaches it, which never passes such a group. ``app`` must be in scope."""
         walked = self._kh_v3_row_from_app(
             c, hop=self._kh_v3_granted_hop("kh_oc", "kh_op", state=state, opens=opens), hierarchy="IN ['PARENT_CHILD', 'ATTACHMENT']")
-        return (f"(NOT EXISTS {{ MATCH (kh_q)-[kh_qr:NODE_RELATION]->({c}) WHERE kh_qr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']"
-                f" AND kh_q <> {p} AND ({self._kh_hides('kh_q', state=state)} OR {self._kh_v3_hidden_above('kh_q', 'q')}) }} OR {walked})")
+        return f"(NOT {self._kh_v3_hidden_elsewhere(c, p, state=state)} OR {walked})"
 
     @staticmethod
     def _kh_v3_hidden_above(v: str, tag: str, *, from_depth: int = 1) -> str:
@@ -22003,13 +22017,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return ""
             # The sidebar keeps a row exactly where its arrow is on: the page row's own test, read from the row's own reach (`kh_row_from_app`),
             # and where that lists nothing, the check's answer on its frontier, as the page settles the arrow (`_kh_v3_settle_held_arrows`).
-            # A flatten's sidebar keeps a record by the flatten's own arrow: the stricter rule (no reach), which no check settles.
-            row_reach_expr = "false" if flatten else f"CASE WHEN node IS NULL THEN false ELSE {own_from_app()} END"
+            # A flatten's sidebar keeps a record by the flatten's own arrow, which no check settles: read from the start's reach below a folder
+            # (`fromApp`, the rows' `fa`), and by the stricter rule (no reach) from the App.
+            row_reach_expr = (("fromApp" if scoped_start else "false") if flatten
+                              else f"CASE WHEN node IS NULL THEN false ELSE {own_from_app()} END")
             reach = f"\n        WITH {carry}, node, {row_reach_expr} AS kh_row_from_app" if sidebar else ""
             has = f"({node_stub} OR {has_children('kh_row_from_app', row=True)})" if sidebar else "false"
             stub_arm = (f" WHEN {node_stub} THEN CASE WHEN {by_probe(stub_way('node', walked_from_app('node')))} THEN []"
                         f" ELSE {by_probe(frontier_of('node', walked_from_app('node')))} END") if lists_placeholders else ""
-            record_arm = f" WHEN NOT khHas THEN {by_probe(frontier_of('node', 'kh_row_from_app'))}" if sidebar and not flatten else ""
+            # a folder is kept whatever lies below it (`_kh_v2_filters_cypher`): only a record asks the check
+            folder = ("node:KhFolder" if state else
+                      "(coalesce(node.mimeType IN $folder_mime_types, false) OR toUpper(coalesce(node.recordType, '')) = 'FOLDER')")
+            record_arm = (f" WHEN NOT khHas AND NOT node:RecordGroup AND NOT {folder} THEN {by_probe(frontier_of('node', 'kh_row_from_app'))}"
+                          if sidebar and not flatten else "")
             row_reach = ", kh_row_from_app" if sidebar else ""
             return (f"{reach}\n        WITH {carry}, node{row_reach}, CASE WHEN node IS NULL THEN false ELSE {has} END AS khHas"
                     f"\n        WITH {carry}, node, khHas, CASE WHEN node IS NULL OR node.id IN $kh_asked OR node.id IN $kh_kept THEN []"
