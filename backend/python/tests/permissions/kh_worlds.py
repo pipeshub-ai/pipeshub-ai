@@ -431,6 +431,33 @@ grants: []
 gates: [[u, A], [u, B]]
 """))
 
+# OPENGRANT / OPENGRANTTEAM: OPENGROUP with the strict group granted to the viewer, directly or through a group of users. A grant does not open a strict group
+# on its own: a strict node is read through a chain of passing hops from its App (R7) or a declaration (R8), and only an OPEN node can be a seed (R9) or lie
+# below one (R10). Here the only chain runs through d, a declaration of the App (skipped by the walk), so gs stays unread and unlisted however it is granted.
+OPENGRANT = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: k, kind: record, connector: A, rule: OPEN, parents: [d]}
+  - {id: gs, kind: group, connector: A, rule: STRICT, parents: [k], belongs: [A]}
+  - {id: go, kind: group, connector: A, rule: OPEN, parents: [k], inherits: [k], belongs: [A]}
+grants: [[u, k], [u, gs]]
+gates: [[u, A]]
+"""))
+OPENGRANTTEAM = world_from_data(yaml.safe_load("""
+principals: [{id: u}, {id: t, kind: group}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: k, kind: record, connector: A, rule: OPEN, parents: [d]}
+  - {id: gs, kind: group, connector: A, rule: STRICT, parents: [k], belongs: [A]}
+  - {id: go, kind: group, connector: A, rule: OPEN, parents: [k], inherits: [k], belongs: [A]}
+grants: [[u, k], [t, gs]]
+memberships: [[u, t]]
+gates: [[u, A]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
-             OPENGROUP, XSTUB]
+             OPENGROUP, XSTUB, OPENGRANT, OPENGRANTTEAM]
