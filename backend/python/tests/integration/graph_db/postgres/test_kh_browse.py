@@ -449,9 +449,9 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
         # a node's children, the App's, and a node whose children are all linked; each with and without the filters and the hidden rows a request carries
         for start, key in (("node", sk), ("app", app_sk), ("linked", g1)):
             linked = [r["child_sk"] for r in await con.fetch(kgl.LINKED_CHILDREN, org, key, kgl.LINKS_MAX + 1, [])]
-            for shaped, (flt, hid) in (("plain", ({}, [])), ("filtered", ({"search_query": "child", "updated_at": {"gte": 0}}, hide))):
+            for shaped, (flt, hid) in (("plain", ({}, [])), ("filtered", ({"search_query": "child", "updated_at": {"gte": 0}}, hide)), ("sidebar", ({"only_containers": True}, hide))):
                 def params(window: int, flt: dict = flt, hid: list = hid, key: int = key, linked: list = linked) -> tuple[kgl.Params, str, str | None]:
-                    base, where = kh_listing.where_of(org, app_sk, {}, flt, hid)
+                    base, where = kh_listing.where_of(org, app_sk, {}, flt, hid, browse=True)
                     base.values[1], base.values[2] = key, window
                     return base, where, (base.add(linked) if linked else None)
                 at = f"{start} {shaped}"
@@ -804,3 +804,46 @@ async def test_an_arrow_samples_the_same_children_it_asks_about(pg_db, monkeypat
     await flip(pg_db, org)
     assert [r["id"] for r in (await browse(p, org, "fold", granted))["rows"]] == ["stub"]
     assert {r["id"]: r["hasChildren"] for r in (await browse(p, org, "top", granted))["rows"]} == {"fold": True}
+
+
+@pytest.mark.parametrize("mode", ["served", "walk", "wide", "wide_walk"])
+async def test_the_sidebar_lists_the_groups_and_folders_a_browse_lists_and_a_record_exactly_where_its_arrow_is_on(pg_db, monkeypatch, mode) -> None:
+    """A group of records and folders, all open to the viewer: ``handbook`` and ``twin`` share a readable child (one by its primary parent, the other by a link), ``locked``'s
+    only child is not readable, ``leaf`` has none, the folder ``empty`` has none and ``fold`` has one. The sidebar (``only_containers``) is the browse's rows that are groups or
+    folders, and its records whose arrow is on: every page, its total and its counts, whether kg serves the connector or not, held or read in windows."""
+    p, org = prov(pg_db), new_org()
+    folder = {"mimeType": "application/vnd.folder"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "space", "groupName": "Space", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+        recs = [("handbook", {}), ("twin", {}), ("locked", {}), ("leaf", {}), ("empty", folder), ("fold", folder), ("page", {}), ("secret", {}), ("inner", {})]
+        await p.batch_upsert_nodes([{"_key": i, "recordName": i.title(), "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", **extra} for i, extra in recs],
+                                   "records")
+        await p.batch_create_edges([*(edge("space", "recordGroups", i, "records", relationshipType="PARENT_CHILD") for i in ("handbook", "twin", "locked", "leaf", "empty", "fold")),
+                                    edge("handbook", "records", "page", "records", relationshipType="PARENT_CHILD"), edge("twin", "records", "page", "records", relationshipType="PARENT_CHILD"),
+                                    edge("locked", "records", "secret", "records", relationshipType="PARENT_CHILD"), edge("fold", "records", "inner", "records", relationshipType="PARENT_CHILD")],
+                                   "nodeRelations")
+        await p.batch_create_edges([edge(i, "records", "space", "recordGroups") for i, _ in recs], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        granted = ["space", *(i for i, _ in recs if i != "secret")]
+        await p.batch_create_edges([edge("u1", "users", "space", "recordGroups", type="USER", role="READER"),
+                                    *(edge("u1", "users", i, "records", type="USER", role="READER") for i in granted[1:])], "permission")
+    await flip(pg_db, org)
+    if mode.endswith("walk"):
+        await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+    if mode.startswith("wide"):
+        monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 2)
+    full = await browse(p, org, "space", granted, start_type="recordGroup")
+    assert {r["id"]: r["hasChildren"] for r in full["rows"]} == {"handbook": True, "twin": True, "locked": False, "leaf": False, "empty": False, "fold": True}
+    want = [r["id"] for r in full["rows"] if r["nodeType"] != "record" or r["hasChildren"]]
+    seen, after = [], None
+    for _ in range(10):
+        page = await browse(p, org, "space", granted, start_type="recordGroup", limit=2, after=after, filters={"only_containers": True})
+        assert page["total"] == len(want) and page["counts"] == {"record": 2, "folder": 2}, (page["total"], page["counts"])
+        seen += [r["id"] for r in page["rows"]]
+        if not page["hasMore"]:
+            break
+        last = page["rows"][-1]
+        after = page.get("resume") or {"nullRank": last["nullRank"], "sortKey": last["sortKey"], "id": last["id"]}
+    assert seen == want == ["empty", "fold", "handbook", "twin"], seen

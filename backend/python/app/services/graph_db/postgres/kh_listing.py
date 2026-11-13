@@ -115,10 +115,10 @@ def filtered_out(app_id: str, app_doc: dict, filters: dict[str, Any]) -> bool:
     return bool((filters.get("connector_ids") and app_id not in filters["connector_ids"]) or (filters.get("origins") and origin_of(app_doc) not in filters["origins"]))
 
 
-def where_of(org: str, app_sk: int, app_doc: dict, filters: dict[str, Any], hidden: list[int]) -> tuple[kgl.Params, str]:
-    """The parameters (``$1`` the org, ``$2`` the connector, ``$3`` the window) and the conditions on a row ``r`` of the filters and the hidden rows."""
+def where_of(org: str, app_sk: int, app_doc: dict, filters: dict[str, Any], hidden: list[int], *, browse: bool = False) -> tuple[kgl.Params, str]:
+    """The parameters (``$1`` the org, ``$2`` the connector, ``$3`` the window) and the conditions on a row ``r`` of the filters and the hidden rows (``browse``: a browse's)."""
     base = kgl.Params([org, app_sk, None])
-    where = kgl.filters_sql(filters, base)
+    where = kgl.filters_sql(filters, base, browse=browse)
     if origin_of(app_doc) == "COLLECTION" and (groups := filters.get("record_group_ids")):
         # As the other stores do: the list narrows a collection's record groups only; records and folders pass.
         where += f" AND (r.kind <> 2 OR r.id = ANY({base.add(list(groups))}::text[]))"
