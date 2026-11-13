@@ -480,3 +480,65 @@ async def test_a_change_to_the_whole_connector_that_commits_after_the_check_is_n
     with ctx(org):
         again = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=7), limit=50)
     assert [r["id"] for r in again["rows"]] == readable and again["total"] == 7
+
+
+@pytest.mark.parametrize("mode", ["served", "by_window", "not_served"])
+async def test_concurrent_pages_never_wait_for_a_second_pooled_connection(pg_db, monkeypatch, mode) -> None:
+    """A page holds one pooled connection (its snapshot) and reads everything on it, the access checks included (``by_window``: every window asked of the access check;
+    ``not_served``: the arrows' sample too). With a pool of two and four pages at once, a page that waited for a second connection would wait as long as the pool lets it:
+    every connection would be held by a page waiting the same way."""
+    import asyncio
+    import dataclasses
+
+    from app.core.db import DbConfig, KernelDB
+    p0, org = prov(pg_db), new_org()
+    await seed_folder(p0, pg_db, org, 25, readable_kids=["c0024"])
+    if mode == "not_served":
+        await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+    if mode == "by_window":
+        monkeypatch.setattr(kh_listing, "CLASS_MAX", 0)
+    small = KernelDB(dataclasses.replace(DbConfig.from_env("connectors"), pool_max=2))
+    await small.start()
+    try:
+        p = prov(small)
+
+        async def one() -> dict:
+            with ctx(org):
+                return await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=["fold", "c0024"]), limit=50)
+        pages = await asyncio.wait_for(asyncio.gather(*(one() for _ in range(4))), 30)
+    finally:
+        await small.close()
+    for page in pages:
+        assert {r["id"] for r in page["rows"]} == {"fold", "c0024"} and page["total"] == 2
+        assert next(r for r in page["rows"] if r["id"] == "fold")["hasChildren"] is True
+
+
+async def test_a_page_in_a_callers_transaction_never_admits_by_a_stamp_hidden_after_its_check(pg_db, monkeypatch) -> None:
+    """In a caller's own transaction (read committed: each statement reads a new commit) the page's statements are not one snapshot. A change to the connector as a whole
+    that commits just before the page reads its rows (it hides the connector and a stamp written under that hiding opens r0010 to everyone) must not admit r0010: such a
+    page asks the access check about its rows, not the classes."""
+    import os
+
+    import psycopg
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 12, readable=7)
+    await _admin("INSERT INTO kg.scope_classes (org_id, id, app_sk, group_sk, clauses, hash) SELECT $1, 990001, k.sk, NULL, '[[]]'::jsonb, $2 FROM kg.node_keys k "
+                 "WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'app1'", org, secrets.token_bytes(16))
+    real, fired = kgl.page_sql, []
+
+    def change_commits_now(*a, **kw) -> str:
+        if not fired:
+            fired.append(True)
+            with psycopg.connect(os.environ["PG_ADMIN_URL"], autocommit=True) as c:
+                c.execute("INSERT INTO kg.restamp_queue (org_id, id, app_sk, kind, reason, fenced, enqueued_ms) SELECT %s, 990002, k.sk, 'app', 'test', true, 0 FROM kg.node_keys k "
+                          "WHERE k.org_id = %s AND k.coll = 1 AND k.id = 'app1'", (org, org))
+                c.execute("UPDATE kg.records SET class_id = 990001 WHERE org_id = %s AND id = 'r0010' AND coll = 3", (org,))
+        return real(*a, **kw)
+    monkeypatch.setattr(kgl, "page_sql", change_commits_now)
+    with ctx(org):
+        tid = await p.begin_transaction([], [])
+        try:
+            page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=7), limit=50, transaction=tid)
+        finally:
+            await p.rollback_transaction(tid)
+    assert fired and [r["id"] for r in page["rows"]] == [f"r{i:04d}" for i in range(7)] and page["total"] == 7

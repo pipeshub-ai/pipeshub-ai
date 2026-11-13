@@ -33,6 +33,7 @@ from app.exceptions.graph_db_exceptions import (
 )
 from app.utils.kh_cursor import (
     Boundary,
+    CursorError,
     KnowledgeHubCursor,
     LivePartitions,
     decode,
@@ -150,6 +151,11 @@ async def search_page(
     refused = {app_id for app_id, payload in zip(targets, results) if payload.get("notReady")}
     if targets and len(refused) == len(targets):
         raise KnowledgeHubListingNotReady            # nothing to list at all: say so instead of an empty page
+    if cursor is not None and refused - left_out:
+        # A connector this listing counted and has been listing stopped being ready: its rows past the boundary cannot be read, so the total carried from the first
+        # page is no longer this listing's. The cursor is refused (the caller answers 400, as for any cursor that no longer applies) and the listing starts again,
+        # counted afresh, with the connector named as not ready.
+        raise CursorError("a source of this listing is being prepared again; start the listing from its first page")
     left_out |= refused
     not_ready = [app_id for app_id in connectors if app_id in left_out]
 

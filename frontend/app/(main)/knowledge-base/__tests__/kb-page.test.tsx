@@ -1703,8 +1703,13 @@ describe('Knowledge base page — All Records', () => {
     await waitFor(() => expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'c20' }), expect.anything()));
     expect(await screen.findByText('No records found')).toBeTruthy();
     expect(api.hub.getAllRootItems).not.toHaveBeenCalledWith(expect.objectContaining({ cursor: 'c21' }), expect.anything());
+    // The footer sits beside the empty body, not in it, and the body may shrink below its content: a short viewport clips the body, never the footer.
+    const next = await screen.findByRole('button', { name: /Next/ });
+    const body = screen.getByTestId('kb-empty-state');
+    expect(body.contains(next)).toBe(false);
+    expect(body.style.minHeight).toBe('0');
 
-    fireEvent.click(await screen.findByRole('button', { name: /Next/ }));
+    fireEvent.click(next);
 
     expect(await screen.findByRole('row', { name: 'Later.xlsx' })).toBeTruthy();
   });

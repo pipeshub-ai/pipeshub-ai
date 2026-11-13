@@ -131,6 +131,27 @@ def test_a_connector_that_becomes_ready_mid_listing_stays_out_of_it_and_a_new_li
     assert fresh.total == 18 and fresh.not_ready == [] and [r["id"] for r in fresh.rows] == ["a00", "b00", "a01", "b01"]
 
 
+@pytest.mark.parametrize("way", ["next", "prev"])
+def test_a_connector_that_stops_being_ready_mid_listing_restarts_it_counted_afresh(way: str) -> None:
+    """c2 is counted and listed from page 1 on and stops being ready before the next request, either way. The listing it was counted in refuses its cursor (a 400: start
+    again) instead of going on with a total that counts rows it can no longer list; the listing begun again names c2 and counts c1 alone."""
+    from app.utils.kh_cursor import CursorError
+    c1 = [row(f"a{i:02d}", f"n{2 * i:02d}") for i in range(9)]
+    c2 = [row(f"b{i:02d}", f"n{2 * i + 1:02d}") for i in range(9)]
+    provider = NotReadyProvider({"c1": c1, "c2": c2}, set())
+
+    def page_at(token: str | None) -> SearchPage:
+        return asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4, cursor_token=token))
+    first = page_at(None)
+    second = page_at(first.next_cursor)
+    assert first.total == 18 and [r["id"] for r in second.rows] == ["a02", "b02", "a03", "b03"]
+    provider.not_ready = {"c2"}
+    with pytest.raises(CursorError):
+        page_at(second.next_cursor if way == "next" else second.prev_cursor)
+    again = page_at(None)
+    assert again.total == 9 and again.not_ready == ["c2"] and [r["id"] for r in again.rows] == ["a00", "a01", "a02", "a03"]
+
+
 def test_when_every_connector_is_not_ready_the_page_is_refused() -> None:
     provider = NotReadyProvider({"c1": [row("a", "a")], "c2": [row("b", "b")]}, {"c1", "c2"})
     with pytest.raises(KnowledgeHubListingNotReady):

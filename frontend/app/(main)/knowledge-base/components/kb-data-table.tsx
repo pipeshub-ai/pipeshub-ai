@@ -337,7 +337,9 @@ export function KbDataTable({
             justify="center"
             direction="column"
             gap="4"
-            style={{ minHeight: '400px', flex: 1 }}
+            data-testid="kb-empty-state"
+            // It shrinks with the viewport (and scrolls) so the pagination footer under it is never clipped by the overflow-hidden parent.
+            style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}
           >
             {/* Dynamic heading based on mode, filters, and current node name */}
             <Flex direction="column" align="center" gap="1">
