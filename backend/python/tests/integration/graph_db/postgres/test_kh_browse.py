@@ -598,3 +598,49 @@ async def test_placeholder_walks_read_at_most_their_budget_and_list_the_same_pla
         pages[size] = seen
     assert walks and max(walks) <= 100, walks
     assert pages[3] == pages[50] == pages[100] == stubs, pages
+
+
+async def test_a_placeholder_walk_counts_the_groups_it_asks_about_chain_tops_against_its_budget(pg_db, monkeypatch) -> None:
+    """A placeholder over 60 placeholder groups, each holding a granted record (so each is asked whether a chain-top is placed under it; none is: the record hangs from an open
+    folder). With LEAD_NODES at 100 the walk reads the 60 groups and asks about 40 of them: rows read and groups asked together never pass the budget, and the placeholder,
+    which leads nowhere within it, is not listed."""
+    p, org = prov(pg_db), new_org()
+    groups = [f"g{j:02d}" for j in range(60)]
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": g, "groupName": f"Group {g}", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL",
+                                     "isPlaceholder": True} for g in groups], "recordGroups")
+        recs = [{"_key": "fold", "recordName": "Folder", "mimeType": "application/vnd.folder"}, {"_key": "other", "recordName": "Other", "mimeType": "application/vnd.folder"},
+                {"_key": "s", "recordName": "Stub", "isPlaceholder": True}, *({"_key": f"r{g}", "recordName": f"Rec {g}"} for g in groups)]
+        await p.batch_upsert_nodes([{**r, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for r in recs], "records")
+        await p.batch_create_edges([edge("fold", "records", "s", "records", relationshipType="PARENT_CHILD"),
+                                    *(edge("s", "records", g, "recordGroups", relationshipType="PARENT_CHILD") for g in groups),
+                                    *(edge("other", "records", f"r{g}", "records", relationshipType="PARENT_CHILD") for g in groups)], "nodeRelations")
+        await p.batch_create_edges([edge(f"r{g}", "records", g, "recordGroups") for g in groups], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        granted = ["fold", "other", "s", *groups, *(f"r{g}" for g in groups)]
+        await p.batch_create_edges([edge("u1", "users", i, "records" if not i.startswith("g") else "recordGroups", type="USER", role="READER") for i in granted], "permission")
+    await flip(pg_db, org)
+    monkeypatch.setattr(kh_listing, "LEAD_NODES", 100)
+    walks: list[int] = []
+    asked: list[int] = []
+    real_lead, real_tops = kh_listing.KhListingMixin._kh_lead, kh_listing.KhListingMixin._kh_tops_under
+
+    async def lead(self, *a, **kw) -> tuple[bool, int]:
+        found = await real_lead(self, *a, **kw)
+        walks.append(found[1])
+        return found
+
+    def tops_under(self, *a, **kw) -> object:
+        under = real_tops(self, *a, **kw)
+
+        async def counted(groups: list) -> set[int]:
+            asked.append(len(groups))
+            return await under(groups)
+        return counted if under else None
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_lead", lead)
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_tops_under", tops_under)
+    page = await browse(p, org, "fold", granted)
+    assert page["rows"] == [] and not page.get("resume"), page["rows"]
+    assert walks and max(walks) <= 100 and sum(asked) == 40, (walks, asked)

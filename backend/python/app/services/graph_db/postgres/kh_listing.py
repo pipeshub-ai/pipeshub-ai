@@ -316,11 +316,15 @@ class KhListingMixin(PgBase):
         them the viewer may open, already read."""
         seen, level, used = {root["sk"]}, [root], 0
         for depth in range(LEAD_DEPTH):
-            groups = [r for r in level if r["kind"] == 2]
+            groups = sorted((r for r in level if r["kind"] == 2), key=lambda r: r["sk"])
             if tops and groups:
-                used += len(groups)
-                if await tops(groups):
+                # each group asked is one of the walk's LEAD_NODES: past them it stops, as at a row past them (the same groups on every run, in key order)
+                asked = groups[:max(0, LEAD_NODES - used)]
+                used += len(asked)
+                if asked and await tops(asked):
                     return True, used
+                if len(asked) < len(groups):
+                    break
             if depth == 0 and first is not None:
                 got, ok = first
             else:
