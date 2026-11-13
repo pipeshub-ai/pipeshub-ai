@@ -226,12 +226,12 @@ async def test_a_sidecar_lands_in_its_revisions_document(blob: BlobStorage) -> N
     assert written is not None
     payload = {"summary": "a contract", "topics": ["Renewal", "Ünïcode"]}
 
+    path = sidecar_path("classification", 1)
     with patch.object(sidecars_module, "is_artifact_write_enabled", AsyncMock(return_value=True)):
-        assert await ArtifactSidecars(store, MagicMock(), logger).write(
-            ORG_ID, vrid, rev, "classification", 1, payload, stored_run="gen-it:run",
+        assert await ArtifactSidecars(store, MagicMock(), logger).write_at(
+            ORG_ID, vrid, rev, path, payload, stored_run="gen-it:run",
         ) is True
 
-    path = sidecar_path("classification", 1)
     document_id = written.manifest_ref.document_id
     urls = await store.read_urls(ORG_ID, document_id, [path, MANIFEST_PATH])
     assert await store.get(urls[path]) == canonical_json(payload)

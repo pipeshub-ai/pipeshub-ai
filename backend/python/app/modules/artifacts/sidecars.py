@@ -1,14 +1,17 @@
 """Enrichment sidecars: one stage's output for one content revision, beside its artifact set.
 
-A sidecar is ``enrich/{name}@{version}.json`` under the root of the set of the stored write
-it belongs to (each stored write of a revision has a set of its own), written by the stage
-that produced it, after the revision's own files and not listed in its manifest.
+A sidecar is ``enrich/{name}.<token>@{version}.json`` under the root of the set of the stored
+write it belongs to (each stored write of a revision has a set of its own), written by the stage
+that produced it, after the revision's own files and not listed in its manifest. The token is the
+write's own, so no two writes ever share a sidecar file; a reader finds one by the path its
+envelope or pointer names, as the classification's ``storedMeta`` does.
 The version is the stage's, so a reader can tell an output of an older stage from one it
 understands, and two versions of a stage never overwrite each other's file.
 """
 
 import logging
 import re
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from app.models.blocks import SemanticMetadata
@@ -37,7 +40,9 @@ _PATH = re.compile(r"^enrich/[a-z0-9_.@-]+\.json$")
 
 
 def sidecar_path(name: str, version: int) -> str:
-    return f"enrich/{name}@{version}.json"
+    """A path of the write that makes it, ``enrich/{name}.<token>@{version}.json``: two writes of one stage
+    on one stored write (a duplicate delivery of its job) each file a file of their own, never over another."""
+    return f"enrich/{name}.{uuid.uuid4().hex}@{version}.json"
 
 
 def classification_payload(metadata: SemanticMetadata) -> dict[str, Any]:
