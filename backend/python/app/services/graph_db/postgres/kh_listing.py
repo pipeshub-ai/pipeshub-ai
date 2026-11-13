@@ -306,58 +306,76 @@ class KhListingMixin(PgBase):
     async def _kh_leads(self, stubs: list[Any], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str, transaction: str | None, *,
                         tops: Callable[[list[Any]], Awaitable[set[int]]] | None = None, decided: dict[int, bool] | None = None) -> tuple[set[int], set[int]]:
         """Of placeholders the viewer may open (rows, in the caller's order), the sks that lead somewhere (:meth:`_kh_lead`), and the sks left undecided. Each placeholder is decided by
-        a walk of its own, so its answer is the same in any window, page or cursor. The request paces the walks: their first level is read in one statement cut at LEAD_NODES rows,
-        and once LEAD_NODES rows are read no further placeholder is walked; the first always is, so a caller that resumes at the first undecided one moves on. ``decided``: the
-        answers this request already holds, filled in."""
+        a walk of its own, so its answer is the same in any window, page or cursor. The request reads LEAD_NODES rows at most over all its walks (and stops starting them after
+        BUDGET_S): the first placeholder is walked alone with all of it, so a caller that resumes at the first undecided one always moves on; the next ones share what is left
+        (their first level in one statement), and one the request cannot finish within it is left undecided, never taken as leading nowhere. ``decided``: the answers this
+        request already holds, filled in."""
         memo = {} if decided is None else decided
         todo = [r for r in {r["sk"]: r for r in stubs}.values() if r["sk"] not in memo]
-        t0 = time.monotonic()
+        t0, spent = time.monotonic(), 0
         if todo:
-            got = await self._kq(lambda tx, f=[r["sk"] for r in todo]: tx.fetch(kgl.children_of_sql(total=True), org, f, LEAD_PER, hidden, LEAD_NODES), transaction)
+            memo[todo[0]["sk"]], spent = await self._kh_lead(todo[0], hidden, admitted_of, org, transaction, tops, allowance=LEAD_NODES)
+        rest = todo[1:]
+        if rest and spent < LEAD_NODES and time.monotonic() - t0 <= BUDGET_S:
+            got = await self._kq(lambda tx, f=[r["sk"] for r in rest], b=LEAD_NODES - spent: tx.fetch(kgl.children_of_sql(total=True), org, f, LEAD_PER, hidden, b), transaction)
+            spent += len(got)
             kids: dict[int, list[Any]] = {}
             for r in got:
                 kids.setdefault(r["parent"], []).append(r)
-            # the statement reads the placeholders in the order asked: cut at its bound, the last one read may be partial and those after it are unread
-            whole = todo if len(got) < LEAD_NODES else todo[:[r["sk"] for r in todo].index(got[-1]["parent"])]
-            ok = await admitted_of([r for r in got if r["parent"] in {w["sk"] for w in whole}]) if whole else set()
-            paced = len(got)
-            for i, r in enumerate(whole or todo[:1]):
-                if i and (paced >= LEAD_NODES or time.monotonic() - t0 > BUDGET_S):      # the request's budget: the rest wait for the next page
+            # the statement reads the placeholders in the order asked: cut at its bound, the last one read may be partial and those after it are unread (undecided)
+            whole = rest if len(got) < LEAD_NODES - (spent - len(got)) else rest[:[r["sk"] for r in rest].index(got[-1]["parent"])]
+            read = {w["sk"] for w in whole}
+            ok = await admitted_of([r for r in got if r["parent"] in read]) if whole else set()
+            for r in whole:
+                if spent >= LEAD_NODES or time.monotonic() - t0 > BUDGET_S:
                     break
-                memo[r["sk"]], used = await self._kh_lead(r, hidden, admitted_of, org, transaction, tops, first=(kids.get(r["sk"], []), ok) if whole else None)
-                paced += used
+                found, used = await self._kh_lead(r, hidden, admitted_of, org, transaction, tops, allowance=LEAD_NODES - spent, first=(kids.get(r["sk"], []), ok))
+                spent += used
+                if found is None:      # the request's rows ran out before this walk ended: it and the ones after it wait for the next page
+                    break
+                memo[r["sk"]] = found
         return {r["sk"] for r in stubs if memo.get(r["sk"])}, {r["sk"] for r in stubs if r["sk"] not in memo}
 
     async def _kh_lead(self, root: Any, hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str, transaction: str | None,  # noqa: ANN401
-                       tops: Callable[[list[Any]], Awaitable[set[int]]] | None, *, first: tuple[list[Any], set[str]] | None = None) -> tuple[bool, int]:
+                       tops: Callable[[list[Any]], Awaitable[set[int]]] | None, *, allowance: int, first: tuple[list[Any], set[str]] | None = None) -> tuple[bool | None, int]:
         """Whether a path of nodes the viewer may open leads from the placeholder ``root`` to a node that is no placeholder, or to a placeholder group a chain-top is placed under
-        (``tops``): its walk alone, level by level through the open placeholders below it, each node once; and the rows it read. ``first``: its own children and the ids among
-        them the viewer may open, already read."""
-        seen, level, used = {root["sk"]}, [root], 0
+        (``tops``): its walk alone, level by level through the open placeholders below it, each node once, at most LEAD_NODES rows and group checks of its own; and the rows it read
+        here (``first``, its own children and the ids among them the viewer may open, were read by the caller and are not counted). None when the request's ``allowance`` ran out
+        before the walk could end: the answer is then unknown, not no."""
+        seen, level, used, mine = {root["sk"]}, [root], 0, 0      # used: rows read here, against the allowance; mine: the walk's own count, against LEAD_NODES
+
+        def cap() -> tuple[int, bool]:
+            """How many more rows or checks this walk may take, and whether that is its own bound (else the request's)."""
+            own, left = LEAD_NODES - mine, allowance - used
+            return (own, True) if own <= left else (left, False)
         for depth in range(LEAD_DEPTH):
             groups = sorted((r for r in level if r["kind"] == 2), key=lambda r: r["sk"])
             if tops and groups:
                 # each group asked is one of the walk's LEAD_NODES: past them it stops, as at a row past them (the same groups on every run, in key order)
-                asked = groups[:max(0, LEAD_NODES - used)]
-                used += len(asked)
+                room, own = cap()
+                asked = groups[:max(0, room)]
+                used, mine = used + len(asked), mine + len(asked)
                 if asked and await tops(asked):
                     return True, used
                 if len(asked) < len(groups):
-                    break
+                    return (False if own else None), used
             if depth == 0 and first is not None:
                 got, ok = first
+                mine += len(got)
             else:
-                if used >= LEAD_NODES:
-                    break
-                got = await self._kq(lambda tx, f=sorted(r["sk"] for r in level), b=LEAD_NODES - used: tx.fetch(kgl.children_of_sql(total=True), org, f, LEAD_PER, hidden, b),
-                                     transaction)
+                room, own = cap()
+                if room <= 0:
+                    return (False if own else None), used
+                got = await self._kq(lambda tx, f=sorted(r["sk"] for r in level), b=room: tx.fetch(kgl.children_of_sql(total=True), org, f, LEAD_PER, hidden, b), transaction)
+                used, mine = used + len(got), mine + len(got)
                 ok = None
-            used += len(got)
             fresh = [r for r in got if r["sk"] not in seen]
             if ok is None:
                 ok = await admitted_of(fresh) if fresh else set()
             if any(r["id"] in ok and not r["placeholder"] for r in fresh):
                 return True, used
+            if (depth > 0 or first is None) and len(got) >= room and not own:      # cut by the request's rows, not its own: what lies past the cut is unknown
+                return None, used
             level = []
             for r in fresh:
                 if r["id"] in ok and r["placeholder"] and r["sk"] not in seen:

@@ -675,3 +675,58 @@ async def test_a_browse_of_many_chain_top_holders_resolves_the_chain_tops_once(p
     page = await browse(p, org, "fold", granted, limit=50)
     assert [r["id"] for r in page["rows"]] == groups[:50] and all(r["hasChildren"] for r in page["rows"]) and page["total"] == 300, page["rows"][:3]
     assert calls == {"_kh_v3_chain_top_groups": 1, "_kh_v3_chain_top_candidates": 1, "_kh_v3_chain_top_facts": 1}, calls
+
+
+async def test_a_request_reads_at_most_its_budget_over_all_its_placeholder_walks_and_resumes_at_one_it_cannot_finish(pg_db, monkeypatch) -> None:
+    """Ten placeholders in one batch; the second leads only two levels down (30 placeholders, of which only the last has a child the viewer may open). With LEAD_NODES at 100 a
+    request reads at most 100 rows over every walk, the batch included; the deep placeholder it cannot finish is left undecided (the page resumes at it) and decided by the
+    next request's own walk. Paged at 3, 50 or 100 rows, the browse lists all ten, each once, in order."""
+    p, org = prov(pg_db), new_org()
+    stubs = [f"s{i:02d}" for i in range(10)]
+    deep = [f"p{j:02d}" for j in range(30)]
+    width = {"s00": 5, **dict.fromkeys(stubs[2:], 10)}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        recs = [{"_key": "fold", "recordName": "Folder", "mimeType": "application/vnd.folder"}, *({"_key": s, "recordName": f"Stub {s}", "isPlaceholder": True} for s in stubs),
+                *({"_key": d, "recordName": f"Deep {d}", "isPlaceholder": True} for d in deep), *({"_key": f"{d}k", "recordName": f"Kid {d}"} for d in deep),
+                *({"_key": f"{s}k{j:02d}", "recordName": f"Kid {s} {j:02d}"} for s, n in width.items() for j in range(n))]
+        await p.batch_upsert_nodes([{**r, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for r in recs], "records")
+        await p.batch_create_edges([*(edge("fold", "records", s, "records", relationshipType="PARENT_CHILD") for s in stubs),
+                                    *(edge("s01", "records", d, "records", relationshipType="PARENT_CHILD") for d in deep),
+                                    *(edge(d, "records", f"{d}k", "records", relationshipType="PARENT_CHILD") for d in deep),
+                                    *(edge(s, "records", f"{s}k{j:02d}", "records", relationshipType="PARENT_CHILD") for s, n in width.items() for j in range(n))], "nodeRelations")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        granted = ["fold", *stubs, *deep, f"{deep[-1]}k", *(f"{s}k00" for s in width)]
+        await p.batch_create_edges([edge("u1", "users", i, "records", type="USER", role="READER") for i in granted], "permission")
+    await flip(pg_db, org)
+    monkeypatch.setattr(kh_listing, "LEAD_NODES", 100)
+    walks: list[int] = []
+    real_leads, real_kq = kh_listing.KhListingMixin._kh_leads, kh_listing.KhListingMixin._kq
+
+    async def leads(self, *a, **kw) -> tuple[set[int], set[int]]:
+        walks.append(0)
+        return await real_leads(self, *a, **kw)
+
+    async def kq(self, fn, transaction) -> object:
+        got = await real_kq(self, fn, transaction)
+        if walks and isinstance(got, list) and got and "parent" in got[0]:      # rows of a placeholder walk
+            walks[-1] += len(got)
+        return got
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_leads", leads)
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kq", kq)
+    first = await browse(p, org, "fold", granted, limit=50)
+    assert [r["id"] for r in first["rows"]] == ["s00"] and first.get("resume"), first["rows"]      # s01 waits for the next request
+    pages: dict[int, list[str]] = {}
+    for size in (3, 50, 100):
+        seen, after = [], None
+        for _ in range(40):
+            page = await browse(p, org, "fold", granted, limit=size, after=after)
+            seen += [r["id"] for r in page["rows"]]
+            if not page["hasMore"]:
+                break
+            last = page["rows"][-1] if page["rows"] else None
+            after = page.get("resume") or {"nullRank": last["nullRank"], "sortKey": last["sortKey"], "id": last["id"]}
+        pages[size] = seen
+    assert walks and max(walks) <= 100, walks
+    assert pages[3] == pages[50] == pages[100] == stubs, pages
