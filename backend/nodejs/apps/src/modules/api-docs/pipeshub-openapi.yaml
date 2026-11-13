@@ -92,7 +92,9 @@ tags:
       or organizations. Each app receives a client ID and secret for authentication.
 
       **Who can see which apps**
-      - **Everyone (including org admins)** sees and manages only OAuth apps **they created** (`createdBy`). Other members' apps are hidden (not listed; individual operations return not found).
+      - **Members** see and manage only OAuth apps **they created** (`createdBy`). Other members' apps are hidden (not listed; individual operations return not found).
+      - **Org admins** see every OAuth app of their organization (internal and dynamically registered clients excepted), with its creator, and may view, suspend, activate or delete any of them and list or revoke its tokens. Changing an app (`PUT /oauth-clients/{appId}`, `regenerate-secret`, `token-identity`) stays with its creator; an admin gets `404` on someone else's app there, as a member does.
+      - **Deleting a user** hands the apps they created to the admin who deleted them, so other people's connections keep working. An app whose own `client_credentials` tokens act as that user (no service account named) is deleted instead, with its tokens.
 
       **Session only**
       - Every `/oauth-clients/*` route requires the user's interactive session JWT. OAuth access tokens and personal access tokens (`phpat_...`) are rejected with `403`, so a token issued to a client can never register, reconfigure, or revoke clients on its own.
@@ -821,6 +823,52 @@ components:
             mcp:write: Add, configure and authenticate MCP servers
             mcp:delete: Remove MCP servers and their credentials
   schemas:
+    McpAccessPolicy:
+      type: object
+      description: What an organization's admins allow on the inbound `/mcp` endpoint. Nothing saved means the defaults below.
+      additionalProperties: false
+      required:
+        - enabled
+        - allowWriteTools
+        - disabledTools
+      properties:
+        enabled:
+          type: boolean
+          default: true
+          description: When false, `/mcp` answers every authenticated request of the organization with `403`.
+        allowWriteTools:
+          type: boolean
+          default: true
+          description: When false, the tools whose `writes` is true (see `GET /configurationManager/mcp/access/tools`) are not listed and calls to them are refused, and `pipeshub_chat` does not run the person's connected actions.
+        disabledTools:
+          type: array
+          default: []
+          maxItems: 200
+          description: Tool names that are not listed and whose calls are refused. Saved sorted and without duplicates. Turning off `pipeshub_chat` also leaves out `pipeshub_agents`, which only serves it.
+          items:
+            type: string
+            pattern: '^[a-z0-9_]{1,64}$'
+      example:
+        enabled: true
+        allowWriteTools: false
+        disabledTools: [pipeshub_download_record]
+    McpAccessTool:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - title
+        - writes
+      properties:
+        name:
+          type: string
+          example: pipeshub_upload
+        title:
+          type: string
+          example: Upload documents to a PipesHub collection
+        writes:
+          type: boolean
+          description: True for a tool that is left out while `allowWriteTools` is false.
     AIGatewayIdentityPolicy:
       type: object
       additionalProperties: false
@@ -3609,6 +3657,7 @@ components:
         - isConfidential
         - accessTokenLifetime
         - refreshTokenLifetime
+        - createdBy
         - createdAt
         - updatedAt
       properties:
@@ -3680,6 +3729,16 @@ components:
             have one; an older app may not, and those are the ones an administrator
             still has to move.
           example: "65f0c0ffee00000000000000"
+        createdBy:
+          type: string
+          description: Id of the user who registered the app and manages it. When that user is deleted, the admin who deleted them.
+          example: "65f0c0ffee00000000000001"
+        createdByName:
+          type: string
+          description: Full name of `createdBy`. Only on an org admin's `GET /oauth-clients`.
+        createdByEmail:
+          type: string
+          description: Email address of `createdBy`. Only on an org admin's `GET /oauth-clients`.
         createdAt:
           type: string
           format: date-time
@@ -26290,6 +26349,9 @@ paths:
                               clientIdHost:
                                 type: string
                                 description: Host of the client ID metadata document, present only when `client_id` is an https URL. The app chooses its name and logo, but not this host.
+                              registeredBy:
+                                type: string
+                                description: Name, or else email address, of the person who registered the app. Absent for a dynamically registered app. Any member may register an app under any name, so this is what tells a look-alike apart.
                               knowledgeLimit:
                                 description: What the app's creator let it see; absent when it may see everything the user can.
                                 allOf:
@@ -27413,7 +27475,9 @@ paths:
         - OAuth Apps
       summary: List OAuth apps
       description: |
-        Returns a paginated list of OAuth apps registered by the signed-in user. Access is creator-scoped — even org admins only see apps they created themselves, so this endpoint is safe to use for per-user developer dashboards without leaking org-wide app metadata.
+        Returns a paginated list of OAuth apps. A member gets the apps they registered. An org admin gets every app of the organization (internal and dynamically registered clients excepted), each with `createdBy`, `createdByName` and `createdByEmail`, so an app registered under a misleading name can be found and suspended or deleted.
+
+        `createdBy` narrows the list to one person's apps; an admin uses it to see what a user leaves behind before deleting them. For a member, any `createdBy` other than their own id yields an empty page.
 
         Each entry carries the full app configuration except the client secret, which is only ever returned at creation time and immediately after a regeneration.
 
@@ -27453,6 +27517,12 @@ paths:
           schema:
             type: string
           description: Search by app name or description (case-insensitive)
+        - name: createdBy
+          in: query
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: Only apps created by this user (24-character hex id). A member gets an empty page for anyone but themselves.
       responses:
         '200':
           description: List of OAuth apps
@@ -27501,7 +27571,7 @@ paths:
         - OAuth Apps
       summary: Create OAuth app
       description: |
-        Register a new OAuth app for the organization. Any authenticated org member may create apps; the creator is recorded as the app's owner and is the only user who can subsequently read, update, suspend, activate, regenerate the secret of, or delete it.
+        Register a new OAuth app for the organization. Any authenticated org member may create apps; the creator is recorded as the app's owner and is the only user who can subsequently update it or regenerate its secret. The creator and the org's admins can read, suspend, activate or delete it.
 
         The `clientSecret` is returned in this response **only** — it is stored hashed server-side and cannot be retrieved later. Persist it before exiting the create flow; if it is ever lost, rotate via `POST /oauth-clients/{appId}/regenerate-secret`.
 
@@ -27656,9 +27726,9 @@ paths:
         - OAuth Apps
       summary: Get OAuth app details
       description: |
-        Returns the full configuration of an OAuth app you registered. The `clientSecret` is never echoed back here; if you need a new one, call `POST /oauth-clients/{appId}/regenerate-secret`.
+        Returns the full configuration of an OAuth app you registered, or for an org admin any app of the organization. The `clientSecret` is never echoed back here; if you need a new one, call `POST /oauth-clients/{appId}/regenerate-secret`.
 
-        Access is creator-scoped: even org admins receive `404` for apps owned by other users. This avoids leaking app metadata across org members and keeps the read surface symmetric with `listOAuthApps`.
+        A member receives `404` for apps owned by other users, which keeps the read surface symmetric with `listOAuthApps`.
       operationId: getOAuthApp
       x-pipeshub-sdk: true
       security:
@@ -27694,13 +27764,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. For a member, an app they did not create is 404, not 403.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
-          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          description: OAuth app not found or not visible to this caller (a member only sees apps they created; an org admin sees every app of the organization)
           content:
             application/json:
               schema:
@@ -27737,7 +27807,7 @@ paths:
         `PUT /oauth-clients/{appId}/token-identity`. An application that already allows the grant without a
         service account predates this rule and can still be edited.
 
-        Creator-only: even org admins cannot edit apps owned by other users.
+        Creator-only, for org admins too: an admin can view, suspend, activate or delete another person's app, but changing it could redirect the codes of everyone who consents to it or mint tokens that act as its creator. An admin gets `404`, as a member does.
 
         When modifying `allowedScopes`, the new set must remain a subset of the caller's role-aware scope list (same rule as `GET /oauth-clients/scopes`). The Zod refine on `updateAppSchema` only looks at the body: it refuses `allowedGrantTypes` containing `authorization_code` together with an empty `redirectUris` (`400 VALIDATION_ERROR`), but sending `authorization_code` without `redirectUris` is accepted even when the stored app has no redirect URI.
 
@@ -27790,15 +27860,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the update adds `client_credentials` and the caller is not an organisation administrator. An app the caller did not create is 404, not 403.
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the update adds `client_credentials` and the caller is not an organisation administrator. An app the caller did not create is 404, not 403, for an org admin too.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: >-
-            OAuth app not found or not visible to this caller (each user only sees apps they
-            created), or the service account the application is bound to no longer exists or
+            OAuth app not found or not visible to this caller (only its creator may change it,
+            even for an org admin), or the service account the application is bound to no longer exists or
             is not a service account.
           content:
             application/json:
@@ -27835,7 +27905,7 @@ paths:
       description: |
         Soft-deletes an OAuth app. The app is flagged `isDeleted=true` on the `OAuthApp` document, removed from list/get responses for every caller, and all of its access and refresh tokens are revoked in the same operation. There is no restore endpoint — deletion is final.
 
-        Creator-only: even org admins cannot delete apps owned by other users.
+        The creator or an org admin.
       operationId: deleteOAuthApp
       x-pipeshub-sdk: true
       security:
@@ -27875,13 +27945,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. For a member, an app they did not create is 404, not 403.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
-          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          description: OAuth app not found or not visible to this caller (a member only sees apps they created; an org admin sees every app of the organization)
           content:
             application/json:
               schema:
@@ -27911,7 +27981,7 @@ paths:
 
         The new secret is returned in this response **only** and cannot be retrieved later. Pair this call with credential propagation to every integration that uses the app. If the rotation was triggered by a suspected leak, also call `POST /oauth-clients/{appId}/revoke-all-tokens` to invalidate already-issued access and refresh tokens instead of waiting for their natural expiry.
 
-        Creator-only: even org admins cannot rotate secrets for other users' apps.
+        Creator-only, for org admins too: an admin can view, suspend, activate or delete another person's app, but changing it could redirect the codes of everyone who consents to it or mint tokens that act as its creator. An admin gets `404`, as a member does.
       operationId: regenerateOAuthAppSecret
       x-pipeshub-sdk: true
       security:
@@ -27947,13 +28017,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403, for an org admin too.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
-          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          description: OAuth app not found or not visible to this caller (only its creator may change it, even for an org admin)
           content:
             application/json:
               schema:
@@ -27983,7 +28053,7 @@ paths:
 
         Use this for temporary suspensions where you intend to reactivate later. For permanent removal, use `DELETE /oauth-clients/{appId}`. Suspending an app that is already suspended returns `400`.
 
-        Creator-only.
+        The creator or an org admin.
       operationId: suspendOAuthApp
       x-pipeshub-sdk: true
       security:
@@ -28019,13 +28089,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. For a member, an app they did not create is 404, not 403.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
-          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          description: OAuth app not found or not visible to this caller (a member only sees apps they created; an org admin sees every app of the organization)
           content:
             application/json:
               schema:
@@ -28055,7 +28125,7 @@ paths:
 
         Activating an app that is already active returns `400`. A deleted app (the only way an app becomes `revoked`) is hidden from every lookup, so activating it returns `404`, not the service's "Cannot activate a revoked app" `400`; the only path back is to register a new app.
 
-        Creator-only.
+        The creator or an org admin.
       operationId: activateOAuthApp
       x-pipeshub-sdk: true
       security:
@@ -28091,13 +28161,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. For a member, an app they did not create is 404, not 403.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
-          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          description: OAuth app not found or not visible to this caller (a member only sees apps they created; an org admin sees every app of the organization)
           content:
             application/json:
               schema:
@@ -28127,7 +28197,7 @@ paths:
 
         Each entry includes the token type (`access` or `refresh`), the user the token was issued for (omitted for client-credentials access tokens), the granted scopes, the issuance and expiry timestamps, and the revocation flag. Each type is capped at 100 most-recent rows server-side (`listTokensForApp` in `oauth_token.service.ts`); revoked and expired tokens are excluded.
 
-        Creator-only.
+        The creator or an org admin.
       operationId: listOAuthAppTokens
       x-pipeshub-sdk: true
       security:
@@ -28163,13 +28233,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. For a member, an app they did not create is 404, not 403.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
-          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          description: OAuth app not found or not visible to this caller (a member only sees apps they created; an org admin sees every app of the organization)
           content:
             application/json:
               schema:
@@ -28199,7 +28269,7 @@ paths:
 
         The response carries only a confirmation `message`; it does not say how many tokens were revoked. Clients of this app must then obtain new tokens via the standard OAuth flow.
 
-        Creator-only.
+        The creator or an org admin.
       operationId: revokeAllOAuthAppTokens
       x-pipeshub-sdk: true
       security:
@@ -28240,13 +28310,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. For a member, an app they did not create is 404, not 403.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
-          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          description: OAuth app not found or not visible to this caller (a member only sees apps they created; an org admin sees every app of the organization)
           content:
             application/json:
               schema:
@@ -30895,6 +30965,13 @@ paths:
         removes the user from all user groups, clears the hashed password, and publishes a
         `DeleteUserEvent`.
 
+        **OAuth:** every token the user holds is revoked, under every client, including their
+        personal access tokens, so none of them works again if the account is later restored.
+        The OAuth apps they created move to the calling admin (`createdBy`), so other people's
+        connections through them keep working; `GET /oauth-clients?createdBy={id}` lists them
+        beforehand. An app whose own `client_credentials` tokens act as the user (it names no
+        service account) is deleted with its tokens instead.
+
         **Restrictions:**
 
         - Only a user whose stored role is `member` can be deleted; an admin (or a legacy record
@@ -33049,6 +33126,10 @@ paths:
         owns it in Developer Settings — moving that would leave the
         application visible to nobody, since no person can sign in as a
         service account.
+
+        Only the application's creator, who must also be an administrator, may
+        call this. An administrator gets `404` for an application someone else
+        created.
       operationId: setOAuthAppTokenIdentity
       security:
         - bearerAuth: []
@@ -33123,7 +33204,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such application, or no such service account in this organisation
+          description: No such application created by the caller, or no such service account in this organisation
           content:
             application/json:
               schema:
@@ -70475,6 +70556,123 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Platform Settings --------------------
+  /configurationManager/mcp/access:
+    get:
+      tags:
+        - MCP
+      summary: Get the MCP access settings
+      description: What the caller's organization allows on the inbound `/mcp` endpoint. Answers the defaults when nothing is saved. Admins only.
+      operationId: getMcpAccessPolicy
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      responses:
+        '200':
+          description: The settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAccessPolicy'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The settings could not be read
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+        - MCP
+      summary: Save the MCP access settings
+      description: Replaces the caller's organization's settings. Every server applies them to new `/mcp` requests within 5 seconds. Admins only.
+      operationId: putMcpAccessPolicy
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpAccessPolicy'
+      responses:
+        '200':
+          description: The saved settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAccessPolicy'
+        '400':
+          description: Invalid settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The settings could not be saved yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /configurationManager/mcp/access/tools:
+    get:
+      tags:
+        - MCP
+      summary: List the tools /mcp can serve
+      description: Every tool the inbound `/mcp` endpoint can offer, whatever the caller's scopes, for choosing which ones to turn off. Admins only.
+      operationId: listMcpAccessTools
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      responses:
+        '200':
+          description: The tools
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - tools
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/McpAccessTool'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /configurationManager/platform/settings:
     post:
       tags:
@@ -73620,6 +73818,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Refused before any message is processed (`id` is null, code `-32000`):
+            - an admin turned MCP access off for the caller's organization ("MCP access is turned off for this organization by an admin.")
+            - a `tools/call` names a tool an admin turned off, by name or because write tools are not allowed ("The <tool> tool is turned off for this organization by an admin.")
+            - a `tools/call` needs a scope the token was not given, with `WWW-Authenticate: Bearer error="insufficient_scope"`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpTransportError'
+        '503':
+          description: The organization's MCP access settings could not be read (`id` null, code `-32000`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpTransportError'
         '406':
           description: Not Acceptable - the `Accept` header does not list both `application/json` and `text/event-stream`
           content:
@@ -73708,6 +73922,12 @@ paths:
         - bearerAuth: []
         - oauth2: []
       responses:
+        '403':
+          description: An admin turned MCP access off for the caller's organization (`id` null, code `-32000`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpTransportError'
         '405':
           description: This server offers no SSE stream; send messages with `POST /mcp`
           headers:

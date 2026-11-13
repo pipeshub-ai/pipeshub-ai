@@ -1589,6 +1589,8 @@
         "removeFromWorkspace": "Aus dem Arbeitsbereich entfernen",
         "removeUserTitle": "Benutzer entfernen?",
         "removeUserMessage": "Sind Sie sicher, dass Sie {{email}} aus dem {{workspace}} Arbeitsbereich entfernen möchten?",
+        "removeUserOAuthAppsOne": "Diese Person hat 1 OAuth-App erstellt. Sie geht auf Sie über, damit alle, die darüber verbunden sind, verbunden bleiben.",
+        "removeUserOAuthAppsMany": "Diese Person hat {{count}} OAuth-Apps erstellt. Sie gehen auf Sie über, damit alle, die darüber verbunden sind, verbunden bleiben.",
         "removeButton": "Entfernen",
         "cancelButton": "Abbrechen",
         "removeSuccess": "Benutzer erfolgreich entfernt",
@@ -1893,7 +1895,8 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "Erstellen und verwalten Sie die von Ihnen registrierten OAuth-Apps. Nur Sie sehen Ihre Apps hier.",
+      "subtitle": "Erstellen und verwalten Sie die von Ihnen registrierten OAuth-Apps. Nur Sie und die Administratoren Ihrer Organisation sehen sie.",
+      "subtitleAdmin": "Alle OAuth-Apps Ihrer Organisation, mit ihren Erstellern. Sperren oder löschen Sie jede App, die Sie nicht kennen.",
       "searchPlaceholder": "Anwendungen nach Name oder Beschreibung suchen...",
       "newApplication": "Neue OAuth-Anwendung",
       "emptyTitle": "Keine OAuth-2.0-Anwendungen",
@@ -1903,6 +1906,7 @@
       "retry": "Erneut versuchen",
       "scopesBadgeOne": "{{count}} Scope",
       "scopesBadgeMany": "{{count}} Scopes",
+      "createdBy": "Erstellt von {{name}}",
       "manage": "Verwalten",
       "noSearchResults": "Keine Anwendungen entsprechen Ihrer Suche.",
       "manageComingSoonTitle": "Demnächst",
@@ -1913,6 +1917,7 @@
         "saveDisabledNoChanges": "Keine Änderungen zum Speichern.",
         "saveDisabledInvalid": "Bitte beheben Sie die Validierungsfehler vor dem Speichern.",
         "tabAdvanced": "Erweitert",
+        "creatorOnlyNotice": "Nur die Person, die diese App erstellt hat, kann sie ändern. Unter „Erweitert“ können Sie sie weiterhin sperren oder löschen.",
         "aboutHeading": "Info",
         "aboutHelper": "Verwenden Sie diese Client-ID in Ihren OAuth-Abläufen.",
         "copyClientIdAria": "Client-ID kopieren",
@@ -2317,6 +2322,7 @@
       "nav": {
         "general": "Allgemein",
         "labs": "Labs",
+        "mcpAccess": "MCP-Zugriff",
         "authentication": "Authentifizierung",
         "connectors": "Konnektoren",
         "mcpServers": "MCP-Server",
@@ -2608,6 +2614,30 @@
         "message": "Wenn Sie verwerfen, werden Ihre Änderungen nicht gespeichert",
         "confirm": "Verwerfen",
         "cancel": "Weiter bearbeiten"
+      }
+    },
+    "mcpAccess": {
+      "title": "MCP-Zugriff",
+      "subtitle": "Legen Sie fest, was MCP-Clients wie Claude, Cursor oder ChatGPT über den /mcp-Endpunkt in diesem Arbeitsbereich tun dürfen.",
+      "enabled": {
+        "label": "MCP-Zugriff erlauben",
+        "description": "Wenn aus, wird jede Anfrage eines MCP-Clients abgelehnt. Verbundene Clients funktionieren wieder, sobald die Option wieder an ist."
+      },
+      "writeTools": {
+        "label": "Schreibende Tools erlauben",
+        "description": "Wenn aus, können MCP-Clients keine Sammlungen erstellen, keine Dateien hochladen und keine Websites hinzufügen, und der Chat führt keine verbundenen Aktionen aus."
+      },
+      "tools": {
+        "title": "Tools",
+        "subtitle": "Schalten Sie einzelne Tools aus. Ein ausgeschaltetes Tool wird MCP-Clients nicht angeboten, und Aufrufe werden abgelehnt.",
+        "writes": "Schreibt"
+      },
+      "appliesNote": "Änderungen gelten innerhalb weniger Sekunden für neue MCP-Anfragen.",
+      "loadError": "Die MCP-Zugriffseinstellungen konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+      "toasts": {
+        "saveSuccess": "MCP-Zugriffseinstellungen gespeichert",
+        "saveError": "MCP-Zugriffseinstellungen konnten nicht gespeichert werden",
+        "saveErrorDescription": "Prüfen Sie Ihre Verbindung und versuchen Sie es erneut."
       }
     },
     "labs": {
@@ -5450,6 +5480,7 @@
     "notGrantedOfflineAccess": "Die Anwendung bleibt nicht angemeldet. Sie müssen sich erneut anmelden, wenn die Sitzung endet.",
     "unreviewedApp": "Diese Anwendung hat sich selbst registriert. Sie wurde von keinem Administrator geprüft.",
     "clientIdHost": "Identifiziert durch {{host}}",
+    "registeredBy": "Registriert von {{name}}",
     "redirectTo": "Leitet Sie zurück zu {{uri}}"
   },
   "auth": {

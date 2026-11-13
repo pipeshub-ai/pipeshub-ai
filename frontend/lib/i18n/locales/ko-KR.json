@@ -1676,6 +1676,8 @@
         "demoteAdminBeforeRemove": "관리자를 멤버로 강등한 후 제거하세요.",
         "removeUserTitle": "사용자를 제거하시겠습니까?",
         "removeUserMessage": "정말 {{email}}을(를) {{workspace}} 워크스페이스에서 제거하시겠습니까?",
+        "removeUserOAuthAppsOne": "이 사용자가 만든 OAuth 앱이 1개 있습니다. 이 앱은 회원님에게 이전되므로 이 앱으로 연결한 사용자는 계속 연결됩니다.",
+        "removeUserOAuthAppsMany": "이 사용자가 만든 OAuth 앱이 {{count}}개 있습니다. 이 앱들은 회원님에게 이전되므로 이 앱으로 연결한 사용자는 계속 연결됩니다.",
         "removeButton": "제거",
         "cancelButton": "취소",
         "removeSuccess": "사용자가 성공적으로 제거되었습니다",
@@ -1966,7 +1968,8 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "등록한 OAuth 앱을 생성하고 관리합니다. 여기에 표시되는 앱은 본인만 볼 수 있습니다.",
+      "subtitle": "등록한 OAuth 앱을 생성하고 관리합니다. 본인과 조직의 관리자만 볼 수 있습니다.",
+      "subtitleAdmin": "조직의 모든 OAuth 앱과 앱을 만든 사람입니다. 알 수 없는 앱은 일시 중지하거나 삭제하세요.",
       "searchPlaceholder": "검색...",
       "newApplication": "새 OAuth 애플리케이션",
       "emptyTitle": "OAuth 2.0 애플리케이션 없음",
@@ -1976,6 +1979,7 @@
       "retry": "다시 시도",
       "scopesBadgeOne": "범위 {{count}}개",
       "scopesBadgeMany": "범위 {{count}}개",
+      "createdBy": "만든 사람: {{name}}",
       "manage": "관리",
       "noSearchResults": "검색과 일치하는 애플리케이션이 없습니다.",
       "manageComingSoonTitle": "준비 중",
@@ -1986,6 +1990,7 @@
         "saveDisabledNoChanges": "저장할 변경 사항이 없습니다.",
         "saveDisabledInvalid": "저장하기 전에 유효성 검사 오류를 수정하세요.",
         "tabAdvanced": "고급",
+        "creatorOnlyNotice": "이 앱을 만든 사람만 앱을 변경할 수 있습니다. 고급에서 앱을 일시 중지하거나 삭제할 수는 있습니다.",
         "aboutHeading": "정보",
         "aboutHelper": "OAuth 플로우에서 이 Client ID를 사용하세요.",
         "copyClientIdAria": "Client ID 복사",
@@ -2459,6 +2464,7 @@
       "nav": {
         "general": "일반",
         "labs": "실험실",
+        "mcpAccess": "MCP 액세스",
         "authentication": "인증",
         "connectors": "커넥터",
         "mcpServers": "MCP 서버",
@@ -2750,6 +2756,30 @@
         "message": "취소하면 편집 내용이 저장되지 않습니다",
         "confirm": "취소",
         "cancel": "계속 편집"
+      }
+    },
+    "mcpAccess": {
+      "title": "MCP 액세스",
+      "subtitle": "Claude, Cursor, ChatGPT 같은 MCP 클라이언트가 이 워크스페이스의 /mcp 엔드포인트로 무엇을 할 수 있는지 선택하세요.",
+      "enabled": {
+        "label": "MCP 액세스 허용",
+        "description": "끄면 MCP 클라이언트의 모든 요청이 거부됩니다. 다시 켜면 연결된 클라이언트가 바로 다시 작동합니다."
+      },
+      "writeTools": {
+        "label": "쓰기 도구 허용",
+        "description": "끄면 MCP 클라이언트가 컬렉션을 만들거나 파일을 업로드하거나 웹사이트를 추가할 수 없고, 채팅은 연결된 작업을 실행하지 않습니다."
+      },
+      "tools": {
+        "title": "도구",
+        "subtitle": "개별 도구를 끕니다. 꺼진 도구는 MCP 클라이언트에 제공되지 않으며 호출이 거부됩니다.",
+        "writes": "쓰기"
+      },
+      "appliesNote": "변경 사항은 몇 초 안에 새 MCP 요청에 적용됩니다.",
+      "loadError": "MCP 액세스 설정을 불러오지 못했습니다. 페이지를 새로 고쳐 다시 시도하세요.",
+      "toasts": {
+        "saveSuccess": "MCP 액세스 설정을 저장했습니다",
+        "saveError": "MCP 액세스 설정을 저장하지 못했습니다",
+        "saveErrorDescription": "연결을 확인한 후 다시 시도하세요."
       }
     },
     "labs": {
@@ -5477,6 +5507,7 @@
     "notGrantedOfflineAccess": "애플리케이션이 로그인 상태를 유지하지 않습니다. 세션이 끝나면 다시 로그인해야 합니다.",
     "unreviewedApp": "이 애플리케이션은 스스로 등록했습니다. 검토한 관리자가 없습니다.",
     "clientIdHost": "{{host}}에서 식별됨",
+    "registeredBy": "등록한 사람: {{name}}",
     "redirectTo": "{{uri}}(으)로 돌아갑니다",
     "legalNotice": "“허용”을 클릭하면 위에 설명된 대로 {{appName}}이(가) 사용자의 데이터에 액세스하는 것을 승인하게 됩니다.",
     "privacyPolicy": "개인정보 처리방침",

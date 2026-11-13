@@ -255,6 +255,11 @@ export interface OAuthAppResponse {
    * administrator still has to move.
    */
   tokenIdentityUserId?: string;
+  /** The person who registered the app and manages it. */
+  createdBy: string;
+  /** Name and address of `createdBy`, on an administrator's list of every app in the org. */
+  createdByName?: string;
+  createdByEmail?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -275,6 +280,8 @@ export interface ConsentData {
     isDynamic?: boolean;
     /** Host of a client metadata document client id: the only part of the app's identity it cannot choose. */
     clientIdHost?: string;
+    /** Who registered an app that was not dynamically registered: a member can name an app anything. */
+    registeredBy?: string;
     /** What the app's creator let it see; absent for everything the user can. */
     knowledgeLimit?: KnowledgeLimit;
   };
@@ -365,6 +372,8 @@ export interface ListAppsQuery {
   limit?: number;
   status?: string;
   search?: string;
+  /** Only the apps this person created. */
+  createdBy?: string;
 }
 
 // Paginated Response

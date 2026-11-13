@@ -18,6 +18,8 @@ const CONTROLLER_PATH = require.resolve('../../../../src/modules/mcp/controller/
 delete require.cache[CONTROLLER_PATH]
 const { handleMCPRequest } = require(CONTROLLER_PATH) as typeof import('../../../../src/modules/mcp/controller/mcp.controller')
 import { CODE_GRAPH_INSTRUCTIONS, CODE_GRAPH_TOOL_NAMES } from '../../../../src/modules/mcp/code-graph.tools'
+import { McpToolCatalog } from '../../../../src/modules/mcp/tool-catalog'
+import path from 'path'
 
 // Cached module references — we mutate these exports per-test so the controller
 // picks up our stubs (it destructures from the same object on every request).
@@ -637,6 +639,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       })
 
       appConfig.oauthBackendUrl = 'http://localhost:3001'
+      appConfig.frontendUrl = 'http://localhost:3001'
       const req = createMockRequest({ headers: { authorization: 'Bearer t' }, body: {} })
       const res = createMockResponse()
       const next = createMockNext()
@@ -644,6 +647,68 @@ describe('MCP Controller — handleMCPRequest', () => {
       await handleMCPRequest(appConfig)(req, res as any, next)
 
       expect(coreServerURL).to.equal('http://localhost:3001/api/v1')
+    })
+  })
+
+  describe('links the tools hand to the user', () => {
+    // The package builds a link on its API client's origin (webOrigin in
+    // tools/_writeHelpers.js), so that origin is what the user opens.
+    let coreOpts: any
+    beforeEach(() => {
+      coreOpts = undefined
+      mcpCoreExports.PipeshubCore = function PipeshubCore(opts: any) {
+        coreOpts = opts
+      }
+      mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
+        opts.getSDK()
+        return { server: { registerTool: () => undefined, connect: sinon.stub().resolves(), server: {} } }
+      })
+    })
+
+    const run = async () => {
+      const req = createMockRequest({ headers: { authorization: 'Bearer tok-1' }, body: {} })
+      await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
+    }
+    const send = (request: Request): Request =>
+      coreOpts.httpClient.hooks.reduce((r: Request, hook: any) => hook(r) ?? r, request)
+
+    it('builds them on the public dashboard URL, not the loopback API', async () => {
+      appConfig.oauthBackendUrl = 'http://localhost:3000'
+      appConfig.frontendUrl = 'https://pipeshub.example.com'
+
+      await run()
+
+      expect(new URL(coreOpts.serverURL).origin).to.equal('https://pipeshub.example.com')
+      const link = new URL('/workspace/connectors/personal/', new URL(coreOpts.serverURL).origin)
+      expect(link.toString()).to.equal('https://pipeshub.example.com/workspace/connectors/personal/')
+    })
+
+    it('still sends the API calls to loopback, with the relay header and body', async () => {
+      appConfig.oauthBackendUrl = 'http://localhost:3000'
+      appConfig.frontendUrl = 'https://pipeshub.example.com/'
+
+      await run()
+
+      const sent = send(new Request(`${coreOpts.serverURL}/search?q=1`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer tok-1', 'content-type': 'application/json' },
+        body: JSON.stringify({ query: 'q' }),
+      }))
+      expect(sent.url).to.equal('http://localhost:3000/api/v1/search?q=1')
+      expect(sent.method).to.equal('POST')
+      expect(sent.headers.get(MCP_RELAY_HEADER)).to.be.a('string')
+      expect(await sent.json()).to.deep.equal({ query: 'q' })
+    })
+
+    it('leaves the client alone when the dashboard is served from the API origin', async () => {
+      appConfig.oauthBackendUrl = 'http://localhost:3000'
+      appConfig.frontendUrl = 'http://localhost:3000'
+
+      await run()
+
+      expect(coreOpts.serverURL).to.equal('http://localhost:3000/api/v1')
+      const request = new Request('http://localhost:3000/api/v1/search')
+      expect(send(request)).to.equal(request)
     })
   })
 
@@ -1363,6 +1428,171 @@ describe('MCP Controller — handleMCPRequest', () => {
 
       expect(transports).to.have.length(2)
       expect(transports[0]).to.not.equal(transports[1])
+    })
+  })
+
+  // =========================================================================
+  // What the org's admins allow
+  // =========================================================================
+  describe('org MCP access settings', () => {
+    const policyRes = (policy?: Record<string, unknown>) => {
+      const res: any = { ...createMockResponse(), locals: policy ? { mcpAccessPolicy: { enabled: true, allowWriteTools: true, disabledTools: [], ...policy } } : {} }
+      res.status.returns(res)
+      res.set = sinon.stub().returns(res)
+      return res
+    }
+    const sessionUser = { userId: 'u1', orgId: 'o1' }
+    const call = (name: string) => ({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name } })
+    let createOpts: any
+    let removed: string[]
+    let origRequired: any
+
+    beforeEach(() => {
+      createOpts = undefined
+      removed = []
+      origRequired = oauthScopesExports.requiredOAuthScopes
+      oauthScopesExports.requiredOAuthScopes = (tool: string) =>
+        ({ pipeshub_upload: ['kb:upload'], pipeshub_search: ['semantic:write'] } as Record<string, string[]>)[tool]
+      mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
+        createOpts = opts
+        const tool = (name: string) => ({ remove: () => { removed.push(name) } })
+        return {
+          server: {
+            _registeredTools: { pipeshub_search: tool('pipeshub_search'), pipeshub_sources: tool('pipeshub_sources') },
+            registerTool: () => undefined,
+            connect: sinon.stub().resolves(),
+            server: {},
+          },
+        }
+      })
+      sinon.stub(McpToolCatalog, 'isWriteTool').resolves((name: string) => name === 'pipeshub_upload')
+    })
+
+    afterEach(() => {
+      oauthScopesExports.requiredOAuthScopes = origRequired
+    })
+
+    it('changes nothing with the defaults: same scopes, chat actions, no chat override, no tool removed', async () => {
+      await handleMCPRequest(appConfig)(createMockRequest({ user: sessionUser, body: call('pipeshub_upload') }), policyRes(), createMockNext())
+      expect(createOpts.scopes).to.equal(undefined)
+      expect(createOpts.allowChatActions).to.equal(true)
+      expect(createOpts).to.not.have.property('chat')
+      expect(removed).to.deep.equal([])
+      expect((McpToolCatalog.isWriteTool as sinon.SinonStub).called, 'the catalog is not needed').to.equal(false)
+    })
+
+    it('mounts only the read tools and runs no chat actions while write tools are off', async () => {
+      await handleMCPRequest(appConfig)(
+        createMockRequest({ user: sessionUser, body: { jsonrpc: '2.0', id: 1, method: 'tools/list' } }),
+        policyRes({ allowWriteTools: false }),
+        createMockNext(),
+      )
+      expect(createOpts.scopes).to.deep.equal(['read'])
+      expect(createOpts.allowChatActions).to.equal(false)
+    })
+
+    it('refuses a call to a write tool while write tools are off, before any step-up', async () => {
+      const res = policyRes({ allowWriteTools: false })
+      const req = createMockRequest({
+        headers: { authorization: 'Bearer t' },
+        user: { ...sessionUser, isOAuth: true, oauthScopes: ['kb:read'] },
+        body: call('pipeshub_upload'),
+      })
+      await handleMCPRequest(appConfig)(req, res, createMockNext())
+      expect(res.status.calledWith(403)).to.equal(true)
+      expect(res.json.firstCall.args[0].error.message).to.equal('The pipeshub_upload tool is turned off for this organization by an admin.')
+      expect(res.set.called, 'no insufficient_scope challenge').to.equal(false)
+      expect(createOpts, 'no server is built').to.equal(undefined)
+    })
+
+    it('leaves a turned-off tool out of the listing and refuses calls to it, before any step-up', async () => {
+      await handleMCPRequest(appConfig)(
+        createMockRequest({ user: sessionUser, body: { jsonrpc: '2.0', id: 1, method: 'tools/list' } }),
+        policyRes({ disabledTools: ['pipeshub_search'] }),
+        createMockNext(),
+      )
+      expect(removed).to.deep.equal(['pipeshub_search'])
+
+      createOpts = undefined
+      const res = policyRes({ disabledTools: ['pipeshub_search'] })
+      await handleMCPRequest(appConfig)(
+        createMockRequest({ headers: { authorization: 'Bearer t' }, user: { ...sessionUser, isOAuth: true, oauthScopes: [] }, body: call('pipeshub_search') }),
+        res,
+        createMockNext(),
+      )
+      expect(res.status.calledWith(403)).to.equal(true)
+      expect(res.json.firstCall.args[0].error.message).to.contain('pipeshub_search tool is turned off')
+      expect(res.set.called).to.equal(false)
+      expect(createOpts).to.equal(undefined)
+    })
+
+    it('builds the server without chat when an admin turned pipeshub_chat off', async () => {
+      await handleMCPRequest(appConfig)(createMockRequest({ user: sessionUser, body: {} }), policyRes({ disabledTools: ['pipeshub_chat'] }), createMockNext())
+      expect(createOpts.chat).to.equal(false)
+    })
+
+    it('skips the repo check when every code tool is turned off', async () => {
+      const fetchStub = sinon.stub(globalThis, 'fetch')
+      await handleMCPRequest(appConfig)(
+        createMockRequest({ user: { userId: 'cg-all-off', orgId: 'o1' }, body: { jsonrpc: '2.0', id: 1, method: 'tools/list' } }),
+        policyRes({ disabledTools: [...CODE_GRAPH_TOOL_NAMES] }),
+        createMockNext(),
+      )
+      expect(fetchStub.called).to.equal(false)
+    })
+
+    describe('with the real @pipeshub-ai/mcp package', () => {
+      const nm = (p: string): string => path.join(__dirname, '../../../../node_modules', p)
+      // The mocha setup mocks the CJS view of the package; load the real ESM files.
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval -- ts-node compiles import() to the mocked require()
+      const nativeImport = new Function('p', 'return import(p)') as (p: string) => Promise<any>
+      let served: any
+
+      beforeEach(async () => {
+        const real = await nativeImport(nm('@pipeshub-ai/mcp/esm/mcp-server/server.js'))
+        mcpServerExports.createMCPServer = (opts: any) => {
+          const built = real.createMCPServer(opts)
+          served = built.server
+          return built
+        }
+        sdkTransportExports.StreamableHTTPServerTransport = class {
+          async start() {}
+          async send() {}
+          async close() {}
+          async handleRequest() {}
+        }
+        sinon.stub(globalThis, 'fetch').resolves(new Response(JSON.stringify({ repos: [] }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        }))
+      })
+
+      const listed = async (policy?: Record<string, unknown>) => {
+        await handleMCPRequest(appConfig)(
+          createMockRequest({ user: { userId: `real-${Math.random()}`, orgId: 'o1' }, body: { jsonrpc: '2.0', id: 1, method: 'tools/list' } }),
+          policyRes(policy),
+          createMockNext(),
+        )
+        const tools = served._registeredTools as Record<string, { enabled: boolean }>
+        await served.close()
+        return Object.keys(tools).filter((name) => tools[name].enabled)
+      }
+      const WRITE_TOOLS = ['pipeshub_create_collection', 'pipeshub_upload', 'pipeshub_add_web_source']
+
+      it('lists the write tools by default', async () => {
+        expect(await listed()).to.include.members([...WRITE_TOOLS, 'pipeshub_search'])
+      })
+
+      it('lists no write tool while write tools are off, and keeps chat', async () => {
+        const tools = await listed({ allowWriteTools: false })
+        expect(tools).to.not.include.any.members(WRITE_TOOLS)
+        expect(tools).to.include.members(['pipeshub_search', 'pipeshub_chat'])
+      })
+
+      it('does not list a tool an admin turned off', async () => {
+        const tools = await listed({ disabledTools: ['pipeshub_download_record'] })
+        expect(tools).to.not.include('pipeshub_download_record')
+        expect(tools).to.include('pipeshub_search')
+      })
     })
   })
 })
