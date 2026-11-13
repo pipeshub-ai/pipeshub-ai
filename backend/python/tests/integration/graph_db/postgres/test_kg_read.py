@@ -443,11 +443,9 @@ N = 12_000
 
 
 async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer, pg_provider, pg_db) -> None:
-    """EXPLAIN gate: on an org of 12,000 records, as the reader's unit runs the statements (custom plans, bitmap scans off), not analysed since its rows were written and then analysed, each is bounded by its
+    """EXPLAIN gate: on an org of 12,000 records, as the reader's unit runs the statements (custom plans, bitmap scans off), never analysed and then analysed, each is bounded by its
     inputs: no sequential or bitmap heap scan, and the index conditions are the org and the key asked. Run on every PostgreSQL version of the suite."""
     c = await _case(layer, pg_provider, pg_db, literal_kind=3)
-    # "fresh" is: statistics from before the org's rows. Without this the plan depends on when autovacuum last analysed the tables, which earlier tests decide.
-    await _admin("ANALYZE kg.records; ANALYZE kg.node_keys; ANALYZE kg.scope_classes; ANALYZE kg.links")
     await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, leaf) SELECT $1, 50000000 + g, 3, 'plans-r' || g, 3, $2, true FROM generate_series(1, $3) g", c.org, c.app_sk, N)
     await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT $1, 50000000 + g, 1, 60000000 + g FROM generate_series(1, $2) g", c.org, N)
     ids = [*c.ids, *(f"plans-r{j}" for j in range(1, N, 240))]
