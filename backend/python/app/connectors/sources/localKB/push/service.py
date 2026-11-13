@@ -46,6 +46,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.services.vector_cleanup_events import (
     build_stored_document_cleanup_events,
 )
+from app.core import org_context
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import FileRecord, RecordType
 from app.models.source_dates import upload_origin
@@ -114,7 +115,7 @@ def _deny() -> PushRefusal:
 async def _make_off_loop(make: Callable[..., str], *args: object, undo: Callable[[str], object]) -> str:
     """``make(*args)`` in a thread. A cancel cannot stop the thread, so what it makes after one is undone (in a thread too)."""
     loop = asyncio.get_running_loop()
-    made = asyncio.ensure_future(asyncio.to_thread(make, *args))
+    made = org_context.spawn_in_request(asyncio.to_thread(make, *args))
     try:
         return await asyncio.shield(made)
     except asyncio.CancelledError:
@@ -295,7 +296,7 @@ class KbPushService:
             return await self._write(kb_id=kb_id, user_id=user_id, org_id=org_id, v=validated, folder_id=folder_id, img=img)
         finally:
             try:
-                await _run_to_the_end(asyncio.ensure_future(asyncio.to_thread(self._remove_files, in_path, out_path, img)))
+                await _run_to_the_end(org_context.spawn_in_request(asyncio.to_thread(self._remove_files, in_path, out_path, img)))
             finally:
                 if img is not None:
                     img.slot.release()
