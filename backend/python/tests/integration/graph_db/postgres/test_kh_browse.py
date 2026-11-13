@@ -847,3 +847,41 @@ async def test_the_sidebar_lists_the_groups_and_folders_a_browse_lists_and_a_rec
         last = page["rows"][-1]
         after = page.get("resume") or {"nullRank": last["nullRank"], "sortKey": last["sortKey"], "id": last["id"]}
     assert seen == want == ["empty", "fold", "handbook", "twin"], seen
+
+
+@pytest.mark.parametrize("mode", ["served", "walk"])
+async def test_a_sidebar_record_whose_placeholder_the_budget_leaves_undecided_is_listed_on_a_later_page(pg_db, monkeypatch, mode) -> None:
+    """Two records of a folder each lead through a chain of placeholders to a readable record; the request's budget of placeholder walks ends with the first chain, so the second
+    record's arrow is undecided. The sidebar ends the page before it, with a resume position and a capped total, and lists it on the next page: every row once."""
+    p, org = prov(pg_db), new_org()
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "G", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+        chains = {r: [f"{r}-s{i}" for i in range(3)] for r in ("a1", "b1")}
+        recs = [("fold", {"mimeType": "application/vnd.folder"}), ("a1", {}), ("b1", {}), ("c1", {}), ("zfold", {"mimeType": "application/vnd.folder"}),
+                *((s, {"isPlaceholder": True}) for c in chains.values() for s in c), ("a1-leaf", {}), ("b1-leaf", {})]
+        await p.batch_upsert_nodes([{"_key": i, "recordName": i, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", **extra} for i, extra in recs],
+                                   "records")
+        hops = [*(("fold", i) for i in ("a1", "b1", "c1", "zfold")), *((r, c[0]) for r, c in chains.items()), *((c[i], c[i + 1]) for c in chains.values() for i in range(2)),
+                *((c[-1], f"{r}-leaf") for r, c in chains.items())]
+        await p.batch_create_edges([edge(a, "records", b, "records", relationshipType="PARENT_CHILD") for a, b in hops], "nodeRelations")
+        await p.batch_create_edges([edge(i, "records", "g1", "recordGroups") for i, _ in recs], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        granted = [i for i, _ in recs]
+        await p.batch_create_edges([edge("u1", "users", i, "records", type="USER", role="READER") for i in granted], "permission")
+    await flip(pg_db, org)
+    if mode == "walk":
+        await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+    monkeypatch.setattr(kh_listing, "LEAD_NODES", 3)      # one chain's walk (three rows) spends the request's budget
+    seen, capped, after = [], [], None
+    for _ in range(10):
+        page = await browse(p, org, "fold", granted, after=after, filters={"only_containers": True})
+        seen += [r["id"] for r in page["rows"]]
+        capped.append(bool(page.get("totalCapped")))
+        if not page["hasMore"]:
+            break
+        last = page["rows"][-1] if page["rows"] else None
+        after = page.get("resume") or {"nullRank": last["nullRank"], "sortKey": last["sortKey"], "id": last["id"]}
+    assert seen == ["a1", "b1", "zfold"], seen
+    assert capped[0] is True, capped

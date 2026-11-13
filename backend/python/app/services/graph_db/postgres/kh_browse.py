@@ -169,16 +169,31 @@ class KhBrowseMixin(PgBase):
         tops = self._kh_tops_under(org, app_id, access, gset, transaction, apply=chain_tops_apply(app_doc))
         lead = LeadBudget()      # the request's placeholder walks: its page, its total and its arrows share one budget
         arrows = (hidden, admitted_of, org, transaction, tops, lead)      # what deciding a placeholder and an arrow reads
-        on: dict[int, bool] = {}
+        on: dict[int, bool] = {}      # a record's arrow, once decided (never while a placeholder below it is undecided)
 
-        async def keep(rows: list[Any]) -> list[Any]:
-            """The sidebar's rows (``only_containers``): the groups and the folders, and a record only where its arrow is on, as the page's arrows decide it."""
-            ask = [r for r in rows if r["kind"] == 3 and not r["folder"] and r["sk"] not in on]
+        def record(r: Any) -> bool:  # noqa: ANN401
+            return r["kind"] == 3 and not r["folder"]
+
+        async def keep(rows: list[Any], head: int | None) -> tuple[list[Any], int | None]:
+            """The sidebar's rows (``only_containers``): the groups and the folders, and a record only where its arrow is on, as the page's arrows decide it. A record whose
+            arrow waits on a placeholder the request's budget left undecided ends the rows there, and its sk is handed back (the caller resumes before it); ``head``, the
+            first row the caller looked at, is decided by walks of its own budget instead, so a request always moves on."""
+            ask = [r for r in rows if record(r) and r["sk"] not in on]
             if ask:
                 read = await self._kq(lambda tx: self._kh_arrows_read(tx, org, ask, hidden, sets, gset, access, tops=chain_tops_apply(app_doc)), transaction)
-                lit = await self._kh_arrows(read, ask, *arrows)
-                on.update((r["sk"], r["sk"] in lit) for r in ask)
-            return [r for r in rows if r["kind"] != 3 or r["folder"] or on[r["sk"]]]
+                unsure: set[int] = set()
+                lit = await self._kh_arrows(read, ask, *arrows, undecided=unsure)
+                on.update((r["sk"], r["sk"] in lit) for r in ask if r["sk"] not in unsure)
+                while head in unsure and head not in on:      # each pass's first walk has a budget of its own and ends: one more placeholder decided
+                    unsure, known = set(), len(lead.decided)
+                    one = (read[0], [k for k in read[1] if k["parent"] == head], read[2], read[3])
+                    lit = await self._kh_arrows(one, [r for r in ask if r["sk"] == head], *arrows[:5], LeadBudget(decided=lead.decided), undecided=unsure)
+                    if head not in unsure:
+                        on[head] = head in lit
+                    elif len(lead.decided) == known:      # no walk ended (never expected): resume before it rather than loop
+                        break
+            stop = next((i for i, r in enumerate(rows) if record(r) and r["sk"] not in on), len(rows))
+            return [r for r in rows[:stop] if not record(r) or on[r["sk"]]], rows[stop]["sk"] if stop < len(rows) else None
         walk = (*arrows, keep if side else None)      # what listing a child reads (``_kh_listed``)
         resume, capped, out, read = None, False, None, None
         if u["done"] is not None:
@@ -234,22 +249,27 @@ class KhBrowseMixin(PgBase):
         return counts
 
     async def _kh_listed(self, rows: list[Any], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str, transaction: str | None,
-                         tops: Callable[[list[Any]], Awaitable[set[int]]] | None, budget: LeadBudget, keep: Callable[[list[Any]], Awaitable[list[Any]]] | None = None,
-                         ok: set[str] | None = None) -> tuple[list[Any], int]:
+                         tops: Callable[[list[Any]], Awaitable[set[int]]] | None, budget: LeadBudget,
+                         keep: Callable[[list[Any], int | None], Awaitable[tuple[list[Any], int | None]]] | None = None, ok: set[str] | None = None) -> tuple[list[Any], int]:
         """Of children in the caller's order, those a browse lists: the ones the viewer may open (``ok`` when already asked), a placeholder only when it leads somewhere
         (:meth:`_kh_leads`), and of those the ones ``keep`` keeps (the sidebar's); and how many of ``rows`` are decided, a prefix that ends before the first placeholder the request's
-        budget left undecided (the caller resumes there)."""
+        budget left undecided, or the first record whose sidebar answer it left undecided (the caller resumes there)."""
         ok = await admitted_of(rows) if ok is None else ok
         stubs = [r for r in rows if r["placeholder"] and r["id"] in ok]
         led, undecided = await self._kh_leads(stubs, hidden, admitted_of, org, transaction, tops=tops, budget=budget) if stubs else (set(), set())
         n = next((i for i, r in enumerate(rows) if r["sk"] in undecided and r["placeholder"] and r["id"] in ok), len(rows))
         listed = [r for r in rows[:n] if r["id"] in ok and (not r["placeholder"] or r["sk"] in led)]
-        return (await keep(listed) if keep else listed), n
+        if keep:
+            listed, stop = await keep(listed, rows[0]["sk"] if rows else None)
+            if stop is not None:
+                n = next(i for i, r in enumerate(rows) if r["sk"] == stop)
+        return listed, n
 
     async def _kh_arrows(self, read: tuple | None, rows: list[Any], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str, transaction: str | None,
-                         tops: Callable[[list[Any]], Awaitable[set[int]]] | None, budget: LeadBudget) -> set[int]:
-        """Of ``rows``, the sks whose arrow is on (opening the row lists something), from their :meth:`_kh_arrows_read`: the one rule for a page's arrows and its sidebar."""
-        lists = await self._kh_lists(read, hidden, admitted_of, org, transaction, tops, budget) if read else set()
+                         tops: Callable[[list[Any]], Awaitable[set[int]]] | None, budget: LeadBudget, *, undecided: set[int] | None = None) -> set[int]:
+        """Of ``rows``, the sks whose arrow is on (opening the row lists something), from their :meth:`_kh_arrows_read`: the one rule for a page's arrows and its sidebar.
+        ``undecided`` collects the rows left off only because the request's budget left a placeholder below them undecided."""
+        lists = await self._kh_lists(read, hidden, admitted_of, org, transaction, tops, budget, undecided=undecided) if read else set()
         return lists | await self._kh_held_lists(rows, read, lists, tops)
 
     @staticmethod

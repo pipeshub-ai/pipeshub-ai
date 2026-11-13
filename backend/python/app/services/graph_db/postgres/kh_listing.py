@@ -429,9 +429,10 @@ class KhListingMixin(PgBase):
         return lists, kids, ok, held
 
     async def _kh_lists(self, read: tuple[set[int], list[Any], set[str], set[int]], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str,
-                        transaction: str | None, tops: Callable[[list[Any]], Awaitable[set[int]]] | None = None, budget: LeadBudget | None = None) -> set[int]:
+                        transaction: str | None, tops: Callable[[list[Any]], Awaitable[set[int]]] | None = None, budget: LeadBudget | None = None, *,
+                        undecided: set[int] | None = None) -> set[int]:
         """The rows of the page whose opening lists something (from :meth:`_kh_arrows_read`): a child the viewer may open, a placeholder only when it leads somewhere
-        (:meth:`_kh_leads`); none for a group that hides its children."""
+        (:meth:`_kh_leads`); none for a group that hides its children. ``undecided`` collects the rows whose answer waits on a placeholder the request's budget left undecided."""
         lists, kids, ok, _ = read
         by_stub: dict[int, set[int]] = {}
         stubs: list[Any] = []
@@ -444,10 +445,13 @@ class KhListingMixin(PgBase):
                 by_stub.setdefault(r["sk"], set()).add(r["parent"])
                 stubs.append(r)
         if by_stub:
-            # shortcut: a placeholder the request's budget leaves undecided lights no arrow; opening the row resumes before it. Upgrade if rows of many wide placeholders are common.
-            led, _ = await self._kh_leads([r for r in stubs if by_stub[r["sk"]] - lists], hidden, admitted_of, org, transaction, tops=tops, budget=budget)
+            # shortcut: a placeholder the request's budget leaves undecided lights no arrow; opening the row resumes before it (a sidebar resumes before the row itself,
+            # ``_kh_browse``). Upgrade if rows of many wide placeholders are common.
+            led, unsure = await self._kh_leads([r for r in stubs if by_stub[r["sk"]] - lists], hidden, admitted_of, org, transaction, tops=tops, budget=budget)
             for sk in led:
                 lists |= by_stub[sk]
+            if undecided is not None:
+                undecided |= {p for sk in unsure for p in by_stub[sk]} - lists
         return lists
 
     async def _kh_flat_viewer(self, sets: dict[str, set[int]] | None, where: str, base: kgl.Params, admit: Any, granted: list[str], transaction: str | None) -> dict[str, Any] | None:  # noqa: ANN401
