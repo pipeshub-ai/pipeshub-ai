@@ -255,6 +255,23 @@ async def test_an_open_apps_member_is_matched_by_the_apps_handle_not_its_key(gra
         await layer.release([KEYCLASH])
 
 
+async def test_an_open_app_reads_only_its_records_as_members_and_lists_only_its_own_stubs(graph_layers) -> None:
+    """An App that opens everything reads a record that belongs to it as a member wherever it hangs, but not a group: below a seed the walk does
+    not reach, a strict group of the App is not listed and an OPEN one that inherits from the seed is (OPENGROUP). A stub of another connector
+    that hangs in this App's hierarchy is not listed here, nor lights the arrow of the row above it (XSTUB)."""
+    for layer in graph_layers:
+        await layer.preload([OPENGROUP, XSTUB])
+        try:
+            assert await children_of(layer, OPENGROUP, "u", "k", "record") == {"go": False}, layer.name
+            assert await children_of(layer, XSTUB, "u", "A", "app") == {"g": True}, layer.name
+            assert await children_of(layer, XSTUB, "u", "g", "recordGroup") == {"r": False}, layer.name
+            assert await children_of(layer, XSTUB, "u", "r", "record") == {}, layer.name
+            bad = [f for world in (OPENGROUP, XSTUB) for f in _bad(await check_world(layer, world, "openapp"))]
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([OPENGROUP, XSTUB])
+
+
 @pytest.mark.parametrize("kind", sorted(gen.GENERATORS))
 async def test_generated_worlds_count_what_the_viewer_may_read(graph_layers, kind: str) -> None:
     for seed in gen.seeds():

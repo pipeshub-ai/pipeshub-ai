@@ -643,10 +643,12 @@ class _RecordLeases:
 class _Sidecars:
     def __init__(self, leases: _RecordLeases) -> None:
         self.calls: list[tuple[Any, ...]] = []
+        self.stored_runs: list[str | None] = []
         self._leases = leases
 
-    async def write_at(self, org_id, virtual_record_id, rev, path, payload) -> bool:
+    async def write_at(self, org_id, virtual_record_id, rev, path, payload, *, stored_run) -> bool:
         self.calls.append((org_id, virtual_record_id, rev, path, payload, "record:b-open" in self._leases.held))
+        self.stored_runs.append(stored_run)
         return True
 
 
@@ -760,6 +762,7 @@ class TestTheClassificationSidecar:
         assert (org, vrid, rev, held) == (ORG, "vr-b-open", REV, True)
         assert path.startswith("enrich/classification.") and path.endswith(f"@{ClassifyStage.version}.json")
         assert envelope["storedRun"] == "gen-1:run" and envelope["storedMeta"] == path
+        assert sidecars.stored_runs == ["gen-1:run"]
         stored = blob.stored["vr-b-open"]["semantic_metadata"]
         payload = envelope["classification"]
         assert payload["topics"] == stored["topics"] == ["Shipping dates", "Product launch window"]

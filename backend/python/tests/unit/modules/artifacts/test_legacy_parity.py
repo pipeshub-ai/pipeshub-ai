@@ -30,6 +30,7 @@ from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter, canonical_json
 from app.modules.pipeline.stages.record_io import NAMED_ENTITIES_SECTION
 from app.modules.transformers.blob_storage import clean_stored_record
+from app.modules.transformers.stored_write import write_id
 from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
@@ -164,7 +165,7 @@ async def _artifact_sets(records: dict[str, dict[str, Any]], cases: dict[str, di
         if later:
             # As a copy-on-write classification or label repair files it, and names it on the mapping.
             path = f"enrich/classification.{vrid.replace('-', '')[:32].ljust(32, '0')}@4.json"
-            plan = await store.presign_revision(ORG, vrid, REV, [(path, "application/json")])
+            plan = await store.presign_revision(ORG, vrid, REV, [(path, "application/json")], write_id=write_id(RUN))
             classification = {k: v for k, v in record["semantic_metadata"].items() if k != NAMED_ENTITIES_SECTION}
             envelope = {"storedRun": RUN, "storedMeta": path, "classification": classification}
             await store.put(plan.files[path], canonical_json(envelope), "application/json")
