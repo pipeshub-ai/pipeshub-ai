@@ -528,6 +528,7 @@
     "created": "생성일",
     "updated": "업데이트일",
     "source": "소스",
+    "actions": "작업",
     "noData": "데이터가 없습니다",
     "loading": "데이터 로드 중...",
     "selectAll": "모두 선택",
@@ -579,6 +580,8 @@
     "pagination": {
       "showing": "{{total}}개 중 {{start}}-{{end}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "최소 {{total}}개 중 {{start}}-{{end}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "페이지당 {{value}}개"
     },
     "yes": "예",
@@ -793,7 +796,8 @@
     "nameRules": {
       "folderSeparator": "폴더 이름에는 \"/\" 또는 \"\\\"를 사용할 수 없습니다.",
       "collectionExists": "\"{{name}}\" 컬렉션이 이미 있습니다. 다른 이름을 선택하세요."
-    }
+    },
+    "sourcesNotReady": "일부 소스가 아직 준비 중이라 목록에 표시되지 않습니다({{count}}). 잠시 후 다시 시도하세요."
   },
   "connectorTypes": {
     "slack": "Slack",

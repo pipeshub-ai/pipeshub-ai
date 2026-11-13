@@ -64,3 +64,11 @@ async def test_records_go_out_in_sk_order() -> None:
     tx = FakeTx()
     await KgWriter(tx).records_upsert([row(3), row(1), row(2)])
     assert tx.calls[0][1][0] == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_the_listing_columns_go_out_sorted_by_key_and_in_the_writers_argument_order() -> None:
+    tx = FakeTx()
+    n = await KgWriter(tx).listing_set([(2, 3, "b", 3, True, False, False, b"b"), (1, 2, "a", 2, False, True, True, None)])
+    assert n == 2 and "kg.w_listing_set" in tx.calls[0][0]
+    assert tx.calls[0][1] == ([1, 2], [2, 3], ["a", "b"], [2, 3], [False, True], [True, False], [True, False], [None, b"b"])

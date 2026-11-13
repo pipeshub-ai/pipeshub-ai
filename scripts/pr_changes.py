@@ -78,6 +78,9 @@ CHECKS: dict[str, tuple[str, ...]] = {
     "node_unit": NODE_APP + (".github/workflows/unit-test.yml",),
     "python_unit": PYTHON_APP
     + (
+        # A frontend file a Python unit test checks against the API
+        # (test_knowledge_hub_sort_matches_spec.py): changed alone, it must still run.
+        "frontend/app/(main)/knowledge-base/sort-fields.json",
         "scripts/unit_shards.py",
         "scripts/unit_shard_durations.json",
         ".github/workflows/unit-test.yml",
@@ -159,6 +162,8 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/permissions/stamp_world.py",
     f"{PYTHON}/tests/permissions/store_harness.py",
     f"{PYTHON}/tests/permissions/rewrite_kit.py",
+    f"{PYTHON}/tests/permissions/kh_layer.py",
+    f"{PYTHON}/tests/permissions/kh_worlds.py",
     f"{PYTHON}/tests/permissions/scenarios/**",
 )
 

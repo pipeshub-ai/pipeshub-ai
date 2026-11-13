@@ -150,6 +150,8 @@ on:
       - 'backend/python/tests/permissions/stamp_world.py'
       - 'backend/python/tests/permissions/store_harness.py'
       - 'backend/python/tests/permissions/rewrite_kit.py'
+      - 'backend/python/tests/permissions/kh_layer.py'
+      - 'backend/python/tests/permissions/kh_worlds.py'
       - 'backend/python/tests/permissions/scenarios/**'
       - 'backend/python/pyproject.toml'
       - 'deployment/docker-compose/docker-compose.integration.messaging.yml'
