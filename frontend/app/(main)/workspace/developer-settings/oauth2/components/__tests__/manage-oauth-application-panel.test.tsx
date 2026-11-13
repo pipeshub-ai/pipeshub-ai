@@ -38,10 +38,10 @@ const app = (createdBy: string): OAuthClient => ({
   createdBy,
 });
 
-async function openPanelFor(createdBy: string) {
+async function openPanelFor(createdBy: string, { profileLoaded = true } = {}) {
   installBrowserShims();
   useUserStore.setState({
-    profile: {
+    profile: !profileLoaded ? null : {
       userId: ME,
       firstName: null,
       lastName: null,
@@ -89,6 +89,13 @@ describe('ManageOAuthApplicationPanel for an app someone else created', () => {
       name: text.manageApplication.suspendApplicationButton,
     });
     expect((suspend as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('shows it read-only until the signed-in profile has loaded', async () => {
+    await openPanelFor(SOMEONE_ELSE, { profileLoaded: false });
+
+    expect(screen.queryByText(text.manageApplication.generateSecret)).toBeNull();
+    expect(nameInput().matches(':disabled')).toBe(true);
   });
 
   it('keeps everything editable for the app\'s creator', async () => {

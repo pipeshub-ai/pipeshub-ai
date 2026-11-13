@@ -331,9 +331,10 @@ export function ManageOAuthApplicationPanel({
 
 
   // An admin can open anyone's app but only suspend, activate or delete it;
-  // the server refuses every change to an app someone else created.
+  // the server refuses every change to an app someone else created. Until both
+  // ids are known, show it read-only rather than offer edits the server refuses.
   const isCreator =
-    !detail?.createdBy || !currentUserId || detail.createdBy === currentUserId;
+    !!detail?.createdBy && !!currentUserId && detail.createdBy === currentUserId;
 
   const needsServiceAccount =
     grantTypes.has('client_credentials') && !tokenIdentityUserId;
