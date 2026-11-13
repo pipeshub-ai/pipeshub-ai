@@ -2,119 +2,410 @@
 
 The projector writes a row whose value the records writer refuses with that column empty (``kg.project``) and takes only the row's connector off the readers. That is safe only while
 no access check or listing reads those columns from kg: the stamps are compiled from the graph, and the one reader of a copied column, the listing's ``record_type`` filter, reads
-only connectors kg serves. This test reads every SQL text of the application and of the migrations that names ``kg.records``, and fails on any other read of those columns: by an alias
-of the table, by a bare column name beside it, or through ``SELECT *`` that hands the whole row out.
+only connectors kg serves.
+
+This test parses every statement that names ``kg.records`` (sqlglot, the PostgreSQL dialect, as ``app.core.db.sql_lint`` does) and follows each column to the table it comes from:
+a copied column (or the whole row) counts when it reaches what a statement returns or a ``WHERE``, ``JOIN``, ``GROUP BY``, ``HAVING`` or ``ORDER BY``; a subquery's column that
+nothing outside it reads does not. The statements are those of the application's modules (a string, an f-string whose holes are module constants, a concatenation of those; a
+fragment that continues a statement is joined to it), the statements the listing composes (rendered by its builders), the migrations' SQL files and the vetted manifests' bodies.
+A statement that does not parse fails the test unless :data:`UNPARSED` names it with a reason; a statement composed at run time must be one of the rendered ones.
 """
 from __future__ import annotations
 
 import ast
+import importlib
 import re
 from pathlib import Path
 
 import pytest
 import yaml
+from sqlglot import exp, parse_one
+from sqlglot.optimizer.scope import Scope, build_scope
 
+# sqlglot is a dev dependency: imported, not skipped, so the guard cannot go missing
 BACKEND = Path(__file__).resolve().parents[5]
-COPIED = ("rule", "model", "origin", "vrid", "external_id", "record_type")
-_C = "|".join(COPIED)
-_NOT_ALIAS = r"(?!(?:WHERE|ON|USING|JOIN|LEFT|RIGHT|INNER|CROSS|ORDER|GROUP|LIMIT|SET|LATERAL|WITH|FOR|AND|OR)\b)"
-_BOUND = re.compile(rf"\bkg\.records\b\s+(?:AS\s+)?{_NOT_ALIAS}(\w+)", re.I)
-# a row of kg.records handed out whole by a subquery: its alias is the table's for what reads it
-_SUBQUERY = re.compile(rf"\(\s*SELECT\s+(?:\w+\.)?\*\s+FROM\s+kg\.records\b[^()]*(?:\([^()]*\)[^()]*)*\)\s+(?:AS\s+)?{_NOT_ALIAS}(\w+)", re.I)
-_STAR = re.compile(r"\bSELECT\s+(?:\w+\.)?\*\s+FROM\s+kg\.records\b", re.I)
+TABLE = "kg.records"
+COPIED = frozenset({"rule", "model", "origin", "vrid", "external_id", "record_type"})
+LISTING = "python/app/services/graph_db/postgres/kg/listing.py"
 
-# (source, what): the reads that may take a copied column or the whole row
+# (source, what): the reads that may take a copied column ("*": the whole row, or anything of the source)
 ALLOWED = {
-    ("python/app/services/graph_db/postgres/kg/listing.py", "r.record_type"),        # the listing's filter: a connector kg serves only
+    (LISTING, "record_type"),                                                       # the listing's filter: a connector kg serves only
     ("python/app/services/graph_db/postgres/kg/verify.py", "*"),                    # the verify compares the whole row with the graph: what must see the difference
-    ("db/versions/kg/0001_baseline.sql", "*"),                                      # the table's definition
-    ("db/versions/kg/vetted/w_records_upsert.sql", "*"),                            # the writer
-    ("db/versions/kg/vetted/manifest.yaml#kg.w_records_upsert", "*"),
 }
+# (source, tag or start of the statement): statements that name kg.records and that sqlglot does not parse, with the reason they need no reading
+UNPARSED: dict[tuple[str, str], str] = {}
+
+_START = re.compile(r"^\s*(?:/\*.*?\*/\s*)*(?:SELECT|WITH|INSERT|UPDATE|DELETE)\b", re.I | re.S)
+_CONTINUES = re.compile(r"^\s*(?:FROM|WHERE|AND|OR|JOIN|LEFT|RIGHT|INNER|CROSS|FULL|ON|ORDER|GROUP|HAVING|LIMIT|OFFSET|RETURNING|USING)\b", re.I)
+_TAG = re.compile(r"/\*\s*pipeshub:([\w.]+)\s*\*/")
 
 
-_SQL = re.compile(r"\b(?:SELECT|FROM|WHERE|JOIN|AND|OR|ORDER\s+BY|GROUP\s+BY|LIMIT|UNION|EXISTS|ANY)\b|\$\d|::", re.I)
-# a whole row of the table handed out again: ``SELECT *`` over a subquery that hands it out
-_OUTER_STAR = re.compile(r"\bSELECT\s+\*\s+FROM\s*\(\s*SELECT\s+(?:\w+\.)?\*\s+FROM\s+kg\.records\b", re.I)
+class Unparsed(Exception):
+    def __init__(self, sql: str) -> None:
+        super().__init__(sql)
+        self.key = _key(sql)
 
 
-def reads(sql_texts: list[str]) -> set[str]:
-    """The reads of copied columns of kg.records in one source, given as its SQL texts. A query may be split across texts: the aliases are the source's, and a source that names
-    the table has every SQL text of it read for bare column names (a fragment ``" FROM kg.records"`` and another ``"SELECT external_id"`` are one query)."""
-    aliases = {m.group(1).lower() for s in sql_texts for rx in (_BOUND, _SUBQUERY) for m in rx.finditer(s)}
-    # a text is SQL when it has a keyword of it or names a column of an alias of the table (a list of columns kept apart from its statement)
-    texts = [s for s in sql_texts if _SQL.search(s) or any(m.group(1).lower() in aliases for m in re.finditer(r"\b(\w+)\.\w+", s))]
+def _key(sql: str) -> str:
+    m = _TAG.search(sql)
+    return m.group(1) if m else " ".join(sql.split())[:60]
+
+
+def _parse(sql: str) -> exp.Expression:
+    try:
+        return parse_one(re.sub(r"\$(\d+)", r":p\1", sql), read="postgres")
+    except Exception as e:      # any parse error: the statement is named
+        raise Unparsed(sql) from e
+
+
+# --- lineage --------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+def _is_table(src: object) -> bool:
+    return isinstance(src, exp.Table) and f"{src.db}.{src.name}".lower() == TABLE
+
+
+def _source(scope: Scope, alias: str) -> list[object]:
+    """What ``alias`` names in ``scope`` or a scope around it (a correlated column); every source of the scope for a column with no table."""
+    s: Scope | None = scope
+    while s is not None:
+        if alias and alias in s.sources:
+            return [s.sources[alias]]
+        if not alias:
+            return list(s.sources.values())
+        s = s.parent
+    return []
+
+
+def _own_columns(scope: Scope, node: exp.Expression) -> list[exp.Column]:
+    mine = {id(c) for c in scope.columns}
+    return [c for c in node.find_all(exp.Column) if id(c) in mine]
+
+
+def _projections(scope: Scope) -> list[exp.Expression]:
+    e = scope.expression
+    return list(e.expressions) if isinstance(e, exp.Select) else []
+
+
+def _stars(scope: Scope, node: exp.Expression) -> list[str | None]:
+    """The stars ``node`` selects in ``scope``: None for ``*``, the table for ``t.*``."""
+    if isinstance(node, exp.Star):
+        return [None]
+    if isinstance(node, exp.Column) and isinstance(node.this, exp.Star):
+        return [node.table]
+    return []
+
+
+def _returns_read(scope: Scope) -> bool:
+    """Whether what a scope returns is read as such: the statement's, a union branch of such a scope, a subquery in an expression. A derived table's, a CTE's or a lateral
+    subquery's columns are read only through what reads them."""
+    parent = scope.parent
+    if parent is None:
+        return True
+    if parent.is_union:
+        return _returns_read(parent)
+    return not (scope.is_derived_table or scope.is_cte or (scope.is_subquery and parent.is_udtf))
+
+
+def _children(scope: Scope) -> list[Scope]:
+    return [*scope.union_scopes, *scope.subquery_scopes, *scope.derived_table_scopes, *scope.udtf_scopes]
+
+
+def copied_reads(tree: exp.Expression) -> set[str]:
+    """The copied columns of kg.records (and "*" for the whole row) that a statement reads: into what it returns, or into a condition, a join, a grouping or an order."""
     found: set[str] = set()
-    if not any("kg.records" in s for s in texts):
+    root = build_scope(tree)
+    if root is None:            # a statement with no query (an insert of values, an update or a delete of the table): its condition and the values it sets
+        if any(_is_table(t) for t in tree.find_all(exp.Table)):
+            read = [tree.args.get("where"), *(a.expression for a in tree.args.get("expressions") or [] if isinstance(a, exp.EQ))]
+            found |= {c.name for w in read if w is not None for c in w.find_all(exp.Column) if c.name in COPIED}
         return found
-    for s in texts:
-        found |= {m.group(0) for m in re.finditer(rf"\b(\w+)\.({_C})\b", s) if m.group(1).lower() in aliases}
-        if any(m.group(1).lower() in aliases for m in re.finditer(r"\b(\w+)\.\*", s)) or _OUTER_STAR.search(s):
-            found.add("*")                                  # ``alias.*`` of the table or of a subquery that hands its row out, or ``SELECT *`` over such a subquery
-        if any(not s[:m.start()].rstrip().endswith("(") for m in _STAR.finditer(s)):      # a subquery's star is read through its alias, above
-            found.add("*")
-        found |= {m.group(1) for m in re.finditer(rf"(?<![.\w'\">])({_C})(?![\w'\"])", s) if not _quoted_or_doc(s, m.start())}
+    work: list[tuple[Scope, exp.Expression]] = []
+    seen: set[tuple[int, int]] = set()
+    for scope in root.traverse():
+        e = scope.expression
+        if isinstance(e, exp.Select):
+            work += [(scope, n) for n in (e.args.get(k) for k in ("where", "group", "having", "order", "qualify")) if n is not None]
+            work += [(scope, j.args["on"]) for j in e.args.get("joins") or [] if j.args.get("on") is not None]
+            if _returns_read(scope):
+                work += [(scope, p) for p in _projections(scope)]
+    if isinstance(tree, (exp.Insert, exp.Update, exp.Delete)) and tree.args.get("where") is not None and root is not None:
+        work.append((root, tree.args["where"]))
+
+    followed: set[tuple[int, str | None]] = set()
+
+    def follow(src: object, name: str | None) -> None:
+        """A column ``name`` (None: every column) of ``src`` is read."""
+        if (id(src), name) in followed:      # a recursive CTE reads itself
+            return
+        followed.add((id(src), name))
+        if _is_table(src):
+            if name is None:
+                found.add("*")
+            elif name in COPIED:
+                found.add(name)
+        elif isinstance(src, Scope):
+            # a union's branches, a lateral's subquery: the scopes that make the columns
+            branches = [src] if isinstance(src.expression, exp.Select) else [c for c in _children(src) if c.parent is src or src.is_union]
+            for b in branches:
+                if not isinstance(b.expression, exp.Select):
+                    follow(b, name)
+                    continue
+                for p in _projections(b):
+                    if _stars(b, p):
+                        for t in _stars(b, p):
+                            for s in _source(b, t or ""):
+                                follow(s, name)
+                    elif name is None or p.alias_or_name == name:
+                        work.append((b, p))
+
+    while work:
+        scope, node = work.pop()
+        if (id(scope), id(node)) in seen:
+            continue
+        seen.add((id(scope), id(node)))
+        for t in _stars(scope, node):
+            for s in _source(scope, t or ""):
+                follow(s, None)
+        for c in _own_columns(scope, node):
+            if isinstance(c.this, exp.Star):
+                continue
+            for s in _source(scope, c.table):
+                follow(s, c.name)
     return found
 
 
-def _quoted_or_doc(s: str, at: int) -> bool:
-    """A name that is a JSON key of a document (``doc->>'origin'``) or a word of a comment, not a column."""
-    line_start = s.rfind("\n", 0, at) + 1
-    return "--" in s[line_start:at] or s[max(0, at - 4):at].endswith(("->>", "->"))
+# --- statements -----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
-def _python_texts(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8-sig"))
-    docs = {id(n.body[0].value) for n in ast.walk(tree) if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-            and n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
-    return [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs]
+def reads(texts: list[str], consts: dict[str, str] | None = None) -> set[str]:
+    """The copied columns read by the statements of one source, given as its SQL texts in order: ``{NAME}`` is the constant ``NAME``, a text that continues a statement
+    (``FROM ...``, ``AND ...``) is joined to the one before it, a statement that does not parse raises :class:`Unparsed`."""
+    stmts: list[str] = []
+    for text in texts:
+        t = re.sub(r"\{(\w+)\}", lambda m: consts.get(m.group(1), m.group(0)), text) if consts else text
+        if _START.match(t):
+            stmts.append(t)
+        elif stmts and _CONTINUES.match(t):
+            stmts[-1] += t
+    found: set[str] = set()
+    for s in stmts:
+        if TABLE in s.lower():
+            found |= copied_reads(_parse(s))
+    return found
 
 
-def sources() -> dict[str, list[str]]:
-    """Every source of SQL that names kg.records: the application's modules, the migrations' SQL files and the vetted manifests' function bodies."""
-    out: dict[str, list[str]] = {}
-    for p in sorted((BACKEND / "python" / "app").rglob("*.py")):
-        if "kg.records" in p.read_text(encoding="utf-8-sig"):
-            out[str(p.relative_to(BACKEND))] = _python_texts(p)
-    for p in sorted((BACKEND / "db" / "versions").rglob("*.sql")):
-        if "kg.records" in (text := p.read_text(encoding="utf-8")):
-            out[str(p.relative_to(BACKEND))] = [text]
-    for p in sorted((BACKEND / "db" / "versions").rglob("manifest.yaml")):
-        for fn in yaml.safe_load(p.read_text(encoding="utf-8")).get("functions", []):
-            if "kg.records" in (body := fn.get("body") or ""):
-                out[f"{p.relative_to(BACKEND)}#{fn['name']}"] = [body]
+def _constants(tree: ast.Module) -> dict[str, str]:
+    """The module's string constants, by name (a concatenation or an f-string of other constants included)."""
+    out: dict[str, str] = {}
+    for _ in range(3):           # constants built from constants defined above them
+        for n in tree.body:
+            if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name):
+                v = _literal(n.value, out, {})
+                if v is not None:
+                    out[n.targets[0].id] = v
     return out
 
 
+def _modules(tree: ast.Module) -> dict[str, str]:
+    """Names the module imports application modules under (``from app.x import listing as kgl``)."""
+    out = {}
+    for n in tree.body:
+        if isinstance(n, ast.ImportFrom) and n.module and n.module.startswith("app."):
+            for a in n.names:
+                out[a.asname or a.name] = f"{n.module}.{a.name}"
+    return out
+
+
+def _literal(node: ast.expr, consts: dict[str, str], mods: dict[str, str]) -> str | None:
+    """The text of a string, an f-string or a concatenation whose parts are all known; None when a part is computed."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return consts.get(node.id)
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in mods:
+        try:
+            v = getattr(importlib.import_module(mods[node.value.id]), node.attr, None)
+        except ImportError:
+            return None
+        return v if isinstance(v, str) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        a, b = _literal(node.left, consts, mods), _literal(node.right, consts, mods)
+        return a + b if a is not None and b is not None else None
+    if isinstance(node, ast.JoinedStr):
+        parts = [_literal(v.value, consts, mods) if isinstance(v, ast.FormattedValue) and not v.format_spec and v.conversion == -1 else _literal(v, consts, mods)
+                 for v in node.values]
+        return "".join(parts) if all(p is not None for p in parts) else None
+    return None
+
+
+def _shape(node: ast.expr, consts: dict[str, str], mods: dict[str, str]) -> str:
+    """The text of a composed string with ``{}`` for each computed part."""
+    if (v := _literal(node, consts, mods)) is not None:
+        return v
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _shape(node.left, consts, mods) + _shape(node.right, consts, mods)
+    if isinstance(node, ast.JoinedStr):
+        return "".join(_shape(v.value if isinstance(v, ast.FormattedValue) else v, consts, mods) for v in node.values)
+    return "{}"
+
+
+def python_statements(path: Path) -> tuple[list[str], list[str]]:
+    """A module's SQL texts in order, and the statements it composes at run time (by tag or start)."""
+    tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+    consts, mods = _constants(tree), _modules(tree)
+    docs = {id(n.body[0].value) for n in ast.walk(tree) if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
+    inner = {id(c) for n in ast.walk(tree) if isinstance(n, (ast.JoinedStr, ast.BinOp, ast.FormattedValue)) for c in ast.iter_child_nodes(n)}
+    nodes = sorted((n for n in ast.walk(tree) if isinstance(n, (ast.Constant, ast.JoinedStr, ast.BinOp)) and id(n) not in inner and id(n) not in docs),
+                   key=lambda n: (n.lineno, n.col_offset))
+    texts, composed = [], []
+    for n in nodes:
+        if isinstance(n, ast.Constant) and not isinstance(n.value, str):
+            continue
+        v = _literal(n, consts, mods)
+        if v is not None:
+            texts.append(v)
+            continue
+        shape = _shape(n, consts, mods)
+        if (_START.match(shape) or _TAG.match(shape.lstrip())) and (TABLE in shape.lower() or "{}" in shape):
+            composed.append(_key(shape))
+    return texts, composed
+
+
+def _body_statements(body: str) -> list[str]:
+    """The statements of a SQL file or a PL/pgSQL body that read or write rows (control lines, declarations and DDL dropped)."""
+    body = re.sub(r"--[^\n]*", "", body)
+    out = []
+    for s in body.split(";"):
+        # a statement starts a line of its chunk (after the control lines of PL/pgSQL, a CREATE FUNCTION's header, a RETURN QUERY)
+        m = re.search(r"(?im)^[ \t]*(?:RETURN\s+QUERY\s+)?((?:SELECT|WITH|INSERT|UPDATE|DELETE)\b)", s)
+        if m:
+            out.append(s[m.start(1):].strip())
+    return out
+
+
+def listing_statements() -> list[str]:
+    """The statements the listing composes, rendered by its builders with every sort, direction, filter and boundary it takes."""
+    kgl = importlib.import_module("app.services.graph_db.postgres.kg.listing")
+    viewer = {"unvouched": [1], "plain": [2], "own": [3], "granted": ["a"], "walked": ["b"]}
+    filters = {"search_query": "a b", "node_types": ["record"], "record_types": ["FILE"], "indexing_status": ["COMPLETED"], "created_at": {"gte": 1, "lte": 2},
+               "updated_at": {"gte": 1, "lte": 2}, "size": {"gte": 1, "lte": 2}, "only_containers": True}
+    out = []
+    for field_ in kgl.SORTS:
+        for sort_dir in ("ASC", "DESC"):
+            for direction in ("next", "prev"):
+                for boundary in (None, {"nullRank": 0, "sortKey": "a" if field_ == "name" else 5, "id": "x"}, {"nullRank": 1, "id": "x"}):
+                    p = kgl.Params([None, None, None])
+                    where = kgl.filters_sql(filters, p)
+                    branches = kgl.after(field_, sort_dir, direction, boundary, p) if boundary else None
+                    out.append(kgl.page_sql(field_, sort_dir, direction, where, branches))
+                    out.append(kgl.page_sql(field_, sort_dir, direction, where, branches, kgl.class_admit("w", p, viewer)))
+    p = kgl.Params([None, None, None])
+    where = kgl.filters_sql(filters, p)
+    out += [kgl.scan_sql(where, "$4"), kgl.undecided_sql(where, "$4"), kgl.count_sql(where, "$4", "$5", "$6", "$7"), kgl.arrows_sql(kgl.class_admit("c", p, viewer))]
+    return out
+
+
+RENDERED = {LISTING: listing_statements}
+
+
+def sources() -> dict[str, tuple[list[str], list[str]]]:
+    """Every source of SQL that names kg.records: (its statements' texts, the statements it composes at run time)."""
+    out: dict[str, tuple[list[str], list[str]]] = {}
+    for p in sorted((BACKEND / "python" / "app").rglob("*.py")):
+        if TABLE in p.read_text(encoding="utf-8-sig"):
+            key = str(p.relative_to(BACKEND))
+            texts, composed = python_statements(p)
+            out[key] = (texts + (RENDERED[key]() if key in RENDERED else []), composed)
+    for p in sorted((BACKEND / "db" / "versions").rglob("*.sql")):
+        if "vetted" not in p.parts and TABLE in (text := p.read_text(encoding="utf-8")):
+            out[str(p.relative_to(BACKEND))] = (_body_statements(text), [])
+    for p in sorted((BACKEND / "db" / "versions").rglob("manifest.yaml")):
+        for fn in yaml.safe_load(p.read_text(encoding="utf-8")).get("functions", []):
+            if TABLE in (body := fn.get("body") or ""):
+                out[f"{p.relative_to(BACKEND)}#{fn['name']}"] = (_body_statements(body), [])
+    return out
+
+
+def _scan(src: str, texts: list[str]) -> set[str]:
+    try:
+        return reads(texts)
+    except Unparsed as e:
+        if (src, e.key) in UNPARSED:
+            return set()
+        raise AssertionError(f"{src}: a statement that names {TABLE} does not parse ({e.key!r}): make it parse, or name it in UNPARSED with the reason it reads no copied column") from e
+
+
+# --- tests ----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
 def test_no_reader_takes_a_copied_column_of_kg_records_from_kg() -> None:
-    found = {(src, what) for src, texts in sources().items() for what in reads(texts)}
+    found = {(src, what) for src, (texts, _) in sources().items() for what in _scan(src, texts)}
     allowed = {(s, w) for s, w in found if (s, w) in ALLOWED or (s, "*") in ALLOWED}
     assert found - allowed == set(), "a read of a column the projector may leave empty for a connector kg no longer serves: read it from the graph, or serve it only for a served connector"
 
 
-def test_the_scan_finds_the_modules_it_must_read() -> None:
+def test_every_statement_composed_at_run_time_is_rendered_here() -> None:
+    """A statement built from computed parts cannot be read from the source: its module's builders render it above, or it is named in UNPARSED."""
+    missing = []
+    for src, (texts, composed) in sources().items():
+        rendered = {_key(t) for t in texts}
+        # a tagged statement must be among the rendered ones; an untagged piece (a part of a tagged one) needs its module rendered
+        missing += [(src, k) for k in composed if (src, k) not in UNPARSED and (k not in rendered if " " not in k else src not in RENDERED)]
+    assert missing == [], f"statements composed at run time that the test does not render: {missing}"
+
+
+def test_the_scan_finds_the_sources_and_statements_it_must_read() -> None:
     srcs = sources()
-    assert {"python/app/services/graph_db/postgres/kg/listing.py", "python/app/services/graph_db/postgres/kg/read.py",
-            "python/app/services/graph_db/postgres/kh_listing.py", "python/app/services/graph_db/postgres/kg/stamp.py"} <= set(srcs)
-    assert ("python/app/services/graph_db/postgres/kg/listing.py", "r.record_type") in {(s, w) for s, t in srcs.items() for w in reads(t)}
+    assert {LISTING, "python/app/services/graph_db/postgres/kg/read.py", "python/app/services/graph_db/postgres/kh_listing.py",
+            "python/app/services/graph_db/postgres/kg/stamp.py", "db/versions/kg/vetted/manifest.yaml#kg.w_listing_set"} <= set(srcs)
+    assert sum(len(t) for t, _ in srcs.values()) > 200, "the scan finds almost no statements: it is broken"
+    assert (LISTING, "record_type") in {(s, w) for s, (t, _) in srcs.items() for w in _scan(s, t)}
 
 
 @pytest.mark.parametrize("texts, found", [
-    (["SELECT r.sk, r.rule FROM kg.records r WHERE r.org_id = $1"], {"r.rule"}),
-    (["SELECT x.origin FROM unnest($2::text[]) q CROSS JOIN LATERAL (SELECT * FROM kg.records k WHERE k.coll = ANY('{1,2}'::smallint[]) LIMIT 3) x"], {"x.origin"}),
+    (["SELECT r.sk, r.rule FROM kg.records r WHERE r.org_id = $1"], {"rule"}),
+    (["SELECT x.origin FROM unnest($2::text[]) q CROSS JOIN LATERAL (SELECT * FROM kg.records k WHERE k.coll = ANY('{1,2}'::smallint[]) LIMIT 3) x"], {"origin"}),
     (["SELECT * FROM kg.records WHERE org_id = $1"], {"*"}),
     (["SELECT sk, external_id FROM kg.records WHERE org_id = $1"], {"external_id"}),
-    (["SELECT r.sk FROM kg.records r WHERE r.org_id = $1", " AND r.vrid = $2"], {"r.vrid"}),                  # a query composed from two texts
+    (["SELECT r.sk FROM kg.records r WHERE r.org_id = $1", " AND r.vrid = $2"], {"vrid"}),                     # a query composed from two texts
     (["SELECT external_id", " FROM kg.records WHERE org_id = $1"], {"external_id"}),                         # a bare column in another text than the table
     (["SELECT x.* FROM (SELECT * FROM kg.records) x"], {"*"}),                                               # the whole row through a subquery's alias
     (["SELECT * FROM (SELECT * FROM kg.records WHERE org_id = $1) x"], {"*"}),
     (["SELECT r.* FROM kg.records r"], {"*"}),
     (["SELECT r.id FROM unnest($2::text[]) q CROSS JOIN LATERAL (SELECT * FROM kg.records k WHERE k.id = q.id LIMIT 3) r"], set()),   # as read.py: only safe columns of the row
+    (["SELECT x.id FROM (SELECT k.* FROM kg.records k) x"], set()),                                          # a qualified star under a safe outer projection
+    (["SELECT y.rule FROM (SELECT x.* FROM (SELECT * FROM kg.records) x) y"], {"rule"}),                     # a row wrapped twice
+    (["SELECT y.id FROM (SELECT x.* FROM (SELECT * FROM kg.records) x) y WHERE y.record_type = $1"], {"record_type"}),
     (["origin", "SELECT r.sk FROM kg.records r"], set()),                                                   # a dict key of the source is no SQL
-    (["r.sk, r.id, vrid", "SELECT {cols} FROM kg.records r"], {"vrid"}),                                     # a list of columns kept apart from its statement
     (["SELECT r.sk, r.name_key FROM kg.records AS r WHERE r.org_id = $1"], set()),
     (["SELECT n.doc->>'origin' AS o FROM graph.nodes n JOIN kg.records r ON r.id = n.id"], set()),
     (["SELECT x.model FROM retrieval.spaces x"], set()),
+    (["SELECT model FROM retrieval.spaces", "SELECT r.sk FROM kg.records r WHERE r.org_id = $1"], set()),     # another table's column of that name, in the same source
+    (["SELECT r.sk FROM kg.records r WHERE r.org_id = $1 ORDER BY r.origin"], {"origin"}),
+    (["SELECT 1 FROM graph.nodes n WHERE EXISTS (SELECT 1 FROM kg.records r WHERE r.id = n.id AND r.model = $1)"], {"model"}),
+    (["UPDATE kg.records SET rule = $1 WHERE org_id = $2"], set()),                                         # a column set is written, not read
+    (["UPDATE kg.records SET name = origin WHERE vrid = $2"], {"origin", "vrid"}),
+    (["WITH RECURSIVE c AS (SELECT r.sk FROM kg.records r UNION SELECT x.sk FROM c JOIN kg.records x ON x.parent_sk = c.sk) SELECT c.sk FROM c"], set()),
 ])
 def test_the_scan_names_each_way_of_reading_a_copied_column(texts: list[str], found: set[str]) -> None:
     assert reads(texts) == found
+
+
+def test_a_column_list_kept_apart_from_its_statement_is_read_in_it() -> None:
+    assert reads(["SELECT {COLS} FROM kg.records r"], {"COLS": "r.sk, r.id, r.vrid"}) == {"vrid"}
+
+
+def test_a_statement_that_does_not_parse_is_named_not_skipped() -> None:
+    with pytest.raises(Unparsed):
+        reads(["/* pipeshub:kg.broken */ SELECT r.rule FROM kg.records r WHERE ((("])
+
+
+def test_a_module_s_constants_fill_its_f_strings_and_a_computed_statement_is_named(tmp_path: Path) -> None:
+    mod = tmp_path / "m.py"
+    mod.write_text('COLS = "r.sk, r.rule"\nA = f"/* pipeshub:kg.a */ SELECT {COLS} FROM kg.records r"\n\n\ndef b(cond):\n'
+                   '    return f"/* pipeshub:kg.b */ SELECT r.sk FROM kg.records r WHERE {cond}"\n', encoding="utf-8")
+    texts, composed = python_statements(mod)
+    assert reads(texts) == {"rule"} and composed == ["kg.b"]
