@@ -115,12 +115,12 @@ async def test_a_flooded_document_cannot_hide_another_documents_link(env: Env) -
     assert {flooded, victim_doc, own_doc} <= got.linked and got.readable == {own_doc}
 
 
+@pytest.mark.parametrize("env", ["neo4j"], indirect=True)
 async def test_upload_records_without_a_connector_name_cannot_hide_the_kb_upload(env: Env) -> None:
     """Neo4j sorts null first in a descending order, and ``origin = upload AND connectorName = kb``
     is null, not false, for a record with no connector name: a full page of those must not push
-    the document's own knowledge-base upload out of its per-document rows."""
-    if not type(env.graph).__name__.startswith("Neo4j"):
-        pytest.skip("ArangoDB's record schema requires connectorName, and its == on a missing field is false")
+    the document's own knowledge-base upload out of its per-document rows. Neo4j only: ArangoDB's
+    record schema requires connectorName, and its == on a missing field is false."""
     _record_id, own_doc = await pushed_document(env)
     rows = [{"id": f"noname-{i}-{uuid.uuid4().hex[:6]}", "orgId": env.org_id, "externalRecordId": own_doc, "origin": "UPLOAD",
              "recordName": "noname", "recordType": "FILE", "createdAtTimestamp": 1,
