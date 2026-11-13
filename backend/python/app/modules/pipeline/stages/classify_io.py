@@ -146,7 +146,7 @@ class GraphClassifyIO(RecordStageIO):
             payload = {k: v for k, v in semantic_metadata.items() if k != NAMED_ENTITIES_SECTION}
             return await sidecars.write_at(
                 job.org_id, job.virtual_record_id, job.rev, path,
-                classification_envelope(stored_run, path, payload),
+                classification_envelope(stored_run, path, payload), stored_run=stored_run,
             )
 
         return SidecarWrite(job.stage_version, write)

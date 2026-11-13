@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import CollectionNames
 from app.models.blocks import BlocksContainer
 from app.modules.artifacts.sidecars import ENTITIES, ArtifactSidecars
 from app.modules.named_entities.domain.config import load_named_entity_config
@@ -74,6 +75,14 @@ class GraphEntitiesIO(RecordStageIO):
         self._logger = logger or logging.getLogger(__name__)
         self._enabled: bool | None = None
 
+    async def _stored_run(self, job: StageJob) -> str | None:
+        """The stored write holding the job's revision now: the sidecar goes into its set. None when the
+        stored record holds another revision (nothing of this one would read it)."""
+        mapping = await self._graph.get_document(
+            job.virtual_record_id, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+        ) or {}
+        return mapping.get("storedRun") if mapping.get("storedRev") == job.rev else None
+
     async def enabled(self) -> bool:
         if self._enabled is None:
             self._enabled = await is_named_entity_extraction_enabled(self._config_service)
@@ -129,7 +138,7 @@ class GraphEntitiesIO(RecordStageIO):
             if outcomes.get(owner) == "written" and self._sidecars is not None:
                 _ = await self._sidecars.write(
                     job.org_id, job.virtual_record_id, job.rev, ENTITIES, job.stage_version,
-                    extraction.model_dump(mode="json"),
+                    extraction.model_dump(mode="json"), stored_run=await self._stored_run(job),
                 )
         for record_id in record_ids[1:]:
             _ = await self._for_bound_record(job, record_id, lambda rid=record_id: persist(rid))

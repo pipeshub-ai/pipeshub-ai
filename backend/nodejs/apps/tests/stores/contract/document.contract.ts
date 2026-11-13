@@ -385,6 +385,35 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       expect((await repo.listArtifactSets(org, 'v1')).map((r) => r._id)).to.deep.equal([a._id]);
     });
 
+    it('createArtifactSetOnce gives each stored write of a revision a row of its own, beside the revision\'s shared row', async () => {
+      const org = fx.newId();
+      const W1 = 'a'.repeat(32);
+      const W2 = 'b'.repeat(32);
+      // As storage files them: a write's set is keyed `{rev}-{writeId}` under the one unique index on (org, vrid, rev).
+      const set = (writeId?: string): NewDocument => {
+        const key = writeId ? `r1-${writeId}` : 'r1';
+        return mk(org, {
+          documentName: `revision_${key}`,
+          artifactSet: {
+            virtualRecordId: 'v1',
+            rev: key,
+            ...(writeId && { contentRev: 'r1', writeId }),
+            root: `${org}/PipesHub/record-revisions/v1/${key}`,
+          },
+        });
+      };
+      const [a, b] = await Promise.all([repo.createArtifactSetOnce(set(W1), fence(Date.now())), repo.createArtifactSetOnce(set(W1), fence(Date.now()))]);
+      // Code that keys a set by revision alone (an older build presigning without a write id) never finds a write's row.
+      const shared = await repo.createArtifactSetOnce(set(), fence(Date.now()));
+      const second = await repo.createArtifactSetOnce(set(W2), fence(Date.now()));
+      expect(b._id).to.equal(a._id);
+      expect(new Set([shared._id, a._id, second._id]).size).to.equal(3);
+      expect(a.artifactSet).to.deep.equal({ virtualRecordId: 'v1', rev: `r1-${W1}`, contentRev: 'r1', writeId: W1, root: `${org}/PipesHub/record-revisions/v1/r1-${W1}` });
+      expect(shared.artifactSet).to.deep.equal({ virtualRecordId: 'v1', rev: 'r1', root: `${org}/PipesHub/record-revisions/v1/r1` });
+      expect((await repo.createArtifactSetOnce(set(), fence(Date.now())))._id).to.equal(shared._id);
+      expect((await repo.listArtifactSets(org, 'v1')).map((r) => r.artifactSet?.writeId ?? '').sort()).to.deep.equal(['', W1, W2]);
+    });
+
     describe('the delete fence of a content revision', () => {
       const T0 = 1_000_000_000_000;
       const revision = async (org: string, rev = 'r1', at = T0): Promise<string> => {
