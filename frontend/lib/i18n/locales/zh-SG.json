@@ -579,6 +579,8 @@
     "pagination": {
       "showing": "显示第 {{start}}-{{end}} 项，共 {{total}} 项",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "显示第 {{start}}-{{end}} 项，至少 {{total}} 项",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "每页 {{value}} 条"
     },
     "yes": "是",

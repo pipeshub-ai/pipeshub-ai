@@ -502,6 +502,8 @@
     "pagination": {
       "showing": "Mostrando {{start}}-{{end}} de {{total}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "Mostrando {{start}}-{{end}} de al menos {{total}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "{{value}} por página"
     },
     "yes": "Sí",

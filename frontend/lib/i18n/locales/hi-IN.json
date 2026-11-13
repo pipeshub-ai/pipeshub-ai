@@ -495,6 +495,8 @@
     "pagination": {
       "showing": "{{total}} में से {{start}}-{{end}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "कम से कम {{total}} में से {{start}}-{{end}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "प्रति पृष्ठ {{value}}"
     },
     "yes": "हाँ",

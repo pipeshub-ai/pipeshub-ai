@@ -15,6 +15,8 @@ from app.services.graph_db.common.name_match import _REPLACEMENTS, name_query_ke
 # sort field -> (column, whether it is text compared as bytes: the order of the code points)
 SORTS: dict[str, tuple[str, str]] = {"name": ("name_key", "name_sort"), "updatedAt": ("updated_ms", "updated_ms"), "createdAt": ("created_ms", "created_ms"), "sizeInBytes": ("size_bytes", "size_bytes")}
 LIVE = "r.kind IN (2, 3) AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien"        # as the partial indexes spell it
+# The bytes of name_sort the name indexes key on (kg_0009): a name is unbounded and a btree entry is not. Ordering by (prefix, name_sort) is ordering by name_sort.
+NAME_PREFIX = 1024
 COLS = "r.sk, r.coll, r.id, r.kind, r.folder, r.hide_children, r.parent_sk, r.group_sk, r.name_key, r.name_sort, r.updated_ms, r.created_ms, r.size_bytes, r.r13, r.path IS NOT NULL AS has_path, r.class_id, r.fence_job IS NOT NULL AS fenced"
 
 # The copy state of a connector: its node key and the mode of its projection ('legacy' is a connector kg has never copied).
@@ -54,12 +56,18 @@ class Params:
         return f"${len(self.values)}"
 
 
+def name_prefix(alias: str = "r") -> str:
+    """The indexed prefix of a row's name key, spelt as the indexes of kg_0009 spell it (the planner matches the expression)."""
+    return f"substring({alias}.name_sort FROM 1 FOR {NAME_PREFIX})"
+
+
 def order(field_: str, sort_dir: str, direction: str, alias: str = "r") -> str:
     """The listing's order as SQL: rows without a key after the rows with one, the key in the sort direction, the id ascending; all three flipped for a previous page."""
     _, col = SORTS[field_]
     rev = direction == "prev"
-    key = f"{alias}.{col}"
-    return f'{key} {"DESC" if (sort_dir == "DESC") != rev else "ASC"} NULLS {"FIRST" if rev else "LAST"}, {alias}.id COLLATE "C" {"DESC" if rev else "ASC"}'
+    keys = [name_prefix(alias), f"{alias}.{col}"] if field_ == "name" else [f"{alias}.{col}"]
+    way = f'{"DESC" if (sort_dir == "DESC") != rev else "ASC"} NULLS {"FIRST" if rev else "LAST"}'
+    return ", ".join(f"{k} {way}" for k in keys) + f', {alias}.id COLLATE "C" {"DESC" if rev else "ASC"}'
 
 
 def after(field_: str, sort_dir: str, direction: str, boundary: dict[str, Any], p: Params) -> list[str]:
@@ -69,17 +77,24 @@ def after(field_: str, sort_dir: str, direction: str, boundary: dict[str, Any], 
     fwd, asc = direction == "next", sort_dir == "ASC"
     rank, bid = int(boundary["nullRank"]), str(boundary["id"])
     key = f"r.{col}"
+    lead = name_prefix() if text else key      # the leading key of the sort index (NULL exactly when the key is), so a test of NULL is a range of it
     idp = p.add(bid)
     id_past = f'r.id COLLATE "C" {">" if fwd else "<"} {idp}::text COLLATE "C"'
     if rank == 1:
-        return [f"r.{col} IS NULL AND {id_past}"] if fwd else [f"r.{col} IS NOT NULL", f"r.{col} IS NULL AND {id_past}"]
+        return [f"{lead} IS NULL AND {id_past}"] if fwd else [f"{lead} IS NOT NULL", f"{lead} IS NULL AND {id_past}"]
     bk = boundary.get("sortKey")
     if bk is None or isinstance(bk, bool) or (not text and not isinstance(bk, int)) or (text and not isinstance(bk, str)):
         raise Fallback("cursor")
-    bkp = f"{p.add(bk.encode('utf-16-be', 'surrogatepass'))}::bytea" if text else f"{p.add(bk)}::bigint"
-    branches = [f"{key} = {bkp} AND {id_past}", f"{key} {'>' if asc == fwd else '<'} {bkp}"]
+    past = ">" if asc == fwd else "<"
+    if text:      # by the indexed prefix first: a key past the boundary's prefix is past the boundary, and only a key with the boundary's prefix needs the whole value
+        raw = bk.encode("utf-16-be", "surrogatepass")
+        bkp, pre = f"{p.add(raw)}::bytea", f"{p.add(raw[:NAME_PREFIX])}::bytea"
+        branches = [f"{name_prefix()} = {pre} AND {key} = {bkp} AND {id_past}", f"{name_prefix()} = {pre} AND {key} {past} {bkp}", f"{name_prefix()} {past} {pre}"]
+    else:
+        bkp = f"{p.add(bk)}::bigint"
+        branches = [f"{key} = {bkp} AND {id_past}", f"{key} {past} {bkp}"]
     if fwd:
-        branches.append(f"r.{col} IS NULL")
+        branches.append(f"{lead} IS NULL")
     return branches
 
 

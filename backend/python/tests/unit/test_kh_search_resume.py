@@ -107,6 +107,30 @@ def test_a_connector_not_ready_is_left_out_and_named_on_every_page_the_others_ar
     assert ids == [r["id"] for r in c1] and len(notices) == 3 and all(n == ["c2"] for n in notices)
 
 
+def test_a_connector_that_becomes_ready_mid_listing_stays_out_of_it_and_a_new_listing_takes_it_in() -> None:
+    """c2 is not ready on the first page and ready from the second on; its rows lie on both sides of the first page's boundary. The listing it was left out of goes on without
+    it, both ways, with the total it began with; a listing begun afterwards has it."""
+    c1 = [row(f"a{i:02d}", f"n{2 * i:02d}") for i in range(9)]
+    c2 = [row(f"b{i:02d}", f"n{2 * i + 1:02d}") for i in range(9)]
+    provider = NotReadyProvider({"c1": c1, "c2": c2}, {"c2"})
+
+    def page_at(token: str | None) -> SearchPage:
+        return asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4, cursor_token=token))
+    first = page_at(None)
+    provider.not_ready = set()
+    ids, pages, token = [r["id"] for r in first.rows], [first], first.next_cursor
+    while token:
+        page = page_at(token)
+        ids, token = ids + [r["id"] for r in page.rows], page.next_cursor
+        pages.append(page)
+    assert ids == [r["id"] for r in c1]
+    assert all(p.not_ready == ["c2"] and p.total == 9 for p in pages)
+    back = page_at(pages[1].prev_cursor)
+    assert [r["id"] for r in back.rows] == [r["id"] for r in c1[:4]] and back.not_ready == ["c2"]
+    fresh = page_at(None)
+    assert fresh.total == 18 and fresh.not_ready == [] and [r["id"] for r in fresh.rows] == ["a00", "b00", "a01", "b01"]
+
+
 def test_when_every_connector_is_not_ready_the_page_is_refused() -> None:
     provider = NotReadyProvider({"c1": [row("a", "a")], "c2": [row("b", "b")]}, {"c1", "c2"})
     with pytest.raises(KnowledgeHubListingNotReady):

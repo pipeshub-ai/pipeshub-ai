@@ -128,7 +128,10 @@ async def search_page(
         allowed = set(wanted)
         connectors = [app_id for app_id in connectors if app_id in allowed]
     keys = [_connector_key(app_id) for app_id in connectors]
-    targets = _targets(connectors, keys, cursor)
+    # A connector not ready when the listing began stays out of every page of it, ready or not since: its rows before the boundary would never be
+    # read, and the total carried from the first page does not count it. A new listing (no cursor) takes it in.
+    left_out = set(cursor.not_ready or ()) if cursor else set()
+    targets = [app_id for app_id in _targets(connectors, keys, cursor) if app_id not in left_out]
 
     # The total is counted once, on the first page, and then carried in the
     # cursor. A node belongs to one connector, so the counts sum to the total.
@@ -144,9 +147,11 @@ async def search_page(
     )
     if grants_read is not None:
         access = {**access, "by_connector": grants_read}
-    not_ready = [app_id for app_id, payload in zip(targets, results) if payload.get("notReady")]
-    if targets and len(not_ready) == len(targets):
+    refused = {app_id for app_id, payload in zip(targets, results) if payload.get("notReady")}
+    if targets and len(refused) == len(targets):
         raise KnowledgeHubListingNotReady            # nothing to list at all: say so instead of an empty page
+    left_out |= refused
+    not_ready = [app_id for app_id in connectors if app_id in left_out]
 
     # A connector that stopped looking before it had a page (a bound on its scan) says where it got to (``resume``). Its rows are complete up to there and nothing is known past it, so the
     # page holds no row beyond the nearest such position: the next page starts there, and a page with no rows still has somewhere to go.
@@ -183,7 +188,7 @@ async def search_page(
     live = {
         _connector_key(app_id)
         for app_id, payload in zip(targets, results)
-        if payload["hasMore"] or _connector_key(app_id) not in merged.exhausted or payload.get("notReady")      # a connector not ready is asked again, to be reported on every page it is left out of
+        if not payload.get("notReady") and (payload["hasMore"] or _connector_key(app_id) not in merged.exhausted)
     }
 
     if reuse_total:
@@ -225,6 +230,7 @@ async def search_page(
                 user_id=user_id,
                 org_id=org_id,
                 limit_apps=limit_apps,
+                not_ready=sorted(left_out),
             ),
             secret,
         )

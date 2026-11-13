@@ -579,6 +579,8 @@
     "pagination": {
       "showing": "顯示第 {{start}}-{{end}} 項，共 {{total}} 項",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "顯示第 {{start}}-{{end}} 項，至少 {{total}} 項",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "每頁 {{value}} 筆"
     },
     "yes": "是",

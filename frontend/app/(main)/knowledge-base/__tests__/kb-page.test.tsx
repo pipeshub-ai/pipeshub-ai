@@ -1694,6 +1694,40 @@ describe('Knowledge base page — All Records', () => {
     release(hubResponse([CONNECTOR_FILE]));
   });
 
+  it('offers Next on the empty state once it stops going on from empty pages, and Next goes on', async () => {
+    withCollections();
+    const later = hubNode({ id: 'rec-later', name: 'Later.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) =>
+      params?.cursor === 'c21' ? hubResponse([later]) : emptyPage(`c${Number(params?.cursor?.slice(1) ?? 0) + 1}`));
+    openAt('/knowledge-base?view=all-records');
+    await waitFor(() => expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'c20' }), expect.anything()));
+    expect(await screen.findByText('No records found')).toBeTruthy();
+    expect(api.hub.getAllRootItems).not.toHaveBeenCalledWith(expect.objectContaining({ cursor: 'c21' }), expect.anything());
+
+    fireEvent.click(await screen.findByRole('button', { name: /Next/ }));
+
+    expect(await screen.findByRole('row', { name: 'Later.xlsx' })).toBeTruthy();
+  });
+
+  it('goes on backwards from an empty page reached by Previous', async () => {
+    withCollections();
+    const earlier = hubNode({ id: 'rec-earlier', name: 'Earlier.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) => {
+      if (params?.cursor === 'back1') return emptyPage('ahead', { hasPrev: true, prevCursor: 'back2' });
+      if (params?.cursor === 'back2') return hubResponse([earlier]);
+      if (params?.cursor === 'ahead') return hubResponse([CONNECTOR_FILE]);
+      return hubResponse([CONNECTOR_FILE], { pagination: { page: 2, limit: 50, totalItems: 2, totalPages: 2, startIndex: 51, endIndex: 51, hasNext: false, hasPrev: true, nextCursor: null, prevCursor: 'back1' } });
+    });
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    fireEvent.click(screen.getByRole('button', { name: /Previous/ }));
+
+    expect(await screen.findByRole('row', { name: 'Earlier.xlsx' })).toBeTruthy();
+    expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'back2' }), expect.anything());
+    expect(api.hub.getAllRootItems).not.toHaveBeenCalledWith(expect.objectContaining({ cursor: 'ahead' }), expect.anything());
+  });
+
   it('requests the next page number when the response has no cursor', async () => {
     withCollections();
     const later = hubNode({ id: 'rec-later', name: 'Later.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });

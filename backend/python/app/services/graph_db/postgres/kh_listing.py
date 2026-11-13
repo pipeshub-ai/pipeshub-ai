@@ -67,7 +67,7 @@ def _node_type(coll: str, doc: dict) -> str:
 
 class KhListingMixin(PgBase):
     async def _kq(self, fn: Any, transaction: str | None) -> Any:  # noqa: ANN401
-        """A read unit of the listing: custom plans (a statement that carries arrays of ids is planned for them, not generically after the fifth run), in the caller's explicit transaction when it has one."""
+        """A read unit of the listing: custom plans (a statement that carries arrays of ids is planned for them, not generically after the fifth run), in the page's transaction when it has one."""
         if transaction:
             return await self._q(fn, transaction)
         return await self._db.run(fn, jobs=current_or_system().kind == "system", custom_plan=True)
@@ -93,6 +93,19 @@ class KhListingMixin(PgBase):
         filters = filters or {}
         if org_id != org or app_id not in set(gated_app_ids):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=False)
+        if transaction is None:
+            # One snapshot for the page: whether kg serves the connector and the rows its classes admit are read at one commit. A change to the connector as a whole hides it
+            # from kg without marking its rows (restamp.py), so a page read after such a commit, by a check made before it, would admit by stamps that are hidden.
+            snap = await self.begin_snapshot()
+            try:
+                return await self.get_knowledge_hub_connector_page_v3(
+                    app_id, org_id, grantee_ids, gated_app_ids, granted_ids, limit, flatten=flatten, sort_field=sort_field, sort_dir=sort_dir, after=after, direction=direction,
+                    filters=filters, include_total=include_total, start_id=start_id, start_type=start_type, grants_by_connector=grants_by_connector, include_scope=include_scope,
+                    via_parent_id=via_parent_id, transaction=snap, name_parents=name_parents, user_key=user_key, grants_out=grants_out, max_depth=max_depth)
+            finally:
+                await self.rollback_transaction(snap)
+        # The access check reads in units of its own (each checks kg's currency with the stamps it reads, and its samples outlive the page): it is handed a caller's transaction only.
+        check_tx = None if getattr(self._txns.get(transaction), "snapshot", False) else transaction
         if grants_by_connector is not None:
             granted = list(grants_by_connector.get(app_id) or [])
         elif granted_ids is None and user_key:
@@ -134,7 +147,7 @@ class KhListingMixin(PgBase):
             for i in range(0, len(ids), ADMIT_CHUNK):
                 chunk = ids[i:i + ADMIT_CHUNK]
                 if served:
-                    rows = await self._kh_v3_accessible_rows("", org, chunk, [], access=access, transaction=transaction)
+                    rows = await self._kh_v3_accessible_rows("", org, chunk, [], access=access, transaction=check_tx)
                 else:      # kg decides nothing for a connector it does not serve: the live check is asked directly, without the read of kg that would hand every row back to it
                     rows = await self._kq(lambda tx, c=chunk: access_sql.accessible_rows(tx, org, c, [], access), transaction)
                 out |= {r["id"] for r in rows}
@@ -170,11 +183,11 @@ class KhListingMixin(PgBase):
         capped = False
         if include_total:
             total, counts, capped = await self._kh_flat_exact(org, app_sk, where, base, viewer, transaction) if viewer is not None else await self._kh_flat_count(org, app_sk, where, base, admit, transaction)
-        rows = await self._kh_flat_rows(org, app_id, app_doc, kept[:need], sort_field, access, viewer, hidden, transaction)
+        rows = await self._kh_flat_rows(org, app_id, app_doc, kept[:need], sort_field, access, viewer, hidden, transaction, check_tx)
         payload = {"rows": rows, "total": total, "nRecord": (counts or {}).get("record", 0), "nFolder": (counts or {}).get("folder", 0), "nGroup": (counts or {}).get("recordGroup", 0)}
         page = await self._kh_v3_page_result(
             payload, limit=limit, direction=direction, include_total=include_total, include_scope=include_scope, scoped_start=False, start_id=start_id, app_id=app_id,
-            via_parent_id=via_parent_id, transaction=transaction, org_id=org_id, access=access, listed_under=None, name_parents=name_parents)
+            via_parent_id=via_parent_id, transaction=check_tx, org_id=org_id, access=access, listed_under=None, name_parents=name_parents)
         if capped:
             page["totalCapped"] = True
         if resume is not None:       # looked at as many rows as it may and found fewer than a page: the rows are complete up to ``resume``, and the next page starts there
@@ -250,7 +263,8 @@ class KhListingMixin(PgBase):
             last = rows[-1]["sk"]
         return sum(counts.values()), {k: v for k, v in counts.items() if v}, capped
 
-    async def _kh_flat_rows(self, org: str, app_id: str, app_doc: dict, cands: list[Any], sort_field: str, access: dict[str, Any], viewer: dict[str, Any] | None, hidden: list[int], transaction: str | None) -> list[dict[str, Any]]:
+    async def _kh_flat_rows(self, org: str, app_id: str, app_doc: dict, cands: list[Any], sort_field: str, access: dict[str, Any], viewer: dict[str, Any] | None, hidden: list[int], transaction: str | None,
+                            check_tx: str | None) -> list[dict[str, Any]]:
         """The rows of a page as the listing returns them, from the documents of the page's nodes."""
         if not cands:
             return []
@@ -282,7 +296,7 @@ class KhListingMixin(PgBase):
         opened: set[str] = set()
         every = sorted({i for ids in kids.values() for i in ids})
         for i in range(0, len(every), ADMIT_CHUNK):
-            opened |= {r["id"] for r in await self._kh_v3_accessible_rows("", org, every[i:i + ADMIT_CHUNK], [], access=access, transaction=transaction)}
+            opened |= {r["id"] for r in await self._kh_v3_accessible_rows("", org, every[i:i + ADMIT_CHUNK], [], access=access, transaction=check_tx)}
 
         def option(sk: int, *, own: bool) -> dict[str, Any] | None:
             key = keys.get(sk)

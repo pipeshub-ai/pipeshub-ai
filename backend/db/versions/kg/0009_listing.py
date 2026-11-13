@@ -14,8 +14,10 @@ WRITERS = ("w_listing_set",)
 
 # The listing indexes: one connector's live listing rows in each sort order (the ordering and tie-break of the listing, in both directions), so that a window of a page is a range of an index.
 # Partial on exactly what a listing reads (live, no placeholder, not another organisation's), so that the predicate of the query implies it. A previous page reads the same index backwards.
+# The name indexes key on the first 1024 bytes of name_sort, not on all of it: a name has no bound here (the copy takes 4,000 characters, up to 16,000 bytes of UTF-16), and a btree entry
+# holds about a third of a page. A listing orders by (that prefix, name_sort, id), which is the order of (name_sort, id): keys whose prefixes differ compare as their prefixes do.
 LIVE = "kind IN (2, 3) AND NOT deleted AND NOT placeholder AND NOT alien"
-SORT_KEYS = {"name": "name_sort", "updated": "updated_ms", "created": "created_ms", "size": "size_bytes"}
+SORT_KEYS = {"name": "substring(name_sort FROM 1 FOR 1024)", "updated": "updated_ms", "created": "created_ms", "size": "size_bytes"}
 INDEXES = [
     *((f"records_list_{k}_{d}", f'org_id, app_sk, {col} {d.upper()} NULLS LAST, (id COLLATE "C")', LIVE) for k, col in SORT_KEYS.items() for d in ("asc", "desc")),
     ("records_list_class", "org_id, app_sk, class_id, sk", LIVE),      # the rows of one class of a connector: a count by what a viewer's grants open

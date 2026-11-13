@@ -615,6 +615,8 @@
     "pagination": {
       "showing": "Zobrazeno {{start}}-{{end}} z {{total}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "Zobrazeno {{start}}-{{end}} z nejméně {{total}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "{{value}} na stránku"
     },
     "yes": "Ano",
