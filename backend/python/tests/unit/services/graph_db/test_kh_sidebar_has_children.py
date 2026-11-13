@@ -115,11 +115,12 @@ async def test_a_folder_in_the_sidebar_asks_the_check_nothing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_neo4j_reads_the_hiding_group_test_once_per_row_and_arrow_not_per_copy_of_the_rule() -> None:
+async def test_neo4j_reads_the_hiding_group_test_once_per_copy_of_the_rule() -> None:
     """Each copy of the browse rule in a page statement costs its plan, and the plan is made again whenever the store's statistics move: with
     the hiding-group test in every copy, CI's Neo4j (768 MB heap) spent the conformance step planning. The rule holds no such test; the
-    statement reads it for its rows (the row filter, and the undecided children) and for the child an arrow counts."""
+    statement holds it once per copy of the rule (for every arm but the walk's hop), once for the undecided children, and once for the arrow's
+    own declared scope; a stub's way is read once."""
     rule = Neo4jProvider.__new__(Neo4jProvider)._kh_v3_child_rule("c", "p", from_app="f", opens="o", state=True)
-    assert "kh_q" not in rule
-    assert (await _browse_statement(None)).count("kh_q <>") == 3
-    assert (await _browse_statement({"only_containers": True})).count("kh_q <>") == 4
+    assert rule.count("kh_q <>") == 1 and "WHERE (kh_hp AND f)" in rule
+    browse = await _browse_statement(None)
+    assert browse.count("kh_q <>") == browse.count("any(kh_hp IN") + 2

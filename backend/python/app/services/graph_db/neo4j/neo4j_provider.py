@@ -460,8 +460,8 @@ def _cypher_kh_has_children(
     browse, so it lights no arrow);
     and ``stub(node)`` hides a placeholder with nothing readable below it, wherever it comes from. ``reached_stub(node)``: a stub child the rule does
     not pass that a browse of it reaches from the App (the folder listing lists it too). What the rule leaves is the check's to decide
-    (`_kh_v3_frontier`), read beside this test by whoever asks it. ``hidden(child, parent)``: a child the walk from the App does not reach the
-    row by (``reached`` false) is counted only where no group that hides its children lies above it, as its browse opens it."""
+    (`_kh_v3_frontier`), read beside this test by whoever asks it. ``hidden(child, parent)``: a child the row's own declared scope admits is
+    counted only where no group that hides its children lies above it, as its browse opens it (the rule holds the same test for its arms)."""
     # A declaration is its own scope only where the check reads it: the viewer is granted it or the walk from the App reaches it (``reached``).
     declared = (f"({v}:RecordGroup AND coalesce({v}.permissionModel, '') = 'RECORD_GROUP_LEVEL'"
                 f" AND coalesce({v}.connectorId, '') = app.id AND ({v}.id IN $grantedIds OR {reached}))") if exact else "false"
@@ -479,7 +479,8 @@ def _cypher_kh_has_children(
     in_scope = (f"({declared} AND NOT coalesce(kh_ch.isDeleted, false) AND {_cypher_read_by_app('kh_ch')} AND (kh_ch:RecordGroup"
                 f" OR EXISTS {{ (kh_ch)-[:BELONGS_TO]->({v}) }}))")
     stub_arm = f" OR ({reached_stub('kh_ch')})" if exact and reached_stub else ""
-    hide_arm = f" AND ({reached} OR NOT {hidden('kh_ch', v)})" if hidden else ""
+    # the row's own declared scope admits a child as the rule's declared arm does: held to the same hiding test
+    hide_arm = f" AND NOT {hidden('kh_ch', v)}" if hidden else ""
     stub_kept = " OR coalesce(kh_ch.isPlaceholder, false)" if stub_arm else ""
     body = (
         f"({holds} OR "
@@ -489,7 +490,7 @@ def _cypher_kh_has_children(
         f"AND ({filed} OR size($declaredScope) > 0 OR kh_ch.id IN $grantedIds OR {declared} "
         f"OR EXISTS {{ (kh_ch)-[:INHERIT_PERMISSIONS]->({v}) }}{stub_kept}) "
         f"AND (kh_ch:Record OR kh_ch:RecordGroup) AND kh_ch.orgId = $org_id AND kh_ch.id IS NOT NULL "
-        f"{stub('kh_ch')} AND ({rule} OR {in_scope}{stub_arm}){hide_arm} }} "
+        f"{stub('kh_ch')} AND ({rule} OR ({in_scope}{hide_arm}){stub_arm}) }} "
         f"OR ({filed} AND {'NOT coalesce(' + container + ', false)' if exact else 'true'} AND {held('kh_bc')}))"
     )
     if exact:
@@ -21316,18 +21317,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         below_member_seeded = f"(NOT {member_p} OR {seed})"
         # A child listed below a seed or in a declared scope opens only where no group that hides its children lies above it, as a browse of it
         # reads its seed and admitted arms (`_kh_v3_hidden_elsewhere`; one the walk from the App reaches is listed by the parent the walk passes).
-        return f"""{_cypher_read_by_app(c)} AND ((({from_app} OR {member_of_open_app}) AND ({hop}) AND {walk} AND {below_member})
-              OR (NOT {from_app} AND NOT {member_of_open_app}
+        # A child listed by an arm other than a hop of the walk from the App (an App member, below a seed, the declared scope) opens only where no
+        # group that hides its children lies above it, as a browse of it reads its seed and admitted arms (`_kh_v3_hidden_elsewhere`). The test is
+        # written once per rule (each copy costs the statement's plan): the hop's answer is bound (`kh_hp`), and only where the walk from the App
+        # reaches the parent does it stand without the test.
+        visible = f"NOT {self._kh_v3_hidden_elsewhere(c, p, state=state)}"
+        return f"""{_cypher_read_by_app(c)} AND any(kh_hp IN [({from_app} OR {member_of_open_app}) AND ({hop}) AND {walk} AND {below_member}]
+              WHERE (kh_hp AND {from_app})
+              OR ((kh_hp
+                OR (NOT {from_app} AND NOT {member_of_open_app}
                   AND NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
                   AND coalesce({c}.accessRule, 'OPEN') = 'OPEN'
                   AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds) AND {walk_seeded} AND {below_member_seeded})
-              OR (NOT {deleted(c, state=state)}
+                OR (NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
                   AND ({c}.id IN $declaredScope
                        OR ({c}:Record AND EXISTS {{
                            ({c})-[:BELONGS_TO]->(sg:RecordGroup) WHERE sg.id IN $declaredScope
-                       }}))))"""
+                       }}))))
+                AND {visible}))"""
 
     def _kh_v3_hidden_elsewhere(self, c: str, p: str, *, state: bool = False) -> str:
         """Whether a group that hides its children lies above ``c``, a child of ``p`` that ``p`` is opened to list. ``p`` is open, so only another
@@ -22379,11 +22388,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Beside what the rules select, a browse lists every child of the start the batch check admits: the statement hands back the
             # children the rules leave undecided, and the page is read again with those the check admits (`_kh_v3_undecided`).
             undecided = "[]" if flatten else by_probe(self._kh_v3_undecided("start", decided="kh_u IN rawNodes"))
-            # A child the rules list below a start the walk does not reach (below a seed, in a declaration) opens only where no group that hides
-            # its children lies above it, as its browse opens it: tested once per row, not in every copy of the rule. shortcut: below a start
-            # the walk reaches, a child the declared scope alone admits is not held to it (such a child is also below a hiding group by another
-            # parent); upgrade if a conformance world needs it.
-            hidden_rows = "" if flatten else f"AND (fromApp OR NOT {self._kh_v3_hidden_elsewhere('n', 'start', state=state)})"
             # An admitted start with no children must still return one row, or
             # the breadcrumb scope disappears with the empty unwind.
             # The walk runs inside the CALL and hands on nodes: an id list imported
@@ -22414,8 +22418,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                          AND n <> start
                          AND n.orgId = $org_id
                          AND n.id IS NOT NULL
-                         {placeholder_test("n", walked_from_app("n"), listing=True)}
-                         {hidden_rows}] AS rawNodes, start
+                         {placeholder_test("n", walked_from_app("n"), listing=True)}] AS rawNodes, start
             WITH app, rawNodes, {undecided} AS khUndecided
             UNWIND rawNodes + [null] AS node{probe_withs("app, fromApp, khUndecided")}
             WITH app, fromApp, khUndecided{", khProbe" if probing else ""}, CASE WHEN node IS NULL THEN true ELSE false END AS sentinel,

@@ -20,6 +20,7 @@ from .kh_worlds import (
     CAPSTUB,
     CROSSREACH,
     DECLDEEP,
+    DECLHIDE,
     DECLSTUB,
     DEEP_CHAIN,
     DEEPOPEN,
@@ -276,19 +277,23 @@ async def test_a_child_the_check_admits_by_any_arm_keeps_its_row_and_its_stub(gr
 async def test_a_child_below_a_group_that_hides_its_children_is_listed_only_where_it_opens(graph_layers) -> None:
     """The check admits C below a seed, but C also hangs under a group that hides its children, and the walk from the App does not reach it: a
     browse of C refuses to open it, so the browse of its other parent R does not list it (nor take a place under the cap for it), R shows no
-    arrow, and the seed does not list it either (HIDESEED)."""
+    arrow, and the seed does not list it either (HIDESEED). The same holds through the declared scope: a member of a declaration below the folder
+    f, which the walk reaches, that a hiding group holds by another parent, is not listed under f (DECLHIDE)."""
     for layer in graph_layers:
-        await layer.preload([HIDESEED])
+        await layer.preload([HIDESEED, DECLHIDE])
         try:
             assert await layer.admitted(HIDESEED, "u", ["C"]) == {"C"}, layer.name
             assert await children_of(layer, HIDESEED, "u", "C", "record") is None, layer.name
             assert await children_of(layer, HIDESEED, "u", "f", "recordGroup") == {"R": False}, layer.name
             assert await children_of(layer, HIDESEED, "u", "R", "record") == {}, layer.name
             assert await children_of(layer, HIDESEED, "u", "s", "record") == {}, layer.name
-            bad = _bad(await check_world(layer, HIDESEED, "hideseed"))
+            assert await layer.admitted(DECLHIDE, "u", ["c"]) == {"c"}, layer.name
+            assert await children_of(layer, DECLHIDE, "u", "c", "record") is None, layer.name
+            assert await children_of(layer, DECLHIDE, "u", "f", "recordGroup") == {}, layer.name
+            bad = [f for w in (HIDESEED, DECLHIDE) for f in _bad(await check_world(layer, w, "hideseed"))]
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
-            await layer.release([HIDESEED])
+            await layer.release([HIDESEED, DECLHIDE])
 
 
 async def test_a_flattens_sidebar_keeps_a_record_exactly_where_its_arrow_is_on(graph_layers) -> None:
