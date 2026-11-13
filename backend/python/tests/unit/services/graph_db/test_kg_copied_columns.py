@@ -79,18 +79,6 @@ def _is_table(src: object) -> bool:
     return isinstance(src, exp.Table) and f"{src.db}.{src.name}".lower() == TABLE
 
 
-def _source(scope: Scope, alias: str) -> list[object]:
-    """What ``alias`` names in ``scope`` or a scope around it (a correlated column); every source of the scope for a column with no table."""
-    s: Scope | None = scope
-    while s is not None:
-        if alias and alias in s.sources:
-            return [s.sources[alias]]
-        if not alias:
-            return list(s.sources.values())
-        s = s.parent
-    return []
-
-
 def _own_columns(node: exp.Expression) -> list[exp.Column]:
     """The columns of ``node`` that are not inside a query nested in it (those are their own scope's). Read from the tree, not from ``Scope.columns``, which leaves out a
     bare column it takes for a possible alias (``HAVING max(record_type) = ...``)."""
@@ -144,70 +132,91 @@ def _exported(scope: Scope) -> list[str]:
     return list(scope.outer_columns) or [p.alias_or_name for p in first if not _stars(scope, p)]
 
 
-def _whole_row(scope: Scope, c: exp.Column) -> bool:
-    """A bare name that is the alias (or the name) of kg.records is the whole row as a value (``SELECT r``, ``to_jsonb(r)``, ``r IS NOT NULL``), unless a column of
-    that name is in reach first. Only the columns of a derived table or CTE are known here: beside a stored table whose columns are not, the name is taken as the row."""
-    if c.table:
-        return False
-    s: Scope | None = scope
-    while s is not None:
-        if any(c.name in _exported(x) for x in s.sources.values() if isinstance(x, Scope) and isinstance(x.expression, (exp.Select, exp.SetOperation))):
-            return False
-        if c.name in s.sources:
-            return _is_table(s.sources[c.name])
-        s = s.parent
-    return False
-
-
 def _target(tree: exp.Expression) -> exp.Table | None:
     """The table an INSERT, UPDATE or DELETE writes."""
     t = tree.this
     return t.this if isinstance(t, exp.Schema) else t if isinstance(t, exp.Table) else None
 
 
-def copied_reads(tree: exp.Expression) -> set[str]:
-    """The copied columns of kg.records (and "*" for the whole row) that a statement reads: into what it returns (a query's columns, a RETURNING list), or into a condition,
-    a join (ON or USING), a grouping, a DISTINCT ON or an order."""
-    found: set[str] = set()
-    if isinstance(tree, (exp.Insert, exp.Update, exp.Delete)):
-        target = _target(tree)
-        if target is not None and _is_table(target):
-            names = {"", target.name, target.alias_or_name}
-            ret = tree.args.get("returning")
-            for r in ret.expressions if ret is not None else []:
-                if isinstance(r, exp.Star) or (isinstance(r, exp.Column) and isinstance(r.this, exp.Star) and r.table in names):
-                    found.add("*")
-            # the target's alias or name as a value (``RETURNING kg_row``, ``WHERE kg_row IS NOT NULL``) is the whole row
-            for w in (ret, tree.args.get("where")):
-                if w is not None and any(not c.table and c.name in names - {""} for c in _own_columns(w)):
-                    found.add("*")
-            found |= {c.name for c in (_own_columns(ret) if ret is not None else []) if c.name in COPIED and c.table in names}
-            if not isinstance(tree, exp.Insert):        # its condition and the values it sets (a column set is written, not read)
-                read = [tree.args.get("where"), *(a.expression for a in tree.args.get("expressions") or [] if isinstance(a, exp.EQ))]
-                found |= {c.name for w in read if w is not None for c in _own_columns(w) if c.name in COPIED and c.table in names}
-    root = build_scope(tree)
-    if root is None:
-        return found
-    work: list[tuple[Scope, exp.Expression]] = []
-    seen: set[tuple[int, int]] = set()
-    followed: set[tuple[int, str | None]] = set()
+_CLAUSES = ("where", "group", "having", "order", "qualify", "distinct", "windows")
+_QUERY = (exp.Select, exp.SetOperation)
+_INCOMING = "excluded"      # ON CONFLICT DO UPDATE: the row an INSERT proposes, not a stored one
 
-    def follow(src: object, name: str | None) -> None:
+
+class _Walker:
+    """Follows the columns a statement reads to the tables they come from, collecting the copied columns of kg.records (and "*" for its whole row). ``outer`` names the
+    sources of a write (its table, its FROM or USING) for the queries nested in it, whose correlated columns name them."""
+
+    def __init__(self) -> None:
+        self.found: set[str] = set()
+        self.outer: dict[str, object] = {}
+        self.work: list[tuple[Scope | None, exp.Expression]] = []
+        self.seen: set[tuple[int, int]] = set()
+        self.followed: set[tuple[int, str | None]] = set()
+
+    def sources(self, scope: Scope | None, alias: str) -> list[object]:
+        """What ``alias`` names in ``scope``, a scope around it (a correlated column) or the write around them; every source of the nearest level for a column with no table."""
+        s = scope
+        while s is not None:
+            if alias and alias in s.sources:
+                return [s.sources[alias]]
+            if not alias:
+                return list(s.sources.values())
+            s = s.parent
+        if not alias:
+            return [v for k, v in self.outer.items() if k != _INCOMING]
+        return [self.outer[alias]] if alias in self.outer and alias != _INCOMING else []
+
+    def whole_row(self, scope: Scope | None, c: exp.Column) -> bool:
+        """A bare name that is the alias (or the name) of kg.records is the whole row as a value (``SELECT r``, ``to_jsonb(r)``, ``RETURNING kg_row``), unless a column of
+        that name is in reach first. Only the columns of a derived table or CTE are known here: beside a stored table whose columns are not, the name is taken as the row."""
+        if c.table:
+            return False
+        s = scope
+        while s is not None:
+            if any(c.name in _exported(x) for x in s.sources.values() if isinstance(x, Scope) and isinstance(x.expression, _QUERY)):
+                return False
+            if c.name in s.sources:
+                return _is_table(s.sources[c.name])
+            s = s.parent
+        if any(c.name in _exported(x) for x in self.outer.values() if isinstance(x, Scope) and isinstance(x.expression, _QUERY)):
+            return False
+        return c.name in self.outer and _is_table(self.outer[c.name])
+
+    def add_query(self, root: Scope, *, returned: bool) -> None:
+        """Every scope of a query: its clauses are read, and what it returns when ``returned`` (else only through what reads it)."""
+        for scope in root.traverse():
+            e = scope.expression
+            if not isinstance(e, exp.Select):
+                continue
+            for k in _CLAUSES:          # a clause is one node or, for WINDOW, a list of them
+                v = e.args.get(k)
+                self.work += [(scope, n) for n in (v if isinstance(v, list) else [v]) if n is not None]
+            for j in e.args.get("joins") or []:
+                if j.args.get("on") is not None:
+                    self.work.append((scope, j.args["on"]))
+                for u in j.args.get("using") or []:         # USING (a): the column a of both sides
+                    for x in scope.sources.values():
+                        self.follow(x, u.name)
+            if _returns_read(scope) and (returned or scope is not root):
+                self.work += [(scope, p) for p in _projections(scope)]
+
+    def follow(self, src: object, name: str | None) -> None:
         """A column ``name`` (None: every column) of ``src`` is read."""
-        if (id(src), name) in followed:      # a recursive CTE reads itself
+        if (id(src), name) in self.followed:      # a recursive CTE reads itself
             return
-        followed.add((id(src), name))
+        self.followed.add((id(src), name))
         if _is_table(src):
             if name is None:
-                found.add("*")
+                self.found.add("*")
             elif name in COPIED:
-                found.add(name)
+                self.found.add(name)
             return
         if not isinstance(src, Scope):
             return
-        if not isinstance(src.expression, (exp.Select, exp.SetOperation)):     # a lateral: its subquery makes the columns
+        if not isinstance(src.expression, _QUERY):     # a lateral: its subquery makes the columns
             for c in _children(src):
-                follow(c, name)
+                self.follow(c, name)
             return
         leaves = _leaves(src)
         first = _projections(leaves[0])
@@ -215,47 +224,107 @@ def copied_reads(tree: exp.Expression) -> set[str]:
             for b in leaves:
                 for p in _projections(b):
                     for t in _stars(b, p):
-                        for x in _source(b, t or ""):
-                            follow(x, None if src.outer_columns else name)
+                        for x in self.sources(b, t or ""):
+                            self.follow(x, None if src.outer_columns else name)
                     if not _stars(b, p) and (name is None or p.alias_or_name == name):
-                        work.append((b, p))
+                        self.work.append((b, p))
             return
         # the names the scope exports (its alias list, ``c(v)`` or ``x(v)``, else its first SELECT's), and the position each has in every SELECT of it
         names = list(src.outer_columns) or [p.alias_or_name for p in first]
         positions = range(len(names)) if name is None else [i for i, n in enumerate(names) if n == name]
         for b in leaves:
             projs = _projections(b)
-            work.extend((b, projs[i]) for i in positions if i < len(projs))
+            self.work.extend((b, projs[i]) for i in positions if i < len(projs))
 
-    for scope in root.traverse():
-        e = scope.expression
-        if isinstance(e, exp.Select):
-            work += [(scope, n) for n in (e.args.get(k) for k in ("where", "group", "having", "order", "qualify", "distinct")) if n is not None]
-            for j in e.args.get("joins") or []:
-                if j.args.get("on") is not None:
-                    work.append((scope, j.args["on"]))
-                for u in j.args.get("using") or []:         # USING (a): the column a of both sides
-                    for x in scope.sources.values():
-                        follow(x, u.name)
-            if _returns_read(scope):
-                work += [(scope, p) for p in _projections(scope)]
-
-    while work:
-        scope, node = work.pop()
-        if (id(scope), id(node)) in seen:
-            continue
-        seen.add((id(scope), id(node)))
-        for t in _stars(scope, node):
-            for x in _source(scope, t or ""):
-                follow(x, None)
-        for c in _own_columns(node):
-            if isinstance(c.this, exp.Star):
+    def drain(self) -> set[str]:
+        while self.work:
+            scope, node = self.work.pop()
+            if (id(scope), id(node)) in self.seen:
                 continue
-            if _whole_row(scope, c):
-                found.add("*")
-            for x in _source(scope, c.table):
-                follow(x, c.name)
-    return found
+            self.seen.add((id(scope), id(node)))
+            for t in _stars(scope, node):
+                for x in self.sources(scope, t or ""):
+                    self.follow(x, None)
+            for c in _own_columns(node):
+                if isinstance(c.this, exp.Star):
+                    if c.table != _INCOMING:
+                        for x in self.sources(scope, c.table):
+                            self.follow(x, None)
+                    continue
+                if self.whole_row(scope, c):
+                    self.found.add("*")
+                for x in self.sources(scope, c.table):
+                    self.follow(x, c.name)
+        return self.found
+
+
+def _write_sources(tree: exp.Expression) -> list[exp.Expression]:
+    """The tables and subqueries a write reads besides its own table: UPDATE's FROM (and its joins), DELETE's USING."""
+    out: list[exp.Expression] = []
+    frm = tree.args.get("from")
+    if frm is not None:
+        out += [frm.this, *frm.expressions]
+    out += [j.this for j in tree.args.get("joins") or []]
+    out += list(tree.args.get("using") or [])
+    return [x for x in out if x is not None]
+
+
+def _top_queries(node: exp.Expression) -> list[exp.Expression]:
+    """The queries under ``node`` that no other query of it holds."""
+    out = []
+    for q in node.find_all(*_QUERY):
+        a = q.parent
+        while a is not None and a is not node and not isinstance(a, _QUERY):
+            a = a.parent
+        if a is node or a is None:
+            out.append(q)
+    return out
+
+
+def copied_reads(tree: exp.Expression) -> set[str]:
+    """The copied columns of kg.records (and "*" for the whole row) that a statement reads: into what it returns (a query's columns, a RETURNING list), or into a condition,
+    a join (ON or USING), a grouping, a window, a DISTINCT ON or an order; for a write also the values it sets (SET, ON CONFLICT DO UPDATE) and what it inserts from a query."""
+    w = _Walker()
+    if not isinstance(tree, (exp.Insert, exp.Update, exp.Delete)):
+        root = build_scope(tree)
+        if root is not None:
+            w.add_query(root, returned=True)
+        return w.drain()
+    target = _target(tree)
+    if target is not None:
+        w.outer[target.alias_or_name] = target
+        w.outer.setdefault(target.name, target)
+    nested_from: set[int] = set()
+    for x in _write_sources(tree):
+        inner = x.this if isinstance(x, exp.Lateral) else x
+        if isinstance(inner, exp.Subquery):
+            root = build_scope(inner.this)
+            if root is not None:
+                w.outer[x.alias_or_name or inner.alias_or_name] = root
+                w.add_query(root, returned=False)          # a FROM subquery: its columns are read through what reads them
+                nested_from.add(id(inner.this))
+        elif isinstance(inner, exp.Table):
+            w.outer[inner.alias_or_name] = inner
+    # what the write itself reads, at its own level: its condition, the values it sets (a column set is written, not read), its RETURNING, its ON CONFLICT DO UPDATE
+    conflict = tree.args.get("conflict")
+    read = [tree.args.get("where"), tree.args.get("returning")]
+    read += [a.expression for a in (tree.expressions if isinstance(tree, exp.Update) else []) if isinstance(a, exp.EQ)]
+    if conflict is not None:
+        read += [a.expression for a in conflict.expressions if isinstance(a, exp.EQ)] + [conflict.args.get("where")]
+    for n in read:
+        if n is not None:
+            w.work.append((None, n))
+    ret = tree.args.get("returning")
+    for r in ret.expressions if ret is not None else []:
+        if isinstance(r, exp.Star):
+            w.follow(target, None)
+    # every query nested in the write (a subquery of its condition, its values, an INSERT's SELECT): what it returns is read, and its correlated columns name the write's sources
+    for q in _top_queries(tree):
+        if id(q) not in nested_from:
+            root = build_scope(q)
+            if root is not None:
+                w.add_query(root, returned=True)
+    return w.drain()
 
 
 # --- statements -----------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -488,10 +557,30 @@ def test_the_scan_finds_the_sources_and_statements_it_must_read() -> None:
     (["SELECT x.v FROM (SELECT sk AS v FROM kg.records EXCEPT SELECT origin FROM kg.records) x"], {"origin"}),
     (["SELECT x.sk FROM (SELECT sk, rule FROM kg.records INTERSECT SELECT sk, rule FROM kg.records) x"], set()),
     (["UPDATE kg.records SET name = 'x' WHERE id IN (SELECT id FROM graph.nodes WHERE rule = 'a')"], set()),   # an inner query's columns are its own
-    (["DELETE FROM kg.records WHERE id IN (SELECT id FROM graph.nodes WHERE records IS NOT NULL)"], set()),
+    (["DELETE FROM kg.records WHERE id IN (SELECT n.id FROM graph.nodes n WHERE n.records IS NOT NULL)"], set()),
+    (["DELETE FROM kg.records WHERE id IN (SELECT id FROM graph.nodes WHERE records IS NOT NULL)"], {"*"}),       # a correlated bare name of the written table: its row
     (["UPDATE kg.records SET name = 'x' WHERE rule = 'a' AND id IN (SELECT id FROM graph.nodes)"], {"rule"}),
     (["UPDATE graph.nodes SET doc = $1 WHERE coll = 'records' AND id IN (SELECT id FROM kg.records WHERE origin = $2)"], {"origin"}),
     (["UPDATE graph.nodes SET doc = $1 WHERE rule = $2 AND id IN (SELECT id FROM kg.records)"], set()),
+    (["UPDATE kg.records r SET name = 'x' WHERE EXISTS (SELECT 1 FROM graph.nodes x WHERE x.id = r.origin)"], {"origin"}),   # correlated to the write
+    (["DELETE FROM kg.records r WHERE EXISTS (SELECT 1 FROM graph.nodes x WHERE x.id = r.origin)"], {"origin"}),
+    (["SELECT r.sk FROM kg.records r WHERE EXISTS (SELECT 1 FROM graph.nodes x WHERE x.id = r.origin)"], {"origin"}),
+    (["UPDATE kg.records r SET name = 'x' WHERE EXISTS (SELECT 1 FROM graph.nodes r WHERE r.origin = 'a')"], set()),   # the inner alias hides the write's
+    (["INSERT INTO kg.records (org_id, sk, name) VALUES ($1, $2, $3) ON CONFLICT (org_id, sk) DO UPDATE SET name = kg.records.origin"], {"origin"}),
+    (["INSERT INTO kg.records AS k (org_id, sk, name) VALUES ($1, $2, $3) ON CONFLICT (org_id, sk) DO UPDATE SET name = excluded.name WHERE k.rule = 'OPEN'"], {"rule"}),
+    (["INSERT INTO kg.records (org_id, sk, rule) VALUES ($1, $2, $3) ON CONFLICT (org_id, sk) DO UPDATE SET rule = excluded.rule"], set()),   # the incoming row
+    (["SELECT r.sk, row_number() OVER (PARTITION BY r.origin ORDER BY r.sk) FROM kg.records r"], {"origin"}),
+    (["SELECT r.sk, row_number() OVER w FROM kg.records r WINDOW w AS (PARTITION BY r.model ORDER BY r.sk)"], {"model"}),
+    (["SELECT count(*) FILTER (WHERE r.vrid IS NULL) FROM kg.records r"], {"vrid"}),
+    (["UPDATE graph.nodes n SET doc = $1 FROM kg.records r WHERE r.id = n.id AND r.record_type = $2"], {"record_type"}),
+    (["UPDATE graph.nodes n SET doc = to_jsonb(r.origin) FROM kg.records r WHERE r.id = n.id"], {"origin"}),
+    (["UPDATE graph.nodes n SET doc = $1 FROM LATERAL (SELECT r.rule FROM kg.records r WHERE r.id = n.id) x WHERE x.rule = 'a'"], {"rule"}),
+    (["UPDATE graph.nodes n SET doc = $1 FROM (SELECT r.id, r.rule FROM kg.records r) x WHERE x.id = n.id"], set()),
+    (["DELETE FROM graph.nodes n USING kg.records r WHERE r.id = n.id AND r.external_id = $1"], {"external_id"}),
+    (["SELECT v.a FROM (VALUES (1)) v(a) JOIN kg.records r ON r.origin = 'x'"], {"origin"}),
+    (["SELECT r.sk FROM kg.records r TABLESAMPLE SYSTEM (10) WHERE r.rule = 'OPEN'"], {"rule"}),
+    (["INSERT INTO graph.nodes (id) SELECT r.origin FROM kg.records r"], {"origin"}),                       # what an INSERT inserts from a query
+    (["INSERT INTO graph.nodes (id, doc) VALUES ((SELECT r.vrid FROM kg.records r LIMIT 1), $1)"], {"vrid"}),
     (["UPDATE kg.records AS kg_row SET name = 'x' RETURNING kg_row"], {"*"}),                              # a bare alias is the whole row as a value
     (["SELECT r FROM kg.records r"], {"*"}),
     (["SELECT to_jsonb(r) FROM kg.records r WHERE r.org_id = $1"], {"*"}),
