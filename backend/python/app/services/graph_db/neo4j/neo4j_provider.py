@@ -21529,9 +21529,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
         # The walk from this App can pass through a node of another: its grant there is tested on it (`_kh_grants_cross`). Read beside
         # this App's own grants, outside a transaction.
-        cross_read = self._kh_v3_cross(user_key, org_id, gated_app_ids, app_id, transaction)
+        cross_read = None
         if transaction is None:
-            cross_read = asyncio.ensure_future(cross_read)
+            cross_read = asyncio.ensure_future(self._kh_v3_cross(user_key, org_id, gated_app_ids, app_id, None))
+            # A page that fails before it reads the answer leaves no unretrieved error behind.
+            cross_read.add_done_callback(lambda done: done.cancelled() or done.exception())
         # Browse lists the user's chain-tops beside the start's own children: under
         # their own record group, else under the App.
         wants_chain_tops = not flatten and (start_is_app or start_type == "recordGroup")
@@ -21608,7 +21610,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             granted_ids = list(granted_ids or [])
         if grants_out is not None:
             grants_out[app_id] = granted_ids
-        cross = await cross_read
+        cross = await cross_read if cross_read is not None else await self._kh_v3_cross(user_key, org_id, gated_app_ids, app_id, transaction)
         shared_key = (user_key, org_id, app_id, only_group) if user_key and transaction is None else None
         filters = filters or {}
         conditions, params = self._kh_v2_filters_cypher(

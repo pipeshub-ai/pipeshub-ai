@@ -106,15 +106,21 @@ class KhListingMixin(PgBase):
                     via_parent_id=via_parent_id, transaction=snap, name_parents=name_parents, user_key=user_key, grants_out=grants_out, max_depth=max_depth)
             finally:
                 await self.rollback_transaction(snap)
+        # The grants of every gated connector, by connector: the walk from this App can pass through a node of another, and a grant counts on a node of any gated App (a source
+        # account's inside its own connector only, as the buckets hold them). Reading this App's grants already reads them all (`get_knowledge_hub_connector_grants`).
         if grants_by_connector is not None:
-            granted = list(grants_by_connector.get(app_id) or [])
+            every = grants_by_connector
         elif granted_ids is None and user_key:
-            granted = list(await self.get_knowledge_hub_connector_grants(user_key, org_id, app_id, transaction=transaction))
+            every = (await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction))["by_connector"]
         else:
-            granted = list(granted_ids or [])
+            every = {app_id: list(granted_ids or [])}
+        gated = set(gated_app_ids)
+        every = {a: list(ids or []) for a, ids in every.items() if a in gated}
+        granted = every.get(app_id) or []
+        held = {g for ids in every.values() for g in ids}
         if grants_out is not None:
             grants_out[app_id] = granted
-        access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted}}
+        access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": every}
 
         async def head(tx: Tx) -> tuple[int | None, str, dict, list[int], bool]:
             k = await tx.fetchrow(kgl.STATE, org, app_id)
@@ -156,7 +162,7 @@ class KhListingMixin(PgBase):
         # Admission by class trusts that the stamps read are the ones the currency check saw: only in the page's snapshot. A caller's own transaction (read committed) reads
         # each statement at a new commit, so its rows are asked of the access check, which reads kg's currency with the stamps it reads.
         snapshot = getattr(self._txns.get(transaction), "snapshot", False)
-        viewer = await self._kh_flat_viewer(org, app_id, app_sk, where, base, admit, granted, transaction) if snapshot else None
+        viewer = await self._kh_flat_viewer(org, app_id, app_sk, where, base, admit, granted, held, transaction) if snapshot else None
         admit_sql, pbase = None, kgl.Params(list(base.values))
         if viewer is not None:      # a connector kg serves: the classes admit in the statement, so a window needs no question to the access check
             admit_sql = kgl.class_admit("w", pbase, viewer)
@@ -198,7 +204,9 @@ class KhListingMixin(PgBase):
             page["resume"] = resume
         return page
 
-    async def _kh_flat_viewer(self, org: str, app_id: str, app_sk: int, where: str, base: kgl.Params, admit: Any, granted: list[str], transaction: str | None) -> dict[str, Any] | None:  # noqa: ANN401
+    async def _kh_flat_viewer(
+        self, org: str, app_id: str, app_sk: int, where: str, base: kgl.Params, admit: Any, granted: list[str], held: set[str], transaction: str | None,  # noqa: ANN401
+    ) -> dict[str, Any] | None:
         """What the viewer's grants open of a connector kg serves, by class: the classes met with no grant of the row's own (``plain``), the classes that need the row's own grant (``own``), the classes
         kg cannot vouch for (``unvouched``) and the few rows no class decides, with the ones among them the access check admits (``walked``). None when the connector is not served or too many rows are
         left to the check: the rows are then asked of the access check one window at a time."""
@@ -212,7 +220,8 @@ class KhListingMixin(PgBase):
         found = await self._kq(classes, transaction)
         if found is None:
             return None
-        verdicts = await self._kq(lambda tx: kg_read.class_verdicts(tx, org, found, set(granted)), transaction)
+        # A clause's literals are the nodes a walk passes through, any connector's: every grant held. A row's own grant is this App's.
+        verdicts = await self._kq(lambda tx: kg_read.class_verdicts(tx, org, found, held), transaction)
         plain = sorted(c for c, v in verdicts.items() if v and v[0])
         own = sorted(c for c, v in verdicts.items() if v and v[1] and not v[0])
         unvouched = sorted(c for c, v in verdicts.items() if v is None)

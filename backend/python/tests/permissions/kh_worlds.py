@@ -475,6 +475,23 @@ grants: [[u, f], [u, x]]
 gates: [[u, A], [u, B]]
 """))
 
+# XLINK: the viewer reads App B as the source account s, which is granted y (of B) and x (of C), both RESTRICTED records under App A. A source account's
+# grant counts inside its own connector only: the walk from A passes y, so e (under y) is read, and not x, so c (under x) is not.
+XLINK = world_from_data(yaml.safe_load("""
+principals: [{id: u}, {id: s}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: B, kind: app, app_type: DRIVE}
+  - {id: C, kind: app, app_type: DRIVE}
+  - {id: y, kind: record, connector: B, rule: RESTRICTED, parents: [A], inherits: [A]}
+  - {id: e, kind: record, connector: A, rule: STRICT, parents: [y], inherits: [y]}
+  - {id: x, kind: record, connector: C, rule: RESTRICTED, parents: [A], inherits: [A]}
+  - {id: c, kind: record, connector: A, rule: STRICT, parents: [x], inherits: [x]}
+grants: [[s, y], [s, x]]
+gates: [[u, A], [u, C]]
+links: [[u, s, B]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
-             OPENGROUP, XSTUB, OPENGRANT, OPENGRANTTEAM, XHOP]
+             OPENGROUP, XSTUB, OPENGRANT, OPENGRANTTEAM, XHOP, XLINK]

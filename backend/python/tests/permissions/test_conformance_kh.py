@@ -28,6 +28,7 @@ from .kh_worlds import (
     TWOWAY,
     XDECL,
     XHOP,
+    XLINK,
     XSTUB,
 )
 from .runner import OracleLayer
@@ -201,15 +202,19 @@ async def test_an_open_app_reads_only_its_records_as_members_and_lists_only_its_
 async def test_a_grant_on_a_node_of_another_app_passes_the_hop(graph_layers) -> None:
     """A grant counts on a node of any gated App: the walk from App A passes through x, a RESTRICTED record of App B the viewer is granted in B,
     so c (a STRICT record of A that inherits from x only) is listed and counted in the flatten, and g (a group of A under x) opens and lists d
-    (XHOP)."""
+    (XHOP). A source account's grant counts inside its own connector only, on that hop as anywhere: e is read through y, a node of the account's
+    connector, and c is not read through x, a node of another (XLINK)."""
+    verdicts = OracleLayer().explain(XLINK, "u", ["e", "c"])
+    assert (verdicts["e"].admitted, verdicts["c"].admitted) == (True, False)
     for layer in graph_layers:
-        await layer.preload([XHOP])
+        await layer.preload([XHOP, XLINK])
         try:
             assert await children_of(layer, XHOP, "u", "g", "recordGroup") == {"d": False}, layer.name
-            bad = _bad(await check_world(layer, XHOP, "xhop"))
+            assert await layer.admitted(XLINK, "u", ["e", "c"]) == {"e"}, layer.name
+            bad = [f for world in (XHOP, XLINK) for f in _bad(await check_world(layer, world, "xhop"))]
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
-            await layer.release([XHOP])
+            await layer.release([XHOP, XLINK])
 
 
 async def test_a_granted_strict_group_below_a_seed_the_app_does_not_reach_is_read_and_listed_nowhere(graph_layers) -> None:
