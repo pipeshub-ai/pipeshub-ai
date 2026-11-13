@@ -519,6 +519,17 @@ def test_a_listed_row_with_a_long_name_that_does_not_compress_is_written(pdb):
         clean(c)
 
 
+@pytest.mark.parametrize("length", [4000, 4001, 100_000])
+def test_a_record_name_of_any_length_is_stored_whole(pdb, length):
+    """The graph stores a name whole and so does the copy (kg_0010): the 4,000 characters the writer once took, one more, and far more, all outside the BMP."""
+    name = "".join(chr(0x20000 + i % 0xA6DF) for i in range(length))
+    with conn(pdb) as c:
+        clean(c)
+        assert call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values(name=name, name_key=name.lower())))) == [(1,)]
+        assert tuple(c.execute("SELECT name, name_key FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (name, name.lower())
+        clean(c)
+
+
 def test_r13_is_written_to_the_row_of_the_session_org_and_the_other_stamps_stay(pdb):
     with conn(pdb) as c:
         clean(c)
