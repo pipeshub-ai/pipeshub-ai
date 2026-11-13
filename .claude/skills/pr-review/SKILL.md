@@ -57,7 +57,7 @@ Does the code do what the PR claims? Trace the happy path and the failure paths.
 
 - Single responsibility: retrieval + transformation + I/O in one function is three things.
 - Depend on abstractions (`IGraphDBProvider`, `IVectorDBService`, `MessagingFactory`), not concrete clients.
-- A new or changed `IGraphDBProvider` method or graph query lands in all three graph stores (Neo4j, ArangoDB, PostgreSQL) with tests on each, or the PostgreSQL side raises `NotImplementedInPostgres` and the PR says why. One store changed alone is blocking.
+- A new or changed `IGraphDBProvider` method or graph query lands in all three graph stores (Neo4j, ArangoDB, PostgreSQL) with tests on each. Where PostgreSQL cannot serve it yet, the PostgreSQL side raises `NotImplementedInPostgres`, a test pins that it raises, the other two stores are still tested, and the PR says why. One store changed alone is blocking.
 - New code fits the existing factory, repository and DI patterns (`inversify` in Node, `dependency-injector` in Python) instead of inventing a parallel structure.
 - Connector-specific shapes do not leak into shared domain models.
 

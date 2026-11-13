@@ -20,7 +20,7 @@ New connectors extend `ConnectorFactory` under `backend/python/app/connectors/so
 
 ## Storage is pluggable
 
-Do not open a Neo4j, Arango, PostgreSQL, Qdrant, or Kafka client from indexing/query/connector feature code. Call `IGraphDBProvider`, `IVectorDBService`, or `MessagingFactory`. Those factories read env and construct the vendor client; your code stays the same on a Neo4j, an Arango and a PostgreSQL box.
+Do not open a client for PipesHub's own stores or broker (Neo4j, Arango, PostgreSQL, Qdrant, Kafka) from indexing/query/connector feature code. Call `IGraphDBProvider`, `IVectorDBService`, or `MessagingFactory`. Those factories read env and construct the vendor client; your code stays the same on a Neo4j, an Arango and a PostgreSQL box. A connector's client for the source it indexes (for example the PostgreSQL connector reaching the database it syncs) is not covered by this rule.
 
 | Role | Env | Backends | Interface / factory |
 | --- | --- | --- | --- |
@@ -33,7 +33,7 @@ Do not open a Neo4j, Arango, PostgreSQL, Qdrant, or Kafka client from indexing/q
 
 Redis can be KV, vector, and broker at once; that does not make it the graph or the document store. The PostgreSQL **connector** (a source to index) is separate from PostgreSQL as a store.
 
-**A graph change covers every graph store.** A new or changed `IGraphDBProvider` method, or a new graph query, is implemented for Neo4j, ArangoDB and PostgreSQL (`backend/python/app/services/graph_db/{neo4j,arango,postgres}/`) and tested on each: real-store tests in `backend/python/tests/integration/graph_db/`, with the PostgreSQL ones in its `postgres/` folder. Where PostgreSQL cannot serve a method yet, it raises `NotImplementedInPostgres` (`graph_db/postgres/base.py`) instead of returning a partial answer, and the PR says so.
+**A graph change covers every graph store.** A new or changed `IGraphDBProvider` method, or a new graph query, is implemented for Neo4j, ArangoDB and PostgreSQL (`backend/python/app/services/graph_db/{neo4j,arango,postgres}/`) and tested on each: real-store tests in `backend/python/tests/integration/graph_db/`, with the PostgreSQL ones in its `postgres/` folder. Where PostgreSQL cannot serve a method yet, it raises `NotImplementedInPostgres` (`graph_db/postgres/base.py`) instead of returning a partial answer, a test pins that it raises, the Neo4j and ArangoDB implementations are still tested, and the PR says so.
 
 ## What lives where
 
@@ -99,4 +99,4 @@ Style: [.gemini/styleguide.md](./.gemini/styleguide.md) (Ruff, PEP 8, ESLint, no
 - Use OAuth `client_credentials` for anything that must act as a user. PATs carry `userId` + `orgId`.
 - Print or log personal access tokens. Newly minted PATs may have a `phpat_` prefix; strip happens in `extractToken`.
 - Trust client-supplied org/user IDs — check auth on every new route and tool.
-- Bypass factories (`ConnectorFactory`, `GraphDBProviderFactory`, `VectorDBProviderFactory`, `KeyValueStoreFactory`, `MessagingFactory`) or talk to Qdrant/Arango/Neo4j/PostgreSQL/etcd clients from feature code.
+- Bypass factories (`ConnectorFactory`, `GraphDBProviderFactory`, `VectorDBProviderFactory`, `KeyValueStoreFactory`, `MessagingFactory`) or talk to the clients of PipesHub's own stores (Qdrant/Arango/Neo4j/PostgreSQL/etcd) from feature code. A connector's client for its own source is fine.
