@@ -295,7 +295,10 @@ def copied_reads(tree: exp.Expression) -> set[str]:
         w.outer[target.alias_or_name] = target
         w.outer.setdefault(target.name, target)
     nested_from: set[int] = set()
-    for x in _write_sources(tree):
+    using: list[str] = []
+
+    def register(x: exp.Expression) -> None:
+        """A source of the write, and the sources sqlglot hangs on it as its joins (``FROM a JOIN b ON ...``, ``FROM a, b``, the same in USING)."""
         inner = x.this if isinstance(x, exp.Lateral) else x
         if isinstance(inner, exp.Subquery):
             root = build_scope(inner.this)
@@ -305,6 +308,17 @@ def copied_reads(tree: exp.Expression) -> set[str]:
                 nested_from.add(id(inner.this))
         elif isinstance(inner, exp.Table):
             w.outer[inner.alias_or_name] = inner
+        for j in x.args.get("joins") or []:
+            register(j.this)
+            if j.args.get("on") is not None:
+                w.work.append((None, j.args["on"]))
+            using.extend(u.name for u in j.args.get("using") or [])
+
+    for x in _write_sources(tree):
+        register(x)
+    for name in using:          # USING (a): the column a of both sides, once every source is known
+        for src in w.sources(None, ""):
+            w.follow(src, name)
     # what the write itself reads, at its own level: its condition, the values it sets (a column set is written, not read), its RETURNING, its ON CONFLICT DO UPDATE
     conflict = tree.args.get("conflict")
     read = [tree.args.get("where"), tree.args.get("returning")]
@@ -577,6 +591,12 @@ def test_the_scan_finds_the_sources_and_statements_it_must_read() -> None:
     (["UPDATE graph.nodes n SET doc = $1 FROM LATERAL (SELECT r.rule FROM kg.records r WHERE r.id = n.id) x WHERE x.rule = 'a'"], {"rule"}),
     (["UPDATE graph.nodes n SET doc = $1 FROM (SELECT r.id, r.rule FROM kg.records r) x WHERE x.id = n.id"], set()),
     (["DELETE FROM graph.nodes n USING kg.records r WHERE r.id = n.id AND r.external_id = $1"], {"external_id"}),
+    (["UPDATE graph.nodes n SET doc = 1 FROM kg.records r JOIN graph.edges e ON e.src = r.origin WHERE n.id = r.id"], {"origin"}),   # a write source's joins
+    (["UPDATE graph.nodes n SET doc = 1 FROM graph.edges e, kg.records r WHERE r.rule = 'a'"], {"rule"}),
+    (["DELETE FROM graph.nodes n USING kg.records r JOIN graph.edges e ON e.src = r.origin WHERE n.id = r.id"], {"origin"}),
+    (["DELETE FROM graph.nodes n USING graph.edges e, kg.records r WHERE r.rule = 'a'"], {"rule"}),
+    (["UPDATE graph.nodes n SET doc = 1 FROM graph.edges e JOIN kg.records r USING (external_id) WHERE n.id = e.id"], {"external_id"}),
+    (["UPDATE graph.nodes n SET doc = 1 FROM graph.edges e JOIN kg.records r ON r.id = e.dst WHERE n.id = e.id"], set()),
     (["SELECT v.a FROM (VALUES (1)) v(a) JOIN kg.records r ON r.origin = 'x'"], {"origin"}),
     (["SELECT r.sk FROM kg.records r TABLESAMPLE SYSTEM (10) WHERE r.rule = 'OPEN'"], {"rule"}),
     (["INSERT INTO graph.nodes (id) SELECT r.origin FROM kg.records r"], {"origin"}),                       # what an INSERT inserts from a query
