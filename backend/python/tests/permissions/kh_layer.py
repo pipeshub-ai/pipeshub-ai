@@ -22,11 +22,12 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from app.connectors.sources.localKB.handlers.kh_search import search_page
 
+from . import oracle
 from .runner import OracleLayer
 
 if TYPE_CHECKING:
@@ -131,7 +132,49 @@ def _ancestors(world: World, node: Node) -> list[Parent]:
     return out
 
 
-async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "") -> list[KhFinding]:
+def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> set[str]:
+    """The granted rows a browse of ``node`` (an App or a group) lists beside its hierarchy children, by the placement rule the stores share
+    (``GraphDBProvider._kh_v3_chain_tops``, ``place_chain_tops``): a live, OPEN, non-placeholder record or group of the App the viewer is
+    granted, with no hierarchy parent the viewer may open and not the App's hierarchy child, outside a group that hides its children. It is
+    listed under each of its own groups (a record's groups, a group's parent groups) the viewer may open; with none, under the App when it
+    has no own group or one that hangs from the App. A group's browse places only the records that belong to it. None in an App that opens
+    everything."""
+    target = world.node(node)
+    app_id = node if target.kind == "app" else target.connector
+    if app_id is None:      # a group of no App: nothing is placed under it
+        return set()
+    app = world.node(app_id)
+    if target.kind not in ("app", "group") or app.model == "APP_LEVEL" or app.app_type == "KB":
+        return set()
+    _, store = reference._store(world)
+    granted = {reference._ns.local(i) for i in oracle.viewer(store, reference._ns.id(viewer), reference._ns.org).granted}
+
+    def hier(n: Node) -> list[str]:
+        return [p.id for p in n.parents if p.rel in HIERARCHY]
+
+    def own(n: Node) -> list[str]:
+        return [g for g in (n.belongs if n.kind == "record" else hier(n)) if g != n.id and world.node(g).kind == "group"]
+
+    cands = [n for n in world.nodes if n.id in granted and n.connector == app_id and n.kind in ("record", "group") and not n.deleted
+             and not n.placeholder and (n.rule or "OPEN") == "OPEN" and app_id not in hier(n) and not hidden_by_navigation(world, n)
+             and (target.kind == "app" or (n.kind == "record" and node in n.belongs))]
+    asked = sorted({i for n in cands for i in [n.id, *hier(n), *own(n)]})
+    # the stores' check admits a placeholder asked by id where it would admit a real node there (the oracle refuses every placeholder): asked as one
+    real = replace(world, nodes=tuple(replace(n, placeholder=False) for n in world.nodes))
+    ok = {i for i, v in reference.explain(real, viewer, asked).items() if v.admitted}
+    out = set()
+    for n in cands:
+        if n.id not in ok or set(hier(n)) & ok:
+            continue
+        openable = set(own(n)) & ok
+        if node in openable or (target.kind == "app" and not openable and (
+                not own(n) or any(not world.node(g).deleted and app_id in {a.id for a in _ancestors(world, world.node(g))} for g in own(n)))):
+            out.add(n.id)
+    return out
+
+
+async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "", *, browse_apps: bool = False) -> list[KhFinding]:
+    """``browse_apps``: also browse each App the viewer is gated to directly, as the folders are (its children are the nodes that hang from it)."""
     reference = OracleLayer(layer.shape)
     found: list[KhFinding] = []
     for viewer in world.users():
@@ -158,7 +201,7 @@ async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "
             have = (await listing(layer, world, viewer, flt)).total
             if have != want:
                 add("facet", f"{name}: total {have}, oracle count {want}")
-        found.extend(await _browse(layer, reference, world, viewer, seen, scenario_id))
+        found.extend(await _browse(layer, reference, world, viewer, seen, scenario_id, browse_apps=browse_apps))
     return found
 
 
@@ -210,7 +253,7 @@ async def browse_pages(layer: GraphCheckLayer, world: World, viewer: str, node: 
 
 
 async def _browse(
-    layer: GraphCheckLayer, reference: OracleLayer, world: World, viewer: str, seen: dict[str, Any], scenario_id: str,
+    layer: GraphCheckLayer, reference: OracleLayer, world: World, viewer: str, seen: dict[str, Any], scenario_id: str, *, browse_apps: bool = False,
 ) -> list[KhFinding]:
     """The service path: browse a few folders the viewer may open, page by page, against the oracle's children of each, and open every row they
     list (a group, a folder, a record, a stub), held to one row per node over its pages and to its arrow."""
@@ -221,6 +264,9 @@ async def _browse(
         found.append(KhFinding(scenario_id, viewer, kind, detail))
 
     on_the_way = {p.id for n in seen.values() for p in _ancestors(world, n)}
+    # a placeholder group a chain-top is placed under is on the way to it too
+    holders = [n for n in world.nodes if n.kind == "group" and n.placeholder and chain_tops(reference, world, viewer, n.id)]
+    on_the_way |= {n.id for n in holders} | {p.id for n in holders for p in _ancestors(world, n)}
 
     def extras(rows: dict[str, Any]) -> set[str]:
         """The rows the oracle does not admit. One may be listed on the way to something readable, and only when it is shown as a placeholder (a
@@ -228,7 +274,9 @@ async def _browse(
         return {i for i, row in rows.items() if i not in seen and not (i in on_the_way and getattr(row, "isPlaceholder", False))}
 
     def children(node: str) -> list[Node]:
-        return [n for n in world.nodes if not n.deleted and any(p.id == node and p.rel in HIERARCHY for p in n.parents)]
+        """Its hierarchy children, and the chain-tops a browse of it places there."""
+        tops = chain_tops(reference, world, viewer, node)
+        return [n for n in world.nodes if not n.deleted and (n.id in tops or any(p.id == node and p.rel in HIERARCHY for p in n.parents))]
 
     async def open_(node: str, parent_type: str) -> dict[str, Any] | None:
         """What opening ``node`` lists, {id: row}, held to one row per node over every page and a total that counts each once."""
@@ -254,15 +302,17 @@ async def _browse(
                 add("browse_gap", f"{node}: the browse leaves out {missing}, which the viewer may open")
         return got
 
-    folders = [i for i, n in seen.items() if n.kind == "group"][:BROWSE_FOLDERS]
-    for folder in folders:
-        got = await open_(folder, "recordGroup")
+    folders = [(i, "recordGroup") for i, n in seen.items() if n.kind == "group"][:BROWSE_FOLDERS]
+    if browse_apps:      # an App of the world's org the viewer is gated to by a relation of their own (a gate through a group is not followed here)
+        folders = [(g.app, "app") for g in world.gates if g.who == viewer and g.via == "USER_APP_RELATION" and world.node(g.app).kind == "app" and world.node(g.app).org is None] + folders
+    for folder, folder_type in folders:
+        got = await open_(folder, folder_type)
         if got is None:      # a folder the viewer may open and the browse does not: an under-admit
             add("browse_gap", f"{folder}: the browse does not open it")
             continue
         # A stub is no content the oracle judges: it is listed exactly where opening it lists something.
         for stub in sorted(n.id for n in children(folder) if n.placeholder and n.id not in got):
-            if (await browse_pages(layer, world, viewer, stub, "record") or [[]])[0]:
+            if (await browse_pages(layer, world, viewer, stub, "recordGroup" if world.node(stub).kind == "group" else "record") or [[]])[0]:
                 add("browse_gap", f"{folder}: the browse leaves out the stub {stub}, and opening it lists something")
         for item_id, item in got.items():      # the expand arrow is on exactly when opening the row lists something
             below = await open_(item_id, str(getattr(item.nodeType, "value", item.nodeType)))

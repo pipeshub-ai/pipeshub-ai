@@ -82,7 +82,9 @@ async def test_a_connector_with_no_copy_is_refused_and_a_shape_not_served_here_i
         with pytest.raises(KnowledgeHubListingNotReady):
             await p.get_knowledge_hub_connector_page_v3(**asks(org), limit=5)
         with pytest.raises(NotImplementedInPostgres):
-            await p.get_knowledge_hub_connector_page_v3(**asks(org), limit=5, flatten=False)
+            await p.get_knowledge_hub_connector_page_v3(**asks(org), limit=5, start_id="g1", start_type="recordGroup")      # a flatten below a node
+        with pytest.raises(KnowledgeHubListingNotReady):
+            await p.get_knowledge_hub_connector_page_v3(**asks(org), limit=5, flatten=False)      # a browse of the connector itself
         with pytest.raises(NotImplementedInPostgres):
             await p.get_knowledge_hub_connector_page_v3(**asks(org), limit=5, max_depth=3)
 
@@ -247,7 +249,7 @@ async def test_every_listing_statement_reads_the_connector_by_an_index_and_never
         arrows = kgl.Params([org, [app_sk], []])
         statements += [("arrows", kgl.arrows_sql(kgl.class_admit("c", arrows, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()})), arrows.values)]
         statements += [("scan", kgl.scan_sql("", "$4"), [org, app_sk, 501, 0]), ("hiders", kgl.HAS_HIDER, [org, app_sk]), ("hidden", kgl.HIDDEN, [org, app_sk]),
-                       ("children", kh_listing.CHILDREN, [org, [app_sk], 20, []]), ("links", kh_listing.LINKS, [org, [app_sk]]), ("state", kgl.STATE, [org, "app1"])]
+                       ("children", kgl.children_of_sql(""), [org, [app_sk], 20, []]), ("links", kh_listing.LINKS, [org, [app_sk]]), ("state", kgl.STATE, [org, "app1"])]
         for name, sql, args in statements:
             await con.execute("SET enable_seqscan = off")      # a statement with an index it can use has a plan without a scan, whatever the size of the tables the planner is guessing at
             plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args))
@@ -313,7 +315,7 @@ async def test_the_hidden_rows_the_arrows_and_their_sample_read_by_key_and_never
         arrows = kgl.Params([org, sks, []])
         statements = [("hiders", kgl.HAS_HIDER, [org, app_sk]), ("hidden", kgl.HIDDEN, [org, app_sk]),
                       ("arrows", kgl.arrows_sql(kgl.class_admit("c", arrows, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()})), arrows.values),
-                      ("children", kh_listing.CHILDREN, [org, sks, 200, []])]
+                      ("children", kgl.children_of_sql(), [org, sks, 200, []])]
         for name, sql, args in statements:
             await con.execute("SET enable_seqscan = off")
             for kind, plan in (("custom", json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args))), ("generic", await _generic_plan(con, sql))):

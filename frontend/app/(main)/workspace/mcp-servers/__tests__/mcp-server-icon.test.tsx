@@ -40,6 +40,27 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="microsoft_learn" name="Microsoft Learn" />)).toBe('microsoft-learn icon');
   });
 
+  it.each([
+    { typeId: 'monday', name: 'monday.com' },
+    { typeId: 'monday', name: 'Team tracker' },
+    { typeId: null, name: 'monday.com' },
+  ])("shows monday.com's logo for $name with type $typeId", ({ typeId, name }) => {
+    const { container } = render(<McpServerIcon typeId={typeId} name={name} />);
+
+    const image = container.querySelector('img');
+    expect(image?.getAttribute('alt')).toBe('monday icon');
+    const sourcePath = new URL(image?.src ?? '', window.location.href).pathname;
+    expect(sourcePath).toBe('/icons/connectors/monday.svg');
+    expect(image?.style.filter).toBe('');
+  });
+
+  it('keeps the MCP mark for an unrelated server named after a weekday', () => {
+    const { container } = render(<McpServerIcon name="Monday planning" />);
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('[data-icon="hub"]')).toBeTruthy();
+  });
+
   it('shows the DocuSign, Okta, and HubSpot catalog logos', () => {
     expect(logo(<McpServerIcon typeId="docusign" name="DocuSign" />)).toBe('docusign icon');
     expect(logo(<McpServerIcon typeId="okta" name="Okta" />)).toBe('okta icon');

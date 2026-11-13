@@ -67,14 +67,22 @@ describe('OAuthAppController', () => {
       expect(query.limit).to.equal(10)
     })
 
-    it('should pass orgId, userId, and query to listApps without org-admin lookup', async () => {
+    it('should pass orgId, userId, query and whether the caller is an org admin', async () => {
       mockOAuthAppService.listApps.resolves({ data: [], pagination: {} })
+      mockReq.query = { createdBy: '507f1f77bcf86cd799439013' }
       await controller.listApps(mockReq, mockRes, mockNext)
-      expect((userAdminService.isUserOrgAdmin as sinon.SinonStub).called).to.be.false
       const args = mockOAuthAppService.listApps.firstCall.args
       expect(args[0]).to.equal('org-1')
       expect(args[1]).to.equal('user-1')
-      expect(args[2]).to.be.an('object')
+      expect(args[2].createdBy).to.equal('507f1f77bcf86cd799439013')
+      expect(args[3]).to.equal(true)
+    })
+
+    it('lists only the caller\'s own apps for a member', async () => {
+      ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
+      mockOAuthAppService.listApps.resolves({ data: [], pagination: {} })
+      await controller.listApps(mockReq, mockRes, mockNext)
+      expect(mockOAuthAppService.listApps.firstCall.args[3]).to.equal(false)
     })
 
     it('should call next on error', async () => {
@@ -162,6 +170,14 @@ describe('OAuthAppController', () => {
       expect(body.app).to.deep.equal(app)
       expect(body.app.tokenIdentityUserId).to.equal('svc-1')
     })
+
+    it('stays creator-only: no admin override reaches the service', async () => {
+      mockOAuthAppService.setTokenIdentity.resolves({})
+      mockReq.params = { appId: 'app-1' }
+      mockReq.body = { serviceAccountId: 'svc-1' }
+      await controller.setTokenIdentity(mockReq, mockRes, mockNext)
+      expect(mockOAuthAppService.setTokenIdentity.firstCall.args).to.deep.equal(['app-1', 'org-1', 'user-1', 'svc-1'])
+    })
   })
 
   describe('deleteApp', () => {
@@ -173,6 +189,15 @@ describe('OAuthAppController', () => {
       expect(mockOAuthTokenService.revokeAllTokensForApp.calledWith('cid')).to.be.true
       expect(mockRes.json.calledOnce).to.be.true
     })
+
+    it('lets an org admin delete any app of the org', async () => {
+      mockOAuthAppService.getAppById.resolves({ clientId: 'cid' })
+      mockOAuthAppService.deleteApp.resolves()
+      mockReq.params = { appId: 'app-1' }
+      await controller.deleteApp(mockReq, mockRes, mockNext)
+      expect(mockOAuthAppService.getAppById.firstCall.args[3]).to.equal(true)
+      expect(mockOAuthAppService.deleteApp.firstCall.args).to.deep.equal(['app-1', 'org-1', 'user-1', true])
+    })
   })
 
   describe('regenerateSecret', () => {
@@ -182,6 +207,13 @@ describe('OAuthAppController', () => {
       await controller.regenerateSecret(mockReq, mockRes, mockNext)
       expect(mockRes.json.calledOnce).to.be.true
     })
+
+    it('stays creator-only, even for an org admin', async () => {
+      mockOAuthAppService.regenerateSecret.resolves({ clientId: 'cid', clientSecret: 's' })
+      mockReq.params = { appId: 'app-1' }
+      await controller.regenerateSecret(mockReq, mockRes, mockNext)
+      expect(mockOAuthAppService.regenerateSecret.firstCall.args).to.deep.equal(['app-1', 'org-1', 'user-1'])
+    })
   })
 
   describe('suspendApp', () => {
@@ -190,6 +222,14 @@ describe('OAuthAppController', () => {
       mockReq.params = { appId: 'app-1' }
       await controller.suspendApp(mockReq, mockRes, mockNext)
       expect(mockRes.json.calledOnce).to.be.true
+    })
+
+    it('passes whether the caller is an org admin', async () => {
+      ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
+      mockOAuthAppService.suspendApp.resolves({ id: 'app-1', status: 'suspended' })
+      mockReq.params = { appId: 'app-1' }
+      await controller.suspendApp(mockReq, mockRes, mockNext)
+      expect(mockOAuthAppService.suspendApp.firstCall.args).to.deep.equal(['app-1', 'org-1', 'user-1', false])
     })
   })
 

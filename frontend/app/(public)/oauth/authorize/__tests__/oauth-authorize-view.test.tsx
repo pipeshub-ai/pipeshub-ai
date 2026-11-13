@@ -134,6 +134,25 @@ describe('OAuthAuthorizeView not-granted scopes', () => {
     expect(screen.getByText(en.oauthConsent.unreviewedApp)).toBeTruthy();
   });
 
+  it('says who registered an app, so a look-alike name registered by a member is visible', async () => {
+    const response = consentResponse([]);
+    (response.data.consentData.app as { registeredBy?: string }).registeredBy = 'Mallory';
+    get.mockResolvedValue(response);
+
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    expect(await screen.findByText('Registered by Mallory')).toBeTruthy();
+  });
+
+  it('names no registrant when the server sends none', async () => {
+    get.mockResolvedValue(consentResponse([], true, undefined, 'claude.ai'));
+
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    expect(await screen.findByText('Identified by claude.ai')).toBeTruthy();
+    expect(screen.queryByText(/^Registered by/)).toBeNull();
+  });
+
   it('shows the full redirect URI, so a changed loopback port is visible', async () => {
     const response = consentResponse([]);
     response.data.consentData.redirectUri = 'http://127.0.0.1:49237/callback';
