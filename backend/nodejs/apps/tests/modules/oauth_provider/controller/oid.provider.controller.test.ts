@@ -240,6 +240,28 @@ describe('OIDCProviderController', () => {
       expect(out).to.include('http://localhost:3000/api/v1/oauth2/register')
     })
 
+    // An agent that reads only auth.md must learn the registration discovery advertises, and never one it doesn't.
+    it('offers email sign-up exactly when discovery advertises agent_auth', async () => {
+      const discovery = async () => {
+        const res = { json: sinon.stub(), status: sinon.stub().returnsThis(), setHeader: sinon.stub() }
+        await controller.openidConfiguration({} as any, res as any, mockNext)
+        return res.json.firstCall.args[0]
+      }
+      let out = await md()
+      expect((await discovery()).agent_auth).to.exist
+      expect(out).to.include('`service_auth`')
+      expect(out).to.include('http://localhost:3000/api/v1/agent/identity')
+      expect(out).to.include('grant_type=urn:workos:agent-auth:grant-type:claim')
+      expect(out).to.include('grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer')
+      expect(out).to.include('lasts 30 days')
+      expect(out).to.not.include('anonymous')
+      process.env.PIPESHUB_ENABLE_DEVICE_GRANT = 'false'
+      out = await md()
+      expect((await discovery()).agent_auth).to.not.exist
+      expect(out).to.not.include('/agent/identity')
+      expect(out).to.not.include('service_auth')
+    })
+
     it('adds the edition\'s sections after the built-in ways in', async () => {
       const out = await md((origin) => [`### Extra way in for ${origin}`])
       expect(out).to.include('### Extra way in for http://localhost:3000')

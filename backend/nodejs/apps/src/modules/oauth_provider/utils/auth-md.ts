@@ -1,9 +1,15 @@
 /**
  * `/auth.md`: how an agent gets and uses a credential for this instance, as
  * the Markdown "skill" the auth.md convention describes. It covers only what
- * this instance offers today; it does not advertise the agentic-registration
- * endpoints (`/agent/identity`, the claim grant), which are not implemented.
+ * this instance offers: `service_auth` registration where it is on, never the
+ * `anonymous` or `identity_assertion` types.
  */
+
+import {
+  AGENT_CLAIM_GRANT,
+  ASSERTION_TTL_SECONDS,
+  JWT_BEARER_GRANT,
+} from '../constants/agent-auth.constants';
 
 export interface AuthMdInfo {
   /** The instance origin, e.g. https://pipeshub.example.com. */
@@ -12,6 +18,8 @@ export interface AuthMdInfo {
   deviceClientId: string | null;
   /** Whether MCP clients may register themselves (Dynamic Client Registration). */
   dcrEnabled: boolean;
+  /** Whether an agent may register with a person's email (auth.md `service_auth`). */
+  agentSignup: boolean;
   /** The scopes an agent sign-in is granted on this instance. */
   agentScopes: readonly string[];
   /** Whether a device sign-in also gets `offline_access`, so it can refresh. */
@@ -47,6 +55,14 @@ npx -y -p @pipeshub-ai/mcp pipeshub login --wait
 The CLI stores the sign-in (\`~/.config/pipeshub/credentials.json\`, mode 0600)${info.deviceRefreshes ? ' and refreshes it' : ''}. \`npx -y @pipeshub-ai/mcp start\` uses it, so an MCP client config needs no token.
 
 Without the CLI: \`POST ${oauth}/device_authorization\` with \`client_id=${info.deviceClientId}\` and \`scope=${deviceScope}\` (the agent scopes below${info.deviceRefreshes ? ', plus `offline_access` so it can refresh' : ''}), show the person \`verification_uri_complete\` (or \`verification_uri\` and \`user_code\`), then poll \`POST ${oauth}/token\` with \`grant_type=urn:ietf:params:oauth:grant-type:device_code\`, \`device_code\` and \`client_id\` every \`interval\` seconds until it returns an access token. Until the person approves, that call answers HTTP 400 with \`error: authorization_pending\`: keep polling. On \`slow_down\`, add 5 seconds to the interval. Stop on \`access_denied\` or \`expired_token\`.`);
+  }
+
+  if (info.agentSignup) {
+    ways.push(`### Sign up with the person's email (auth.md \`service_auth\`)
+
+For when you know the person's email but cannot run the CLI. \`POST ${origin}/api/v1/agent/identity\` with JSON \`{"type": "service_auth", "login_hint": "<the person's email>"}\`. Show the person \`claim.verification_uri\` and \`claim.user_code\`: they sign in with that email, check the code and approve. Then poll \`POST ${oauth}/token\` with \`grant_type=${AGENT_CLAIM_GRANT}\` and \`claim_token\` (no \`client_id\`) every \`claim.interval\` seconds. Until the person approves, that call answers HTTP 400 with \`error: authorization_pending\`: keep polling. On \`slow_down\`, wait longer. Stop on \`access_denied\` or \`expired_token\`.
+
+The answer has an access token and an \`identity_assertion\` that lasts ${ASSERTION_TTL_SECONDS / 86400} days. When the access token expires, \`POST ${oauth}/token\` with \`grant_type=${JWT_BEARER_GRANT}\` and \`assertion=<identity_assertion>\` for a new one. Keep the assertion as secret as a token.`);
   }
 
   if (info.dcrEnabled) {
