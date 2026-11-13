@@ -621,6 +621,19 @@ grants: [[u, f], [u, s]]
 gates: [[u, A]]
 """))
 
+# FLATSIDE: a record f of a declared group D, with a member y as its hierarchy child. The flatten's sidebar keeps a record by the flatten's own
+# arrow (the stricter rule): f's is off there, so the flatten's sidebar holds D alone, though a browse of D shows f with an arrow.
+FLATSIDE = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: D, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: f, kind: record, connector: A, rule: OPEN, parents: [D], belongs: [D]}
+  - {id: y, kind: record, connector: A, rule: OPEN, parents: [f], belongs: [D]}
+grants: [[u, D]]
+gates: [[u, A]]
+"""))
+
 # KEYCLASH: an App that opens everything, and a strict record m below a seed the walk does not reach, which belongs to no App. The test adds, on
 # ArangoDB only, a record group whose key is the App's key and files m in it: m belongs to that group, not to the App, so it is not listed.
 KEYCLASH = world_from_data(yaml.safe_load("""
@@ -664,4 +677,4 @@ gates: [[u, A]]
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
              SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ, OPENGRANT, OPENGRANTTEAM, SIDESEED,
-             STUBSEED, NESTSTUB, CAPSTUB, HIDESEED]
+             STUBSEED, NESTSTUB, CAPSTUB, HIDESEED, FLATSIDE]

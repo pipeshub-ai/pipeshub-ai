@@ -66,7 +66,9 @@ def _arango() -> ArangoHTTPProvider:
 def test_arango_decides_the_container_filter_on_real_children() -> None:
     conditions, _ = _arango()._kh_v2_filters_aql(only_containers=True)
 
-    slim = ArangoHTTPProvider._kh_v3_slim_aql(tuple(conditions), "name")
+    slim = ArangoHTTPProvider._kh_v3_slim_aql(tuple(conditions), "name", browse=True)
+    # a flatten's sidebar keeps a record by the flatten's own arrow, the stricter rule no check settles
+    assert "hasChildren: ((IS_SAME_COLLECTION(" in ArangoHTTPProvider._kh_v3_slim_aql(tuple(conditions), "name")
 
     assert "LET kh_has = (kh_sd.hideChildren != true" in slim and "LET kh_probe = kh_has ? [] :" in slim
     assert "hasChildren: (kh_has OR LENGTH(kh_probe) > 0)" in slim and "RETURN [kh_h, node.nodeType, sortKey, kh_probe]" in slim

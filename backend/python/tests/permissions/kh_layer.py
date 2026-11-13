@@ -173,6 +173,15 @@ async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "
             have = (await listing(layer, world, viewer, flt)).total
             if have != want:
                 add("facet", f"{name}: total {have}, oracle count {want}")
+        # the flatten's sidebar (rows with children) is a filter on the flatten: its groups and folders, and a record exactly where the
+        # flatten's own arrow is on; it never adds a row
+        side = {r["id"] for r in (await listing(layer, world, viewer, {"only_containers": True})).rows}
+        want = {r["id"] for r in got.rows if r.get("nodeType") != "record" or r.get("hasChildren")}
+        for extra in sorted(side - want):
+            add("sidebar", f"flatten: the sidebar lists {extra}, which the flatten lists without an arrow" if extra in ids
+                else f"flatten: the sidebar lists {extra}, which the flatten does not list")
+        for missing in sorted(want - side):
+            add("sidebar", f"flatten: the sidebar leaves out {missing}, which the flatten lists with an arrow")
         found.extend(await _browse(layer, reference, world, viewer, seen, scenario_id))
     return found
 

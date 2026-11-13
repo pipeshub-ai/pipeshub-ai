@@ -22003,11 +22003,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return ""
             # The sidebar keeps a row exactly where its arrow is on: the page row's own test, read from the row's own reach (`kh_row_from_app`),
             # and where that lists nothing, the check's answer on its frontier, as the page settles the arrow (`_kh_v3_settle_held_arrows`).
-            reach = f"\n        WITH {carry}, node, CASE WHEN node IS NULL THEN false ELSE {own_from_app()} END AS kh_row_from_app" if sidebar else ""
+            # A flatten's sidebar keeps a record by the flatten's own arrow: the stricter rule (no reach), which no check settles.
+            row_reach_expr = "false" if flatten else f"CASE WHEN node IS NULL THEN false ELSE {own_from_app()} END"
+            reach = f"\n        WITH {carry}, node, {row_reach_expr} AS kh_row_from_app" if sidebar else ""
             has = f"({node_stub} OR {has_children('kh_row_from_app', row=True)})" if sidebar else "false"
             stub_arm = (f" WHEN {node_stub} THEN CASE WHEN {by_probe(stub_way('node', walked_from_app('node')))} THEN []"
                         f" ELSE {by_probe(frontier_of('node', walked_from_app('node')))} END") if lists_placeholders else ""
-            record_arm = f" WHEN NOT khHas THEN {by_probe(frontier_of('node', 'kh_row_from_app'))}" if sidebar else ""
+            record_arm = f" WHEN NOT khHas THEN {by_probe(frontier_of('node', 'kh_row_from_app'))}" if sidebar and not flatten else ""
             row_reach = ", kh_row_from_app" if sidebar else ""
             return (f"{reach}\n        WITH {carry}, node{row_reach}, CASE WHEN node IS NULL THEN false ELSE {has} END AS khHas"
                     f"\n        WITH {carry}, node, khHas, CASE WHEN node IS NULL OR node.id IN $kh_asked OR node.id IN $kh_kept THEN []"

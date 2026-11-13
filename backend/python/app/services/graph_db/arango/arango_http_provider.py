@@ -20798,7 +20798,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # a browse with no child the rule selects may still list a stub its reach reaches (`_kh_v3_slim_aql`)
         if (visible.nodes or visible.member_groups or visible.collection or lists_placeholders) and visible.only != []:
             slim = await self.http_client.execute_aql(
-                self._kh_v3_slim_aql(tuple(conditions), sort_field, restricted=restricted, stubs=lists_placeholders),
+                self._kh_v3_slim_aql(tuple(conditions), sort_field, restricted=restricted, stubs=lists_placeholders, browse=exact_arrows),
                 bind_vars={
                     **params, "kh_nodes": visible.nodes, "kh_member_groups": visible.member_groups,
                     "kh_collection": visible.collection, "org_id": org_id, "app_id": app_id,
@@ -20809,8 +20809,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     **({"kh_placeholders": lists_placeholders, "granted": row_ctx["granted"],
                         "kh_scope": row_ctx["kh_scope"]} if lists_placeholders or sidebar else {}),
                     **({"kh_start": start_handle} if lists_placeholders else {}),
-                    # the sidebar reads each row's own reach, not the start's (an unused bind fails the statement)
-                    **({k: v for k, v in row_ctx.items() if k not in ("kh_from_app", "kh_seeded")} if sidebar else {}),
+                    # a browse's sidebar reads each row's own reach, not the start's (an unused bind fails the statement)
+                    **({k: v for k, v in row_ctx.items() if not (exact_arrows and k in ("kh_from_app", "kh_seeded"))} if sidebar else {}),
                     **({"kh_only": visible.only} if restricted else {}),
                 },
                 txn_id=transaction,
@@ -21025,7 +21025,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     @staticmethod
     @functools.cache
     def _kh_v3_slim_aql(
-        conditions: tuple[str, ...], sort_field: str, *, restricted: bool = False, stubs: bool = False,
+        conditions: tuple[str, ...], sort_field: str, *, restricted: bool = False, stubs: bool = False, browse: bool = False,
     ) -> str:
         """What the filters and the sort read, for every visible node: the
         filters see the same fields as Neo4j's slim map. The declared scope's
@@ -21077,8 +21077,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # A listed stub lists something, by its way or by the check (asked by the page); a group always answers yes.
             if stubs:
                 pre, has_children = stub_way, "true"
-            elif sidebar and collection == records:
+            elif sidebar and collection == records and browse:
                 pre, has_children = sidebar_record, "(kh_has OR LENGTH(kh_probe) > 0)"
+            elif sidebar and collection == records:
+                # A flatten's sidebar keeps a record by the flatten's own arrow: the stricter rule, which no check settles.
+                pre, has_children = "", _aql_kh_has_children("kh_n")
             else:
                 pre, has_children = "", "true" if sidebar else "false"
             probe = ", kh_probe" if pre else ""
