@@ -89,6 +89,7 @@ from app.connectors.sources.google.drive.utils.drive_filters import (
     passes_date_filters,
     passes_extension_filter,
 )
+from app.connectors.sources.google.drive.utils import drive_full_sync_reconciler
 from app.connectors.sources.google.drive.utils.drive_full_sync_reconciler import (
     FullSyncLedger,
     delete_shared_drive_records,
@@ -3159,11 +3160,16 @@ class GoogleDriveTeamConnector(BaseConnector):
         )
 
     async def _keep_records_no_listing_may_show(self) -> None:
-        """Keep the files on an undecided list from a full sync's removals: only their recheck settles them. Each
-        counts as seen, so the stale-record cleanup never deletes one, and in a full sync the runner started, which
-        then unlinks every record the run did not write, each is noted kept, a batch at a time. The unseen records
-        granted to an audience group are kept by the cleanup's check (`_unseen_records_an_audience_may_open`). A
-        failed read marks the run incomplete, so neither the cleanup nor the unlink removes anything."""
+        """Keep the files no listing may show from a full sync's removals. A file in a shared drive no synced user is
+        in, shared with an audience alone, is in no listing while its audience opens it.
+
+        Each file on an undecided list counts as seen, so the stale-record cleanup never deletes one: only its recheck
+        settles it. In a full sync the runner started, which then unlinks every record the run did not write, each
+        file on an undecided list, and each stored record this run did not see that is granted to an audience group,
+        is noted kept, a batch at a time. That is decided here, by paging the stored records, whatever the cleanup
+        then does (an incremental run, nothing listed, a failure): the removal check and the cleanup's audience check
+        (`_unseen_records_an_audience_may_open`) remove one nobody can open. A failed read marks the run incomplete,
+        so neither the cleanup nor the unlink removes anything."""
         reconcile = self._sync_ledger.can_reconcile
         full_sync = self.data_entities_processor.full_sync_running(self.connector_id) is True
         if not (reconcile or full_sync):
@@ -3190,6 +3196,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                         kept, batch = kept + len(batch), []
                 self.data_entities_processor.note_kept_records(self.connector_id, batch)
                 kept += len(batch)
+                kept += await self._keep_unseen_audience_records_linked()
         except Exception as e:
             self.logger.warning(
                 f"The undecided removals could not be read ({type(e).__name__}); nothing unseen is removed or unlinked"
@@ -3201,13 +3208,38 @@ class GoogleDriveTeamConnector(BaseConnector):
             f"{kept} kept linked through the full sync"
         )
 
+    async def _keep_unseen_audience_records_linked(self) -> int:
+        """Note kept each stored record this run did not see that is granted to an audience group, paging the stored
+        records as the stale-record cleanup does. Returns how many. A failed or unreadable page raises."""
+        page_size = drive_full_sync_reconciler.RECONCILE_PAGE_SIZE
+        kept, after_key = 0, None
+        while True:
+            page = await self.data_entities_processor.get_records_by_status(
+                self.connector_id, None, limit=page_size, is_placeholder=False, after_key=after_key
+            )
+            if not isinstance(page, list):
+                raise TypeError("the stored record listing was not readable")
+            batch: list[str] = []
+            for record in page:
+                if not record.id or record.external_record_id in self._sync_ledger.seen:
+                    continue
+                groups = await self.data_entities_processor.get_groups_with_permission_to_node(
+                    record.id, CollectionNames.RECORDS.value, raise_on_error=True
+                )
+                if any(_is_audience_group(g.source_user_group_id) for g in groups):
+                    batch.append(record.id)
+            self.data_entities_processor.note_kept_records(self.connector_id, batch)
+            kept += len(batch)
+            if len(page) < page_size or not getattr(page[-1], "id", None):
+                return kept
+            after_key = page[-1].id
+
     async def _unseen_records_an_audience_may_open(self, unseen: list[Record]) -> set[str]:
         """The records a complete full sync did not see that may still exist: those granted to an audience group
         whose people are not shown unable to open them. A file in a shared drive no synced user is in, shared with an
         audience alone, is in no listing (My Drive's leaves out shared drive files, and "shared with me" only user and
         group grants), yet its audience opens it. Each is checked as for any removal: someone who can open it, or an
-        answer nobody gives, keeps it; a clean "nobody can" lets the cleanup remove it. A kept one is noted kept at
-        once, so the unlink after a full sync the runner started leaves it linked. Any other failure raises."""
+        answer nobody gives, keeps it; a clean "nobody can" lets the cleanup remove it. Any other failure raises."""
         kept: set[str] = set()
         for record in unseen:
             groups = await self.data_entities_processor.get_groups_with_permission_to_node(
@@ -3224,7 +3256,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                     drive_id = record.external_record_group_id if record.external_record_group_id in self._synced_drive_ids else ""
                     await self._park_undecided_removal(UNDECIDED_KEPT_KEY, f"{record.external_record_id}:{drive_id}")
             kept.add(record.id)
-            self.data_entities_processor.note_kept_records(self.connector_id, [record.id])
         return kept
 
     async def _settle_by_asking(self, file_id: str, user: AppUser | None) -> _Settled:

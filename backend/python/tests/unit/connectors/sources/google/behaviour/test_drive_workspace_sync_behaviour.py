@@ -4511,3 +4511,55 @@ async def test_a_kept_list_file_whose_group_members_cannot_be_read_stays_listed(
     ws.world.unlistable_groups["team@example.com"] = 403  # whether its people can open g1 is unknown
     await ws.sync()
     assert _undecided_file_ids(ws) == {"g1"}, "unknown is not kept for good: checked again"
+
+
+async def _an_audience_file_only_its_audience_opens(ws: Workspace) -> None:
+    """g1, in a drive no synced user is in, kept for its "anyone" share after Bob, its only synced holder, lost it;
+    the synced users' own Drives are empty."""
+    _audience_file_in_an_unwalked_drive(ws, discoverable("anyone"))
+    await ws.sync()
+    ws.world.unshare("g1", BOB)
+    await ws.sync()
+    assert "g1" in ws.records.records
+
+
+async def test_a_runner_full_sync_that_lists_nothing_keeps_an_audience_file_linked(ws: Workspace) -> None:
+    await _an_audience_file_only_its_audience_opens(ws)
+    unlinked = await _runner_full_sync(ws, delete_sync_points=True)
+    assert not (await ws.connector_())._sync_ledger.seen, "a complete listing that found nothing"
+    assert ws.records.records["g1"].id not in unlinked
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+
+
+async def test_a_runner_full_sync_whose_sync_points_were_not_deleted_keeps_an_audience_file_linked(
+    ws: Workspace,
+) -> None:
+    await _an_audience_file_only_its_audience_opens(ws)
+    ws.world.add_item("a", "a.txt", parent="root-alice", owner=ALICE)  # a change the incremental run reads
+    ws.records.begin_full_sync_run(CONNECTOR_ID)  # deleting the sync points failed: every feed reads on
+    await ws.sync()
+    assert not ws.incomplete
+    unlinked = ws.records.unlink_missed_by_full_sync()
+    assert ws.records.records["g1"].id not in unlinked
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+
+
+async def test_a_runner_full_sync_whose_cleanup_raises_unlinks_nothing(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+
+    await _an_audience_file_only_its_audience_opens(ws)
+
+    async def cleanup_fails(*_: object, **__: object) -> int:
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(drive_connector, "reconcile_unseen_records", cleanup_fails)
+    ws.sync_points.sync_points.clear()
+    ws.records.begin_full_sync_run(CONNECTOR_ID)
+    with pytest.raises(RuntimeError):
+        await ws.sync()
+    # The run failed, so the runner ends it without unlinking (only a run that returns, or ends with
+    # IncompleteSyncError, is unlinked after).
+    ws.records.full_sync_seen = None
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
