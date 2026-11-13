@@ -22,6 +22,7 @@ def _provider(*answers: list[dict], admits: set[str]) -> Neo4jProvider:
     provider._kh_v3_chain_tops = AsyncMock(return_value={})
     provider._kh_v3_scoped_start_access = AsyncMock(return_value=(True, [], []))
     provider._kh_v3_app_declared_scope = AsyncMock(return_value=[])
+    provider._kh_v3_org_hides = AsyncMock(return_value=True)
     provider._kh_query = AsyncMock(side_effect=list(answers))
     provider.check_access = AsyncMock(side_effect=lambda _u, _o, node_ids=(), **_: AccessCheck(node_ids=frozenset(set(node_ids) & admits)))
     return provider
@@ -38,7 +39,7 @@ async def test_a_folder_is_read_again_with_the_undecided_children_the_check_admi
     first, second = provider._kh_query.await_args_list
     assert "AS khUndecided" in first.args[0] and second.args[0] == first.args[0]
     # a row's own children are read only where its rules select none: a row with an arrow is asked about itself alone
-    assert "CASE WHEN built IS NULL OR built.hasChildren THEN [] ELSE" in first.args[0]
+    assert "CASE WHEN built IS NULL OR built.hasChildren THEN false ELSE" in first.args[0]
     assert set(provider.check_access.await_args_list[0].kwargs["node_ids"]) == {"k1", "k2"}
     assert second.kwargs["parameters"]["kh_placed"] == ["k1"]
 
@@ -55,7 +56,7 @@ async def test_the_app_reads_its_undecided_children_in_its_own_page_statement() 
     await _browse(provider, None)
     statement, = (c.args[0] for c in provider._kh_query.await_args_list)
     assert "AS khUndecided" in statement and "CALL (app, allNodes)" in statement
-    assert "CASE WHEN built.hasChildren THEN [] ELSE" in statement
+    assert "CASE WHEN built.hasChildren THEN false ELSE" in statement
     provider.check_access.assert_not_awaited()
 
     provider = _provider(_payload(["k1", "k2"]), _payload([]), admits={"k1"})
@@ -87,13 +88,16 @@ async def test_a_browse_walks_below_a_child_for_the_stub_test_only_when_the_chil
 async def test_a_row_kept_for_its_frontier_stays_only_where_the_check_admits_a_child_of_it() -> None:
     """A row its rules list nothing under (a stub with no way below it, a sidebar record) is kept by the statement with its frontier; the check
     is asked about the frontier once, and the page is read again only when it refuses one, with that row asked and not kept."""
-    provider = _provider(_payload([], [["s1", ["c1"]], ["s2", ["c2", "c3"]]]), _payload([], [["s1", ["c1"]]]), admits={"c3"})
+    provider = _provider(_payload([], ["s1", "s2"]), _payload([], ["s1"]), admits={"c3"})
+    frontiers = {"s1": ["c1"], "s2": ["c2", "c3"]}
+    provider._kh_v3_frontiers = AsyncMock(side_effect=lambda ids, *_a, **_k: {i: frontiers[i] for i in ids})
     await _browse(provider, "g1")
     first, second = provider._kh_query.await_args_list
     assert set(provider.check_access.await_args_list[0].kwargs["node_ids"]) == {"c1", "c2", "c3"}
     assert provider.check_access.await_count == 1      # s1 is not asked twice
     assert second.kwargs["parameters"]["kh_asked"] == ["s1", "s2"] and second.kwargs["parameters"]["kh_kept"] == ["s2"]
 
-    provider = _provider(_payload([], [["s2", ["c3"]]]), admits={"c3"})
+    provider = _provider(_payload([], ["s2"]), admits={"c3"})
+    provider._kh_v3_frontiers = AsyncMock(return_value={"s2": ["c3"]})
     await _browse(provider, "g1")
     assert provider._kh_query.await_count == 1      # every row kept: the page stands

@@ -263,11 +263,13 @@ async def _browse(
     def capped(node: str, missing: str, listed: dict[str, Any]) -> bool:
         """Whether a browse of ``node`` leaves ``missing`` out only for the cap on the children it asks the check about (`_KH_UNDECIDED_MAX`, the
         first by id of its live children of its App, no stub, that its rules leave undecided): reported, as the cap's known under-share, not
-        failed. A child the browse lists may be one its rules select, so only the unlisted ones ahead of ``missing`` are sure to be candidates
-        ahead of it: the cap is excused only when at least ``_KH_UNDECIDED_MAX`` of those precede it."""
+        failed. A child the browse lists may be one its rules select, so only the unlisted ones ahead of ``missing`` that no group hiding its
+        children holds are sure to be candidates ahead of it: the cap is excused only when at least ``_KH_UNDECIDED_MAX`` of those precede it."""
         app = node if world.node(node).kind == "app" else world.node(node).connector
+        # A child hidden by a group that hides its children is no candidate either: the browse leaves it out before the cap.
         ahead = [n.id for n in children(node)
-                 if not n.placeholder and not n.deleted and n.connector == app and n.id not in listed and ns.id(n.id) < ns.id(missing)]
+                 if not n.placeholder and not n.deleted and n.connector == app and n.id not in listed and ns.id(n.id) < ns.id(missing)
+                 and not hidden_by_navigation(world, n)]
         return len(ahead) >= IGraphDBProvider._KH_UNDECIDED_MAX
 
     opened: dict[str, dict[str, Any] | None] = {}

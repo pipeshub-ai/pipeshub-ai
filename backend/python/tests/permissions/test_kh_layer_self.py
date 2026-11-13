@@ -122,14 +122,18 @@ async def test_an_app_past_the_budget_is_counted_not_opened(monkeypatch) -> None
     assert [(f.kind, f.detail) for f in found] == [("truncated", "opened 2 nodes (the cap); 2 listed rows and 0 stubs left out not opened")]
 
 
-def _capped_world(listed_first: bool) -> object:
-    """f holds 201 children, each readable (it inherits from f). ``listed_first``: the browse lists the first 200 (so its rules may select them)."""
-    kids = "".join(f"  - {{id: k{i:03d}, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]}}\n" for i in range(201))
+def _capped_world(listed_first: bool, hidden_first: bool = False) -> object:
+    """f holds 201 children, each readable (it inherits from f). ``listed_first``: the browse lists the first 200 (so its rules may select them).
+    ``hidden_first``: the first 200 belong to a group that hides its children (the browse leaves them out before the cap)."""
+    belongs = ", belongs: [H]" if hidden_first else ""
+    kids = "".join(f"  - {{id: k{i:03d}, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]{belongs if i < 200 else ''}}}\n"
+                   for i in range(201))
     return world_from_data(yaml.safe_load(f"""
 principals: [{{id: u}}]
 nodes:
   - {{id: A, kind: app, app_type: DRIVE}}
   - {{id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}}
+  - {{id: H, kind: group, connector: A, rule: OPEN, hide_children: true, parents: [A], belongs: [A]}}
 {kids}grants: [[u, f]]
 gates: [[u, A]]
 """))
@@ -148,3 +152,16 @@ async def test_a_child_left_out_is_excused_by_the_cap_only_behind_two_hundred_un
     reference = OracleLayer()
     found = await kh_layer._browse(_Layer(), reference, world, "u", kh_layer.visible(reference, world, "u"), "self")
     assert (kind, "f: the browse leaves out k200, which the viewer may open") in {(f.kind, f.detail) for f in found}
+
+
+async def test_children_a_hiding_group_holds_are_no_candidates_of_the_cap(monkeypatch) -> None:
+    """The first 200 children of f belong to a group that hides its children: the browse leaves them out before the cap, so k200 left out is a
+    real under-admit, not the cap's."""
+    world = _capped_world(False, hidden_first=True)
+
+    async def browse_pages(_layer, _world, _viewer, node, _parent_type, _page_size=kh_layer.PAGE, *, only_containers=False) -> tuple | None:
+        return {"A": ([_item("f", "recordGroup", arrow=True)], [1], [1]), "f": ([], [0], [0])}.get(node, ([], [0], [0]))
+    monkeypatch.setattr(kh_layer, "browse_pages", browse_pages)
+    reference = OracleLayer()
+    found = await kh_layer._browse(_Layer(), reference, world, "u", kh_layer.visible(reference, world, "u"), "self")
+    assert ("browse_gap", "f: the browse leaves out k200, which the viewer may open") in {(f.kind, f.detail) for f in found}

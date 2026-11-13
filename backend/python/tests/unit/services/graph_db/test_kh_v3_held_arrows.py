@@ -160,10 +160,11 @@ def test_a_browse_and_a_row_s_arrow_ask_about_the_same_children() -> None:
     assert _aql_undecided("node", decided="@d").replace("FILTER kh_uc._id NOT IN @d", "").replace("LIMIT 201", "LIMIT 200") == aql
     queries = ArangoHTTPProvider._kh_v3_listing_aql()
     assert _aql_undecided("kh_fy") in _aql_frontier("node", "kh_row_from_app") and "0..50 OUTBOUND kh_fz.n" in _aql_frontier("node", "kh_row_from_app")
-    assert _aql_frontier("node", "kh_row_from_app") in queries["enrich_exact"] and "khKids: []" in queries["enrich"]
+    # a row's frontier is read apart, for the rows that ask (`khAsk`), from each row's own reach
+    assert _aql_frontier("node", "kh_rfa") in queries["frontier"] and "khAsk:" in queries["enrich_exact"] and "khAsk: false" in queries["enrich"]
     assert neo._kh_v3_undecided("kh_fy") in neo._kh_v3_frontier("node", "kh_row_from_app", state=True, grant_once=False)
     # the children are read only for a row whose rules select none, or that is asked again for its stub child
-    assert "(kh_row.hasChildren AND NOT kh_stub) ? [] :" in queries["enrich_exact"]
+    assert "(kh_row.hasChildren AND NOT kh_stub) ? false :" in queries["enrich_exact"]
 
 
 async def test_no_check_is_made_when_every_row_is_reached() -> None:
@@ -345,6 +346,6 @@ def test_the_frontier_and_the_sidebar_reach_walk_only_for_a_node_with_a_child() 
     assert _aql_frontier("node", "X").startswith("UNIQUE(FLATTEN(FOR kh_fg IN (LENGTH(FOR kh_fx, kh_fxe IN 1..1 OUTBOUND node")
     conditions, _ = ArangoHTTPProvider(MagicMock(), MagicMock())._kh_v2_filters_aql(only_containers=True)
     slim = ArangoHTTPProvider._kh_v3_slim_aql(tuple(conditions), "name", stubs=True, browse=True)
-    assert "LET kh_row_from_app = LENGTH(FOR kh_kx, kh_kxe IN 1..1 OUTBOUND kh_sd" in slim
-    assert "FILTER kh_way OR LENGTH(kh_probe) > 0" in slim
+    assert "LET kh_row_from_app = (LENGTH(FOR kh_kx, kh_kxe IN 1..1 OUTBOUND kh_sd" in slim
+    assert "FILTER kh_way OR (LENGTH(FOR kh_kx" in slim
     assert "kh_xc" not in _aql_way_below("kh_ch", every_hop=True) and "kh_rq" not in _aql_way_below("kh_ch", every_hop=True)
