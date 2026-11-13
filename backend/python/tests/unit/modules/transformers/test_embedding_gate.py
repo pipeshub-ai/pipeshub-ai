@@ -100,8 +100,8 @@ class FakeServer(EmbeddingServerEmbeddings):
         self.arrived = 0
         self.max_arrived = 0
         self.requests = 0
-        # Per client call cut off by its timeout: how long it had been at the server, in loop time.
-        self.timed_out: list[float] = []
+        # Per client call cut off by its timeout, by request number: how long it had been at the server, in loop time.
+        self.timed_out: dict[int, float] = {}
         self.oldest_started: float | None = None
         self.tasks: list[asyncio.Future[None]] = []
 
@@ -125,14 +125,15 @@ class FakeServer(EmbeddingServerEmbeddings):
         loop = asyncio.get_running_loop()
         arrived_at = loop.time()
         self.requests += 1
+        number = self.requests
         self.arrived += 1
         self.max_arrived = max(self.max_arrived, self.arrived)
-        task = asyncio.ensure_future(self._serve(self.requests))
+        task = asyncio.ensure_future(self._serve(number))
         self.tasks.append(task)
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
-            self.timed_out.append(loop.time() - arrived_at)
+            self.timed_out[number] = loop.time() - arrived_at
             raise
         finally:
             self.arrived -= 1
@@ -251,7 +252,7 @@ class TestQueueingIsNotTimingOut:
         # a timeout falls only on an attempt that spent the whole timeout at the server, never in the queue.
         assert [r for r in results if isinstance(r, Exception)] == []
         assert server.max_arrived == 1
-        assert all(at_server >= 0.9 * 0.5 for at_server in server.timed_out), server.timed_out
+        assert all(at_server >= 0.9 * 0.5 for at_server in server.timed_out.values()), server.timed_out
         assert server.requests == 150 + len(server.timed_out)
         assert dict(feedback.drain().timeouts) == ({SERVICE: len(server.timed_out)} if server.timed_out else {})
 
@@ -277,7 +278,7 @@ class TestQueueingIsNotTimingOut:
         server = FakeServer(make_gate(Health(encode_gate(1))), slots=1, work=work)
         with fast(0.5):
             results = await embed(store_for(server), 150)
-        assert len(server.timed_out) == 1
+        assert 75 in server.timed_out
         self.assert_none_timed_out_on_queue_wait(server, results, _clean_env)
 
 
