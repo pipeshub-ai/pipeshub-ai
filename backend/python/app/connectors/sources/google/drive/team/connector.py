@@ -6,6 +6,7 @@ import secrets
 import shutil
 import tempfile
 import uuid
+from enum import Enum
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from functools import partial
@@ -303,6 +304,15 @@ class _ItemReadFailed(Exception):
 
 class _RemovalUndecided(RuntimeError):
     """Whether anyone but the user who lost a file can still open it is not known yet."""
+
+
+class _Settled(Enum):
+    """What checking an undecided removal again found. Only KEPT and REMOVED take the file off its list: a check
+    that decided nothing leaves it there, to be checked again."""
+
+    KEPT = "kept"
+    REMOVED = "removed"
+    UNDECIDED = "undecided"
 
 
 @ConnectorBuilder("Drive Workspace")\
@@ -3217,6 +3227,25 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.data_entities_processor.note_kept_records(self.connector_id, [record.id])
         return kept
 
+    async def _settle_by_asking(self, file_id: str, user: AppUser | None) -> _Settled:
+        """Settle an undecided removal of a file outside a shared drive's walk, or with no user to report it, by
+        asking everyone else who may open it (`_another_synced_user_can_open`): someone can, it is kept; a clean
+        "nobody can", it is removed. Members who walk its drive are asked like anyone else, as one of them may be
+        unable to list it. A group whose members cannot be read, or nobody answering, decides nothing."""
+        record = await self.data_entities_processor.get_record_by_external_id(
+            connector_id=self.connector_id, external_record_id=file_id
+        )
+        if record is None:
+            return _Settled.REMOVED
+        try:
+            if await self._another_synced_user_can_open(record, user, {}, unknown_is_undecided=True):
+                return _Settled.KEPT
+        except _RemovalUndecided as e:
+            self.logger.info(f"Whether anyone else can open file {file_id} is still not settled: {e}")
+            return _Settled.UNDECIDED
+        await self._delete_record_tree(record)
+        return _Settled.REMOVED
+
     async def _recheck_unvisited_undecided_removals(self) -> None:
         """Check again the undecided lists no user's run reached: their user left the shared drive, so nobody walks
         it for them, is no longer synced, or is no longer in the directory. Everyone else who may open a file is
@@ -3244,13 +3273,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
 
                 async def settle(
-                    file_id: str, entry_drive_id: str | None, reporter: AppUser | None = reporter,
+                    file_id: str, _: str | None, reporter: AppUser | None = reporter,
                     drive_id: str | None = drive_id, source: GoogleDriveDataSource | None = source,
-                ) -> None:
+                ) -> _Settled:
                     if drive_id:
-                        await self._apply_shared_drive_removal(file_id, reporter, drive_id, source)
-                    else:
-                        await self._handle_removed_change(file_id, reporter, {}, drive_id=entry_drive_id)
+                        return await self._apply_shared_drive_removal(file_id, reporter, drive_id, source)
+                    return await self._settle_by_asking(file_id, reporter)
 
                 await self._recheck_undecided_removals(key, reporter, source, settle)
             except Exception as e:
@@ -3261,7 +3289,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         undecided_key: str,
         user: AppUser | None,
         source: GoogleDriveDataSource | None,
-        settle: Callable[[str, str | None], Awaitable[None]],
+        settle: Callable[[str, str | None], Awaitable[_Settled]],
     ) -> None:
         """At the start of a run, full listing or not, check again the removals kept undecided past the limit, one
         part of the list per run, the parts in turn, until a clean answer settles each: the file is removed or kept
@@ -3283,7 +3311,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                     user is not None and source is not None and await self._user_can_open(record, user, {user.email: source})
                 ):
                     continue
-                await settle(file_id, drive_id or None)
+                if await settle(file_id, drive_id or None) is _Settled.UNDECIDED:
+                    left.append(entry)
             except Exception as e:
                 self.logger.warning(f"Whether anyone else can open file {file_id} is still not settled: {e}")
                 left.append(entry)
@@ -3302,25 +3331,28 @@ class GoogleDriveTeamConnector(BaseConnector):
         user: AppUser | None,
         drive_id: str,
         user_drive_data_source: GoogleDriveDataSource | None,
-    ) -> None:
+    ) -> _Settled:
         """Apply a `removed` change from a shared drive's feed.
 
         Drive reports `removed` when a file is deleted, but also when it moved to another drive or My Drive,
         and when a limited-access folder shut this member out. Deleting on the change alone dropped a moved
         file whenever its new place was synced first, and a restricted one for every other member. So the
         record goes only when no synced user who could have it can open it, or it is in the trash. A read
-        that fails another way raises, so the drive's checkpoint stays and the change is read again.
+        that fails another way raises, so the drive's checkpoint stays and the change is read again. Returns what
+        was decided: KEPT when someone can open it, UNDECIDED when a member group of the drive could not be read.
         """
         if not file_id:
-            return
+            return _Settled.REMOVED
         record = await self.data_entities_processor.get_record_by_external_id(
             connector_id=self.connector_id, external_record_id=file_id
         )
         if record is None:
-            return
+            return _Settled.REMOVED
+        unknown = False
         sources = {user.email: user_drive_data_source} if user and user_drive_data_source else {}
 
         async def still_open(item: Record) -> bool:
+            nonlocal unknown
             for candidate in await self._removal_candidates(item, user, drive_id):
                 source = sources.get(candidate.email)
                 if source is None:
@@ -3343,6 +3375,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # members cannot be read, so a refusal that does not clear does not hold the drive's changes.
                 self.logger.info(f"Keeping {item.record_name}: a member group of its drive could not be read")
                 await self._drop_reporters_grant(item, user)
+                unknown = True
                 return True
             holders = await self.data_entities_processor.get_users_with_permission_to_node(
                 item.id, CollectionNames.RECORDS.value, raise_on_error=True
@@ -3354,13 +3387,14 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         try:
             if await still_open(record):
-                return
+                return _Settled.UNDECIDED if unknown else _Settled.KEPT
             if record.mime_type in FOLDER_MIME_TYPES:
                 await remove_folder_confirming_contents(
                     self.data_entities_processor, self.connector_id, record, still_open, self.logger
                 )
             else:
                 await self.data_entities_processor.on_record_deleted(record_id=record.id)
+            return _Settled.REMOVED
         except _RemovalUndecided:
             await self._drop_reporters_grant(record, user)
             raise
@@ -3474,7 +3508,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         return self._deployment_emails
 
     async def _another_synced_user_can_open(
-        self, record: Record, removed_for: AppUser | None, owner_sources: dict[str, GoogleDriveDataSource]
+        self, record: Record, removed_for: AppUser | None, owner_sources: dict[str, GoogleDriveDataSource],
+        *, unknown_is_undecided: bool = False,
     ) -> bool:
         """Whether a synced user other than ``removed_for`` (None: a user no longer in the directory) can still open
         the record's file.
@@ -3504,6 +3539,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 continue
             members = await self._synced_group_members(group.source_user_group_id)
             if members is None:
+                if unknown_is_undecided:
+                    raise _RemovalUndecided(f"The members of a group that can open {record.record_name} are unread")
                 self.logger.info(
                     f"Keeping {record.record_name}: the members of {group.source_user_group_id}, "
                     "which can open it, could not be read"
@@ -4826,10 +4863,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         batch_records = []
         batch_count = 0
 
-        recheck_sources: dict[str, GoogleDriveDataSource] = {}
-
-        async def settle(file_id: str, removed_drive_id: str | None) -> None:
-            await self._handle_removed_change(file_id, user, recheck_sources, drive_id=removed_drive_id)
+        async def settle(file_id: str, _: str | None) -> _Settled:
+            return await self._settle_by_asking(file_id, user)
 
         await self._recheck_undecided_removals(self._undecided_key(user), user, user_drive_data_source, settle)
 
@@ -5556,8 +5591,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                         async def settle_in_drive(
                             file_id: str, _: str | None, drive_id: str = drive_id,
                             source: GoogleDriveDataSource = user_drive_data_source,
-                        ) -> None:
-                            await self._apply_shared_drive_removal(file_id, user, drive_id, source)
+                        ) -> _Settled:
+                            return await self._apply_shared_drive_removal(file_id, user, drive_id, source)
 
                         await self._recheck_undecided_removals(
                             self._undecided_key(user, drive_id), user, user_drive_data_source, settle_in_drive

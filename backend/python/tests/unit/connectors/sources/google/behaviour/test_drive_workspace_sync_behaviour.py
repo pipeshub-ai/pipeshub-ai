@@ -4467,3 +4467,47 @@ async def test_a_runner_full_sync_pages_the_stored_records_and_unlinks_nothing_w
     unlinked = ws.records.unlink_missed_by_full_sync()
     assert "e" not in ws.records.records
     assert ws.records.records["g1"].id not in unlinked and ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+
+
+async def test_a_kept_list_file_in_a_drive_a_synced_member_walks_is_settled_only_on_a_clean_answer(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.connectors.sources.google.drive.team.connector import UNDECIDED_KEPT_KEY
+
+    _audience_file_bob_loses(ws)
+    await ws.sync()
+    ws.world.unshare("g1", BOB)
+    await ws.sync()  # kept: its audience opens it
+    connector = await ws.connector_()
+    await connector._park_undecided_removal(UNDECIDED_KEPT_KEY, "g1:sd-3")  # as a full sync's cleanup lists it
+
+    async def walked(drive_id: str) -> bool:
+        return True  # a synced member walks the drive, yet cannot list the file
+
+    monkeypatch.setattr(connector, "_drive_has_synced_member", walked)
+    ws.http.fail("GET", "/drive/v3/files/g1", 403, "insufficientFilePermissions")
+    await ws.sync()
+    assert _undecided_file_ids(ws) == {"g1"}, "asked, and nobody answered: still listed"
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+
+    _drop_the_audience_shares(ws, "g1")
+    await ws.sync()
+    assert "g1" not in ws.records.records, "asked again: nobody can open it"
+    assert _undecided_file_ids(ws) == set()
+
+
+async def test_a_kept_list_file_whose_group_members_cannot_be_read_stays_listed(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import UNDECIDED_KEPT_KEY
+
+    ws.world.add_group("team@example.com", [ALICE])
+    _audience_file_bob_loses(ws)
+    ws.world.files["g1"].perms.append({"type": "group", "role": "reader", "emailAddress": "team@example.com"})
+    await ws.sync()
+    ws.world.unshare("g1", BOB)
+    await ws.sync()
+    connector = await ws.connector_()
+    await connector._park_undecided_removal(UNDECIDED_KEPT_KEY, "g1:sd-3")
+
+    ws.world.unlistable_groups["team@example.com"] = 403  # whether its people can open g1 is unknown
+    await ws.sync()
+    assert _undecided_file_ids(ws) == {"g1"}, "unknown is not kept for good: checked again"
