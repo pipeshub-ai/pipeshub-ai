@@ -8,8 +8,9 @@ import contextlib
 import errno
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import pytest
 
@@ -117,4 +118,28 @@ async def test_a_push_cancelled_during_its_body_write_leaves_no_file(h, monkeypa
         if not spool_files(h):
             break
         await asyncio.sleep(0.02)
+    assert spool_files(h) == []
+
+
+async def test_a_push_cancelled_while_its_cleanup_waits_for_a_thread_still_removes_its_files(h) -> None:
+    """A cancel must not drop a cleanup that is still queued for a thread (it would wait for the trim)."""
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=1))  # this test's loop only
+    gate, failed = threading.Event(), asyncio.Event()
+
+    async def validate_then_fail(*a: object, **kw: object) -> NoReturn:
+        loop.run_in_executor(None, gate.wait, 5)  # the one thread is busy, so the cleanup queues behind it
+        failed.set()
+        raise PushRefusal(422, "BLOCKS_INVALID", "invalid")
+
+    h.svc.worker.validate = validate_then_fail
+    push = asyncio.create_task(h.push(image_body([])))
+    await failed.wait()
+    for _ in range(5):  # let the push reach its cleanup
+        await asyncio.sleep(0)
+    assert spool_files(h), "the body was written"
+    push.cancel()
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await push
     assert spool_files(h) == []

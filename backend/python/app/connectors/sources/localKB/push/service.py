@@ -124,6 +124,20 @@ async def _make_off_loop(make: Callable[..., str], *args: object, undo: Callable
         raise
 
 
+async def _run_to_the_end(work: asyncio.Future[None]) -> None:
+    """Wait for ``work`` even through a cancel, then re-raise the cancel. An awaited executor job that is cancelled
+    while still queued is dropped, never run."""
+    cancel: asyncio.CancelledError | None = None
+    while not work.done():
+        try:
+            await asyncio.shield(work)
+        except asyncio.CancelledError as e:
+            cancel = e
+    work.result()
+    if cancel is not None:
+        raise cancel
+
+
 def _mib(n: int) -> str:
     return f"{n / (1 << 20):g}"
 
@@ -281,7 +295,7 @@ class KbPushService:
             return await self._write(kb_id=kb_id, user_id=user_id, org_id=org_id, v=validated, folder_id=folder_id, img=img)
         finally:
             try:
-                await asyncio.to_thread(self._remove_files, in_path, out_path, img)
+                await _run_to_the_end(asyncio.ensure_future(asyncio.to_thread(self._remove_files, in_path, out_path, img)))
             finally:
                 if img is not None:
                     img.slot.release()
