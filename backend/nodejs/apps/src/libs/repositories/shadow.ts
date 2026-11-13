@@ -113,6 +113,7 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
   'listDirectory',
   'listEnvelopes',
   'listEvents',
+  'listExpiredTemporary',
   'listFieldsByIds',
   'listFor',
   'listForApprover',

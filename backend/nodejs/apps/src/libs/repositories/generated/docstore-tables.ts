@@ -146,6 +146,8 @@ export interface ConversationChatSessions {
   nulls: Generated<string[]>;
   created_at: Date;
   updated_at: Date;
+  is_temporary: Generated<boolean>;
+  expires_at: Date | null;
 }
 
 export interface ConversationCitations {

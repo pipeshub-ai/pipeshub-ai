@@ -372,8 +372,19 @@ export class Application {
       this.outboxDispatcher.start();
 
       // Mongo expires old notifications by itself; on PostgreSQL this does it (as the jobs role).
-      if (docStore() === 'postgres' && process.env.PG_JOBS_URL) {
-        this.ttlSweeper = new TtlSweeper(this.logger);
+      // On Mongo it runs only the temporary-chat pass, which Mongo's TTL indexes cannot do because
+      // artifacts and attachments must be deleted before the row (hence appConfig).
+      if (
+        docStore() === 'mongo' ||
+        (docStore() === 'postgres' && process.env.PG_JOBS_URL)
+      ) {
+        this.ttlSweeper = new TtlSweeper(
+          this.logger,
+          undefined,
+          undefined,
+          appConfig,
+          docStore() === 'postgres',
+        );
         this.ttlSweeper.start();
       }
 
