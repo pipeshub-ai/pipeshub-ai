@@ -386,5 +386,19 @@ DEEP_CHAIN = 56
 DEEPSEED = _deep_chain("{id: A, kind: app, app_type: DRIVE}", grants=True)
 DEEPOPEN = _deep_chain("{id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}", grants=False)
 
+# A group of another connector filed under a declared group: the declared scope is read group to group, whatever the connector, but the check
+# decides a node in its own App, so the group is not listed in this App, and the declared group, which holds nothing else, has no arrow (XDECL).
+XDECL = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: B, kind: app, app_type: DRIVE}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: x, kind: group, connector: B, rule: OPEN, parents: [d], inherits: [d], belongs: [d]}
+  - {id: y, kind: record, connector: B, rule: OPEN, parents: [x], inherits: [x], belongs: [x]}
+grants: [[u, d]]
+gates: [[u, A], [u, B]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
-             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB]
+             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL]
