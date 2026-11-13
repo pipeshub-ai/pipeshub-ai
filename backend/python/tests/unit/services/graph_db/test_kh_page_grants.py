@@ -49,7 +49,18 @@ async def test_neo4j_takes_the_other_connectors_grants_the_caller_holds_without_
     provider.client = MagicMock()
     provider.client.execute_query = AsyncMock(side_effect=AssertionError("no read"))
     cross = await provider._kh_v3_cross(None, ORG, [APP, OTHER], APP, None, {APP: ["g"], OTHER: ["x"]})
-    assert cross == {"probe": [OTHER], "held": ["x"], "common": [], "scoped": {}}
+    assert cross == ["x"]
+
+
+@pytest.mark.asyncio
+async def test_neo4j_reads_at_most_the_bound_of_cross_connector_grants_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past the bound the rest are left out: a node reached only through one of them is not listed (never one the viewer may not read)."""
+    provider = Neo4jProvider.__new__(Neo4jProvider)
+    provider.logger = MagicMock(spec=logging.Logger)
+    monkeypatch.setattr(Neo4jProvider, "_KH_CROSS_MAX", 2)
+    cross = await provider._kh_v3_cross("user-1", ORG, [APP, OTHER], APP, None, {OTHER: ["x", "y", "z"]})
+    assert cross == ["x", "y"]
+    provider.logger.warning.assert_called_once()
 
 
 @pytest.mark.asyncio

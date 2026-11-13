@@ -20680,10 +20680,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         statements. A list inside a map carries no size, so each statement is
         planned once."""
         parameters = parameters or {}
-        if parameters.get("kh_x"):
-            query = self._kh_grants_cross(query)
-        elif "$kh_x" in query:
-            parameters = {**parameters, "kh_x": self._KH_NO_CROSS}
+        # Every grant test also reads the other connectors' grants (`_kh_grants_cross`), always: one text, so one plan, per statement.
+        query = self._kh_grants_cross(query)
+        if "$kh_cross" in query and parameters.get("kh_cross") is None:
+            parameters = {**parameters, "kh_cross": []}
         names = tuple(sorted(k for k, v in parameters.items() if isinstance(v, list)))
         if names:
             # Only the lists this statement reads are sent: callers share one
@@ -20739,45 +20739,39 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return out
 
     # A grant test not yet followed by its cross-connector half.
-    _KH_GRANT_CROSS = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.id IN \$grantedIds\b(?! OR \(\1\.connectorId IN \$kh_x\.probe)")
-    _KH_NO_CROSS: dict[str, Any] = {"probe": [], "held": [], "common": [], "scoped": {}}
+    _KH_GRANT_CROSS = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.id IN \$grantedIds\b(?! OR \1\.id IN \$kh_cross\b)")
+    # The most cross-connector grants a page reads (`_kh_v3_cross`). Past it the rest are left out (logged): a node reached only
+    # through one of them is not listed, never one the viewer may not read.
+    _KH_CROSS_MAX = 20000
 
     @staticmethod
     @lru_cache(maxsize=256)
     def _kh_grants_cross(query: str) -> str:
-        """``query`` with every ``x.id IN $grantedIds`` also true when x is a node of another gated connector
-        (``$kh_x.probe``) that the viewer is granted there: listed in ``$kh_x.held`` or tested on x itself (``_kh_v3_cross``): the walk from one
-        App can pass through a node of another, and a grant counts on a node of any gated App. The statement's own
-        list or probe still decides a node of its own connector, so that node pays one property test."""
-        def cross(m: re.Match) -> str:
-            v = m.group(1)
-            g, p = f"kh_xg_{v}", f"kh_xp_{v}"
-            return (f"({v}.id IN $grantedIds OR ({v}.connectorId IN $kh_x.probe"
-                    f" AND ({v}:Record OR {v}:RecordGroup) AND NOT coalesce({v}.isDeleted, false)"
-                    f" AND ({v}.id IN $kh_x.held OR EXISTS {{ ({v})<-[{p}:PERMISSION]-({g})"
-                    f" WHERE ({g}:User OR {g}:Group OR {g}:Role OR {g}:Teams"
-                    f" OR ({g}:Organization AND {p}.type IN {_ORG_SHARE_TYPES_CYPHER}))"
-                    f" AND ({g}.id IN $kh_x.common OR {g}.id IN coalesce($kh_x.scoped[{v}.connectorId], [])) }})))")
-
-        return Neo4jProvider._KH_GRANT_CROSS.sub(cross, query)
+        """``query`` with every ``x.id IN $grantedIds`` also true when x is in ``$kh_cross``: the nodes of the other gated
+        connectors the viewer is granted there (``_kh_v3_cross``). The walk from one App can pass through a node of another, and
+        a grant counts on a node of any gated App. One list membership per test, read once per statement: a subquery or a
+        pattern per test made the statements too costly to plan."""
+        return Neo4jProvider._KH_GRANT_CROSS.sub(
+            lambda m: f"({m.group(1)}.id IN $grantedIds OR {m.group(1)}.id IN $kh_cross)", query)
 
     async def _kh_v3_cross(
         self, user_key: str | None, org_id: str, gated_app_ids: list[str], app_id: str, transaction: str | None,
         grants_by_connector: dict[str, list[str]] | None = None,
-    ) -> dict[str, Any] | None:
-        """``$kh_x`` for a statement that reads ``app_id``'s grants: the other gated connectors, and their grants when the
-        caller holds them (``held``, from ``grants_by_connector``), else per connector the grantees ``_kh_v3_connector_grantees``
-        would name there (``common`` to all of them, the rest ``scoped``), so that a source account's grants count inside its
-        own connector only. None when no other connector is gated, or neither is known."""
-        others = [a for a in gated_app_ids if a != app_id]
+    ) -> list[str] | None:
+        """``$kh_cross`` for a statement that reads ``app_id``'s grants: the live records and groups of the other gated
+        connectors the viewer is granted there, from ``grants_by_connector`` when the caller holds them, else read for
+        ``user_key`` with the grantees ``_kh_v3_connector_grantees`` would name in each connector (so a source account's
+        grants count inside its own connector only). At most ``_KH_CROSS_MAX``. None when no other connector is gated, or
+        neither is known."""
+        others = sorted({a for a in gated_app_ids if a != app_id})
         if not others:
             return None
         if grants_by_connector is not None:
-            return {"probe": others, "held": [g for a in others for g in grants_by_connector.get(a) or ()], "common": [], "scoped": {}}
+            return self._kh_cross_capped([g for a in others for g in grants_by_connector.get(a) or ()], user_key)
         if not user_key:
             return None
 
-        async def read() -> dict[str, Any]:
+        async def read() -> list[str]:
             rows = await self.client.execute_query(
                 """
                 MATCH (u:User {id: $user_key})
@@ -20796,22 +20790,42 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 """,
                 parameters={"user_key": user_key}, txn_id=transaction, plain=True,
             )
-            return (rows or [{}])[0]
+            row = (rows or [{}])[0]
+            if not row.get("user"):
+                return []
+            # [holder, the one connector its grants count in, or null for any]
+            holders: list[list[str | None]] = [[row["user"], None], *([o, None] for o in row.get("orgs") or [] if o)]
+            for badge, connector in row.get("badges") or []:
+                if badge:
+                    holders.append([badge, connector])
+            for connector, holder, holder_connector in row.get("linked") or []:
+                if connector and holder and holder_connector in (None, connector):
+                    holders.append([holder, connector])
+            granted = await self.client.execute_query(
+                f"""
+                UNWIND $holders AS kh_h
+                MATCH (kh_g:User|Group|Role|Teams|Organization {{id: kh_h[0]}})
+                MATCH (kh_g)-[kh_p:PERMISSION]->(kh_n:Record|RecordGroup)
+                WHERE kh_n.connectorId IN $others AND (kh_h[1] IS NULL OR kh_n.connectorId = kh_h[1])
+                  AND NOT coalesce(kh_n.isDeleted, false) AND {_cypher_grant_edge("kh_g", "kh_p")}
+                WITH DISTINCT kh_n.id AS id LIMIT $limit
+                RETURN collect(id) AS ids
+                """,
+                parameters={"holders": holders, "others": others, "limit": self._KH_CROSS_MAX + 1},
+                txn_id=transaction, plain=True,
+            )
+            return list((granted or [{}])[0].get("ids") or [])
 
-        row = await (self._kh_v3_shared(("cross", user_key), read) if transaction is None else read())
-        if not row.get("user"):
-            return None
-        common = [row["user"], *(o for o in row.get("orgs") or [] if o)]
-        scoped: dict[str, list[str]] = {}
-        for badge, connector in row.get("badges") or []:
-            if badge and connector is None:
-                common.append(badge)
-            elif badge:
-                scoped.setdefault(connector, []).append(badge)
-        for connector, holder, holder_connector in row.get("linked") or []:
-            if connector and holder and holder_connector in (None, connector):
-                scoped.setdefault(connector, []).append(holder)
-        return {"probe": others, "held": [], "common": common, "scoped": {c: ids for c, ids in scoped.items() if c in others}}
+        ids = await (self._kh_v3_shared(("cross", user_key, *others), read) if transaction is None else read())
+        return self._kh_cross_capped(ids, user_key)
+
+    def _kh_cross_capped(self, ids: list[str], user_key: str | None) -> list[str]:
+        if len(ids) <= self._KH_CROSS_MAX:
+            return ids
+        self.logger.warning(
+            "kh: user %s holds more than %d grants in the other gated connectors; nodes reached only through the rest are not listed",
+            user_key, self._KH_CROSS_MAX)
+        return ids[:self._KH_CROSS_MAX]
 
     async def _kh_v3_connector_grantees(
         self, user_key: str, connector_id: str, transaction: str | None,
@@ -20957,7 +20971,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WHERE kh_dg.id IN $grantedIds OR {reached}
         RETURN collect(DISTINCT kh_dg.id) AS ids
         """
-        parameters: dict[str, Any] = {"app_id": app_id, "declared": declared, "grantedIds": granted_ids, "kh_x": cross}
+        parameters: dict[str, Any] = {"app_id": app_id, "declared": declared, "grantedIds": granted_ids, "kh_cross": cross}
         if probe:
             query = self._kh_grants_by_probe(query)
             parameters.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})
@@ -21420,7 +21434,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }
         probe = access.get("probe")
         # The grants of the other connectors, tested on their nodes, when ``by_connector`` holds one connector's alone.
-        parameters["kh_x"] = access.get("cross")
+        parameters["kh_cross"] = access.get("cross")
         if probe:
             # A browse inside one connector: grants are tested from the nodes.
             query = self._kh_grants_by_probe(query)
@@ -21462,7 +21476,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         RETURN ids
             """
         # In probe mode the grants are tested from the node, as everywhere else on the page.
-        parameters: dict[str, Any] = {"app_id": app_id, "grantedIds": granted_ids, "kh_x": cross}
+        parameters: dict[str, Any] = {"app_id": app_id, "grantedIds": granted_ids, "kh_cross": cross}
         if probe:
             query = self._kh_grants_by_probe(query)
             parameters.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})
@@ -22352,7 +22366,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "declaredScope": declared_scope,
             "kh_placed": placed_ids,
             "kh_candidates": name_matches or [],
-            "kh_x": cross,
+            "kh_cross": cross,
         })
         if probe:
             params.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})
