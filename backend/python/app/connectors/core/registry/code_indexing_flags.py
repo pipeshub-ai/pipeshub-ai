@@ -1,6 +1,8 @@
 """Indexing-filter reads shared by the code-repository connectors."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -11,6 +13,11 @@ from app.connectors.core.registry.filters import (
     OptionSourceType,
     SyncFilterKey,
 )
+from app.models.entities import Record, RecordType
+from app.modules.parsers.code_parser.file_role import FileRole
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Sequence
 
 
 def code_indexing_flags(indexing_filters: FilterCollection | None) -> tuple[bool, bool]:
@@ -27,6 +34,67 @@ def code_indexing_flags(indexing_filters: FilterCollection | None) -> tuple[bool
         indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES),
         indexing_filters.is_enabled(IndexingFilterKey.TEST_FILES, default=False),
     )
+
+
+async def records_excluded_by_repo_indexing_filters(
+    records: Sequence[Record],
+    indexing_filters: FilterCollection | None,
+    find_parent: Callable[[str], Awaitable[Record | None]],
+) -> set[str]:
+    """Ids of the records a code-repository connector's indexing filters keep out.
+
+    Issues, merge/pull requests, code files and test files each follow their
+    toggle, and an attachment follows its parent's, as the sync stamps them.
+    ``find_parent`` resolves an attachment's parent by external id; an attachment
+    whose parent is gone is not excluded. The toggles are read for themselves, not
+    through manual indexing, which only decides whether indexing is automatic.
+    """
+    filters = indexing_filters or FilterCollection()
+
+    def enabled(key: IndexingFilterKey, *, default: bool = True) -> bool:
+        return filters.is_enabled(key, default=default, honour_manual_sync=False)
+
+    type_toggles = {
+        RecordType.TICKET.value: enabled(IndexingFilterKey.ISSUES),
+        RecordType.PULL_REQUEST.value: enabled(IndexingFilterKey.MERGE_REQUESTS),
+    }
+    code_files_on = enabled(IndexingFilterKey.CODE_FILES)
+    test_files_on = enabled(IndexingFilterKey.TEST_FILES, default=False)
+    parent_types: dict[str, str | None] = {}
+
+    async def parent_type(external_id: str) -> str | None:
+        if external_id not in parent_types:
+            parent = await find_parent(external_id)
+            parent_types[external_id] = _type_value(parent.record_type) if parent else None
+        return parent_types[external_id]
+
+    excluded: set[str] = set()
+    for record in records:
+        record_type = _type_value(record.record_type)
+        parent_id = getattr(record, "parent_external_record_id", None)
+        if record_type in type_toggles:
+            on = type_toggles[record_type]
+        elif record_type == RecordType.CODE_FILE.value:
+            on = code_files_on and (
+                test_files_on or getattr(record, "file_role", None) != FileRole.TEST.value
+            )
+        elif (
+            record_type == RecordType.FILE.value
+            # Repository folders are FILE records too; only attachments follow a parent.
+            and getattr(record, "is_file", True) is not False
+            and parent_id
+        ):
+            parent = await parent_type(parent_id)
+            on = type_toggles.get(parent, True) if parent else True
+        else:
+            on = True
+        if not on:
+            excluded.add(record.id)
+    return excluded
+
+
+def _type_value(record_type: object) -> str:
+    return str(getattr(record_type, "value", record_type))
 
 
 _CODE_INDEXING_KEYS = (IndexingFilterKey.CODE_FILES.value, IndexingFilterKey.TEST_FILES.value)
