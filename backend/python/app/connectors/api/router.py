@@ -114,6 +114,7 @@ from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectionCheckResult,
     ConnectorInitError,
+    action_items_json,
     dispose_connector,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
@@ -8245,10 +8246,13 @@ async def _build_and_store_connector(
             container.connectors_map = {}
         container.connectors_map[connector_id] = connector
 
-        # Update isAuthenticated flag
+        updates: dict[str, Any] = {"isAuthenticated": True}
+        if isinstance(connector.last_action_items, list):
+            # The connection test found something for the admin before any sync has run.
+            updates[ConnectorStateKeys.ACTION_ITEMS] = action_items_json(connector.last_action_items)
         await connector_registry.update_connector_instance(
             connector_id=connector_id,
-            updates={"isAuthenticated": True},
+            updates=updates,
             user_id=user_id,
             org_id=org_id,
             is_admin=is_admin
@@ -8928,7 +8932,7 @@ async def _store_config_action_items(
         await request.app.state.graph_provider.update_node(
             connector_id,
             CollectionNames.APPS.value,
-            {ConnectorStateKeys.ACTION_ITEMS: json.dumps([item.model_dump(by_alias=True) for item in items]) if items else None},
+            {ConnectorStateKeys.ACTION_ITEMS: action_items_json(items)},
         )
     except Exception as e:
         logger.warning("Could not refresh the action items of connector %s: %s", connector_id, e)

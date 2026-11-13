@@ -18,6 +18,29 @@ def _fresh_connector_name_cache() -> None:
         chat_helpers._connector_name_misses.clear()
 
 
+@pytest.fixture(autouse=True)
+def _service_container_leaves_no_wiring() -> Iterator[None]:
+    """Unwire the connector service's container after each test.
+
+    Importing ``app.connectors_main`` builds its container, and building it wires the
+    router, the signed-URL module and the others in its ``wiring_config`` (it wires again
+    on first use). A wired route function takes its injected arguments itself, so a test
+    that calls it directly with ``config_service=...`` fails with "got multiple values
+    for argument" (or reads an unset provider), and which tests failed depended on
+    whether an earlier file in the process had imported the service. Wiring is process
+    state, so it is undone here: before a test too, for a module imported at collection.
+    """
+    _unwire_connector_service()
+    yield
+    _unwire_connector_service()
+
+
+def _unwire_connector_service() -> None:
+    container = getattr(sys.modules.get("app.connectors_main"), "container", None)
+    if container is not None:
+        container.unwire()
+
+
 @pytest.fixture
 def frozen_heap() -> Iterator[None]:
     """Keep a full GC pass over the suite's large heap out of the measurement.

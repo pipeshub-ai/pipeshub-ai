@@ -28,12 +28,13 @@ from __future__ import annotations
 import logging
 import zlib
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from app.connectors.sources.localKB.handlers.kh_search import search_page
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
+from . import oracle
 from .runner import OracleLayer
 
 if TYPE_CHECKING:
@@ -146,7 +147,50 @@ def _ancestors(world: World, node: Node) -> list[Parent]:
     return out
 
 
+def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> set[str]:
+    """The granted rows a browse of ``node`` (an App or a group) lists beside its hierarchy children, by the placement rule the stores share
+    (``GraphDBProvider._kh_v3_chain_tops``, ``place_chain_tops``): a live, OPEN, non-placeholder record or group of the App the viewer is
+    granted, with no hierarchy parent the viewer may open and not the App's hierarchy child, outside a group that hides its children. It is
+    listed under each of its own groups (a record's groups, a group's parent groups) the viewer may open; with none, under the App when it
+    has no own group or one that hangs from the App. A group's browse places only the records that belong to it. None in an App that opens
+    everything."""
+    target = world.node(node)
+    app_id = node if target.kind == "app" else target.connector
+    if app_id is None:      # a group of no App: nothing is placed under it
+        return set()
+    app = world.node(app_id)
+    if target.kind not in ("app", "group") or app.model == "APP_LEVEL" or app.app_type == "KB":
+        return set()
+    _, store = reference._store(world)
+    granted = {reference._ns.local(i) for i in oracle.viewer(store, reference._ns.id(viewer), reference._ns.org).granted}
+
+    def hier(n: Node) -> list[str]:
+        return [p.id for p in n.parents if p.rel in HIERARCHY]
+
+    def own(n: Node) -> list[str]:
+        return [g for g in (n.belongs if n.kind == "record" else hier(n)) if g != n.id and world.node(g).kind == "group"]
+
+    cands = [n for n in world.nodes if n.id in granted and n.connector == app_id and n.kind in ("record", "group") and not n.deleted
+             and not n.placeholder and (n.rule or "OPEN") == "OPEN" and app_id not in hier(n) and not hidden_by_navigation(world, n)
+             and (target.kind == "app" or (n.kind == "record" and node in n.belongs))]
+    asked = sorted({i for n in cands for i in [n.id, *hier(n), *own(n)]})
+    # the stores' check admits a placeholder asked by id where it would admit a real node there (the oracle refuses every placeholder): asked as one
+    real = replace(world, nodes=tuple(replace(n, placeholder=False) for n in world.nodes))
+    ok = {i for i, v in reference.explain(real, viewer, asked).items() if v.admitted}
+    out = set()
+    for n in cands:
+        if n.id not in ok or set(hier(n)) & ok:
+            continue
+        openable = set(own(n)) & ok
+        if node in openable or (target.kind == "app" and not openable and (
+                not own(n) or any(not world.node(g).deleted and app_id in {a.id for a in _ancestors(world, world.node(g))} for g in own(n)))):
+            out.add(n.id)
+    return out
+
+
 async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "") -> list[KhFinding]:
+    """Every listing the viewer sees, held to the oracle; the browse starts at every App of the world (`_browse`), so an App's own children are
+    held to it as a folder's are."""
     reference = OracleLayer(layer.shape)
     found: list[KhFinding] = []
     for viewer in world.users():
@@ -251,14 +295,23 @@ async def _browse(
         found.append(KhFinding(scenario_id, viewer, kind, detail))
 
     on_the_way = {p.id for n in seen.values() for p in _ancestors(world, n)}
+    # a placeholder group a chain-top is placed under is on the way to it too
+    holders = [n for n in world.nodes if n.kind == "group" and n.placeholder and chain_tops(reference, world, viewer, n.id)]
+    on_the_way |= {n.id for n in holders} | {p.id for n in holders for p in _ancestors(world, n)}
 
     def extras(rows: dict[str, Any]) -> set[str]:
         """The rows the oracle does not admit. One may be listed on the way to something readable, and only when it is shown as a placeholder (a
         node a seed it admits hangs under is listed under the nearest folder, and is in `seen`)."""
         return {i for i, row in rows.items() if i not in seen and not (i in on_the_way and getattr(row, "isPlaceholder", False))}
 
+    tops_of: dict[str, set[str]] = {}
+
     def children(node: str) -> list[Node]:
-        return [n for n in world.nodes if not n.deleted and any(p.id == node and p.rel in HIERARCHY for p in n.parents)]
+        """Its hierarchy children, and the chain-tops a browse of it places there (read once per node: each asks the oracle)."""
+        if node not in tops_of:
+            tops_of[node] = chain_tops(reference, world, viewer, node)
+        tops = tops_of[node]
+        return [n for n in world.nodes if not n.deleted and (n.id in tops or any(p.id == node and p.rel in HIERARCHY for p in n.parents))]
 
     def capped(node: str, missing: str, listed: dict[str, Any]) -> bool:
         """Whether a browse of ``node`` leaves ``missing`` out only for the cap on the children it asks the check about (`_KH_UNDECIDED_MAX`, the
@@ -311,7 +364,7 @@ async def _browse(
                 add("gap" if capped(node, missing, got) else "browse_gap", f"{node}: the browse leaves out {missing}, which the viewer may open")
         # A stub is no content the oracle judges: it is listed exactly where opening it lists something.
         for stub in sorted(n.id for n in children(node) if n.placeholder and n.id not in got):
-            below = await open_(stub, "record", kind="stubs")
+            below = await open_(stub, "recordGroup" if world.node(stub).kind == "group" else "record", kind="stubs")
             if below and below is not SKIPPED:
                 add("browse_gap", f"{node}: the browse leaves out the stub {stub}, and opening it lists something")
         return got

@@ -110,6 +110,10 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("PUT", f"{_CM}/slack-bot/:configId", admin="invalid"),
     AdminRoute("DELETE", f"{_CM}/slack-bot/:configId", admin="invalid"),
     AdminRoute("GET", f"{_CM}/prompts/system"),
+    # mcp/routes/mcp-access.routes.ts
+    AdminRoute("GET", f"{_CM}/mcp/access"),
+    AdminRoute("PUT", f"{_CM}/mcp/access", admin="invalid"),
+    AdminRoute("GET", f"{_CM}/mcp/access/tools"),
     _no_admin("PUT", f"{_CM}/prompts/system",
               "replaces the org's system prompt; nothing after the check stops a write"),
     _no_admin("POST", f"{_CM}/connectors/googleWorkspaceCredentials",

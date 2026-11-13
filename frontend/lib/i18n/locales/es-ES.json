@@ -1614,6 +1614,8 @@
         "demoteAdminBeforeRemove": "Cambie el administrador a miembro y después quítelo.",
         "removeUserTitle": "¿Eliminar usuario?",
         "removeUserMessage": "¿Está seguro de que desea eliminar a {{email}} del espacio de trabajo {{workspace}}?",
+        "removeUserOAuthAppsOne": "Esta persona creó 1 aplicación OAuth. Pasará a ser suya, para que quienes se conectaron con ella sigan conectados.",
+        "removeUserOAuthAppsMany": "Esta persona creó {{count}} aplicaciones OAuth. Pasarán a ser suyas, para que quienes se conectaron con ellas sigan conectados.",
         "removeButton": "Eliminar",
         "cancelButton": "Cancelar",
         "removeSuccess": "Usuario eliminado exitosamente",
@@ -1928,7 +1930,8 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "Cree y administre las aplicaciones OAuth que ha registrado. Solo usted ve sus aplicaciones aquí.",
+      "subtitle": "Cree y administre las aplicaciones OAuth que ha registrado. Solo usted y los administradores de su organización las ven.",
+      "subtitleAdmin": "Todas las aplicaciones OAuth de su organización, con quién las creó. Suspenda o elimine cualquier aplicación que no reconozca.",
       "searchPlaceholder": "Buscar aplicaciones por nombre o descripción...",
       "newApplication": "Nueva aplicación OAuth",
       "emptyTitle": "No hay aplicaciones OAuth 2.0",
@@ -1938,6 +1941,7 @@
       "retry": "Reintentar",
       "scopesBadgeOne": "{{count}} permiso",
       "scopesBadgeMany": "{{count}} permisos",
+      "createdBy": "Creada por {{name}}",
       "manage": "Administrar",
       "noSearchResults": "Ninguna aplicación coincide con su búsqueda.",
       "manageComingSoonTitle": "Próximamente",
@@ -1948,6 +1952,7 @@
         "saveDisabledNoChanges": "No changes to save.",
         "saveDisabledInvalid": "Fix validation errors before saving.",
         "tabAdvanced": "Advanced",
+        "creatorOnlyNotice": "Solo quien creó esta aplicación puede cambiarla. Aún puede suspenderla o eliminarla en Avanzado.",
         "aboutHeading": "About",
         "aboutHelper": "Use this Client ID in your OAuth flows.",
         "copyClientIdAria": "Copy client ID",
@@ -2349,6 +2354,7 @@
       "nav": {
         "general": "General",
         "labs": "Labs",
+        "mcpAccess": "Acceso MCP",
         "authentication": "Autenticación",
         "connectors": "Conectores",
         "mcpServers": "Servidores MCP",
@@ -2640,6 +2646,30 @@
         "message": "If you discard, your edits won't be saved",
         "confirm": "Discard",
         "cancel": "Continue editing"
+      }
+    },
+    "mcpAccess": {
+      "title": "Acceso MCP",
+      "subtitle": "Elige qué pueden hacer los clientes MCP, como Claude, Cursor o ChatGPT, en este espacio de trabajo a través de su endpoint /mcp.",
+      "enabled": {
+        "label": "Permitir acceso MCP",
+        "description": "Si está desactivado, se rechaza cada solicitud de un cliente MCP. Los clientes conectados vuelven a funcionar en cuanto se reactiva."
+      },
+      "writeTools": {
+        "label": "Permitir herramientas de escritura",
+        "description": "Si está desactivado, los clientes MCP no pueden crear colecciones, subir archivos ni añadir sitios web, y el chat no ejecuta acciones conectadas."
+      },
+      "tools": {
+        "title": "Herramientas",
+        "subtitle": "Desactiva herramientas concretas. Una herramienta desactivada no se ofrece a los clientes MCP y se rechazan sus llamadas.",
+        "writes": "Escribe"
+      },
+      "appliesNote": "Los cambios se aplican a las nuevas solicitudes MCP en unos segundos.",
+      "loadError": "No se pudo cargar la configuración de acceso MCP. Recarga la página para volver a intentarlo.",
+      "toasts": {
+        "saveSuccess": "Configuración de acceso MCP guardada",
+        "saveError": "No se pudo guardar la configuración de acceso MCP",
+        "saveErrorDescription": "Comprueba tu conexión e inténtalo de nuevo."
       }
     },
     "labs": {
@@ -3346,7 +3376,14 @@
         "badge": "Acción necesaria",
         "title": "Acción necesaria",
         "openAuthentication": "Actualizar autenticación",
-        "viewSteps": "Ver los pasos de configuración"
+        "viewSteps": "Ver los pasos de configuración",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki rechaza las consultas de miembros y de estructura de páginas",
+            "message": "Los espacios privados solo se sincronizan con el acceso confirmado en una sincronización anterior, y solo durante {{days}} días después de confirmarse. Los espacios privados nunca sincronizados, o confirmados hace más tiempo, se omiten y la jerarquía de páginas no está disponible. Los espacios abiertos no se ven afectados. Una sincronización completa, incluida la que se inicia al cambiar los filtros, pone fin a esto para los espacios privados hasta que Drupal Wiki vuelva a listar sus miembros.",
+            "message_dated": "Los espacios privados solo se sincronizan con el acceso confirmado en una sincronización anterior, y solo durante {{days}} días después de confirmarse. Los espacios privados nunca sincronizados, o confirmados hace más tiempo, se omiten y la jerarquía de páginas no está disponible. Los espacios abiertos no se ven afectados. Una sincronización completa, incluida la que se inicia al cambiar los filtros, pone fin a esto para los espacios privados hasta que Drupal Wiki vuelva a listar sus miembros. El acceso más antiguo en uso se confirmó el {{confirmedOn}}."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Todos en tu organización verán estos datos",
@@ -5467,6 +5504,7 @@
     "requestHeading": "Esta aplicación solicita acceso a:",
     "unreviewedApp": "Esta aplicación se ha registrado por sí misma. Ningún administrador la ha revisado.",
     "clientIdHost": "Identificada por {{host}}",
+    "registeredBy": "Registrada por {{name}}",
     "redirectTo": "Te devuelve a {{uri}}",
     "notGrantedHeading": "Esta aplicación también solicitó estos permisos. La configuración de la aplicación no los permite, por lo que no los obtendrá:",
     "notGrantedOwnerHint": "La persona que creó esta aplicación puede añadirlos en Configuración del espacio de trabajo → Configuración de desarrollador → Apps de OAuth 2.0.",

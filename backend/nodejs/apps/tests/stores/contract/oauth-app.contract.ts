@@ -305,21 +305,61 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
       expect(await repo.listClientIdsActingAs(fx.newId())).to.deep.equal([]);
     });
 
-    it('listClientIdsCreatedBy and softDeleteCreatedBy cover every live app of the user, including internal ones', async () => {
+    it('a deleted person\'s apps: the ones acting as them are deleted, the rest change hands', async () => {
       const org = fx.newId();
       const me = fx.newId();
       const admin = fx.newId();
+      const svc = fx.newId();
       const mine = await repo.create(mk(org, me));
       const pat = await repo.create(mk(org, me, { clientId: `pat-system:${org}` }));
-      const other = await repo.create(mk(org, fx.newId()));
-      const elsewhere = await repo.create(mk(fx.newId(), me));
-      expect((await repo.listClientIdsCreatedBy(org, me)).sort()).to.deep.equal([mine.clientId, pat.clientId].sort());
-      await repo.softDeleteCreatedBy(org, me, admin);
-      expect(await repo.listClientIdsCreatedBy(org, me)).to.deep.equal([]);
-      const row = await repo.findByClientId(mine.clientId);
-      expect(row).to.include({ isDeleted: true, status: OAuthAppStatus.REVOKED, deletedBy: admin });
+      const actsAsMe = await repo.create(mk(org, me, { allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS] }));
+      const actsAsSvc = await repo.create(
+        mk(org, me, { allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS], tokenIdentityUserId: svc }),
+      );
+      const other = await repo.create(mk(org, fx.newId(), { allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS] }));
+      const elsewhere = await repo.create(mk(fx.newId(), me, { allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS] }));
+
+      expect(await repo.listClientIdsActingAsCreator(org, me)).to.deep.equal([actsAsMe.clientId]);
+      await repo.softDeleteActingAsCreator(org, me, admin);
+      expect(await repo.listClientIdsActingAsCreator(org, me)).to.deep.equal([]);
+      expect(await repo.findByClientId(actsAsMe.clientId)).to.include({
+        isDeleted: true,
+        status: OAuthAppStatus.REVOKED,
+        deletedBy: admin,
+      });
+
+      await repo.transferCreatedBy(org, me, admin);
+      for (const a of [mine, pat, actsAsSvc]) {
+        expect(await repo.findByClientId(a.clientId), a.clientId).to.include({ createdBy: admin, isDeleted: false });
+      }
+      // A deleted app stays with whoever it was, and other people's and other orgs' apps are untouched.
+      expect((await repo.findByClientId(actsAsMe.clientId))?.createdBy).to.equal(me);
       expect((await repo.findByClientId(other.clientId))?.isDeleted).to.equal(false);
-      expect((await repo.findByClientId(elsewhere.clientId))?.isDeleted).to.equal(false);
+      expect(await repo.findByClientId(elsewhere.clientId)).to.include({ createdBy: me, isDeleted: false });
+      expect(await repo.findOwned(org, admin, mine._id)).to.not.equal(null);
+    });
+
+    it('findInOrg and listInOrg: every creator in the org, same exclusions, optional creator filter', async () => {
+      const org = fx.newId();
+      const a = fx.newId();
+      const b = fx.newId();
+      const appA = await repo.create(mk(org, a, { name: 'A' }));
+      const appB = await repo.create(mk(org, b, { name: 'B' }));
+      await fx.setCreatedAt(appA._id, new Date(Date.now() - 1000));
+      const internal = await repo.create(mk(org, a, { clientId: `pat-system:${org}` }));
+      const dynamic = await repo.create(mk(org, a, { isDynamic: true }));
+      const elsewhere = await repo.create(mk(fx.newId(), a));
+
+      expect((await repo.findInOrg(org, appB._id))?.clientId).to.equal(appB.clientId);
+      for (const x of [internal, dynamic, elsewhere]) {
+        expect(await repo.findInOrg(org, x._id), x.clientId).to.equal(null);
+      }
+      const all = await repo.listInOrg(org, { skip: 0, limit: 10 });
+      expect(all.total).to.equal(2);
+      expect(all.rows.map((r) => r.name)).to.deep.equal(['B', 'A']);
+      const onlyA = await repo.listInOrg(org, { skip: 0, limit: 10, createdBy: a });
+      expect(onlyA.rows.map((r) => r.name)).to.deep.equal(['A']);
+      expect((await repo.listInOrg(org, { skip: 0, limit: 10, search: 'b' })).total).to.equal(1);
     });
   });
 }

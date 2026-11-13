@@ -28,6 +28,34 @@ describe('ActionItemsCallout', () => {
     expect(screen.getByText('Upload a client certificate and its private key.')).toBeTruthy();
   });
 
+  it('shows a known item from the catalogue rather than as the connector words it', () => {
+    const known: ConnectorActionItem = {
+      code: 'drupal_wiki_graphql_refused',
+      severity: 'warning',
+      title: 'connector wording',
+      message: 'connector message',
+      action: null,
+    };
+    renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [known] })} />);
+
+    expect(screen.getByText('Drupal Wiki refuses member and page structure queries')).toBeTruthy();
+    expect(screen.queryByText('connector wording')).toBeNull();
+  });
+
+  it('fills a known item with its params and picks the variant they name', () => {
+    const dated: ConnectorActionItem = {
+      code: 'drupal_wiki_graphql_refused',
+      severity: 'warning',
+      title: 't',
+      message: 'm',
+      action: null,
+      params: { days: '30', confirmedOn: '2026-10-02', context: 'dated' },
+    };
+    renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [dated] })} />);
+
+    expect(screen.getByText(/only for 30 days after it was confirmed.*confirmed on 2026-10-02\./)).toBeTruthy();
+  });
+
   it('opens the Authenticate tab for an item done there', () => {
     const open = vi.fn();
     renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [SWITCH] })} onOpenAuthentication={open} />);

@@ -16,8 +16,18 @@ from app.core.org_context import OrgContext, bind
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
-from tests.permissions.kh_layer import KhFinding, check_world, listing
-from tests.permissions.kh_worlds import KH_WORLDS, OPENGRANT, OPENGRANTTEAM
+from tests.permissions.kh_layer import KhFinding, check_world, children_of, listing
+from tests.permissions.kh_worlds import (
+    APPCHAIN,
+    CHAIN,
+    CHAINLINK,
+    KH_WORLDS,
+    OPENGRANT,
+    OPENGRANTTEAM,
+    STUBHELD,
+    STUBREACH,
+    STUBTOP,
+)
 from tests.permissions.scenario import load_all
 
 from .test_conformance import PgLayer
@@ -97,16 +107,16 @@ async def kh_layer(request, pg_provider, pg_db) -> AsyncIterator[KhPgLayer]:
     await lay.release(list(lay._prefix))
 
 
-# `browse_gap`: the layer fails a folder the browse does not open or leaves nodes out of. This provider lists a whole connector only (browsing a node is the next step of the series), so every browse is a
-# gap here; the flat listing is held to the oracle in full (over, under, total, counts, facets, order). Take `browse_gap` out of this set when the browse is served.
-GAPS = {"gap", "browse_gap"}
+# `gap`: the shapes the flatten listing leaves out on purpose (kh_layer.declared_gap). The browse is held to the oracle in full: a folder it does not open or leaves nodes out of (`browse_gap`),
+# a row it lists that the oracle does not admit (`browse_extra`) and an arrow that is not on exactly when opening the row lists something (`arrow`) fail, as on Neo4j and ArangoDB.
+GAPS = {"gap"}
 
 
 async def check(layer: KhPgLayer, world, scenario: str) -> list[KhFinding]:
     """``check_world`` as the product runs a request: under the world's own org."""
     with bind(OrgContext((await layer._ns(world)).org, None, "job", "job:test", "t")):
         try:
-            found = await check_world(layer, world, scenario)
+            found = await check_world(layer, world, scenario, browse_apps=True)
             for viewer in world.users():      # the order of the whole listing is the merge's (a string by UTF-16 code unit): what pages and cursors are cut by
                 keys = [key_for(r, descending=False) for r in (await listing(layer, world, viewer)).rows]
                 if keys != sorted(keys):
@@ -159,6 +169,19 @@ async def test_generated_worlds_list_what_the_viewer_may_read(kh_layer, kind: st
         assert kh_layer.not_ready * 10 <= len(worlds), f"{kh_layer.not_ready} of {len(worlds)} {kind} worlds were refused as not copied"
 
 
+async def test_a_stub_is_listed_under_a_declaration_exactly_when_opening_it_lists_something(kh_layer) -> None:
+    """STUBREACH: the stub's listing and arrow read the reach a browse of the stub starts with, never the declaration's (what opening the declaration and then the stub shows must agree)."""
+    await kh_layer.preload([STUBREACH])
+    with bind(OrgContext((await kh_layer._ns(STUBREACH)).org, None, "job", "job:test", "t")):
+        bad = _bad(await check_world(kh_layer, STUBREACH, "stubreach", browse_apps=True))
+        under_d = await children_of(kh_layer, STUBREACH, "u", "d", "recordGroup")
+        under_s = await children_of(kh_layer, STUBREACH, "u", "s", "record")
+    assert not bad, _describe(bad)
+    assert under_d is not None and ("s" in under_d) == bool(under_s), (under_d, under_s)
+    assert under_d.get("s", False) == bool(under_s), (under_d, under_s)
+    print(f"{kh_layer.name} STUBREACH: d lists {under_d}, s lists {under_s}")
+
+
 async def test_a_connector_with_no_copy_is_refused_not_listed_as_empty(pg_provider, pg_db) -> None:
     """The listing of a connector the typed graph has never copied raises the refusal the service answers with a 503 (retry in a moment)."""
     from app.connectors.sources.localKB.handlers.kh_search import search_page
@@ -185,3 +208,28 @@ async def test_a_granted_strict_group_below_a_seed_the_app_does_not_reach_is_rea
             assert {ns.local(n) for n in found.node_ids} == {"k", "go"}, kh_layer.name
             assert {r["id"] for r in (await listing(kh_layer, world, "u")).rows} == {"k", "go", "d"}, kh_layer.name
         assert not _bad(await check(kh_layer, world, "opengrant")), kh_layer.name
+
+
+async def test_a_browse_lists_the_chain_tops_the_stores_place_under_it_and_their_arrows(kh_layer) -> None:
+    """A granted record with no hierarchy parent the viewer may open is listed under its own group, else under the App (the placement rule Neo4j and
+    ArangoDB share). APPCHAIN: opening h lists r, and h's arrow is on in All Records and under the App. CHAIN, CHAINLINK and STUBHELD have the same shape."""
+    worlds = [APPCHAIN, CHAIN, CHAINLINK, STUBHELD]
+    await kh_layer.preload(worlds)
+    with bind(OrgContext((await kh_layer._ns(APPCHAIN)).org, None, "job", "job:test", "t")):
+        assert await children_of(kh_layer, APPCHAIN, "u", "h", "recordGroup") == {"r": False}, kh_layer.name
+        assert await children_of(kh_layer, APPCHAIN, "u", "A", "app") == {"h": True}, kh_layer.name
+        assert {r["id"]: r["hasChildren"] for r in (await listing(kh_layer, APPCHAIN, "u")).rows}["h"] is True, kh_layer.name
+    bad = [f for world in worlds for f in _bad(await check(kh_layer, world, "chain"))]
+    assert not bad, _describe(bad)
+
+
+async def test_a_placeholder_group_whose_only_content_is_a_chain_top_is_listed_with_its_arrow(kh_layer) -> None:
+    """STUBTOP: opening the placeholder group s lists its chain-top r, so the folder f lists s, with an arrow: a placeholder leads by the chain-top rule as well as by its
+    hierarchy children."""
+    await kh_layer.preload([STUBTOP])
+    with bind(OrgContext((await kh_layer._ns(STUBTOP)).org, None, "job", "job:test", "t")):
+        assert await children_of(kh_layer, STUBTOP, "u", "s", "recordGroup") == {"r": False}, kh_layer.name
+        assert await children_of(kh_layer, STUBTOP, "u", "f", "recordGroup") == {"s": True}, kh_layer.name
+        assert {r["id"]: r["hasChildren"] for r in (await listing(kh_layer, STUBTOP, "u")).rows}["f"] is True, kh_layer.name
+    bad = _bad(await check(kh_layer, STUBTOP, "stubtop"))
+    assert not bad, _describe(bad)

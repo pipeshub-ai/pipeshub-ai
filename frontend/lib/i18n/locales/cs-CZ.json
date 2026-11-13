@@ -1748,6 +1748,8 @@
         "demoteAdminBeforeRemove": "Nejprve změňte roli správce na člena a poté jej odeberte.",
         "removeUserTitle": "Odebrat uživatele?",
         "removeUserMessage": "Opravdu chcete odebrat uživatele {{email}} z pracovního prostoru {{workspace}}?",
+        "removeUserOAuthAppsOne": "Tento uživatel vytvořil 1 aplikaci OAuth. Přejde na vás, aby lidé, kteří se přes ni připojili, zůstali připojeni.",
+        "removeUserOAuthAppsMany": "Počet aplikací OAuth, které tento uživatel vytvořil: {{count}}. Přejdou na vás, aby lidé, kteří se přes ně připojili, zůstali připojeni.",
         "removeButton": "Odebrat",
         "cancelButton": "Zrušit",
         "removeSuccess": "Uživatel byl úspěšně odebrán",
@@ -2074,7 +2076,8 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "Vytvářejte a spravujte OAuth aplikace, které jste zaregistrovali. Vaše aplikace zde vidíte pouze vy.",
+      "subtitle": "Vytvářejte a spravujte OAuth aplikace, které jste zaregistrovali. Vidíte je jen vy a správci vaší organizace.",
+      "subtitleAdmin": "Všechny aplikace OAuth ve vaší organizaci a kdo je vytvořil. Pozastavte nebo smažte každou aplikaci, kterou neznáte.",
       "searchPlaceholder": "Hledat...",
       "newApplication": "Nová OAuth aplikace",
       "emptyTitle": "Žádné aplikace OAuth 2.0",
@@ -2084,6 +2087,7 @@
       "retry": "Zkusit znovu",
       "scopesBadgeOne": "{{count}} rozsah",
       "scopesBadgeMany": "{{count}} rozsahů",
+      "createdBy": "Vytvořil(a): {{name}}",
       "manage": "Spravovat",
       "noSearchResults": "Vašemu hledání neodpovídají žádné aplikace.",
       "manageComingSoonTitle": "Již brzy",
@@ -2094,6 +2098,7 @@
         "saveDisabledNoChanges": "Žádné změny k uložení.",
         "saveDisabledInvalid": "Před uložením opravte chyby validace.",
         "tabAdvanced": "Pokročilé",
+        "creatorOnlyNotice": "Tuto aplikaci může změnit jen ten, kdo ji vytvořil. V části Pokročilé ji můžete pozastavit nebo smazat.",
         "aboutHeading": "O aplikaci",
         "aboutHelper": "Toto Client ID použijte ve svých OAuth tocích.",
         "copyClientIdAria": "Kopírovat Client ID",
@@ -2575,6 +2580,7 @@
       "nav": {
         "general": "Obecné",
         "labs": "Labs",
+        "mcpAccess": "Přístup MCP",
         "authentication": "Ověřování",
         "connectors": "Konektory",
         "mcpServers": "MCP servery",
@@ -2866,6 +2872,30 @@
         "message": "Pokud změny zahodíte, vaše úpravy nebudou uloženy",
         "confirm": "Zahodit",
         "cancel": "Pokračovat v úpravách"
+      }
+    },
+    "mcpAccess": {
+      "title": "Přístup MCP",
+      "subtitle": "Zvolte, co mohou klienti MCP, jako Claude, Cursor nebo ChatGPT, v tomto pracovním prostoru dělat přes jeho koncový bod /mcp.",
+      "enabled": {
+        "label": "Povolit přístup MCP",
+        "description": "Je-li vypnuto, každý požadavek klienta MCP je odmítnut. Připojení klienti začnou znovu fungovat, jakmile jej opět zapnete."
+      },
+      "writeTools": {
+        "label": "Povolit zapisující nástroje",
+        "description": "Je-li vypnuto, klienti MCP nemohou vytvářet kolekce, nahrávat soubory ani přidávat weby a chat nespouští připojené akce."
+      },
+      "tools": {
+        "title": "Nástroje",
+        "subtitle": "Vypněte jednotlivé nástroje. Vypnutý nástroj se klientům MCP nenabízí a jeho volání jsou odmítnuta.",
+        "writes": "Zapisuje"
+      },
+      "appliesNote": "Změny se na nové požadavky MCP uplatní během několika sekund.",
+      "loadError": "Nastavení přístupu MCP se nepodařilo načíst. Zkuste stránku načíst znovu.",
+      "toasts": {
+        "saveSuccess": "Nastavení přístupu MCP uloženo",
+        "saveError": "Nastavení přístupu MCP se nepodařilo uložit",
+        "saveErrorDescription": "Zkontrolujte připojení a zkuste to znovu."
       }
     },
     "labs": {
@@ -3574,7 +3604,14 @@
         "badge": "Vyžaduje akci",
         "title": "Vyžaduje akci",
         "openAuthentication": "Aktualizovat ověření",
-        "viewSteps": "Zobrazit postup nastavení"
+        "viewSteps": "Zobrazit postup nastavení",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki odmítá dotazy na členy a strukturu stránek",
+            "message": "Soukromé prostory se synchronizují jen s přístupem potvrzeným při dřívější synchronizaci, a to jen {{days}} dní po jeho potvrzení. Soukromé prostory, které nikdy nebyly synchronizovány nebo byly potvrzeny dříve, se přeskočí a hierarchie stránek není k dispozici. Otevřených prostorů se to netýká. Úplná synchronizace, včetně té spuštěné změnou filtrů, to pro soukromé prostory ukončí, dokud Drupal Wiki znovu nevypíše jejich členy.",
+            "message_dated": "Soukromé prostory se synchronizují jen s přístupem potvrzeným při dřívější synchronizaci, a to jen {{days}} dní po jeho potvrzení. Soukromé prostory, které nikdy nebyly synchronizovány nebo byly potvrzeny dříve, se přeskočí a hierarchie stránek není k dispozici. Otevřených prostorů se to netýká. Úplná synchronizace, včetně té spuštěné změnou filtrů, to pro soukromé prostory ukončí, dokud Drupal Wiki znovu nevypíše jejich členy. Nejstarší používaný přístup byl potvrzen {{confirmedOn}}."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Tato data uvidí všichni ve vaší organizaci",
@@ -5636,6 +5673,7 @@
     "requestHeading": "Tato aplikace žádá o přístup k:",
     "unreviewedApp": "Tato aplikace se zaregistrovala sama. Žádný správce ji nezkontroloval.",
     "clientIdHost": "Identifikována doménou {{host}}",
+    "registeredBy": "Zaregistroval(a): {{name}}",
     "redirectTo": "Vrátí vás na {{uri}}",
     "notGrantedHeading": "Tato aplikace požádala také o následující oprávnění. Její nastavení je nepovoluje, takže je nezíská:",
     "notGrantedOwnerHint": "Osoba, která tuto aplikaci vytvořila, je může přidat v Nastavení pracovního prostoru → Nastavení pro vývojáře → OAuth 2.0 aplikace.",

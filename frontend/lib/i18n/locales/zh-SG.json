@@ -1676,6 +1676,8 @@
         "demoteAdminBeforeRemove": "请先将该管理员降级为成员，然后再移除。",
         "removeUserTitle": "移除用户？",
         "removeUserMessage": "确定要将 {{email}} 从 {{workspace}} 工作区中移除吗？",
+        "removeUserOAuthAppsOne": "此用户创建了 1 个 OAuth 应用。它将转移给您，通过它连接的用户将保持连接。",
+        "removeUserOAuthAppsMany": "此用户创建了 {{count}} 个 OAuth 应用。它们将转移给您，通过它们连接的用户将保持连接。",
         "removeButton": "移除",
         "cancelButton": "取消",
         "removeSuccess": "用户已成功移除",
@@ -1966,7 +1968,8 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "创建和管理您注册的 OAuth 应用。这里的应用仅您本人可见。",
+      "subtitle": "创建和管理您注册的 OAuth 应用。仅您本人和组织管理员可见。",
+      "subtitleAdmin": "组织中的所有 OAuth 应用及其创建者。暂停或删除任何您不认识的应用。",
       "searchPlaceholder": "搜索…",
       "newApplication": "新建 OAuth 应用",
       "emptyTitle": "暂无 OAuth 2.0 应用",
@@ -1976,6 +1979,7 @@
       "retry": "重试",
       "scopesBadgeOne": "{{count}} 个权限范围",
       "scopesBadgeMany": "{{count}} 个权限范围",
+      "createdBy": "创建者：{{name}}",
       "manage": "管理",
       "noSearchResults": "没有符合搜索条件的应用。",
       "manageComingSoonTitle": "即将推出",
@@ -1986,6 +1990,7 @@
         "saveDisabledNoChanges": "没有需要保存的更改。",
         "saveDisabledInvalid": "请先修正验证错误再保存。",
         "tabAdvanced": "高级",
+        "creatorOnlyNotice": "只有创建此应用的人可以更改它。您仍可以在“高级”中暂停或删除它。",
         "aboutHeading": "关于",
         "aboutHelper": "在您的 OAuth 流程中使用此客户端 ID。",
         "copyClientIdAria": "复制客户端 ID",
@@ -2459,6 +2464,7 @@
       "nav": {
         "general": "常规",
         "labs": "实验室",
+        "mcpAccess": "MCP 访问",
         "authentication": "身份验证",
         "connectors": "连接器",
         "mcpServers": "MCP 服务器",
@@ -2750,6 +2756,30 @@
         "message": "如果放弃，您的编辑将不会被保存",
         "confirm": "放弃",
         "cancel": "继续编辑"
+      }
+    },
+    "mcpAccess": {
+      "title": "MCP 访问",
+      "subtitle": "选择 Claude、Cursor 或 ChatGPT 等 MCP 客户端可以通过此工作区的 /mcp 端点执行哪些操作。",
+      "enabled": {
+        "label": "允许 MCP 访问",
+        "description": "关闭后，MCP 客户端的每个请求都会被拒绝。重新开启后，已连接的客户端会立即恢复工作。"
+      },
+      "writeTools": {
+        "label": "允许写入工具",
+        "description": "关闭后，MCP 客户端无法创建集合、上传文件或添加网站，聊天也不会运行已连接的操作。"
+      },
+      "tools": {
+        "title": "工具",
+        "subtitle": "关闭单个工具。关闭的工具不会提供给 MCP 客户端，对它的调用会被拒绝。",
+        "writes": "写入"
+      },
+      "appliesNote": "更改会在几秒内应用于新的 MCP 请求。",
+      "loadError": "无法加载 MCP 访问设置。请重新加载页面后重试。",
+      "toasts": {
+        "saveSuccess": "MCP 访问设置已保存",
+        "saveError": "无法保存 MCP 访问设置",
+        "saveErrorDescription": "请检查网络连接后重试。"
       }
     },
     "labs": {
@@ -3453,7 +3483,14 @@
         "badge": "需要处理",
         "title": "需要处理",
         "openAuthentication": "更新身份验证",
-        "viewSteps": "查看设置步骤"
+        "viewSteps": "查看设置步骤",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki 拒绝成员和页面结构查询",
+            "message": "私有空间只能使用之前同步时确认的访问权限进行同步，且仅限确认后的 {{days}} 天内。从未同步过或确认时间更早的私有空间会被跳过，且页面层级不可用。开放空间不受影响。 完整同步（包括因更改筛选器而启动的同步）会使私有空间停止这样同步，直到 Drupal Wiki 再次列出其成员。",
+            "message_dated": "私有空间只能使用之前同步时确认的访问权限进行同步，且仅限确认后的 {{days}} 天内。从未同步过或确认时间更早的私有空间会被跳过，且页面层级不可用。开放空间不受影响。 完整同步（包括因更改筛选器而启动的同步）会使私有空间停止这样同步，直到 Drupal Wiki 再次列出其成员。 正在使用的最早访问权限确认于 {{confirmedOn}}。"
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "组织中的所有人都将看到这些数据",
@@ -5470,6 +5507,7 @@
     "notGrantedOfflineAccess": "此应用不会保持登录状态。会话结束后，你需要重新登录。",
     "unreviewedApp": "此应用是自行注册的，没有管理员审核过。",
     "clientIdHost": "由 {{host}} 标识",
+    "registeredBy": "注册者：{{name}}",
     "redirectTo": "将您送回 {{uri}}",
     "legalNotice": "点击「允许」，即表示您授权 {{appName}} 按上述说明访问您的数据。",
     "privacyPolicy": "隐私政策",

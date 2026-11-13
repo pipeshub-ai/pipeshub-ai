@@ -78,6 +78,7 @@ class TestMCPRegistry:
         assert "atlassian_rovo" in type_ids
         assert "linear" in type_ids
         assert "notion" in type_ids
+        assert "monday" in type_ids
         assert "airtable" in type_ids
         assert "slack" in type_ids
         assert "exa" in type_ids
@@ -97,6 +98,28 @@ class TestMCPRegistry:
         assert "paypal" in type_ids
         assert "gitlab" in type_ids
         assert "posthog" in type_ids
+
+    def test_monday_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        monday = registry.get_template("monday")
+
+        assert monday is not None
+        assert monday.display_name == "monday.com"
+        assert monday.transport == MCPTransport.STREAMABLE_HTTP
+        assert monday.default_url == "https://mcp.monday.com/mcp"
+        assert monday.default_auth_mode == MCPAuthMode.OAUTH
+        assert monday.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert monday.supports_dcr is True
+        assert monday.require_oauth_client is False
+        assert monday.url_editable is False
+        assert monday.authorization_url == "https://auth.monday.com/oauth2/authorize"
+        assert monday.token_url == "https://auth.monday.com/oauth_ms/oauth/token"
+        assert monday.default_scopes == []
+        assert monday.icon == "/icons/connectors/monday.svg"
+        assert monday.documentation_url == (
+            "https://developer.monday.com/api-reference/docs/mondaycom-mcp"
+        )
 
     def test_airtable_catalog_entry(self) -> None:
         registry = MCPRegistry()
