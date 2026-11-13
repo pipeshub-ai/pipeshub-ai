@@ -319,6 +319,19 @@ grants: [[u, d], [u, s]]
 gates: [[u, A]]
 """))
 
+# STUBTOP: a placeholder group whose only content is a chain-top: a granted record that belongs to it and hangs from nothing. Opening the group lists the record, so the folder above
+# lists the group, with an arrow. (Not in KH_WORLDS: Neo4j's folder leaves the group out and ArangoDB lists the record under the App instead.)
+STUBTOP = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: s, kind: group, connector: A, rule: OPEN, placeholder: true, parents: [f], inherits: [f], belongs: [f]}
+  - {id: r, kind: record, connector: A, rule: OPEN, belongs: [s]}
+grants: [[u, f], [u, r]]
+gates: [[u, A]]
+"""))
+
 # DECLSTUB: a stub in a declared group the walk from the App reaches, granted to the viewer, over a strict node it leads to: a browse of the stub
 # starts below a seed (the walk does not pass the declaration), where the strict node is not read, so the group lists no stub and shows no arrow
 DECLSTUB = world_from_data(yaml.safe_load("""

@@ -552,10 +552,10 @@ async def test_a_browse_in_a_callers_transaction_asks_the_check_and_never_admits
     assert [r["id"] for r in (await browse(p, org, "fold", ["fold", *KIDS[1:6]]))["rows"]] == KIDS[1:6] and calls      # in the page's own snapshot the classes admit
 
 
-async def test_the_placeholder_walk_reads_at_most_its_budget_of_rows_however_wide_its_nodes_and_pages_the_same(pg_db, monkeypatch) -> None:
-    """Twenty granted placeholders of 60 children each, the first of each granted: one level of the walk below them would read 1,200 rows. Each walk reads at most LEAD_NODES
-    rows in all (the level is cut in SQL at what is left of the budget), a placeholder it did not get to is not listed (never a leak), and the browse lists the same rows
-    whether read in one page or paged by cursor, each once."""
+async def test_placeholder_walks_read_at_most_their_budget_and_list_the_same_placeholders_at_any_page_size(pg_db, monkeypatch) -> None:
+    """Twenty granted placeholders of 60 children each, the first of each granted: their first level alone is 1,200 rows. A request reads at most LEAD_NODES rows of it (cut in
+    SQL), and a placeholder it does not reach is not dropped: the page ends before it, with a resume position. Each placeholder is decided by its own walk, so a browse paged
+    at 3, 50 or 100 rows lists every placeholder, each once, in the same order."""
     p, org = prov(pg_db), new_org()
     stubs = [f"s{i:02d}" for i in range(20)]
     with ctx(org):
@@ -585,15 +585,16 @@ async def test_the_placeholder_walk_reads_at_most_its_budget_of_rows_however_wid
         return got
     monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_leads", leads)
     monkeypatch.setattr(kh_listing.KhListingMixin, "_kq", kq)
-    whole = [r["id"] for r in (await browse(p, org, "fold", granted, limit=50))["rows"]]
+    pages: dict[int, list[str]] = {}
+    for size in (3, 50, 100):
+        seen, after = [], None
+        for _ in range(60):
+            page = await browse(p, org, "fold", granted, limit=size, after=after)
+            seen += [r["id"] for r in page["rows"]]
+            if not page["hasMore"]:
+                break
+            last = page["rows"][-1] if page["rows"] else None
+            after = page.get("resume") or {"nullRank": last["nullRank"], "sortKey": last["sortKey"], "id": last["id"]}
+        pages[size] = seen
     assert walks and max(walks) <= 100, walks
-    assert whole and set(whole) < set(stubs), whole      # the walk reached some placeholders and stopped at its budget for the rest
-    seen, after = [], None
-    for _ in range(20):
-        page = await browse(p, org, "fold", granted, limit=3, after=after)
-        seen += [r["id"] for r in page["rows"]]
-        if not page["hasMore"]:
-            break
-        last = page["rows"][-1]
-        after = {"nullRank": last["nullRank"], "sortKey": last["sortKey"], "id": last["id"]}
-    assert seen == whole and max(walks) <= 100, (seen, whole, walks)
+    assert pages[3] == pages[50] == pages[100] == stubs, pages

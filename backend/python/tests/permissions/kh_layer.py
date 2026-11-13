@@ -262,6 +262,9 @@ async def _browse(
         found.append(KhFinding(scenario_id, viewer, kind, detail))
 
     on_the_way = {p.id for n in seen.values() for p in _ancestors(world, n)}
+    # a placeholder group a chain-top is placed under is on the way to it too
+    holders = [n for n in world.nodes if n.kind == "group" and n.placeholder and chain_tops(reference, world, viewer, n.id)]
+    on_the_way |= {n.id for n in holders} | {p.id for n in holders for p in _ancestors(world, n)}
 
     def extras(rows: dict[str, Any]) -> set[str]:
         """The rows the oracle does not admit. One may be listed on the way to something readable, and only when it is shown as a placeholder (a
@@ -307,7 +310,7 @@ async def _browse(
             continue
         # A stub is no content the oracle judges: it is listed exactly where opening it lists something.
         for stub in sorted(n.id for n in children(folder) if n.placeholder and n.id not in got):
-            if (await browse_pages(layer, world, viewer, stub, "record") or [[]])[0]:
+            if (await browse_pages(layer, world, viewer, stub, "recordGroup" if world.node(stub).kind == "group" else "record") or [[]])[0]:
                 add("browse_gap", f"{folder}: the browse leaves out the stub {stub}, and opening it lists something")
         for item_id, item in got.items():      # the expand arrow is on exactly when opening the row lists something
             below = await open_(item_id, str(getattr(item.nodeType, "value", item.nodeType)))

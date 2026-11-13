@@ -26,6 +26,7 @@ from tests.permissions.kh_worlds import (
     OPENGRANTTEAM,
     STUBHELD,
     STUBREACH,
+    STUBTOP,
 )
 from tests.permissions.scenario import load_all
 
@@ -219,4 +220,16 @@ async def test_a_browse_lists_the_chain_tops_the_stores_place_under_it_and_their
         assert await children_of(kh_layer, APPCHAIN, "u", "A", "app") == {"h": True}, kh_layer.name
         assert {r["id"]: r["hasChildren"] for r in (await listing(kh_layer, APPCHAIN, "u")).rows}["h"] is True, kh_layer.name
     bad = [f for world in worlds for f in _bad(await check(kh_layer, world, "chain"))]
+    assert not bad, _describe(bad)
+
+
+async def test_a_placeholder_group_whose_only_content_is_a_chain_top_is_listed_with_its_arrow(kh_layer) -> None:
+    """STUBTOP: opening the placeholder group s lists its chain-top r, so the folder f lists s, with an arrow: a placeholder leads by the chain-top rule as well as by its
+    hierarchy children."""
+    await kh_layer.preload([STUBTOP])
+    with bind(OrgContext((await kh_layer._ns(STUBTOP)).org, None, "job", "job:test", "t")):
+        assert await children_of(kh_layer, STUBTOP, "u", "s", "recordGroup") == {"r": False}, kh_layer.name
+        assert await children_of(kh_layer, STUBTOP, "u", "f", "recordGroup") == {"s": True}, kh_layer.name
+        assert {r["id"]: r["hasChildren"] for r in (await listing(kh_layer, STUBTOP, "u")).rows}["f"] is True, kh_layer.name
+    bad = _bad(await check(kh_layer, STUBTOP, "stubtop"))
     assert not bad, _describe(bad)

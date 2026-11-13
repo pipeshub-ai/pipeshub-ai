@@ -43,7 +43,7 @@ COUNT_SCAN = 500            # candidates the total asks the access check about w
 WINDOW_MAX = 2_000
 ADMIT_CHUNK = 2_000
 ARROW_CHILDREN = 200         # the children of a row asked about for its arrow when the access check decides them (a sample: a row whose only readable child is further down shows no arrow)
-# shortcut: a placeholder's way down is followed for LEAD_NODES nodes, LEAD_DEPTH levels and LEAD_PER children of a node; past those it is taken as leading nowhere (not listed, never a leak).
+# shortcut: each placeholder's own walk follows its way down for LEAD_NODES rows, LEAD_DEPTH levels and LEAD_PER children of a node; past those it is taken as leading nowhere (not listed, never a leak).
 # Upgrade to a statement over the closure if a connector writes chains of placeholders that wide.
 LEAD_NODES = 5_000
 LEAD_DEPTH = 50
@@ -219,7 +219,8 @@ class KhListingMixin(PgBase):
         containers = [c for c in kept[:need] if c["kind"] == 2 or c["folder"]]
         rows, read = await self._kh_flat_rows(org, app_id, app_doc, kept[:need], sort_field, transaction,
                                               also=lambda tx: self._kh_arrows_read(tx, org, containers, hidden, sets, gset, access, tops=chain_tops_apply(app_doc)))
-        lists = await self._kh_lists(read, hidden, admitted_of, org, transaction) if read else set()
+        tops = self._kh_tops_under(org, app_id, access, gset, transaction, apply=chain_tops_apply(app_doc))
+        lists = await self._kh_lists(read, hidden, admitted_of, org, transaction, tops) if read else set()
         for row, c in zip(rows, kept[:need], strict=True):
             row["hasChildren"] = c["sk"] in lists
             row["khHeld"] = bool(read) and c["sk"] in read[3]      # settled by the chain-top walk (``_kh_v3_page_result``)
@@ -272,44 +273,76 @@ class KhListingMixin(PgBase):
                 left.append(r)
         return ok, left
 
-    async def _kh_leads(self, stubs: set[int], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str, transaction: str | None) -> set[int]:
-        """Of placeholders (sks) the viewer may open, those a path of nodes the viewer may open leads from to a node that is no placeholder. The placeholders open below them are
-        walked level by level (each once), then what leads is carried back up every edge between them, so a placeholder reached from two others leads for both."""
-        below: dict[int, set[int]] = {}      # a placeholder -> the open placeholders under it
-        leads: set[int] = set()               # the placeholders with an open child that is no placeholder
-        seen = set(stubs)
-        frontier = set(stubs)
-        budget = LEAD_NODES
-        for _ in range(LEAD_DEPTH):
-            if not frontier or budget <= 0:
-                break
-            # the whole level is read in one statement, cut at what is left of the budget: never more rows than LEAD_NODES over the walk, however wide each node is
-            got = await self._kq(lambda tx, f=sorted(frontier), b=budget: tx.fetch(kgl.children_of_sql(total=True), org, f, LEAD_PER, hidden, b), transaction)
-            budget -= len(got)
-            ok = await admitted_of([r for r in got if not (r["placeholder"] and r["sk"] in seen)])      # a placeholder already met is open: it is in ``seen`` only then
-            frontier = set()
+    def _kh_tops_under(self, org: str, app_id: str, access: dict[str, Any], gset: set[str], transaction: str | None, *, apply: bool) -> Callable[[list[Any]], Awaitable[set[int]]] | None:
+        """For the placeholder walk: of group rows, the sks the chain-top walk places something under (``_kh_v3_chain_tops``, the rule every store shares), asked only of the groups
+        that hold a granted record (``kgl.HELD``). None in an App that opens everything."""
+        if not apply or not gset:
+            return None
+
+        async def under(groups: list[Any]) -> set[int]:
+            held = {r["sk"] for r in await self._kq(lambda tx: tx.fetch(kgl.HELD, org, [g["sk"] for g in groups], sorted(gset)), transaction)}
+            return {g["sk"] for g in groups if g["sk"] in held
+                    and (await self._kh_v3_chain_tops(app_id, org, access, transaction, only_group=g["id"])).get(g["id"])}
+        return under
+
+    async def _kh_leads(self, stubs: list[Any], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str, transaction: str | None, *,
+                        tops: Callable[[list[Any]], Awaitable[set[int]]] | None = None, decided: dict[int, bool] | None = None) -> tuple[set[int], set[int]]:
+        """Of placeholders the viewer may open (rows, in the caller's order), the sks that lead somewhere (:meth:`_kh_lead`), and the sks left undecided. Each placeholder is decided by
+        a walk of its own, so its answer is the same in any window, page or cursor. The request paces the walks: their first level is read in one statement cut at LEAD_NODES rows,
+        and once LEAD_NODES rows are read no further placeholder is walked; the first always is, so a caller that resumes at the first undecided one moves on. ``decided``: the
+        answers this request already holds, filled in."""
+        memo = {} if decided is None else decided
+        todo = [r for r in {r["sk"]: r for r in stubs}.values() if r["sk"] not in memo]
+        if todo:
+            got = await self._kq(lambda tx, f=[r["sk"] for r in todo]: tx.fetch(kgl.children_of_sql(total=True), org, f, LEAD_PER, hidden, LEAD_NODES), transaction)
+            kids: dict[int, list[Any]] = {}
             for r in got:
-                if r["placeholder"] and r["sk"] in seen:
-                    below.setdefault(r["parent"], set()).add(r["sk"])
-                elif r["id"] not in ok:
-                    continue
-                elif not r["placeholder"]:
-                    leads.add(r["parent"])
-                else:
-                    below.setdefault(r["parent"], set()).add(r["sk"])
+                kids.setdefault(r["parent"], []).append(r)
+            # the statement reads the placeholders in the order asked: cut at its bound, the last one read may be partial and those after it are unread
+            whole = todo if len(got) < LEAD_NODES else todo[:[r["sk"] for r in todo].index(got[-1]["parent"])]
+            ok = await admitted_of([r for r in got if r["parent"] in {w["sk"] for w in whole}]) if whole else set()
+            paced = len(got)
+            for i, r in enumerate(whole or todo[:1]):
+                if i and paced >= LEAD_NODES:
+                    break
+                memo[r["sk"]], used = await self._kh_lead(r, hidden, admitted_of, org, transaction, tops, first=(kids.get(r["sk"], []), ok) if whole else None)
+                paced += used
+        return {r["sk"] for r in stubs if memo.get(r["sk"])}, {r["sk"] for r in stubs if r["sk"] not in memo}
+
+    async def _kh_lead(self, root: Any, hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str, transaction: str | None,  # noqa: ANN401
+                       tops: Callable[[list[Any]], Awaitable[set[int]]] | None, *, first: tuple[list[Any], set[str]] | None = None) -> tuple[bool, int]:
+        """Whether a path of nodes the viewer may open leads from the placeholder ``root`` to a node that is no placeholder, or to a placeholder group a chain-top is placed under
+        (``tops``): its walk alone, level by level through the open placeholders below it, each node once; and the rows it read. ``first``: its own children and the ids among
+        them the viewer may open, already read."""
+        seen, level, used = {root["sk"]}, [root], 0
+        for depth in range(LEAD_DEPTH):
+            groups = [r for r in level if r["kind"] == 2]
+            if tops and groups:
+                used += len(groups)
+                if await tops(groups):
+                    return True, used
+            if depth == 0 and first is not None:
+                got, ok = first
+            else:
+                if used >= LEAD_NODES:
+                    break
+                got = await self._kq(lambda tx, f=sorted(r["sk"] for r in level), b=LEAD_NODES - used: tx.fetch(kgl.children_of_sql(total=True), org, f, LEAD_PER, hidden, b),
+                                     transaction)
+                ok = None
+            used += len(got)
+            fresh = [r for r in got if r["sk"] not in seen]
+            if ok is None:
+                ok = await admitted_of(fresh) if fresh else set()
+            if any(r["id"] in ok and not r["placeholder"] for r in fresh):
+                return True, used
+            level = []
+            for r in fresh:
+                if r["id"] in ok and r["placeholder"] and r["sk"] not in seen:
                     seen.add(r["sk"])
-                    frontier.add(r["sk"])
-        above: dict[int, set[int]] = {}
-        for parent, kids in below.items():
-            for kid in kids:
-                above.setdefault(kid, set()).add(parent)
-        led, todo = set(leads), list(leads)
-        while todo:
-            for parent in above.get(todo.pop(), ()):
-                if parent not in led:
-                    led.add(parent)
-                    todo.append(parent)
-        return led & stubs
+                    level.append(r)
+            if not level:
+                break
+        return False, used
 
     async def _kh_arrows_read(self, tx: Tx, org: str, page: list[Any], hidden: list[int], sets: dict[str, Any] | None, gset: set[str], access: dict[str, Any], *,
                               tops: bool) -> tuple[set[int], list[Any], set[str], set[int]]:
@@ -338,20 +371,24 @@ class KhListingMixin(PgBase):
         return lists, kids, ok, held
 
     async def _kh_lists(self, read: tuple[set[int], list[Any], set[str], set[int]], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str,
-                        transaction: str | None) -> set[int]:
-        """The rows of the page whose opening lists something (from :meth:`_kh_arrows_read`): a child the viewer may open, a placeholder only when it leads to one that is no
-        placeholder; none for a group that hides its children."""
+                        transaction: str | None, tops: Callable[[list[Any]], Awaitable[set[int]]] | None = None) -> set[int]:
+        """The rows of the page whose opening lists something (from :meth:`_kh_arrows_read`): a child the viewer may open, a placeholder only when it leads somewhere
+        (:meth:`_kh_leads`); none for a group that hides its children."""
         lists, kids, ok, _ = read
         by_stub: dict[int, set[int]] = {}
+        stubs: list[Any] = []
         for r in kids:
             if r["id"] not in ok:
                 continue
             if not r["placeholder"]:
                 lists.add(r["parent"])
-            else:
+            elif r["parent"] not in lists:
                 by_stub.setdefault(r["sk"], set()).add(r["parent"])
+                stubs.append(r)
         if by_stub:
-            for sk in await self._kh_leads(set(by_stub), hidden, admitted_of, org, transaction):
+            # shortcut: a placeholder the request's budget leaves undecided lights no arrow; opening the row resumes before it. Upgrade if rows of many wide placeholders are common.
+            led, _ = await self._kh_leads([r for r in stubs if by_stub[r["sk"]] - lists], hidden, admitted_of, org, transaction, tops=tops)
+            for sk in led:
                 lists |= by_stub[sk]
         return lists
 
