@@ -4499,7 +4499,8 @@ async def test_a_kept_list_file_in_a_drive_a_synced_member_walks_is_settled_only
 async def test_a_kept_list_file_whose_group_members_cannot_be_read_stays_listed(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.team.connector import UNDECIDED_KEPT_KEY
 
-    ws.world.add_group("team@example.com", [ALICE])
+    ws.world.add_user(CAROL)  # in the account, not a user of this deployment: nobody synced answers for the group
+    ws.world.add_group("team@example.com", [CAROL])
     _audience_file_bob_loses(ws)
     ws.world.files["g1"].perms.append({"type": "group", "role": "reader", "emailAddress": "team@example.com"})
     await ws.sync()
@@ -4563,3 +4564,47 @@ async def test_a_runner_full_sync_whose_cleanup_raises_unlinks_nothing(
     # IncompleteSyncError, is unlinked after).
     ws.records.full_sync_seen = None
     assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+
+
+async def _park_a_file_of_alices_drive(ws: Workspace, on: str) -> None:
+    """f5, in shared drive sd-5 where Alice, a synced user, is a member, whose record holds no edge for her, parked
+    as undecided on the list the cleanup keeps or on Bob's own list."""
+    from app.connectors.sources.google.drive.team.connector import UNDECIDED_KEPT_KEY
+
+    ws.world.add_drive("sd-5", "Team", {ALICE: "reader"})
+    ws.world.add_item("f5", "f5.txt", parent="sd-5", perms=[])
+    await ws.sync()
+    ws.records.permissions["f5"] = [p for p in ws.records.permissions.get("f5", []) if p.email != ALICE]
+    assert (ALICE, "USER", "READ") not in ws.grants("f5")
+    connector = await ws.connector_()
+    bob = next(u for u in connector.synced_users if u.email == BOB)
+    key = UNDECIDED_KEPT_KEY if on == "the kept list" else connector._undecided_key(bob)
+    await connector._park_undecided_removal(key, "f5:sd-5")
+
+
+PARKED_ON = ["the kept list", "a user's list"]
+
+
+@pytest.mark.parametrize("on", PARKED_ON)
+async def test_a_parked_shared_drive_file_a_member_can_open_is_kept(ws: Workspace, on: str) -> None:
+    await _park_a_file_of_alices_drive(ws, on)
+    await ws.sync()
+    assert "f5" in ws.records.records, "Alice, a member of its drive, opens it"
+    assert _undecided_file_ids(ws) == set(), "a clean answer: settled"
+
+
+@pytest.mark.parametrize("on", PARKED_ON)
+async def test_a_parked_shared_drive_file_nobody_can_open_is_removed(ws: Workspace, on: str) -> None:
+    await _park_a_file_of_alices_drive(ws, on)
+    ws.http.fail("GET", "/drive/v3/files/f5", 404, "notFound")
+    await ws.sync()
+    assert "f5" not in ws.records.records and _undecided_file_ids(ws) == set()
+
+
+@pytest.mark.parametrize("on", PARKED_ON)
+async def test_a_parked_shared_drive_file_its_members_refuse_stays_undecided(ws: Workspace, on: str) -> None:
+    await _park_a_file_of_alices_drive(ws, on)
+    # Drive turned off for Alice: whether she can open it is unknown.
+    ws.http.fail("GET", "/drive/v3/files/f5", 403, "driveServiceDisabled", when=lambda r: r.identity != BOB)
+    await ws.sync()
+    assert "f5" in ws.records.records and _undecided_file_ids(ws) == {"f5"}

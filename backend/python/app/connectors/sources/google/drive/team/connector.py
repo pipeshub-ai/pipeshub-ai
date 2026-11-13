@@ -3259,10 +3259,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         return kept
 
     async def _settle_by_asking(self, file_id: str, user: AppUser | None) -> _Settled:
-        """Settle an undecided removal of a file outside a shared drive's walk, or with no user to report it, by
-        asking everyone else who may open it (`_another_synced_user_can_open`): someone can, it is kept; a clean
-        "nobody can", it is removed. Members who walk its drive are asked like anyone else, as one of them may be
-        unable to list it. A group whose members cannot be read, or nobody answering, decides nothing."""
+        """Settle an undecided removal of a file in no shared drive (a shared drive's go through
+        `_apply_shared_drive_removal`, which asks its members too) by asking everyone else who may open it
+        (`_another_synced_user_can_open`): someone can, it is kept; a clean "nobody can", it is removed. A group
+        whose members cannot be read, or nobody answering, decides nothing."""
         record = await self.data_entities_processor.get_record_by_external_id(
             connector_id=self.connector_id, external_record_id=file_id
         )
@@ -3304,11 +3304,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
 
                 async def settle(
-                    file_id: str, _: str | None, reporter: AppUser | None = reporter,
+                    file_id: str, entry_drive_id: str | None, reporter: AppUser | None = reporter,
                     drive_id: str | None = drive_id, source: GoogleDriveDataSource | None = source,
                 ) -> _Settled:
-                    if drive_id:
-                        return await self._apply_shared_drive_removal(file_id, reporter, drive_id, source)
+                    # A shared drive file, by its list or its entry: its members are asked too.
+                    if drive := drive_id or entry_drive_id:
+                        return await self._apply_shared_drive_removal(
+                            file_id, reporter, drive, source, ask_audience=True
+                        )
                     return await self._settle_by_asking(file_id, reporter)
 
                 await self._recheck_undecided_removals(key, reporter, source, settle)
@@ -3362,6 +3365,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         user: AppUser | None,
         drive_id: str,
         user_drive_data_source: GoogleDriveDataSource | None,
+        *,
+        ask_audience: bool = False,
     ) -> _Settled:
         """Apply a `removed` change from a shared drive's feed.
 
@@ -3371,6 +3376,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         record goes only when no synced user who could have it can open it, or it is in the trash. A read
         that fails another way raises, so the drive's checkpoint stays and the change is read again. Returns what
         was decided: KEPT when someone can open it, UNDECIDED when a member group of the drive could not be read.
+        `ask_audience` (checking an undecided removal again) also asks the people of its audience groups, after the
+        drive's members and the record's holders: a file in a drive no synced user is in is reached through them.
         """
         if not file_id:
             return _Settled.REMOVED
@@ -3414,6 +3421,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._raise_if_cut_listing_left_out(
                 item, {*self._drive_member_emails.get(drive_id, ()), *((u.email or "").lower() for u in holders)}, user
             )
+            if ask_audience:
+                return await self._another_synced_user_can_open(item, user, sources, unknown_is_undecided=True)
             return False
 
         try:
@@ -4894,7 +4903,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         batch_records = []
         batch_count = 0
 
-        async def settle(file_id: str, _: str | None) -> _Settled:
+        async def settle(file_id: str, removed_drive_id: str | None) -> _Settled:
+            if removed_drive_id:  # a shared drive file: its members are asked too
+                return await self._apply_shared_drive_removal(
+                    file_id, user, removed_drive_id, user_drive_data_source, ask_audience=True
+                )
             return await self._settle_by_asking(file_id, user)
 
         await self._recheck_undecided_removals(self._undecided_key(user), user, user_drive_data_source, settle)
@@ -5623,7 +5636,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                             file_id: str, _: str | None, drive_id: str = drive_id,
                             source: GoogleDriveDataSource = user_drive_data_source,
                         ) -> _Settled:
-                            return await self._apply_shared_drive_removal(file_id, user, drive_id, source)
+                            return await self._apply_shared_drive_removal(
+                                file_id, user, drive_id, source, ask_audience=True
+                            )
 
                         await self._recheck_undecided_removals(
                             self._undecided_key(user, drive_id), user, user_drive_data_source, settle_in_drive
