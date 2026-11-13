@@ -15,7 +15,9 @@ holds them to the oracle:
   verdict `R7:depth-cap`) is a `gap`: a browse reads one hop from the node it opens. An admitted node a browse leaves out is a `browse_gap` however
   deep it lies (a seed or an open App's member is admitted with no hop cap);
 * browse: the service path (`totalItems`, `counts`, the rows of a folder) against the oracle, every row it lists opened in turn and held to the
-  same (one row per node over every page, a total that counts each once), and each row's expand arrow against opening that row: it is on exactly when the browse of the row lists something, and a stub is listed exactly where opening it lists something.
+  same (one row per node over every page, a total that counts each once), and each row's expand arrow against opening that row: it is on exactly when the browse of the row lists something, and a stub is listed exactly where opening it lists something;
+* sidebar: the browse of the same folder with `only_containers` (`sidebar_findings`) never leaves out a row the browse lists with children (every group and
+  folder, and a record exactly where opening it lists something), and its total counts each row once.
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ MAX_PAGES = 400
 class KhFinding:
     scenario: str
     viewer: str
-    kind: str  # over | under | gap | browse_gap | browse_extra | total | counts | facet | browse | arrow | stub
+    kind: str  # over | under | gap | browse_gap | browse_extra | total | counts | facet | browse | arrow | stub | sidebar
     detail: str
 
 
@@ -222,9 +224,11 @@ async def children_of(layer: GraphCheckLayer, world: World, viewer: str, node: s
     return {ns.local(i.id): bool(i.hasChildren) for i in page.items} if page.success else None
 
 
-async def browse_pages(layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str) -> tuple[list[Any], list[int], list[int]] | None:
+async def browse_pages(
+    layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str, *, only_containers: bool = False,
+) -> tuple[list[Any], list[int], list[int]] | None:
     """Every page of opening ``node`` for the viewer, as the product pages it: the rows in order, and each page's ``totalItems`` and
-    ``counts.total``; None when the browse does not open it."""
+    ``counts.total``; None when the browse does not open it. ``only_containers``: the sidebar's listing."""
     from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
         KnowledgeHubService,
     )
@@ -237,7 +241,7 @@ async def browse_pages(layer: GraphCheckLayer, world: World, viewer: str, node: 
     cursor = None
     for _ in range(MAX_PAGES):
         args = {"user_id": ns.id(viewer), "org_id": ns.org, "parent_id": ns.id(node), "parent_type": parent_type, "limit": PAGE,
-                "sort_by": "name", "sort_order": "asc", "include": ["counts"]}
+                "sort_by": "name", "sort_order": "asc", "include": ["counts"], "only_containers": only_containers}
         if cursor:
             args["cursor"] = cursor
         page = await service.get_nodes(**args)
@@ -250,6 +254,22 @@ async def browse_pages(layer: GraphCheckLayer, world: World, viewer: str, node: 
         if not cursor:
             return items, totals, counted
     raise AssertionError("browse did not end")
+
+
+async def sidebar_findings(
+    layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str, rows: dict[str, Any], lists: dict[str, bool],
+) -> list[str]:
+    """The sidebar of ``node`` (its browse with ``only_containers``) against its browse (``rows``, and ``lists``: whether opening each row lists
+    something): it never leaves out a group or folder the browse lists or a record where opening it lists something, and its total counts each
+    row once."""
+    ns = await layer._ns(world)
+    items, totals, _ = await browse_pages(layer, world, viewer, node, parent_type, only_containers=True) or ([], [0], [])
+    got = [ns.local(item.id) for item in items]
+    want = {row for row, item in rows.items() if str(getattr(item.nodeType, "value", item.nodeType)) != "record" or lists[row]}
+    out = [f"{node}: the sidebar leaves out {row}, and opening it lists something" for row in sorted(want - set(got))]
+    if len(got) != len(set(got)) or set(totals) != {len(got)}:
+        out.append(f"{node}: the sidebar's totalItems per page {sorted(set(totals))}, rows {len(got)} ({len(set(got))} distinct)")
+    return out
 
 
 async def _browse(
@@ -314,11 +334,14 @@ async def _browse(
         for stub in sorted(n.id for n in children(folder) if n.placeholder and n.id not in got):
             if (await browse_pages(layer, world, viewer, stub, "recordGroup" if world.node(stub).kind == "group" else "record") or [[]])[0]:
                 add("browse_gap", f"{folder}: the browse leaves out the stub {stub}, and opening it lists something")
+        lists_of: dict[str, bool] = {}
         for item_id, item in got.items():      # the expand arrow is on exactly when opening the row lists something
             below = await open_(item_id, str(getattr(item.nodeType, "value", item.nodeType)))
-            lists = bool(below)
+            lists = lists_of[item_id] = bool(below)
             if bool(getattr(item, "hasChildren", False)) != lists:
                 add("arrow", f"{folder}: {item_id} hasChildren {item.hasChildren}, opening it lists something: {lists}")
             if getattr(item, "isPlaceholder", False) and not lists:      # a stub is listed only as the way to something the viewer may open
                 add("stub", f"{folder}: lists the stub {item_id}, and opening it lists nothing")
+        for detail in await sidebar_findings(layer, world, viewer, folder, folder_type, got, lists_of):
+            add("sidebar", detail)
     return found
