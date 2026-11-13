@@ -17,6 +17,7 @@ from app.services.graph_db.postgres.kg import net
 from .pg_support import new_org
 from .test_kh_listing_flat import (
     _admin,
+    _generic_plan,
     _nodes,
     _open_to_all,
     ctx,
@@ -238,8 +239,8 @@ async def browse_app(p, org: str, app: str, granted: list[str], gated: list[str]
 
 
 async def test_a_browse_of_the_connector_lists_the_nodes_that_hang_from_it_the_viewer_may_open(pg_db, monkeypatch) -> None:
-    """The App is the hierarchy parent of its top nodes in kg too, so it is browsed by its own key. A node with no hierarchy parent at all, or whose parent is another connector's
-    node, does not hang from the App and is not listed there."""
+    """The App is the hierarchy parent of its top nodes in kg too, so it is browsed by its own key. A node whose parent is another connector's node does not hang from the App; it
+    and a granted node with no hierarchy parent and no group are listed there only as chain-tops (granted, with no parent the viewer may open: the rule every store shares)."""
     p, org = prov(pg_db), new_org()
     await seed_folder(p, pg_db, org, 3, readable_kids=["c0001"])
     with ctx(org):
@@ -254,11 +255,12 @@ async def test_a_browse_of_the_connector_lists_the_nodes_that_hang_from_it_the_v
     await flip(pg_db, org)
     granted = ["fold", "c0001", "loose"]
     page = await browse_app(p, org, "app1", granted)
-    assert [(r["id"], r["hasChildren"], r["parentId"]) for r in page["rows"]] == [("fold", True, "app1")] and page["total"] == 1      # g1: not open to the viewer; loose: hangs from nothing
+    assert [(r["id"], r["hasChildren"], r["parentId"]) for r in page["rows"]] == [("fold", True, "app1"), ("loose", False, "app1")] and page["total"] == 2      # g1: not open to the viewer
     assert page["scope"]["admitted"] is True and page["scope"]["currentNode"]["id"] == "app1"
-    assert [r["id"] for r in (await browse_app(p, org, "app2", ["top2", "under"]))["rows"]] == ["top2"]      # under hangs from app1's folder
+    # under hangs from app1's folder, which this browse (gated to app2 alone) may not open: a chain-top of app2
+    assert [(r["id"], r["parentId"]) for r in (await browse_app(p, org, "app2", ["top2", "under"]))["rows"]] == [("top2", "app2"), ("under", "app2")]
     monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 1)      # more children than a browse holds: read by the children index in the name order
-    assert [r["id"] for r in (await browse_app(p, org, "app1", granted))["rows"]] == ["fold"]
+    assert [r["id"] for r in (await browse_app(p, org, "app1", granted))["rows"]] == ["fold", "loose"]
     with pytest.raises(KnowledgeHubListingTooLarge):
         await browse_app(p, org, "app1", granted, sort_field="sizeInBytes")
     with ctx(org):      # a connector the viewer is not gated to, and one of another organisation, are not browsed
@@ -392,7 +394,7 @@ async def test_a_node_reads_its_linked_children_once_and_refuses_more_than_it_re
                  "AND g.id = 'g1' WHERE r.org_id = $1 AND r.id = ANY($2::text[])", org, KIDS[:3])
     granted = ["fold", "g1", *KIDS[:4]]
     first = await browse(p, org, "g1", granted, start_type="recordGroup")
-    assert [r["id"] for r in first["rows"]] == KIDS[:3], first["scope"]
+    assert [r["id"] for r in first["rows"]] == [*KIDS[:3], "fold"], first["scope"]      # fold: a granted member of g1 with no hierarchy parent, a chain-top
     monkeypatch.setattr(kh_browse.kgl, "LINKS_MAX", 2)
     with pytest.raises(KnowledgeHubListingTooLarge):
         await browse(p, org, "g1", granted, start_type="recordGroup")
@@ -411,16 +413,6 @@ async def test_a_node_counts_only_live_linked_children_against_its_bound_and_lis
             await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
         assert [r["id"] for r in (await browse(p, org, "fold", ["fold", "far"]))["rows"]] == ["far"], served
         assert (await flat_arrows(p, org, ["fold", "far"]))["fold"] is True, served
-
-
-def _generic_plan(sql: str) -> object:
-    """``EXPLAIN (GENERIC_PLAN)`` of a statement with its ``$n`` unbound: sent as a simple query (a client-side cursor), which the extended protocol of asyncpg cannot."""
-    import psycopg
-    with psycopg.connect(os.environ["PG_ADMIN_URL"], autocommit=True) as c, psycopg.ClientCursor(c) as cur:
-        cur.execute("SET enable_seqscan = off")
-        cur.execute("EXPLAIN (GENERIC_PLAN, FORMAT JSON) " + sql.replace("%", "%%"))
-        plan = cur.fetchone()[0]
-    return json.loads(plan) if isinstance(plan, str) else plan
 
 
 # the statements checked for the plan of their values only (the page's snapshot plans each for its values): the windows of a wide node and its total
@@ -494,7 +486,7 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
             # the plan for these values, and for the statements of a held node also the generic plan (a margin: a plan that does not depend on the values asked)
             plans = [("custom", json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args)))]
             if not name.startswith(CUSTOM_ONLY):
-                plans.append(("generic", await asyncio.to_thread(_generic_plan, sql)))
+                plans.append(("generic", await _generic_plan(con, sql)))
             for kind, plan in plans:
                 at = f"{name} {kind} ({'after' if analyzed else 'before'} ANALYZE)"
                 seq = [n["Relation Name"] for n in _nodes(plan) if n.get("Node Type") == "Seq Scan" and n.get("Relation Name") in ("records", "links", "node_keys")]
