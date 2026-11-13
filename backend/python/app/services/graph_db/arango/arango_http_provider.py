@@ -20377,14 +20377,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             app_id = resolved
         if not org_id or app_id not in set(gated_app_ids):
             return empty()
+        # The grants of every gated connector, by connector: the walk from this App can pass through a node of another, and a grant counts
+        # on a node of any gated App (a source account's inside its own connector only, as the buckets hold them). Reading this App's
+        # grants already reads them all (`get_knowledge_hub_connector_grants`); `granted_ids` stays this App's own (seeds, chain-tops).
         if grants_by_connector is not None:
-            granted_ids = list(grants_by_connector.get(app_id) or [])
+            every = grants_by_connector
         elif granted_ids is None and user_key:
-            granted_ids = await self.get_knowledge_hub_connector_grants(
-                user_key, org_id, app_id, transaction=transaction,
-            )
+            every = (await (
+                self._kh_v3_shared(("access", user_key, org_id), lambda: self.get_knowledge_hub_access_v3(user_key, org_id))
+                if transaction is None else self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
+            ))["by_connector"]
         else:
-            granted_ids = list(granted_ids or [])
+            every = {app_id: list(granted_ids or [])}
+        gated = set(gated_app_ids)
+        every = {a: list(ids or []) for a, ids in every.items() if a in gated}
+        granted_ids = every.get(app_id) or []
         apps = await self._kh_v3_run("app", {"app_id": app_id, "org_id": org_id}, transaction)
         if not apps:
             return empty()
@@ -20392,11 +20399,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         bind = {
             "app_id": app_id,
             "kh_opens": bool(app["opens"]),
-            "granted": dict.fromkeys(granted_ids, True),
+            "granted": {g: True for ids in every.values() for g in ids},
         }
         payload: dict[str, Any] = {}
-        access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids,
-                  "by_connector": {app_id: granted_ids}}
+        access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": every}
         # Browse lists the user's chain-tops beside the start's own children: under
         # their own record group, else under the App.
         start_handle = app["handle"]      # a browse of the App itself; a scoped browse sets its own start below
@@ -20413,13 +20419,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "kh_seeded": placed if browsing_app else [],
         }
         app_scope = dict.fromkeys(await self._kh_v3_app_declared_scope(
-            app_id, granted_ids, transaction=transaction), True) if not flatten else {}
+            app_id, list(bind["granted"]), transaction=transaction), True) if not flatten else {}
         row_ctx["kh_scope"] = app_scope
         if not start_is_app:
             admitted, admitted_ancestors, declared_scope = await self._kh_v3_scoped_start_access(
                 start_id, app_id, org_id, grantee_ids, gated_app_ids,
-                grants_by_connector if grants_by_connector is not None else {app_id: granted_ids},
-                transaction,
+                every, transaction,
             )
             starts = await self._kh_v3_run("browse_start", {
                 **bind, "start_id": start_id, "start_admitted": admitted,

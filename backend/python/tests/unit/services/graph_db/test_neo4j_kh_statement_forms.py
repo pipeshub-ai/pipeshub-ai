@@ -37,16 +37,33 @@ def test_a_name_that_is_a_prefix_of_another_is_not_taken_for_it() -> None:
     assert Neo4jProvider._kh_lists_read("RETURN $granteeIds", ("grant", "granteeIds")) == ("granteeIds",)
 
 
+_CROSS_CA = (
+    " OR (ca.connectorId IN $kh_x.probe AND (ca:Record OR ca:RecordGroup) AND NOT coalesce(ca.isDeleted, false)"
+    " AND EXISTS { (ca)<-[kh_xp_ca:PERMISSION]-(kh_xg_ca)"
+    " WHERE (kh_xg_ca:User OR kh_xg_ca:Group OR kh_xg_ca:Role OR kh_xg_ca:Teams"
+    " OR (kh_xg_ca:Organization AND kh_xp_ca.type IN ['ORG', 'ORGANIZATION']))"
+    " AND (kh_xg_ca.id IN $kh_x.common OR kh_xg_ca.id IN coalesce($kh_x.scoped[ca.connectorId], [])) })"
+)
+
+
 def test_a_grant_test_is_read_from_the_node() -> None:
     out = Neo4jProvider._kh_grants_by_probe("MATCH (ca) WHERE ca.id IN $grantedIds RETURN ca")
     assert out == (
-        "MATCH (ca) WHERE ((ca:Record OR ca:RecordGroup) AND ca.connectorId = $kh_conn"
+        "MATCH (ca) WHERE (((ca:Record OR ca:RecordGroup) AND ca.connectorId = $kh_conn"
         " AND NOT coalesce(ca.isDeleted, false)"
         " AND EXISTS { (ca)<-[kh_gp0:PERMISSION]-(kh_gr0)"
         " WHERE (kh_gr0:User OR kh_gr0:Group OR kh_gr0:Role OR kh_gr0:Teams"
         " OR (kh_gr0:Organization AND kh_gp0.type IN ['ORG', 'ORGANIZATION']))"
-        " AND kh_gr0.id IN $kh_grantees }) RETURN ca"
+        " AND kh_gr0.id IN $kh_grantees })" + _CROSS_CA + ") RETURN ca"
     )
+
+
+def test_a_grant_on_a_node_of_another_connector_is_tested_on_that_node_once() -> None:
+    """A grant test also holds for a node of another gated connector the viewer is granted there; written once, however often it is applied
+    (the probe form applies it, and the statement runner again)."""
+    once = Neo4jProvider._kh_grants_cross("MATCH (ca) WHERE ca.id IN $grantedIds RETURN ca")
+    assert once == "MATCH (ca) WHERE (ca.id IN $grantedIds" + _CROSS_CA + ") RETURN ca"
+    assert Neo4jProvider._kh_grants_cross(once) == once
 
 
 def test_each_grant_test_takes_its_own_grantee_variable() -> None:

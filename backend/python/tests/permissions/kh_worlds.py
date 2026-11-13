@@ -431,6 +431,23 @@ grants: []
 gates: [[u, A], [u, B]]
 """))
 
+# XHOP: the walk from App A passes through x, a RESTRICTED record of App B under A that the viewer is granted in B: a grant counts on a node of any
+# gated App. So c (a STRICT record of A under the folder f and under x, inheriting from x only) is read through x and listed and counted in the
+# flatten, and g (a group of A under x, inheriting from it) is opened from A through x and lists d.
+XHOP = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: B, kind: app, app_type: DRIVE}
+  - {id: f, kind: record, connector: A, rule: OPEN, parents: [A]}
+  - {id: x, kind: record, connector: B, rule: RESTRICTED, parents: [A], inherits: [A]}
+  - {id: c, kind: record, connector: A, rule: STRICT, parents: [f, x], inherits: [x]}
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [x], inherits: [x], belongs: [A]}
+  - {id: d, kind: record, connector: A, rule: OPEN, parents: [g], inherits: [g], belongs: [g]}
+grants: [[u, f], [u, x]]
+gates: [[u, A], [u, B]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
-             OPENGROUP, XSTUB]
+             OPENGROUP, XSTUB, XHOP]

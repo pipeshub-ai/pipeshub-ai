@@ -8148,6 +8148,7 @@ class IGraphDBProvider(ABC):
         grants_by_connector: dict[str, list[str]],
         transaction: str | None,
         probe: dict[str, Any] | None = None,
+        cross: dict[str, Any] | None = None,
     ) -> tuple[bool, list[str], list[str]]:
         """What the batch check says about a browse start: whether it admits the
         start, which of its ancestors it admits (the breadcrumb of a start the
@@ -8163,6 +8164,8 @@ class IGraphDBProvider(ABC):
             "by_connector": grants_by_connector,
             # A backend that tests grants from the node instead of a list (Neo4j).
             "probe": probe,
+            # The other connectors' grants, tested on their nodes (`grants_by_connector` holds this App's alone).
+            "cross": cross,
         }
         admitted = (await self.check_access(
             "", org_id, node_ids=[start_id, *ancestors], access=access, transaction=transaction,
@@ -8172,10 +8175,13 @@ class IGraphDBProvider(ABC):
         # A declaration is a scope only where the check's declared arm reads it: the viewer is granted it or the walk from the App reaches it, not
         # where it is admitted some other way (below a seed), where what hangs under it is not readable through it.
         declared = [d for d in declared if d in admitted]
-        granted = list(grants_by_connector.get(app_id) or [])
+        # Every grant held: the walk to a declaration can pass through a node of another connector (a backend that lists one connector's
+        # grants tests the others' on their nodes, ``cross``).
+        granted = list(dict.fromkeys(g for ids in grants_by_connector.values() for g in ids or ()))
         unproved = [d for d in declared if d not in granted]        # a declaration the viewer is granted is read as one without asking the walk
         if unproved:
-            reached = set(await self._kh_v3_declared_reached(unproved, app_id, granted, probe, transaction))
+            reached = set(await self._kh_v3_declared_reached(
+                unproved, app_id, granted, probe, transaction, **({"cross": cross} if cross is not None else {})))
             declared = [d for d in declared if d in granted or d in reached]
         scope = await self._kh_v3_declared_groups(declared, transaction) if declared else []
         return True, [a for a in ancestors if a in admitted], scope
@@ -8290,9 +8296,10 @@ class IGraphDBProvider(ABC):
 
     async def _kh_v3_declared_reached(
         self, declared: list[str], app_id: str, granted_ids: list[str], probe: dict[str, Any] | None, transaction: str | None,
+        cross: dict[str, Any] | None = None,
     ) -> list[str]:
         """Of these declared groups, those the viewer is granted or the walk from the App reaches (the check's declared arm). ``probe``: grants are
-        tested from the node, as on the rest of the page."""
+        tested from the node, as on the rest of the page. ``cross``: the other connectors' grants, tested on their nodes along the walk."""
         raise NotImplementedError
 
     async def get_knowledge_hub_access_v3(

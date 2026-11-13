@@ -25,6 +25,7 @@ from .kh_worlds import (
     SCOPEDTWO,
     TWOWAY,
     XDECL,
+    XHOP,
     XSTUB,
 )
 from .runner import OracleLayer
@@ -193,6 +194,20 @@ async def test_an_open_app_reads_only_its_records_as_members_and_lists_only_its_
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
             await layer.release([OPENGROUP, XSTUB])
+
+
+async def test_a_grant_on_a_node_of_another_app_passes_the_hop(graph_layers) -> None:
+    """A grant counts on a node of any gated App: the walk from App A passes through x, a RESTRICTED record of App B the viewer is granted in B,
+    so c (a STRICT record of A that inherits from x only) is listed and counted in the flatten, and g (a group of A under x) opens and lists d
+    (XHOP)."""
+    for layer in graph_layers:
+        await layer.preload([XHOP])
+        try:
+            assert await children_of(layer, XHOP, "u", "g", "recordGroup") == {"d": False}, layer.name
+            bad = _bad(await check_world(layer, XHOP, "xhop"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([XHOP])
 
 
 @pytest.mark.parametrize("kind", sorted(gen.GENERATORS))
