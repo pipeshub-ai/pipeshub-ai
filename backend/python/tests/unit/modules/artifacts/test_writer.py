@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -26,6 +27,7 @@ from app.models.blocks import (
 from app.models.entities import Priority, Record, RecordType, Status, TicketRecord
 from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts import store as store_module
+from app.modules.artifacts import writer as writer_module
 from app.modules.artifacts.models import MANIFEST_PATH, PROPERTIES_PATH
 from app.modules.artifacts.store import MAX_FILES_PER_CALL, NodeArtifactStore
 from app.modules.artifacts.writer import (
@@ -87,6 +89,7 @@ def _image_block(index: int, uri: str) -> Block:
 def _routes_available() -> None:
     store_module.ARTIFACT_ROUTES.reset()
     store_module.PROPERTIES_FILE.reset()
+    store_module.PER_WRITE_SETS.reset()
 
 
 @pytest.fixture
@@ -284,7 +287,7 @@ class TestWriteRevision:
 
     @pytest.mark.parametrize("late_manifest", [False, True], ids=["late_files", "late_files_and_manifest"])
     async def test_a_late_write_of_a_superseded_run_never_lands_in_the_newer_writes_set(
-        self, storage: FakeStorage, late_manifest: bool,
+        self, storage: FakeStorage, late_manifest: bool, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Two records sharing content write one revision, with different bytes (record.json carries each
         record's identity). X passes its check, then Y takes over the stored record and writes its whole set;
@@ -294,6 +297,12 @@ class TestWriteRevision:
         y = x.model_copy(update={"id": "rec-2", "record_name": "copy.pdf"})
         stored = {"run": "gen:x"}
         x_checks = 0
+
+        def no_lock(*key: str) -> asyncio.Lock:
+            raise AssertionError(f"a write with a set of its own took the shared-set lock: {key}")
+
+        # Storage echoes each write id: the writes never share a file, so nothing serializes them.
+        monkeypatch.setattr(writer_module, "_set_write_lock", no_lock)
 
         async def write(record: Record, run: str, still_current: Callable[[], Awaitable[bool]]) -> object:
             return await _writer(storage).write_revision(
@@ -330,6 +339,102 @@ class TestWriteRevision:
         # X's late files are all in X's own set.
         assert json.loads(storage.puts[f"{x_root}/record.json"].data)["id"] == "rec-1"
         assert (f"{x_root}/{MANIFEST_PATH}" in storage.puts) is late_manifest
+        assert store_module.PER_WRITE_SETS.available
+
+    async def test_on_storage_without_sets_per_write_a_superseded_write_finishes_before_the_newer_one_writes(
+        self, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A storage service that ignores writeId files both writes of the revision in its one shared set, at the
+        same paths with different bytes. X passes its check before its files go up, then Y takes over the stored
+        record and writes while X is held there. Y must wait for X's uploads, so when both are done every file
+        Y's manifest names is the bytes Y wrote, not X's late ones."""
+        storage.honours_write_id = False
+        x = _record(_text_blocks(3, 10))
+        y = x.model_copy(update={"id": "rec-2", "record_name": "copy.pdf"})
+        stored = {"run": "gen:x"}
+        y_waits = asyncio.Event()
+        real_lock = getattr(writer_module, "_set_write_lock", None)
+
+        def set_write_lock(*key: str) -> asyncio.Lock:
+            assert real_lock is not None
+            lock = real_lock(*key)
+            if lock.locked():
+                y_waits.set()
+            return lock
+
+        monkeypatch.setattr(writer_module, "_set_write_lock", set_write_lock, raising=False)
+
+        async def write(record: Record, run: str, still_current: Callable[[], Awaitable[bool]]) -> object:
+            return await _writer(storage).write_revision(
+                record, "org-1", "vr-1", REV, record.block_containers, stored_run=run, still_current=still_current,
+            )
+
+        async def y_current() -> bool:
+            return stored["run"] == "gen:y"
+
+        y_write: asyncio.Task[object] | None = None
+
+        async def x_current() -> bool:
+            nonlocal y_write
+            if stored["run"] != "gen:x":
+                return False
+            # X is current at its check; Y takes over and starts its write before X's files go up.
+            stored["run"] = "gen:y"
+            y_write = asyncio.create_task(write(y, "gen:y", y_current))
+            waiting = asyncio.create_task(y_waits.wait())
+            await asyncio.wait({y_write, waiting}, return_when=asyncio.FIRST_COMPLETED)
+            waiting.cancel()
+            return True
+
+        assert await write(x, "gen:x", x_current) is None
+        assert y_write is not None and await y_write is not None
+
+        root = FakeStorage.root("vr-1", REV)
+        manifest = json.loads(storage.puts[f"{root}/{MANIFEST_PATH}"].data)
+        assert manifest["storedRun"] == "gen:y"
+        listed = [
+            *(f for e in manifest["artifacts"].values() for f in (e.get("parts") or e.get("files") or [])),
+            *(e for e in manifest["artifacts"].values() if e.get("path")),
+        ]
+        assert listed
+        for entry in listed:
+            assert hashlib.sha256(storage.puts[f"{root}/{entry['path']}"].data).hexdigest() == entry["sha256"], entry
+        assert json.loads(storage.puts[f"{root}/record.json"].data)["id"] == "rec-2"
+
+    @pytest.mark.parametrize(
+        ("honours", "echo"),
+        [(False, None), (True, "f" * 32), (False, SET)],
+        ids=["no_echo", "another_write_echoed", "echo_without_a_root_of_its_own"],
+    )
+    async def test_a_write_id_storage_did_not_honour_falls_back_to_the_shared_set_lock(
+        self, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+        honours: bool, echo: str | None,
+    ) -> None:
+        storage.honours_write_id, storage.echo_write_id = honours, echo
+        locked: list[tuple[str, ...]] = []
+        real_lock = writer_module._set_write_lock
+
+        def set_write_lock(*key: str) -> asyncio.Lock:
+            locked.append(key)
+            return real_lock(*key)
+
+        monkeypatch.setattr(writer_module, "_set_write_lock", set_write_lock)
+        record = _record(_text_blocks(2, 10))
+        writer = _writer(storage)
+
+        with caplog.at_level(logging.WARNING, logger="artifact-writer-test"):
+            assert await writer.write_revision(record, "org-1", "vr-1", REV, record.block_containers) is not None
+            # The first write learns it from its presign and signs again under the lock; later ones lock first.
+            assert len(storage.presign_calls) == 2
+            assert await writer.write_revision(record, "org-1", "vr-1", REV, record.block_containers) is not None
+            assert len(storage.presign_calls) == 3
+
+        assert locked == [("org-1", "vr-1", REV)] * 2
+        assert not store_module.PER_WRITE_SETS.available
+        assert [r.getMessage() for r in caplog.records].count(
+            "Storage keeps one artifact set per revision (it does not honour writeId); writes of one "
+            "revision are serialized in this process until it restarts"
+        ) == 1
 
     async def test_a_none_run_keeps_no_set(self, storage: FakeStorage) -> None:
         record = _record(_text_blocks(2, 10))

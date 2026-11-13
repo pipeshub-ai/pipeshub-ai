@@ -40,6 +40,10 @@ class FakeStorage:
     missing_status: int = 404
     put_status: int = 201
     presign_status: int = 200
+    # False: a storage service that ignores writeId (older than sets per write) and files every write in the
+    # revision's one shared set. echo_write_id, when set, is what the answer echoes instead of the writeId sent.
+    honours_write_id: bool = True
+    echo_write_id: str | None = None
     fail_paths: set[str] = field(default_factory=set)
     refused_paths: set[str] = field(default_factory=set)
     refuse_other_with_properties: str = ""
@@ -136,13 +140,16 @@ class FakeStorage:
             return web.json_response({"error": {"code": "VALIDATION_ERROR", "message": message}}, status=400)
         if not 1 <= len(files) <= 1000 or len(set(paths)) != len(paths):
             return web.json_response({"error": {"message": "bad files"}}, status=400)
-        vrid, rev, write_id = body["virtualRecordId"], body["rev"], body.get("writeId")
+        vrid, rev = body["virtualRecordId"], body["rev"]
+        write_id = body.get("writeId") if self.honours_write_id else None
         root = self.root(vrid, rev, write_id)
         self.roots[self.document_id(vrid, rev, write_id)] = root
+        echo = self.echo_write_id or write_id
         return web.json_response({
             "documentId": self.document_id(vrid, rev, write_id),
             "virtualRecordId": vrid,
             "rev": rev,
+            **({"writeId": echo} if echo else {}),
             "root": root,
             "expiresInSeconds": 900,
             "files": [self._signed(root, f["path"], "PUT", f["contentType"]) for f in files],

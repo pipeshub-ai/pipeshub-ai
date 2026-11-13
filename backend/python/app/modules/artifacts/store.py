@@ -79,6 +79,9 @@ class _Availability:
 ARTIFACT_ROUTES = _Availability()
 #: Whether the storage service takes ``properties.json``; one older than the file refuses it.
 PROPERTIES_FILE = _Availability()
+#: Whether the storage service gives each stored write its own set (honours ``writeId``); an older one
+#: files every write of a revision in the revision's one shared set.
+PER_WRITE_SETS = _Availability()
 
 
 def artifact_writes_available() -> bool:
@@ -164,7 +167,7 @@ class NodeArtifactStore:
         ``write_id`` names the stored write the set is of (``stored_write.write_id``): each write
         of a revision then has a document and file root of its own, so no write can overwrite
         another's files. Without it the files go to the revision's one shared set (an older
-        storage service ignores it and does the same).
+        storage service ignores it and does the same: the plan's ``write_id`` then echoes none).
         More files than one call takes are asked for in several calls; the
         storage service files them all under the one document.
         Raises ``ArtifactRoutesUnavailable`` (and stops asking for the rest of
@@ -174,6 +177,7 @@ class NodeArtifactStore:
             raise ValueError("a revision needs at least one file")
         document_id: str | None = None
         root: str | None = None
+        echoed: str | None = None
         expires: int | None = None
         signed: dict[str, SignedFileUrl] = {}
         for start in range(0, len(files), MAX_FILES_PER_CALL):
@@ -204,6 +208,7 @@ class NodeArtifactStore:
                 raise ArtifactStoreError("presign calls for one revision answered different documents")
             document_id = chunk_doc
             root = body.get("root") if isinstance(body.get("root"), str) else root
+            echoed = body.get("writeId") if isinstance(body.get("writeId"), str) else echoed
             if isinstance(body.get("expiresInSeconds"), int):
                 expires = body["expiresInSeconds"]
             answered = body.get("files")
@@ -217,6 +222,7 @@ class NodeArtifactStore:
                 raise ArtifactStoreError(f"presign left {len(missing)} file(s) unsigned")
         return RevisionUploadPlan(
             document_id=str(document_id), root=root or "", expires_in_seconds=expires, files=signed,
+            write_id=echoed,
         )
 
     async def put(self, entry: SignedFileUrl, data: bytes, content_type: str | None = None) -> None:

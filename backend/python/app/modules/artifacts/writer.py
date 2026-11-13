@@ -34,6 +34,7 @@ import hashlib
 import json
 import logging
 import re
+import weakref
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -57,6 +58,7 @@ from app.modules.artifacts.models import (
     WrittenRevision,
 )
 from app.modules.artifacts.store import (
+    PER_WRITE_SETS,
     PROPERTIES_FILE,
     ArtifactRoutesUnavailable,
     NodeArtifactStore,
@@ -287,6 +289,26 @@ def build_revision(
     return built
 
 
+#: The set writes of this process on a storage service that keeps one shared set per revision, by
+#: ``(org, vrid, rev)``. Two stored writes of one revision (records sharing content) then store their sets
+#: at the same paths with different bytes, so a write that lost its place must have finished its uploads
+#: before the current write sends its own. A set of its own per write needs no lock.
+_SET_WRITES: "weakref.WeakValueDictionary[tuple[str, str, str], asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def _set_write_lock(org_id: str, virtual_record_id: str, rev: str) -> asyncio.Lock:
+    key = (org_id, virtual_record_id, rev)
+    lock = _SET_WRITES.get(key)
+    if lock is None:
+        lock = _SET_WRITES[key] = asyncio.Lock()
+    return lock
+
+
+def _set_of_its_own(plan: RevisionUploadPlan, rev: str, set_id: str) -> bool:
+    """Whether storage filed the write in a set of its own: it echoed the write id and named its root."""
+    return plan.write_id == set_id and plan.root.endswith(f"/{rev}-{set_id}")
+
+
 #: What the storage service's validation says of a path an artifact set cannot hold.
 PATH_NOT_HELD_REFUSAL = "Not a file an artifact set can hold"
 
@@ -361,7 +383,10 @@ class ArtifactWriter:
 
         Each stored write has a set of its own (``write_id``), so two writes of one revision never share a
         file: whatever lands late, from a write that lost its place or an upload storage commits after it
-        was given up, lands in its own write's set, which the pointer never names over a newer write.
+        was given up, lands in its own write's set, which the pointer never names over a newer write. A
+        storage service that does not honour the write id (it echoes none, or another) files every write of
+        the revision in one shared set; the writes of one revision in this process are then serialized,
+        from the presign through the manifest.
         None when nothing was written: artifact writes are unavailable (a storage service without the
         routes), the run keeps no set (a ``none`` run), or ``still_current`` said another stored write took
         over, so the rest of this write's set would be wasted. Raises when a file could not be stored; the
@@ -391,10 +416,41 @@ class ArtifactWriter:
         )
         if not PROPERTIES_FILE.available:
             _drop_properties(built)
-        try:
-            plan = await self._presign(built, org_id, virtual_record_id, rev, set_id)
-        except ArtifactRoutesUnavailable:
-            return None
+        if PER_WRITE_SETS.available:
+            try:
+                plan = await self._presign(built, org_id, virtual_record_id, rev, set_id)
+            except ArtifactRoutesUnavailable:
+                return None
+            if _set_of_its_own(plan, rev, set_id):
+                return await self._store(built, plan, virtual_record_id, rev, org_id, stored_run, current)
+            if PER_WRITE_SETS.mark_unavailable(HttpStatusCode.SUCCESS.value):
+                self.logger.warning(
+                    "Storage keeps one artifact set per revision (it does not honour writeId); writes of one "
+                    "revision are serialized in this process until it restarts",
+                )
+        # Storage files every write of the revision in one shared set. shortcut: the lock serializes them in
+        # this process only; two processes writing one revision at once can still leave a set its manifest
+        # does not match, which the reader's sha256 check refuses (it then serves the stored record). That
+        # window closes once storage gives each write a set of its own.
+        async with _set_write_lock(org_id, virtual_record_id, rev):
+            # Signed again under the lock: waiting for another write must not expire the URLs.
+            try:
+                plan = await self._presign(built, org_id, virtual_record_id, rev, set_id)
+            except ArtifactRoutesUnavailable:
+                return None
+            return await self._store(built, plan, virtual_record_id, rev, org_id, stored_run, current)
+
+    async def _store(
+        self,
+        built: BuiltRevision,
+        plan: RevisionUploadPlan,
+        virtual_record_id: str,
+        rev: str,
+        org_id: str,
+        stored_run: str,
+        current: Callable[[], Awaitable[bool]],
+    ) -> WrittenRevision | None:
+        """Upload the files, then the manifest, re-checking ``current`` before each; None once superseded."""
         if not await current():
             return None
         limit = asyncio.Semaphore(max(1, self.upload_concurrency))
