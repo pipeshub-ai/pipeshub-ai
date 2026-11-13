@@ -25,15 +25,14 @@ import { defaultPatScopes } from '../default-scopes';
 // ========================================
 
 const EXPIRY_OPTIONS: { value: PatExpiryOption; labelKey: string }[] = [
+  { value: 7, labelKey: 'workspace.personalAccessTokens.create.expiry7Days' },
   { value: 30, labelKey: 'workspace.personalAccessTokens.create.expiry30Days' },
   { value: 90, labelKey: 'workspace.personalAccessTokens.create.expiry90Days' },
-  { value: 365, labelKey: 'workspace.personalAccessTokens.create.expiry365Days' },
-  { value: 'never', labelKey: 'workspace.personalAccessTokens.create.expiryNever' },
 ];
 
 // Shortest option, not the longest — a token minted without a second
 // thought shouldn't default to the widest blast radius.
-const DEFAULT_EXPIRY_DAYS: PatExpiryOption = 30;
+const DEFAULT_EXPIRY_DAYS: PatExpiryOption = 7;
 
 const CARD_STYLE: React.CSSProperties = {
   backgroundColor: 'var(--olive-2)',

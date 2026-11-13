@@ -397,9 +397,8 @@ export interface TokenListItem {
 export interface CreatePatRequest {
   name: string;
   scopes?: string[];
-  /** Days until expiry, or 'never' for a non-expiring token (stored as a
-   * far-future expiresAt — the schema's expiresAt is required). */
-  expiryDays?: 30 | 90 | 365 | 'never';
+  /** Days until expiry; defaults to 7. */
+  expiryDays?: 7 | 30 | 90;
   /** What the token may see; omit for everything the user can. */
   knowledgeLimit?: KnowledgeLimit;
 }
