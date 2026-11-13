@@ -327,3 +327,17 @@ def test_neo4j_arrow_tests_a_child_stub_with_the_row_s_reach_and_a_filed_one_str
 
     expr = _cypher_kh_has_children("node", "RULE", "FILED", lambda v: f"CHILD({v})", "CONT", exact=True, stub_filed=lambda v: f"STRICT({v})")
     assert "CHILD(kh_ch)" in expr and "STRICT(kh_bg)" in expr and "STRICT(kh_bc)" in expr and "CHILD(kh_bc)" not in expr
+
+
+def test_a_childs_own_reach_walks_only_inside_a_loop_over_the_children_that_can_be_listed() -> None:
+    """AQL lifts a subquery that reads no loop variable above the loop, so the own-reach walk of a child (the sidebar, a stub's way) is a FOR
+    inside a loop over a list that is empty unless the rule leaves the child out and it could be listed; written as a filter, it walked for every
+    child of every row and the sidebar page took four times main's. The last-hop stub test does not ask it."""
+    from app.services.graph_db.arango.arango_http_provider import (
+        _aql_kh_has_children,
+        _aql_way_below,
+    )
+
+    assert "FOR kh_rq IN (((NOT kh_rp) AND kh_ch.isPlaceholder != true" in _aql_kh_has_children("node", own_reach=True)
+    assert "FOR kh_rq IN (((NOT kh_wk) AND kh_xc.isPlaceholder != true" in _aql_way_below("kh_ch", every_hop=True)
+    assert "kh_xc" not in _aql_way_below("kh_ch", every_hop=False)
