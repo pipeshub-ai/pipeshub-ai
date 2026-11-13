@@ -752,6 +752,8 @@ function ChatContent() {
           remoteRunInProgress: detail.conversation.status === 'Inprogress',
           isOwner,
           sharedWith: detail.conversation.sharedWith ?? null,
+          forkedFrom: detail.conversation.forkedFrom ?? null,
+          forks: detail.conversation.forks ?? [],
           messagePagination: {
             currentPage: apiPagination.page,
             hasOlderMessages: apiPagination.hasNextPage,

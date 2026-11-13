@@ -5,16 +5,15 @@ from typing import Any
 
 from app.web.budget import WebBudget
 from app.web.chain import Cooldowns
-from app.web.config import DEFAULT_PROVIDER
 from app.web.deadline import Deadline
-from app.web.errors import UnknownProvider
+from app.web.errors import NotConfigured, UnknownProvider
 from app.web.fetch import FETCHERS
 from app.web.fetch.browser import BrowserRenderer
 from app.web.fetch.builtin import BuiltinFetcher
 from app.web.http_client import shared_http_client
 from app.web.models import WebResult
 from app.web.ports import ContentFetcher, SearchProvider, WebAccessGate
-from app.web.search import FREE_PROVIDERS, PROVIDERS, spec_for
+from app.web.search import FREE_PROVIDERS, PROVIDERS
 from app.web.services import WebFetchService, WebSearchService
 
 # What each source failed with lately is shared by every run in the process.
@@ -39,29 +38,48 @@ class UnknownSearchProvider:
         raise UnknownProvider(f"Unknown web search provider: {self.id}", source=self.id)
 
 
+class NoSearchProvider:
+    """Stands in when nothing that searches is configured, so a search reports ``not_configured``
+    instead of reaching an engine the admin never chose."""
+
+    id = "none"
+    cooldown_key = "none"
+
+    async def search(self, query: str, deadline: Deadline) -> list[WebResult]:
+        raise NotConfigured("No web search provider is configured", source=self.id, reason="no_provider")
+
+
 def _others(selection: dict[str, Any]) -> list[dict[str, Any]]:
     return [p for p in selection.get("providers") or [] if isinstance(p, dict)]
 
 
 def search_providers(selection: dict[str, Any]) -> list[SearchProvider]:
-    """The chosen provider, then the other stored providers that search, then the free ones."""
+    """The chosen provider, then the other stored providers that search. A free provider
+    (``duckduckgo``, or ``ddgs`` an agent names) runs both free engines, ``ddgs`` first; they run
+    only when the admin or an agent chose one of them."""
     http = shared_http_client()
-    type_id = selection.get("provider") or DEFAULT_PROVIDER
+    type_id = selection.get("provider") or ""
     # A provider that only reads pages (an agent may name one) leaves the search to the others.
     page_only = type_id in FETCHERS and type_id not in PROVIDERS  # Crawl4AI; Firecrawl does both
-    searches = type_id != DEFAULT_PROVIDER and not page_only
-    if searches and type_id not in PROVIDERS:
+    if type_id and not page_only and type_id not in PROVIDERS:
         return [UnknownSearchProvider(type_id)]
-    chosen = [spec_for(type_id).build(selection.get("configuration") or {}, http)] if searches else []
-    others = [
-        PROVIDERS[p["provider"]].build(p.get("configuration") or {}, http)
+    wanted = [(type_id, selection.get("configuration") or {})] if type_id and not page_only else []
+    wanted += [
+        (p["provider"], p.get("configuration") or {})
         for p in _others(selection)
-        if p.get("provider") in PROVIDERS and p.get("provider") not in (type_id, DEFAULT_PROVIDER)
+        if p.get("provider") in PROVIDERS and p.get("provider") != type_id
     ]
-    # A free engine the admin also stored as a provider is tried once, in its stored place.
-    taken = {*([type_id] if searches else []), *(p.get("provider") for p in _others(selection))}
-    free = [PROVIDERS[free_id].build({}, http) for free_id in FREE_PROVIDERS if free_id not in taken]
-    return [*chosen, *others, *free]
+    built: list[SearchProvider] = []
+    free_seen: set[str] = set()
+    for provider, configuration in wanted:
+        if provider not in FREE_PROVIDERS:
+            built.append(PROVIDERS[provider].build(configuration, http))
+            continue
+        built.extend(
+            PROVIDERS[free_id].build({}, http) for free_id in FREE_PROVIDERS if free_id not in free_seen
+        )
+        free_seen.update(FREE_PROVIDERS)
+    return built or [NoSearchProvider()]
 
 
 def fetchers(selection: dict[str, Any]) -> list[ContentFetcher]:

@@ -1494,13 +1494,7 @@ describe('ConfigurationManager Controller', () => {
   // Web Search Providers
   // -----------------------------------------------------------------------
   describe('getWebSearchProviders', () => {
-    const duckDuckGoProvider = {
-      provider: 'duckduckgo',
-      providerKey: 'duckduckgo',
-      configuration: {},
-    }
-
-    it('should return DuckDuckGo as default when no config exists', async () => {
+    it('should report web search as not set up when no config exists', async () => {
       const kvs = createMockKeyValueStore()
       const handler = getWebSearchProviders(kvs)
       const req = createMockRequest()
@@ -1513,9 +1507,8 @@ describe('ConfigurationManager Controller', () => {
       expect(next.called).to.be.false
       const response = res.json.firstCall.args[0]
       expect(response.status).to.equal('success')
-      expect(response.providers).to.deep.equal([
-        { ...duckDuckGoProvider, isDefault: true },
-      ])
+      expect(response.providers).to.deep.equal([])
+      expect(response.configured).to.equal(false)
       expect(response.settings).to.deep.equal({
         includeImages: false,
         maxImages: 3,
@@ -1523,7 +1516,7 @@ describe('ConfigurationManager Controller', () => {
       expect(response.message).to.equal('No web search providers found')
     })
 
-    it('should prepend DuckDuckGo as default when stored providers have no default', async () => {
+    it('should report web search as not set up when stored providers have no default', async () => {
       const storedSerper = {
         provider: 'serper',
         providerKey: 'serper-key-1',
@@ -1547,15 +1540,15 @@ describe('ConfigurationManager Controller', () => {
       const response = res.json.firstCall.args[0]
       // The request comes from a member, so the stored key is masked.
       expect(response.providers).to.deep.equal([
-        { ...duckDuckGoProvider, isDefault: true },
         { ...storedSerper, configuration: { apiKey: CONFIG_SECRET_PLACEHOLDER } },
       ])
+      expect(response.configured).to.equal(false)
       expect(response.message).to.equal(
         'Web search providers retrieved successfully',
       )
     })
 
-    it('should prepend DuckDuckGo with isDefault false when another provider is default', async () => {
+    it('should report web search as set up when a provider is the default', async () => {
       const storedTavily = {
         provider: 'tavily',
         providerKey: 'tavily-key-1',
@@ -1578,9 +1571,9 @@ describe('ConfigurationManager Controller', () => {
       expect(res.status.calledWith(200)).to.be.true
       const response = res.json.firstCall.args[0]
       expect(response.providers).to.deep.equal([
-        { ...duckDuckGoProvider, isDefault: false },
         { ...storedTavily, configuration: { apiKey: CONFIG_SECRET_PLACEHOLDER } },
       ])
+      expect(response.configured).to.equal(true)
       expect(response.settings).to.deep.equal({
         includeImages: true,
         maxImages: 3,

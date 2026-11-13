@@ -75,6 +75,8 @@ export const WebSearchApi = {
 
         return {
           providers,
+          // An older server sends no flag: the default provider is what made web search work.
+          configured: typeof data.configured === 'boolean' ? data.configured : providers.some((p) => p.isDefault),
           settings: normalizeWebSearchSettings(data.settings),
           inherited: !!data?.inherited || false,
         };
@@ -139,7 +141,8 @@ export const WebSearchApi = {
     }
   },
 
-  async setDefaultProvider(providerKey: string): Promise<unknown> {
+  /** `warning` is set when DuckDuckGo was saved while it refused the test search. */
+  async setDefaultProvider(providerKey: string): Promise<{ warning?: string }> {
     const { data } = await apiClient.put(`${BASE_URL}/default/${providerKey}`);
     if (data.status === 'success') {
       return data;
