@@ -95,7 +95,10 @@ def lean_read_header(record: dict[str, Any]) -> dict[str, Any]:
             lines = []
         for line in lines:
             if line.startswith(_MODEL_WRITTEN_PREFIXES):
-                header = header.replace(f"\n{line}", "", 1) if f"\n{line}" in header else header.replace(line, "", 1)
+                # Whole lines only: the same text inside a longer line (a record
+                # name with a line break and "Summary: …" in it) stays.
+                whole_line = re.compile(r"(?:\n|^)" + re.escape(line) + r"(?=\n|$)")
+                header = whole_line.sub("", header, count=1)
     header = _EMPTY_HEADER_LINE.sub("", header)
     return {**record, "context_metadata": header}
 

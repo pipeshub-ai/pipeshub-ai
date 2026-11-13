@@ -494,6 +494,19 @@ class TestLeanReadHeader:
 
         assert "External Parent ID: N/A-2025" in lean_read_header(record)["context_metadata"]
 
+    def test_a_summary_inside_a_longer_line_is_kept(self) -> None:
+        record = _record(
+            "doc-3", [],
+            context_metadata="Record ID: doc-3\nName: notes\nSummary: Budget approved (draft)\nSummary: Budget approved",
+            semantic_metadata={**_SEMANTIC, "summary": "Budget approved"},
+        )
+
+        header = lean_read_header(record)["context_metadata"]
+
+        # The record's own line that starts the same way stays whole; the
+        # model-written summary line goes.
+        assert header == "Record ID: doc-3\nName: notes\nSummary: Budget approved (draft)"
+
     async def test_a_thread_read_leaves_out_the_same_lines(self) -> None:
         read = await read_thread([_header_record(), _header_record()], max_chars=40_000)
 
