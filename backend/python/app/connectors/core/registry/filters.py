@@ -1208,7 +1208,11 @@ async def load_connector_filters_strict(
     """
     log = logger or _logger
     empty_filters = (FilterCollection(), FilterCollection())
-    config = await config_service.get_config(f"/services/connectors/{connector_id}/config")
+    # Without raise_on_error, get_config answers a store failure with None,
+    # which reads below as "no config" and gives empty filters.
+    config = await config_service.get_config(
+        f"/services/connectors/{connector_id}/config", raise_on_error=True
+    )
 
     # Handle missing or disabled config
     if not config:

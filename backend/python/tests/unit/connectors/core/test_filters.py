@@ -1121,7 +1121,7 @@ class TestLoadConnectorFilters:
         await load_connector_filters(config_service, "confluence", "conf-42")
 
         config_service.get_config.assert_awaited_once_with(
-            "/services/connectors/conf-42/config"
+            "/services/connectors/conf-42/config", raise_on_error=True
         )
 
     @pytest.mark.asyncio
@@ -1138,13 +1138,36 @@ class TestLoadConnectorFilters:
 class TestLoadConnectorFiltersStrict:
     """A filter read that fails raises: a caller that must not act on no filters can stop."""
 
-    @pytest.mark.asyncio
-    async def test_a_failed_config_read_raises(self) -> None:
-        config_service = AsyncMock()
-        config_service.get_config.side_effect = RuntimeError("connection refused")
+    @staticmethod
+    def _config_service_over(backend: object) -> object:
+        """The real ConfigurationService and encrypted store, so a failed read
+        reaches the loader the way it does in production: by default both
+        layers answer a store failure with None, not an exception."""
+        from tests.unit.config.test_configuration_service import _build_service
+        from tests.unit.config.test_encrypted_store import _make_encrypted_store
 
-        with pytest.raises(RuntimeError, match="connection refused"):
+        encrypted_store, _, _ = _make_encrypted_store(store_mock=backend)
+        return _build_service(store=encrypted_store)
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_config_store_raises(self) -> None:
+        backend = AsyncMock()
+        backend.get_key = AsyncMock(side_effect=ConnectionError("connection refused"))
+        config_service = self._config_service_over(backend)
+
+        with pytest.raises(ConnectionError):
             await load_connector_filters_strict(config_service, "gitlab", "gl-1")
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_config_store_still_gives_the_lenient_loader_empty_filters(self) -> None:
+        backend = AsyncMock()
+        backend.get_key = AsyncMock(side_effect=ConnectionError("connection refused"))
+        config_service = self._config_service_over(backend)
+
+        sync_filters, indexing_filters = await load_connector_filters(config_service, "gitlab", "gl-1")
+
+        assert len(sync_filters) == 0
+        assert len(indexing_filters) == 0
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1179,7 +1202,9 @@ class TestLoadConnectorFiltersStrict:
         _, indexing_filters = await load_connector_filters_strict(config_service, "gitlab", "gl-3")
 
         assert indexing_filters.get_value("merge_requests") is False
-        config_service.get_config.assert_awaited_once_with("/services/connectors/gl-3/config")
+        config_service.get_config.assert_awaited_once_with(
+            "/services/connectors/gl-3/config", raise_on_error=True
+        )
 
 
 # ============================================================================
