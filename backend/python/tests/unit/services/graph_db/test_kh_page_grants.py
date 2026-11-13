@@ -64,6 +64,26 @@ async def test_neo4j_reads_at_most_the_bound_of_cross_connector_grants_and_says_
 
 
 @pytest.mark.asyncio
+async def test_neo4j_keeps_the_same_cross_connector_grants_past_the_bound_on_every_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past the bound every read keeps the same ids, however they arrive: else a node would show in one listing and not the next.
+    The read keeps the lowest ids in the database too, so the two paths agree."""
+    provider = Neo4jProvider.__new__(Neo4jProvider)
+    provider.logger = MagicMock(spec=logging.Logger)
+    monkeypatch.setattr(Neo4jProvider, "_KH_CROSS_MAX", 2)
+    first = await provider._kh_v3_cross("user-1", ORG, [APP, OTHER], APP, None, {OTHER: ["z", "x", "y"]})
+    again = await provider._kh_v3_cross("user-1", ORG, [APP, OTHER], APP, None, {OTHER: ["y", "z", "x"]})
+    assert first == again == ["x", "y"]
+
+    provider.client = MagicMock()
+    provider.client.execute_query = AsyncMock(side_effect=[
+        [{"user": "user-1", "badges": [], "orgs": [], "linked": []}], [{"ids": ["x", "y", "z"]}]])
+    read = await provider._kh_v3_cross("user-1", ORG, [APP, OTHER], APP, "txn")
+    statement = provider.client.execute_query.await_args_list[1].args[0]
+    assert "ORDER BY id LIMIT $limit" in statement
+    assert read == ["x", "y"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("store", ["neo4j", "arango", "postgres"])
 async def test_every_store_refuses_a_page_asked_with_one_connectors_grants_alone(store: str) -> None:
     if store == "neo4j":

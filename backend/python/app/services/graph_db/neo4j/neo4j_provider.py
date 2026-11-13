@@ -20740,8 +20740,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     # A grant test not yet followed by its cross-connector half.
     _KH_GRANT_CROSS = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.id IN \$grantedIds\b(?! OR \1\.id IN \$kh_cross\b)")
-    # The most cross-connector grants a page reads (`_kh_v3_cross`). Past it the rest are left out (logged): a node reached only
-    # through one of them is not listed, never one the viewer may not read.
+    # The most cross-connector grants a page reads (`_kh_v3_cross`). Past it the lowest ids are kept and the rest left out (logged):
+    # a node reached only through one of them is not listed, never one the viewer may not read.
     _KH_CROSS_MAX = 20000
 
     @staticmethod
@@ -20808,7 +20808,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 MATCH (kh_g)-[kh_p:PERMISSION]->(kh_n:Record|RecordGroup)
                 WHERE kh_n.connectorId IN $others AND (kh_h[1] IS NULL OR kh_n.connectorId = kh_h[1])
                   AND NOT coalesce(kh_n.isDeleted, false) AND {_cypher_grant_edge("kh_g", "kh_p")}
-                WITH DISTINCT kh_n.id AS id LIMIT $limit
+                // In id order: past the bound every read keeps the same ids, so a listing does not change from one page to the next.
+                WITH DISTINCT kh_n.id AS id ORDER BY id LIMIT $limit
                 RETURN collect(id) AS ids
                 """,
                 parameters={"holders": holders, "others": others, "limit": self._KH_CROSS_MAX + 1},
@@ -20825,7 +20826,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self.logger.warning(
             "kh: user %s holds more than %d grants in the other gated connectors; nodes reached only through the rest are not listed",
             user_key, self._KH_CROSS_MAX)
-        return ids[:self._KH_CROSS_MAX]
+        return sorted(ids)[:self._KH_CROSS_MAX]      # the same ids on every read, and the ones the bounded read keeps
 
     async def _kh_v3_connector_grantees(
         self, user_key: str, connector_id: str, transaction: str | None,
