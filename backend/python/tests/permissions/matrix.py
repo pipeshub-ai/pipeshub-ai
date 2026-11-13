@@ -152,7 +152,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("zendesk", "item-acl", OVERRIDE, "zendesk/connector.py:2057", "ticket folders inherit=False, opened to the requester", read=False),
     Connector("zammad", "item-acl", OVERRIDE, "zammad/connector.py:2003", "PUBLIC/ARCHIVED/DRAFT explicit, INTERNAL inherits the category", read=False),
     Connector("zoom", "item-acl", OVERRIDE, "zoom/connector.py:907", "per-user groups, inherit=False", read=False),
-    Connector("drupal_wiki", "item-acl", OVERRIDE, "drupal_wiki/connector.py:769", "spaces inherit=False with org, user and group grants", read=False),
+    Connector("drupal_wiki", "item-acl", OVERRIDE, "drupal_wiki/connector.py:990", "spaces inherit=False with org, user and group grants", read=False),
     Connector("bookstack", "item-acl", OVERRIDE, "bookstack/connector.py:1224", "each chapter and page carries its own access (inherit=False): BookStack decides it apart from its book's", read=False),
     Connector("demo", "item-acl", OVERRIDE, "demo/connector.py:202", "RECORD_LEVEL demo connector", read=False),
 )
