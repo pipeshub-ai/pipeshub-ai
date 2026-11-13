@@ -588,7 +588,7 @@ async def test_the_placeholder_walk_reads_at_most_its_budget_of_rows_however_wid
 
     async def kq(self, fn, transaction) -> object:
         got = await real_kq(self, fn, transaction)
-        if walks and isinstance(got, list) and got and "parent" in got[0].keys():      # a level of the placeholder walk
+        if walks and isinstance(got, list) and got and "parent" in got[0]:      # a level of the placeholder walk
             walks[-1] += len(got)
         return got
     monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_leads", leads)
