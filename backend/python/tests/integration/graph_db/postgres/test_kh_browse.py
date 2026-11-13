@@ -481,7 +481,8 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
         q = kgl.Params([org, [sk, g1], hide])
         admit = kgl.class_admit("c", q, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()})
         arrows = kgl.arrows_sql(admit, kgl.undecided_child(q, [3], app_sk))      # as the listing asks it
-        statements += [("children_of", kgl.children_of_sql(""), [org, [sk, g1], 200, hide]), ("arrows", arrows, q.values), ("linked_children", kgl.LINKED_CHILDREN, [org, g1, 5001, hide]),
+        statements += [("children_of", kgl.children_of_sql(""), [org, [sk, g1], 200, hide]), ("children_of_bounded", kgl.children_of_sql(total=True), [org, [sk, g1], 1000, hide, 5000]),
+                       ("arrows", arrows, q.values), ("linked_children", kgl.LINKED_CHILDREN, [org, g1, 5001, hide]),
                        ("start", kgl.BROWSE_START, [org, "fold"]), ("start_connector", kh_browse.START_CONNECTOR, [org, "fold"]), ("up", kgl.BROWSE_UP, [org, [sk]]),
                        ("state", kgl.STATE, [org, "app1"]), ("hiders", kgl.HAS_HIDER, [org, app_sk]), ("hidden", kgl.HIDDEN, [org, app_sk]), ("classes", kgl.CLASSES, [org, app_sk, 50_001]),
                        ("links", kh_listing.LINKS, [org, [sk]]), ("keys", kh_listing.KEYS, [org, [sk]]), ("docs", kh_listing.DOCS, [org, ["records"], ["fold"]]),
@@ -555,3 +556,50 @@ async def test_a_browse_in_a_callers_transaction_asks_the_check_and_never_admits
             await p.rollback_transaction(tid)
     assert not calls and [r["id"] for r in page["rows"]] == KIDS[1:6] and page["total"] == 5
     assert [r["id"] for r in (await browse(p, org, "fold", ["fold", *KIDS[1:6]]))["rows"]] == KIDS[1:6] and calls      # in the page's own snapshot the classes admit
+
+
+async def test_the_placeholder_walk_reads_at_most_its_budget_of_rows_however_wide_its_nodes_and_pages_the_same(pg_db, monkeypatch) -> None:
+    """Twenty granted placeholders of 60 children each, the first of each granted: one level of the walk below them would read 1,200 rows. Each walk reads at most LEAD_NODES
+    rows in all (the level is cut in SQL at what is left of the budget), a placeholder it did not get to is not listed (never a leak), and the browse lists the same rows
+    whether read in one page or paged by cursor, each once."""
+    p, org = prov(pg_db), new_org()
+    stubs = [f"s{i:02d}" for i in range(20)]
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        recs = [{"_key": "fold", "recordName": "Folder", "mimeType": "application/vnd.folder"}, *({"_key": s, "recordName": f"Stub {s}", "isPlaceholder": True} for s in stubs),
+                *({"_key": f"{s}k{j:02d}", "recordName": f"Kid {s} {j:02d}"} for s in stubs for j in range(60))]
+        await p.batch_upsert_nodes([{**r, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for r in recs], "records")
+        await p.batch_create_edges([*(edge("fold", "records", s, "records", relationshipType="PARENT_CHILD") for s in stubs),
+                                    *(edge(s, "records", f"{s}k{j:02d}", "records", relationshipType="PARENT_CHILD") for s in stubs for j in range(60))], "nodeRelations")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        granted = ["fold", *stubs, *(f"{s}k00" for s in stubs)]
+        await p.batch_create_edges([edge("u1", "users", i, "records", type="USER", role="READER") for i in granted], "permission")
+    await flip(pg_db, org)
+    monkeypatch.setattr(kh_listing, "LEAD_NODES", 100)
+    walks: list[int] = []
+    real_leads, real_kq = kh_listing.KhListingMixin._kh_leads, kh_listing.KhListingMixin._kq
+
+    async def leads(self, *a, **kw) -> set[int]:
+        walks.append(0)
+        return await real_leads(self, *a, **kw)
+
+    async def kq(self, fn, transaction) -> object:
+        got = await real_kq(self, fn, transaction)
+        if walks and isinstance(got, list) and got and "parent" in got[0].keys():      # a level of the placeholder walk
+            walks[-1] += len(got)
+        return got
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_leads", leads)
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kq", kq)
+    whole = [r["id"] for r in (await browse(p, org, "fold", granted, limit=50))["rows"]]
+    assert walks and max(walks) <= 100, walks
+    assert whole and set(whole) < set(stubs), whole      # the walk reached some placeholders and stopped at its budget for the rest
+    seen, after = [], None
+    for _ in range(20):
+        page = await browse(p, org, "fold", granted, limit=3, after=after)
+        seen += [r["id"] for r in page["rows"]]
+        if not page["hasMore"]:
+            break
+        last = page["rows"][-1]
+        after = {"nullRank": last["nullRank"], "sortKey": last["sortKey"], "id": last["id"]}
+    assert seen == whole and max(walks) <= 100, (seen, whole, walks)

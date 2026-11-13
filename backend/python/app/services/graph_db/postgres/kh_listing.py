@@ -277,7 +277,8 @@ class KhListingMixin(PgBase):
         for _ in range(LEAD_DEPTH):
             if not frontier or budget <= 0:
                 break
-            got = await self._kq(lambda tx, f=sorted(frontier): tx.fetch(kgl.children_of_sql(), org, f, LEAD_PER, hidden), transaction)
+            # the whole level is read in one statement, cut at what is left of the budget: never more rows than LEAD_NODES over the walk, however wide each node is
+            got = await self._kq(lambda tx, f=sorted(frontier), b=budget: tx.fetch(kgl.children_of_sql(total=True), org, f, LEAD_PER, hidden, b), transaction)
             budget -= len(got)
             ok = await admitted_of([r for r in got if not (r["placeholder"] and r["sk"] in seen)])      # a placeholder already met is open: it is in ``seen`` only then
             frontier = set()

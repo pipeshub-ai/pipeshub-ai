@@ -186,10 +186,11 @@ def class_admit(alias: str, p: Params, viewer: dict[str, Any]) -> str:
 _FENCE = " OFFSET 0"
 
 
-def _linked(parent: str, cols: str, live: str, limit: str = "") -> str:
+def _linked(parent: str, cols: str, live: str, limit: str = "", *, ordered: bool = False) -> str:
     """The live children of ``parent`` by a hierarchy link, as rows ``c``: the parent's links by the key of kg.links, each child by its own key, filtered before any ``limit`` (so no
-    budget of links can stop short of a child that qualifies). OFFSET 0 keeps each read on its node."""
-    return (f"(SELECT c.* FROM (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = {parent} AND l.kind = 1 OFFSET 0) l "
+    budget of links can stop short of a child that qualifies). OFFSET 0 keeps each read on its node. ``ordered``: the links in key order (the order of their index)."""
+    by_key = " ORDER BY l.child_sk" if ordered else ""
+    return (f"(SELECT c.* FROM (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = {parent} AND l.kind = 1{by_key} OFFSET 0) l "
             f"CROSS JOIN LATERAL ({cols} WHERE {live} AND c.sk = l.child_sk OFFSET 0) c{limit})")
 
 
@@ -266,9 +267,14 @@ def browse_count_sql(where: str, plain: str, own: str, granted: str, unvouched: 
             f"WHERE {admitted} LIMIT $3) t GROUP BY t.kind, t.folder")
 
 
-def children_of_sql(only: str = "") -> str:
-    """The children of each of the sks ``$2`` by a hierarchy edge, at most ``$3`` of each, outside the hidden rows ``$4`` (``only``: a further condition on ``r``)."""
+def children_of_sql(only: str = "", *, total: bool = False) -> str:
+    """The children of each of the sks ``$2`` by a hierarchy edge, at most ``$3`` of each, outside the hidden rows ``$4`` (``only``: a further condition on ``r``). With ``total``,
+    ``$5`` rows at most in all: the parents in the order of ``$2``, each one's children by the primary parent in the order of the children index, then its linked ones in key order
+    (the read stops at the bound, so a cut is the same on every run)."""
     live = f"r.org_id = $1 AND {BROWSE_LIVE} AND r.sk <> ALL($4::bigint[]){only}"
+    linked = live.replace("r.", "c.") + " AND c.parent_sk IS DISTINCT FROM l_parent"
     return ("/* pipeshub:kg.browse_children_of */ SELECT p.sk AS parent, c.* FROM unnest($2::bigint[]) AS p(sk) CROSS JOIN LATERAL ("
-            f"SELECT * FROM (SELECT {COLS} FROM kg.records r WHERE {live} AND r.parent_sk = p.sk LIMIT $3) a "
-            f"UNION {_linked('p.sk', 'SELECT ' + COLS.replace('r.', 'c.') + ' FROM kg.records c', live.replace('r.', 'c.'), ' LIMIT $3')}) c")
+            f"(SELECT {COLS} FROM kg.records r WHERE {live} AND r.parent_sk = p.sk ORDER BY {name_prefix()}, r.id COLLATE \"C\" LIMIT $3) "
+            f"UNION ALL {_linked('p.sk', 'SELECT ' + COLS.replace('r.', 'c.') + ' FROM kg.records c', linked.replace('l_parent', 'p.sk'), ' LIMIT $3', ordered=True)}) c"
+            + (" LIMIT $5" if total else ""))
+
