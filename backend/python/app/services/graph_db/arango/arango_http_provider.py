@@ -574,8 +574,11 @@ def _aql_browse_child(c: str, p: str, tag: str, from_app: str, p_member: str | N
     # inside a declaration or a member of one is admitted by it, is no seed, and what hangs under it is not read through it.
     walk_seeded = f'(NOT ({declared_p} OR (IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", {p}) AND HAS(@kh_scope, {p}._key))) OR {seed})'
     below_member_seeded = f"(NOT {member_p} OR {seed})"
-    # An App that opens everything reads a record that belongs to it as a member, wherever it hangs (the loop over an empty list reads nothing otherwise).
-    member_of_open_app = (f"(kh_opens AND LENGTH(FOR kh_ma IN (kh_opens ? [1] : []) FOR kh_mb IN 1..1 OUTBOUND {c} {CollectionNames.BELONGS_TO.value}"
+    # An App that opens everything reads a record that belongs to it as a member, wherever it hangs (a record only, as the check: a group is read by
+    # its hops). The loop over an empty list reads nothing otherwise.
+    record_c = f'IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", {c})'
+    member_of_open_app = (f"(kh_opens AND {record_c} AND LENGTH(FOR kh_ma IN (kh_opens AND {record_c} ? [1] : [])"
+                          f" FOR kh_mb IN 1..1 OUTBOUND {c} {CollectionNames.BELONGS_TO.value}"
                           f" FILTER kh_mb._key == @app_id LIMIT 1 RETURN 1) > 0)")
     return (f"({_aql_read_by_app(c)} AND (({from_app} OR {member_of_open_app}) ? (({_aql_granted_hop(c, p, tag + 'h', navigation=True)}"
             f" AND {walk} AND {below_member}) ? true : ({_aql_in_scope(c, p)})) : ({p}.hideChildren != true AND (({_aql_open_hop(c, p, tag + 'o')}"
@@ -769,7 +772,7 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
             # A page's arrow leaves the stubs to `every_hop` (a second pass over the rows that have one), so its own plan holds no stub test. There a
             # stub child the rule does not pass is listed where a browse of it is reached (`browse_start`), as the folder listing lists it.
             + (f" FILTER {passes} FILTER kh_ch.isPlaceholder != true" if exact and not every_hop else
-               f" FILTER kh_ch.isPlaceholder == true OR ({passes})"
+               f" FILTER (kh_ch.isPlaceholder == true AND {_aql_read_by_app('kh_ch')}) OR ({passes})"
                f" FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch', every_hop=True, from_app=stub_reach, admit=passes)})"
                if exact else
                f" FILTER {passes} FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch', every_hop=every_hop)})")
