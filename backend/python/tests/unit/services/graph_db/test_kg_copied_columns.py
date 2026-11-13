@@ -471,6 +471,18 @@ def listing_statements() -> list[str]:
     p = kgl.Params([None, None, None])
     where = kgl.filters_sql(filters, p)
     out += [kgl.scan_sql(where, "$4"), kgl.undecided_sql(where, "$4"), kgl.count_sql(where, "$4", "$5", "$6", "$7"), kgl.arrows_sql(kgl.class_admit("c", p, viewer))]
+    # a browse: a node's children by its own ranges, and by the keys of its linked children and chain-tops ($5)
+    for links in (None, "$5"):
+        for field_ in ("name", "updatedAt"):
+            for direction in ("next", "prev"):
+                p = kgl.Params([None, None, None])
+                where = kgl.filters_sql(filters, p)
+                branches = kgl.after(field_, "ASC", direction, {"nullRank": 0, "sortKey": "a" if field_ == "name" else 5, "id": "x"}, p)
+                out.append(kgl.page_sql(field_, "ASC", direction, where, branches, None, kgl.browse_scopes(links)))
+        out += [kgl.children_sql(where, links), kgl.children_held_sql(where, links), kgl.browse_undecided_sql(where, "$6", "$7", links),
+                kgl.browse_count_sql(where, "$6", "$7", "$8", "$9", links)]
+    q = kgl.Params([None, None, None])
+    out += [kgl.LINKED_CHILDREN, kgl.children_of_sql(), kgl.children_of_sql(total=True), kgl.arrows_sql(kgl.class_admit("c", q, viewer), kgl.undecided_child(q, [1], 2))]
     return out
 
 

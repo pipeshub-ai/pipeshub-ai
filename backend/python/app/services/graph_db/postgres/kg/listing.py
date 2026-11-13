@@ -186,6 +186,11 @@ def class_admit(alias: str, p: Params, viewer: dict[str, Any]) -> str:
 _FENCE = " OFFSET 0"
 
 
+def _limit(bound: str) -> str:
+    """`` LIMIT <bound>``: built here, so that no bare clause text sits apart from its statement (``test_kg_copied_columns`` reads the module's texts in order)."""
+    return f" LIMIT {bound}"
+
+
 def _linked(parent: str, cols: str, live: str, limit: str = "", *, ordered: bool = False) -> str:
     """The live children of ``parent`` by a hierarchy link, as rows ``c``: the parent's links by the key of kg.links, each child by its own key, filtered before any ``limit`` (so no
     budget of links can stop short of a child that qualifies). OFFSET 0 keeps each read on its node. ``ordered``: the links in key order (the order of their index)."""
@@ -223,7 +228,7 @@ LINKS_MAX = 5_000       # the linked children of one node a request reads (kg.li
 # The live linked children of the start ``$2`` outside the hidden rows ``$4``, read once per request and handed to its statements: ``LINKS_MAX + 1`` at most (``$3``), counted
 # among the children that qualify (a link to a deleted or hidden row takes nothing from the budget).
 LINKED_CHILDREN = ("/* pipeshub:kg.browse_linked */ SELECT c.sk AS child_sk FROM "
-                   + _linked("$2", "SELECT c.sk FROM kg.records c", "c.org_id = $1 AND c.kind IN (2, 3) AND NOT c.deleted AND NOT c.alien AND c.sk <> ALL($4::bigint[])", " LIMIT $3") + " c")
+                   + _linked("$2", "SELECT c.sk FROM kg.records c", "c.org_id = $1 AND c.kind IN (2, 3) AND NOT c.deleted AND NOT c.alien AND c.sk <> ALL($4::bigint[])", _limit("$3")) + " c")
 
 
 def browse_scopes(links: str | None) -> list[str]:
@@ -235,7 +240,8 @@ def browse_scopes(links: str | None) -> list[str]:
     return scopes
 
 
-def _children(cols: str, where: str, links: str | None, tail: str = " LIMIT $3") -> str:
+def _children(cols: str, where: str, links: str | None, tail: str | None = None) -> str:
+    tail = _limit("$3") if tail is None else tail
     return " UNION ALL ".join(f"(SELECT {cols} FROM kg.records r WHERE r.org_id = $1 AND {sc}{where}{tail})" for sc in browse_scopes(links))
 
 
@@ -275,14 +281,16 @@ def children_of_sql(only: str = "", *, total: bool = False) -> str:
     linked = live.replace("r.", "c.") + " AND c.parent_sk IS DISTINCT FROM l_parent"
     return ("/* pipeshub:kg.browse_children_of */ SELECT p.sk AS parent, c.* FROM unnest($2::bigint[]) AS p(sk) CROSS JOIN LATERAL ("
             f"(SELECT {COLS} FROM kg.records r WHERE {live} AND r.parent_sk = p.sk ORDER BY {name_prefix()}, r.id COLLATE \"C\" LIMIT $3) "
-            f"UNION ALL {_linked('p.sk', 'SELECT ' + COLS.replace('r.', 'c.') + ' FROM kg.records c', linked.replace('l_parent', 'p.sk'), ' LIMIT $3', ordered=True)}) c"
-            + (" LIMIT $5" if total else ""))
+            f"UNION ALL {_linked('p.sk', 'SELECT ' + COLS.replace('r.', 'c.') + ' FROM kg.records c', linked.replace('l_parent', 'p.sk'), _limit('$3'), ordered=True)}) c"
+            + (_limit("$5") if total else ""))
 
 
 # The granted rows of a connector (``$3``) among ids ``$2`` that a browse may list as chain-tops: live, of the organisation, no placeholder, OPEN (``_kh_v3_chain_top_groups``).
+# The access rule is the graph's: a copied column kg may hold empty for a row it refused (kg.project).
 CHAIN_GRANTED = """/* pipeshub:kg.chain_granted */ SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk FROM kg.records r JOIN kg.node_keys a ON a.org_id = r.org_id AND a.sk = r.app_sk
+    JOIN graph.nodes n ON n.org_id = r.org_id AND n.coll = (CASE r.coll WHEN 2 THEN 'recordGroups' ELSE 'records' END) AND n.id = r.id
     WHERE r.org_id = $1 AND r.coll = ANY('{2,3}'::smallint[]) AND r.id = ANY($2::text[]) AND a.coll = 1 AND a.id = $3
-      AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND coalesce(r.rule, 'OPEN') = 'OPEN'"""
+      AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN'"""
 CHAIN_ROWS = """/* pipeshub:kg.chain_rows */ SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk, r.deleted FROM kg.records r
     WHERE r.org_id = $1 AND r.coll = ANY('{2,3}'::smallint[]) AND r.id = ANY($2::text[])"""
 CHAIN_BY_SK = "/* pipeshub:kg.chain_by_sk */ SELECT r.sk, r.kind, r.parent_sk, r.deleted FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[])"
@@ -290,11 +298,11 @@ APP_KEY = "/* pipeshub:kg.app_key */ SELECT sk FROM kg.node_keys WHERE org_id = 
 # The groups that hold a record among ids ``$2`` (as its group or by a group link) that could be a chain-top: read once per request by key from the grants.
 HELD_ANY = """/* pipeshub:kg.listing_held_any */ SELECT DISTINCT g.sk FROM kg.records c
     CROSS JOIN LATERAL (SELECT c.group_sk AS sk UNION ALL SELECT l.parent_sk FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = c.sk AND l.kind = 2) g
-    WHERE c.org_id = $1 AND c.coll = 3 AND c.id = ANY($2::text[]) AND NOT c.deleted AND NOT c.placeholder AND NOT c.alien AND coalesce(c.rule, 'OPEN') = 'OPEN'
+    WHERE c.org_id = $1 AND c.coll = 3 AND c.id = ANY($2::text[]) AND NOT c.deleted AND NOT c.placeholder AND NOT c.alien
       AND g.sk IS NOT NULL"""
 # The groups among ``$2`` that hold a record among ids ``$3`` (as its group or by a group link) that could be a chain-top: the cheap test behind a group's arrow, settled by the
 # request's chain-top placements (``_kh_held_lists``); it never says no to a real chain-top.
 HELD = """/* pipeshub:kg.listing_held */ SELECT DISTINCT g.sk FROM kg.records c
     CROSS JOIN LATERAL (SELECT c.group_sk AS sk UNION ALL SELECT l.parent_sk FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = c.sk AND l.kind = 2) g
-    WHERE c.org_id = $1 AND c.coll = 3 AND c.id = ANY($3::text[]) AND NOT c.deleted AND NOT c.placeholder AND NOT c.alien AND coalesce(c.rule, 'OPEN') = 'OPEN'
+    WHERE c.org_id = $1 AND c.coll = 3 AND c.id = ANY($3::text[]) AND NOT c.deleted AND NOT c.placeholder AND NOT c.alien
       AND g.sk = ANY($2::bigint[])"""
