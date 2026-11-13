@@ -268,6 +268,9 @@ export const ROW_ACTION_BUTTON: React.CSSProperties = {
   borderRadius: 'var(--radius-1)',
 };
 
+// Phones get the 44px touch target; the header row grows with it so the button is not clipped
+const headerHeight = (isMobile: boolean) => (isMobile ? 44 : 36);
+
 interface TableHeaderCellProps {
   label: string;
   field?: SortField;
@@ -293,6 +296,7 @@ export function TableHeaderCell({
   sort,
   onSort,
 }: TableHeaderCellProps) {
+  const isMobile = useIsMobile();
   const isActive = sortable && field && sort?.field === field;
 
   const handleClick = () => {
@@ -316,7 +320,7 @@ export function TableHeaderCell({
           // The flexible File name column may shrink to nothing, like its row cells
           minWidth: flex ? 0 : minWidth,
           overflow: flex ? 'hidden' : undefined,
-          height: 36,
+          height: headerHeight(isMobile),
         }}
       >
         <Button
@@ -328,7 +332,7 @@ export function TableHeaderCell({
             width: '100%',
             minWidth: 0,
             justifyContent: align === 'center' ? 'center' : 'flex-start',
-            height: 36,
+            height: headerHeight(isMobile),
             // Radix ghost buttons pull out by their padding, which made neighbouring labels touch
             margin: 0,
             // Radix buttons are content-box; the padding must sit inside the column width
@@ -993,7 +997,7 @@ export function KbListView({
         role="row"
         align="center"
         style={{
-          height: 36,
+          height: headerHeight(isMobile),
           borderBottom: '1px solid var(--olive-3)',
           backgroundColor: 'var(--olive-2)',
           backdropFilter: 'var(--frost-filter-subtle)',

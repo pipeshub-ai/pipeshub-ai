@@ -39,6 +39,7 @@ from app.connectors.sources.localKB.handlers.kh_bounded import (
     is_bounded_cursor,
     read_inside,
 )
+from app.connectors.sources.localKB.handlers.kh_merge import sort_order
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
@@ -598,16 +599,16 @@ _SORT_KEYS = {
 }
 
 
-def _sorted_like_the_providers(rows: list, sort_by: str, sort_order: str) -> list:
+def _sorted_like_the_providers(rows: list, sort_by: str, direction: str) -> list:
     """The graph providers' page order: rows with no value last in either
     direction, the value in the asked direction, then id ascending. Rows sorted
     here sit beside rows the providers sorted, so the two orders must agree."""
     key = _SORT_KEYS.get(sort_by, _SORT_KEYS["name"])
     # Stable passes, least significant first, so only the value term is reversed.
-    by_id = sorted(rows, key=lambda item: item.id)
+    by_id = sorted(rows, key=lambda item: sort_order(item.id))
     with_value = [item for item in by_id if key(item) is not None]
     without = [item for item in by_id if key(item) is None]
-    return sorted(with_value, key=key, reverse=sort_order == "desc") + without
+    return sorted(with_value, key=lambda item: sort_order(key(item)), reverse=direction == "desc") + without
 
 
 def _bad_cursor() -> HTTPException:

@@ -26,6 +26,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_router import (
     _validate_uuid_format,
     get_knowledge_hub_service,
 )
+from app.connectors.sources.localKB.handlers.kh_merge import sort_order
 
 
 # ---------------------------------------------------------------------------
@@ -1314,3 +1315,16 @@ def test_equal_values_and_missing_sizes_break_ties_by_id_ascending(order: str) -
     rows = [_named("c", "x", size=5), _named("b", "x", size=None), _named("a", "x", size=5), _named("d", "x", size=1)]
     ranked = [r.id for r in _sorted_like_the_providers(rows, "size", order)]
     assert ranked == (["d", "a", "c", "b"] if order == "asc" else ["a", "c", "d", "b"])
+
+
+@pytest.mark.parametrize("order", ["asc", "desc"])
+def test_names_outside_the_basic_plane_sort_by_utf16_like_the_providers(order: str) -> None:
+    """Cypher compares strings by UTF-16 code unit, so a name above U+FFFF sorts
+    before one in U+E000..U+FFFF, where Python's code-point order puts it after.
+    The router's merge must follow `sort_order`, the order the providers use."""
+    astral, fullwidth = "\U0001F600a", "\uFF21"
+    rows = [_named("r-none", None), _named("r-full", fullwidth), _named("r-astral", astral)]
+    names = {"r-astral": astral, "r-full": fullwidth.lower()}
+    expected = sorted(names, key=lambda i: sort_order(names[i]), reverse=order == "desc")
+    assert expected[0] == ("r-astral" if order == "asc" else "r-full")
+    assert [r.id for r in _sorted_like_the_providers(rows, "name", order)] == [*expected, "r-none"]
