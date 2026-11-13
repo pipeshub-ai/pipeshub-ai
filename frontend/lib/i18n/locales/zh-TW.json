@@ -4161,10 +4161,10 @@
         "editConfiguration": "編輯設定",
         "deleteConfiguration": "刪除設定"
       },
-      "duckduckgoWarning": "非官方擷取：在共用伺服器上可能被封鎖或限速，不建議團隊使用。",
+      "duckduckgoWarning": "多人同時搜尋時可能失效。對團隊而言，使用 API 金鑰的供應商更可靠。",
       "notSetUp": {
-        "title": "網頁搜尋已關閉。",
-        "description": "請在下方選擇一個搜尋供應商。在此之前，組織中的任何人都無法在聊天中使用網頁搜尋。"
+        "title": "網路搜尋尚未設定。",
+        "description": "請在下方選擇一個供應商來開啟。在此之前，組織中的任何人都無法在聊天中搜尋網路。"
       }
     },
     "profile": {

@@ -4300,10 +4300,10 @@
         "editConfiguration": "Upravit konfiguraci",
         "deleteConfiguration": "Smazat konfiguraci"
       },
-      "duckduckgoWarning": "Neoficiální scraping: na sdílených serverech může být blokován nebo omezován. Pro týmy nedoporučujeme.",
+      "duckduckgoWarning": "Může přestat fungovat, když vyhledává mnoho lidí najednou. Pro tým je spolehlivější poskytovatel s klíčem API.",
       "notSetUp": {
-        "title": "Vyhledávání na webu je vypnuté.",
-        "description": "Níže vyberte poskytovatele vyhledávání. Do té doby nemůže v chatu nikdo ve vaší organizaci vyhledávat na webu."
+        "title": "Vyhledávání na webu zatím není nastaveno.",
+        "description": "Vyberte níže poskytovatele a zapněte ho. Do té doby nikdo ve vaší organizaci nemůže v chatu vyhledávat na webu."
       }
     },
     "profile": {

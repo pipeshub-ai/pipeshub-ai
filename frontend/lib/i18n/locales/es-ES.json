@@ -3910,10 +3910,10 @@
         "editConfiguration": "Editar configuración",
         "deleteConfiguration": "Eliminar configuración"
       },
-      "duckduckgoWarning": "Scraping no oficial: puede bloquearse o limitarse en servidores compartidos. No recomendado para equipos.",
+      "duckduckgoWarning": "Puede dejar de funcionar cuando mucha gente busca a la vez. Para un equipo, un proveedor con clave de API es más fiable.",
       "notSetUp": {
-        "title": "La búsqueda web está desactivada.",
-        "description": "Elige un proveedor de búsqueda abajo. Hasta entonces, nadie en tu organización podrá usar la búsqueda web en el chat."
+        "title": "La búsqueda web aún no está configurada.",
+        "description": "Elige un proveedor abajo para activarla. Hasta entonces, nadie de tu organización puede buscar en la web desde el chat."
       }
     },
     "profile": {

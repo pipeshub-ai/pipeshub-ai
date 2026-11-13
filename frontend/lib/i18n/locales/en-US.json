@@ -4182,10 +4182,10 @@
         "editConfiguration": "Edit configuration",
         "deleteConfiguration": "Delete configuration"
       },
-      "duckduckgoWarning": "Unofficial scraping: it can be blocked or rate-limited on shared servers. Not recommended for teams.",
+      "duckduckgoWarning": "May stop working when many people search at once. For a team, a provider with an API key is more reliable.",
       "notSetUp": {
-        "title": "Web search is off.",
-        "description": "Choose a search provider below. Until you do, nobody in your organization can use web search in chat."
+        "title": "Web search isn't set up yet.",
+        "description": "Pick a provider below to turn it on. Until then, people in your organization can't search the web in chat."
       }
     },
     "profile": {

@@ -3870,10 +3870,10 @@
         "editConfiguration": "Konfiguration bearbeiten",
         "deleteConfiguration": "Konfiguration löschen"
       },
-      "duckduckgoWarning": "Inoffizielles Scraping: Kann auf gemeinsam genutzten Servern blockiert oder gedrosselt werden. Für Teams nicht empfohlen.",
+      "duckduckgoWarning": "Kann ausfallen, wenn viele gleichzeitig suchen. Für Teams ist ein Anbieter mit API-Schlüssel zuverlässiger.",
       "notSetUp": {
-        "title": "Die Websuche ist deaktiviert.",
-        "description": "Wählen Sie unten einen Suchanbieter. Bis dahin kann niemand in Ihrer Organisation die Websuche im Chat nutzen."
+        "title": "Die Websuche ist noch nicht eingerichtet.",
+        "description": "Wählen Sie unten einen Anbieter, um sie zu aktivieren. Bis dahin kann in Ihrer Organisation niemand im Chat im Web suchen."
       }
     },
     "profile": {
