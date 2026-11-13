@@ -105,6 +105,23 @@ async def test_single_record_reindex_skips_a_record_excluded_by_filters(service)
 
 
 @pytest.mark.asyncio
+async def test_a_failed_filter_read_leaves_the_batch_untouched(service) -> None:
+    service.graph_provider.get_records_by_status = AsyncMock(
+        return_value=[_record("issue"), _record("merge-request")]
+    )
+    connector = _Connector(excluded=set())
+    connector.records_excluded_by_indexing_filters = AsyncMock(
+        side_effect=RuntimeError("config store unreachable")
+    )
+
+    with pytest.raises(RuntimeError, match="config store unreachable"):
+        await _run(service, connector, status_filters=[ProgressStatus.AUTO_INDEX_OFF.value])
+
+    connector.reindex_records.assert_not_awaited()
+    assert _status_writes(service) == {}
+
+
+@pytest.mark.asyncio
 async def test_records_no_filter_excludes_are_all_reindexed(service) -> None:
     service.graph_provider.get_records_by_status = AsyncMock(
         return_value=[_record("a"), _record("b")]

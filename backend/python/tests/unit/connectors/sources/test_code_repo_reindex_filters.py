@@ -23,13 +23,16 @@ def _filters(**values: bool) -> FilterCollection:
     ])
 
 
-@pytest.mark.parametrize(
+CONNECTORS = pytest.mark.parametrize(
     ("connector_cls", "module"),
     [
         pytest.param(GitLabConnector, "app.connectors.sources.gitlab.connector", id="gitlab"),
         pytest.param(GitHubTeamsConnector, "app.connectors.sources.github_teams.connector", id="github"),
     ],
 )
+
+
+@CONNECTORS
 async def test_reads_the_saved_filters_not_the_ones_from_the_last_sync(connector_cls, module) -> None:
     c = MagicMock()
     c.connector_id = "conn-1"
@@ -39,7 +42,7 @@ async def test_reads_the_saved_filters_not_the_ones_from_the_last_sync(connector
     c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MERGE_REQUEST)
     saved = (FilterCollection(), _filters(merge_requests=False))
 
-    with patch(f"{module}.load_connector_filters", AsyncMock(return_value=saved)) as load:
+    with patch(f"{module}.load_connector_filters_strict", AsyncMock(return_value=saved)) as load:
         excluded = await connector_cls.records_excluded_by_indexing_filters(
             c, [MERGE_REQUEST, MR_ATTACHMENT, ISSUE],
         )
@@ -47,3 +50,15 @@ async def test_reads_the_saved_filters_not_the_ones_from_the_last_sync(connector
     assert excluded == {"mr", "mr-att"}
     assert load.await_args.args[2] == "conn-1"
     c.data_entities_processor.get_record_by_external_id.assert_awaited_once_with("conn-1", "ext-mr")
+
+
+@CONNECTORS
+async def test_a_failed_filter_read_stops_the_reindex(connector_cls, module) -> None:
+    # Empty filters would read as "every type on" and index what the admin switched off.
+    c = MagicMock()
+    c.connector_id = "conn-1"
+    c.config_service = AsyncMock()
+    c.config_service.get_config.side_effect = RuntimeError("config store unreachable")
+
+    with pytest.raises(RuntimeError, match="config store unreachable"):
+        await connector_cls.records_excluded_by_indexing_filters(c, [MERGE_REQUEST])

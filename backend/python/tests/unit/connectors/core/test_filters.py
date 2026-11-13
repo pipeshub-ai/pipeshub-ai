@@ -33,6 +33,7 @@ from app.connectors.core.registry.filters import (
     get_operator_enum_class,
     get_operators_for_type,
     load_connector_filters,
+    load_connector_filters_strict,
 )
 
 
@@ -1132,6 +1133,53 @@ class TestLoadConnectorFilters:
         await load_connector_filters(config_service, "test", "t-1", logger=logger)
 
         logger.debug.assert_called()
+
+
+class TestLoadConnectorFiltersStrict:
+    """A filter read that fails raises: a caller that must not act on no filters can stop."""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_config_read_raises(self) -> None:
+        config_service = AsyncMock()
+        config_service.get_config.side_effect = RuntimeError("connection refused")
+
+        with pytest.raises(RuntimeError, match="connection refused"):
+            await load_connector_filters_strict(config_service, "gitlab", "gl-1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "config",
+        [None, {"enabled": False}, {"enabled": True}],
+        ids=["no-config", "disabled", "no-filters-section"],
+    )
+    async def test_a_connector_with_no_filters_gets_empty_ones(self, config: dict | None) -> None:
+        config_service = AsyncMock()
+        config_service.get_config.return_value = config
+
+        sync_filters, indexing_filters = await load_connector_filters_strict(
+            config_service, "gitlab", "gl-2"
+        )
+
+        assert len(sync_filters) == 0
+        assert len(indexing_filters) == 0
+
+    @pytest.mark.asyncio
+    async def test_loads_the_saved_filters(self) -> None:
+        config_service = AsyncMock()
+        config_service.get_config.return_value = {
+            "filters": {
+                "indexing": {
+                    "values": {
+                        "merge_requests": {"value": False, "type": "boolean", "operator": "is"},
+                    }
+                },
+            },
+        }
+
+        _, indexing_filters = await load_connector_filters_strict(config_service, "gitlab", "gl-3")
+
+        assert indexing_filters.get_value("merge_requests") is False
+        config_service.get_config.assert_awaited_once_with("/services/connectors/gl-3/config")
 
 
 # ============================================================================

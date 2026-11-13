@@ -1164,7 +1164,9 @@ async def load_connector_filters(
 
     Returns:
         Tuple of (sync_filters, indexing_filters)
-        Returns empty collections if config not found or on error.
+        Returns empty collections if config not found or on error. A caller for
+        which empty filters are not a safe answer to a failed read uses
+        ``load_connector_filters_strict``.
 
     Expected config structure:
         {
@@ -1184,15 +1186,29 @@ async def load_connector_filters(
         }
     """
     log = logger or _logger
-    empty_filters = (FilterCollection(), FilterCollection())
-    config_path = f"/services/connectors/{connector_id}/config"
-
-    # Fetch config from service
     try:
-        config = await config_service.get_config(config_path)
+        return await load_connector_filters_strict(config_service, connector_name, connector_id, log)
     except Exception as e:
         log.error(f"Failed to fetch config for {connector_id}: {e}")
-        return empty_filters
+        return FilterCollection(), FilterCollection()
+
+
+async def load_connector_filters_strict(
+    config_service: ConfigurationService,
+    connector_name: str,
+    connector_id: str,
+    logger: Logger | None = None,
+) -> tuple[FilterCollection, FilterCollection]:
+    """``load_connector_filters``, except that a failed config read raises.
+
+    Empty filters mean "nothing switched off", so a caller that acted on them
+    after a failed read would sync and index what the admin excluded. A
+    connector with no config, a disabled one or one with no filters still gets
+    empty collections: those are answers, not failures.
+    """
+    log = logger or _logger
+    empty_filters = (FilterCollection(), FilterCollection())
+    config = await config_service.get_config(f"/services/connectors/{connector_id}/config")
 
     # Handle missing or disabled config
     if not config:
