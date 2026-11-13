@@ -12,6 +12,7 @@ import yaml
 
 from . import kh_layer
 from .graph import Namespace
+from .layers import arango_graph
 from .runner import OracleLayer
 from .scenario import world_from_data
 
@@ -165,3 +166,24 @@ async def test_children_a_hiding_group_holds_are_no_candidates_of_the_cap(monkey
     reference = OracleLayer()
     found = await kh_layer._browse(_Layer(), reference, world, "u", kh_layer.visible(reference, world, "u"), "self")
     assert ("browse_gap", "f: the browse leaves out k200, which the viewer may open") in {(f.kind, f.detail) for f in found}
+
+
+STORED = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: s, kind: group, connector: A, rule: INHERITED, parents: [A], belongs: [A]}
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [s], belongs: [A]}
+  - {id: r, kind: record, connector: A, rule: OPEN, parents: [g], belongs: [g]}
+grants: [[u, r]]
+gates: [[u, A]]
+"""))
+
+
+def test_the_app_places_a_chain_top_by_the_chain_the_store_holds() -> None:
+    """r's own group g hangs from the App through s, whose rule no connector writes. A store that keeps s places r under the App; ArangoDB keeps no
+    node with an unknown rule (`arango_graph`), so there g does not hang from the App and r is placed nowhere, by the same rule
+    (`place_chain_tops`). The layer expects each store's own placement, and the check admits r on both."""
+    for reference, want in ((OracleLayer(), {"r"}), (OracleLayer(arango_graph), set())):
+        assert reference.explain(STORED, "u", ["r"])["r"].admitted
+        assert kh_layer.chain_tops(reference, STORED, "u", "A") == want
