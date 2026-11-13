@@ -396,7 +396,7 @@ async def update_knowledge_base(
         except ValidationError as ve:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=ve.errors()
+                detail=ve.errors(include_input=False),
             )
         updates = body.model_dump(exclude_none=True)
         if not updates:
@@ -1912,6 +1912,7 @@ def _push_service(request: Request, kb_service: KnowledgeBaseService, kafka_serv
         publish_event=publish,
         materialiser=runtime.materialiser,
         image_admission=runtime.image_admission,
+        ledger=runtime.ledger,
     )
 
 
@@ -1938,6 +1939,7 @@ async def push_record(
             raise PushRefusal(400, "ENVELOPE_INVALID", "userId and orgId are required.")
         service = _push_service(request, kb_service, kafka_service)
         user_key = await service.authorize(kb_id, user_id)
+        service.precheck(org_id, user_id)  # a suspended or over-budget caller is refused before a byte of the body is read
         admission = push_api.runtime_for(request.app).admission
         admission.claim(user_key)  # one push at a time per caller per process: held until the push ends
         task: asyncio.Future[Any] | None = None

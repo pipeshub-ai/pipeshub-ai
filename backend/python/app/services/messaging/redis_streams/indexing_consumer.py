@@ -15,10 +15,19 @@ from typing import TYPE_CHECKING, Any, Optional, override
 
 from pydantic import ValidationError
 
-from app.core.envelope import EnvelopeRejected, ctx_of, open_stream_message
+from app.core.envelope import (
+    EnvelopeRejected,
+    ctx_of,
+    decode_message,
+    open_stream_message,
+)
 from app.core.org_context import bind_optional, spawn_detached
-from app.core.org_context import pop as pop_org
-from app.core.org_context import push as push_org
+from app.modules.indexing.embed_resume import stamp_delivery_id
+from app.modules.indexing.record_progress import (
+    begin_progress,
+    end_progress,
+    new_progress,
+)
 from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
@@ -54,6 +63,7 @@ from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_ke
 from app.services.messaging.lanes.hash_router import RedisLaneRouter
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.membership import register_group
+from app.services.messaging.message_log import bound_message
 from app.services.messaging.redis_streams.backlog import read_stream_backlog_detail
 from app.services.messaging.redis_streams.retention import (
     DEFAULT_INTERVAL_SECONDS,
@@ -81,13 +91,13 @@ from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.services.resource_governor import ParseTier, Pool
 from app.telemetry.modules import scheduling_metrics as metrics
+from app.utils import error_class
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
+from app.utils.logging_fields import log_fields
 from app.utils.loop_lag_monitor import LoopLagMonitor, loop_lag_monitor_from_env
 from app.utils.request_context import (
-    bind_context,
     context_from_envelope,
-    reset_context,
     run_in_context,
 )
 
@@ -126,14 +136,6 @@ _RECOVERY_BATCH = 10
 # idle-claim window ago has missed a refresh (they run every third of it),
 # so a peer may be about to claim it (see __release_entries_at_risk).
 _AT_RISK_FRACTION = 2 / 3
-
-
-def _loads_possibly_double_encoded(value: str) -> object:
-    """Decode an envelope that producers sometimes JSON-encode twice."""
-    raw = json.loads(value)
-    if isinstance(raw, str):
-        raw = json.loads(raw)
-    return raw
 
 
 class RedisAcknowledgementError(RuntimeError):
@@ -1189,26 +1191,27 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return False
         try:
             parsed_message = await self._parse_message(message_id, fields, topic)
-            stable_message_id = self._get_stable_message_id(message_id, parsed_message)
-            if await self._should_dead_letter(
-                topic, message_id, stable_message_id, parsed_message
-            ):
-                return False
-            if owned:
-                await self.__reclaim_for_dispatch(topic, message_id)
-            self.logger.info(
-                "Recovering %spending message: stream=%s, id=%s",
-                prefix,
-                topic,
-                message_id,
-            )
-            # Acknowledges an unparseable envelope, as a fresh read does;
-            # left pending it would sit at the head of this lane's recovery
-            # for good, since reclaiming never counts a delivery.
-            await self.__enqueue_parsed(topic, message_id, fields, parsed_message)
-            if parsed_message is None:
-                return True
-            return self.__already_held(message_id, topic)
+            with log_fields(topic=topic, message_id=message_id), bound_message(parsed_message):
+                stable_message_id = self._get_stable_message_id(message_id, parsed_message)
+                if await self._should_dead_letter(
+                    topic, message_id, stable_message_id, parsed_message
+                ):
+                    return False
+                if owned:
+                    await self.__reclaim_for_dispatch(topic, message_id)
+                self.logger.info(
+                    "Recovering %spending message: stream=%s, id=%s",
+                    prefix,
+                    topic,
+                    message_id,
+                )
+                # Acknowledges an unparseable envelope, as a fresh read does;
+                # left pending it would sit at the head of this lane's recovery
+                # for good, since reclaiming never counts a delivery.
+                await self.__enqueue_parsed(topic, message_id, fields, parsed_message)
+                if parsed_message is None:
+                    return True
+                return self.__already_held(message_id, topic)
         except Exception as e:
             self.logger.error(
                 "Error recovering %spending message %s: %s", prefix, message_id, e
@@ -2289,15 +2292,23 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             for stream_name, messages in results
             for message_id, fields in messages
         ]
-        parsed = [
-            await self._parse_message(message_id, fields, _stream)
-            for _stream, message_id, fields in entries
-        ]
+        parsed: list[StreamMessage | None] = []
+        unparsed: set[int] = set()
+        for position, (stream_name, message_id, fields) in enumerate(entries):
+            try:
+                parsed.append(await self._parse_message(message_id, fields, stream_name))
+            except Exception as e:
+                # Not the message (that parses to None): left pending for recovery, so the rest of the read goes on.
+                error_class.log_failure(
+                    self.logger, "message.parse_deferred", e, topic=stream_name, message_id=message_id
+                )
+                parsed.append(None)
+                unparsed.add(position)
         settled = await self.__settle_connector_off(entries, parsed)
         for position, (stream_name, message_id, fields) in enumerate(entries):
             if not self.running:
                 return
-            if position in settled:
+            if position in settled or position in unparsed:
                 continue
             try:
                 await self.__enqueue_parsed(
@@ -2550,31 +2561,36 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Parse a Redis stream entry into a ``StreamMessage``.
 
         Returns ``None`` for any unparseable ("poison") entry — missing value
-        field, malformed JSON, non-object payload, or a payload that fails
+        field, malformed or undecodable JSON, a rejected envelope, non-object
+        payload, or a payload that fails
         ``StreamMessage`` validation. Such entries can never become valid on
         retry, so the caller drops them (see ``_process_message_wrapper``).
         """
-        if _MESSAGE_VALUE_FIELD not in fields:
-            self.logger.debug(
-                "Message %s has no value field (likely init message); treating as unparseable",
-                message_id,
-            )
-            return None
+        with log_fields(topic=stream_name, message_id=message_id):
+            if _MESSAGE_VALUE_FIELD not in fields:
+                self.logger.debug(
+                    "Message %s has no value field (likely init message); treating as unparseable",
+                    message_id,
+                )
+                return None
 
-        try:
-            value_str = fields[_MESSAGE_VALUE_FIELD]
-            # Offloaded above a size threshold: a connector can emit a record
-            # whose whole body rides in the envelope, and parsing it inline
-            # blocks every other in-flight record on this one worker loop.
-            raw = await offload_if_large(_loads_possibly_double_encoded, value_str)
-            return await open_stream_message(stream_name, raw, StreamMessage)
-        except EnvelopeRejected as e:
-            self.logger.error("Envelope rejected for %s on %s: %s", message_id, stream_name, e.reason)
-        except (json.JSONDecodeError, ValidationError, TypeError) as e:
-            self.logger.error(
-                "Failed to parse message %s as StreamMessage: %s", message_id, e
-            )
-            return None
+            try:
+                value_str = fields[_MESSAGE_VALUE_FIELD]
+                # Offloaded above a size threshold: a connector can emit a record
+                # whose whole body rides in the envelope, and parsing it inline
+                # blocks every other in-flight record on this one worker loop.
+                raw = await offload_if_large(decode_message, value_str)
+                return await open_stream_message(stream_name, raw, StreamMessage)
+            except EnvelopeRejected as e:
+                self.logger.error("Envelope rejected for %s on %s: %s", message_id, stream_name, e.reason)
+            except (json.JSONDecodeError, ValidationError, TypeError) as e:
+                # The type only: a ValidationError's text quotes the payload's values. The cause names nesting or a
+                # too-long number behind a JSONDecodeError (decode_json).
+                self.logger.error(
+                    "Failed to parse message %s as StreamMessage", message_id,
+                    extra={"error_type": type(e.__cause__ or e).__name__, "size_bytes": len(value_str)},
+                )
+                return None
 
     async def _start_processing_task(
         self,
@@ -2913,6 +2929,28 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         waiter_token: "concurrency.GateWaiterToken | None" = None,
         parsed_message: "StreamMessage | None" = None,
     ) -> bool:
+        """Process a message with its root, org and ids bound for the whole run, so the lines
+        after the handler (re-queue, dead-letter, the timing summary) carry them too."""
+        with log_fields(topic=stream_name, message_id=message_id):
+            # Reuses the caller's parse when the read/dispatch split (or PEL
+            # recovery) already did it -- avoids a second full json.loads (and,
+            # above the offload threshold, a second thread hop) on the same
+            # envelope.
+            if parsed_message is None:
+                parsed_message = await self._parse_message(message_id, fields, stream_name)
+            with bound_message(parsed_message):
+                return await self._process_bound_message(
+                    stream_name, message_id, fields, waiter_token, parsed_message
+                )
+
+    async def _process_bound_message(
+        self,
+        stream_name: str,
+        message_id: str,
+        fields: dict[str, str],
+        waiter_token: "concurrency.GateWaiterToken | None",
+        parsed_message: "StreamMessage | None",
+    ) -> bool:
         """Process a message under bounded pipeline and parsing concurrency.
 
         Semaphore lifecycle:
@@ -2957,16 +2995,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.logger.error("Concurrency gates not initialized for %s", message_id)
             return False
 
-        # Parse (and, for re-queued messages, wait out any backoff) before
+        # Parsed (and, for re-queued messages, any backoff waited out) before
         # acquiring the parsing semaphore, so a retry waiting for a downed
         # service to recover only occupies a pending-task slot (counted
         # against backpressure), never a parsing/indexing concurrency slot.
-        # Reuses the caller's parse when the read/dispatch split (or PEL
-        # recovery) already did it -- avoids a second full json.loads (and,
-        # above the offload threshold, a second thread hop) on the same
-        # envelope.
-        if parsed_message is None:
-            parsed_message = await self._parse_message(message_id, fields, stream_name)
         if parsed_message is None:
             self.logger.warning(
                 "Unparseable message %s from stream %s (%d byte payload); "
@@ -3132,6 +3164,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
                 parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
 
+            stamp_delivery_id(parsed_message.payload, stable_message_id)
+
             # Counted only now that the record is ours: a crash while it waited
             # for a permit or for its lease was not its doing.
             unfinished = await concurrency.start_attempt(self, record_lock_id)
@@ -3155,25 +3189,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             parsed_message.is_final_failure = will_be_final_on_failure
 
             if self.message_handler:
-                token = bind_context(
-                    context_from_envelope(
-                        {
-                            "requestId": parsed_message.requestId,
-                            "orgId": parsed_message.orgId,
-                        }
-                    )
-                )
+                record_kind = concurrency.record_parse_kind(parsed_message.payload)
                 processing_timeout = messaging_env.record_processing_timeout_for(
                     parsed_message.payload.get("extension"),
                     parsed_message.payload.get("mimeType"),
                 )
-                org_token = push_org(ctx_of(parsed_message))
+
+                progress = new_progress()
+                begin_progress(progress)
 
                 async def consume_handler_events() -> None:
                     nonlocal download_admission, memory_admission, parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool
                     event_gen = self.message_handler(parsed_message)
                     try:
                         async with asyncio.timeout(processing_timeout) as budget:
+                            progress.attach(budget)
                             async for event in event_gen:
                                 if (
                                     event.event == IndexingEvent.START_DOWNLOAD
@@ -3198,6 +3228,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                             index_tier,
                                             event.data.size_bytes if event.data else None,
                                             timeout=wait.remaining(),
+                                            kind=record_kind,
                                         )
                                 elif (
                                     event.event == IndexingEvent.START_PARSING
@@ -3223,13 +3254,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self, parse_tier, size_bytes,
                                             timeout=wait.remaining(), downloaded=True,
-                                            current=memory_admission,
+                                            current=memory_admission, kind=record_kind,
                                         )
                                         parsing_admission = await concurrency.acquire_parsing_slot(
                                             self,
                                             parse_tier,
                                             size_bytes,
                                             timeout=wait.remaining(),
+                                            kind=record_kind,
+                                            reserved_bytes=memory_admission.cost if memory_admission else 0,
                                         )
                                         # Set before the lease attempt so the
                                         # wrapper's finally hands this permit
@@ -3322,6 +3355,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         processing_timeout,
                         message_id,
                     )
+                    await concurrency.requeue_after_productive_cut(
+                        self, progress, lease_handle, message_id
+                    )
                     raise
                 finally:
                     if handler_task is not None and not handler_task.done():
@@ -3334,8 +3370,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         renewal_task.cancel()
                         await asyncio.gather(renewal_task, return_exceptions=True)
                         renewal_task = None
-                    pop_org(org_token)
-                    reset_context(token)
+                    end_progress()
 
                 if shutting_down:
                     # Consumer stopped while waiting for the parsing slot:

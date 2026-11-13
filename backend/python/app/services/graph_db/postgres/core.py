@@ -181,6 +181,9 @@ class CoreMixin(PgBase):
             WHERE org_id = $1 AND coll = $2 AND id = $3 RETURNING 1) SELECT count(*) FROM u""", org, collection, key, _j(upd)), transaction, write=True)
         return bool(r)
 
+    async def store_time(self) -> float:
+        return float(await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.store_time */ SELECT extract(epoch FROM clock_timestamp())::float8"), None))
+
     async def increment_node_field(self, key: str, collection: str, field: str, transaction: str | None = None) -> int | None:
         """One UPDATE that adds one to the stored value under the row's lock (two callers get two different values); None when no node
         matches."""

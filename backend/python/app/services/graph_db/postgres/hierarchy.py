@@ -129,7 +129,7 @@ class HierarchyMixin(PgBase):
                                                   org, colls, from_collection, from_id, to_collection, kind), transaction, write=True)
 
     async def delete_edges_by_relationship_types(self, from_id: str, from_collection: str, collection: str, relationship_types: list[str],
-                                                 transaction: str | None = None) -> int:
+                                                 transaction: str | None = None, *, raise_on_error: bool = False) -> int:
         """``nodeRelations`` is the hierarchy and the links, ``recordLinks`` the links only (Neo4j's ``NODE_RELATION|RECORD_LINK`` and ``RECORD_LINK``)."""
         org = current_org_id()
         colls, kind = _edge_scope(collection)
@@ -139,6 +139,8 @@ class HierarchyMixin(PgBase):
                 SELECT count(*) FROM d""", org, colls, from_collection, from_id, relationship_types, kind), transaction, write=True)
         except Exception as e:
             self.logger.error(f"❌ Delete edges by relationship types failed: {e}")
+            if raise_on_error:
+                raise
             return 0
 
     async def delete_parent_child_edge_to_record(self, record_id: str, transaction: str | None = None) -> bool:
@@ -150,8 +152,12 @@ class HierarchyMixin(PgBase):
         return bool(n)
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None) -> RecordGroup | None:
-        d = await self._one("""/* pipeshub:graph.get_record_group_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups'
-            AND doc->>'connectorId' = $2 AND doc->>'externalGroupId' = $3 LIMIT 1""", current_org_id(), connector_id, external_id, transaction=transaction)
+        org = current_org_id()
+        if isinstance(connector_id, str) and isinstance(external_id, str) and 0 < len(connector_id) <= 200 and 0 < len(external_id) <= 2000:      # the vetted read of graph_0008
+            d = await self._one("/* pipeshub:graph.node_by_external */ SELECT node_id, doc FROM graph.node_by_external('recordGroups', $1, $2)", connector_id, external_id, transaction=transaction)
+        else:
+            d = await self._one("""/* pipeshub:graph.get_record_group_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups'
+                AND doc->>'connectorId' = $2 AND doc->>'externalGroupId' = $3 LIMIT 1""", org, connector_id, external_id, transaction=transaction)
         return RecordGroup.from_arango_base_record_group(_arango(d, "recordGroups")) if d else None
 
     async def batch_upsert_record_groups(

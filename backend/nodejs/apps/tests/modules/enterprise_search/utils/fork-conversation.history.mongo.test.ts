@@ -16,6 +16,7 @@ import { ChatSession } from '../../../../src/modules/enterprise_search/schema/ch
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { copyArtifactsForFork, copySessionUpToMessage } from '../../../../src/modules/enterprise_search/utils/fork-conversation'
 import type { ArtifactCopier, ArtifactRef } from '../../../../src/modules/enterprise_search/utils/fork-artifacts'
+import type { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import { continueConversation } from '../../../../src/modules/enterprise_search/utils/non-streaming-chat'
 import { saveCompleteConversation } from '../../../../src/modules/enterprise_search/utils/utils'
 import type { IAIResponse, IChatSessionDocument } from '../../../../src/modules/enterprise_search/types/conversation.interfaces'
@@ -77,8 +78,11 @@ describeIfMongo(`history after a fork on a real MongoDB (transactions: ${useTran
   const ask = async (chat: IChatSessionDocument, question: string, answer?: string) => {
     const now = new Date()
     const { conversation, previousConversations } = await continueConversation(
-      { _id: chat._id, orgId, userId: owner },
+      { kind: 'chat' },
+      String(chat._id),
       { messageType: 'user_query', content: question, contentFormat: 'MARKDOWN', createdAt: now, updatedAt: now },
+      { userId: String(owner), orgId: String(orgId) },
+      {} as AppConfig, // no record is named, so no access check is made
     )
     const history = previousConversations as unknown as HistoryRow[]
     const reply = answer ?? fakeModel(history, question)

@@ -11,6 +11,7 @@ interface KbPaginationState {
   hasPrev: boolean;
   nextCursor?: string | null;
   prevCursor?: string | null;
+  totalCapped?: boolean;
 }
 
 /** Keyset paging has no page number of its own; derive one from the item index for display. */
@@ -37,6 +38,7 @@ export function KbPaginationFooter({
           endIndex: pagination.endIndex ?? 0,
           hasPrev: pagination.hasPrev,
           hasNext: pagination.hasNext,
+          totalCapped: pagination.totalCapped,
         }}
         // The footer only fires page±1, so the sign alone picks the cursor direction.
         onPageChange={(next) =>

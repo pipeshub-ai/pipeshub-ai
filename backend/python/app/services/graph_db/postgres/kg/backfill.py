@@ -7,7 +7,7 @@
 3. Verify, full, in one unit under the connector's lock; with no change waiting and no difference the state becomes ``shadow`` with the digest and the code epoch.
 The principals of the org (users, groups, roles, teams, organizations) are one pseudo-connector (app_sk 0), done once per org.
 
-A backfill needs the change log to be kept: with the projection off (``PG_KG_PROJECT`` not 1) the connectors service takes its log rows back, so nothing could tell a writer's change from
+A backfill needs the change log to be kept: with the projection off (``PG_KG_PROJECT=0``) the connectors service takes its log rows back, so nothing could tell a writer's change from
 the copy, and the call raises. The same take-back is why a connector goes back to the walk when it deletes rows (flush._take_back, modes.demote_org): the next backfill starts over.
 """
 from __future__ import annotations
@@ -35,6 +35,8 @@ from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
+    import asyncio
+
     from app.core.db import KernelDB, Tx
 
 logger = logging.getLogger(__name__)
@@ -53,6 +55,9 @@ class Outcome:
     batches: int
     result: Result | None = None
     pending: int = 0
+    reason: str = ""             # why ``flipped`` is false: "unfinished" (a budget or a stop ended the copy; it keeps its cursor), "pending" (changes waiting in the log), "cleared" (a demotion or restart
+                                 # emptied the copy while it was verified), "differs" (the verify found a difference nothing waiting explains)
+    stamp_after: str | None = None   # where an unfinished stamping of the connector goes on (``backfill(stamp_after=...)``)
 
 
 def _ctx(org: str) -> OrgContext:
@@ -61,7 +66,7 @@ def _ctx(org: str) -> OrgContext:
 
 def _need_log() -> None:
     if flush.mode() == "off":
-        raise ProjectionOff("the projection is off (PG_KG_PROJECT is not 1): the change log is not kept, so a copy could not be told from a change; turn it on first")
+        raise ProjectionOff("the projection is off (PG_KG_PROJECT=0): the change log is not kept, so a copy could not be told from a change; turn it on first")
 
 
 def _parse(cursor: str | None) -> Key | None:
@@ -86,7 +91,8 @@ async def principal_page(tx: Tx, org: str, after: Key | None, limit: int) -> lis
     return [(r["coll"], r["id"]) for r in rows]
 
 
-async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: int = PAGE, max_batches: int | None = None, restart: bool = False) -> int:
+async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: int = PAGE, max_batches: int | None = None, restart: bool = False,
+                         stop: asyncio.Event | None = None) -> int:
     """Copy one connector (``app_id``) or the org's principals (None) in batches; returns the batches committed in this call. Resumable: a call goes on from the saved cursor."""
     _need_log()
     done = 0
@@ -94,21 +100,26 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
     with bind(_ctx(org)):
         if restart:                                  # copy again from the start (a verify found a difference the drain could not explain)
             async def reset(tx: Tx) -> None:
-                await lock_apps(tx, org, {app_id} if app_id else set(), org_wide=app_id is None)
+                await lock_apps(tx, org, {app_id} if app_id else set(), org_wide=True)      # an orphan has no record row, so a connector taking it over locks only itself
                 app_sk = await _app_sk(tx, app_id) if app_id else 0
                 w = KgWriter(tx)
                 if app_id:       # rows the copy would never touch again: records of this connector whose node is gone, with their links
                     ghosts = [r["sk"] for r in await tx.fetch("""/* pipeshub:kg.ghosts */ SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.app_sk = $2
                         AND NOT EXISTS (SELECT 1 FROM graph.nodes n WHERE n.org_id = r.org_id AND n.coll = CASE r.coll WHEN 1 THEN 'apps' WHEN 2 THEN 'recordGroups' ELSE 'records' END AND n.id = r.id)""",
                                                          org, app_sk)]
+                    orphans = [r["sk"] for r in await tx.fetch("""/* pipeshub:kg.orphan_scopes */ SELECT s.sk FROM kg.scopes s WHERE s.org_id = $1 AND s.app_sk = $2
+                        AND NOT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = s.org_id AND r.sk = s.sk)""", org, app_sk)]
+                    if orphans:      # an access list whose record row is gone (an older process deleted the record alone)
+                        await w.scopes_delete(orphans)
                     if ghosts:
                         links = await tx.fetch("/* pipeshub:kg.ghost_links */ SELECT parent_sk, kind, child_sk FROM kg.links WHERE org_id = $1 AND (child_sk = ANY($2::bigint[]) OR parent_sk = ANY($2::bigint[]))",
                                                org, ghosts)
                         await w.links_delete([(r["parent_sk"], r["kind"], r["child_sk"]) for r in links])
                         await w.records_delete(ghosts)
+                        await w.scopes_delete(ghosts)
                 await modes.demote(tx, org, app_sk)
             await db.run(reset, write=True)
-        while max_batches is None or done < max_batches:
+        while (max_batches is None or done < max_batches) and not (stop is not None and stop.is_set()):
             async def batch(tx: Tx) -> bool:
                 app_sk = await _app_sk(tx, app_id) if app_id else 0
                 cursor, _ = await modes.state(tx, org, app_sk)
@@ -130,14 +141,14 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
     return done
 
 
-async def restamp_app(db: KernelDB, org: str, app_id: str, *, page: int = 2000) -> int:
-    """Stamp every record and record group of a connector, a page at a time under its lock; returns the pages. The structural rows come first: a page's classes are compiled from the
-    graph, whose closure the pages share. A stamp that reaches another connector takes its lock too and redoes the page."""
+async def _restamp_pages(db: KernelDB, org: str, app_id: str, page: int, after: str | None, max_pages: int | None, stop: asyncio.Event | None) -> tuple[int, str | None, bool]:
+    """``restamp_app`` for at most ``max_pages`` pages from ``after`` and not past ``stop``: (pages, where to go on, finished)."""
     pages = 0
-    after: str | None = None
     extra: set[str] = set()
     with bind(_ctx(org)):
         while True:
+            if (max_pages is not None and pages >= max_pages) or (stop is not None and stop.is_set()):
+                return pages, after, False
             async def go(tx: Tx, cursor: str | None = after, held: frozenset[str] = frozenset(extra)) -> str | None:
                 await lock_apps(tx, org, {app_id} | held, org_wide=False)
                 return await stamp_app(tx, org, app_id, cursor, page, locked={app_id} | held)
@@ -147,8 +158,14 @@ async def restamp_app(db: KernelDB, org: str, app_id: str, *, page: int = 2000) 
                 extra |= e.apps
                 continue
             if after is None:
-                return pages
+                return pages, None, True
             pages += 1
+
+
+async def restamp_app(db: KernelDB, org: str, app_id: str, *, page: int = 2000) -> int:
+    """Stamp every record and record group of a connector, a page at a time under its lock; returns the pages. The structural rows come first: a page's classes are compiled from the
+    graph, whose closure the pages share. A stamp that reaches another connector takes its lock too and redoes the page."""
+    return (await _restamp_pages(db, org, app_id, page, None, None, None))[0]
 
 
 async def _pending(tx: Tx, org: str, app_id: str) -> int:
@@ -159,19 +176,51 @@ async def _pending(tx: Tx, org: str, app_id: str) -> int:
         WHERE q.org_id = $1 AND k.coll = 1 AND k.id = $2""", org, app_id)
 
 
-async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max_batches: int | None = None, drain_rounds: int | None = None, restart: bool = False) -> Outcome:
-    """The whole sequence for one connector; resumes where an interrupted call stopped. ``flipped`` is true only when the verify found no difference and nothing waits in the log."""
+async def _copied(db: KernelDB, org: str, app_id: str) -> bool:
+    """Both copies (the org's principals and the connector) are finished."""
+    async def go(tx: Tx) -> bool:
+        return bool(await tx.fetchval("""/* pipeshub:kg.copied */ SELECT coalesce((SELECT p.backfill_cursor = 'done' FROM kg.projection_state p WHERE p.org_id = $1 AND p.app_sk = 0), false)
+            AND coalesce((SELECT s.backfill_cursor = 'done' FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+                          WHERE s.org_id = $1 AND k.coll = 1 AND k.id = $2), false)""", org, app_id))
+    with bind(_ctx(org)):
+        return await db.run(go)
+
+
+async def principals_copied(db: KernelDB, org: str) -> bool:
+    async def go(tx: Tx) -> bool:
+        return (await modes.state(tx, org, 0))[0] == "done"
+    with bind(_ctx(org)):
+        return await db.run(go)
+
+
+async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max_batches: int | None = None, drain_rounds: int | None = None, restart: bool = False,
+                   stop: asyncio.Event | None = None, stamp_pages: int | None = None, stamp_after: str | None = None, stamp_page: int = 2000) -> Outcome:
+    """The whole sequence for one connector; resumes where an interrupted call stopped. ``flipped`` is true only when the verify found no difference and nothing waits in the log.
+    ``max_batches`` (per copy), ``drain_rounds`` (each round takes at most ``page`` log rows), ``stamp_pages`` and ``stop`` bound the call: when one is reached the outcome is not flipped and
+    nothing is stamped or verified past it: "unfinished" (a copy or the stamping stopped at its budget or at ``stop``; the copy keeps its cursor and the stamping goes on from
+    ``Outcome.stamp_after``) or "pending" (the log still has rows). The verify itself is one unit and is not interrupted."""
     _need_log()
-    n = await backfill_scope(db, org, None, page=page, max_batches=max_batches, restart=restart)
-    n += await backfill_scope(db, org, app_id, page=page, max_batches=max_batches, restart=restart)
+    n = await backfill_scope(db, org, None, page=page, max_batches=max_batches, restart=restart, stop=stop)
+    n += await backfill_scope(db, org, app_id, page=page, max_batches=max_batches, restart=restart, stop=stop)
+    if not await _copied(db, org, app_id):
+        return Outcome(False, n, None, 0, "unfinished")
     with bind(_ctx(org)):
         rounds = 0
-        while drain_rounds is None or rounds < drain_rounds:            # until nothing is left (a round takes pages until the log is empty); None = no cap
-            if not (await drain_org(db, org)).rows:
+        while (drain_rounds is None or rounds < drain_rounds) and not (stop is not None and stop.is_set()):     # until nothing is left (a round takes pages until the log is empty); None = no cap
+            bounded = {"page": page, "max_rows": page} if drain_rounds is not None else {}      # a page commits whole: a bounded round must also take small pages
+            if not (await drain_org(db, org, stop=stop, **bounded)).rows:
                 break
             rounds += 1
+        if stop is not None and stop.is_set():
+            return Outcome(False, n, None, 0, "unfinished", stamp_after)
 
-        await restamp_app(db, org, app_id)
+        async def waiting(tx: Tx) -> int:
+            return await _pending(tx, org, app_id)
+        if left := await db.run(waiting):          # a log that keeps gaining rows is never caught up with: the caller waits and looks again, nothing is stamped meanwhile
+            return Outcome(False, n, None, left, "pending", stamp_after)
+        pages, after, finished = await _restamp_pages(db, org, app_id, stamp_page, stamp_after, stamp_pages, stop)
+        if not finished:
+            return Outcome(False, n, None, 0, "unfinished", after)
 
         async def flip(tx: Tx) -> Outcome:
             await lock_apps(tx, org, {app_id}, org_wide=False)
@@ -180,13 +229,13 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
             app_sk = await _app_sk(tx, app_id)
             cursor, mode = await modes.state(tx, org, app_sk)
             if pending:      # the log explains a difference: nothing is decided, the caller drains and asks again
-                return Outcome(False, n, res, pending)
-            if cursor != "done":      # a demotion (or a restart) cleared the copy while we verified: it is not a copy any more
-                return Outcome(False, n, res, 0)
+                return Outcome(False, n, res, pending, "pending")
+            if cursor != "done" or (await modes.state(tx, org, 0))[0] != "done":      # a demotion (or a restart) cleared the connector's copy or the principals' while we verified: it is not a copy any more
+                return Outcome(False, n, res, 0, "cleared")
             if not res.ok:
                 if mode != "legacy":      # nothing waits and kg still differs: back to the walk for readers, and the next backfill starts over
                     await modes.demote(tx, org, app_sk)
-                return Outcome(False, n, res, 0)
+                return Outcome(False, n, res, 0, "differs")
             await KgWriter(tx).projection_set(app_sk, epoch=CODE_EPOCH, mode="enforce" if mode == "enforce" else "shadow", digest=res.digest, cursor="done", verified_at=dt.datetime.now(dt.timezone.utc))
             return Outcome(True, n, res, 0)
         out = await db.run(flip, write=True)

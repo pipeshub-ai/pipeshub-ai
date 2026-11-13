@@ -25,6 +25,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.data_processor.record_links import mentions_in
 from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.connectors.core.base.sync_point.sync_point import FailedItems
 from app.models.entities import Record, RecordGroupType, RecordType, PullRequestRecord
@@ -238,6 +239,9 @@ class MergeRequestsSync:
                 review_name=reviewer_names,
                 merged_at=datetime_to_epoch_ms(getattr(pr, "merged_at", None)),
                 closed_at=datetime_to_epoch_ms(getattr(pr, "closed_at", None)),
+                # As GitHub's PRs do: Jira keys and addresses in the title and description join the MR to
+                # those records, in whichever connector holds them.
+                related_external_records=mentions_in(pr.title or "", getattr(pr, "description", "") or ""),
             )
             return RecordUpdate(
                 record=merge_request_record,

@@ -208,16 +208,16 @@ async def test_get_user_by_email_reads_only_the_ambient_org(org_id: str | None, 
 
     p = object.__new__(IdentityMixin)
     p.logger = logging.getLogger("t")
-    p._one = AsyncMock(return_value={"email": "a@x.io"})
+    p._principals_by_email = AsyncMock(return_value=[{"doc": {"email": "a@x.io"}}])      # the vetted read, which takes the ambient org itself
     user = object()
     with for_org("o1", job="t"), patch.object(identity, "_arango", lambda d, _c: d), \
             patch.object(identity.User, "from_arango_user", return_value=user):
         got = await p.get_user_by_email("A@x.io", org_id=org_id)
     assert got is (user if found else None)
     if found:
-        assert p._one.await_args.args[1:] == ("o1", "A@x.io")
+        assert p._principals_by_email.await_args.args[:2] == (["users"], ["A@x.io"])
     else:
-        p._one.assert_not_awaited()
+        p._principals_by_email.assert_not_awaited()
 
 
 class TestReplaceRecordEntityRelations:

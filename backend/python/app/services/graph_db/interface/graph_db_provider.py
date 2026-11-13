@@ -459,11 +459,14 @@ class CodeFileInfo:
         in recent projections, so a build re-resolves the files referencing them
     has_code_file: False for a source file with no codeFiles node (a .py
         uploaded to a KB), which records neither list
+    commit_sha: the commit the file was synced at (codeFiles.commitSha, written
+        by the git connectors); None for a file with no commit
     """
     file_path: str
     referenced_names: tuple[str, ...] = ()
     changed_names: tuple[str, ...] = ()
     has_code_file: bool = True
+    commit_sha: str | None = None
 
 
 class IGraphDBProvider(ABC):
@@ -521,6 +524,10 @@ class IGraphDBProvider(ABC):
        During transition, providers should handle both old format (with _key, _from, _to)
        and new generic format to ensure smooth migration.
     """
+
+    #: How ``page_entity_index_source`` orders a connector's records, when it differs from the order this store always used. It is part of the
+    #: entity index's pass marker, so a pass saved under another order starts over instead of resuming a cursor that could skip rows.
+    ENTITY_INDEX_PAGE_ORDER: str = ""
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -1300,7 +1307,9 @@ class IGraphDBProvider(ABC):
         from_collection: str,
         collection: str,
         relationship_types: list[str],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> int:
         """
         Delete edges from a node by relationship types.
@@ -1311,6 +1320,8 @@ class IGraphDBProvider(ABC):
             collection (str): Edge collection name
             relationship_types (List[str]): List of relationship type values to delete
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failure instead of answering 0, which also means
+                "nothing to delete"; a caller that writes replacements next needs to tell them apart
 
         Returns:
             int: Number of edges deleted
@@ -1980,6 +1991,30 @@ class IGraphDBProvider(ABC):
         """The connector's code blocks (in *record_group_ids*, when given) with an ``externalRefs`` entry
         (``specifier:name``) starting with any of *prefixes*, in ``_key`` order, at most *limit*, each with its
         ``externalRefs``. The groups filter before the limit applies."""
+        pass
+
+    @abstractmethod
+    async def find_uncalled_blocks(
+        self,
+        org_id: str,
+        connector_id: str,
+        record_ids: list[str],
+        kinds: list[str],
+        relations: list[str],
+        limit: int,
+        after_key: str | None = None,
+        uncounted_caller_records: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Blocks of *kinds* in *record_ids* with no inbound code edge of *relations*, in ``_key`` order after
+        *after_key*: ``(page, next after_key or None)``.
+
+        An edge from a block of one of *uncounted_caller_records* (or from that record itself) does not count, so
+        a caller the reader may not see neither hides a block nor reveals itself. The anti-join runs in the
+        database, so a caller ranks a whole scope instead of a scanned sample.
+        """
         pass
 
     @abstractmethod
@@ -3023,6 +3058,8 @@ class IGraphDBProvider(ABC):
         org_id: str,
         per_address: int = 2,
         transaction: str | None = None,
+        *,
+        include_deleted: bool = False,
     ) -> list[dict[str, Any]]:
         """The live records of the org stored under any of ``weburls`` (exact
         match), in any connector. Link records and placeholders are left out:
@@ -3036,6 +3073,8 @@ class IGraphDBProvider(ABC):
             per_address: Most rows per address, records that are not dependent
                 nodes first; each address is looked up on its own.
             transaction: Optional transaction ID.
+            include_deleted: Also return deleted records, so a caller asking who may
+                read what is at an address can tell a deleted record from no record.
 
         Returns:
             Rows ``{"id", "recordType", "connectorName", "webUrl",
@@ -3663,6 +3702,17 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of app users
+        """
+        pass
+
+    @abstractmethod
+    async def get_app_user_links(
+        self, org_id: str, connector_id: str, transaction: str | None = None
+    ) -> list[dict]:
+        """Every user of the org linked to the connector with a source user id, guests
+        included (``get_app_users`` lists org members only). Each item is
+        ``{"id": <user key>, "sourceUserId": <id at the source>}``. Used to find the links
+        to withdraw. Reads inside ``transaction`` when given. A failed read raises.
         """
         pass
 
@@ -5053,6 +5103,13 @@ class IGraphDBProvider(ABC):
         "no scopes"."""
         raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
 
+    async def store_time(self) -> float:
+        """The store's own clock, in epoch seconds. Leases that a writer and a sweeper judge are written and read by this clock, so a host whose
+        clock is off cannot make a live lease look dead. A provider that cannot say raises, and so does a read slower than
+        ``STORE_CLOCK_TIMEOUT_SECONDS`` as far as the callers are concerned: a writer then writes its lease by the local clock and marks it unknown,
+        a sweep recovers nothing that round, and the operator view reports the unknown clock. Nothing is recovered by the local clock."""
+        raise NotImplementedError(f"{type(self).__name__} has no store clock")
+
     async def increment_node_field(
         self, key: str, collection: str, field: str, transaction: str | None = None
     ) -> int | None:
@@ -6170,6 +6227,21 @@ class IGraphDBProvider(ABC):
         sweep too -- both halves have to be removed here.
 
         Returns the number of block nodes removed.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def sweep_deleted_connector_writes(
+        self, connector_id: str, record_group_ids: Sequence[str] = (),
+    ) -> tuple[int, int]:
+        """One pass over a deleted connector: remove the blocks and stage states that still
+        carry its ``connectorId``, which indexing already in flight can write after the delete.
+        A store that writes an edge without checking its ends also removes the record links
+        that carry one of the connector's ``record_group_ids``: the code graph writes a file's
+        edges after its blocks, and those edges carry no ``connectorId``.
+
+        Returns ``(removed, left)``, ``left`` being what a count finds right after. Raises when
+        the store does. Never call it for a connector that still exists: it removes all of them.
         """
         raise NotImplementedError
 
@@ -7854,6 +7926,7 @@ class IGraphDBProvider(ABC):
         page = page[:limit]
         if direction == "prev":
             page.reverse()
+        await self._kh_v3_settle_held_arrows(page, app_id=app_id, org_id=org_id, access=access, transaction=transaction)
         if name_parents:
             await self._kh_v3_name_parents(
                 page, org_id=org_id, apps={app_id}, access=access, listed_under=listed_under,
@@ -7891,6 +7964,36 @@ class IGraphDBProvider(ABC):
             "counts": counts,
             "scope": scope_out,
         }
+
+    async def _kh_v3_settle_held_arrows(
+        self, page: list[dict[str, Any]], *, app_id: str, org_id: str, access: dict[str, Any] | None, transaction: str | None,
+    ) -> None:
+        """A row's arrow is on only where opening the row lists something, which the queries cannot say alone:
+
+        * a group the viewer holds a granted record in (``khHeld``) lists it only if it is a chain-top: asked of the chain-top walk a browse of the
+          group runs;
+        * a row the walk from the App does not reach (``khFromApp`` false: a seed, a chain-top, a declared member) opens only if the batch check
+          admits it, as the start of its own browse is admitted: asked of the same check.
+        """
+        asked = [row for row in page if row.pop("khHeld", False) and not row.get("hasChildren") and row.get("nodeType") == "recordGroup"]
+        unreached = [row for row in page if not row.pop("khFromApp", True)]
+        if access is None:
+            return
+
+        async def lists_a_chain_top(row: dict[str, Any]) -> bool:
+            probe = access.get("probe")
+            by_groups = await self._kh_v3_chain_top_groups_by_probe(
+                app_id, org_id, row["id"], probe["grantees"], transaction) if probe else None
+            return bool((await self._kh_v3_chain_tops(
+                app_id, org_id, access, transaction, only_group=row["id"], by_groups=by_groups)).get(row["id"]))
+
+        for row, lists in zip(asked, await asyncio.gather(*(lists_a_chain_top(r) for r in asked)), strict=True):
+            row["hasChildren"] = lists
+        unreached = [row for row in unreached if row.get("hasChildren")]
+        if unreached:
+            openable = (await self.check_access("", org_id, node_ids=[row["id"] for row in unreached], access=access, transaction=transaction)).node_ids
+            for row in unreached:
+                row["hasChildren"] = row["id"] in openable
 
     async def name_knowledge_hub_parents(
         self,
@@ -8066,7 +8169,14 @@ class IGraphDBProvider(ABC):
         )).node_ids
         if start_id not in admitted:
             return False, [], []
+        # A declaration is a scope only where the check's declared arm reads it: the viewer is granted it or the walk from the App reaches it, not
+        # where it is admitted some other way (below a seed), where what hangs under it is not readable through it.
         declared = [d for d in declared if d in admitted]
+        granted = list(grants_by_connector.get(app_id) or [])
+        unproved = [d for d in declared if d not in granted]        # a declaration the viewer is granted is read as one without asking the walk
+        if unproved:
+            reached = set(await self._kh_v3_declared_reached(unproved, app_id, granted, probe, transaction))
+            declared = [d for d in declared if d in granted or d in reached]
         scope = await self._kh_v3_declared_groups(declared, transaction) if declared else []
         return True, [a for a in ancestors if a in admitted], scope
 
@@ -8176,6 +8286,13 @@ class IGraphDBProvider(ABC):
     ) -> list[str]:
         """The groups under these declared groups, group to group, deleted groups
         cut: the check's declared-scope arm."""
+        raise NotImplementedError
+
+    async def _kh_v3_declared_reached(
+        self, declared: list[str], app_id: str, granted_ids: list[str], probe: dict[str, Any] | None, transaction: str | None,
+    ) -> list[str]:
+        """Of these declared groups, those the viewer is granted or the walk from the App reaches (the check's declared arm). ``probe``: grants are
+        tested from the node, as on the rest of the page."""
         raise NotImplementedError
 
     async def get_knowledge_hub_access_v3(

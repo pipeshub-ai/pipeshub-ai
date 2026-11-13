@@ -31,6 +31,7 @@ from app.connectors.core.sync.sync_runner import run_sync_task
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.utils import error_class
 from app.utils.logging_fields import log_fields
+from app.connectors.sources.local_repo.connector import LocalRepoConnector
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
@@ -145,6 +146,7 @@ class ConnectorFactory:
         "demo": DemoConnector,
         "bookstack": BookStackConnector,
         "drupalwiki": DrupalWikiConnector,
+        "localrepository": LocalRepoConnector,
         "github": GithubConnector,
         "s3": S3Connector,
         "minio": MinIOConnector,

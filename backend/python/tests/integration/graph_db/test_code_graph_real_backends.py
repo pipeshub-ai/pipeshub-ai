@@ -17,11 +17,13 @@ import contextlib
 import logging
 import uuid
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
 from app.agents.actions.code_graph.neighbours import impact_impl
+from app.agents.actions.code_graph.ops import synced_commits
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -29,7 +31,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
-from app.models.entities import CodeFileRecord, RecordType
+from app.models.entities import CodeFileRecord, RecordGroupType, RecordType
 from app.modules.code_graph import deleted_files
 from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
@@ -42,6 +44,10 @@ from app.modules.code_graph.edge_builder import (
     build_code_graph_edges,
 )
 from app.modules.code_graph.facts_source import facts_from_blob_record
+from app.modules.code_graph.synced_commit import (
+    LAST_SYNCED_COMMIT,
+    record_synced_commit,
+)
 from app.modules.parsers.code_parser import CodeFileParser
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import (
@@ -67,6 +73,7 @@ FILES = {
     "src/shop/b.py": "def target(x):\n    return helper(x)\n\n\ndef helper(x):\n    return x\n",
     "src/shop/a.py": "from shop.b import target\n\n\ndef caller():\n    return target(1)\n",
 }
+COMMIT = "0123456789abcdef0123456789abcdef01234567"  # the commit the git connector stores per file
 
 logger = logging.getLogger("code-graph-real-backends-it")
 
@@ -123,7 +130,7 @@ async def _write_repo(graph: IGraphDBProvider, org_id: str, connector_id: str, g
             version=1, origin=OriginTypes.CONNECTOR, connector_name=Connectors.GITHUB,
             connector_id=connector_id, mime_type=language(path)[1], extension=language(path)[2],
             file_path=path, file_hash=uuid.uuid4().hex, language=language(path)[0],
-            indexing_status=ProgressStatus.COMPLETED.value, file_role=(roles or {}).get(path),
+            indexing_status=ProgressStatus.COMPLETED.value, file_role=(roles or {}).get(path), commit_sha=COMMIT,
         )
         for path in files
     ]
@@ -349,7 +356,35 @@ async def test_records_updated_since_and_file_paths(repo: _Repo) -> None:
         repo.org_id, list(repo.record_ids.values()), raise_on_error=True,
     )
     assert {info.file_path for info in paths.values()} == set(FILES)
+    assert {info.commit_sha for info in paths.values()} == {COMMIT}  # read back for indexed_commit
 
+
+
+async def test_a_code_group_is_stamped_with_its_synced_commit_and_read_back(repo: _Repo) -> None:
+    """The strict record-group schema accepts the stamp, the patch keeps the group's other fields, and the
+    tools read it back for the caller's org only."""
+    groups = CollectionNames.RECORD_GROUPS.value
+    await repo.graph.batch_upsert_nodes([{
+        "id": repo.group_id, "orgId": repo.org_id, "connectorId": repo.connector_id, "groupName": "acme/shop",
+        "groupType": RecordGroupType.PROJECT.value, "connectorName": Connectors.GITHUB.value,
+        "externalGroupId": "101-code-repository", "createdAtTimestamp": 1,
+    }], groups)
+    try:
+        processor = SimpleNamespace(
+            get_record_group_by_external_id=lambda *_: asyncio.sleep(0, SimpleNamespace(id=repo.group_id)),
+            batch_update_nodes=repo.graph.batch_update_nodes,
+        )
+        assert await record_synced_commit(processor, repo.connector_id, "101-code-repository", COMMIT)
+
+        assert await synced_commits(repo.graph, repo.org_id, [repo.group_id]) == {repo.group_id: COMMIT}
+        assert await synced_commits(repo.graph, f"{repo.org_id}-other", [repo.group_id]) == {}
+        stored = await repo.graph.get_nodes_by_field_in(
+            collection=groups, field_name="_key", field_values=[repo.group_id],
+            return_fields=["groupName", LAST_SYNCED_COMMIT], raise_on_error=True,
+        )
+        assert [(g["groupName"], g[LAST_SYNCED_COMMIT]) for g in stored] == [("acme/shop", COMMIT)]
+    finally:
+        await repo.graph.delete_nodes_and_edges([repo.group_id], groups)
 
 async def test_path_prefix_and_name_lookups(repo: _Repo) -> None:
     files = await repo.graph.get_nodes_by_field_prefix(
@@ -378,6 +413,37 @@ async def test_the_edge_rollup_by_file_prefix(repo: _Repo) -> None:
         repo.org_id, "src/shop/", [RecordRelations.CALLS.value], "outbound", repo.connector_id,
     )
     assert rows, "the CALLS edge from a.py to b.py rolls up under the prefix"
+
+
+async def test_find_uncalled_blocks_anti_joins_in_the_database(repo: _Repo) -> None:
+    """caller() calls target(), target() calls helper(): only caller has no inbound CALLS."""
+    await _build(repo)
+    ids = list(repo.record_ids.values())
+    find = repo.graph.find_uncalled_blocks
+    kinds, calls = ["function", "method"], [RecordRelations.CALLS.value]
+    page, after = await find(repo.org_id, repo.connector_id, ids, kinds, calls, 10, raise_on_error=True)
+    assert [b["qualifiedName"] for b in page] == ["function:caller"] and after is None
+    assert page[0]["_key"] == repo.block("src/shop/a.py", "function:caller")
+    # scoped to b.py, whose functions are both called: nothing
+    only_b = [repo.record_ids["src/shop/b.py"]]
+    assert await find(repo.org_id, repo.connector_id, only_b, kinds, calls, 10, raise_on_error=True) == ([], None)
+    # a caller in an uncounted file does not make its callee called; one in a counted file still does
+    hidden_a = [repo.record_ids["src/shop/a.py"]]
+    page, _ = await find(repo.org_id, repo.connector_id, only_b, kinds, calls, 10,
+                         uncounted_caller_records=hidden_a, raise_on_error=True)
+    assert [b["qualifiedName"] for b in page] == ["function:target"]
+    # every function counts once the relation is one no edge has
+    everything, _ = await find(repo.org_id, repo.connector_id, ids, kinds, ["OVERRIDES"], 10, raise_on_error=True)
+    assert {b["qualifiedName"] for b in everything} == {"function:caller", "function:target", "function:helper"}
+    # paged in key order: a full page hands back where to go on, the last page None
+    keys = sorted(b["_key"] for b in everything)
+    first, after = await find(repo.org_id, repo.connector_id, ids, kinds, ["OVERRIDES"], 2, raise_on_error=True)
+    assert [b["_key"] for b in first] == keys[:2] and after == keys[1]
+    rest, end = await find(repo.org_id, repo.connector_id, ids, kinds, ["OVERRIDES"], 2, after, raise_on_error=True)
+    assert [b["_key"] for b in rest] == keys[2:] and end is None
+    # an empty scope asks nothing; another connector's blocks are never returned
+    assert await find(repo.org_id, repo.connector_id, [], kinds, calls, 10, raise_on_error=True) == ([], None)
+    assert await find(repo.org_id, "conn-other", ids, kinds, calls, 10, raise_on_error=True) == ([], None)
 
 
 async def test_the_exact_name_index_exists(repo: _Repo) -> None:
@@ -581,6 +647,124 @@ async def test_an_agent_tool_answers_from_the_built_graph(repo: _Repo) -> None:
             await repo.graph.delete_nodes_and_edges([user_key], CollectionNames.USERS.value)
         with contextlib.suppress(Exception):
             await repo.graph.delete_nodes_and_edges([repo.connector_id], CollectionNames.APPS.value)
+
+
+async def test_modifies_survives_a_pr_save_and_a_rewrite_keeps_one_edge(repo: _Repo) -> None:
+    """A PR's MODIFIES edges are its own -- the processor's link rewrite on every PR save leaves them --
+    and re-indexing the PR replaces them instead of adding a second set."""
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_processor.pr_links import write_modifies
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+    from app.models.blocks import FileChangeMetadata
+    from app.models.entities import PullRequestRecord
+
+    pr = PullRequestRecord(
+        id=str(uuid.uuid4()), org_id=repo.org_id, record_name="Speed up target",
+        record_type=RecordType.PULL_REQUEST, external_record_id=f"pr-{uuid.uuid4().hex[:8]}", version=1,
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.GITHUB, connector_id=repo.connector_id,
+        mime_type="text/markdown", merged_at=1_700,
+    )
+    await repo.graph.batch_upsert_records([pr])
+    store = GraphDataStore(logger, repo.graph)
+    target = repo.record_ids["src/shop/b.py"]
+    changes = [FileChangeMetadata(path="src/shop/b.py", status="modified", additions=2, deletions=1),
+               FileChangeMetadata(path="docs/none.md", status="added")]
+
+    async def prs_of_target() -> list[str]:
+        rows = await repo.graph.get_neighbors_for_nodes_by_relationship_types(
+            node_keys=[target], node_collection=RECORDS, relationship_types=[RecordRelations.MODIFIES.value],
+            direction="inbound", raise_on_error=True)
+        return [r["key"] for r in rows]
+
+    try:
+        for _ in range(2):  # indexed, then re-indexed
+            async with store.transaction() as tx:
+                assert await write_modifies(tx, pr, changes,
+                                            lambda path: f"ext-{repo.record_ids.get(path)}") == (1, 1)
+        assert await prs_of_target() == [pr.id]
+        async with store.transaction() as tx:  # what every save of the PR does to its link edges
+            await tx.delete_edges_by_relationship_types(
+                pr.id, RECORDS, CollectionNames.NODE_RELATIONS.value,
+                list(DataSourceEntitiesProcessor.LINK_RELATION_TYPES))
+        assert await prs_of_target() == [pr.id]
+    finally:
+        with contextlib.suppress(Exception):
+            await repo.graph.delete_nodes_and_edges([pr.id], RECORDS)
+
+
+async def _a_failed_rewrite_keeps_the_old_links(repo: _Repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A PR linked to a.py is re-indexed with b.py as its only change, and the write fails after the delete: the
+    processor's rewrite raises and the PR keeps exactly its link to a.py, none to b.py."""
+    from types import SimpleNamespace
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_processor.pr_links import write_modifies
+    from app.connectors.core.base.data_store.graph_data_store import (
+        GraphDataStore,
+        GraphTransactionStore,
+    )
+    from app.models.blocks import FileChangeMetadata
+    from app.models.entities import PullRequestRecord
+
+    pr = PullRequestRecord(
+        id=str(uuid.uuid4()), org_id=repo.org_id, record_name="Rewrite that fails",
+        record_type=RecordType.PULL_REQUEST, external_record_id=f"pr-{uuid.uuid4().hex[:8]}", version=1,
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.GITHUB, connector_id=repo.connector_id,
+        mime_type="text/markdown",
+    )
+    await repo.graph.batch_upsert_records([pr])
+    store = GraphDataStore(logger, repo.graph)
+
+    def ext(path: str) -> str:
+        return f"ext-{repo.record_ids.get(path)}"
+
+    a, b = repo.record_ids["src/shop/a.py"], repo.record_ids["src/shop/b.py"]
+
+    async def linked() -> set[str]:
+        rows = await repo.graph.get_neighbors_for_nodes_by_relationship_types(
+            node_keys=[pr.id], node_collection=RECORDS, relationship_types=[RecordRelations.MODIFIES.value],
+            direction="outbound", raise_on_error=True)
+        return {r["key"] for r in rows}
+
+    try:
+        async with store.transaction() as tx:
+            assert await write_modifies(tx, pr, [FileChangeMetadata(path="src/shop/a.py")], ext) == (1, 0)
+        assert await linked() == {a}
+
+        async def write_fails(self, edges, collection) -> None:
+            raise RuntimeError("injected edge-write failure")
+
+        monkeypatch.setattr(GraphTransactionStore, "batch_create_edges", write_fails)
+        processor = SimpleNamespace(data_store_provider=store)
+        with pytest.raises(RuntimeError, match="injected"):
+            await DataSourceEntitiesProcessor.on_pr_file_changes(
+                processor, pr, [FileChangeMetadata(path="src/shop/b.py")], ext)
+        assert await linked() == {a}, "the delete must roll back with the failed write"
+        assert b not in await linked()
+    finally:
+        with contextlib.suppress(Exception):
+            await repo.graph.delete_nodes_and_edges([pr.id], RECORDS)
+
+
+async def test_a_failed_modifies_rewrite_rolls_back_and_keeps_the_old_links(
+    repo: _Repo, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _a_failed_rewrite_keeps_the_old_links(repo, monkeypatch)
+
+
+# Neo4j only: auto-commit is a Neo4j setting (ArangoDB transactions are always real).
+@pytest.mark.parametrize("repo", ["neo4j"], indirect=True)
+async def test_a_failed_modifies_rewrite_rolls_back_with_neo4j_auto_commit_on(
+    repo: _Repo, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With NEO4J_EXPLICIT_TRANSACTIONS false each statement commits on its own, so only the rewrite's real
+    transaction (explicit=True) keeps the delete from landing without the write."""
+    monkeypatch.setattr(repo.graph.client, "_explicit_transactions", False)
+    await _a_failed_rewrite_keeps_the_old_links(repo, monkeypatch)
 
 
 # Neo4j only: collected for one backend, so the Arango job never selects (and skips) it.

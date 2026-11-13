@@ -13,8 +13,10 @@ import type {
   FilterOptionsResponse,
   ConnectorStatsResponse,
   ConnectionCheckResponse,
+  PermissionStatus,
   ReindexStage,
   CodeGraphRepo,
+  AccessExplanation,
 } from './types';
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
@@ -516,6 +518,28 @@ export const ConnectorsApi = {
   ): Promise<ConnectorStatsResponse> {
     const { data } = await apiClient.get<ConnectorStatsResponse>(
       `${BASE_URL}/${connectorId}/stats`
+    );
+    return data;
+  },
+
+  /** Why a person can or cannot read a record. Org admins only. The caller words every failure. */
+  async explainAccess(
+    connectorId: string,
+    userId: string,
+    recordId: string
+  ): Promise<AccessExplanation> {
+    const { data } = await apiClient.get<AccessExplanation>(
+      `${BASE_URL}/${encodeURIComponent(connectorId)}/permissions/explain`,
+      { params: { userId, recordId }, suppressErrorToast: true }
+    );
+    return data;
+  },
+
+  /** Admin only: how fresh a connector's permissions are. */
+  async getPermissionStatus(connectorId: string): Promise<PermissionStatus> {
+    const { data } = await apiClient.get<PermissionStatus>(
+      `${BASE_URL}/${connectorId}/permissions/status`,
+      { suppressErrorToast: true }
     );
     return data;
   },

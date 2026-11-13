@@ -125,6 +125,44 @@ describe('Connector routes over HTTP', () => {
     })
   })
 
+  describe('GET /:connectorId/permissions/status', () => {
+    const PATH = `/api/v1/connectors/${CONNECTOR_ID}/permissions/status`
+
+    it('forwards the call with the caller\'s own token and returns the status as it comes', async () => {
+      h.backend.on('GET', PATH, { status: 200, body: { state: 'healthy' } })
+
+      const r = await call(h, 'GET', `/${CONNECTOR_ID}/permissions/status`, sessionToken(h, admin))
+
+      expect(r.status).to.equal(200)
+      expect(r.body).to.deep.equal({ state: 'healthy' })
+      expect(single(h.backend.callsTo('GET', PATH)).headers.authorization).to.match(/^Bearer /)
+    })
+
+    it('passes on the 404 the connector service gives a non-admin', async () => {
+      h.backend.on('GET', PATH, { status: 404, body: { detail: 'This connector was removed, or you no longer have access.' } })
+
+      const r = await call(h, 'GET', `/${CONNECTOR_ID}/permissions/status`, sessionToken(h, member))
+
+      expect(r.status).to.equal(404)
+    })
+
+    it('rejects a request with no token without asking the connector service', async () => {
+      const r = await call(h, 'GET', `/${CONNECTOR_ID}/permissions/status`)
+
+      expect(r.status).to.equal(401)
+      expect(h.backend.calls).to.have.length(0)
+    })
+
+    it('tells the user to try again later when the connector service is down', async () => {
+      h.backend.on('GET', PATH, 'drop')
+
+      const r = await call(h, 'GET', `/${CONNECTOR_ID}/permissions/status`, sessionToken(h, admin))
+
+      expect(r.status).to.equal(503)
+      expect(errorMessage(r)).to.equal(SERVICE_UNAVAILABLE_MESSAGE)
+    })
+  })
+
   describe('GET /record/:recordId/content', () => {
     it('returns the parsed content for a record', async () => {
       h.backend.on('GET', `/api/v1/records/${CONNECTOR_ID}/content`, { status: 200, body: { content: 'hello' } })

@@ -73,6 +73,7 @@ import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes
 import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
 import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
 import * as delegationRoutes from '../src/modules/oauth_provider/routes/delegation.routes';
+import * as localReposRoutes from '../src/modules/local_repos/routes/local_repos.routes';
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
 import { MailSenderService } from '../src/modules/mail/services/mail.sender.service';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
@@ -204,6 +205,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
   sandbox.stub(serviceTokenRoutes, 'createServiceTokenRouter').returns(dummyRouter);
   sandbox.stub(delegationRoutes, 'createDelegationRouter').returns(dummyRouter);
+  sandbox.stub(localReposRoutes, 'createLocalReposRouter').returns(dummyRouter);
 }
 
 /**

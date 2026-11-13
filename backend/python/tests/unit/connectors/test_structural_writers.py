@@ -647,6 +647,7 @@ _OUTSIDE_THE_STORE: dict[tuple[str, str], str] = {
     ("app/connectors/services/event_service.py", "delete_connector_instance"): "deletes the connector itself, and with it the generation",
     # the same for a knowledge base, which is an app
     ("app/connectors/sources/localKB/handlers/kb_service.py", "delete_connector_instance"): "deletes the knowledge base (an app) itself, as above",
+    ("app/connectors/services/storage_release.py", "delete_connector_instance"): "finishes the delete of the connector itself, as above",
     # hard-deletes records that are already in the trash: the soft delete moved the generation and removed their points
     ("app/connectors/services/trash_purge.py", "purge_trashed_records"): "removes records already soft-deleted (that moved the generation)",
     # a push that finds its knowledge base being deleted removes the record it created a moment earlier in the same request;

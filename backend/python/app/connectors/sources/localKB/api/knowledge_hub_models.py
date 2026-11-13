@@ -27,6 +27,7 @@ class SortField(str, Enum):
     UPDATED_AT = "updatedAt"
     SIZE = "size"
     TYPE = "type"
+    ORIGIN = "origin"
 
 class SortOrder(str, Enum):
     """Valid sort order values"""
@@ -83,6 +84,8 @@ class NodeItem(BaseModel):
     recordGroupType: Optional[str] = Field(None, description="Record group type (only when nodeType is recordGroup, e.g. SLACK_CHANNEL, CONFLUENCE_SPACES)")
     indexingStatus: Optional[str] = Field(None, description="Indexing status (only when nodeType is record)")
     reason: Optional[str] = Field(None, description="Reason for current indexing status (e.g. failure reason)")
+    embedDone: Optional[int] = Field(None, description="Vector points written so far (one per chunk or image); set only while indexingStatus is IN_PROGRESS and the record is embedding")
+    embedTotal: Optional[int] = Field(None, description="Distinct vector points the record needs (one per chunk or image); set only while indexingStatus is IN_PROGRESS and the record is embedding")
     createdAt: int = Field(..., description="Creation timestamp (epoch ms)")
     updatedAt: int = Field(..., description="Update timestamp (epoch ms)")
     sizeInBytes: Optional[int] = Field(None, description="File size in bytes (only for file records)")
@@ -128,7 +131,8 @@ class PaginationInfo(BaseModel):
     by number.
     """
     limit: int = Field(..., description="Items per page")
-    totalItems: int = Field(..., description="Total number of items")
+    totalItems: int = Field(..., description="Total number of items; a lower bound when `totalCapped` is true")
+    totalCapped: bool = Field(False, description="True when `totalItems` stopped at the provider's cap and more items exist; `hasNext` and `nextCursor` stay authoritative")
     hasNext: bool = Field(..., description="Whether there is a next page")
     hasPrev: bool = Field(..., description="Whether there is a previous page")
     startIndex: Optional[int] = Field(None, description="1-based index of the first item on this page")
@@ -189,7 +193,8 @@ class CountItem(BaseModel):
 class CountsInfo(BaseModel):
     """Response model for counts information"""
     items: List[CountItem] = Field(..., description="Breakdown of counts by type")
-    total: int = Field(..., description="Total number of nodes")
+    total: int = Field(..., description="Total number of nodes; a lower bound when `capped` is true")
+    capped: bool = Field(False, description="True when `total` and the counts stopped at the provider's cap")
 
 class PermissionsInfo(BaseModel):
     """Response model for permissions information"""
@@ -221,6 +226,7 @@ class KnowledgeHubNodesResponse(BaseModel):
     breadcrumbs: Optional[List[BreadcrumbItem]] = Field(None, description="Breadcrumb trail")
     counts: Optional[CountsInfo] = Field(None, description="Counts summary")
     permissions: Optional[PermissionsInfo] = Field(None, description="User permissions")
+    notReady: Optional[list[str]] = Field(None, description="Sources left out of this listing because their copy is not made yet; the others are listed. Ask again in a moment")
     maxFolderDepth: int = Field(KB_MAX_FOLDER_DEPTH, description="Deepest a collection folder may be nested (a folder directly in the collection is depth 1)")
     typed_records: Optional[Dict[str, Any]] = Field(None, description="Typed Record instances keyed by record ID (only when include_typed_records is requested)")
 

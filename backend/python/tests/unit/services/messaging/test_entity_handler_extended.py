@@ -48,21 +48,21 @@ class TestHandleUserAddedExtended:
     """Cover lines 300-302: exception during user creation."""
 
     @pytest.mark.asyncio
-    async def test_user_added_exception_returns_false(self):
+    async def test_user_added_exception_raises(self):
         svc = _make_entity_service()
         svc.graph_provider.get_user_by_email = AsyncMock(
             side_effect=Exception("DB error")
         )
-        result = await svc.process_event(
-            "userAdded",
-            {
-                "userId": "u1",
-                "orgId": "org-1",
-                "email": "user@test.com",
-                "syncAction": "none",
-            },
-        )
-        assert result is False
+        with pytest.raises(Exception, match="DB error"):
+            await svc.process_event(
+                "userAdded",
+                {
+                    "userId": "u1",
+                    "orgId": "org-1",
+                    "email": "user@test.com",
+                    "syncAction": "none",
+                },
+            )
 
 
 # ===================================================================
@@ -74,16 +74,16 @@ class TestHandleAppDisabledExtended:
     """Cover lines 481-483: exception in app disabled handler."""
 
     @pytest.mark.asyncio
-    async def test_app_disabled_db_error_returns_false(self):
+    async def test_app_disabled_db_error_raises(self):
         svc = _make_entity_service()
         svc.graph_provider.get_document = AsyncMock(
             side_effect=Exception("DB error")
         )
-        result = await svc.process_event(
-            "appDisabled",
-            {"orgId": "org-1", "apps": ["drive"], "connectorId": "c-1"},
-        )
-        assert result is False
+        with pytest.raises(Exception, match="DB error"):
+            await svc.process_event(
+                "appDisabled",
+                {"orgId": "org-1", "apps": ["drive"], "connectorId": "c-1"},
+            )
 
 
 # ===================================================================

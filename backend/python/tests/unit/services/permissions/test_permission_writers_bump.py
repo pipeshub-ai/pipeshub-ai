@@ -150,6 +150,8 @@ NO_BUMP = {
     "agents/agent_loop/skills/graph_store.py::detach_from_agents": AGENT,
     "api/routes/agent.py::update_agent": "agent sharing edges, not records: no viewer scope reads them",
     "connectors/core/base/data_processor/data_source_entities_processor.py::_drop_shared_groups": SYNC,
+    "connectors/core/base/data_processor/pr_links.py::write_modifies":
+        "replaces a PR's MODIFIES links to the code files it changed: record links, not permission edges",
     "connectors/core/base/data_processor/data_source_entities_processor.py::_drop_stale_group_parents": SYNC,
     "connectors/core/base/data_store/graph_data_store.py::batch_delete_edges": STORE,
     "connectors/core/base/data_store/graph_data_store.py::delete_edge": STORE,
@@ -255,7 +257,7 @@ CREATE_NO_BUMP = {
     "connectors/sources/salesforce/connector.py::write_permissions": SYNC,
     **{f"connectors/core/base/data_processor/data_source_entities_processor.py::{f}": SYNC for f in (
         "_give_every_copy_all_stored_members", "_link_kb_record_to_app", "_write_permission_edges",
-        "migrate_group_permissions_to_user", "on_user_group_member_added", "upsert_permission_edge")},
+        "migrate_group_permissions_to_user", "upsert_permission_edge")},
     **{f"connectors/core/base/data_store/graph_data_store.py::{f}": STORE for f in (
         "batch_upsert_record_group_permissions", "create_inherit_permissions_relation_record",
         "create_user_group_membership")},
@@ -285,3 +287,9 @@ def test_a_handler_bumps_before_the_cleanup_that_follows_its_write() -> None:
                        for n in ast.walk(_function(tree, name)) if isinstance(n, ast.Call))
         order = [c for _, c in calls]
         assert order.index("notify_principals_changed") < order.index(cleanup), name
+
+
+def test_the_webhook_group_member_writer_moves_the_version() -> None:
+    """It runs outside a sync, so no sync-end bump follows it; a served search would otherwise hide what the new member may read until the entry expires."""
+    tree = _tree("connectors/core/base/data_processor/data_source_entities_processor.py")
+    assert PROCESSOR_BUMPS & _calls(_function(tree, "on_user_group_member_added"))

@@ -92,8 +92,10 @@ class TestMCPRegistry:
         assert "okta" in type_ids
         assert "zoom" in type_ids
         assert "trello" in type_ids
+        assert "hubspot" in type_ids
         assert "cloudflare" in type_ids
         assert "paypal" in type_ids
+        assert "gitlab" in type_ids
         assert "posthog" in type_ids
 
     def test_airtable_catalog_entry(self) -> None:
@@ -147,6 +149,26 @@ class TestMCPRegistry:
             "cors",
         }
 
+    def test_hubspot_catalog_entry(self) -> None:
+        """HubSpot is one official CRM host; no DCR — admin pastes an MCP connector app."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        hubspot = registry.get_template("hubspot")
+        assert hubspot is not None
+        assert hubspot.display_name == "HubSpot"
+        assert hubspot.transport == MCPTransport.STREAMABLE_HTTP
+        assert hubspot.default_url == "https://mcp.hubspot.com"
+        assert hubspot.default_auth_mode == MCPAuthMode.OAUTH
+        assert hubspot.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert hubspot.supports_dcr is False
+        assert hubspot.require_oauth_client is True
+        assert hubspot.url_editable is False
+        assert hubspot.authorization_url == "https://mcp.hubspot.com/oauth/authorize/user"
+        assert hubspot.token_url == "https://mcp.hubspot.com/oauth/v3/token"
+        assert hubspot.default_scopes == []
+        assert hubspot.icon == "/icons/connectors/hubspot.svg"
+        assert hubspot.documentation_url == "https://developers.hubspot.com/ai-tools/mcp"
+
     def test_zoom_catalog_entry(self) -> None:
         """Zoom is one official host, no DCR, and the admin pastes a Marketplace app."""
         registry = MCPRegistry()
@@ -187,6 +209,25 @@ class TestMCPRegistry:
         assert paypal.default_scopes == []
         assert paypal.icon == "/icons/connectors/paypal.svg"
         assert paypal.documentation_url == "https://developer.paypal.com/tools/mcp-server/"
+
+    def test_gitlab_catalog_entry(self) -> None:
+        """GitLab targets GitLab.com over Streamable HTTP with OAuth + DCR."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        gitlab = registry.get_template("gitlab")
+        assert gitlab is not None
+        assert gitlab.display_name == "GitLab"
+        assert gitlab.transport == MCPTransport.STREAMABLE_HTTP
+        assert gitlab.default_auth_mode == MCPAuthMode.OAUTH
+        assert gitlab.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert gitlab.default_url == "https://gitlab.com/api/v4/mcp"
+        assert gitlab.url_editable is False
+        assert gitlab.supports_dcr is True
+        assert gitlab.authorization_url == "https://gitlab.com/oauth/authorize"
+        assert gitlab.token_url == "https://gitlab.com/oauth/token"
+        assert gitlab.default_scopes == ["mcp"]
+        assert gitlab.icon == "/icons/connectors/gitlab.svg"
+        assert gitlab.documentation_url == "https://docs.gitlab.com/user/model_context_protocol/mcp_server/"
 
     def test_auto_discover_templates_are_well_formed(self) -> None:
         """Every registered template must carry the fields its own transport/auth mode

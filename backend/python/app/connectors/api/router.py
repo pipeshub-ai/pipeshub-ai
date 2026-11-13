@@ -50,6 +50,7 @@ from app.agents.actions.knowledge_graph.views import (
     render_navigation_view,
 )
 from app.api.connection_limit import (
+    connection_apps,
     hide_record_parents_outside_connection,
     hide_source_paths,
     ids_outside_connection,
@@ -161,6 +162,7 @@ from app.connectors.services.vector_store_rebuild import (
     start_vector_store_reindex,
 )
 from app.edition_containers import ConnectorAppContainer
+from app.core.org_context import current_org_id
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
 from app.models.entities import ArtifactRecord, Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
@@ -174,7 +176,8 @@ from app.services.featureflag.platform_settings import (
 )
 from app.services.graph_db.common.utils import api_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.permissions.structure_generation import note_structure_change
+from app.services.permissions import access_status
+from app.services.permissions.structure_generation import note_structure_change, store_now
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
 from app.utils.chat_helpers import (
@@ -7972,6 +7975,27 @@ def _tag_instance_name(connector_obj: BaseConnector, name: str | None) -> None:
         connector_obj.instance_name = name
 
 
+async def _send_revert_disabled(
+    producer: Any,  # noqa: ANN401 - the container's messaging producer
+    enabled: dict[str, Any],
+    toggle_seq: int,
+    logger: logging.Logger,
+) -> None:
+    """Send the appDisabled of a reverted on, numbered by the revert. Never raises."""
+    message = {
+        "eventType": "appDisabled",
+        "payload": {**enabled["payload"], ConnectorStateKeys.TOGGLE_SEQ: toggle_seq},
+        "timestamp": get_epoch_timestamp_in_ms(),
+    }
+    try:
+        await producer.send_message(topic="entity-events", message=message)
+    except Exception:
+        logger.exception(
+            f"Could not send appDisabled for connector {enabled['payload'].get('connectorId')} "
+            "after reverting its enable; a sync it had running may go on until the next toggle"
+        )
+
+
 async def _revert_toggle(
     graph_provider: IGraphDBProvider,
     connector_id: str,
@@ -7982,8 +8006,12 @@ async def _revert_toggle(
     previous: bool,
     written_at: int | None,
     logger: logging.Logger,
+    toggle_seq: int | None = None,
 ) -> bool:
     """Restore the pre-toggle state unless a newer write has landed since.
+
+    Given the number the toggle took, the revert takes the next one, so the
+    appDisabled the caller sends for it is not mistaken for a superseded one.
 
     Returns whether the revert was applied. Never raises, so the caller's error
     propagates.
@@ -7993,6 +8021,10 @@ async def _revert_toggle(
         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         **{key: instance.get(key) for key in owner_updates},
     }
+    expected: dict[str, Any] = {"updatedAtTimestamp": written_at}
+    if toggle_seq is not None:
+        reverted[ConnectorStateKeys.TOGGLE_SEQ] = toggle_seq + 1
+        expected[ConnectorStateKeys.TOGGLE_SEQ] = toggle_seq
     try:
         # Toggles flip, so a stale revert can undo a newer successful one; the
         # version check is part of the write so nothing can land in between.
@@ -8000,7 +8032,7 @@ async def _revert_toggle(
             connector_id,
             CollectionNames.APPS.value,
             reverted,
-            {"updatedAtTimestamp": written_at},
+            expected,
         ):
             logger.warning(
                 f"Not reverting {status_field} for connector {connector_id}: "
@@ -8442,13 +8474,42 @@ async def toggle_connector_instance(
             # too, but every app write moves it.
             updates["enabledAtTimestamp"] = now
 
-        success = await connector_registry.update_connector_instance(
-            connector_id=connector_id,
-            updates=updates,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin
-        )
+        toggle_seq: int | None = None
+        if toggle_type == "sync":
+            # The appDisabled/appEnabled events are handled after this returns, and a quick
+            # off-then-on can see the off's event handled after the on was written. Each
+            # sync toggle numbers itself, in the same transaction as the flip, so the
+            # handler can tell a superseded event from a current one.
+            txn = await graph_provider.begin_transaction(
+                read=[CollectionNames.APPS.value], write=[CollectionNames.APPS.value], explicit=True,
+            )
+            try:
+                toggle_seq = await graph_provider.increment_node_field(
+                    connector_id, CollectionNames.APPS.value, ConnectorStateKeys.TOGGLE_SEQ, transaction=txn,
+                )
+                success = await connector_registry.update_connector_instance(
+                    connector_id=connector_id,
+                    updates=updates,
+                    user_id=user_id,
+                    org_id=org_id,
+                    is_admin=is_admin,
+                    transaction=txn,
+                )
+                if not success:
+                    await graph_provider.rollback_transaction(txn)
+                else:
+                    await graph_provider.commit_transaction(txn)
+            except BaseException:
+                await graph_provider.rollback_transaction(txn)
+                raise
+        else:
+            success = await connector_registry.update_connector_instance(
+                connector_id=connector_id,
+                updates=updates,
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=is_admin
+            )
         if not success:
             logger.error(f"Failed to update {instance.get('name')} connector instance status")
             raise HTTPException(
@@ -8475,6 +8536,8 @@ async def toggle_connector_instance(
                 "fullSync": full_sync,
                 "syncedBy": user_info.get("userId", ""),
             }
+            if toggle_seq is not None:
+                payload[ConnectorStateKeys.TOGGLE_SEQ] = toggle_seq
 
             message = {
                 "eventType": event_type,
@@ -8497,9 +8560,14 @@ async def toggle_connector_instance(
                     previous=not target_status,
                     written_at=success.get("updatedAtTimestamp") if isinstance(success, dict) else None,
                     logger=logger,
+                    toggle_seq=toggle_seq if target_status else None,
                 )
                 if reverted and target_status:
                     await evict_cached_connector(container, connector_id, logger)
+                    if toggle_seq is not None:
+                        # An off handled while this on stood was skipped as superseded; the
+                        # connector is off again, so its sync stop and cleanup are still owed.
+                        await _send_revert_disabled(producer, message, toggle_seq + 1, logger)
                 raise
 
             # Drop the instance now so a quick re-enable rebuilds it with init(); its
@@ -10377,3 +10445,36 @@ async def delete_oauth_config(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=action_failed("delete this sign-in app")
         ) from e
+
+
+async def _sync_interval_minutes(request: Request, connector_id: str) -> int | None:
+    """How often the connector's own schedule runs, which is how soon a change at the source reaches PipesHub; None when it is not scheduled or unreadable."""
+    try:
+        config = await resolve_config_service(request.app.container, current_org_id()).get_config(_get_config_path_for_instance(connector_id))
+        sync = (config or {}).get("sync") or {}
+        minutes = int((sync.get("scheduledConfig") or {}).get("intervalMinutes") or 0)
+        return minutes if str(sync.get("selectedStrategy", "")).upper() == "SCHEDULED" and minutes > 0 else None
+    except Exception:
+        logger.warning("Could not read the sync schedule of connector %s", connector_id)
+        return None
+
+
+@router.get("/api/v1/connectors/{connector_id}/permissions/status", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+async def get_permission_status(
+    connector_id: str, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
+    """Admin only. Everyone who may not read the connector gets the 404 of a missing one: a non-admin, another organisation's connector, another
+    user's personal connector (the registry's read gate), and a connected app whose limit does not name the whole connector (its counts could not be limited)."""
+    not_found_error = HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))
+    org_id = current_org_id()
+    user_id = request.state.user.get("userId")
+    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value) if is_request_admin(request) else None
+    if not app or not org_id or not await request.app.state.connector_registry.get_connector_instance(
+        connector_id=connector_id, user_id=user_id, org_id=org_id, is_admin=True
+    ):
+        raise not_found_error
+    if connection_limit(request.state.user) is not None:
+        whole, _ = await connection_apps(request, graph_provider, org_id, user_id)
+        if connector_id not in whole:
+            raise not_found_error
+    return access_status.status(app, reach_minutes=await _sync_interval_minutes(request, connector_id), store_time=await store_now(graph_provider))

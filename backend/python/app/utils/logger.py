@@ -16,6 +16,7 @@ import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+import httpx2
 from httpx import URL
 
 from app.core import org_context
@@ -224,7 +225,8 @@ def log_record_fields(record: logging.LogRecord) -> dict[str, object]:
     """The record's fields: the bound context's (identity first, then the call context's
     ids, then bound ids), then its ``extra=`` fields in the order passed. An ``extra=``
     value replaces a bound one in place; it never sets or replaces org_id, user_id,
-    ctx_kind or ctx_source. Numbers, booleans and None keep their type; anything else
+    ctx_kind or ctx_source. Numbers, booleans and None keep their type, except that a number
+    under a credential name that the text pair rule masks becomes ``[REDACTED]``; anything else
     becomes a string, and a string under a credential name (``token``, ``apiKey``) is masked."""
     merged: dict[str, object] = dict(getattr(record, "_log_ctx", None) or {})
     for key, value in record.__dict__.items():
@@ -235,11 +237,19 @@ def log_record_fields(record: logging.LogRecord) -> dict[str, object]:
     for key, value in merged.items():
         if key in RESERVED_RECORD_ATTRS:
             continue
-        if isinstance(value, _UNREDACTED_TYPES):
+        if isinstance(value, _UNREDACTED_TYPES) and not _is_masked_number(key, value):
             fields[key] = value
         else:
             fields[key] = REDACTED if _is_credential_key(key) else str(value)
     return fields
+
+
+def _is_masked_number(key: str, value: object) -> bool:
+    """A number the text line masks as a pair (``password=73915528``), so every format masks it."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not _is_credential_key(key):
+        return False
+    pair = f"{key}={_text_value(value)}"
+    return redact_secrets_in_text(pair) != pair
 
 
 # Shared with Node (docs/logging.md, "Field values in text"): bare when it
@@ -326,6 +336,9 @@ class JsonFormatter(logging.Formatter):
         return "\n".join(parts)
 
 
+_HTTPX_RENDERED_STATUS = re.compile(r'HTTP Request: \S+ (\S+) "HTTP/[\d.]+ (\d{3}) ')
+
+
 class HttpxSuccessFilter(logging.Filter):
     """Drop httpx's per-request INFO log for successful responses.
 
@@ -335,7 +348,9 @@ class HttpxSuccessFilter(logging.Filter):
     as well — so filter on the status code instead and keep 3xx/4xx/5xx.
 
     The status is read from ``record.args`` rather than the formatted message:
-    httpx passes it as an int, so this does not depend on message wording.
+    httpx passes it as an int, so this does not depend on message wording. Only
+    when another filter has already rendered the message and cleared ``args``
+    (litellm's) is it read from the text.
 
     Lines that are kept have their request URL redacted: the query string of a
     signed URL, or the userinfo of any URL, is a credential.
@@ -343,6 +358,15 @@ class HttpxSuccessFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         if not isinstance(record.args, (tuple, list)):
+            # Another filter on this logger (litellm's SecretRedactionFilter) may already have rendered the
+            # message and cleared args: read the status from the text instead.
+            rendered = _HTTPX_RENDERED_STATUS.match(record.msg) if isinstance(record.msg, str) else None
+            if rendered is None:
+                return True
+            if 200 <= int(rendered.group(2)) < 300:
+                return False
+            start, end = rendered.span(1)  # the kept line's URL, redacted as the args path does
+            record.msg = record.msg[:start] + redact_url(rendered.group(1)) + record.msg[end:]
             return True
         # args are (method, url, http_version, status_code, reason_phrase); scan
         # for the status rather than indexing, so a signature change downgrades
@@ -355,7 +379,7 @@ class HttpxSuccessFilter(logging.Filter):
                     return False
                 break
         record.args = tuple(
-            redact_url(str(arg)) if isinstance(arg, URL) else arg for arg in record.args
+            redact_url(str(arg)) if isinstance(arg, (URL, httpx2.URL)) else arg for arg in record.args
         )
         return True
 
@@ -548,8 +572,10 @@ _redact_all_handlers()
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 logging.getLogger("uvicorn.access").addFilter(AccessLogRedactionFilter())
 
-# httpx logs every outbound request at INFO. Keep the failures, drop the 2xx.
+# httpx logs every outbound request at INFO. Keep the failures, drop the 2xx. httpx2 (the MCP 2.x client) is a
+# second copy of httpx with its own logger and URL type.
 logging.getLogger("httpx").addFilter(HttpxSuccessFilter())
+logging.getLogger("httpx2").addFilter(HttpxSuccessFilter())
 
 
 def _provider_formatter(

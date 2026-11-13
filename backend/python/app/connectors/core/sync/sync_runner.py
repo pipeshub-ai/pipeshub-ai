@@ -11,6 +11,7 @@ task's status, and startup-resumed syncs become visible.
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import time
@@ -27,8 +28,16 @@ from app.connectors.core.base.connector.connector_service import (
 )
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
-from app.connectors.core.sync.run_context import reset_run_sync_id, set_run_sync_id
+from app.connectors.core.sync.run_context import (
+    SyncRunStats,
+    bind_run_stats,
+    reset_run_stats,
+    reset_run_sync_id,
+    set_run_sync_id,
+)
 from app.connectors.core.sync.sync_coordinator import SyncCoordinator, SyncLease, _now_ms
+from app.core.org_context import for_org, spawn_detached
+from app.core.org_jobs import for_each_org
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils import error_class
 from app.utils.logging_fields import bind_log_fields, log_event, reset_log_fields
@@ -267,6 +276,11 @@ async def _finalize(
         if await _deleting_or_gone(graph_provider, logger, connector_id):
             logger.info("Not writing IDLE: the connector is being deleted")
         else:
+            # A served search reads this connector with the stamps once it is IDLE, so what the sync wrote is in the cached viewer scopes first:
+            # the version moves before the status does (the call after dispose stays, for the record caches).
+            from app.services.cache.invalidation_hooks import notify_principals_changed
+
+            await notify_principals_changed(org_id)
             # An update, not the upsert write_app_status does: it cannot create
             # the node if the read above failed or a delete landed since.
             try:
@@ -405,7 +419,8 @@ async def drain_queued_syncs(
     # concurrently too (a shutdown fires them all at once), and two passes over
     # the same rows each published every queued connector.
     async with _drain_lock():
-        return await _drain_once(graph_provider, logger, dispatcher)
+        # One pass serves every org, and its runtime callers sit inside one org's context, where binding another raises OrgMismatch.
+        return await spawn_detached(_drain_once(graph_provider, logger, dispatcher), name="drain_queued_syncs")
 
 
 _DRAIN_LOCKS: dict[str, asyncio.Lock] = {}
@@ -418,74 +433,23 @@ def _drain_lock() -> asyncio.Lock:
 async def _drain_once(
     graph_provider: IGraphDBProvider, logger: logging.Logger, dispatcher: "SyncEventDispatcher"
 ) -> list[str]:
+    """Gather every active org's queue, each under its org, then publish oldest first across orgs within one budget."""
     from app.connectors.core.sync.sync_coordinator import get_coordinator
     from app.connectors.core.sync.sync_dispatcher import SubmitResult
 
+    owed: list[tuple[str, dict, dict]] = []     # (org id, queued doc, app doc)
+    owners: dict[str, bool] = {}                # owed connector id -> claimed by an org visited so far
+    failed: list[str] = []                      # orgs whose read or app listing failed this pass
     try:
-        queued = await graph_provider.get_nodes_by_field_in(
-            CollectionNames.APPS.value,
-            "status",
-            [AppStatus.QUEUED.value],
-            [
-                "id", ConnectorStateKeys.PENDING_RESYNC, "updatedAtTimestamp", "queuedAtTimestamp",
-                ConnectorStateKeys.IS_ACTIVE, ConnectorStateKeys.IS_AUTHENTICATED,
-            ],
+        await for_each_org(
+            graph_provider, "drain_queued_syncs",
+            functools.partial(_read_org_queue, graph_provider, logger, owed, owners, failed), logger, active=True,
         )
     except Exception as e:
         error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="drain")
         return []
-
-    # A connector disabled or signed out while it waited is owed nothing: the
-    # start path would skip it, so publishing it only repeats on every pass.
-    runnable = []
-    for doc in queued or []:
-        if doc.get(ConnectorStateKeys.IS_ACTIVE) is False or doc.get(
-            ConnectorStateKeys.IS_AUTHENTICATED
-        ) is False:
-            try:
-                await graph_provider.update_node(
-                    doc["id"],
-                    CollectionNames.APPS.value,
-                    {
-                        "status": AppStatus.IDLE.value,
-                        ConnectorStateKeys.PENDING_RESYNC: False,
-                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    },
-                )
-                logger.info("Dropped the queued sync of an inactive connector", extra={"target_connector_id": doc["id"]})
-            except Exception as e:
-                error_class.log_failure(
-                    logger, "sync_step.failed", e, level=logging.ERROR, step="drain", target_connector_id=doc.get("id")
-                )
-            continue
-        runnable.append(doc)
-    queued = runnable
-
-    # pendingResync marks not-yet-submitted, so the next drain does not re-issue
-    # a connector whose event is already in flight. Status stays QUEUED until the
-    # sync starts and writes SYNCING, so anything watching still sees work owed.
-    #
-    # A submitted request whose event never arrives would otherwise strand the
-    # connector: QUEUED, unflagged, and invisible to every later drain. After the
-    # grace window it is treated as owed again. A duplicate of an event that did
-    # arrive late is harmless: the start path drops a request older than the sync
-    # already running for it.
-    stale_before = _now_ms() - _QUEUE_GRACE_MS
-    # Oldest first, by when each connector entered the queue. Unordered, whoever
-    # the org traversal met first won every freed slot.
-    def arrived(d: dict) -> int:
-        return int(d.get("queuedAtTimestamp") or d.get("updatedAtTimestamp") or 0)
-
-    ids = [
-        doc["id"]
-        for doc in sorted(queued or [], key=arrived)
-        if doc.get("id")
-        and (
-            doc.get(ConnectorStateKeys.PENDING_RESYNC)
-            or int(doc.get("updatedAtTimestamp") or 0) < stale_before
-        )
-    ]
-    if not ids:
+    lost = sorted(cid for cid, mine in owners.items() if not mine)
+    if not owed and not lost:
         return []
 
     # A coordinator that can count free slots exactly (one process) gets only as
@@ -498,36 +462,49 @@ async def _drain_once(
     budget = budget if isinstance(budget, int) else None
     if budget is not None and budget <= 0:
         return []
+    # A failed org may own them (Arango and Neo4j show its queue to the next org): no ownership claim without every org's answer.
+    if lost and not failed:
+        logger.warning(
+            "Pending resync flagged on connectors that belong to no active org; leaving them alone",
+            extra={"unowned": len(lost), "target_connector_ids": ",".join(lost)},
+        )
 
-    order = {cid: i for i, cid in enumerate(ids)}
-    specs = sorted(
-        await resolve_resync_specs(graph_provider, ids, logger),
-        key=lambda spec: order.get(spec.connector_id, len(order)),
-    )
+    # Oldest first, by when each connector entered the queue, across orgs.
+    # Unordered, whoever the org traversal met first won every freed slot.
+    def arrived(entry: tuple[str, dict, dict]) -> int:
+        doc = entry[1]
+        return int(doc.get("queuedAtTimestamp") or doc.get("updatedAtTimestamp") or 0)
+
     started: list[str] = []
-    for spec in specs:
+    for org_id, doc, app in sorted(owed, key=arrived):
         if budget is not None and len(started) >= budget:
             break
         if len(started) >= _DRAIN_MAX_PER_PASS:
             logger.warning(
                 "Drain hit its per-pass cap; the next completion or sweep takes the rest",
-                extra={"cap": _DRAIN_MAX_PER_PASS, "still_queued": len(ids) - len(started)},
+                extra={"cap": _DRAIN_MAX_PER_PASS, "still_queued": len(owed) - len(started)},
             )
             break
-        if await dispatcher.submit(spec) is not SubmitResult.ACCEPTED:
-            continue
-        # Restamp as well as clear: the staleness arm above re-issues anything
-        # older than the grace window, and without a fresh timestamp a row whose
-        # event never arrives qualifies again on every later pass, forever.
-        await graph_provider.update_node(
-            spec.connector_id,
-            CollectionNames.APPS.value,
-            {
-                ConnectorStateKeys.PENDING_RESYNC: False,
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
-        started.append(spec.connector_id)
+        # Published under its own org, so the event is signed for the org it names.
+        with for_org(org_id, job="drain_queued_syncs"):
+            if await dispatcher.submit(_resync_spec(org_id, app)) is not SubmitResult.ACCEPTED:
+                continue
+            started.append(doc["id"])
+            # Restamp as well as clear: the staleness arm re-issues anything
+            # older than the grace window, and without a fresh timestamp a row whose
+            # event never arrives qualifies again on every later pass, forever.
+            try:
+                await graph_provider.update_node(
+                    doc["id"],
+                    CollectionNames.APPS.value,
+                    {
+                        ConnectorStateKeys.PENDING_RESYNC: False,
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    },
+                )
+            except Exception as e:
+                # Published already; the flag stays set, so a later pass re-issues it. One connector's write must not stop the pass.
+                error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="drain", target_connector_id=doc["id"])
 
     if started:
         logger.info(
@@ -536,49 +513,106 @@ async def _drain_once(
     return started
 
 
-async def resolve_resync_specs(
-    graph_provider: IGraphDBProvider,
-    connector_ids: list[str],
-    logger: logging.Logger,
-) -> list["SyncSpec"]:
-    """App documents do not carry their org, so walk orgs down to their apps.
+def _is_inactive(doc: dict) -> bool:
+    # A connector disabled or signed out while it waited is owed nothing: the
+    # start path would skip it, so publishing it only repeats on every pass.
+    return doc.get(ConnectorStateKeys.IS_ACTIVE) is False or doc.get(ConnectorStateKeys.IS_AUTHENTICATED) is False
 
-    The same traversal `resume_sync_services` uses, and it only runs on a pass
-    that actually found something flagged.
+
+def _is_owed(doc: dict, stale_before: int) -> bool:
+    # pendingResync marks not-yet-submitted, so the next drain does not re-issue
+    # a connector whose event is already in flight. Status stays QUEUED until the
+    # sync starts and writes SYNCING, so anything watching still sees work owed.
+    #
+    # A submitted request whose event never arrives would otherwise strand the
+    # connector: QUEUED, unflagged, and invisible to every later drain. After the
+    # grace window it is treated as owed again. A duplicate of an event that did
+    # arrive late is harmless: the start path drops a request older than the sync
+    # already running for it.
+    return bool(doc.get(ConnectorStateKeys.PENDING_RESYNC)) or int(doc.get("updatedAtTimestamp") or 0) < stale_before
+
+
+async def _read_org_queue(
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    owed: list[tuple[str, dict, dict]],
+    owners: dict[str, bool],
+    failed: list[str],
+    org_id: str,
+) -> None:
+    """One org's part of a drain pass, run under that org: drop its inactive queued connectors, note its owed ones.
+
+    App documents do not carry their org, so a queued connector is this org's only if the org's ``orgAppRelation`` edges list it.
     """
+    try:
+        queued = await graph_provider.get_nodes_by_field_in(
+            CollectionNames.APPS.value,
+            "status",
+            [AppStatus.QUEUED.value],
+            [
+                "id", ConnectorStateKeys.PENDING_RESYNC, "updatedAtTimestamp", "queuedAtTimestamp",
+                ConnectorStateKeys.IS_ACTIVE, ConnectorStateKeys.IS_AUTHENTICATED,
+            ],
+        )
+        stale_before = _now_ms() - _QUEUE_GRACE_MS
+        # Arango and Neo4j answer every org's queue whatever is bound: skip what an earlier org has claimed (first org wins), and list
+        # this org's apps only when something is left to act on.
+        actionable = [
+            doc for doc in queued or []
+            if doc.get("id") and not owners.get(doc["id"]) and (_is_inactive(doc) or _is_owed(doc, stale_before))
+        ]
+        apps = {
+            app.get("_key") or app.get("id"): app
+            for app in await graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
+        } if actionable else {}
+    except Exception as e:
+        # Under for_org: the line carries this org's org_id.
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="drain")
+        failed.append(org_id)
+        return
+
+    for doc in actionable:
+        cid = doc["id"]
+        app = apps.get(cid)
+        if app is None:                             # another org's, or linked to none
+            if _is_owed(doc, stale_before):
+                owners.setdefault(cid, False)
+        elif _is_inactive(doc):
+            owners[cid] = True
+            try:
+                await graph_provider.update_node(
+                    cid,
+                    CollectionNames.APPS.value,
+                    {
+                        "status": AppStatus.IDLE.value,
+                        ConnectorStateKeys.PENDING_RESYNC: False,
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    },
+                )
+                logger.info("Dropped the queued sync of an inactive connector", extra={"target_connector_id": cid})
+            except Exception as e:
+                error_class.log_failure(
+                    logger, "sync_step.failed", e, level=logging.ERROR, step="drain", target_connector_id=cid
+                )
+        elif app.get(ConnectorStateKeys.IS_ACTIVE) is not True:
+            # The start path skips an App with isActive unset, and get_org_apps(active_only=True) never resolved one.
+            owners.setdefault(cid, False)
+        else:
+            owners[cid] = True
+            owed.append((org_id, doc, app))
+
+
+def _resync_spec(org_id: str, app: dict) -> "SyncSpec":
     from app.connectors.core.sync.sync_dispatcher import SyncSpec
 
-    wanted = set(connector_ids)
-    specs = []
-    for org in (await graph_provider.get_all_orgs(active=True)) or []:
-        if not wanted:
-            break
-        org_id = org.get("_key") or org.get("id")
-        if not org_id:
-            continue
-        for app in (await graph_provider.get_org_apps(org_id)) or []:
-            cid = app.get("_key") or app.get("id")
-            if cid not in wanted:
-                continue
-            wanted.discard(cid)
-            # full_sync stays False: the start path already merges the
-            # connector's own pendingFullSync flag, and deciding it here too
-            # would put that decision in two places.
-            specs.append(
-                SyncSpec(
-                    connector_id=cid,
-                    connector_name=(app.get("type") or app.get("name") or "")
-                    .replace(" ", "")
-                    .lower(),
-                    org_id=org_id,
-                )
-            )
-    if wanted:
-        logger.warning(
-            "Pending resync flagged on connectors that belong to no active org; leaving them alone",
-            extra={"unowned": len(wanted), "target_connector_ids": ",".join(sorted(wanted))},
-        )
-    return specs
+    # full_sync stays False: the start path already merges the
+    # connector's own pendingFullSync flag, and deciding it here too
+    # would put that decision in two places.
+    return SyncSpec(
+        connector_id=app.get("_key") or app.get("id"),
+        connector_name=(app.get("type") or app.get("name") or "").replace(" ", "").lower(),
+        org_id=org_id,
+    )
 
 
 async def _reissue_pending_resync(
@@ -747,6 +781,9 @@ def _stop_cause(lease: SyncLease | None, coordinator: SyncCoordinator | None, *,
     return "cancelled"
 
 
+_START_STATUS_TRIES = 3
+
+
 async def run_sync_task(
     connector: "BaseConnector",
     connector_id: str,
@@ -772,6 +809,8 @@ async def run_sync_task(
     # downstream processing can be correlated back to the run.
     run_sync_id = str(uuid4())
     run_sync_token = set_run_sync_id(run_sync_id)
+    run_stats = SyncRunStats()
+    run_stats_token = bind_run_stats(run_stats)
     # On every line of the run: the connector's, the processor's and the finalizer task's (it copies the context).
     fields_token = bind_log_fields(run_id=run_sync_id, connector_id=connector_id)
     sync_type = "full" if full_sync else "incremental"
@@ -787,10 +826,18 @@ async def run_sync_task(
         connector.last_action_items = None
         if full_sync:
             processor, seen = _begin_full_sync_run(connector, connector_id)
-        await write_app_status(
-            graph_provider, logger, connector_id, start_status,
-            full_sync_started=full_sync, run_started=True,
-        )
+        # Until this lands the connector is still served from its stamps (`app_is_served`), and the grants this run writes are hidden from it.
+        # Retried, not required: a write that keeps failing (a schema that rejects it) must not stop every sync of the connector.
+        for attempt in range(_START_STATUS_TRIES):
+            if await write_app_status(
+                graph_provider, logger, connector_id, start_status,
+                full_sync_started=full_sync, run_started=True,
+            ):
+                break
+            if attempt + 1 < _START_STATUS_TRIES:
+                await asyncio.sleep(attempt + 1)
+        else:
+            logger.error("the %s status of connector %s could not be written; it is read from its stamps until the run ends", start_status, connector_id)
         # A resync asked for before this run began is served by it. Left set, the
         # flag handed the finalizer a request that was already satisfied, and
         # the connector synced twice back to back. Except a full sync owed to an
@@ -852,6 +899,8 @@ async def run_sync_task(
                 # Logged, not raised: the finalizer below must still run.
                 error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="full_sync_tracking")
         reset_run_sync_id(run_sync_token)
+        # Before the finalizer task copies the context: its writes are not the run's.
+        reset_run_stats(run_stats_token)
         # A stop that arrives through the lease ends _run_until_aborted without
         # raising, so it has to be read here or it would log as a clean finish.
         if lease is not None and lease.stop_requested.is_set():
@@ -871,6 +920,7 @@ async def run_sync_task(
             "duration_ms": int((time.monotonic() - start) * 1000),
             # The next sync of this connector runs in full.
             "full_sync_cut_short": full_sync_cut_short or None,
+            **run_stats.end_fields(),
         }
         # The run's one failure line; the task manager then logs the same exception at DEBUG.
         if error is not None:

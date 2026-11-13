@@ -40,9 +40,10 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="microsoft_learn" name="Microsoft Learn" />)).toBe('microsoft-learn icon');
   });
 
-  it('shows the DocuSign and Okta catalog logos', () => {
+  it('shows the DocuSign, Okta, and HubSpot catalog logos', () => {
     expect(logo(<McpServerIcon typeId="docusign" name="DocuSign" />)).toBe('docusign icon');
     expect(logo(<McpServerIcon typeId="okta" name="Okta" />)).toBe('okta icon');
+    expect(logo(<McpServerIcon typeId="hubspot" name="HubSpot" />)).toBe('hubspot icon');
   });
 
   it('goes by the catalog type when the server was renamed', () => {
@@ -110,6 +111,11 @@ describe('McpServerIcon', () => {
   it("shows Cloudflare's logo, also for a custom server named after it", () => {
     expect(logo(<McpServerIcon typeId="cloudflare" name="Cloudflare" />)).toBe('cloudflare icon');
     expect(logo(<McpServerIcon typeId={null} name="Cloudflare" />)).toBe('cloudflare icon');
+  });
+
+  it("shows GitLab's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="gitlab" name="GitLab" />)).toBe('gitlab icon');
+    expect(logo(<McpServerIcon typeId={null} name="GitLab" />)).toBe('gitlab icon');
   });
 
   it("shows PostHog's logo, also for a custom server named after it", () => {

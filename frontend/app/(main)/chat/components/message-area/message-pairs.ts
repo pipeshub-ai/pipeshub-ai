@@ -1,7 +1,8 @@
 import type { AppliedFilters, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, MessagePart } from '../../types';
-import type { ConfidenceLevel, ModelInfo } from '../../types';
+import type { ConfidenceLevel, ConversationMessage, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import type { ChatStreamErrorInfo } from '../../stream-error';
+import type { AccessNotice } from '@/app/components/feedback/access-notice';
 
 export interface MessagePair {
   key: string;
@@ -12,6 +13,7 @@ export interface MessagePair {
   citationMaps: CitationMaps;
   confidence?: ConfidenceLevel;
   searchDegraded?: boolean;
+  accessNotices?: AccessNotice[];
   isStreaming: boolean;
   modelInfo?: ModelInfo;
   feedbackInfo?: { value?: 'like' | 'dislike' };
@@ -31,6 +33,8 @@ export interface MessagePair {
   status?: 'stopped';
   /** The server's error code and details when this reply is a failed run (live turns only). */
   streamError?: ChatStreamErrorInfo;
+  /** The server withheld this answer (a record it used is no longer readable, or access was not confirmed). */
+  answerHidden?: ConversationMessage['answerHidden'];
   /** No assistant row follows this question — render the question alone, no answer area. */
   unanswered?: boolean;
 }
@@ -55,8 +59,10 @@ type AssistantCustom = {
   persistedParts?: MessagePart[];
   status?: 'stopped';
   streamError?: ChatStreamErrorInfo;
+  answerHidden?: ConversationMessage['answerHidden'];
   /** A search behind this answer was answered from a partial search. */
   searchDegraded?: boolean;
+  accessNotices?: AccessNotice[];
 };
 
 type UserCustom = {
@@ -178,6 +184,7 @@ export function buildMessagePairs(
           : (metadata?.citationMaps || emptyCitationMaps),
         confidence: metadata?.confidence,
         searchDegraded: metadata?.searchDegraded === true,
+        ...(metadata?.accessNotices?.length ? { accessNotices: metadata.accessNotices } : {}),
         isStreaming: isCurrentlyStreaming || isBeingRegenerated,
         modelInfo: metadata?.modelInfo,
         feedbackInfo: metadata?.feedbackInfo,
@@ -192,6 +199,7 @@ export function buildMessagePairs(
         persistedParts: metadata?.persistedParts,
         status: metadata?.status,
         streamError: metadata?.streamError,
+        answerHidden: metadata?.answerHidden,
       });
     }
   }

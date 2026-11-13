@@ -14,6 +14,14 @@ def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.delenv("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _lifespan_leaves_no_governor_behind(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lifespan wires a governor into the service module; its gates are bound to a loop that closes."""
+    from app.services.docling import docling_service
+
+    monkeypatch.setattr(docling_service, "_resource_governor", None)
+
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -281,6 +289,39 @@ class TestLifespan:
 
             # Shutdown must stop the sampling loop rather than leaking the task.
             assert governor._running is False
+
+    async def test_docling_governor_uses_the_docling_working_set(self, monkeypatch) -> None:
+        """The service's governor is built with the Docling working set as its own base, so the
+        PdfPlumber parent base and the lane charges can never lower a Docling permit's cost."""
+        from app.docling_main import lifespan
+        from app.services.resource_governor import ResourceGovernor
+        from app.services.resource_governor.policy import docling_working_set_gb
+
+        monkeypatch.setenv("GOVERNOR_DOCLING_WORKING_SET_GB", "2.25")
+        mock_container = _make_container()
+        mock_config_service = MagicMock()
+        mock_config_service.close = AsyncMock()
+        mock_container.config_service.return_value = mock_config_service
+        mock_container.logger.return_value = MagicMock()
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+        built = []
+
+        def build(**kwargs) -> ResourceGovernor:
+            built.append(kwargs)
+            return ResourceGovernor(**kwargs)
+
+        with (
+            patch("app.docling_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.docling_main.DoclingService", return_value=_make_docling_service(healthy=True)),
+            patch("app.docling_main.set_docling_service"),
+            patch("app.docling_main.set_resource_governor"),
+            patch("app.docling_main.ResourceGovernor", side_effect=build),
+        ):
+            async with lifespan(mock_app):
+                pass
+        assert docling_working_set_gb() == 2.25
+        assert [k["heavy_working_set_gb"] for k in built] == [2.25]
 
     async def test_startup_failure_raises(self):
         """If DoclingService initialization fails, the error propagates."""

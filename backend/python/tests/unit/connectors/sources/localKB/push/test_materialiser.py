@@ -22,12 +22,14 @@ from app.connectors.sources.localKB.push.contract import PushRefusal
 from .fake_storage import FakeStorage, etag_of
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 JPEG = b"\xff\xd8\xff\xe0" + b"j" * 100
 NONCE = "ab" * 16
 CHILD_SRC = Path(C.__file__)
+
+needs_proc = pytest.mark.skipif(not os.path.exists("/proc/self/limits"), reason="not applicable on this platform: no /proc")
 
 
 def doc_id(n: int) -> str:
@@ -391,6 +393,7 @@ class TestLimits:
     def test_magic_table_equals_the_parents(self) -> None:
         assert C.MAGIC == I._MAGIC
 
+    @needs_proc
     async def test_limits_are_set_in_the_child(self, tmp_path) -> None:
         pool = M.Materialiser(pool_size=1)
         slot = await pool._acquire()
@@ -582,3 +585,267 @@ class TestPool:
             await runner.cleanup()
             await pool.close()
         assert events == ["overrun", "ok"]
+
+
+# ---- accounting: strikes, suspect events, overruns --------------------------------------------------
+
+class Heard:
+    def __init__(self) -> None:
+        self.names: list[str] = []
+
+    def __call__(self, event: str, value: float = 0.0) -> None:
+        self.names.append(event)
+
+
+def kill_on_download(store: FakeStorage, pid: int, sig: int, only: str | None = None) -> None:
+    """Kill ``pid`` with a real signal when its storage request arrives, so the child dies while it runs the task.
+
+    A kill before the task is sent races the send: once the dead child's end of the pipe is closed the send fails,
+    and that is a death before the task, not one caused by it.
+    """
+    async def kill(doc: str) -> None:
+        if only is None or doc == only:
+            store.on_download = None
+            os.kill(pid, sig)
+    store.on_download = kill
+
+
+def crash_next(pool: M.Materialiser, store: FakeStorage, sig: int = 11) -> Callable[[dict], Awaitable[None]]:
+    """A ``before_task`` that kills the child the task was just handed to, with a real signal, while it runs it."""
+    async def hook(_task) -> None:
+        kill_on_download(store, pool._slots[0].proc.pid, sig)
+    return hook
+
+
+class TestAccounting:
+    async def test_a_real_crash_on_a_fresh_child_is_a_strike_and_a_replaced_child_serves_next(self, tmp_path, store) -> None:
+        ends, heard = [], Heard()
+        pool = M.Materialiser(pool_size=1, allow_loopback=True, on_task_end=lambda o, c: ends.append(o))
+        pool.before_task = crash_next(pool, store)
+        try:
+            with pytest.raises(PushRefusal) as e:
+                await pool.run(make_task(tmp_path, store, [ref_for(store, 1, PNG)]), account=heard)
+            assert e.value.status == 503 and heard.names == ["strike"] and ends == ["crashed"]
+            pool.before_task = None
+            assert (await pool.run(make_task(tmp_path, store, [ref_for(store, 2, PNG)]))).size > 0
+        finally:
+            await pool.close()
+
+    @pytest.mark.parametrize("sig", [6, 11, 7])
+    async def test_every_crash_signal_counts(self, tmp_path, store, sig) -> None:
+        heard = Heard()
+        pool = M.Materialiser(pool_size=1, allow_loopback=True)
+        pool.before_task = crash_next(pool, store, sig)
+        try:
+            with pytest.raises(PushRefusal):
+                await pool.run(make_task(tmp_path, store, [ref_for(store, 1, PNG)]), account=heard)
+            assert heard.names == ["strike"]
+        finally:
+            await pool.close()
+
+    async def test_an_external_sigkill_is_nothing(self, tmp_path, store) -> None:
+        heard = Heard()
+        pool = M.Materialiser(pool_size=1, allow_loopback=True)
+        pool.before_task = crash_next(pool, store, 9)
+        try:
+            with pytest.raises(PushRefusal):
+                await pool.run(make_task(tmp_path, store, [ref_for(store, 1, PNG)]), account=heard)
+            assert heard.names == []
+        finally:
+            await pool.close()
+
+    async def test_a_reused_child_death_is_suspect_not_a_strike(self, tmp_path, store) -> None:
+        heard = Heard()
+        pool = M.Materialiser(pool_size=1, allow_loopback=True)
+        try:
+            await pool.run(make_task(tmp_path, store, [ref_for(store, 1, PNG)]))  # another caller's push: index 0
+            pool.before_task = crash_next(pool, store)
+            with pytest.raises(PushRefusal):
+                await pool.run(make_task(tmp_path, store, [ref_for(store, 2, PNG)]), account=heard)
+            assert heard.names == ["suspect"]
+        finally:
+            await pool.close()
+
+    async def test_a_child_is_replaced_after_its_task_cap(self, tmp_path, store, monkeypatch) -> None:
+        monkeypatch.setattr(M, "MAX_TASKS_PER_CHILD", 2)
+        pool = M.Materialiser(pool_size=1, allow_loopback=True)
+        try:
+            for i in range(1, 4):
+                await pool.run(make_task(tmp_path, store, [ref_for(store, i, PNG)]))
+            assert pool.spawned == 2
+        finally:
+            await pool.close()
+
+    async def test_the_attacker_who_warms_a_child_first_is_still_bounded_by_the_suspect_counter(self, tmp_path, store) -> None:
+        """Benign push (index 0), then the crashing one (index 1) with a fresh key each time: never a strike, still refused."""
+        from app.connectors.sources.localKB.push import ledger as L
+
+        ledger, user = L.PushLedger(), ("org", "mallory")
+        pool = M.Materialiser(pool_size=1, allow_loopback=True)
+        try:
+            for i in range(4):
+                pool.before_task = None
+                await pool.run(make_task(tmp_path, store, [ref_for(store, 1, PNG)]), account=ledger.accountant(user, f"r:warm{i}", L.IMAGE))
+                pool.before_task = crash_next(pool, store)
+                with pytest.raises(PushRefusal):
+                    await pool.run(make_task(tmp_path, store, [ref_for(store, 2, PNG)]), account=ledger.accountant(user, f"r:crash{i}", L.IMAGE))
+            with pytest.raises(PushRefusal) as e:
+                ledger.check_images(user)
+            assert e.value.reason == "PUSH_TIMEOUT"  # four suspect events; strikes alone (0) never suspended anyone
+            assert not ledger._rows[user].strikes
+        finally:
+            await pool.close()
+
+    async def test_an_honest_caller_whose_push_dies_on_a_reused_child_has_no_strike(self, tmp_path, store) -> None:
+        from app.connectors.sources.localKB.push import ledger as L
+
+        ledger, honest = L.PushLedger(), ("org", "honest")
+        pool = M.Materialiser(pool_size=1, allow_loopback=True)
+        try:
+            await pool.run(make_task(tmp_path, store, [ref_for(store, 1, PNG)]))  # someone else warmed the child
+            pool.before_task = crash_next(pool, store)
+            with pytest.raises(PushRefusal):
+                await pool.run(make_task(tmp_path, store, [ref_for(store, 2, PNG)]), account=ledger.accountant(honest, "r:mine", L.IMAGE))
+            assert not ledger._rows[honest].strikes and len(ledger._rows[honest].suspects) == 1
+        finally:
+            await pool.close()
+
+    async def _slow_server(self, seconds: float) -> tuple[object, int]:
+        from aiohttp import web
+        app = web.Application()
+
+        async def slow(request) -> None:
+            await asyncio.sleep(seconds)
+
+        app.router.add_get("/api/v1/document/internal/{id}/download", slow)
+        runner = web.AppRunner(app, shutdown_timeout=0.1)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        return runner, site._server.sockets[0].getsockname()[1]
+
+    @needs_proc
+    async def test_a_stalled_storage_overrun_is_not_a_strike_and_the_cpu_is_the_childs_own(self, tmp_path, store) -> None:
+        ends, heard = [], Heard()
+        runner, port = await self._slow_server(5)
+        pool = M.Materialiser(pool_size=1, wall_budget_s=1.5, allow_loopback=True, on_task_end=lambda o, c: ends.append((o, c)))
+        try:
+            task = make_task(tmp_path, store, [ref_for(store, 1, PNG)], storage_url=f"http://127.0.0.1:{port}", request_timeout_s=60)
+            with pytest.raises(PushRefusal):
+                await pool.run(task, account=heard)
+            assert heard.names == ["overrun"]
+            outcome, cpu_s = ends[0]
+            assert outcome == "overrun" and cpu_s is not None and cpu_s < 0.75, "a waiting child spends almost no CPU (and this is not the wall time)"
+        finally:
+            await runner.cleanup()
+            await pool.close()
+
+    async def test_a_cpu_bound_overrun_is_a_strike(self, tmp_path, store, monkeypatch) -> None:
+        heard = Heard()
+        runner, port = await self._slow_server(5)
+        readings = iter([(0, 5), (900, 5)])  # 9 s of CPU in a 1.5 s window is more than half: busy
+        monkeypatch.setattr(M.cpu, "_TICKS", 100)
+        monkeypatch.setattr(M.cpu, "read", lambda pid, proc_root="/proc": next(readings, (900, 5)))
+        pool = M.Materialiser(pool_size=1, wall_budget_s=1.5, allow_loopback=True)
+        try:
+            task = make_task(tmp_path, store, [ref_for(store, 1, PNG)], storage_url=f"http://127.0.0.1:{port}", request_timeout_s=60)
+            with pytest.raises(PushRefusal):
+                await pool.run(task, account=heard)
+            assert heard.names == ["strike"]
+        finally:
+            await runner.cleanup()
+            await pool.close()
+
+    async def test_a_recycled_pid_gives_no_measurement_and_no_strike(self, tmp_path, store, monkeypatch) -> None:
+        heard = Heard()
+        runner, port = await self._slow_server(5)
+        readings = iter([(0, 5), (900, 6)])  # another start time: not the same process
+        monkeypatch.setattr(M.cpu, "_TICKS", 100)
+        monkeypatch.setattr(M.cpu, "read", lambda pid, proc_root="/proc": next(readings, (900, 6)))
+        pool = M.Materialiser(pool_size=1, wall_budget_s=1.5, allow_loopback=True)
+        try:
+            task = make_task(tmp_path, store, [ref_for(store, 1, PNG)], storage_url=f"http://127.0.0.1:{port}", request_timeout_s=60)
+            with pytest.raises(PushRefusal):
+                await pool.run(task, account=heard)
+            assert heard.names == ["overrun"]
+        finally:
+            await runner.cleanup()
+            await pool.close()
+
+    async def test_efbig_and_a_full_spool_are_not_strikes(self, tmp_path, store) -> None:
+        heard = Heard()
+        pool = M.Materialiser(pool_size=1, allow_loopback=True)
+        refs = [ref_for(store, 1, PNG + b"x" * (15 << 20)), ref_for(store, 2, PNG + b"x" * (15 << 20))]
+        try:
+            with pytest.raises(PushRefusal) as e:
+                await pool.run(make_task(tmp_path, store, refs, [2, 2], cap=200 << 20), account=heard)
+            assert e.value.extra["limit"] == "resolved" and heard.names == []
+            if os.path.exists("/dev/full"):
+                with pytest.raises(PushRefusal) as e:
+                    await pool.run(make_task(tmp_path, store, [ref_for(store, 3, PNG)], out_path="/dev/full"), account=heard)
+                assert (e.value.status, e.value.reason) == (503, "SPOOL_FULL") and heard.names == []
+        finally:
+            await pool.close()
+
+    async def test_a_cancelled_task_is_neither_a_strike_nor_an_overrun(self, tmp_path, store) -> None:
+        heard = Heard()
+        runner, port = await self._slow_server(5)
+        pool = M.Materialiser(pool_size=1, wall_budget_s=30, allow_loopback=True)
+        try:
+            task = make_task(tmp_path, store, [ref_for(store, 1, PNG)], storage_url=f"http://127.0.0.1:{port}", request_timeout_s=60)
+            t = asyncio.create_task(pool.run(task, account=heard))
+            await asyncio.sleep(1.0)
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+            assert heard.names == []
+        finally:
+            await runner.cleanup()
+            await pool.close()
+
+    async def test_concurrent_verdicts_do_not_cross(self, tmp_path, store) -> None:
+        crashed, fine = Heard(), Heard()
+        pool = M.Materialiser(pool_size=2, allow_loopback=True)
+        for name in ("crash", "fine"):
+            (tmp_path / name).mkdir()
+
+        async def hook(task) -> None:
+            if task["work_dir"].endswith("crash/work"):
+                kill_on_download(store, pool._slots[0].proc.pid, 11, only=doc_id(1))  # the crashing task took the first slot
+                await asyncio.sleep(0.3)
+
+        pool.before_task = hook
+        try:
+            bad = asyncio.create_task(pool.run(make_task(tmp_path / "crash", store, [ref_for(store, 1, PNG)]), account=crashed))
+            await asyncio.sleep(0)
+            good = asyncio.create_task(pool.run(make_task(tmp_path / "fine", store, [ref_for(store, 2, PNG)]), account=fine))
+            results = await asyncio.gather(bad, good, return_exceptions=True)
+            assert isinstance(results[0], PushRefusal) and results[1].size > 0
+            assert crashed.names == ["strike"] and fine.names == []
+        finally:
+            await pool.close()
+
+
+class TestChildDiskFull:
+    @pytest.mark.skipif(not os.path.exists("/dev/full"), reason="not applicable on this platform: no /dev/full")
+    async def test_a_full_disk_at_the_download_write_is_spool_full_not_a_fetch_failure(self, tmp_path, store) -> None:
+        task = make_task(tmp_path, store, [ref_for(store, 1, PNG)])
+        os.symlink("/dev/full", os.path.join(task["work_dir"], doc_id(1) + ".img"))
+        r = await go(task)
+        assert isinstance(r, C.Refused) and (r.status, r.reason) == (503, "SPOOL_FULL")
+
+    @pytest.mark.skipif(not os.path.exists("/dev/full"), reason="not applicable on this platform: no /dev/full")
+    async def test_a_full_disk_at_the_splice_write_is_spool_full(self, tmp_path, store) -> None:
+        r = await go(make_task(tmp_path, store, [ref_for(store, 1, PNG)], out_path="/dev/full"))
+        assert isinstance(r, C.Refused) and (r.status, r.reason) == (503, "SPOOL_FULL")
+
+    async def test_make_dir_on_a_full_disk_is_spool_full(self, tmp_path, monkeypatch) -> None:
+        import errno
+
+        def failing(path, *a, **kw) -> NoReturn:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(os, "makedirs", failing)
+        with pytest.raises(PushRefusal) as e:
+            M.Materialiser(allow_loopback=True).make_dir(str(tmp_path))
+        assert e.value.reason == "SPOOL_FULL"

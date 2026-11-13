@@ -21,6 +21,10 @@ from app.core import org_context
 from app.core.db import CapabilityError, DbError
 from app.core.db.shared import acquire_db, release_db
 from app.modules.retrieval import degraded_notice
+from app.services.permissions.scope_fields import (
+    SCOPE_FIELDS_VERSION,
+    current_scope_generation,
+)
 from app.services.vector_db.filters import (
     build_filter_expression,
     build_generic_conditions,
@@ -430,6 +434,58 @@ class PgVectorService(IVectorDBService):
             )
         return ScrollResult(points=points, next_offset=nxt)
 
+    async def fence_time(self) -> datetime:
+        """The database's clock: what the compare-and-set fence of the group rows is measured in for a writer that asks, so that the clocks of
+        the hosts that write do not have to agree."""
+        db, _ = self._assert_connected()
+        return await db.run(lambda tx: tx.fetchval("/* pipeshub:pgvector.fence_time */ SELECT clock_timestamp()"), idempotent=True, custom_plan=True)
+
+    async def group_clock_skew(self, org_id: str, *, min_ahead_seconds: float = 30.0) -> tuple[int, float]:
+        """``(rows, seconds)``: how many of the org's group rows were computed more than ``min_ahead_seconds`` after the database's clock, and by how
+        much the furthest is. A rewrite writes at the database's time and a group row is replaced only by a later one, so a row ahead of the clock
+        refuses every rewrite of its virtual record until the clock passes it.
+
+        shortcut: reads the org's group rows without an index on ``computed_at``; it is an operator command, so run it when asked, not per request."""
+        db, _ = self._assert_connected()
+        org = require_org(org_id)
+        with org_scope(org):
+            row = await db.run(lambda tx: tx.fetchrow(
+                """/* pipeshub:pgvector.group_clock_skew */
+                SELECT count(*) AS n, coalesce(extract(epoch FROM max(computed_at) - clock_timestamp()), 0) AS ahead
+                FROM retrieval.point_groups WHERE org_id = $1 AND computed_at > clock_timestamp() + make_interval(secs => $2::float8)""",
+                org, float(min_ahead_seconds)), idempotent=True, custom_plan=True)
+        return int(row["n"]), float(row["ahead"])
+
+    async def unreadable_group_rows(self, org_id: str) -> int:
+        """How many of the org's group rows hold a stamp a served search trusts (this version and generation, with connectors) of a deciding kind but a
+        NULL list its rule reads (a data fault): such a list admits nothing on its own, so a served search can hide their points (a union or
+        intersection row may still pass on its other list). A stale stamp is left to the request's arms, and a container stamp reads only lists that
+        cannot be NULL, so neither is counted.
+
+        shortcut: reads the org's group rows without an index on the stamp; an operator command, run it when asked, not per request."""
+        db, _ = self._assert_connected()
+        org = require_org(org_id)
+        with org_scope(org):
+            n = await db.run(lambda tx: tx.fetchval(
+                """/* pipeshub:pgvector.unreadable_group_rows */
+                SELECT count(*) FROM retrieval.point_groups
+                WHERE org_id = $1 AND scope_stamp IN ('container', 'union', 'intersection', 'override') AND scope_version = $2::int
+                  AND scope_generation = $3::int AND cardinality(connector_ids) > 0
+                  AND ((scope_stamp <> 'container' AND acl_scope IS NULL) OR (scope_stamp IN ('union', 'intersection') AND path_ids IS NULL))""",
+                org, SCOPE_FIELDS_VERSION, current_scope_generation()), idempotent=True, custom_plan=True)
+        return int(n)
+
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        db, catalog = self._assert_connected()
+        org = _filter_org(count_filter)
+        coll = await catalog.require_collection(collection_name)
+        with org_scope(org):
+            space = await catalog.active_space(org, real_time=True)
+            if space is None:
+                return 0
+            compiled = compile_filter(count_filter, first_param=4)
+            return int(await db.run(lambda tx: reads.count_filtered(tx, org, coll.collection_id, space.space_id, compiled), custom_plan=True))
+
     async def retrieve_points(self, collection_name: str, ids: list[str]) -> list[VectorPoint]:
         """The points with these ids in the request's org, in the order asked; ids that name no point (or are no UUID) are left out.
         The interface carries no org: it is the request's."""
@@ -443,6 +499,17 @@ class PgVectorService(IVectorDBService):
         found = await db.run(lambda tx: reads.retrieve(tx, org, coll.collection_id, space.space_id, wanted), custom_plan=True)
         position = {str(i): n for n, i in enumerate(wanted)}
         return sorted(found, key=lambda p: position.get(str(p.id), len(position)))
+
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        """Which of these ids have a live point in the request's org, reading no payload; real time like ``retrieve_points``."""
+        db, catalog = self._assert_connected()
+        org = ambient_or_required()
+        coll = await catalog.require_collection(collection_name)
+        space = await catalog.active_space(org, real_time=True)
+        wanted = _ids(ids)
+        if space is None or not wanted:
+            return set()
+        return await db.run(lambda tx: reads.existing_ids(tx, org, coll.collection_id, space.space_id, wanted), custom_plan=True)
 
     # Search ----------------------------------------------------------------------------------------------------------
 

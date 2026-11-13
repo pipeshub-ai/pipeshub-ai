@@ -6,6 +6,7 @@ import {
 import { idOf, isValidId } from '../../../libs/repositories/ids';
 import { UniqueConstraintError } from '../../../libs/repositories/errors';
 import { getUserRepository } from '../../../libs/repositories/user';
+import { audit } from '../../../libs/services/audit';
 import type {
   UserDto,
   DirectoryQuery,
@@ -478,6 +479,12 @@ export class UserController {
         throw new BadRequestError('User not found or not blocked');
       }
 
+      audit('auth.account.unlock', {
+        target: userId,
+        targetIsUser: true,
+        outcome: 'success',
+        reason: 'admin',
+      });
       res.status(200).json({
         message: 'User unblocked successfully',
       });
