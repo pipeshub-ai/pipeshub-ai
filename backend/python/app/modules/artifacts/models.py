@@ -49,8 +49,6 @@ class RevisionUploadPlan(BaseModel):
     root: str
     expires_in_seconds: int | None = None
     files: dict[str, SignedFileUrl]
-    #: The ``writeId`` the storage service echoed: absent when it filed the files in the revision's shared set.
-    write_id: str | None = None
 
     def __repr__(self) -> str:
         return f"RevisionUploadPlan(document_id={self.document_id!r}, files={len(self.files)})"

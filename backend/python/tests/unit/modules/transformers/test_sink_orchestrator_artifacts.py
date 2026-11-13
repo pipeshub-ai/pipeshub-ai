@@ -578,3 +578,41 @@ async def test_end_to_end_the_stored_record_keeps_images_inline(storage: FakeSto
     assert storage.put_order[-1] == "manifest.json"
     assert graph.mapping["currentRev"] == REV
     assert graph.mapping["manifestDocId"] == FakeStorage.document_id("vr-1", REV, write_id(graph.mapping["currentRun"]))
+
+
+async def test_storage_without_a_set_per_write_indexes_the_record_and_leaves_the_pointer(storage: FakeStorage) -> None:
+    """Storage that ignores writeId gets no artifact file: the stored record is still written, the record is
+    indexed and completed, and the pointer stays where it was, so reads keep serving the stored record."""
+    storage.honours_write_id = False
+    pointer = {"id": "vr-1", "record_doc_id": "doc-1", "currentRev": "00000000aaaaaaaa", "manifestDocId": "older-set"}
+    graph = _graph(dict(pointer))
+    orch = _orchestrator(graph)
+    logger = logging.getLogger("test-sink-artifacts")
+    orch.artifact_writer = ArtifactWriter(NodeArtifactStore(storage.blob_storage(), logger), logger)
+    counted = MagicMock()
+
+    with patch.object(sink_module, "record_artifact_write", counted):
+        await _index(orch, TransformContext(record=_record()))
+
+    orch.blob_storage.apply.assert_awaited_once()
+    orch.vector_store.apply.assert_awaited_once()
+    assert graph.provider.batch_update_nodes.await_args.args[0][0]["indexingStatus"] == "COMPLETED"
+    assert storage.puts == {} and len(storage.presign_calls) == 1
+    counted.assert_called_once_with("unavailable")
+    graph.provider.update_node_fields_if_match.assert_not_awaited()
+    assert graph.mapping is not None
+    assert {k: graph.mapping.get(k) for k in pointer} == pointer
+
+
+async def test_every_index_run_mints_a_stored_run_of_its_own() -> None:
+    """A retry or a duplicate delivery of one index event is another run: it never shares a stored run, so
+    never an artifact set, with an earlier attempt whose late uploads may still land."""
+    graph = _graph()
+    orch = _orchestrator(graph)
+
+    await _index(orch, TransformContext(record=_record()))
+    await _index(orch, TransformContext(record=_record()))
+
+    runs = [c.kwargs["stored_run"] for c in orch.artifact_writer.write_revision.await_args_list]
+    assert len(runs) == 2 and runs[0] != runs[1]
+    assert write_id(runs[0]) != write_id(runs[1])

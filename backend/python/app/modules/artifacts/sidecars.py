@@ -16,6 +16,7 @@ from app.modules.artifacts.store import (
     ArtifactRoutesUnavailable,
     ArtifactStoreError,
     NodeArtifactStore,
+    SetPerWriteUnsupported,
     artifact_writes_available,
 )
 from app.modules.artifacts.writer import REV_PATTERN, canonical_json
@@ -96,7 +97,8 @@ class ArtifactSidecars:
                 raise ValueError("revision or sidecar name the storage service would refuse")
             plan = await self.store.presign_revision(org_id, virtual_record_id, rev, [(path, _JSON)], write_id=set_id)
             await self.store.put(plan.files[path], canonical_json(payload), _JSON)
-        except ArtifactRoutesUnavailable:
+        except (ArtifactRoutesUnavailable, SetPerWriteUnsupported):
+            # No set of its own for this write: never file into the revision's shared set.
             record_artifact_write("sidecar_unavailable")
             return False
         except Exception as exc:

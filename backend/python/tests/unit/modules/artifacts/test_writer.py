@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import itertools
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -27,7 +28,6 @@ from app.models.blocks import (
 from app.models.entities import Priority, Record, RecordType, Status, TicketRecord
 from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts import store as store_module
-from app.modules.artifacts import writer as writer_module
 from app.modules.artifacts.models import MANIFEST_PATH, PROPERTIES_PATH
 from app.modules.artifacts.store import MAX_FILES_PER_CALL, NodeArtifactStore
 from app.modules.artifacts.writer import (
@@ -89,7 +89,6 @@ def _image_block(index: int, uri: str) -> Block:
 def _routes_available() -> None:
     store_module.ARTIFACT_ROUTES.reset()
     store_module.PROPERTIES_FILE.reset()
-    store_module.PER_WRITE_SETS.reset()
 
 
 @pytest.fixture
@@ -218,6 +217,25 @@ class TestFiles:
         assert built.artifacts["reconciliation"].count == 2
         assert built.artifacts["blocks"].count == 5 and built.artifacts["text"].count == 4
 
+    def test_the_same_input_builds_the_same_bytes(self) -> None:
+        """Building is pure: nothing in a set's files depends on the time, the order of a run or chance (only the
+        manifest carries ``producedAt``). So the files of one stored write never differ between two builds."""
+        def build() -> dict[str, str]:
+            png, jpeg = _uri("image/png", PNG), _uri("image/jpeg", JPEG)
+            blocks = [*_text_blocks(3, 5), _image_block(3, png), _image_block(4, jpeg), _image_block(5, png)]
+            record = _record(blocks, [BlockGroup(id="g0", index=0, type=GroupType.TEXT_SECTION)])
+            built = build_revision(
+                record, record.block_containers,
+                semantic_metadata=SemanticMetadata(summary="s", topics=["b", "a"]),
+                reconciliation_metadata={"block_id_to_index": {"b1": 1, "b0": 0}},
+                stored_record_fields={"id": "rec-1", "record_name": "doc.pdf"},
+            )
+            return {path: hashlib.sha256(f.data).hexdigest() for path, f in built.files.items()}
+
+        first = build()
+        assert len(first) > 5
+        assert build() == first
+
     def test_json_is_sorted_compact_utf8(self) -> None:
         assert canonical_json({"b": 1, "a": "Borgartún"}) == '{"a":"Borgartún","b":1}'.encode()
         assert canonical_json({"s": "\ud800"}) == b'{"s":"\\ud800"}'
@@ -287,7 +305,7 @@ class TestWriteRevision:
 
     @pytest.mark.parametrize("late_manifest", [False, True], ids=["late_files", "late_files_and_manifest"])
     async def test_a_late_write_of_a_superseded_run_never_lands_in_the_newer_writes_set(
-        self, storage: FakeStorage, late_manifest: bool, monkeypatch: pytest.MonkeyPatch,
+        self, storage: FakeStorage, late_manifest: bool,
     ) -> None:
         """Two records sharing content write one revision, with different bytes (record.json carries each
         record's identity). X passes its check, then Y takes over the stored record and writes its whole set;
@@ -297,12 +315,6 @@ class TestWriteRevision:
         y = x.model_copy(update={"id": "rec-2", "record_name": "copy.pdf"})
         stored = {"run": "gen:x"}
         x_checks = 0
-
-        def no_lock(*key: str) -> asyncio.Lock:
-            raise AssertionError(f"a write with a set of its own took the shared-set lock: {key}")
-
-        # Storage echoes each write id: the writes never share a file, so nothing serializes them.
-        monkeypatch.setattr(writer_module, "_set_write_lock", no_lock)
 
         async def write(record: Record, run: str, still_current: Callable[[], Awaitable[bool]]) -> object:
             return await _writer(storage).write_revision(
@@ -339,102 +351,83 @@ class TestWriteRevision:
         # X's late files are all in X's own set.
         assert json.loads(storage.puts[f"{x_root}/record.json"].data)["id"] == "rec-1"
         assert (f"{x_root}/{MANIFEST_PATH}" in storage.puts) is late_manifest
-        assert store_module.PER_WRITE_SETS.available
-
-    async def test_on_storage_without_sets_per_write_a_superseded_write_finishes_before_the_newer_one_writes(
-        self, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A storage service that ignores writeId files both writes of the revision in its one shared set, at the
-        same paths with different bytes. X passes its check before its files go up, then Y takes over the stored
-        record and writes while X is held there. Y must wait for X's uploads, so when both are done every file
-        Y's manifest names is the bytes Y wrote, not X's late ones."""
-        storage.honours_write_id = False
-        x = _record(_text_blocks(3, 10))
-        y = x.model_copy(update={"id": "rec-2", "record_name": "copy.pdf"})
-        stored = {"run": "gen:x"}
-        y_waits = asyncio.Event()
-        real_lock = getattr(writer_module, "_set_write_lock", None)
-
-        def set_write_lock(*key: str) -> asyncio.Lock:
-            assert real_lock is not None
-            lock = real_lock(*key)
-            if lock.locked():
-                y_waits.set()
-            return lock
-
-        monkeypatch.setattr(writer_module, "_set_write_lock", set_write_lock, raising=False)
-
-        async def write(record: Record, run: str, still_current: Callable[[], Awaitable[bool]]) -> object:
-            return await _writer(storage).write_revision(
-                record, "org-1", "vr-1", REV, record.block_containers, stored_run=run, still_current=still_current,
-            )
-
-        async def y_current() -> bool:
-            return stored["run"] == "gen:y"
-
-        y_write: asyncio.Task[object] | None = None
-
-        async def x_current() -> bool:
-            nonlocal y_write
-            if stored["run"] != "gen:x":
-                return False
-            # X is current at its check; Y takes over and starts its write before X's files go up.
-            stored["run"] = "gen:y"
-            y_write = asyncio.create_task(write(y, "gen:y", y_current))
-            waiting = asyncio.create_task(y_waits.wait())
-            await asyncio.wait({y_write, waiting}, return_when=asyncio.FIRST_COMPLETED)
-            waiting.cancel()
-            return True
-
-        assert await write(x, "gen:x", x_current) is None
-        assert y_write is not None and await y_write is not None
-
-        root = FakeStorage.root("vr-1", REV)
-        manifest = json.loads(storage.puts[f"{root}/{MANIFEST_PATH}"].data)
-        assert manifest["storedRun"] == "gen:y"
-        listed = [
-            *(f for e in manifest["artifacts"].values() for f in (e.get("parts") or e.get("files") or [])),
-            *(e for e in manifest["artifacts"].values() if e.get("path")),
-        ]
-        assert listed
-        for entry in listed:
-            assert hashlib.sha256(storage.puts[f"{root}/{entry['path']}"].data).hexdigest() == entry["sha256"], entry
-        assert json.loads(storage.puts[f"{root}/record.json"].data)["id"] == "rec-2"
 
     @pytest.mark.parametrize(
         ("honours", "echo"),
         [(False, None), (True, "f" * 32), (False, SET)],
         ids=["no_echo", "another_write_echoed", "echo_without_a_root_of_its_own"],
     )
-    async def test_a_write_id_storage_did_not_honour_falls_back_to_the_shared_set_lock(
+    async def test_storage_that_gives_the_write_no_set_of_its_own_gets_no_file(
         self, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
         honours: bool, echo: str | None,
     ) -> None:
+        """A storage service that ignores writeId would file every write of the revision in one shared set, where
+        another process's late files can land over this write's. Nothing is written there, not even the manifest,
+        so no pointer can name it and reads keep serving the stored record."""
         storage.honours_write_id, storage.echo_write_id = honours, echo
-        locked: list[tuple[str, ...]] = []
-        real_lock = writer_module._set_write_lock
-
-        def set_write_lock(*key: str) -> asyncio.Lock:
-            locked.append(key)
-            return real_lock(*key)
-
-        monkeypatch.setattr(writer_module, "_set_write_lock", set_write_lock)
+        monkeypatch.setattr(store_module, "_UNSUPPORTED_SKIPS", itertools.count(1))
         record = _record(_text_blocks(2, 10))
         writer = _writer(storage)
 
-        with caplog.at_level(logging.WARNING, logger="artifact-writer-test"):
-            assert await writer.write_revision(record, "org-1", "vr-1", REV, record.block_containers) is not None
-            # The first write learns it from its presign and signs again under the lock; later ones lock first.
-            assert len(storage.presign_calls) == 2
-            assert await writer.write_revision(record, "org-1", "vr-1", REV, record.block_containers) is not None
-            assert len(storage.presign_calls) == 3
+        with caplog.at_level(logging.DEBUG, logger="artifact-writer-test"):
+            assert await writer.write_revision(record, "org-1", "vr-1", REV, record.block_containers) is None
+            assert await writer.write_revision(record, "org-1", "vr-1", REV, record.block_containers) is None
 
-        assert locked == [("org-1", "vr-1", REV)] * 2
-        assert not store_module.PER_WRITE_SETS.available
-        assert [r.getMessage() for r in caplog.records].count(
-            "Storage keeps one artifact set per revision (it does not honour writeId); writes of one "
-            "revision are serialized in this process until it restarts"
-        ) == 1
+        assert storage.put_order == [] and storage.puts == {}
+        assert len(storage.presign_calls) == 2
+        warned = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warned) == 1 and "artifact writes are skipped" in warned[0].getMessage()
+        assert "(2 skipped in this process)" in caplog.records[-1].getMessage()
+
+    async def test_overlapping_writes_from_two_processes_on_such_storage_store_nothing(self, storage: FakeStorage) -> None:
+        """Two writers with nothing in common (as in two processes) write one revision at once, each record with its
+        own bytes. On storage without a set per write neither files anything, so neither can corrupt the other."""
+        storage.honours_write_id = False
+        x = _record(_text_blocks(3, 10))
+        y = x.model_copy(update={"id": "rec-2", "record_name": "copy.pdf"})
+
+        written = await asyncio.gather(
+            _writer(storage).write_revision(x, "org-1", "vr-1", REV, x.block_containers, stored_run="gen:x"),
+            _writer(storage).write_revision(y, "org-1", "vr-1", REV, y.block_containers, stored_run="gen:y"),
+        )
+
+        assert written == [None, None]
+        assert storage.puts == {}
+
+    async def test_two_deliveries_of_one_index_write_two_whole_sets(self, storage: FakeStorage) -> None:
+        """A duplicate delivery, or a retry while a cancelled attempt's uploads still land, is another index run:
+        each mints its own stored run (``mint_stored_write``), so each writes a set of its own, at once, and
+        both come out whole."""
+        x = _record(_text_blocks(3, 10))
+        y = x.model_copy(update={"id": "rec-2", "record_name": "copy.pdf"})
+
+        written = await asyncio.gather(
+            _writer(storage).write_revision(x, "org-1", "vr-1", REV, x.block_containers, stored_run="gen:first"),
+            _writer(storage).write_revision(y, "org-1", "vr-1", REV, y.block_containers, stored_run="gen:second"),
+        )
+
+        assert all(w is not None for w in written)
+        for run, record_id in (("gen:first", "rec-1"), ("gen:second", "rec-2")):
+            root = FakeStorage.root("vr-1", REV, write_id(run))
+            manifest = json.loads(storage.puts[f"{root}/{MANIFEST_PATH}"].data)
+            assert manifest["storedRun"] == run
+            for e in manifest["artifacts"].values():
+                for f in e.get("parts") or e.get("files") or ([e] if e.get("path") else []):
+                    assert hashlib.sha256(storage.puts[f"{root}/{f['path']}"].data).hexdigest() == f["sha256"]
+            assert json.loads(storage.puts[f"{root}/record.json"].data)["id"] == record_id
+
+    async def test_storage_upgraded_mid_process_is_used_at_the_next_write(self, storage: FakeStorage) -> None:
+        storage.honours_write_id = False
+        record = _record(_text_blocks(2, 10))
+        writer = _writer(storage)
+        assert await writer.write_revision(record, "org-1", "vr-1", REV, record.block_containers) is None
+
+        storage.honours_write_id = True
+        written = await writer.write_revision(record, "org-1", "vr-1", REV, record.block_containers)
+
+        assert written is not None
+        assert written.manifest_ref.root == FakeStorage.root("vr-1", REV, SET)
+        assert f"{FakeStorage.root('vr-1', REV, SET)}/{MANIFEST_PATH}" in storage.puts
 
     async def test_a_none_run_keeps_no_set(self, storage: FakeStorage) -> None:
         record = _record(_text_blocks(2, 10))

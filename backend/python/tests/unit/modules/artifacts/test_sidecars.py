@@ -144,6 +144,20 @@ class TestNeverRaises:
         assert len(storage.presign_calls) == 1
         assert outcomes == ["sidecar_unavailable", "sidecar_unavailable"]
 
+    async def test_storage_without_a_set_per_write_gets_no_sidecar_until_it_has_one(
+        self, storage: FakeStorage, outcomes: list[str],
+    ) -> None:
+        """A sidecar never goes into the revision's shared set; an upgraded storage service is used at the next write."""
+        storage.honours_write_id = False
+        sidecars = _sidecars(storage)
+        with _flag(True):
+            assert await sidecars.write("org-1", "vr-1", REV, "classification", 1, PAYLOAD, stored_run=RUN) is False
+            assert storage.puts == {}
+            storage.honours_write_id = True
+            assert await sidecars.write("org-1", "vr-1", REV, "classification", 1, PAYLOAD, stored_run=RUN) is True
+        assert list(storage.puts) == [f"{storage.root('vr-1', REV, write_id(RUN))}/enrich/classification@1.json"]
+        assert outcomes == ["sidecar_unavailable", "sidecar_written"]
+
     async def test_an_unexpected_error_is_swallowed(self, outcomes: list[str]) -> None:
         store = MagicMock()
         store.presign_revision = AsyncMock(side_effect=RuntimeError("boom"))

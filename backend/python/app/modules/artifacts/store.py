@@ -5,6 +5,7 @@ S3 or Azure (or, on local storage, to a storage-service route). A signed URL
 is a bearer credential: nothing here logs one or puts one in an error.
 """
 
+import itertools
 import json
 import logging
 import threading
@@ -48,6 +49,20 @@ class ArtifactStoreError(Exception):
     """A storage reply this client cannot use. Never carries a signed URL."""
 
 
+class SetPerWriteUnsupported(Exception):
+    """The storage service did not give the write a set of its own (it ignores ``writeId``, e.g. mid-upgrade).
+
+    It would file every write of the revision in one shared set, where a late or concurrent write of another
+    process can overwrite this one's files and no lock here could fence it. Nothing is written there; reads
+    keep serving the stored record. Asked again at every presign, so an upgraded storage service is used as
+    soon as it answers.
+    """
+
+
+#: Writes this process skipped because storage gave them no set of their own.
+_UNSUPPORTED_SKIPS = itertools.count(1)
+
+
 class _Availability:
     """Process-wide: once the storage service is seen without the routes, stop asking.
 
@@ -79,9 +94,6 @@ class _Availability:
 ARTIFACT_ROUTES = _Availability()
 #: Whether the storage service takes ``properties.json``; one older than the file refuses it.
 PROPERTIES_FILE = _Availability()
-#: Whether the storage service gives each stored write its own set (honours ``writeId``); an older one
-#: files every write of a revision in the revision's one shared set.
-PER_WRITE_SETS = _Availability()
 
 
 def artifact_writes_available() -> bool:
@@ -166,8 +178,9 @@ class NodeArtifactStore:
 
         ``write_id`` names the stored write the set is of (``stored_write.write_id``): each write
         of a revision then has a document and file root of its own, so no write can overwrite
-        another's files. Without it the files go to the revision's one shared set (an older
-        storage service ignores it and does the same: the plan's ``write_id`` then echoes none).
+        another's files, and a reply that does not echo it with a root of its own raises
+        ``SetPerWriteUnsupported`` (an older storage service ignores it). Without it the files go
+        to the revision's one shared set.
         More files than one call takes are asked for in several calls; the
         storage service files them all under the one document.
         Raises ``ArtifactRoutesUnavailable`` (and stops asking for the rest of
@@ -177,7 +190,6 @@ class NodeArtifactStore:
             raise ValueError("a revision needs at least one file")
         document_id: str | None = None
         root: str | None = None
-        echoed: str | None = None
         expires: int | None = None
         signed: dict[str, SignedFileUrl] = {}
         for start in range(0, len(files), MAX_FILES_PER_CALL):
@@ -207,8 +219,11 @@ class NodeArtifactStore:
             if document_id is not None and chunk_doc != document_id:
                 raise ArtifactStoreError("presign calls for one revision answered different documents")
             document_id = chunk_doc
+            if write_id and (
+                body.get("writeId") != write_id or not str(body.get("root") or "").endswith(f"/{rev}-{write_id}")
+            ):
+                self._skip_unsupported(virtual_record_id, rev)
             root = body.get("root") if isinstance(body.get("root"), str) else root
-            echoed = body.get("writeId") if isinstance(body.get("writeId"), str) else echoed
             if isinstance(body.get("expiresInSeconds"), int):
                 expires = body["expiresInSeconds"]
             answered = body.get("files")
@@ -222,8 +237,17 @@ class NodeArtifactStore:
                 raise ArtifactStoreError(f"presign left {len(missing)} file(s) unsigned")
         return RevisionUploadPlan(
             document_id=str(document_id), root=root or "", expires_in_seconds=expires, files=signed,
-            write_id=echoed,
         )
+
+    def _skip_unsupported(self, virtual_record_id: str, rev: str) -> None:
+        skipped = next(_UNSUPPORTED_SKIPS)
+        log = self.logger.warning if skipped == 1 else self.logger.debug
+        log(
+            "Storage did not give a write of %s (rev %s) an artifact set of its own (it ignores writeId); "
+            "artifact writes are skipped and reads use the stored record until storage is upgraded "
+            "(%d skipped in this process)", virtual_record_id, rev, skipped,
+        )
+        raise SetPerWriteUnsupported
 
     async def put(self, entry: SignedFileUrl, data: bytes, content_type: str | None = None) -> None:
         """PUT ``data`` with exactly the headers the storage service signed.
