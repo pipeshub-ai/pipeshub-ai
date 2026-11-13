@@ -62,7 +62,8 @@ concurrency:
 jobs:
   python:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # shard 1 is one test case of ~22-26 min serial (the not-current adversarial worlds), which no split can shorten
+    timeout-minutes: ${{ matrix.shard == 1 && 60 || 45 }}
     strategy:
       fail-fast: false
       matrix:
