@@ -4161,7 +4161,7 @@
         "editConfiguration": "编辑配置",
         "deleteConfiguration": "删除配置"
       },
-      "duckduckgoWarning": "多人同时搜索时可能失效。对团队来说，使用 API 密钥的提供商更可靠。",
+      "duckduckgoWarning": "在共享服务器上可能被封锁或限速，不建议团队使用。",
       "notSetUp": {
         "title": "网络搜索尚未设置。",
         "description": "请在下方选择一个提供商来开启。在此之前，组织中的任何人都无法在聊天中搜索网络。"

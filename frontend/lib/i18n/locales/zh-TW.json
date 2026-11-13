@@ -4161,7 +4161,7 @@
         "editConfiguration": "編輯設定",
         "deleteConfiguration": "刪除設定"
       },
-      "duckduckgoWarning": "多人同時搜尋時可能失效。對團隊而言，使用 API 金鑰的供應商更可靠。",
+      "duckduckgoWarning": "在共用伺服器上可能被封鎖或限速，不建議團隊使用。",
       "notSetUp": {
         "title": "網路搜尋尚未設定。",
         "description": "請在下方選擇一個供應商來開啟。在此之前，組織中的任何人都無法在聊天中搜尋網路。"

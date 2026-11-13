@@ -3910,7 +3910,7 @@
         "editConfiguration": "Editar configuración",
         "deleteConfiguration": "Eliminar configuración"
       },
-      "duckduckgoWarning": "Puede dejar de funcionar cuando mucha gente busca a la vez. Para un equipo, un proveedor con clave de API es más fiable.",
+      "duckduckgoWarning": "Puede bloquearse o limitarse en servidores compartidos. No recomendado para equipos.",
       "notSetUp": {
         "title": "La búsqueda web aún no está configurada.",
         "description": "Elige un proveedor abajo para activarla. Hasta entonces, nadie de tu organización puede buscar en la web desde el chat."

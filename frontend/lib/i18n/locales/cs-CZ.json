@@ -4300,7 +4300,7 @@
         "editConfiguration": "Upravit konfiguraci",
         "deleteConfiguration": "Smazat konfiguraci"
       },
-      "duckduckgoWarning": "Může přestat fungovat, když vyhledává mnoho lidí najednou. Pro tým je spolehlivější poskytovatel s klíčem API.",
+      "duckduckgoWarning": "Na sdílených serverech může být blokován nebo omezován. Pro týmy nedoporučujeme.",
       "notSetUp": {
         "title": "Vyhledávání na webu zatím není nastaveno.",
         "description": "Vyberte níže poskytovatele a zapněte ho. Do té doby nikdo ve vaší organizaci nemůže v chatu vyhledávat na webu."
