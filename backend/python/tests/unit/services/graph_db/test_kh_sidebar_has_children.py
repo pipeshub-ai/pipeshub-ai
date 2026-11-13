@@ -112,3 +112,14 @@ async def test_a_folder_in_the_sidebar_asks_the_check_nothing() -> None:
     assert 'LET kh_probe = NOT kh_has AND (IS_SAME_COLLECTION("recordGroups", kh_sd) ? "recordGroup"' in slim and '== "record" AND' in slim
     statement = await _browse_statement({"only_containers": True})
     assert "(NOT khHas AND NOT node:RecordGroup AND NOT node:KhFolder AND EXISTS" in statement
+
+
+@pytest.mark.asyncio
+async def test_neo4j_reads_the_hiding_group_test_once_per_row_and_arrow_not_per_copy_of_the_rule() -> None:
+    """Each copy of the browse rule in a page statement costs its plan, and the plan is made again whenever the store's statistics move: with
+    the hiding-group test in every copy, CI's Neo4j (768 MB heap) spent the conformance step planning. The rule holds no such test; the
+    statement reads it for its rows (the row filter, and the undecided children) and for the child an arrow counts."""
+    rule = Neo4jProvider.__new__(Neo4jProvider)._kh_v3_child_rule("c", "p", from_app="f", opens="o", state=True)
+    assert "kh_q" not in rule
+    assert (await _browse_statement(None)).count("kh_q <>") == 3
+    assert (await _browse_statement({"only_containers": True})).count("kh_q <>") == 4
