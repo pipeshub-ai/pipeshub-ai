@@ -496,6 +496,8 @@
     "pagination": {
       "showing": "{{total}} में से {{start}}-{{end}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "कम से कम {{total}} में से {{start}}-{{end}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "प्रति पृष्ठ {{value}}"
     },
     "yes": "हाँ",
@@ -706,7 +708,8 @@
     "nameRules": {
       "folderSeparator": "फ़ोल्डर के नाम में \"/\" या \"\\\" नहीं हो सकता।",
       "collectionExists": "आपके पास पहले से \"{{name}}\" नाम का संग्रह है। कोई दूसरा नाम चुनें।"
-    }
+    },
+    "sourcesNotReady": "कुछ स्रोत अभी तैयार किए जा रहे हैं और अभी सूची में नहीं हैं ({{count}})। थोड़ी देर में फिर से कोशिश करें।"
   },
   "connectorTypes": {
     "slack": "Slack",
