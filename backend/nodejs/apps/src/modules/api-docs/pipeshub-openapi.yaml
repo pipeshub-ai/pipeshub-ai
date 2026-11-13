@@ -18474,6 +18474,7 @@ components:
       required:
         - status
         - providers
+        - configured
         - settings
         - message
       properties:
@@ -18484,6 +18485,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/WebSearchProviderItem'
+        configured:
+          type: boolean
+          description: Whether a provider that can search is the default, so web search can run
         settings:
           $ref: '#/components/schemas/WebSearchSettings'
         message:
@@ -69574,10 +69578,12 @@ paths:
         server hides secrets from everyone (`HIDE_SECRET_CONFIG=true`). When updating a provider,
         sending the placeholder back keeps the stored key.
 
-        The built-in `duckduckgo` entry (never stored, empty `configuration`) is always listed
-        first; it is the default when no stored provider is. With nothing stored, `message` is
-        `No web search providers found` and the settings are the defaults. Of the query
-        string only `reveal` is read.
+        Only stored providers are listed. `configured` is true when a stored provider that can
+        search is marked default; until then web search is off for chat and for agents that
+        have no provider of their own, and the UI asks an admin to set it up. DuckDuckGo is
+        listed only after an admin chose it. With nothing stored, `message` is
+        `No web search providers found`, `providers` is empty and the settings are the
+        defaults. Of the query string only `reveal` is read.
       operationId: getWebSearchProviders
       x-pipeshub-sdk: true
       security:
@@ -69894,7 +69900,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No provider is stored under this key (the built-in `duckduckgo` entry is never stored)
+          description: No provider is stored under this key
           content:
             application/json:
               schema:
@@ -69925,7 +69931,7 @@ paths:
       description: |
         Remove a web search provider configuration. If the deleted provider was default, the
         first remaining stored provider that can search (not crawl4ai) becomes default (with
-        none, the built-in `duckduckgo` is). Refused with 409 while any agent of the organization uses a web search
+        none, web search is not set up until an admin chooses a provider). Refused with 409 while any agent of the organization uses a web search
         provider of the same type (`provider`), whichever stored entry it was set up with.
 
         This route has no OAuth scope check: a token without `config:write` is accepted
@@ -69984,7 +69990,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No provider is stored under this key (the built-in `duckduckgo` entry is never stored)
+          description: No provider is stored under this key
           content:
             application/json:
               schema:
@@ -70035,9 +70041,10 @@ paths:
       summary: Update the default web search provider
       description: |
         Set the given provider as the default web search provider. For a stored provider its
-        stored configuration goes through the provider health check first. The built-in
-        `duckduckgo` key needs no check: choosing it clears the default flag of every stored
-        provider.
+        stored configuration goes through the provider health check first. The `duckduckgo`
+        key names DuckDuckGo even when it is not stored yet: it goes through the same health
+        check; if DuckDuckGo blocks or rate limits the test search it is still chosen and the answer carries a `warning`. It is stored with an empty
+        `configuration`, and becomes the default.
 
         This route has no OAuth scope check: a token without `config:write` is accepted
         (only the admin check applies).
@@ -70068,6 +70075,9 @@ paths:
                   message:
                     type: string
                     example: Default web search provider updated successfully
+                  warning:
+                    type: string
+                    description: Only for `duckduckgo`, when its test search was blocked or rate limited. It was saved anyway.
                   details:
                     type: object
                     additionalProperties: false

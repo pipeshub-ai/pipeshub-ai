@@ -4833,6 +4833,16 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     web_search_off = "capability_off"
                 else:
                     web_search_off = None
+                # Only the org default can be unset; an agent with no web search attached is a choice.
+                # A turn that switched web search off itself (capability, tools filter) is not asked to set it up.
+                web_search_unset = (
+                    web_search_off == "not_configured"
+                    and web_search_coro is not None
+                    and caps.web_search
+                    and _is_web_search_enabled(
+                        chat_query.tools, is_universal_agent=agent_id == UNIVERSAL_AGENT_ID,
+                    )
+                )
                 if web_search_off:
                     web_search_provider = None
                     web_search_tool_config = None
@@ -4902,6 +4912,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "modelKey": model_key,
                     "webSearch": web_search_provider,
                     "webSearchConfig": web_search_tool_config,
+                    "webSearchUnset": web_search_unset,
                     "deepResearch": caps.deep_search,
                     "attachments": attachments,
                     "enableRecordIdShortening": chat_query.enableRecordIdShortening,

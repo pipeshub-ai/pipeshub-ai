@@ -1558,6 +1558,15 @@
         "done": "Listo",
         "error": "Error"
       }
+    },
+    "webSearchSetup": {
+      "title": "La búsqueda web aún no está configurada",
+      "adminBody": "Tu organización no tiene ningún proveedor de búsqueda configurado. Elige uno en Workspace → Búsqueda web para activar la búsqueda web para todos.",
+      "memberBody": "Tu organización aún no ha configurado un proveedor de búsqueda web, por lo que las respuestas no pueden usar la web.",
+      "memberHint": "Pide a tu administrador que lo configure en Workspace → Búsqueda web.",
+      "setUp": "Configurar la búsqueda web",
+      "notNow": "Ahora no",
+      "gotIt": "Entendido"
     }
   },
   "workspaceMenu": {
@@ -4014,6 +4023,11 @@
         "settingDefault": "Estableciendo…",
         "editConfiguration": "Editar configuración",
         "deleteConfiguration": "Eliminar configuración"
+      },
+      "duckduckgoWarning": "Puede bloquearse o limitarse en servidores compartidos. No recomendado para equipos.",
+      "notSetUp": {
+        "title": "La búsqueda web aún no está configurada.",
+        "description": "Elige un proveedor abajo para activarla. Hasta entonces, nadie de tu organización puede buscar en la web desde el chat."
       }
     },
     "profile": {

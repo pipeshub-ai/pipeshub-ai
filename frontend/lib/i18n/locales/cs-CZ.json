@@ -1692,6 +1692,15 @@
         "done": "Hotovo",
         "error": "Selhalo"
       }
+    },
+    "webSearchSetup": {
+      "title": "Vyhledávání na webu zatím není nastaveno",
+      "adminBody": "Vaše organizace nemá nastaveného žádného poskytovatele vyhledávání. Vyberte jej v Workspace → Vyhledávání na webu a zapněte tak vyhledávání pro všechny.",
+      "memberBody": "Vaše organizace zatím nenastavila poskytovatele vyhledávání na webu, takže odpovědi nemohou web používat.",
+      "memberHint": "Požádejte správce, aby jej nastavil v Workspace → Vyhledávání na webu.",
+      "setUp": "Nastavit vyhledávání na webu",
+      "notNow": "Teď ne",
+      "gotIt": "Rozumím"
     }
   },
   "workspaceMenu": {
@@ -4405,6 +4414,11 @@
         "settingDefault": "Nastavuje se…",
         "editConfiguration": "Upravit konfiguraci",
         "deleteConfiguration": "Smazat konfiguraci"
+      },
+      "duckduckgoWarning": "Na sdílených serverech může být blokován nebo omezován. Pro týmy nedoporučujeme.",
+      "notSetUp": {
+        "title": "Vyhledávání na webu zatím není nastaveno.",
+        "description": "Vyberte níže poskytovatele a zapněte ho. Do té doby nikdo ve vaší organizaci nemůže v chatu vyhledávat na webu."
       }
     },
     "profile": {

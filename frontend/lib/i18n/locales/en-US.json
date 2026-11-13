@@ -1624,6 +1624,15 @@
         "done": "Done",
         "error": "Failed"
       }
+    },
+    "webSearchSetup": {
+      "title": "Web search isn’t set up yet",
+      "adminBody": "No search provider is configured for your organization. Choose one in Workspace → Web search to turn web search on for everyone.",
+      "memberBody": "Your organization hasn’t set up a web search provider yet, so answers can’t use the web.",
+      "memberHint": "Ask your admin to configure it under Workspace → Web search.",
+      "setUp": "Set up web search",
+      "notNow": "Not now",
+      "gotIt": "Got it"
     }
   },
   "workspaceMenu": {
@@ -4285,6 +4294,11 @@
         "settingDefault": "Setting…",
         "editConfiguration": "Edit configuration",
         "deleteConfiguration": "Delete configuration"
+      },
+      "duckduckgoWarning": "It can be blocked or rate-limited on shared servers. Not recommended for teams.",
+      "notSetUp": {
+        "title": "Web search isn't set up yet.",
+        "description": "Pick a provider below to turn it on. Until then, people in your organization can't search the web in chat."
       }
     },
     "profile": {
