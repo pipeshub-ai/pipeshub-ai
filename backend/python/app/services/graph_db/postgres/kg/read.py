@@ -37,24 +37,34 @@ CHUNK = 10_000
 ANSWERS = METRICS_BACKEND.counter("pipeshub_kg_read_nodes_total", "Nodes an access check decided, by who answered", ["answer"])
 FALLBACKS = METRICS_BACKEND.counter("pipeshub_kg_read_fallback_total", "Nodes (or whole calls) that kg handed to the walk, by reason", ["reason"])
 
-# The asked nodes: apps, record groups and records. One index probe per asked id (the LIMIT keeps the planner from turning the lateral join into a scan of the org when it has no statistics). ``hidden`` is the record's own mark;
-# the connector-wide one (a queued restamp job that hides) is part of ``drainer.serves``.
+# Every lookup by key below is a seek: the first row at or after the key in the key's unique index (``k >= q.k ORDER BY k LIMIT 1``), kept only when it is the key. Of the org's
+# indexes only that one returns its rows in key order, and PROFILE turns sorts off, so the plan is that index whatever the statistics say. With ``k = q.k`` any index on the org
+# answers too: when the statistics knew only small orgs and the asked org's rows were newer (its first large sync, before autovacuum analyses the table) the planner chose to
+# scan the whole org once per asked key. OFFSET 0 keeps a seek's key check in its own subquery, so the plan shows it next to the seek (``s.id = q.id``) as the union does.
+# The asked nodes: apps, record groups and records, one seek per id and collection, and the connector of each by its key. ``hidden`` is the record's own mark; the connector-wide
+# one (a queued restamp job that hides) is part of ``drainer.serves``.
 BY_ID = """/* pipeshub:kg.read_rows */ SELECT r.coll, r.id, r.kind, r.deleted, r.placeholder, r.class_id, r.r13, r.path IS NULL AS no_path, r.fence_job IS NOT NULL AS hidden, a.id AS app_id
     FROM unnest($2::text[]) AS q(id)
-    CROSS JOIN LATERAL (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = ANY('{1,2,3}'::smallint[]) AND k.id = q.id LIMIT 3) r
-    LEFT JOIN kg.node_keys a ON a.org_id = r.org_id AND a.coll = 1 AND a.sk = r.app_sk"""
+    CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 1 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE s.id = q.id
+        UNION ALL SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 2 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE s.id = q.id
+        UNION ALL SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 3 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE s.id = q.id) r
+    LEFT JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.node_keys n WHERE n.org_id = $1 AND n.sk >= r.app_sk ORDER BY n.sk LIMIT 1) s WHERE s.sk = r.app_sk AND s.coll = 1 OFFSET 0) a
+        ON true"""
 CLASSES = """/* pipeshub:kg.read_classes */ SELECT c.id, c.clauses FROM unnest($2::bigint[]) AS q(id)
-    CROSS JOIN LATERAL (SELECT * FROM kg.scope_classes k WHERE k.org_id = $1 AND k.id = q.id LIMIT 1) c"""
+    CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.scope_classes k WHERE k.org_id = $1 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE s.id = q.id OFFSET 0) c"""
 # A literal is a node a grant can open the records below. A record that is a literal must have a child kg holds (a hierarchy child by ``parent_sk`` or a non-primary parent link, kinds as
 # kg.model.LINK_HIERARCHY): its ``leaf`` flag alone is not trusted, because a stale flag is the only thing between a grant on a childless record and the records the class says it opens.
+# Both children are found by a seek as well (the first child at or after the node in records_parent, and in links_pkey).
 LITERALS = """/* pipeshub:kg.read_literals */ SELECT r.sk, r.id, r.leaf,
-    (r.kind <> 3 OR coalesce((SELECT true FROM kg.records c WHERE c.org_id = r.org_id AND c.parent_sk = r.sk LIMIT 1),
-        (SELECT true FROM kg.links l WHERE l.org_id = r.org_id AND l.parent_sk = r.sk AND l.kind = 1 LIMIT 1), false)) AS has_child
+    (r.kind <> 3 OR coalesce((SELECT true FROM (SELECT c.parent_sk FROM kg.records c WHERE c.org_id = r.org_id AND c.parent_sk >= r.sk ORDER BY c.parent_sk LIMIT 1) x WHERE x.parent_sk = r.sk),
+        (SELECT true FROM (SELECT l.parent_sk, l.kind FROM kg.links l WHERE l.org_id = r.org_id AND (l.parent_sk, l.kind) >= (r.sk, 1) ORDER BY l.parent_sk, l.kind LIMIT 1) x
+            WHERE x.parent_sk = r.sk AND x.kind = 1), false)) AS has_child
     FROM unnest($2::bigint[]) AS q(sk)
-    CROSS JOIN LATERAL (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk = q.sk LIMIT 1) r"""
+    CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk >= q.sk ORDER BY k.sk LIMIT 1) s WHERE s.sk = q.sk OFFSET 0) r"""
 # With no statistics a bitmap scan of the whole org can look cheaper than the index searches an array of ids needs (plan_cache_mode, set by the unit, is the other half of the profile).
+# With sorts off nothing but the key's index can answer a seek above; the read's other statements ask for no order (a join, GROUP BY or DISTINCT is hashed instead).
 # The short lock and statement limits hand a blocked or slow read to the walk at once, instead of holding a pooled connection for the service's own limits.
-PROFILE = """/* pipeshub:kg.read_profile */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('lock_timeout', '200ms', true),
+PROFILE = """/* pipeshub:kg.read_profile */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('enable_sort', 'off', true), set_config('lock_timeout', '200ms', true),
     set_config('statement_timeout', '2s', true)"""
 
 
