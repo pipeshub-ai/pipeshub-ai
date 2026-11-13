@@ -444,6 +444,7 @@
     "created": "Created",
     "updated": "Updated",
     "source": "Source",
+    "actions": "Actions",
     "noData": "No data available",
     "loading": "Loading data...",
     "selectAll": "Select all",
@@ -495,6 +496,8 @@
     "pagination": {
       "showing": "Showing {{start}}-{{end}} of {{total}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "Showing {{start}}-{{end}} of at least {{total}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "{{value}} per page"
     },
     "yes": "Yes",
@@ -647,6 +650,8 @@
     "indexingStatus": {
       "completed": "Completed",
       "inProgress": "In progress",
+      "embeddingProgress_one": "Embedding {{done, number}} / {{total, number}} chunk",
+      "embeddingProgress_other": "Embedding {{done, number}} / {{total, number}} chunks",
       "failed": "Failed",
       "fileTypeNotSupported": "File type not supported",
       "notStarted": "Not started",
@@ -703,7 +708,8 @@
     "nameRules": {
       "folderSeparator": "Folder names cannot contain \"/\" or \"\\\".",
       "collectionExists": "You already have a collection named \"{{name}}\". Choose a different name."
-    }
+    },
+    "sourcesNotReady": "Some sources are still being prepared and are not listed yet ({{count}}). Try again in a moment."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -845,7 +851,17 @@
     "copy": "Copy",
     "fork": "Fork chat",
     "forkFromHere": "Fork from here",
+    "forkedHere": "Forked here",
+    "untitledChat": "Untitled chat",
+    "forkedFrom": "Forked from",
+    "copiedUpToHere": "Copied up to here · new messages start below",
+    "forkOriginUnavailable": "the original chat is no longer available",
     "regenerate": "Regenerate",
+    "answerHidden": {
+      "lost": "This answer used content you can no longer access.",
+      "unconfirmed": "We couldn't confirm your access. Try again.",
+      "askAgain": "Ask again"
+    },
     "readAloud": "Read aloud",
     "stopReading": "Stop reading",
     "ttsNotSupported": "Text-to-speech is not supported in this browser",
@@ -1519,6 +1535,15 @@
         "done": "Done",
         "error": "Failed"
       }
+    },
+    "webSearchSetup": {
+      "title": "Web search isn’t set up yet",
+      "adminBody": "No search provider is configured for your organization. Choose one in Workspace → Web search to turn web search on for everyone.",
+      "memberBody": "Your organization hasn’t set up a web search provider yet, so answers can’t use the web.",
+      "memberHint": "Ask your admin to configure it under Workspace → Web search.",
+      "setUp": "Set up web search",
+      "notNow": "Not now",
+      "gotIt": "Got it"
     }
   },
   "workspaceMenu": {
@@ -3278,7 +3303,14 @@
         "badge": "Action needed",
         "title": "Action needed",
         "openAuthentication": "Update authentication",
-        "viewSteps": "View setup steps"
+        "viewSteps": "View setup steps",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki refuses member and page structure queries",
+            "message": "Private spaces sync only with the access confirmed on an earlier sync, and only for {{days}} days after it was confirmed. Private spaces never synced, or confirmed longer ago, are skipped, and the page hierarchy is not available. Open spaces are not affected. A full sync, including one started by changing the filters, ends this for private spaces until Drupal Wiki lists their members again.",
+            "message_dated": "Private spaces sync only with the access confirmed on an earlier sync, and only for {{days}} days after it was confirmed. Private spaces never synced, or confirmed longer ago, are skipped, and the page hierarchy is not available. Open spaces are not affected. A full sync, including one started by changing the filters, ends this for private spaces until Drupal Wiki lists their members again. The oldest access in use was confirmed on {{confirmedOn}}."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Everyone in your organization will see this data",
@@ -3288,6 +3320,105 @@
         "cancel": "Cancel",
         "continueTeam": "Continue with team connector",
         "goToPersonal": "Set up personal connector"
+      },
+      "accessCheck": {
+        "open": "Check someone's access",
+        "title": "Check someone's access",
+        "description": "See whether a person can read a record from this connector, and why not.",
+        "personLabel": "Person",
+        "personPlaceholder": "Choose a person",
+        "peopleLoading": "Loading people...",
+        "peopleFailed": "We could not load the list of people.",
+        "recordLabel": "Record ID",
+        "recordHint": "Open the record and copy its ID.",
+        "check": "Check",
+        "checking": "Checking...",
+        "close": "Close",
+        "resultHeading": "Result",
+        "restrictedArea": "a restricted area",
+        "theyFallback": "This person",
+        "pathLabel": "Where it sits: {{path}}",
+        "reference": "Reference: {{ref}} (give this to support if the reason looks wrong)",
+        "verdict": {
+          "granted": "{{name}} can see this record.",
+          "denied": "{{name}} cannot see this record."
+        },
+        "reason": {
+          "granted": "If it is missing from search, it may not be indexed yet or the connector may still be syncing.",
+          "not_linked": "{{name}} has no account linked to this connector.",
+          "no_grant": "Nothing in {{container}} gives {{name}} access.",
+          "restricted_container": "{{container}} is limited to other people.",
+          "item_restricted": "This record has its own limit and {{name}} is not on it.",
+          "parent_not_readable": "{{name}} cannot open a parent this record needs.",
+          "pending_rewrite": "The folder this record is in is being updated.",
+          "syncing": "The connector has not finished syncing this part.",
+          "scheme_unreadable": "The connector cannot read the access rules for this area, so it is hidden from everyone.",
+          "deleted_at_source": "This record was deleted at the source.",
+          "unexplained": "We cannot show the reason."
+        },
+        "next": {
+          "not_linked": "Fix the account at the source, then sync.",
+          "no_grant": "Add {{name}} at the source.",
+          "restricted_container": "Ask its owner to add {{name}}.",
+          "item_restricted": "Ask its owner to add {{name}}.",
+          "parent_not_readable": "Share the parent with {{name}}.",
+          "pending_rewrite": "Wait a few minutes, then check again.",
+          "syncing": "Wait for the sync to finish.",
+          "scheme_unreadable": "Fix the sync account's permission at the source.",
+          "deleted_at_source": "Nothing to do.",
+          "unexplained": "Contact support and give them the reference."
+        },
+        "errors": {
+          "failed": "We could not check. Try again.",
+          "notFound": "We could not find that person or record in this connector.",
+          "rateLimited": "Too many checks. Try again in a minute."
+        },
+        "peopleRetry": "Try again",
+        "askedAbout": "About record {{record}}"
+      },
+      "access": {
+        "title": "Access",
+        "loading": "Loading access details…",
+        "loadError": "We could not load access details.",
+        "retry": "Try again",
+        "reach": "Changes in {{connector}} reach PipesHub within {{interval}}.",
+        "reachUnknown": "Changes in {{connector}} reach PipesHub on its next sync.",
+        "syncNow": "Sync permissions now",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "Permissions",
+          "succeeded": "Last refreshed {{when}}.",
+          "failed": "The last permission refresh failed, so recent changes in the source may not be applied yet. Choose Sync permissions now to try again.",
+          "never": "Permissions have not been refreshed yet. Content from this connector stays hidden until the first sync finishes.",
+          "running": "Refreshing permissions now.",
+          "incomplete": "The last permission refresh did not run to the end."
+        },
+        "pending": {
+          "label": "Waiting to be applied",
+          "none": "Nothing is waiting.",
+          "some_one": "{{count}} folder is being updated. It is hidden from everyone until the update finishes, usually a few minutes.",
+          "some_other": "{{count}} folders are being updated. They are hidden from everyone until the update finishes, usually a few minutes.",
+          "overflow": "A change reached the whole connector, so its permission index needs to be rebuilt in full. Until then search checks each result, so nothing is hidden by it.",
+          "unknown": "Not known: the list of folders waiting to update can't be read. See Needs attention."
+        },
+        "attention": {
+          "label": "Needs attention ({{count}})",
+          "none": "Nothing needs attention.",
+          "warning": "{{items}} items in {{container}} are hidden. The sync account cannot read this container's permissions.",
+          "fix": "Fix: give the sync account {{permission}} in {{vendor}}, then choose Sync permissions now.",
+          "showAll": "Show {{count}} more",
+          "warningNoContainer": "Some items are hidden because the sync account cannot read their permissions.",
+          "rebuild": "This connector's permission index needs a full rebuild. Until then search checks each result, so nothing is hidden by it.",
+          "unfinished": "A permission change did not finish cleanly. Ask whoever runs PipesHub to check this connector's permission index.",
+          "stale": "Some items could not be checked by the faster search and are found by the classic search instead.",
+          "sweep": "Permission updates keep failing for this connector. Ask whoever runs PipesHub to check its logs.",
+          "other": "Something about this connector's permissions needs a person to look at it.",
+          "unreadable": "The list of folders waiting to update can't be read. Ask whoever runs PipesHub to rebuild this connector's permission index. Search checks each result meanwhile."
+        }
       }
     },
     "mcpServers": {
@@ -3849,6 +3980,11 @@
         "settingDefault": "Setting…",
         "editConfiguration": "Edit configuration",
         "deleteConfiguration": "Delete configuration"
+      },
+      "duckduckgoWarning": "It can be blocked or rate-limited on shared servers. Not recommended for teams.",
+      "notSetUp": {
+        "title": "Web search isn't set up yet.",
+        "description": "Pick a provider below to turn it on. Until then, people in your organization can't search the web in chat."
       }
     },
     "profile": {
@@ -5857,5 +5993,20 @@
     },
     "nothingNew": "Nothing more to show for this node.",
     "tableOnly": "Showing the table only, to keep things responsive."
+  },
+  "accessNotice": {
+    "permissions_updating": "Some sources are updating permissions, so a few results may be missing for a few minutes.",
+    "connector_syncing": "{{name}} is still syncing, so results from it may be incomplete.",
+    "connector_syncing_unnamed": "A source is still syncing, so results from it may be incomplete.",
+    "check_unavailable": "We couldn't check which documents you have access to just now, so no results are shown. Please try again in a minute.",
+    "emptySyncing": "Nothing to search yet. {{name}} is still syncing.",
+    "emptySyncing_unnamed": "Nothing to search yet. A source is still syncing.",
+    "noAccess": {
+      "title": "You don't have access to this item",
+      "body": "It may have been moved, deleted or restricted. Ask the owner, or open it where it came from if you have the link.",
+      "justGotAccess": "Just got access at the source? New access appears after the next sync.",
+      "copyDetails": "Copy details for an admin",
+      "copied": "Details copied"
+    }
   }
 }

@@ -23,6 +23,18 @@ import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 import { setContextIdentity } from '../context/request-context';
 import { MCP_PATH } from './rate-limit.middleware';
+import {
+  auditAuthRefusal,
+  authRefusal,
+  type AuthRefusalEvent,
+} from '../../modules/auth/utils/sign-in-audit';
+
+/** The user-held tokens whose refusal is an auth decision; S2S scopes are not audited. */
+const AUDITED_SCOPES: Readonly<Record<string, AuthRefusalEvent>> = {
+  [TokenScopes.TOKEN_REFRESH]: 'auth.session.refresh',
+  [TokenScopes.PASSWORD_RESET]: 'auth.password_reset.complete',
+  [TokenScopes.VALIDATE_EMAIL]: 'auth.email.change',
+};
 
 const CLIENT_NAME_HEADER = 'client-name';
 const WEB_CLIENT_NAME = 'pipeshub-ai';
@@ -344,10 +356,24 @@ export class AuthMiddleware {
         const token = this.extractToken(req);
 
         if (!token) {
-          throw new UnauthorizedError('No token provided');
+          throw authRefusal(
+            new UnauthorizedError('No token provided'),
+            'no_token',
+          );
         }
 
-        const decoded = await this.tokenService.verifyScopedToken(token, scope);
+        const decoded = await this.tokenService
+          .verifyScopedToken(token, scope)
+          .catch((error: unknown) => {
+            if (!(error instanceof UnauthorizedError)) throw error;
+            const { cause } = error as { cause?: unknown };
+            throw authRefusal(
+              error,
+              cause instanceof jwt.TokenExpiredError
+                ? 'token_expired'
+                : 'token_invalid',
+            );
+          });
         req.tokenPayload = decoded;
         req.verifiedToken = token;
 
@@ -379,8 +405,11 @@ export class AuthMiddleware {
             const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
             const activityTimestamp = userActivity.createdAt?.getTime() || 0;
             if (activityTimestamp > tokenIssuedAt) {
-              throw new UnauthorizedError(
-                'Password reset link expired, please request for a new link',
+              throw authRefusal(
+                new UnauthorizedError(
+                  'Password reset link expired, please request for a new link',
+                ),
+                'link_used',
               );
             }
           }
@@ -402,6 +431,8 @@ export class AuthMiddleware {
           next();
         }
       } catch (error) {
+        const event = AUDITED_SCOPES[scope];
+        if (event) auditAuthRefusal(event, error);
         next(error);
       }
     };

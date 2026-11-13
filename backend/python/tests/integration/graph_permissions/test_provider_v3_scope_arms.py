@@ -92,7 +92,8 @@ ITEM = {"record_type": "FILE", "connector_id": APP}
 #   v3-dec-restricted  arm 4: RESTRICTED, but the declaration wins
 #   v3-dec-r3 / v3-dec-nested-granted  granted AND in the declared scope
 #   v3-dec-nested-hidden  arm 3: a nested group (its own flag hides only children)
-#   v3-foreign-dec(-r1) / v3-noconn-dec(-r1)  declarations the stop must NOT apply to
+#   v3-foreign-dec(-r1) / v3-noconn-dec(-r1)  declarations the stop must NOT apply to: the walk descends them to
+#                   their records, but a group is judged in the App its own connectorId names, so they are not listed
 #   v3-hide-folder  arm 1: an undeclared group that hides its children
 CORRECT_VISIBLE = {
     "v3-open", "v3-dec", "v3-dec-r1", "v3-dec-r2", "v3-dec-nested",
@@ -100,7 +101,7 @@ CORRECT_VISIBLE = {
     "v3-open-r1", "v3-dec-walked", "v3-dec-walked-r1", "v3-dec-folder",
     "v3-dec-attach-granted", "v3-dec-restricted", "v3-dec-r3",
     "v3-dec-nested-granted", "v3-dec-nested-hidden",
-    "v3-foreign-dec", "v3-foreign-dec-r1", "v3-noconn-dec", "v3-noconn-dec-r1",
+    "v3-foreign-dec-r1", "v3-noconn-dec-r1",
     "v3-hide-folder",
 }
 
@@ -115,6 +116,7 @@ PRUNE_GAP = {"v3-dec-attach", "v3-dec-via-rec"}
 OFF_CONNECTOR = {"v3-foreign-dec", "v3-noconn-dec", "v3-kb-r1", "v3-kb-deleted"}
 
 EXPECTED_HIDDEN = PRUNE_GAP | {
+    "v3-foreign-dec", "v3-noconn-dec",  # name another connector or none: the check refuses them under APP, so the listing does too
     "v3-dec-r3-child",         # inherits from a granted node that is not a seed
     "v3-dec-nested-granted-child",
     "v3-app-loose",            # BELONGS_TO a non-KB, non-APP_LEVEL app
@@ -356,7 +358,8 @@ async def _page(provider, *, app_id: str = APP, **overrides) -> dict:
         "app_id": app_id, "org_id": ORG,
         "grantee_ids": access["grantee_ids"],
         "gated_app_ids": access["gated_app_ids"],
-        "granted_ids": access["by_connector"].get(app_id) or [],
+        # Every gated connector's grants: a walk can pass through a node of another (an App's own grants alone are refused).
+        "grants_by_connector": {**access["by_connector"], **({app_id: overrides.pop("granted_ids")} if "granted_ids" in overrides else {})},
         "limit": 500, "flatten": True, "sort_field": "name", "sort_dir": "ASC",
         "include_total": True,
     }
@@ -527,7 +530,7 @@ async def test_the_total_matches_the_rows(v3_graph, neo4j_provider) -> None:
         app_id=APP, org_id=ORG,
         grantee_ids=access["grantee_ids"],
         gated_app_ids=access["gated_app_ids"],
-        granted_ids=access["by_connector"].get(APP) or [],
+        grants_by_connector=access["by_connector"],
         limit=3, flatten=True, sort_field="name", sort_dir="ASC",
         include_total=True,
     )
@@ -550,7 +553,7 @@ async def test_a_user_with_no_grants_sees_nothing_here(
         app_id=APP, org_id=ORG,
         grantee_ids=access["grantee_ids"],
         gated_app_ids=access["gated_app_ids"],
-        granted_ids=access["by_connector"].get(APP) or [],
+        grants_by_connector=access["by_connector"],
         limit=500, flatten=True, sort_field="name", sort_dir="ASC",
         include_total=True,
     )
@@ -703,7 +706,7 @@ async def test_direct_children_of_the_app(v3_graph, neo4j_provider) -> None:
     v3-dec-attach-granted has an open parent and stays under it."""
     assert await _visible(neo4j_provider, flatten=False) == {
         "v3-open", "v3-dec", "v3-hidden", "v3-hide-folder",
-        "v3-dec-walked", "v3-foreign-dec", "v3-noconn-dec", "v3-seed",
+        "v3-dec-walked", "v3-seed",
     }
 
 

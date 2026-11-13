@@ -4,7 +4,9 @@ For the nodes a projection just wrote (the *seeds*) this module finds every reco
 hierarchy and every member of a record group among them, to a fixpoint, read from the graph *and* from the rows kg held before, because an edge that is gone leaves
 no trace in the graph; the whole connector when its app changed or what the stamps were compiled with, ``opens`` or "has a record-group-level group", changed), compiles each
 with the class compiler over the closure of the graph, and writes the difference: ``class_id`` (interned in kg.scope_classes, with its anchors in kg.class_literals), ``self_lit``,
-``seed``, ``own_grant``, ``under_deleted``, ``legacy_reason``, ``leaf`` and ``path``.
+``seed``, ``own_grant``, ``under_deleted``, ``legacy_reason``, ``leaf`` and ``path``. Beside them: ``r13`` (a record of no connector that only a grant on it opens; NULL is not stamped,
+which a reader takes as "walk") and ``kg.scopes``, the records and record groups that have an access list of their own, written in the same unit and hidden whenever their record is
+(``restamp.HIDDEN_SCOPE``).
 
 ``class_id`` NULL is "legacy": the record keeps today's walk. ``legacy_reason`` 0 marks a record that is never readable (deleted or placeholder, the oracle's R11) and 1-8 a refusal
 of the compiler (``REASONS``). A record that was never stamped has all of them NULL.
@@ -29,7 +31,7 @@ from app.services.graph_db.postgres.kg.dependents import (
     held_keys,
     parents_of,
 )
-from app.services.graph_db.postgres.kg.locks import NeedLocks
+from app.services.graph_db.postgres.kg.locks import NeedLocks, bump
 from app.services.graph_db.postgres.kg.model import (
     CODE_COLL,
     COLL_CODE,
@@ -236,6 +238,7 @@ async def stamp(tx: Tx, org: str, seeds: set[Key], *, also: set[Key] | None = No
     lost a child, whose ``leaf`` flips); returns what it did. Runs in the projection's unit, under the connector's lock, after the structural rows. ``locked``: the connectors the
     unit holds (with ``org_wide``, any): a stamp that reaches another raises :class:`NeedLocks` before anything is written."""
     from app.services.graph_db.postgres.kg import restamp  # restamp imports this module
+    bump(org, set(locked or ()), wide=org_wide)
 
     recs = {k for k in seeds if k[0] in RECORD_COLLS}
     st = StampStats(seeds=len(recs))
@@ -317,6 +320,7 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
     paths = await _paths(tx, org, [sk_of[i] for i in present if i in sk_of])
     group_of = await _group_sks(tx, org, [sk_of[i] for i in present if i in sk_of])
     cur = await _current(tx, org, [sk_of[i] for i in present if i in sk_of])
+    cur_scopes = await _current_scopes(tx, org, [sk_of[i] for i in present if i in sk_of])
     kids = await _has_children(tx, org, [sk_of[i] for i in present if i in sk_of])
     has_children = {i for i in present if sk_of.get(i) in kids}
     wanted: dict[bytes, tuple[int, int | None, str]] = {}
@@ -336,6 +340,7 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
         wanted.setdefault(h, (a_sk, g_sk, json.dumps(enc, separators=(",", ":"))))
     class_ids = await _intern(tx, org, w, wanted, st, create=not dry)
     rows: list[dict] = []
+    scopes: dict[int, tuple] = {}
     for i in present:
         if i not in sk_of:
             if dry:
@@ -344,8 +349,10 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
         n, k = nodes[i], result[i]
         legacy: int | None = None
         class_id: int | None = None
-        self_lit = seed = False
+        self_lit = seed = r13 = False
         if isinstance(k, classes.Refusal):
+            # r13: a live record of no connector that did not come from a connector, opened by a grant on it alone. It keeps its refusal too, so a reader that does not know r13 walks.
+            r13 = k.reason == "no_app" and n.kind == "record" and not n.deleted and not n.placeholder and n.origin not in (None, "CONNECTOR")
             legacy = REASONS.get(k.reason, 1)
             st.legacy += k.reason != "deny"
         else:
@@ -354,13 +361,41 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
             seed = frozenset({SELF}) in k.clauses
         coll = KIND_COLL[n.kind]
         rows.append({"sk": sk_of[i], "coll": COLL_CODE[coll], "id": stampgraph.split(i)[1], "kind": KIND[coll], "path": paths.get(sk_of[i]), "class_id": class_id, "self_lit": self_lit, "seed": seed,
-                     "own_grant": _own_grant(n), "under_deleted": _under_deleted(i, nodes), "legacy_reason": legacy, "leaf": n.kind == "record" and i not in has_children})
-    changed = [r for r in rows if cur.get(r["sk"]) != _stamp_tuple(r)]
+                     "own_grant": _own_grant(n), "under_deleted": _under_deleted(i, nodes), "legacy_reason": legacy, "leaf": n.kind == "record" and i not in has_children, "r13": r13})
+        if (sc := _scope(n, facts[aid(n.connector_id)], i in has_children) if aid(n.connector_id) in facts else None) is not None:     # a scope belongs to a connector
+            scopes[sk_of[i]] = (KIND[coll], app_sks.get(aid(n.connector_id)) or 0, *sc)
+    changed = [r for r in rows if cur.get(r["sk"], _NONE)[0] != _stamp_tuple(r)]
+    r13_changed = [r for r in rows if cur.get(r["sk"], _NONE)[1] != r["r13"]]
+    set_scopes = [(k_, *v) for k_, v in scopes.items() if cur_scopes.get(k_) != v]
+    drop_scopes = [r["sk"] for r in rows if r["sk"] in cur_scopes and r["sk"] not in scopes]
     if dry:
-        st.diffs += [f"s|{r['id']}" for r in changed]
-    elif changed:
-        st.written += await w.stamps_set(changed)
+        by_sk = {r["sk"]: r["id"] for r in rows}
+        st.diffs += [f"s|{r['id']}" for r in changed] + [f"r13|{r['id']}" for r in r13_changed if r not in changed]
+        st.diffs += [f"sc|{by_sk[x[0]]}" for x in set_scopes] + [f"sc|{by_sk[x]}" for x in drop_scopes]
+    else:
+        if changed:
+            st.written += await w.stamps_set(changed)
+        if r13_changed:
+            await w.r13_set([(r["sk"], r["coll"], r["id"], r["kind"], r["r13"]) for r in r13_changed])
+        if set_scopes:
+            await w.scopes_set(set_scopes)
+        if drop_scopes:
+            await w.scopes_delete(drop_scopes)
     return st
+
+
+def _scope(n: StampNode, f: StampApp, has_child: bool) -> tuple[bool, bool, bool, bool] | None:  # noqa: FBT001
+    """(restricted, rule_restricted, needs_grant, deleted) when the node has an access list of its own (a scope), else None; the definition of the harness's ``scope_facts``
+    (tests/permissions/scope_layer.py). A deleted node is a scope only while something hangs below it. ``special``: something other than a direct grant can admit a node of the
+    app (it opens everything, or a record group declares its own readers). A hierarchy parent in another organisation cannot be represented on PG (row policy, and the
+    parent query joins on org_id), so it makes no row; that is the one difference from ``scope_facts``."""
+    bad = n.rule not in (None, "OPEN", "STRICT")
+    breaks = any(p not in n.inherits for p in n.parents)
+    inherits_a_parent = any(p in n.inherits for p in n.parents)
+    if not (has_child if n.deleted else (bad or breaks or n.granted)):
+        return None
+    special = f.opens or f.has_group_level
+    return (n.deleted or bad or breaks, n.deleted or bad, n.deleted or (not special and (bad or not inherits_a_parent)), n.deleted)
 
 
 def _after(cursor: str | None) -> tuple[str | None, str | None]:
@@ -372,6 +407,8 @@ async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int
     """One page of the whole-connector restamp (the backfill's last step): the next ``limit`` records and groups after the cursor ``after`` (ordered by collection and id); returns the new cursor or None when done.
     The first page also stores what the stamps are compiled with. ``locked``: the connectors the unit holds; a page whose stamps reach another raises :class:`locks.NeedLocks` before it writes
     (a ``dry`` page writes nothing and reads under the connector's lock in a unit that stays open, so it passes none)."""
+    if not dry:
+        bump(org, {app_id})
     w = KgWriter(tx)
     app_sks, facts = await _facts(tx, org, w, {app_id})
     if app_id not in facts:
@@ -394,6 +431,8 @@ async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int
             frontier = set(await held_apps(tx, org, await children_of(tx, org, frontier))) - below - keys
             below |= frontier
         keys |= below
+    if not dry:      # every connector whose rows this page rewrites, not only its own
+        bump(org, {a for a in (await held_apps(tx, org, keys)).values() if a})
     await stamp_keys(tx, org, keys, st, app_sks=app_sks, facts=facts, dry=dry, locked=locked)
     return stampgraph.nk(rows[-1]["coll"], rows[-1]["id"])
 
@@ -406,13 +445,25 @@ def _stamp_tuple(r: dict) -> tuple:
     return tuple(r[c] for c in _STAMPS)
 
 
+_NONE = ((), None)        # what kg holds for a row it has none of: no stamps, no r13
+
+
 async def _current(tx: Tx, org: str, sks: list[int]) -> dict[int, tuple]:
-    """What kg holds now for these rows: their stamps, as a tuple."""
+    """What kg holds now for these rows: (their stamps as a tuple, r13)."""
     out: dict[int, tuple] = {}
     for i in range(0, len(sks), 5000):
-        for r in await tx.fetch("""/* pipeshub:kg.stamp_current */ SELECT sk, path, class_id, self_lit, seed, own_grant, under_deleted, legacy_reason, leaf FROM kg.records
+        for r in await tx.fetch("""/* pipeshub:kg.stamp_current */ SELECT sk, path, class_id, self_lit, seed, own_grant, under_deleted, legacy_reason, leaf, r13 FROM kg.records
             WHERE org_id = $1 AND sk = ANY($2::bigint[])""", org, sks[i:i + 5000]):
-            out[r["sk"]] = tuple(r[c] for c in _STAMPS)
+            out[r["sk"]] = (tuple(r[c] for c in _STAMPS), r["r13"])
+    return out
+
+
+async def _current_scopes(tx: Tx, org: str, sks: list[int]) -> dict[int, tuple]:
+    out: dict[int, tuple] = {}
+    for i in range(0, len(sks), 5000):
+        for r in await tx.fetch("""/* pipeshub:kg.stamp_current_scopes */ SELECT sk, kind, app_sk, restricted, rule_restricted, needs_grant, deleted FROM kg.scopes
+            WHERE org_id = $1 AND sk = ANY($2::bigint[])""", org, sks[i:i + 5000]):
+            out[r["sk"]] = (r["kind"], r["app_sk"], r["restricted"], r["rule_restricted"], r["needs_grant"], r["deleted"])
     return out
 
 

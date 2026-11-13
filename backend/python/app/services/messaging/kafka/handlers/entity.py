@@ -30,7 +30,9 @@ from app.connectors.services.event_service import evict_cached_connector
 from app.containers.connector import (
     ConnectorAppContainer,
 )
+from app.core import org_context
 from app.edition_services import get_data_entities_processor_cls
+from app.exceptions.non_retryable import NonRetryableError
 from app.modules.indexing.record_republish import record_event
 from app.schema.node_validator import SchemaValidationError
 from app.services.cache.invalidation_hooks import notify_principals_changed
@@ -41,6 +43,8 @@ from app.services.graph_db.common.record_visibility import (
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.schema_metrics import record_schema_rejection
+from app.utils import error_class
+from app.utils.logging_fields import log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import CONNECTOR_OFF
 
@@ -65,6 +69,25 @@ _PARKED_WHILE_OFF = {
 PRINCIPAL_EVENTS = frozenset({"userAdded", "userUpdated", "userDeleted", "appEnabled", "appDisabled", "orgDeleted"})
 
 
+# Each one that misses means another toggle committed meanwhile; this many in a row is someone
+# toggling non-stop, and the event is failed rather than looped on.
+_DISABLE_WRITE_ATTEMPTS = 5
+
+
+def _superseded_by_a_newer_toggle(payload: dict, app_doc: dict) -> bool:
+    """Whether a toggle numbered after this event's turned the connector back on.
+
+    Only a sync toggle numbers its event; any other appDisabled (a refresh token gone
+    bad, a delete) carries no number and always disables. A newer toggle that left the
+    connector off is not a reason to skip: disabling again stops what the first one
+    should have, and writes the same value."""
+    sent = payload.get(ConnectorStateKeys.TOGGLE_SEQ)
+    current = app_doc.get(ConnectorStateKeys.TOGGLE_SEQ)
+    if sent is None or current is None:
+        return False
+    return int(sent) < int(current) and bool(app_doc.get(ConnectorStateKeys.IS_ACTIVE))
+
+
 class EntityEventService(BaseEventService):
     def __init__(
         self,
@@ -81,15 +104,11 @@ class EntityEventService(BaseEventService):
     async def process_event(self, event_type: str, payload: dict) -> bool:
         """Handle entity-related events by calling appropriate handlers"""
         try:
-            self.logger.info(f"Processing entity event: {event_type}")
-            handled = await self._dispatch(event_type, payload)
+            return await self._dispatch(event_type, payload)
+        finally:
             if event_type in PRINCIPAL_EVENTS:
                 # Success or not: a handler that failed half way may have changed edges. Nothing here widens access.
                 await notify_principals_changed(payload.get("orgId") if isinstance(payload, dict) else None)
-            return handled
-        except Exception as e:
-            self.logger.error(f"Error processing entity event: {str(e)}")
-            return False
 
     async def _dispatch(self, event_type: str, payload: dict) -> bool:
         try:
@@ -110,18 +129,19 @@ class EntityEventService(BaseEventService):
             elif event_type == "appDisabled":
                 return await self._handle_app_disabled(payload)
             else:
-                self.logger.error(f"Unknown entity event type: {event_type}")
-                return False
+                raise NonRetryableError(f"unknown entity event type {event_type}")
         except SchemaValidationError as e:
             # Permanent: redelivering the event cannot make the payload valid. Handled, not retried.
             # The data processor marks an error it already logged and counted: report it once.
             if not getattr(e, "schema_reported", False):
-                self.logger.error(f"Entity event {event_type} rejected by schema validation (collection={e.collection}): {e}")
+                # Where and which rule, never the message: jsonschema's text quotes the rejected value.
+                rule = e.original_error
+                self.logger.error(
+                    f"Entity event {event_type} rejected by schema validation (collection={e.collection})",
+                    extra={"schema_path": getattr(rule, "json_path", None), "validator": getattr(rule, "validator", None)},
+                )
                 record_schema_rejection(e.collection)
             return True
-        except Exception as e:
-            self.logger.error(f"Error processing entity event: {str(e)}")
-            return False
 
     async def _handle_sync_event(self,event_type: str, value: dict) -> bool:
         """Handle sync-related events by sending them to the sync-events topic"""
@@ -146,7 +166,7 @@ class EntityEventService(BaseEventService):
             return True
 
         except Exception as e:
-            self.logger.error(f"Error sending sync event: {str(e)}")
+            error_class.log_failure(self.logger, "entity_event.step_failed", e, step="send_sync_event")
             return False
 
     # ORG EVENTS
@@ -204,11 +224,11 @@ class EntityEventService(BaseEventService):
                     CollectionNames.ORG_DEPARTMENT_RELATION.value,
                 )
                 self.logger.info(
-                    f"✅ Successfully created organization: {payload['orgId']} and relationships with departments"
+                    f"Successfully created organization: {payload['orgId']} and relationships with departments"
                 )
             else:
                 self.logger.info(
-                    f"✅ Successfully created organization: {payload['orgId']}"
+                    f"Successfully created organization: {payload['orgId']}"
                 )
 
             # Create "All" team for the org (first user will be added with OWNER in userAdded)
@@ -219,13 +239,12 @@ class EntityEventService(BaseEventService):
         except SchemaValidationError:
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
-            self.logger.error(f"❌ Error creating organization: {str(e)}")
-            return False
+            error_class.log_failure(self.logger, "entity_event.failed", e)
+            raise
 
     async def _handle_org_updated(self, payload: dict) -> bool:
         """Handle organization update event"""
         try:
-            self.logger.info(f"📥 Processing org updated event: {payload}")
             org_data = {
                 "_key": payload["orgId"],
                 "name": payload["registeredName"],
@@ -240,20 +259,19 @@ class EntityEventService(BaseEventService):
                 [org_data], CollectionNames.ORGS.value
             )
             self.logger.info(
-                f"✅ Successfully updated organization: {payload['orgId']}"
+                f"Successfully updated organization: {payload['orgId']}"
             )
             return True
 
         except SchemaValidationError:
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
-            self.logger.error(f"❌ Error updating organization: {str(e)}")
-            return False
+            error_class.log_failure(self.logger, "entity_event.failed", e)
+            raise
 
     async def _handle_org_deleted(self, payload: dict) -> bool:
         """Handle organization deletion event"""
         try:
-            self.logger.info(f"📥 Processing org deleted event: {payload}")
             org_id = payload["orgId"]
             org_data = {
                 "_key": org_id,
@@ -270,7 +288,7 @@ class EntityEventService(BaseEventService):
             )
             await notify_principals_changed(org_id)  # before the cleanup below; see process_event
             self.logger.info(
-                f"✅ Successfully soft-deleted organization: {payload['orgId']}"
+                f"Successfully soft-deleted organization: {payload['orgId']}"
             )
             await self._remove_mcp_data("org", payload["orgId"])
             await self._remove_personal_toolsets("org", payload["orgId"])
@@ -280,14 +298,14 @@ class EntityEventService(BaseEventService):
         except SchemaValidationError:
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
-            self.logger.error(f"❌ Error deleting organization: {str(e)}")
-            return False
+            error_class.log_failure(self.logger, "entity_event.failed", e)
+            raise
 
     # USER EVENTS
     async def _handle_user_added(self, payload: dict) -> bool:
         """Handle user creation event"""
         try:
-            self.logger.info("Processing user added event for user %s", payload.get("userId"))
+            self.logger.debug("Processing user added event for user %s", payload.get("userId"))
             # raise_on_error: the providers answer None to a failed read too, and
             # "nobody" here would mint a second user for someone who is there.
             existing_user = await self.graph_provider.get_user_by_email(
@@ -395,8 +413,8 @@ class EntityEventService(BaseEventService):
         except SchemaValidationError:
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
-            self.logger.error(f"❌ Error creating/updating user: {str(e)}")
-            return False
+            error_class.log_failure(self.logger, "entity_event.failed", e, target_user_id=payload.get("userId"))
+            raise
 
     def _schedule_connector_link(self, org_id: str) -> None:
         """Ask the org's running connectors that link users to do so, without holding up the event.
@@ -407,25 +425,30 @@ class EntityEventService(BaseEventService):
         for connector_id, connector in list(getattr(self.app_container, "connectors_map", {}).items()):
             if not getattr(connector, "user_link_steps", ()):
                 continue
-            if getattr(connector.data_entities_processor, "org_id", None) != org_id:
+            connector_org = getattr(connector.data_entities_processor, "org_id", None)
+            if not connector_org or connector_org != org_id:
                 continue
             state = self._link_state.setdefault(connector_id, {"dirty": False, "task": None})
             state["dirty"] = True
             if state["task"] is None:
-                state["task"] = asyncio.create_task(self._link_passes(connector_id))
+                # Detached: later passes serve other events, not the one that started them.
+                state["task"] = org_context.spawn_detached(
+                    self._link_passes(connector_id, connector_org), name="connector_link"
+                )
 
-    async def _link_passes(self, connector_id: str) -> None:
+    async def _link_passes(self, connector_id: str, org_id: str) -> None:
         state = self._link_state[connector_id]
         deferrals = 0
         try:
-            while state["dirty"]:
-                await asyncio.sleep(_LINK_DEBOUNCE_SEC)
-                state["dirty"] = False
-                if await self._link_connector(connector_id):
-                    deferrals = 0
-                elif deferrals < _LINK_MAX_DEFERRALS:
-                    deferrals += 1
-                    state["dirty"] = True
+            with org_context.for_org(org_id, job="connector_link"), log_fields(connector_id=connector_id):
+                while state["dirty"]:
+                    await asyncio.sleep(_LINK_DEBOUNCE_SEC)
+                    state["dirty"] = False
+                    if await self._link_connector(connector_id):
+                        deferrals = 0
+                    elif deferrals < _LINK_MAX_DEFERRALS:
+                        deferrals += 1
+                        state["dirty"] = True
         finally:
             state["task"] = None
 
@@ -453,13 +476,13 @@ class EntityEventService(BaseEventService):
                     return True
                 await connector.link_new_users()
         except Exception as e:
-            self.logger.warning("Could not link new users to connector %s: %s", connector_id, e)
+            error_class.log_failure(self.logger, "entity_event.step_failed", e, step="link_users")
         return True
 
     async def _handle_user_updated(self, payload: dict) -> bool:
         """Handle user update event"""
         try:
-            self.logger.info("Processing user updated event for user %s", payload.get("userId"))
+            self.logger.debug("Processing user updated event for user %s", payload.get("userId"))
             # Find existing user by userId
             existing_user = await self.graph_provider.get_user_by_user_id(
                 payload["userId"],
@@ -546,13 +569,13 @@ class EntityEventService(BaseEventService):
         except SchemaValidationError:
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
-            self.logger.error(f"❌ Error updating user: {str(e)}")
-            return False
+            error_class.log_failure(self.logger, "entity_event.failed", e, target_user_id=payload.get("userId"))
+            raise
 
     async def _handle_user_deleted(self, payload: dict) -> bool:
         """Handle user deletion event"""
         try:
-            self.logger.info("Processing user deleted event for user %s", payload.get("userId"))
+            self.logger.debug("Processing user deleted event for user %s", payload.get("userId"))
             # Find existing user by email
             existing_user_id = await self.graph_provider.get_entity_id_by_email(
                 payload["email"]
@@ -586,8 +609,8 @@ class EntityEventService(BaseEventService):
         except SchemaValidationError:
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
-            self.logger.error(f"❌ Error deleting user: {str(e)}")
-            return False
+            error_class.log_failure(self.logger, "entity_event.failed", e, target_user_id=payload.get("userId"))
+            raise
 
     async def _remove_mcp_data(self, owner_kind: str, org_id: str, user_id: str | None = None) -> None:
         """MCP servers and credentials go with their user or org, so nothing keeps refreshing
@@ -602,7 +625,7 @@ class EntityEventService(BaseEventService):
                 removed = await mcp_lifecycle.remove_user_mcp_data(config_service, org_id, user_id or "")
             self.logger.info(f"Removed {len(removed)} MCP keys for deleted {owner_kind} {user_id or org_id}")
         except Exception as e:
-            self.logger.error(f"Could not remove MCP data for deleted {owner_kind} {user_id or org_id}: {e}")
+            error_class.log_failure(self.logger, "entity_event.step_failed", e, step="remove_mcp_data", target_user_id=user_id)
 
     async def _remove_personal_toolsets(self, owner_kind: str, org_id: str, user_id: str | None = None) -> None:
         """Personal toolset instances, with their sign-ins and tool rules, go with their user or org,
@@ -617,7 +640,7 @@ class EntityEventService(BaseEventService):
                 removed = await toolset_store.remove_user_personal_instances(config_service, org_id, user_id or "")
             self.logger.info(f"Removed {removed} personal toolset instance(s) for deleted {owner_kind} {user_id or org_id}")
         except Exception as e:
-            self.logger.error(f"Could not remove personal toolset instances for deleted {owner_kind} {user_id or org_id}: {e}")
+            error_class.log_failure(self.logger, "entity_event.step_failed", e, step="remove_personal_toolsets", target_user_id=user_id)
 
     async def _remove_api_toolset_data(self, org_id: str, user_id: str | None = None) -> None:
         """A deleted org's API toolsets, or a deleted user's credentials for them. The graph
@@ -631,13 +654,12 @@ class EntityEventService(BaseEventService):
             else:
                 await store.remove_org(org_id)
         except Exception as e:
-            self.logger.error(f"Could not remove API toolset data for deleted {'user' if user_id else 'org'} {user_id or org_id}: {e}")
+            error_class.log_failure(self.logger, "entity_event.step_failed", e, step="remove_api_toolset_data", target_user_id=user_id)
 
     # APP EVENTS
     async def _handle_app_enabled(self, payload: dict) -> bool:
         """Handle app enabled event"""
         try:
-            self.logger.info(f"📥 Processing app enabled event: {payload}")
             org_id = payload["orgId"]
             apps = payload["apps"]
             sync_action = payload.get("syncAction", "none")
@@ -671,14 +693,52 @@ class EntityEventService(BaseEventService):
             if connector_id:
                 await self._start_requeue_of_parked_records(connector_id)
 
-            self.logger.info(f"✅ Successfully enabled apps for org: {org_id}")
+            self.logger.info(f"Successfully enabled apps for org: {org_id}")
             return True
 
         except SchemaValidationError:
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
-            self.logger.error(f"❌ Error enabling apps: {str(e)}")
-            return False
+            error_class.log_failure(self.logger, "entity_event.failed", e)
+            raise
+
+    async def _write_app_disabled(self, payload: dict, app_doc: dict) -> bool | None:
+        """Write isActive false, unless a newer toggle turned the connector back on.
+
+        Returns True when written, False when superseded, None when the app went away. A
+        numbered event writes only while the app still has the number it was checked
+        against, so an on that commits between the read and the write is seen, not
+        overwritten; an event without a number writes as it always has.
+        """
+        connector_id = payload.get("connectorId", "")
+        apps = CollectionNames.APPS.value
+        disabled = {"isActive": False, "updatedAtTimestamp": get_epoch_timestamp_in_ms()}
+        if payload.get(ConnectorStateKeys.TOGGLE_SEQ) is None or app_doc.get(ConnectorStateKeys.TOGGLE_SEQ) is None:
+            await self.graph_provider.update_node(connector_id, apps, disabled)
+            return True
+        for _ in range(_DISABLE_WRITE_ATTEMPTS):
+            if _superseded_by_a_newer_toggle(payload, app_doc):
+                # A quick off-then-on can reach here after the on was written: disabling now
+                # would turn the connector off again and skip the sync the on started.
+                self.logger.info(
+                    f"Skipping app disabled event for connector {connector_id}: a newer toggle "
+                    f"(#{app_doc.get(ConnectorStateKeys.TOGGLE_SEQ)}) turned it back on after this one "
+                    f"(#{payload.get(ConnectorStateKeys.TOGGLE_SEQ)})"
+                )
+                return False
+            if await self.graph_provider.update_node_fields_if_match(
+                connector_id, apps, disabled,
+                {ConnectorStateKeys.TOGGLE_SEQ: app_doc[ConnectorStateKeys.TOGGLE_SEQ]},
+            ):
+                return True
+            app_doc = await self.graph_provider.get_document(connector_id, apps)
+            if not app_doc:
+                self.logger.error(f"App not found: {connector_id}")
+                return None
+        raise RuntimeError(
+            f"Connector {connector_id} was toggled {_DISABLE_WRITE_ATTEMPTS} times while its "
+            "app disabled event was being handled"
+        )
 
     async def _handle_app_disabled(self, payload: dict) -> bool:
         """Handle app disabled event"""
@@ -692,7 +752,6 @@ class EntityEventService(BaseEventService):
                 return False
 
             # Stop sync for each app
-            self.logger.info(f"📥 Processing app disabled event: {payload}")
 
             # Set apps as inactive
             for app_name in apps:
@@ -706,12 +765,11 @@ class EntityEventService(BaseEventService):
             # Update apps in database. Only the two fields that change: rebuilding the
             # whole document from the stored one would write None for a field a legacy
             # app lacks, which the schema (rightly) rejects.
-            for _ in apps:
-                await self.graph_provider.update_node(
-                    connector_id,
-                    CollectionNames.APPS.value,
-                    {"isActive": False, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
-                )
+            disabled = await self._write_app_disabled(payload, app_doc)
+            if disabled is None:
+                return False
+            if not disabled:
+                return True
             await notify_principals_changed(org_id)  # before the (slow) cleanup below; see process_event
 
             # Stop any running sync/reindex and wait for it to unwind, bounded:
@@ -725,14 +783,14 @@ class EntityEventService(BaseEventService):
                 if coordinator is not None:
                     await coordinator.request_stop(connector_id)
                 if await self._wait_for_sync_to_stop(connector_id):
-                    self.logger.info(f"✅ Stopped running sync/reindex for connector {connector_id}")
+                    self.logger.info(f"Stopped running sync/reindex for connector {connector_id}")
                 else:
                     self.logger.warning(
                         f"Sync/reindex for connector {connector_id} still unwinding after "
                         f"{stop_wait_sec(self.logger)}s; disabling anyway"
                     )
             except Exception as cancel_err:
-                self.logger.error(f"❌ Failed to stop sync for connector {connector_id}: {cancel_err}")
+                error_class.log_failure(self.logger, "entity_event.step_failed", cancel_err, step="stop_sync")
 
             # A connector parked at the concurrency limit is owed a sync that must
             # no longer run: without this it shows QUEUED until re-enabled.
@@ -751,9 +809,7 @@ class EntityEventService(BaseEventService):
                         },
                     )
             except Exception as queue_err:
-                self.logger.error(
-                    f"❌ Failed to clear the queued sync of disabled connector {connector_id}: {queue_err}"
-                )
+                error_class.log_failure(self.logger, "entity_event.step_failed", queue_err, step="clear_queued_sync")
 
             # Drain the backlog. Records already QUEUED have no event guard to
             # catch them and no processingStartedAt, so stale recovery — which
@@ -776,24 +832,21 @@ class EntityEventService(BaseEventService):
                     visibility=RecordVisibility.LIVE,
                 )
                 self.logger.info(
-                    f"✅ Moved queued records for connector {connector_id} to manual indexing"
+                    f"Moved queued records for connector {connector_id} to manual indexing"
                 )
             except Exception as sweep_err:
-                self.logger.error(
-                    f"❌ Failed to move queued records to manual indexing for "
-                    f"connector {connector_id}: {sweep_err}"
-                )
+                error_class.log_failure(self.logger, "entity_event.step_failed", sweep_err, step="park_queued_records")
 
             await evict_cached_connector(self.app_container, connector_id, self.logger)
 
-            self.logger.info(f"✅ Successfully disabled apps for org: {org_id}")
+            self.logger.info(f"Successfully disabled apps for org: {org_id}")
             return True
 
         except SchemaValidationError:
             raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
-            self.logger.error(f"❌ Error disabling apps: {str(e)}")
-            return False
+            error_class.log_failure(self.logger, "entity_event.failed", e)
+            raise
 
     async def _adopt_existing_person(self, email: str, user_key: str, org_id: str) -> None:
         """Move a pre-existing Person's collaborator edges onto the new user.
@@ -824,10 +877,7 @@ class EntityEventService(BaseEventService):
             )
         except Exception as e:
             # Never fail the enable over it; the next one tries again.
-            self.logger.error(
-                f"❌ Could not start re-queuing records parked while connector "
-                f"{connector_id} was off: {e}"
-            )
+            error_class.log_failure(self.logger, "entity_event.step_failed", e, step="requeue_parked_records")
 
     async def _requeue_records_parked_while_off(self, connector_id: str) -> int:
         """Re-publish the connector's records parked as AUTO_INDEX_OFF / CONNECTOR_OFF.
@@ -917,7 +967,7 @@ class EntityEventService(BaseEventService):
 
         if requeued:
             self.logger.info(
-                f"✅ Re-queued {requeued} record(s) parked while connector {connector_id} was off"
+                f"Re-queued {requeued} record(s) parked while connector {connector_id} was off"
             )
         return requeued
 
@@ -983,7 +1033,7 @@ class EntityEventService(BaseEventService):
             )
             self.logger.info(f"Created 'All' team for org {org_id}")
         except Exception as e:
-            self.logger.error(f"Failed to create 'All' team for org {org_id}: {str(e)}", exc_info=True)
+            error_class.log_failure(self.logger, "entity_event.step_failed", e, step="create_all_team")
 
     async def _get_or_create_all_team_and_add_user(self, org_id: str, user_key: str) -> None:
         """
@@ -1127,9 +1177,9 @@ class EntityEventService(BaseEventService):
             )
             if connector:
                 self.app_container.connectors_map[kb_key] = connector
-                self.logger.info(f"✅ KB connector instance registered for kb_key={kb_key}")
+                self.logger.info(f"KB connector instance registered for kb_key={kb_key}")
         except Exception as reg_err:
-            self.logger.warning(f"⚠️ Failed to register KB connector instance: {reg_err}")
+            error_class.log_failure(self.logger, "entity_event.step_failed", reg_err, step="register_kb_connector")
 
         self.logger.info(f"Created new KB app for user {userId} in organization {orgId} (kb_key={kb_key})")
         return {

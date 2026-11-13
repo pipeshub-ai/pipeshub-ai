@@ -525,6 +525,10 @@ class IGraphDBProvider(ABC):
        and new generic format to ensure smooth migration.
     """
 
+    #: How ``page_entity_index_source`` orders a connector's records, when it differs from the order this store always used. It is part of the
+    #: entity index's pass marker, so a pass saved under another order starts over instead of resuming a cursor that could skip rows.
+    ENTITY_INDEX_PAGE_ORDER: str = ""
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
         instrument_org_methods(cls)  # shadow/enforce check of every org_id argument
@@ -3054,6 +3058,8 @@ class IGraphDBProvider(ABC):
         org_id: str,
         per_address: int = 2,
         transaction: str | None = None,
+        *,
+        include_deleted: bool = False,
     ) -> list[dict[str, Any]]:
         """The live records of the org stored under any of ``weburls`` (exact
         match), in any connector. Link records and placeholders are left out:
@@ -3067,6 +3073,8 @@ class IGraphDBProvider(ABC):
             per_address: Most rows per address, records that are not dependent
                 nodes first; each address is looked up on its own.
             transaction: Optional transaction ID.
+            include_deleted: Also return deleted records, so a caller asking who may
+                read what is at an address can tell a deleted record from no record.
 
         Returns:
             Rows ``{"id", "recordType", "connectorName", "webUrl",
@@ -5095,6 +5103,13 @@ class IGraphDBProvider(ABC):
         "no scopes"."""
         raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
 
+    async def store_time(self) -> float:
+        """The store's own clock, in epoch seconds. Leases that a writer and a sweeper judge are written and read by this clock, so a host whose
+        clock is off cannot make a live lease look dead. A provider that cannot say raises, and so does a read slower than
+        ``STORE_CLOCK_TIMEOUT_SECONDS`` as far as the callers are concerned: a writer then writes its lease by the local clock and marks it unknown,
+        a sweep recovers nothing that round, and the operator view reports the unknown clock. Nothing is recovered by the local clock."""
+        raise NotImplementedError(f"{type(self).__name__} has no store clock")
+
     async def increment_node_field(
         self, key: str, collection: str, field: str, transaction: str | None = None
     ) -> int | None:
@@ -6212,6 +6227,21 @@ class IGraphDBProvider(ABC):
         sweep too -- both halves have to be removed here.
 
         Returns the number of block nodes removed.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def sweep_deleted_connector_writes(
+        self, connector_id: str, record_group_ids: Sequence[str] = (),
+    ) -> tuple[int, int]:
+        """One pass over a deleted connector: remove the blocks and stage states that still
+        carry its ``connectorId``, which indexing already in flight can write after the delete.
+        A store that writes an edge without checking its ends also removes the record links
+        that carry one of the connector's ``record_group_ids``: the code graph writes a file's
+        edges after its blocks, and those edges carry no ``connectorId``.
+
+        Returns ``(removed, left)``, ``left`` being what a count finds right after. Raises when
+        the store does. Never call it for a connector that still exists: it removes all of them.
         """
         raise NotImplementedError
 
@@ -7896,6 +7926,7 @@ class IGraphDBProvider(ABC):
         page = page[:limit]
         if direction == "prev":
             page.reverse()
+        await self._kh_v3_settle_held_arrows(page, app_id=app_id, org_id=org_id, access=access, transaction=transaction)
         if name_parents:
             await self._kh_v3_name_parents(
                 page, org_id=org_id, apps={app_id}, access=access, listed_under=listed_under,
@@ -7933,6 +7964,36 @@ class IGraphDBProvider(ABC):
             "counts": counts,
             "scope": scope_out,
         }
+
+    async def _kh_v3_settle_held_arrows(
+        self, page: list[dict[str, Any]], *, app_id: str, org_id: str, access: dict[str, Any] | None, transaction: str | None,
+    ) -> None:
+        """A row's arrow is on only where opening the row lists something, which the queries cannot say alone:
+
+        * a group the viewer holds a granted record in (``khHeld``) lists it only if it is a chain-top: asked of the chain-top walk a browse of the
+          group runs;
+        * a row the walk from the App does not reach (``khFromApp`` false: a seed, a chain-top, a declared member) opens only if the batch check
+          admits it, as the start of its own browse is admitted: asked of the same check.
+        """
+        asked = [row for row in page if row.pop("khHeld", False) and not row.get("hasChildren") and row.get("nodeType") == "recordGroup"]
+        unreached = [row for row in page if not row.pop("khFromApp", True)]
+        if access is None:
+            return
+
+        async def lists_a_chain_top(row: dict[str, Any]) -> bool:
+            probe = access.get("probe")
+            by_groups = await self._kh_v3_chain_top_groups_by_probe(
+                app_id, org_id, row["id"], probe["grantees"], transaction) if probe else None
+            return bool((await self._kh_v3_chain_tops(
+                app_id, org_id, access, transaction, only_group=row["id"], by_groups=by_groups)).get(row["id"]))
+
+        for row, lists in zip(asked, await asyncio.gather(*(lists_a_chain_top(r) for r in asked)), strict=True):
+            row["hasChildren"] = lists
+        unreached = [row for row in unreached if row.get("hasChildren")]
+        if unreached:
+            openable = (await self.check_access("", org_id, node_ids=[row["id"] for row in unreached], access=access, transaction=transaction)).node_ids
+            for row in unreached:
+                row["hasChildren"] = row["id"] in openable
 
     async def name_knowledge_hub_parents(
         self,
@@ -8063,6 +8124,40 @@ class IGraphDBProvider(ABC):
         ``max_depth`` bounds a flatten's walk below the start (hops)."""
         raise NotImplementedError
 
+    @staticmethod
+    def _kh_v3_require_other_grants(
+        app_id: str, gated_app_ids: list[str], granted_ids: list[str] | None,
+        grants_by_connector: dict[str, list[str]] | None, user_key: str | None,
+    ) -> None:
+        """Refuse a page asked with ``granted_ids`` alone while another connector is gated: the walk from the App can pass through
+        a node of that connector, whose grant counts, and neither its grants (``grants_by_connector``) nor the user to read them
+        (``user_key``) were given. Answering would leave out what such a node opens, with no sign of it."""
+        if granted_ids is not None and grants_by_connector is None and not user_key and any(a != app_id for a in gated_app_ids):
+            raise ValueError(
+                "granted_ids holds one connector's grants and another connector is gated: pass grants_by_connector or user_key")
+
+    async def _kh_v3_page_grants(
+        self, app_id: str, org_id: str, gated_app_ids: list[str], granted_ids: list[str] | None,
+        grants_by_connector: dict[str, list[str]] | None, user_key: str | None, transaction: str | None,
+    ) -> dict[str, list[str]]:
+        """The grants of every gated connector, by connector, for a page of ``app_id`` (a source account's inside its own connector
+        only, as ``get_knowledge_hub_access_v3`` buckets them): the walk from the App can pass through a node of another, and a grant
+        counts on a node of any gated App. An explicit ``granted_ids`` is the App's own bucket; the others are read for ``user_key``."""
+        self._kh_v3_require_other_grants(app_id, gated_app_ids, granted_ids, grants_by_connector, user_key)
+        if grants_by_connector is not None:
+            every = dict(grants_by_connector)
+        elif user_key:
+            access = await (
+                self._kh_v3_shared(("access", user_key, org_id), lambda: self.get_knowledge_hub_access_v3(user_key, org_id))
+                if transaction is None else self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction))
+            every = dict(access["by_connector"])
+            if granted_ids is not None:
+                every[app_id] = list(granted_ids)
+        else:
+            every = {app_id: list(granted_ids or [])}
+        gated = set(gated_app_ids)
+        return {a: list(ids or []) for a, ids in every.items() if a in gated}
+
     async def _kh_v3_shared(self, key: tuple, compute: Callable[[], Awaitable[_T]]) -> _T:
         """``compute()``, shared by the callers that ask for ``key`` while it runs:
         one click sends the main pane and the sidebar together, and both need the
@@ -8087,6 +8182,7 @@ class IGraphDBProvider(ABC):
         grants_by_connector: dict[str, list[str]],
         transaction: str | None,
         probe: dict[str, Any] | None = None,
+        cross: dict[str, Any] | None = None,
     ) -> tuple[bool, list[str], list[str]]:
         """What the batch check says about a browse start: whether it admits the
         start, which of its ancestors it admits (the breadcrumb of a start the
@@ -8102,13 +8198,25 @@ class IGraphDBProvider(ABC):
             "by_connector": grants_by_connector,
             # A backend that tests grants from the node instead of a list (Neo4j).
             "probe": probe,
+            # The other connectors' grants, tested on their nodes (`grants_by_connector` holds this App's alone).
+            "cross": cross,
         }
         admitted = (await self.check_access(
             "", org_id, node_ids=[start_id, *ancestors], access=access, transaction=transaction,
         )).node_ids
         if start_id not in admitted:
             return False, [], []
+        # A declaration is a scope only where the check's declared arm reads it: the viewer is granted it or the walk from the App reaches it, not
+        # where it is admitted some other way (below a seed), where what hangs under it is not readable through it.
         declared = [d for d in declared if d in admitted]
+        # Every grant held: the walk to a declaration can pass through a node of another connector (a backend that lists one connector's
+        # grants tests the others' on their nodes, ``cross``).
+        granted = list(dict.fromkeys(g for ids in grants_by_connector.values() for g in ids or ()))
+        unproved = [d for d in declared if d not in granted]        # a declaration the viewer is granted is read as one without asking the walk
+        if unproved:
+            reached = set(await self._kh_v3_declared_reached(
+                unproved, app_id, granted, probe, transaction, **({"cross": cross} if cross is not None else {})))
+            declared = [d for d in declared if d in granted or d in reached]
         scope = await self._kh_v3_declared_groups(declared, transaction) if declared else []
         return True, [a for a in ancestors if a in admitted], scope
 
@@ -8218,6 +8326,14 @@ class IGraphDBProvider(ABC):
     ) -> list[str]:
         """The groups under these declared groups, group to group, deleted groups
         cut: the check's declared-scope arm."""
+        raise NotImplementedError
+
+    async def _kh_v3_declared_reached(
+        self, declared: list[str], app_id: str, granted_ids: list[str], probe: dict[str, Any] | None, transaction: str | None,
+        cross: dict[str, Any] | None = None,
+    ) -> list[str]:
+        """Of these declared groups, those the viewer is granted or the walk from the App reaches (the check's declared arm). ``probe``: grants are
+        tested from the node, as on the rest of the page. ``cross``: the other connectors' grants, tested on their nodes along the walk."""
         raise NotImplementedError
 
     async def get_knowledge_hub_access_v3(

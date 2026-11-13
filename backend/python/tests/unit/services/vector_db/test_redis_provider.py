@@ -1050,8 +1050,9 @@ class TestKeysMatchingFilter:
         assert second[:4] == ("FT.CURSOR", "READ", first[1], 7)
 
     @pytest.mark.asyncio
-    async def test_a_repeated_key_is_counted_once_and_a_short_scan_raises(self, service, mock_redis_client) -> None:
+    async def test_a_repeated_key_is_counted_once_and_a_short_scan_raises(self, service, mock_redis_client, monkeypatch) -> None:
         """Offset paging repeated some keys and missed others; the cursor can still repeat one."""
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._SETTLE_ATTEMPTS", 1)
         mock_redis_client.execute_command = AsyncMock(side_effect=[
             [3], _agg(3, [b"k1", b"k2"], cursor=9), _agg(0, [b"k2"], cursor=0),
         ])
@@ -1065,14 +1066,33 @@ class TestKeysMatchingFilter:
 
     @pytest.mark.asyncio
     async def test_a_misleading_first_integer_of_the_aggregate_does_not_hide_a_short_scan(
-        self, service, mock_redis_client,
+        self, service, mock_redis_client, monkeypatch,
     ) -> None:
         """The first integer of an aggregate reply is not defined as the number of matches: here it says 2,
         as many as came back, while the index counts 3. The count query is what the scan is held to."""
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._SETTLE_ATTEMPTS", 1)
         mock_redis_client.execute_command = AsyncMock(side_effect=[[3], _agg(2, [b"k1", b"k2"], cursor=0)])
 
         with pytest.raises(RuntimeError, match="2 of 3 counted"):
             await service._keys_matching_filter("test_collection", self._filter())
+
+    @pytest.mark.asyncio
+    async def test_a_short_scan_is_read_again_while_the_index_settles(self, service, mock_redis_client, monkeypatch) -> None:
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._SETTLE_DELAY_SECONDS", 0.0)
+        mock_redis_client.execute_command = AsyncMock(side_effect=[
+            [2], _agg(1, [b"k1"], cursor=0), [2], _agg(2, [b"k1", b"k2"], cursor=0),
+        ])
+
+        assert await service._keys_matching_filter("test_collection", self._filter()) == [b"k1", b"k2"]
+
+    @pytest.mark.asyncio
+    async def test_a_scan_that_stays_short_raises_after_every_attempt(self, service, mock_redis_client, monkeypatch) -> None:
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._SETTLE_DELAY_SECONDS", 0.0)
+        mock_redis_client.execute_command = AsyncMock(side_effect=lambda cmd, *a: [2] if cmd == "FT.SEARCH" else _agg(1, [b"k1"], cursor=0))
+
+        with pytest.raises(RuntimeError, match="1 of 2 counted"):
+            await service._keys_matching_filter("test_collection", self._filter())
+        assert mock_redis_client.execute_command.await_count == 10
 
     @pytest.mark.asyncio
     async def test_documents_removed_during_the_scan_are_not_an_error(self, service, mock_redis_client) -> None:
@@ -1557,3 +1577,51 @@ class TestRedisFilterOpsSeeEveryMatch:
         svc = self._svc()
         page = await svc.scroll("records", self.FILT, limit=40)
         assert len(page.points) == 40
+
+
+class TestRedisExistingPointIds:
+    @pytest.mark.asyncio
+    async def test_is_one_exists_per_key_in_one_round_trip_and_reads_no_hash(self, service, mock_redis_client) -> None:
+        pipeline = MagicMock()
+        pipeline.execute = AsyncMock(return_value=[1, 0, 1])
+        mock_redis_client.pipeline = MagicMock(return_value=pipeline)
+
+        found = await service.existing_point_ids("coll", ["a", "b", "c"])
+
+        assert found == {"a", "c"}
+        assert [c.args for c in pipeline.execute_command.call_args_list] == [
+            ("EXISTS", "coll:a"), ("EXISTS", "coll:b"), ("EXISTS", "coll:c"),
+        ]
+        pipeline.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reply_fails_the_call_rather_than_reading_as_absent(self, service, mock_redis_client) -> None:
+        pipeline = MagicMock()
+        pipeline.execute = AsyncMock(return_value=[1, RuntimeError("boom")])
+        mock_redis_client.pipeline = MagicMock(return_value=pipeline)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await service.existing_point_ids("coll", ["a", "b"])
+
+    @pytest.mark.asyncio
+    async def test_no_ids_makes_no_call(self, service, mock_redis_client) -> None:
+        mock_redis_client.pipeline = MagicMock()
+        assert await service.existing_point_ids("coll", []) == set()
+        mock_redis_client.pipeline.assert_not_called()
+
+
+class TestRedisCreateIndex:
+    SCHEMA = {"type": "keyword"}
+
+    @pytest.mark.asyncio
+    async def test_a_failure_that_is_not_a_duplicate_is_raised(self, service, mock_redis_client) -> None:
+        # Kills: swallowing the error, which let the registry treat an unindexed field as indexed.
+        mock_redis_client.execute_command = AsyncMock(side_effect=RuntimeError("ERR unknown command 'FT.ALTER'"))
+        with pytest.raises(RuntimeError):
+            await service.create_index("c", "metadata.contentRev", self.SCHEMA)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message", ["Field already exists", "Duplicate field in schema"])
+    async def test_a_field_already_in_the_schema_returns_quietly(self, service, mock_redis_client, message) -> None:
+        mock_redis_client.execute_command = AsyncMock(side_effect=RuntimeError(message))
+        await service.create_index("c", "metadata.contentRev", self.SCHEMA)

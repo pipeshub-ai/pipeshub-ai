@@ -50,6 +50,15 @@ async def test_lists_once_under_system_every_internal_org_active_or_not() -> Non
     assert graph.calls == [("system", "system:demo_job", {"active": False})]
 
 
+async def test_active_lists_only_active_orgs() -> None:
+    graph = _Orgs([])
+
+    async def work(_org_id: str) -> None: ...
+
+    await asyncio.get_running_loop().create_task(for_each_org(graph, "demo_job", work, _LOG, active=True), context=contextvars.Context())
+    assert graph.calls == [("system", "system:demo_job", {"active": True})]
+
+
 async def test_runs_work_once_per_org_under_that_org() -> None:
     seen, _ = await _detached(_Orgs([{"_key": "a"}, {"id": "b"}]))
     assert seen == [("a", "a", "job", "job:demo_job"), ("b", "b", "job", "job:demo_job")]

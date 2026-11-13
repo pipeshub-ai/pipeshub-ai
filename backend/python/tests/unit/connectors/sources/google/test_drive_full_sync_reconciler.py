@@ -181,3 +181,39 @@ async def test_a_shared_drive_with_an_unreadable_record_page_keeps_its_group() -
     assert removed is False
     assert processor.deleted == []
     assert processor.groups_deleted == []
+
+
+async def test_unseen_records_that_may_still_exist_are_kept() -> None:
+    processor = _Processor([_record("keep"), _record("audience"), _record("gone"), _record("seen")])
+
+    async def keep(unseen: list) -> set[str]:
+        return {r.id for r in unseen if r.external_record_id == "audience"}
+
+    deleted = await reconcile_unseen_records(processor, "drive-1", _ready({"keep", "seen"}), LOGGER, keep=keep)
+
+    assert deleted == 1 and processor.deleted == [["id-gone"]]
+
+
+async def test_a_failed_keep_check_marks_the_run_incomplete_and_deletes_nothing() -> None:
+    processor = _Processor([_record("keep"), _record("gone")])
+    ledger = _ready({"keep"})
+
+    async def keep(unseen: list) -> set[str]:
+        raise RuntimeError("graph unavailable")
+
+    assert await reconcile_unseen_records(processor, "drive-1", ledger, LOGGER, keep=keep) == 0
+    assert processor.deleted == [] and ledger.has_gaps
+
+
+async def test_an_unread_record_listing_marks_the_run_incomplete_only_when_unseen_records_may_be_kept() -> None:
+    class FailsListing(_Processor):
+        async def get_records_by_status(self, *_args: object, **_kwargs: object) -> list:
+            raise RuntimeError("graph unavailable")
+
+    async def keep(unseen: list) -> set[str]:
+        return set()
+
+    with_keep, without_keep = _ready({"keep"}), _ready({"keep"})
+    assert await reconcile_unseen_records(FailsListing([]), "drive-1", with_keep, LOGGER, keep=keep) == 0
+    assert await reconcile_unseen_records(FailsListing([]), "drive-1", without_keep, LOGGER) == 0
+    assert with_keep.has_gaps and not without_keep.has_gaps

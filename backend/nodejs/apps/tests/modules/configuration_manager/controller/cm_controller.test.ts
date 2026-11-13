@@ -1494,13 +1494,7 @@ describe('ConfigurationManager Controller', () => {
   // Web Search Providers
   // -----------------------------------------------------------------------
   describe('getWebSearchProviders', () => {
-    const duckDuckGoProvider = {
-      provider: 'duckduckgo',
-      providerKey: 'duckduckgo',
-      configuration: {},
-    }
-
-    it('should return DuckDuckGo as default when no config exists', async () => {
+    it('should report web search as not set up when no config exists', async () => {
       const kvs = createMockKeyValueStore()
       const handler = getWebSearchProviders(kvs)
       const req = createMockRequest()
@@ -1513,9 +1507,8 @@ describe('ConfigurationManager Controller', () => {
       expect(next.called).to.be.false
       const response = res.json.firstCall.args[0]
       expect(response.status).to.equal('success')
-      expect(response.providers).to.deep.equal([
-        { ...duckDuckGoProvider, isDefault: true },
-      ])
+      expect(response.providers).to.deep.equal([])
+      expect(response.configured).to.equal(false)
       expect(response.settings).to.deep.equal({
         includeImages: false,
         maxImages: 3,
@@ -1523,7 +1516,7 @@ describe('ConfigurationManager Controller', () => {
       expect(response.message).to.equal('No web search providers found')
     })
 
-    it('should prepend DuckDuckGo as default when stored providers have no default', async () => {
+    it('should report web search as not set up when stored providers have no default', async () => {
       const storedSerper = {
         provider: 'serper',
         providerKey: 'serper-key-1',
@@ -1547,15 +1540,15 @@ describe('ConfigurationManager Controller', () => {
       const response = res.json.firstCall.args[0]
       // The request comes from a member, so the stored key is masked.
       expect(response.providers).to.deep.equal([
-        { ...duckDuckGoProvider, isDefault: true },
         { ...storedSerper, configuration: { apiKey: CONFIG_SECRET_PLACEHOLDER } },
       ])
+      expect(response.configured).to.equal(false)
       expect(response.message).to.equal(
         'Web search providers retrieved successfully',
       )
     })
 
-    it('should prepend DuckDuckGo with isDefault false when another provider is default', async () => {
+    it('should report web search as set up when a provider is the default', async () => {
       const storedTavily = {
         provider: 'tavily',
         providerKey: 'tavily-key-1',
@@ -1578,9 +1571,9 @@ describe('ConfigurationManager Controller', () => {
       expect(res.status.calledWith(200)).to.be.true
       const response = res.json.firstCall.args[0]
       expect(response.providers).to.deep.equal([
-        { ...duckDuckGoProvider, isDefault: false },
         { ...storedTavily, configuration: { apiKey: CONFIG_SECRET_PLACEHOLDER } },
       ])
+      expect(response.configured).to.equal(true)
       expect(response.settings).to.deep.equal({
         includeImages: true,
         maxImages: 3,
@@ -3552,6 +3545,8 @@ describe('ConfigurationManager Controller', () => {
     const appConfig = { cmBackend: 'http://cm', aiBackend: 'http://ai' } as unknown as AppConfig
     const IN_USE =
       'This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed.'
+    const LAST_MODEL =
+      'This is the only embedding model, so deleting it would switch embedding to the built-in model, which cannot use the vectors already stored. To keep your embeddings, first add the same model from another provider, at the same size, then delete this one. To use a different model, delete the embeddings in Labs first, then change or delete this model and re-embed.'
 
     // Records what reaches the AI service and answers the embedding takeover
     // check with `takeoverStatus` (400 is its answer while vectors are stored).
@@ -3724,7 +3719,23 @@ describe('ConfigurationManager Controller', () => {
       )
 
       expect(models(takeoverCalls(calls)[0])).to.deep.equal([])
-      expect(next.firstCall.args[0].message).to.equal(IN_USE)
+      expect(next.firstCall.args[0].message).to.equal(LAST_MODEL)
+      expect(storeWrites(kvs)).to.equal(0)
+    })
+
+    it('shows the store\'s own text when the last embedding model is deleted and the store cannot change model in place', async () => {
+      const text = 'The embedding model cannot be changed yet: this installation keeps vectors in PostgreSQL (pgvector).'
+      stubAiService(400, healthy, { status: 'not healthy', code: 'embedding_change_unsupported', error: text, message: text })
+      const kvs = storedModels([openai])
+      const next = createMockNext()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k1' } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.firstCall.args[0].message).to.equal(text)
       expect(storeWrites(kvs)).to.equal(0)
     })
 

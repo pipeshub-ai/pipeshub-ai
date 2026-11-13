@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '../services/logger.service';
-import { BaseError } from '../errors/base.error';
+import { BaseError, ErrorMetadata } from '../errors/base.error';
 import { unansweredCallError } from '../errors/backend-error';
 import {
   BadRequestError,
@@ -26,6 +26,12 @@ import {
  */
 const INFRASTRUCTURE_FAILURE_MESSAGE =
   "Something went wrong on PipesHub's side. Please try again; if it keeps happening, ask your admin for help.";
+
+// Nothing more can be answered: close the connection, as Express's own final
+// handler does, so the client sees a cut transfer instead of waiting forever.
+function closeStartedResponse(res: Response): void {
+  if (!res.writableEnded) res.destroy();
+}
 
 /**
  * Maps a body-parser rejection to the 4xx it stands for. body-parser marks
@@ -64,6 +70,14 @@ function bodyParserError(error: Error): HttpError | null {
       return null;
   }
 }
+
+const omitAccessNotices = (
+  metadata: ErrorMetadata | undefined,
+): ErrorMetadata | undefined => {
+  if (!metadata || !('accessNotices' in metadata)) return metadata;
+  const { accessNotices: _sent, ...rest } = metadata;
+  return rest;
+};
 
 export class ErrorMiddleware {
   private static logger = Logger.getInstance({ service: 'ErrorMiddleware' });
@@ -115,6 +129,7 @@ export class ErrorMiddleware {
         // midway): controllers no longer log what they pass on.
         this.logRequestError(mapped ?? error, req, res);
         if (res.headersSent) {
+          closeStartedResponse(res);
           return;
         }
         if (mapped) {
@@ -125,7 +140,10 @@ export class ErrorMiddleware {
       } catch (middlewareError) {
         // If even the error middleware fails, send a basic error response
         console.error('Error in error middleware:', middlewareError);
-        if (res.headersSent) return;
+        if (res.headersSent) {
+          closeStartedResponse(res);
+          return;
+        }
         jsonResponse(res, 500, {
           error: {
             code: 'MIDDLEWARE_ERROR',
@@ -221,13 +239,19 @@ export class ErrorMiddleware {
         ...(requestId && { requestId }),
         // Only include metadata in development, and never for a failure whose
         // details describe our internals.
+        // The access notices are sent at the top level; left out here, the sanitizer would meet the same array twice and
+        // answer "[Circular]" for the second copy.
         ...(isDevelopment &&
           !isInternalPlumbing && {
-            metadata: error.metadata,
+            metadata: omitAccessNotices(error.metadata),
           }),
         // Stack traces should NEVER be exposed to clients, even in development
         // They are logged server-side only for debugging
       },
+      // Codes the client words ("a source is still syncing"): carried on the error by the route that has them, never text.
+      ...(Array.isArray(error.metadata?.accessNotices) && {
+        accessNotices: error.metadata.accessNotices,
+      }),
     };
 
     const retryAfter = error.metadata?.retryAfter;

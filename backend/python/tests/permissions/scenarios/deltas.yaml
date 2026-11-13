@@ -2,9 +2,15 @@
 # shows). A scenario lists the vendor's verdicts; every listed pair the oracle does not give must be named here with
 # its direction, and every entry must still be observed. test_scenarios_oracle.py fails on an unlisted difference and
 # on a stale entry.
+# public: set on an entry that is published in the documentation (written for the reader, no code or internal ids): the connector,
+# the source permission and what differs. gen_docs.py renders only these. An entry without it stays internal.
 # direction: over-share (the product shows what the vendor hides) | under-share (it hides what the vendor shows).
 deltas:
   - id: DELTA-02
+    public:
+      connector: Google Drive
+      source: "A file shared with your whole domain, or with anyone who has the link"
+      differs: "It does not give everyone in the organisation access in PipesHub. People it is shared with directly or through a group still see it."
     direction: under-share
     scenarios: [DRIVE-C-08]
     pairs: [DRIVE-C-08/mo/roadmap]
@@ -14,6 +20,10 @@ deltas:
       discoverable domain share gives the org no grant. Safe but incomplete.
     fix: "Write a discoverable domain share (and a discoverable anyone share) as an org grant after a verified-domain check; link-only shares stay ungranted."
   - id: DELTA-05
+    public:
+      connector: Confluence
+      source: "A page nested very deep in a space"
+      differs: "A page more than 50 levels below its space is hidden from everyone. Move it closer to the top of the space."
     direction: under-share
     scenarios: [CONF-S-05]
     pairs: [CONF-S-05/v/page:52]
@@ -22,6 +32,10 @@ deltas:
       rule R7), so a page nested deeper is hidden from everyone.
     fix: "Raise the cap in check_access or flatten depth at write time; ticket candidate."
   - id: DELTA-17
+    public:
+      connector: Gmail
+      source: "A delegate added to a mailbox"
+      differs: "Delegates cannot search the mailbox in PipesHub. Only the mailbox owner can."
     direction: under-share
     scenarios: [GM-C-01]
     pairs: [GM-C-01/cat/mail:ann-1, GM-C-01/cat/mail:ann-2]

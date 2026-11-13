@@ -6,6 +6,7 @@
  */
 import 'reflect-metadata';
 import { randomUUID } from 'crypto';
+import { expect } from 'chai';
 import mongoose from 'mongoose';
 import { MongoService } from '../../src/libs/services/mongo.service';
 import { MongoDocumentRepository } from '../../src/libs/repositories/document/mongo';
@@ -59,5 +60,33 @@ describe('MongoDocumentRepository against a real MongoDB', function () {
       });
       return { writeSeq: raw?.writeSeq as number, writers: raw?.writers as { t: string; until: number }[] };
     },
+  });
+
+  // A build from before writes had their own sets declares the same unique index on (orgId, vrid, rev) and builds it at boot
+  // (Model.init); a failed build would fail every keyed create. Several write sets of one revision must not stop it.
+  it('rebuilds the unique artifact-set index over several stored writes of one revision', async () => {
+    const orgId = new mongoose.Types.ObjectId();
+    const set = (key: string, extra: Record<string, string> = {}) => ({
+      orgId, documentName: `revision_${key}`, documentPath: `${orgId}/PipesHub/record-revisions/v1`, isVersionedFile: false,
+      artifactSet: { virtualRecordId: 'v1', rev: key, root: `${orgId}/PipesHub/record-revisions/v1/${key}`, ...extra },
+    });
+    const W1 = 'a'.repeat(32);
+    const W2 = 'b'.repeat(32);
+    await DocumentModel.collection.insertMany([
+      set('r1'),
+      set(`r1-${W1}`, { contentRev: 'r1', writeId: W1 }),
+      set(`r1-${W2}`, { contentRev: 'r1', writeId: W2 }),
+    ]);
+    const key = { orgId: 1, 'artifactSet.virtualRecordId': 1, 'artifactSet.rev': 1 };
+    const named = (await DocumentModel.collection.indexes()).find((i) => JSON.stringify(i.key) === JSON.stringify(key));
+    expect(named?.unique).to.equal(true);
+    await DocumentModel.collection.dropIndex(named!.name!);
+    await DocumentModel.syncIndexes();
+    const rebuilt = (await DocumentModel.collection.indexes()).find((i) => JSON.stringify(i.key) === JSON.stringify(key));
+    expect(rebuilt?.unique).to.equal(true);
+    // The index still refuses a second row of one key.
+    let refused: unknown;
+    await DocumentModel.collection.insertOne(set(`r1-${W1}`)).catch((e: unknown) => { refused = e; });
+    expect((refused as { code?: number } | undefined)?.code).to.equal(11000);
   });
 });

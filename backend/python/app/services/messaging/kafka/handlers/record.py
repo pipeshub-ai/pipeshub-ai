@@ -44,7 +44,9 @@ from app.modules.code_graph.build_state import (
     request_is_stale,
 )
 from app.modules.indexing.connector_off_events import (
+    HELD_FOR_DELETE_DELAY_S,
     ConnectorState,
+    RecordHeldForDelete,
     already_indexed,
     clears_embeddings_first,
     connector_gated_event,
@@ -55,6 +57,7 @@ from app.modules.indexing.connector_off_events import (
     resuming_enrichment as record_resuming_enrichment,
 )
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
+from app.modules.indexing.embed_resume import chain_end_fields, end_attempt
 from app.modules.indexing.parse_now_marker import (
     PARSE_NOW_REV,
     PARSE_NOW_STATUS,
@@ -161,6 +164,13 @@ def _seconds_from_env(name: str, default: float) -> float:
 
 # Records whose statuses a parse-now must leave as they are: it stores the content and does not index.
 _STORE_ONLY_STATUSES = frozenset({ProgressStatus.AUTO_INDEX_OFF.value})
+# A connector record's events that are held while its connector is being deleted: every one that
+# indexes, re-runs stages or rebuilds vectors, vectorDbOnly included.
+_HELD_FOR_DELETE_EVENTS = frozenset({
+    EventTypes.NEW_RECORD.value,
+    EventTypes.UPDATE_RECORD.value,
+    EventTypes.REINDEX_RECORD.value,
+})
 
 
 def _event_org(record: dict, payload: dict) -> str | None:
@@ -731,6 +741,12 @@ class RecordEventHandler(BaseEventService):
                 payload=payload,
                 key=str(record_id),
             ),
+        )
+
+    async def _read_gating_app(self, connector_id: str) -> dict | None:
+        # Raising, as the connector check does: an unreadable graph must not look like a deleted connector.
+        return await self.event_processor.graph_provider.get_document(
+            connector_id, CollectionNames.APPS.value, raise_on_error=True
         )
 
     async def _end_enrichment_without_running(
@@ -1528,6 +1544,8 @@ class RecordEventHandler(BaseEventService):
         error_msg = None
         last_exception: Exception | None = None
         cancelled = False
+        # Handed back because the record's connector is being deleted: nothing of it is written.
+        held_for_delete = False
         record = None
         resuming_enrichment = False
         source_name: str | None = None
@@ -1542,6 +1560,7 @@ class RecordEventHandler(BaseEventService):
         parse_now_refused = False
         # Nothing of an earlier delivery's run survives into this one.
         end_run()
+        end_attempt()
         try:
             if not event_type:
                 # A message with no event type is a producer bug: acking it
@@ -1550,7 +1569,6 @@ class RecordEventHandler(BaseEventService):
                 # consumer reports as "Handler ended without INDEXING_COMPLETE"
                 # and classifies as transient — three deliveries of something no
                 # retry can fix.
-                self.logger.error(f"Missing event_type in message {payload}")
                 raise ProcessingError(
                     "Message has no eventType; cannot be routed",
                     details={"payload_keys": sorted(payload.keys())},
@@ -1727,7 +1745,6 @@ class RecordEventHandler(BaseEventService):
             if not record_id:
                 # As above: malformed payload, surfaced via the dead-letter queue
                 # in one attempt rather than three.
-                self.logger.error(f"Missing record_id in message {payload}")
                 raise ProcessingError(
                     f"Message of type {event_type} has no recordId",
                     details={"event_type": event_type},
@@ -1831,10 +1848,29 @@ class RecordEventHandler(BaseEventService):
             # before its first attempt; the record holds the one that attempt saved.
             virtual_record_id = record.get("virtualRecordId") or virtual_record_id
 
+            # A connector being deleted owns its records, and the delete may yet be put back, so its
+            # record events are held before anything is written: a stage redrive's states, a vector
+            # rebuild (vectorDbOnly), the embeddings taken out below. This read decides only that:
+            # the connector check further on reads the app again, since it can change meanwhile.
+            # Known before the read below, as is whether this is a stage re-run: the finally block
+            # keys on both if that read fails.
+            resuming_enrichment = record_resuming_enrichment(record)
             stages = payload.get("stages")
             stage_ingress = self.event_processor.stage_ingress
-            if event_type == EventTypes.REINDEX_RECORD.value and isinstance(stages, list) and stages and stage_ingress is not None:
-                stage_redrive = True
+            stage_redrive = bool(
+                event_type == EventTypes.REINDEX_RECORD.value
+                and isinstance(stages, list) and stages and stage_ingress is not None
+            )
+            if event_type in _HELD_FOR_DELETE_EVENTS:
+                deleting_id = gating_connector_id(record)
+                if deleting_id and connector_state(await self._read_gating_app(deleting_id)) is ConnectorState.DELETING:
+                    held_for_delete = True
+                    raise RecordHeldForDelete(
+                        f"connector {deleting_id} of record {record_id} is being deleted",
+                        delay_s=HELD_FOR_DELETE_DELAY_S,
+                    )
+
+            if stage_redrive:
                 stage_rev = payload.get("stageRev")
                 # A null stageRev is a record selected before it had a revision.
                 if "stageRev" in payload and (record.get("contentRev") or None) != (stage_rev or None):
@@ -1874,6 +1910,7 @@ class RecordEventHandler(BaseEventService):
 
             #Reconciliation
             vector_db_only = bool(payload.get("vectorDbOnly"))
+            embeddings_deleted = False
             if parse_now:
                 # Parsing to read, not to index: nothing is taken out of the vector store.
                 pass
@@ -1881,6 +1918,7 @@ class RecordEventHandler(BaseEventService):
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
                     [virtual_record_id], org_id=payload.get("orgId") or None
                 )
+                embeddings_deleted = True
             elif not vector_db_only and event_type in (
                 EventTypes.UPDATE_RECORD.value,
                 EventTypes.REINDEX_RECORD.value,
@@ -1907,6 +1945,15 @@ class RecordEventHandler(BaseEventService):
             if already_indexed(event_type, payload, doc) and not (
                 stage_ingress is not None and await stage_ingress.handoff_lost(doc)
             ):
+                # The finally block releases queued copies from here. A delete marked while the
+                # embeddings were being deleted is seen before that, as at the connector check.
+                deleting_id = gating_connector_id(record) if embeddings_deleted else None
+                if deleting_id and connector_state(await self._read_gating_app(deleting_id)) is ConnectorState.DELETING:
+                    held_for_delete = True
+                    raise RecordHeldForDelete(
+                        f"connector {deleting_id} of record {record_id} is being deleted",
+                        delay_s=HELD_FOR_DELETE_DELAY_S,
+                    )
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1936,6 +1983,15 @@ class RecordEventHandler(BaseEventService):
                     )
                     state = connector_state(connector_instance)
                     source_name = (connector_instance or {}).get("name") or None
+                    if state is ConnectorState.DELETING:
+                        # Before anything is written: the delete may yet be put back, so the event is
+                        # held rather than dropped, a forced re-index included. Also reached when the
+                        # delete began while the embeddings were being deleted above.
+                        held_for_delete = True
+                        raise RecordHeldForDelete(
+                            f"connector {connector_id} of record {record_id} is being deleted",
+                            delay_s=HELD_FOR_DELETE_DELAY_S,
+                        )
                     if resuming_enrichment and state is not ConnectorState.ACTIVE:
                         # Stays searchable: only the enrichment is given up. Its
                         # end lets the finally block promote the QUEUED copies.
@@ -2385,6 +2441,10 @@ class RecordEventHandler(BaseEventService):
             error_msg = str(ie)
             last_exception = ie
             raise  # preserve DocumentProcessingError and other IndexingError subtypes
+        except RecordHeldForDelete:
+            # Not a failure: the consumer hands the message back, and nothing is written for it.
+            self.logger.info(f"Record {record_id} held: its connector is being deleted")
+            raise
         except Exception as e:
             error_occurred = True
             error_msg = str(e)
@@ -2402,9 +2462,10 @@ class RecordEventHandler(BaseEventService):
                 f"Success: {not error_occurred}"
             )
 
-            if stage_redrive:
+            if stage_redrive or held_for_delete:
                 # A stage re-run owns none of the record's bookkeeping (statuses, queued
                 # duplicates, index notifications); its stage state records the outcome.
+                # A held event has done nothing yet, and its record is the delete's.
                 pass
             elif error_occurred and record_id:
                 if parse_now and current_run() is None:
@@ -2606,11 +2667,12 @@ class RecordEventHandler(BaseEventService):
             # stays IN_PROGRESS for redelivery, so the repo is not drained and
             # this would be graph I/O during an unwind. Skipped for a record in
             # the trash too, which is drained like a missing one.
-            if not cancelled and not in_trash and not parse_now_refused and not store_only:
+            if not cancelled and not held_for_delete and not in_trash and not parse_now_refused and not store_only:
                 await self._request_code_edge_build_if_repo_drained(record_id, record)
 
             # Last, so every status write above is shaped by the run.
             end_run()
+            end_attempt()
 
     async def __update_document_status(
         self,
@@ -2634,6 +2696,7 @@ class RecordEventHandler(BaseEventService):
                 "indexingStatus": indexing_status,
                 "extractionStatus": extraction_status,
                 "processingStartedAt": None,
+                **chain_end_fields(indexing_status),
             }
             # Mirror the terminal status onto parsingStatus, but never
             # downgrade a parse that already completed in this attempt.

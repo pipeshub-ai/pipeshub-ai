@@ -528,6 +528,7 @@
     "created": "创建时间",
     "updated": "更新时间",
     "source": "来源",
+    "actions": "操作",
     "noData": "没有可用数据",
     "loading": "正在加载数据...",
     "selectAll": "全选",
@@ -579,6 +580,8 @@
     "pagination": {
       "showing": "显示第 {{start}}-{{end}} 项，共 {{total}} 项",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "显示第 {{start}}-{{end}} 项，至少 {{total}} 项",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "每页 {{value}} 条"
     },
     "yes": "是",
@@ -736,6 +739,8 @@
     "indexingStatus": {
       "completed": "已完成",
       "inProgress": "进行中",
+      "embeddingProgress_one": "正在嵌入 {{done, number}} / {{total, number}} 个分块",
+      "embeddingProgress_other": "正在嵌入 {{done, number}} / {{total, number}} 个分块",
       "failed": "失败",
       "fileTypeNotSupported": "不支持的文件类型",
       "notStarted": "未开始",
@@ -791,7 +796,8 @@
     "nameRules": {
       "folderSeparator": "文件夹名称不能包含“/”或“\\”。",
       "collectionExists": "你已有名为“{{name}}”的集合。请换一个名称。"
-    }
+    },
+    "sourcesNotReady": "部分来源仍在准备中，尚未列出（{{count}}）。请稍后再试。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -933,7 +939,17 @@
     "copy": "复制",
     "fork": "分叉对话",
     "forkFromHere": "从此处分叉",
+    "forkedHere": "已在此处分叉",
+    "untitledChat": "未命名聊天",
+    "forkedFrom": "分叉自",
+    "copiedUpToHere": "已复制到此处 · 新消息从下方开始",
+    "forkOriginUnavailable": "原始对话已不可用",
     "regenerate": "重新生成",
+    "answerHidden": {
+      "lost": "此回答使用了您已无权访问的内容。",
+      "unconfirmed": "无法确认您的访问权限，请重试。",
+      "askAgain": "重新提问"
+    },
     "readAloud": "朗读",
     "stopReading": "停止朗读",
     "ttsNotSupported": "此浏览器不支持文字转语音",
@@ -1604,6 +1620,15 @@
         "done": "已完成",
         "error": "失败"
       }
+    },
+    "webSearchSetup": {
+      "title": "网页搜索尚未设置",
+      "adminBody": "您的组织尚未配置搜索提供商。请在 Workspace → 网页搜索 中选择一个，为所有人开启网页搜索。",
+      "memberBody": "您的组织尚未设置网页搜索提供商，因此回答无法使用网络。",
+      "memberHint": "请联系管理员在 Workspace → 网页搜索 中进行配置。",
+      "setUp": "设置网页搜索",
+      "notNow": "暂不",
+      "gotIt": "知道了"
     }
   },
   "workspaceMenu": {
@@ -3428,7 +3453,14 @@
         "badge": "需要处理",
         "title": "需要处理",
         "openAuthentication": "更新身份验证",
-        "viewSteps": "查看设置步骤"
+        "viewSteps": "查看设置步骤",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki 拒绝成员和页面结构查询",
+            "message": "私有空间只能使用之前同步时确认的访问权限进行同步，且仅限确认后的 {{days}} 天内。从未同步过或确认时间更早的私有空间会被跳过，且页面层级不可用。开放空间不受影响。 完整同步（包括因更改筛选器而启动的同步）会使私有空间停止这样同步，直到 Drupal Wiki 再次列出其成员。",
+            "message_dated": "私有空间只能使用之前同步时确认的访问权限进行同步，且仅限确认后的 {{days}} 天内。从未同步过或确认时间更早的私有空间会被跳过，且页面层级不可用。开放空间不受影响。 完整同步（包括因更改筛选器而启动的同步）会使私有空间停止这样同步，直到 Drupal Wiki 再次列出其成员。 正在使用的最早访问权限确认于 {{confirmedOn}}。"
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "组织中的所有人都将看到这些数据",
@@ -3438,6 +3470,104 @@
         "cancel": "取消",
         "continueTeam": "继续使用团队连接器",
         "goToPersonal": "设置个人连接器"
+      },
+      "accessCheck": {
+        "open": "检查某人的访问权限",
+        "title": "检查某人的访问权限",
+        "description": "查看某人能否读取此连接器中的记录，以及无法读取的原因。",
+        "personLabel": "人员",
+        "personPlaceholder": "选择人员",
+        "peopleLoading": "正在加载人员...",
+        "peopleFailed": "无法加载人员列表。",
+        "recordLabel": "记录 ID",
+        "recordHint": "打开记录并复制其 ID。",
+        "check": "检查",
+        "checking": "正在检查...",
+        "close": "关闭",
+        "resultHeading": "结果",
+        "restrictedArea": "受限区域",
+        "theyFallback": "此人",
+        "pathLabel": "位置：{{path}}",
+        "reference": "参考编号：{{ref}}（如果原因看起来不对，请提供给支持人员）",
+        "verdict": {
+          "granted": "{{name}} 可以查看此记录。",
+          "denied": "{{name}} 无法查看此记录。"
+        },
+        "reason": {
+          "granted": "如果它在搜索中缺失，可能是尚未建立索引，或连接器仍在同步。",
+          "not_linked": "{{name}} 没有关联到此连接器的账户。",
+          "no_grant": "{{container}} 中没有任何内容授予 {{name}} 访问权限。",
+          "restricted_container": "{{container}} 仅限其他人访问。",
+          "item_restricted": "此记录有自己的限制，{{name}} 不在其中。",
+          "parent_not_readable": "{{name}} 无法打开此记录所需的上级项目。",
+          "pending_rewrite": "此记录所在的文件夹正在更新。",
+          "syncing": "连接器尚未完成此部分的同步。",
+          "scheme_unreadable": "连接器无法读取此区域的访问规则，因此对所有人隐藏。",
+          "deleted_at_source": "此记录已在源端删除。",
+          "unexplained": "我们无法显示原因。"
+        },
+        "next": {
+          "not_linked": "请在源端修复账户，然后同步。",
+          "no_grant": "请在源端添加 {{name}}。",
+          "restricted_container": "请让所有者添加 {{name}}。",
+          "item_restricted": "请让所有者添加 {{name}}。",
+          "parent_not_readable": "请将上级项目共享给 {{name}}。",
+          "pending_rewrite": "请等待几分钟后再检查。",
+          "syncing": "请等待同步完成。",
+          "scheme_unreadable": "请在源端修复同步账户的权限。",
+          "deleted_at_source": "无需操作。",
+          "unexplained": "请联系支持人员并提供参考编号。"
+        },
+        "errors": {
+          "failed": "无法完成检查。请重试。",
+          "notFound": "在此连接器中找不到该人员或记录。",
+          "rateLimited": "检查次数过多。请一分钟后重试。"
+        },
+        "peopleRetry": "重试",
+        "askedAbout": "关于记录 {{record}}"
+      },
+      "access": {
+        "title": "访问",
+        "loading": "正在加载访问详情…",
+        "loadError": "无法加载访问详情。",
+        "retry": "重试",
+        "reach": "{{connector}} 中的更改会在{{interval}}内同步到 PipesHub。",
+        "reachUnknown": "{{connector}} 中的更改会在下次同步时到达 PipesHub。",
+        "syncNow": "立即同步权限",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "权限",
+          "succeeded": "上次刷新：{{when}}。",
+          "failed": "上次权限刷新失败，因此来源中的最新更改可能尚未生效。请选择“立即同步权限”重试。",
+          "never": "权限尚未刷新。在首次同步完成之前，此连接器的内容将保持隐藏。",
+          "running": "正在刷新权限。",
+          "incomplete": "上一次权限刷新没有运行到结束。"
+        },
+        "pending": {
+          "label": "等待生效",
+          "none": "没有等待中的项目。",
+          "some_other": "{{count}} 个文件夹正在更新。更新完成前，所有人都看不到它们，通常需要几分钟。",
+          "overflow": "某项更改涉及整个连接器，因此需要完整重建其权限索引。在此之前，搜索会逐条检查结果，因此不会因此隐藏任何内容。",
+          "unknown": "未知：无法读取等待更新的文件夹列表。请参阅“需要关注”。"
+        },
+        "attention": {
+          "label": "需要处理（{{count}}）",
+          "none": "没有需要处理的事项。",
+          "warning": "{{container}} 中有 {{items}} 个项目被隐藏。同步账户无法读取此容器的权限。",
+          "fix": "解决办法：在 {{vendor}} 中为同步账户授予 {{permission}} 权限，然后选择“立即同步权限”。",
+          "showAll": "再显示 {{count}} 项",
+          "warningNoContainer": "同步账户无法读取部分项目的权限，因此这些项目被隐藏。",
+          "rebuild": "此连接器的权限索引需要完整重建。在此之前，搜索会逐条检查结果，因此不会因此隐藏任何内容。",
+          "unfinished": "某项权限更改没有顺利完成。请让运行 PipesHub 的人员检查此连接器的权限索引。",
+          "stale": "部分项目无法通过更快的搜索进行检查，会改由经典搜索查找。",
+          "sweep": "此连接器的权限更新持续失败。请让运行 PipesHub 的人员检查其日志。",
+          "other": "此连接器的权限需要有人查看。",
+          "unreadable": "无法读取等待更新的文件夹列表。请让运行 PipesHub 的人员重建此连接器的权限索引。在此期间，搜索会逐条检查结果。"
+        }
       }
     },
     "mcpServers": {
@@ -4149,6 +4279,11 @@
         "settingDefault": "正在设置…",
         "editConfiguration": "编辑配置",
         "deleteConfiguration": "删除配置"
+      },
+      "duckduckgoWarning": "在共享服务器上可能被封锁或限速，不建议团队使用。",
+      "notSetUp": {
+        "title": "网络搜索尚未设置。",
+        "description": "请在下方选择一个提供商来开启。在此之前，组织中的任何人都无法在聊天中搜索网络。"
       }
     },
     "profile": {
@@ -5823,5 +5958,20 @@
     },
     "nothingNew": "此节点没有更多内容可显示。",
     "tableOnly": "为保持流畅，仅显示表格。"
+  },
+  "accessNotice": {
+    "permissions_updating": "部分来源正在更新权限，因此几分钟内可能缺少一些结果。",
+    "connector_syncing": "{{name}} 仍在同步，因此来自它的结果可能不完整。",
+    "connector_syncing_unnamed": "有来源仍在同步，因此来自它的结果可能不完整。",
+    "check_unavailable": "我们暂时无法检查您有权访问哪些文档，因此不显示结果。请一分钟后重试。",
+    "emptySyncing": "暂时没有可搜索的内容。{{name}} 仍在同步。",
+    "emptySyncing_unnamed": "暂时没有可搜索的内容。有来源仍在同步。",
+    "noAccess": {
+      "title": "您无权访问此项目",
+      "body": "它可能已被移动、删除或受到限制。请询问所有者，或在您有链接时从原处打开。",
+      "justGotAccess": "刚在源端获得访问权限？新的访问权限会在下次同步后显示。",
+      "copyDetails": "复制详细信息给管理员",
+      "copied": "详细信息已复制"
+    }
   }
 }

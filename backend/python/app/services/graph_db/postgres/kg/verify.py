@@ -17,7 +17,7 @@ from app.services.graph_db.postgres.kg.reader import load_sks, snapshot
 from app.services.graph_db.postgres.kg.stamp import StampStats, stamp_app
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Awaitable, Callable, Iterable
 
     from app.core.db import Tx
 
@@ -92,6 +92,38 @@ async def _readonly(tx: Tx, org: str):  # noqa: ANN202
     return allocate
 
 
+async def _check_page(tx: Tx, org: str, page: list[Key], alloc: Callable[..., Awaitable[dict[Key, int]]], res: Result, h: hashlib._Hash) -> tuple[set[int], set[int]]:
+    """One page of a connector's nodes against kg: their records, links and grants. Returns the sks the graph explains and the connectors the page shares parents or groups with."""
+    focus = set(page)
+    snap = await snapshot(tx, org, focus, alloc)
+    if lacking := sorted(k for k in snap.nodes if k not in snap.sk):     # a node of the graph that is connected to this connector and kg has no key for: it came after the copy
+        res.note_all("missing", [f"k|{k[0]}:{k[1]} (no node key)" for k in lacking[:LIMIT]])
+    try:
+        d = derive(focus, snap)
+    except KeyError as e:               # a node (or a neighbour) kg has no key for: the copy has not reached it
+        res.note("missing", f"k|{e} (no node key)")
+        return set(), set()
+    sks = sorted(d.records)
+    cols = tuple(sorted({c for row in d.records.values() for c in row}))
+    exp = {f"r|{sk}": _line(d.records[sk], cols) for sk in sks}
+    exp |= {f"l|{p}|{k}|{c}": "" for (p, k, c) in d.links}
+    exp |= {f"g|{p}|{n}|{g}": repr(v) for (p, n, g), v in d.grants.items() if n in d.grant_nodes}
+    act: dict[str, str] = {}
+    if sks:
+        for r in await tx.fetch("""/* pipeshub:kg.verify_records */ SELECT * FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])""", org, sks):
+            act[f"r|{r['sk']}"] = _line(dict(r), cols)
+        for r in await tx.fetch("""/* pipeshub:kg.verify_links */ SELECT parent_sk, kind, child_sk FROM kg.links WHERE org_id = $1 AND child_sk = ANY($2::bigint[])""", org, sks):
+            act[f"l|{r['parent_sk']}|{r['kind']}|{r['child_sk']}"] = ""
+        for r in await tx.fetch("""/* pipeshub:kg.verify_grants */ SELECT principal_sk, node_sk, gtype, role, app_sk, leaf FROM kg.scope_members WHERE org_id = $1 AND node_sk = ANY($2::bigint[])""", org, sks):
+            act[f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']}"] = repr((r["role"], r["app_sk"], r["leaf"]))
+    _compare(res, exp, act)
+    res.expected += len(exp)
+    for k in sorted(exp):
+        h.update(f"{k}={exp[k]}\n".encode())
+    return set(sks), d.cross_apps
+
+
+
 async def verify_app(tx: Tx, org: str, app_id: str) -> Result:
     """Everything kg holds for one connector against the graph. Call under the connector's lock, in a unit that stays open for the whole read."""
     res = Result()
@@ -105,34 +137,9 @@ async def verify_app(tx: Tx, org: str, app_id: str) -> Result:
         if not page:
             break
         after = page[-1]
-        focus = set(page)
-        snap = await snapshot(tx, org, focus, alloc)
-        if lacking := sorted(k for k in snap.nodes if k not in snap.sk):     # a node of the graph that is connected to this connector and kg has no key for: it came after the copy
-            res.note_all("missing", [f"k|{k[0]}:{k[1]} (no node key)" for k in lacking[:LIMIT]])
-        try:
-            d = derive(focus, snap)
-        except KeyError as e:               # a node (or a neighbour) kg has no key for: the copy has not reached it
-            res.note("missing", f"k|{e} (no node key)")
-            continue
-        sks = sorted(d.records)
-        expected_sks |= set(sks)
-        cross |= d.cross_apps
-        cols = tuple(sorted({c for row in d.records.values() for c in row}))
-        exp = {f"r|{sk}": _line(d.records[sk], cols) for sk in sks}
-        exp |= {f"l|{p}|{k}|{c}": "" for (p, k, c) in d.links}
-        exp |= {f"g|{p}|{n}|{g}": repr(v) for (p, n, g), v in d.grants.items() if n in d.grant_nodes}
-        act: dict[str, str] = {}
-        if sks:
-            for r in await tx.fetch("""/* pipeshub:kg.verify_records */ SELECT * FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])""", org, sks):
-                act[f"r|{r['sk']}"] = _line(dict(r), cols)
-            for r in await tx.fetch("""/* pipeshub:kg.verify_links */ SELECT parent_sk, kind, child_sk FROM kg.links WHERE org_id = $1 AND child_sk = ANY($2::bigint[])""", org, sks):
-                act[f"l|{r['parent_sk']}|{r['kind']}|{r['child_sk']}"] = ""
-            for r in await tx.fetch("""/* pipeshub:kg.verify_grants */ SELECT principal_sk, node_sk, gtype, role, app_sk, leaf FROM kg.scope_members WHERE org_id = $1 AND node_sk = ANY($2::bigint[])""", org, sks):
-                act[f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']}"] = repr((r["role"], r["app_sk"], r["leaf"]))
-        _compare(res, exp, act)
-        res.expected += len(exp)
-        for k in sorted(exp):
-            h.update(f"{k}={exp[k]}\n".encode())
+        sks_, cross_ = await _check_page(tx, org, page, alloc, res, h)
+        expected_sks |= sks_
+        cross |= cross_
     app_sk = (await load_sks(tx, org, {("apps", app_id)})).get(("apps", app_id))
     if app_sk is not None:
         sk_after = 0
@@ -162,6 +169,10 @@ async def verify_app(tx: Tx, org: str, app_id: str) -> Result:
     for r in await tx.fetch("""/* pipeshub:kg.verify_orphan_grants */ SELECT m.principal_sk, m.node_sk, m.gtype FROM kg.scope_members m
             WHERE m.org_id = $1 AND m.app_sk IS NULL AND NOT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = m.org_id AND r.sk = m.node_sk) ORDER BY m.node_sk LIMIT $2""", org, LIMIT):
         res.note("extra", f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']} (node gone)")      # a grant on a node that is gone leaves its row without a connector: the per-connector scan cannot find it
+    if app_sk is not None:
+        for r in await tx.fetch("""/* pipeshub:kg.verify_orphan_scopes */ SELECT s.sk FROM kg.scopes s WHERE s.org_id = $1 AND s.app_sk = $2
+                AND NOT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = s.org_id AND r.sk = s.sk) ORDER BY s.sk LIMIT $3""", org, app_sk, LIMIT):
+            res.note("extra", f"sc|{r['sk']} (node gone)")        # an access list of this connector whose record row is gone: no reader counts it; a restart backfill removes it
     if cross:   # superset: kg may mark a connector the graph no longer needs marked, never miss one
         marked = {r["app_sk"] for r in await tx.fetch("""/* pipeshub:kg.verify_cross */ SELECT app_sk FROM kg.projection_state WHERE org_id = $1 AND cross_app AND app_sk = ANY($2::bigint[])""",
                                                       org, sorted(cross))}
@@ -219,3 +230,77 @@ async def verify_principals(tx: Tx, org: str) -> Result:
         res.note_all("extra", [f"c|{r['user_sk']}|{r['principal_sk']}|{r['app_sk']} (no user)" for r in rows if r["user_sk"] not in expected_users])
     res.digest = h.hexdigest()
     return res
+
+
+# ---- the chunked verify of the periodic net -------------------------------------------------------------------------------------------------------
+# One page of the verify at a time, each in a snapshot of its own, so a connector too large to verify in one unit is verified over several passes. Every page is an index range
+# (the next keys of the connector in graph.nodes, the next sks of kg.records, the next grants of kg.scope_members), self-consistent in its own snapshot; the caller skips a page
+# when the connector is not served in it (a change waits in the log: kg is behind by design). It makes the checks of the promotion's verify except the three orphan scans
+# (links without a child, grants without a connector, access lists without a record), which read a whole connector in one statement.
+@dataclass
+class Cursor:
+    """Where a chunked verify of one connector goes on, and what it found so far."""
+    phase: str = "nodes"                     # nodes, stamps, ghosts, grants
+    after: Key | None = None                 # nodes: the last key checked
+    after_id: str | None = None              # stamps: the last record id compiled
+    sk_after: int = 0                        # ghosts: the last sk checked
+    grant_after: tuple[int, int, str] = (0, 0, "")
+    pages: int = 0
+    res: Result = field(default_factory=Result)
+
+
+GHOSTS = """/* pipeshub:kg.verify_chunk_ghosts */ SELECT g.sk, g.coll, g.id, g.key_sk, x.found IS NULL AS ghost
+    FROM (SELECT r.sk, r.coll, r.id, k.sk AS key_sk, CASE r.coll WHEN 1 THEN 'apps' WHEN 2 THEN 'recordGroups' ELSE 'records' END AS ncoll
+          FROM (SELECT * FROM kg.records WHERE org_id = $1 AND app_sk = $2 AND (app_sk, sk) > ($2, $3) ORDER BY app_sk, sk LIMIT $4) r
+          LEFT JOIN kg.node_keys k ON k.org_id = r.org_id AND k.coll = r.coll AND k.id = r.id) g
+    LEFT JOIN LATERAL (SELECT 1 AS found FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = g.ncoll AND n.id = g.id AND (n.coll = 'apps' OR n.doc->>'connectorId' = $5) LIMIT 1) x ON true
+    ORDER BY g.sk"""
+GRANT_GHOSTS = """/* pipeshub:kg.verify_chunk_grants */ SELECT g.principal_sk, g.node_sk, g.gtype, x.found IS NULL AS ghost
+    FROM (SELECT principal_sk, node_sk, gtype FROM kg.scope_members WHERE org_id = $1 AND app_sk = $2 AND (app_sk, node_sk, principal_sk, gtype) > ($2, $3, $4, $5)
+          ORDER BY app_sk, node_sk, principal_sk, gtype LIMIT $6) g
+    LEFT JOIN LATERAL (SELECT 1 AS found FROM kg.records r WHERE r.org_id = $1 AND r.sk = g.node_sk LIMIT 1) x ON true
+    ORDER BY g.node_sk, g.principal_sk, g.gtype"""
+
+
+async def verify_chunk(tx: Tx, org: str, app_id: str, cur: Cursor, *, page: int | None = None) -> bool:
+    """Advance the verify of one connector by one page, recording what it finds in ``cur.res``. True when every phase is done. Call in a read unit that is not held open between pages."""
+    cur.pages += 1
+    res = cur.res
+    page = page or PAGE
+    if cur.phase == "nodes":
+        keys = await app_nodes(tx, org, app_id, cur.after, page)
+        if not keys:
+            cur.phase = "stamps"
+            return False
+        cur.after = keys[-1]
+        _, cross = await _check_page(tx, org, keys, await _readonly(tx, org), res, hashlib.sha256())
+        if cross:
+            marked = {r["app_sk"] for r in await tx.fetch("""/* pipeshub:kg.verify_cross */ SELECT app_sk FROM kg.projection_state WHERE org_id = $1 AND cross_app AND app_sk = ANY($2::bigint[])""",
+                                                          org, sorted(cross))}
+            res.note_all("missing", [f"x|{sk} (shares a parent or group with another connector, not marked)" for sk in sorted(cross - marked)])
+        return False
+    if cur.phase == "stamps":
+        st = StampStats()
+        cur.after_id = await stamp_app(tx, org, app_id, cur.after_id, page, st, dry=True)
+        res.note_all("changed", st.diffs)
+        if cur.after_id is None:
+            cur.phase = "ghosts"
+        return False
+    app_sk = (await load_sks(tx, org, {("apps", app_id)})).get(("apps", app_id))
+    if app_sk is None:
+        return True
+    if cur.phase == "ghosts":
+        rows = await tx.fetch(GHOSTS, org, app_sk, cur.sk_after, page, app_id)
+        if not rows:
+            cur.phase = "grants"
+            return False
+        cur.sk_after = rows[-1]["sk"]
+        res.note_all("extra", [f"r|{r['sk']} (no node)" for r in rows if r["ghost"]])
+        res.note_all("changed", [f"s|{r['sk']} {r['coll']}:{r['id']} (node_keys holds {r['key_sk']})" for r in rows if not r["ghost"] and r["key_sk"] != r["sk"]])
+        return False
+    rows = await tx.fetch(GRANT_GHOSTS, org, app_sk, *cur.grant_after, page)
+    if not rows:
+        return True
+    cur.grant_after = (rows[-1]["node_sk"], rows[-1]["principal_sk"], rows[-1]["gtype"])
+    res.note_all("extra", [f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']} (no node)" for r in rows if r["ghost"]])
+    return False

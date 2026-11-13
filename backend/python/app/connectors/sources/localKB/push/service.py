@@ -23,6 +23,7 @@ import hashlib
 import logging
 import os
 import random
+import re
 import secrets
 import time
 import uuid
@@ -45,6 +46,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.services.vector_cleanup_events import (
     build_stored_document_cleanup_events,
 )
+from app.core import org_context
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import FileRecord, RecordType
 from app.models.source_dates import upload_origin
@@ -60,6 +62,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from . import contract as C
 from . import images as I
 from .contract import PushRefusal
+from .ledger import IMAGE, TEXT
 from .retry import is_attempt_lost
 from .worker import PushWorker, Validated, schema_id_hint
 
@@ -73,6 +76,7 @@ if TYPE_CHECKING:
     from app.services.storage_documents import StorageDocumentInfo
 
     from .image_admission import ImageAdmission, ImageSlot
+    from .ledger import PushLedger
     from .materialiser import Materialiser
     from .spool import Spool
 
@@ -90,16 +94,49 @@ WRITE_ROLES = ["OWNER", "WRITER"]
 MAX_INLINED_BYTES = 48 << 20
 #: Storage ids a push may name; checked again before they reach a task payload.
 _DOC_ID = I._STORAGE_REF
+#: A storage id read back from a tag: it goes into a URL path, so it is checked before it is used.
+_TAG_DOC_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 SETTLE_RETRY_S = 2.0
 TOKEN_TTL_S = 180
 #: ``kb_push_untrusted_total{reason}``: pushes whose image fingerprint could not be trusted, by cause.
 UNTRUSTED: Counter[str] = Counter()
 _UNTRUSTED_LOGGED: dict[str, float] = {}
+#: ``kb_push_heal_total{outcome}``: the previous-document cleanup after a content change (cleaned | skipped | failed).
+HEAL: Counter[str] = Counter()
+_HEAL_LOGGED: dict[str, float] = {}
+HEAL_TIMEOUT_S = 10.0
 
 
 def _deny() -> PushRefusal:
     """The one answer for a reference that cannot be used, whatever the cause (absent, foreign, deleted, not an image...)."""
     return PushRefusal(422, "IMAGE_REF_INVALID", "An image reference in this record cannot be used.", extra={"code": "IMAGE_REF_INVALID"})
+
+
+async def _make_off_loop(make: Callable[..., str], *args: object, undo: Callable[[str], object]) -> str:
+    """``make(*args)`` in a thread. A cancel cannot stop the thread, so what it makes after one is undone (in a thread too)."""
+    loop = asyncio.get_running_loop()
+    made = org_context.spawn_in_request(asyncio.to_thread(make, *args))
+    try:
+        return await asyncio.shield(made)
+    except asyncio.CancelledError:
+        made.add_done_callback(
+            lambda f: f.cancelled() or f.exception() is not None or loop.run_in_executor(None, undo, f.result())
+        )
+        raise
+
+
+async def _run_to_the_end(work: asyncio.Future[None]) -> None:
+    """Wait for ``work`` even through a cancel, then re-raise the cancel. An awaited executor job that is cancelled
+    while still queued is dropped, never run."""
+    cancel: asyncio.CancelledError | None = None
+    while not work.done():
+        try:
+            await asyncio.shield(work)
+        except asyncio.CancelledError as e:
+            cancel = e
+    work.result()
+    if cancel is not None:
+        raise cancel
 
 
 def _mib(n: int) -> str:
@@ -173,6 +210,7 @@ class KbPushService:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         materialiser: Materialiser | None = None,
         image_admission: ImageAdmission | None = None,
+        ledger: PushLedger | None = None,
     ) -> None:
         self.graph = graph_provider
         self.kb_service = kb_service
@@ -186,6 +224,8 @@ class KbPushService:
         # None: references are refused as before images existed (a deployment or test that has no materialiser).
         self.materialiser = materialiser
         self.image_admission = image_admission
+        # None: no accounting (a test or a deployment that builds the service without a runtime).
+        self.ledger = ledger
 
     # ---- access -----------------------------------------------------------------------------
 
@@ -222,28 +262,55 @@ class KbPushService:
 
     # ---- the push ---------------------------------------------------------------------------
 
+    def precheck(self, org_id: str, user_id: str) -> None:
+        """Refuse a caller whose pushes are suspended or whose shared-worker budget is spent, before any body byte is read."""
+        if self.ledger is not None:
+            self.ledger.check_all((org_id, user_id))
+
     async def push(self, *, kb_id: str, user_id: str, org_id: str, body: bytes, folder_id: str | None) -> PushResult:
-        in_path = self.spool.write(body)
+        user = (org_id, user_id)
+        report = None
+        if self.ledger is not None:
+            self.precheck(org_id, user_id)
+            body_key = "b:" + await asyncio.to_thread(lambda: hashlib.sha256(body).hexdigest())
+            self.ledger.check_pair(user, body_key)
+            report = self.ledger.accountant(user, body_key, TEXT)
+        # The spool's file work runs in threads: a slow disk must not stall the loop every connector shares.
+        in_path = await _make_off_loop(self.spool.write, body, undo=self.spool.remove)
         out_path = self.spool.new_path("out")
         img: ImagePush | None = None
         try:
             schema_id, schema = await self._load_schema(org_id, kb_id, body)
-            validated = await self.worker.validate(in_path, out_path, schema_id=schema_id, schema=schema)
+            validated = await (
+                self.worker.validate(in_path, out_path, schema_id=schema_id, schema=schema)
+                if report is None else self.worker.validate(in_path, out_path, schema_id=schema_id, schema=schema, account=report)
+            )
             if validated.refs:
-                img = self._begin_images(user_id, org_id)
+                request_key = C.request_key(validated.blocks_sha, validated.properties, [r for r, _ in validated.refs])
+                if self.ledger is not None:
+                    self.ledger.check_images(user)
+                    self.ledger.check_pair(user, "r:" + request_key)
+                img = await self._begin_images(user_id, org_id)
+                img.request_key = request_key
                 validated = await self._authorise_images(img, validated, user_id=user_id, org_id=org_id)
             return await self._write(kb_id=kb_id, user_id=user_id, org_id=org_id, v=validated, folder_id=folder_id, img=img)
         finally:
-            self.spool.remove(in_path, out_path)
-            if img is not None:
-                if img.out_path:
-                    self.spool.remove(img.out_path)
-                self.materialiser.remove_dir(img.work_dir)  # type: ignore[union-attr]
-                img.slot.release()
+            try:
+                await _run_to_the_end(org_context.spawn_in_request(asyncio.to_thread(self._remove_files, in_path, out_path, img)))
+            finally:
+                if img is not None:
+                    img.slot.release()
+
+    def _remove_files(self, in_path: str, out_path: str, img: ImagePush | None) -> None:
+        self.spool.remove(in_path, out_path)
+        if img is not None:
+            if img.out_path:
+                self.spool.remove(img.out_path)
+            self.materialiser.remove_dir(img.work_dir)  # type: ignore[union-attr]
 
     # ---- images -----------------------------------------------------------------------------
 
-    def _begin_images(self, user_id: str, org_id: str) -> ImagePush:
+    async def _begin_images(self, user_id: str, org_id: str) -> ImagePush:
         if self.materialiser is None and self.image_admission is not None:
             # A deployment whose materialiser could not be made (a malformed origin list): an operator fault, not the caller's.
             raise _refuse(503, "IMAGES_UNAVAILABLE", "Images in pushes are unavailable on this deployment.")
@@ -252,7 +319,8 @@ class KbPushService:
                               extra={"code": "BLOCKS_INVALID"})
         slot = self.image_admission.reserve(user_id, org_id)
         try:
-            return ImagePush(slot=slot, work_dir=self.materialiser.make_dir(self.spool.dir))
+            work_dir = await _make_off_loop(self.materialiser.make_dir, self.spool.dir, undo=self.materialiser.remove_dir)
+            return ImagePush(slot=slot, work_dir=work_dir)
         except BaseException:
             slot.release()
             raise
@@ -317,11 +385,11 @@ class KbPushService:
                 h.update(ref_id.encode() + b"\x1f" + (img.infos[ref_id].fingerprint or "").encode() + b"\x1e")
             fp = h.hexdigest()
         img.image_fp = fp
-        img.request_key = C.request_key(v.blocks_sha, v.properties, ids)
         # Arithmetic from what storage says, before any download: a refusal here costs no bytes.
         sizes = {r: (i.object_size if i.object_size is not None else i.declared_size or 0) for r, i in img.infos.items()}
         refs = I.ImageRefs(order=ids, counts=dict(v.refs))
-        lower = I.inlined_size_lower_bound(os.path.getsize(v.stored_path), v.image_nonce or "", refs, sizes)
+        stored_size = await asyncio.to_thread(os.path.getsize, v.stored_path)
+        lower = I.inlined_size_lower_bound(stored_size, v.image_nonce or "", refs, sizes)
         cap, limit = await self._cap(authoritative=False)
         if lower > cap:
             raise resolved_too_large(cap, limit)
@@ -349,7 +417,7 @@ class KbPushService:
             raise resolved_too_large(cap, limit)
         return cap
 
-    async def _materialise(self, img: ImagePush, v: Validated, *, org_id: str) -> Validated:
+    async def _materialise(self, img: ImagePush, v: Validated, *, org_id: str, user_id: str | None = None) -> Validated:
         """Fetch the images and splice them into the stored file. The caller keeps the result for the next attempt."""
         cap, _limit = await self._cap(authoritative=True)
         refs = []
@@ -369,7 +437,11 @@ class KbPushService:
             "refs": refs, "storage_url": storage_url, "token": token, "cap_bytes": cap,
         }
         async with img.slot.running():
-            done = await self.materialiser.run(task)  # type: ignore[union-attr]
+            if self.ledger is not None and user_id is not None:
+                account = self.ledger.accountant((org_id, user_id), "r:" + img.request_key, IMAGE)
+                done = await self.materialiser.run(task, account=account)  # type: ignore[union-attr]
+            else:
+                done = await self.materialiser.run(task)  # type: ignore[union-attr]
         return replace(v, stored_path=img.out_path, size=done.size, content_rev=done.content_rev)
 
     async def _recheck_refs(self, img: ImagePush, v: Validated, *, user_id: str, org_id: str) -> None:
@@ -414,6 +486,7 @@ class KbPushService:
             await self._enforce_cap(v.size, authoritative=False)  # every push, text-only included
         new_doc: str | None = None
         new_doc_is_ours = False
+        heal_prev: str | None = None  # a verified leaked document to clean together with the superseded one
         first_loss: float | None = None  # the retry budget runs from the first lost attempt, not from the push's start
         try:
             for attempt in range(MAX_ATTEMPTS):
@@ -424,7 +497,7 @@ class KbPushService:
                 if action == "unchanged" and await self._document_is_gone(existing, org_id):
                     action = "content"  # heal: same version, same bytes, a new document
                 if img is not None and v.content_rev is None and action in ("create", "content", "maybe_changed"):
-                    v = await self._materialise(img, v, org_id=org_id)
+                    v = await self._materialise(img, v, org_id=org_id, user_id=user_id)
                     if action == "maybe_changed":
                         action, _ = self._decide(existing, v, kb_id, org_id)
                 if action == "unchanged":
@@ -442,7 +515,10 @@ class KbPushService:
                 revision = C.revision_id(v.digest, v.content_rev) if v.content_rev else None
                 if action in ("create", "content") and new_doc is None:
                     await self._enforce_cap(v.size, authoritative=True)
-                    new_doc = await self._store(org_id, kb_id, key, v)
+                    previous = existing.get("externalRecordId") if action == "content" and existing else None
+                    # Read before any cleanup is published: once the superseded document is purged its tags are gone.
+                    heal_prev = await self._heal_prepare(org_id, kb_id, key, previous) if previous else None
+                    new_doc = await self._store(org_id, kb_id, key, v, previous=previous)
                     new_doc_is_ours = True
                 if img is not None and action in ("create", "content"):
                     # Every attempt: the caller's access or a document may have changed since the first read.
@@ -479,7 +555,9 @@ class KbPushService:
                 if action == "create":
                     await self._undo_create_in_deleted_kb(key, kb_id, org_id, new_doc)
                 if action == "content" and existing.get("externalRecordId"):
-                    await self._cleanup(org_id, kb_id, [existing["externalRecordId"]])
+                    await self._cleanup(org_id, kb_id, [existing["externalRecordId"], *([heal_prev] if heal_prev else [])])
+                    if heal_prev:
+                        HEAL["cleaned"] += 1
                 status = "created" if action == "create" else "updated"
                 indexing = "NOT_STARTED"
                 if outcome.event:
@@ -591,12 +669,15 @@ class KbPushService:
 
     # ---- storage ----------------------------------------------------------------------------
 
-    async def _store(self, org_id: str, kb_id: str, key: str, v: Validated) -> str:
+    async def _store(self, org_id: str, kb_id: str, key: str, v: Validated, previous: str | None = None) -> str:
+        tags = {"connectorId": kb_id, "pushRecordKey": key, "contentRev": v.content_rev}
+        if previous:
+            tags["previousDocumentId"] = previous  # a crash after the commit leaves this one to the next content change
         try:
             return await self.storage.create(
                 org_id=org_id, name=key, document_path=f"{STORAGE_PATH}/{kb_id}", file_path=v.stored_path,
                 extension="bin", content_type="application/octet-stream",
-                tags={"connectorId": kb_id, "pushRecordKey": key, "contentRev": v.content_rev},
+                tags=tags,
             )
         except StorageUploadError as e:
             logger.error("push storage upload failed: %s", e)
@@ -606,6 +687,41 @@ class KbPushService:
                 # Not an oversize file (create() maps that to 413): retrying the same bytes cannot succeed.
                 raise _refuse(500, "STORAGE_REJECTED", "The content was rejected by storage.") from None
             raise _refuse(503, "STORAGE_UNAVAILABLE", "The content could not be stored; retry.", retryAfter=5) from None
+
+    @staticmethod
+    def _is_ours(info: StorageDocumentInfo | None, key: str, kb_id: str) -> bool:
+        """A live document that carries this record's tags. Tags can be set by anyone who uploads, so this only
+        rules out the documents that cannot be ours; the record's own pointer is what makes E trustworthy."""
+        return info is not None and not info.is_deleted and info.tags.get("pushRecordKey") == key and info.tags.get("connectorId") == kb_id
+
+    async def _heal_prepare(self, org_id: str, kb_id: str, key: str, previous: str) -> str | None:
+        """The document an earlier crash may have leaked: the one the superseded document E was tagged to replace.
+
+        Best effort and isolated: any failure (storage down, timeout, a document without our tags) means "nothing
+        to clean", never an error for the push. Both documents are read here, before anything is published, and
+        P is returned only if its own tags are this record's: the cleanup consumer deletes by id alone.
+        """
+        outcome = "skipped"
+        try:
+            async with asyncio.timeout(HEAL_TIMEOUT_S):
+                superseded = await self.storage.info(org_id, previous)
+                leaked = superseded.tags.get("previousDocumentId") if self._is_ours(superseded, key, kb_id) else None  # type: ignore[union-attr]
+                if not leaked or leaked == previous or not _TAG_DOC_ID.fullmatch(leaked):
+                    return None
+                if not self._is_ours(await self.storage.info(org_id, leaked), key, kb_id):
+                    return None
+                outcome = "verified"
+                return leaked
+        except Exception as e:
+            outcome = "failed"
+            now = time.monotonic()
+            if now - _HEAL_LOGGED.get("failed", -60.0) >= 60.0:
+                _HEAL_LOGGED["failed"] = now
+                logger.warning("push of %s: the previous-document check failed (%s); continuing", key, type(e).__name__)
+            return None
+        finally:
+            if outcome != "verified":
+                HEAL[outcome] += 1
 
     async def _cleanup(self, org_id: str, kb_id: str, document_ids: list[str]) -> None:
         for event in build_stored_document_cleanup_events(org_id=org_id, document_ids=document_ids, connector_id=kb_id):

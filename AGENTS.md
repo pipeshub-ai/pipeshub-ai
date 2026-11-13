@@ -20,18 +20,24 @@ New connectors extend `ConnectorFactory` under `backend/python/app/connectors/so
 
 ## Storage is pluggable
 
-Do not open a Neo4j, Arango, Qdrant, or Kafka client from indexing/query/connector feature code. Call `IGraphDBProvider`, `IVectorDBService`, or `MessagingFactory`. Those factories read env and construct the vendor client; your code stays the same on a Neo4j box and an Arango box.
+Do not open a client for PipesHub's own stores or broker (MongoDB, Neo4j, Arango, PostgreSQL, Qdrant, Kafka) from indexing/query/connector feature code. Call `IGraphDBProvider`, `IVectorDBService`, `MessagingFactory`, or the Node repositories. Those factories read env and construct the vendor client; your code stays the same on a Neo4j, an Arango and a PostgreSQL box. A connector's client for the source it indexes (for example the PostgreSQL connector reaching the database it syncs) is not covered by this rule.
 
 | Role | Env | Backends | Interface / factory |
 | --- | --- | --- | --- |
-| Graph | `DATA_STORE` | `neo4j` (what `install.sh`, Helm, and `backend/env.template` ship), `arangodb` | `IGraphDBProvider` / `GraphDBProviderFactory`; connectors use `GraphDataStore` |
-| Vector | `VECTOR_DB_TYPE` | `qdrant` (default), `opensearch`, `redis` | `IVectorDBService` / `VectorDBProviderFactory` |
+| Graph | `DATA_STORE` | `neo4j` (what `install.sh`, Helm, and `backend/env.template` ship), `arangodb`, `postgres` (opt-in; schema `graph`) | `IGraphDBProvider` / `GraphDBProviderFactory`; connectors use `GraphDataStore` |
+| Vector | `VECTOR_DB_TYPE` | `qdrant` (default), `opensearch`, `redis`, `pgvector` (opt-in; PostgreSQL with pgvector) | `IVectorDBService` / `VectorDBProviderFactory` |
 | KV / config | `KV_STORE_TYPE` | `redis` (default), `etcd`, `postgres` | `KeyValueStore` / `KeyValueStoreFactory`. Python config reads go through `ConfigurationService`, never the store directly |
-| Document | — | MongoDB | Mongoose in the Node API (users, orgs, sessions). Not swapped today |
+| Document | `DOC_STORE` | `mongo` (default), `postgres` (opt-in) | Repositories in the Node API (users, orgs, sessions, …): `backend/nodejs/apps/src/libs/repositories/<name>/` with `mongo.ts` and `pg.ts`, chosen by `store-select.ts`. Feature code uses the repository, never Mongoose or SQL directly |
 | Blob | storage config | local, S3, Azure Blob | `StorageServiceInterface` (`backend/nodejs/apps/src/modules/storage/`) |
 | Broker | `MESSAGE_BROKER` | `kafka`, `redis` (streams), `postgres` (queue tables) | `MessagingFactory` |
 
-Redis can be KV, vector, and broker at once; that does not make it the graph or the document store. PostgreSQL is a **connector** (a source to index), not PipesHub's document store.
+Redis can be KV, vector, and broker at once; that does not make it the graph or the document store. The PostgreSQL **connector** (a source to index) is separate from PostgreSQL as a store.
+
+**A document change covers both document stores.** A new or changed repository method is implemented in its `mongo.ts` and `pg.ts` and passes the repository's shared contract suite on both (`backend/nodejs/apps/tests/stores/contract/`, run against Mongo and PostgreSQL). A new collection or table also needs its PostgreSQL migration under `backend/db/`.
+
+**A vector change covers every vector store.** A new or changed `IVectorDBService` method is implemented for Qdrant, OpenSearch, Redis and pgvector (`backend/python/app/services/vector_db/`), or the PR says which store does not support it yet. Every store must still start: an `@abstractmethod` left unimplemented fails at construction. So either give the method a concrete default on `IVectorDBService` (as `memory_report`, `transient_search_error` and `reconcile_storage_layout` do), or implement it in the refusing store to raise an explicit error, with a test for that error.
+
+**A graph change covers every graph store.** A new or changed `IGraphDBProvider` method, or a new graph query, is implemented for Neo4j, ArangoDB and PostgreSQL (`backend/python/app/services/graph_db/{neo4j,arango,postgres}/`) and tested on each: real-store tests in `backend/python/tests/integration/graph_db/`, with the PostgreSQL ones in its `postgres/` folder. Where PostgreSQL cannot serve a method yet, it raises `NotImplementedInPostgres` (`graph_db/postgres/base.py`) instead of returning a partial answer, a test pins that it raises, the Neo4j and ArangoDB implementations are still tested, and the PR says so.
 
 ## What lives where
 
@@ -61,7 +67,7 @@ These two local setups look similar and are not the same. Use the origin you act
 
 ## Build and test
 
-Python 3.12, Node 22, Docker. Full setup, including creating the venv, is in [CONTRIBUTING.md](./CONTRIBUTING.md) (around the `python3.12 -m venv venv` step). Do not invent a venv path here.
+Python 3.12, Node 24 LTS (22 is the minimum), Docker. Full setup, including creating the venv, is in [CONTRIBUTING.md](./CONTRIBUTING.md) (around the `python3.12 -m venv venv` step). Do not invent a venv path here.
 
 ```bash
 cd backend/python && source venv/bin/activate && pytest
@@ -97,4 +103,4 @@ Style: [.gemini/styleguide.md](./.gemini/styleguide.md) (Ruff, PEP 8, ESLint, no
 - Use OAuth `client_credentials` for anything that must act as a user. PATs carry `userId` + `orgId`.
 - Print or log personal access tokens. Newly minted PATs may have a `phpat_` prefix; strip happens in `extractToken`.
 - Trust client-supplied org/user IDs — check auth on every new route and tool.
-- Bypass factories (`ConnectorFactory`, `GraphDBProviderFactory`, `VectorDBProviderFactory`, `KeyValueStoreFactory`, `MessagingFactory`) or talk to Qdrant/Arango/Neo4j/etcd clients from feature code.
+- Bypass factories (`ConnectorFactory`, `GraphDBProviderFactory`, `VectorDBProviderFactory`, `KeyValueStoreFactory`, `MessagingFactory`) or talk to the clients of PipesHub's own stores (Qdrant/Arango/Neo4j/PostgreSQL/etcd) from feature code. A connector's client for its own source is fine.

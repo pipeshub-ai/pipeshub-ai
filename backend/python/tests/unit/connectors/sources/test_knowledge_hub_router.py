@@ -8,20 +8,25 @@ Covers:
 - Search query validation (too short, too long)
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 
+from app.connectors.sources.localKB.api.knowledge_hub_models import OriginType, SortField
 from app.connectors.sources.localKB.api.knowledge_hub_router import (
+    _SORT_KEYS,
     _handle_get_nodes,
     _parse_comma_separated_str,
     _parse_date_range,
     _parse_size_range,
+    _sorted_like_the_providers,
     _validate_enum_values,
     _validate_uuid_format,
     get_knowledge_hub_service,
 )
+from app.connectors.sources.localKB.handlers.kh_merge import sort_order
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +266,71 @@ class TestHandleGetNodes:
                 limit=50,
                 sort_by="invalid_field",
                 sort_order="desc",
+                q=None,
+                node_types=None,
+                record_types=None,
+                origins=None,
+                connector_ids=None,
+                indexing_status=None,
+                created_at=None,
+                updated_at=None,
+                size=None,
+                flattened=False,
+                include=None,
+            )
+        assert caught.value.status_code == 400
+        svc.get_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sort_by", ["name", "createdAt", "updatedAt", "size", "type", "origin"])
+    async def test_every_listed_sort_by_is_accepted(self, sort_by: str) -> None:
+        request = _make_request()
+        svc = _make_knowledge_hub_service()
+        svc.get_nodes = AsyncMock(return_value=_make_success_result())
+
+        await _handle_get_nodes(
+            request=request,
+            knowledge_hub_service=svc,
+            parent_id=None,
+            parent_type=None,
+            only_containers=False,
+            page=1,
+            limit=50,
+            sort_by=sort_by,
+            sort_order="asc",
+            q=None,
+            node_types=None,
+            record_types=None,
+            origins=None,
+            connector_ids=None,
+            indexing_status=None,
+            created_at=None,
+            updated_at=None,
+            size=None,
+            flattened=False,
+            include=None,
+        )
+        assert svc.get_nodes.await_args.kwargs["sort_by"] == sort_by
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sort_by", ["indexingStatus", "nodeType", "sizeInBytes"])
+    async def test_a_sort_by_outside_the_api_names_is_refused(self, sort_by: str) -> None:
+        """Provider-side names are not API names; only the listed ones are accepted."""
+        request = _make_request()
+        svc = _make_knowledge_hub_service()
+        svc.get_nodes = AsyncMock(return_value=_make_success_result())
+
+        with pytest.raises(HTTPException) as caught:
+            await _handle_get_nodes(
+                request=request,
+                knowledge_hub_service=svc,
+                parent_id=None,
+                parent_type=None,
+                only_containers=False,
+                page=1,
+                limit=50,
+                sort_by=sort_by,
+                sort_order="asc",
                 q=None,
                 node_types=None,
                 record_types=None,
@@ -1208,3 +1278,53 @@ class TestHandleGetNodesCoverage:
         )
         call_kwargs = svc.get_nodes.call_args[1]
         assert call_kwargs["q"] == "search"
+
+
+def test_every_api_sort_field_has_an_in_memory_sort_key() -> None:
+    """A listing sorted in the router (a connection limited below app level) must
+    honour each sort the API accepts, not fall back to name."""
+    assert set(_SORT_KEYS) == {field.value for field in SortField}
+    rows = [MagicMock(id="a", origin=OriginType.CONNECTOR), MagicMock(id="b", origin=OriginType.COLLECTION)]
+    assert [r.origin for r in _sorted_like_the_providers(rows, "origin", "asc")] == [
+        OriginType.COLLECTION, OriginType.CONNECTOR,
+    ]
+
+
+def _named(row_id: str, name: str | None, *, size: int | None = None) -> SimpleNamespace:
+    # Not a MagicMock: its `name` argument names the mock instead of setting the attribute.
+    return SimpleNamespace(id=row_id, name=name, sizeInBytes=size)
+
+
+@pytest.mark.parametrize(("order", "expected"), [
+    ("asc", ["r-apple", "r-Banana", "r-cherry", "r-none-1", "r-none-2"]),
+    ("desc", ["r-cherry", "r-Banana", "r-apple", "r-none-1", "r-none-2"]),
+])
+def test_rows_with_no_name_sort_last_either_way_like_the_providers(order: str, expected: list[str]) -> None:
+    """The providers rank a null sort key after every value in both directions
+    (`nullRank` ascending) and break ties by id ascending; rows sorted here must
+    land the same way, or a limited connection lists them in another order."""
+    rows = [
+        _named("r-none-2", None), _named("r-cherry", "cherry"), _named("r-none-1", None),
+        _named("r-Banana", "Banana"), _named("r-apple", "apple"),
+    ]
+    assert [r.id for r in _sorted_like_the_providers(rows, "name", order)] == expected
+
+
+@pytest.mark.parametrize("order", ["asc", "desc"])
+def test_equal_values_and_missing_sizes_break_ties_by_id_ascending(order: str) -> None:
+    rows = [_named("c", "x", size=5), _named("b", "x", size=None), _named("a", "x", size=5), _named("d", "x", size=1)]
+    ranked = [r.id for r in _sorted_like_the_providers(rows, "size", order)]
+    assert ranked == (["d", "a", "c", "b"] if order == "asc" else ["a", "c", "d", "b"])
+
+
+@pytest.mark.parametrize("order", ["asc", "desc"])
+def test_names_outside_the_basic_plane_sort_by_utf16_like_the_providers(order: str) -> None:
+    """Cypher compares strings by UTF-16 code unit, so a name above U+FFFF sorts
+    before one in U+E000..U+FFFF, where Python's code-point order puts it after.
+    The router's merge must follow `sort_order`, the order the providers use."""
+    astral, fullwidth = "\U0001F600a", "\uFF21"
+    rows = [_named("r-none", None), _named("r-full", fullwidth), _named("r-astral", astral)]
+    names = {"r-astral": astral, "r-full": fullwidth.lower()}
+    expected = sorted(names, key=lambda i: sort_order(names[i]), reverse=order == "desc")
+    assert expected[0] == ("r-astral" if order == "asc" else "r-full")
+    assert [r.id for r in _sorted_like_the_providers(rows, "name", order)] == [*expected, "r-none"]

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from app.services.permissions.scope_fields import SCOPE_FIELDS_VERSION
 from app.services.vector_db.filters import ScopeFilter
 
-VERSION, GENERATION = 5, 3
+VERSION, GENERATION = SCOPE_FIELDS_VERSION, 3
 TERMS = (3, 7)
 
 

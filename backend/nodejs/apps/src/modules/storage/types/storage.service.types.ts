@@ -197,7 +197,16 @@ export interface FingerprintState {
 
 export interface ArtifactSet {
   virtualRecordId: string;
+  /**
+   * The set's key, unique per virtual record: the revision for the revision's one shared set, or
+   * `{rev}-{writeId}` for a stored write's own set. A rev is hex only, so a write's key never equals a
+   * revision: code that looks a set up by revision alone never finds a write's set.
+   */
   rev: string;
+  /** A stored write's own set only: the content revision it holds (`rev` is then its key). */
+  contentRev?: string;
+  /** A stored write's own set only: the write it is of, so none can overwrite another's files. */
+  writeId?: string;
   /** Storage key prefix holding the revision's files. */
   root: string;
   /** Epoch ms a delete claimed the revision; absent while it is writable. */

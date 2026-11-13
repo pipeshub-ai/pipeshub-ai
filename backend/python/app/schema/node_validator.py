@@ -31,7 +31,8 @@ class SchemaValidationError(Exception):
     Custom exception for schema validation failures.
 
     Wraps jsonschema.ValidationError with additional context about the collection
-    and provides a clear error message.
+    and provides a clear error message. The message names the field and the rule, never the
+    rejected value: handlers log it. The value stays on ``original_error``.
     """
 
     def __init__(self, collection: str, message: str, original_error: Optional[Exception] = None) -> None:
@@ -166,9 +167,27 @@ def _clean(collection: str, payload: dict[str, Any], strip: frozenset[str]) -> d
     return cleaned
 
 
+#: Rules whose message names fields, never a value: the keys of our schemas or a source's metadata property names.
+_NAMES_ONLY = frozenset({"required", "additionalProperties", "dependentRequired"})
+
+
+def _rule_text(error: JsonSchemaValidationError) -> str:
+    """jsonschema's message without the rejected value, which most rules quote first ("'Ada' is not of type 'integer'").
+
+    Allow-listed shapes only: a message that quotes the value or part of it anywhere else keeps just the rule.
+    """
+    shown = repr(error.instance)
+    rest = error.message[len(shown):]
+    if error.message.startswith(shown) and shown not in rest:
+        return f"value{rest}"
+    if error.validator in _NAMES_ONLY:
+        return error.message
+    return f"value fails '{error.validator}'"
+
+
 def _raise(collection: str, error: JsonSchemaValidationError) -> None:
-    error_path = ".".join(str(p) for p in error.path) if error.path else "root"
-    raise SchemaValidationError(collection, f"at '{error_path}': {error.message}", error)
+    error_path = ".".join(str(p) for p in error.absolute_path) or "root"
+    raise SchemaValidationError(collection, f"at '{error_path}': {_rule_text(error)}", error)
 
 
 def _check(validator: Validator | None, collection: str, payload: dict[str, Any]) -> None:

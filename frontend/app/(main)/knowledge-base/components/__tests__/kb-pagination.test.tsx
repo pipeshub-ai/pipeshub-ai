@@ -40,4 +40,10 @@ describe('KbPaginationFooter', () => {
     expect((screen.getByRole('button', { name: /Next/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('Showing 1-7 of 7')).toBeTruthy();
   });
+
+  it('All Records: a capped total reads as a lower bound, and so does the page count', () => {
+    setup({ ...base, startIndex: 151, endIndex: 200, totalItems: 120, totalCapped: true });
+    expect(screen.getByText('Showing 151-200 of at least 120')).toBeTruthy();
+    expect(screen.getByText('4 / 4+')).toBeTruthy();
+  });
 });

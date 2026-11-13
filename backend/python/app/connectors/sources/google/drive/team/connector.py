@@ -2,10 +2,14 @@ import asyncio
 import hashlib
 import json
 import logging
+import secrets
 import shutil
 import tempfile
 import uuid
+from enum import Enum
+from contextvars import ContextVar
 from datetime import datetime, timezone
+from functools import partial
 from logging import Logger
 from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -85,6 +89,7 @@ from app.connectors.sources.google.drive.utils.drive_filters import (
     passes_date_filters,
     passes_extension_filter,
 )
+from app.connectors.sources.google.drive.utils import drive_full_sync_reconciler
 from app.connectors.sources.google.drive.utils.drive_full_sync_reconciler import (
     FullSyncLedger,
     delete_shared_drive_records,
@@ -123,7 +128,7 @@ from app.connectors.sources.google.common.impersonation import (
     is_delegation_error,
     resolve_explicit_user,
 )
-from app.connectors.sources.google.drive.team.user_status import UserStatusTracker
+from app.connectors.sources.google.drive.team.user_status import UserStatusTracker, is_active_account
 from app.connectors.sources.google.drive.team.drive_access import (
     DrivePermissionBatch,
     grants_to_store,
@@ -203,14 +208,112 @@ FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup"
 SYNCED_SHARED_DRIVES_SYNC_POINT_KEY = "synced_shared_drives"
 DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX = "shared_drive_restrictions_"
 DRIVE_RESTRICTION_FLAGS = ("driveMembersOnly", "domainUsersOnly")
+# Set once a full read has written the audience grants (discoverable domain and "anyone" shares).
+DISCOVERABLE_SHARES_SYNC_POINT_KEY = "discoverable_shares_read"
+# Groups holding the enabled people a discoverable share is open to: everyone ("anyone" shares), and one per
+# verified domain (domain shares). Ids have no "@", so they are never mistaken for a Workspace group.
+ALL_MEMBERS_GROUP_ID = "workspace-members"
+DOMAIN_MEMBERS_GROUP_PREFIX = "domain-members:"
+# Google's answers, per verified domain D and each other verified domain E, to whether a share with D reaches the
+# people of E, and how long one is trusted before it is asked again.
+DOMAIN_REACH_SYNC_POINT_PREFIX = "domain_share_reach_"
+DOMAIN_REACH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+# A check that learns nothing keeps the last answer; a yes not answered again for this long reaches D's own people only.
+DOMAIN_REACH_KEEP_MAX_MS = 30 * 24 * 60 * 60 * 1000
+# Files kept per domain to ask that with, and at most this many with the same owners.
+REACH_CANDIDATES = 6
+REACH_CANDIDATES_PER_OWNER = 2
+# The membership digests of the audience groups as last written, so an unchanged group is not written again.
+AUDIENCE_DIGESTS_SYNC_POINT_KEY = "audience_group_digests"
+# All of them are written again once the last full write is this old: an edge removed in the store, not at the source
+# (a person removed and added back), comes back.
+AUDIENCE_REWRITE_MAX_AGE_MS = 24 * 60 * 60 * 1000
+# People of an audience asked whether they can still open a file. Everyone in an audience has the same access, so
+# a clean "no" from each of them shows the share is gone; more than one allows for a person who cannot use Drive.
+AUDIENCE_PROBES = 3
+# Set when a drive's items were synced under assumed restrictions: the next answer that has them lists it in full.
+DRIVE_RESTRICTIONS_ASSUMED = "assumed"
+# On a user's checkpoint: read the files shared with them again before the token moves on (a drive's limits changed).
+RESEED_SHARED_WITH_ME = "reseed_shared_with_me"
+# On a checkpoint: items its listing failed to read, read again by id on later runs until each one succeeds, so a
+# checkpoint that moves on past a failure gives nothing up. Past the cap the listing itself is read again instead.
+FAILED_ITEMS = "failed_items"
+MAX_FAILED_ITEMS = 500
+# Removed files whose check stayed undecided for MAX_UNRECOGNISED_403_RUNS runs, as "fileId:driveId", per user and per
+# user and shared drive, on keys of their own: re-reading a feed in full deletes its checkpoint, never these. Each is
+# kept and checked again on later runs until a clean answer settles it, without holding anything. None is ever dropped
+# unsettled: a list holds MAX_UNDECIDED_REMOVALS entries per key and goes on to "<key>_part<n>" keys, n from 1, their
+# count kept as UNDECIDED_PARTS on the first key. A run checks one part again, the parts in turn (UNDECIDED_NEXT_PART).
+UNDECIDED_REMOVALS_SYNC_POINT_PREFIX = "undecided_removals_"
+UNDECIDED_REMOVALS = "entries"
+MAX_UNDECIDED_REMOVALS = MAX_FAILED_ITEMS
+UNDECIDED_PARTS = "parts"
+UNDECIDED_NEXT_PART = "next_part"
+# Every undecided list's first key, so a full sync's cleanup spares their files whoever is synced (`keys`).
+UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY = "undecided_removal_keys"
+# The list of the unseen audience files a full sync's cleanup could not decide, tied to no user (no source user id is
+# "kept"): every run checks them again, as those of a user no longer in the directory.
+UNDECIDED_KEPT_KEY = f"{UNDECIDED_REMOVALS_SYNC_POINT_PREFIX}kept"
+# Records noted kept through a full sync per call.
+KEPT_RECORDS_BATCH = 100
+# The ids of the items that failed in the listing this task is reading (each user's sync runs in its own task).
+_failed_items: ContextVar[set[str] | None] = ContextVar("drive_failed_items", default=None)
 FILTER_CLEANUP_PAGE_SIZE = 500
 
+
+
+def _is_audience_group(group_id: str | None) -> bool:
+    return bool(group_id) and (group_id == ALL_MEMBERS_GROUP_ID or group_id.startswith(DOMAIN_MEMBERS_GROUP_PREFIX))
+
+
+def _email_domain(email: str | None) -> str:
+    return (email or "").lower().rpartition("@")[2]
+
+
+def _sole_domain_share(permissions: list[dict]) -> tuple[str, list[str]] | None:
+    """(domain, owner emails) when a file's only permissions are its owners and one discoverable domain share: then
+    a person of another domain can open it only if that share reaches them. None otherwise."""
+    live = [p for p in permissions if not p.get("deleted")]
+    owners = [p for p in live if p.get("role") == "owner"]
+    shares = [p for p in live if p.get("role") != "owner"]
+    if not owners or any(p.get("type") != "user" or not p.get("emailAddress") for p in owners) or len(shares) != 1:
+        return None
+    share = shares[0]
+    if share.get("type") != "domain" or share.get("allowFileDiscovery") is not True or not share.get("domain"):
+        return None
+    return share["domain"].lower(), [p["emailAddress"].lower() for p in owners]
+
+
+def _add_reach_candidate(candidates: list[dict], candidate: dict) -> None:
+    if (
+        len(candidates) < REACH_CANDIDATES
+        and all(c["file_id"] != candidate["file_id"] for c in candidates)
+        and sum(c["owners"] == candidate["owners"] for c in candidates) < REACH_CANDIDATES_PER_OWNER
+    ):
+        candidates.append(candidate)
 
 
 def _delegated_scopes() -> list[str]:
     """Every scope this connector's delegated tokens ask for: Drive as each user, the directory as the admin.
     A domain-wide delegation grant missing any of them makes Google refuse the whole token request."""
     return merge_scopes(GoogleClient.delegated_scopes_for("drive"), GoogleClient.delegated_scopes_for("admin"))
+
+
+class _ItemReadFailed(Exception):
+    """An item's permissions could not be read: it is neither changed nor unchanged."""
+
+
+class _RemovalUndecided(RuntimeError):
+    """Whether anyone but the user who lost a file can still open it is not known yet."""
+
+
+class _Settled(Enum):
+    """What checking an undecided removal again found. Only KEPT and REMOVED take the file off its list: a check
+    that decided nothing leaves it there, to be checked again."""
+
+    KEPT = "kept"
+    REMOVED = "removed"
+    UNDECIDED = "undecided"
 
 
 @ConnectorBuilder("Drive Workspace")\
@@ -379,6 +482,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Batch processing configuration
         self.batch_size = 100
         self._sync_ledger = FullSyncLedger()
+        # Guards the read-modify-write of the undecided lists' key index across concurrent user tasks.
+        self._undecided_keys_lock = asyncio.Lock()
+        # The undecided lists this run checked again; the rest are checked after every user's run.
+        self._undecided_visited: set[str] = set()
+        # The files on an undecided list, as read before this run's stale-record cleanup.
+        self._undecided_file_ids: set[str] = set()
         self._run_report: DriveRunReport | None = None
         # Keyed by impersonated user: a target one user can read says nothing about another.
         self._shortcut_cache: dict[str, dict[str, dict]] = {}
@@ -408,8 +517,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._synced_drive_ids: set = set()
         self._drive_has_member_cache: dict[str, bool] = {}
         self._drive_member_emails: dict[str, list[str]] = {}
+        # Drives with a member group the directory will not list: who else can open their files is unknown.
+        self._drive_members_unread: set[str] = set()
         # Per shared drive, this run: its restrictions, and the people and groups that are members.
         self._drive_restrictions: dict[str, dict[str, bool]] = {}
+        self._assumed_restrictions: set[str] = set()
         self._drive_principals: dict[str, tuple[set[str], set[str]]] = {}
         self._group_people: dict[str, set[str] | None] = {}
         self._warned_groups: set[tuple[str, str]] = set()
@@ -422,6 +534,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Every shared drive in the domain before the DRIVE_IDS filter, to tell a shared
         # drive's records from My Drive ones when that filter is checked.
         self._listed_shared_drive_ids: set = set()
+        self._shared_drives_listed = False
 
         # Collaborators granted access to a file but outside this Workspace domain.
         # Accumulated across the run and flushed once at the end, so an email repeated
@@ -446,10 +559,22 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Accounts that cannot sign in (suspended, archived, deleted), and those active again this run.
         self._inactive_emails: set[str] = set()
         self._returning_emails: set[str] = set()
+        # Whether this run's user listing was cut (an empty page before its end); see _sync_users.
+        self._listing_cut = False
 
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
         self.synced_user_emails: set[str] = set() # to filter out non workspace emails during shared drive file share processing
+        # Audience groups written by the last user listing; a discoverable share grants only these.
+        self._audience_groups: set[str] = set()
+        self._audience_loaded = False
+        # Who is in each audience group as last written, and the domains of each person's alias addresses.
+        self._audience_members: dict[str, set[str]] = {}
+        self._alias_domains: dict[str, set[str]] = {}
+        # Files that can ask how far a domain's share reaches, by domain.
+        self._reach_candidates: dict[str, list[dict]] = {}
+        # When this run began: an answer or a look at a file from before it is from an earlier run.
+        self._run_started_at = 0
 
     async def init(self) -> bool:
         """Initialize the Google Drive enterprise connector with service account credentials and services."""
@@ -650,17 +775,26 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._synced_drive_ids = set()
             self._drive_has_member_cache = {}
             self._drive_member_emails = {}
+            self._drive_members_unread = set()
             self._drive_restrictions = {}
+            self._assumed_restrictions = set()
             self._drive_principals = {}
             self._group_people = {}
             self._warned_groups = set()
             self._hidden_groups = {}
             self._group_digests = {}
             self._account_domains = None
+            self._audience_groups = set()
+            self._audience_loaded = False
+            self._audience_members = {}
+            self._reach_candidates = {}
+            self._run_started_at = get_epoch_timestamp_in_ms()
             self._refreshed_folders = set()
             self._group_members_cache = {}
             self._deployment_emails = None
             self._external_emails = set()
+            self._undecided_visited = set()
+            self._undecided_file_ids = set()
             if self._folder_seed_ids:
                 self.logger.info(
                     f"📁 Folder filter active with {len(self._folder_seed_ids)} seed folder(s)"
@@ -696,15 +830,22 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info("Processing user drives in batches...")
             # Use users synced in Step 1
             await self._process_users_in_batches(self.synced_users)
+            await self._recheck_unvisited_undecided_removals()
+            if self._reach_candidates and len(self._account_domains or ()) > 1:
+                # Files read this run can ask Google how far a domain share reaches, now or when it is asked again
+                # (so they are kept); the groups follow its answer.
+                await self._write_audience_groups()
             if self._folder_seed_ids and self._unresolved_filter_folders():
                 # Files under a selected folder nobody could list fail the folder
                 # filter without being seen, so cleanup would read them as deleted.
                 self._sync_ledger.note_incomplete()
+            await self._keep_records_no_listing_may_show()
             await reconcile_unseen_records(
                 self.data_entities_processor,
                 self.connector_id,
                 self._sync_ledger,
                 self.logger,
+                keep=self._unseen_records_an_audience_may_open,
             )
 
             # Step 6: Remove what changed sync filters now leave out
@@ -735,7 +876,12 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             self.logger.info("Fetching all users from Google Workspace Admin API...")
             all_users: List[AppUser] = []
+            alias_domains: dict[str, set[str]] = {}
             page_token: Optional[str] = None
+            listing_complete = True
+            ambiguous_end = False
+            self._listing_cut = False
+            pages_read = 0
 
             while True:
                 try:
@@ -750,6 +896,15 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                     # Paging follows the token alone: an empty page is not the end of the listing.
                     users_data = result.get("users", [])
+                    if not users_data:
+                        if result.get("nextPageToken"):
+                            # More follows an empty page: users may be missing.
+                            listing_complete = False
+                        elif pages_read:
+                            # Google ends a listing with a page that has users, but a directory whose size is an exact
+                            # multiple of the page size may end this way: judged below by its fingerprint.
+                            ambiguous_end = True
+                    pages_read += 1
 
                     # Transform Google user dictionaries to AppUser objects
                     for user in users_data:
@@ -799,6 +954,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 source_created_at=source_created_at
                             )
                             all_users.append(app_user)
+                            alias_domains[email.lower()] = {
+                                _email_domain(a) for a in [*(user.get("aliases") or []), *(user.get("nonEditableAliases") or [])]
+                            }
 
                         except Exception as e:
                             self.logger.error(f"Error processing user {user.get('id', 'unknown')}: {e}", exc_info=True)
@@ -815,26 +973,66 @@ class GoogleDriveTeamConnector(BaseConnector):
                     self.logger.error(f"Error fetching users page: {e}", exc_info=True)
                     raise
 
+            if ambiguous_end and listing_complete:
+                # The same listing on the next run is the directory's own size; a transient cut differs. It is kept
+                # after a match, so an exact page-size directory stays complete.
+                fingerprint = self._user_status.fingerprint(all_users)
+                if not await self._user_status.fingerprint_is_remembered(fingerprint):
+                    listing_complete = False
+                    await self._user_status.remember_fingerprint(fingerprint)
+            else:
+                await self._user_status.forget_fingerprint()
+            self._listing_cut = not listing_complete
+            if self._listing_cut:
+                self.logger.warning(
+                    "The user listing may be cut (an empty page before its end); no account's status is changed on this run"
+                )
+                self._sync_ledger.note_incomplete()
+
             if not all_users:
                 self.logger.warning("No users found in Google Workspace")
                 self.synced_users = []
                 self.synced_user_emails = set()
+                if self._listing_cut:
+                    await self._hold_back_on_cut_listing(all_users)
                 return
 
             # Process all users through the data entities processor
             self.logger.info(f"Processing {len(all_users)} users...")
-            await self.data_entities_processor.on_new_app_users(all_users)
+            # A cut run does not link a listed account that cannot sign in: it may not be linked now.
+            await self.data_entities_processor.on_new_app_users(
+                all_users if listing_complete else [u for u in all_users if is_active_account(u)]
+            )
 
             # Store users for use in batch processing
             self.synced_users = all_users
             self.synced_user_emails = {user.email.lower() for user in all_users if user.email}
-            await self._apply_user_status(all_users)
+            self._alias_domains = alias_domains
+            if listing_complete:
+                await self._apply_user_status(all_users)
+            else:
+                await self._hold_back_on_cut_listing(all_users)
+            # Also on a cut listing: a person it leaves out is only left out of the groups until a complete one.
+            await self._write_audience_groups()
 
             self.logger.info(f"✅ Successfully synced {len(all_users)} users")
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing users: {e}", exc_info=True)
             raise
+
+    async def _hold_back_on_cut_listing(self, listed: list[AppUser]) -> None:
+        """What a cut user listing may be used for: narrowing only. Accounts it shows as unable to sign in lose their
+        access now; accounts it does not show are unknown, and keep their groups and grants; nobody is restored and
+        nothing is saved."""
+        suspended = sorted(u.email.lower() for u in listed if u.email and not is_active_account(u))
+        removed = 0
+        for email in suspended:
+            removed += await self.data_entities_processor.remove_user_access_to_connector(self.connector_id, email)
+        if suspended:
+            self.logger.info(f"{len(suspended)} account(s) shown unable to sign in lose access; removed {removed} grant(s)")
+        self._inactive_emails = await self._user_status.inactive_on_partial_listing(listed)
+        self._returning_emails = set()
 
     async def _apply_user_status(self, listed: list[AppUser]) -> None:
         """Take access away from accounts that can no longer sign in, and note the ones that came back.
@@ -851,11 +1049,367 @@ class GoogleDriveTeamConnector(BaseConnector):
             removed = await self.data_entities_processor.remove_user_access_to_connector(self.connector_id, email)
             self.logger.info(f"{email} can no longer sign in to Google Workspace; removed {removed} grant(s)")
 
+    async def _write_audience_groups(self) -> None:
+        """The groups a discoverable share grants: every enabled person ("anyone" shares), and one group per domain
+        (domain shares) holding the enabled people whose address is on that domain, and those of each other domain
+        that Google has shown a share with it reaches (`_domain_reach`).
+
+        Groups, not an organization grant, because an organization grant also reaches guests and accounts
+        that cannot sign in. A domain whose people are all gone is written empty, so no one keeps its access, and
+        a change in Google's answer changes who is in the groups, not the grants on each file. A group whose people
+        are the same as when it was last written is not written again, until AUDIENCE_REWRITE_MAX_AGE_MS has passed
+        since all of them were.
+        """
+        enabled = [u for u in self.synced_users if u.is_active and not self._is_inactive_email(u.email)]
+        by_domain: dict[str, list[AppUser]] = {}
+        for user in enabled:
+            by_domain.setdefault(_email_domain(user.email), []).append(user)
+        domains_read = True
+        try:
+            domains = await self._workspace_domains()
+        except Exception as e:
+            self.logger.warning(f"Workspace domains could not be read; the domain groups only narrow this run: {e}")
+            domains, domains_read = set(), False
+        try:
+            reach = await self._domain_reach(domains, enabled)
+        except Exception as e:
+            self.logger.warning(f"Could not settle how far domain shares reach; each reaches its own domain only: {e}")
+            reach = {}
+        audiences = {ALL_MEMBERS_GROUP_ID: ("Workspace members", enabled)}
+        audiences.update({
+            DOMAIN_MEMBERS_GROUP_PREFIX + d: (
+                f"Members of {d}", [u for e in sorted({d, *reach.get(d, ())}) for u in by_domain.get(e, [])]
+            )
+            for d in set(by_domain) | domains
+        })
+        # The domains whose people each group may hold (None: everyone).
+        allowed: dict[str, set[str] | None] = {ALL_MEMBERS_GROUP_ID: None}
+        allowed.update({DOMAIN_MEMBERS_GROUP_PREFIX + d: {d, *reach.get(d, ())} for d in set(by_domain) | domains})
+        try:
+            stored_groups = {}
+            all_stored = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
+            for stored in all_stored:
+                gone = stored.source_user_group_id or ""
+                stored_groups[gone] = stored
+                if gone.startswith(DOMAIN_MEMBERS_GROUP_PREFIX) and gone not in audiences:
+                    audiences[gone] = (stored.name, [])
+                    allowed[gone] = set()  # no longer a verified domain: nobody
+            if not domains_read:
+                # Unknown is not empty: who a domain's group reaches cannot be worked out without the domains, so
+                # each keeps its stored people, less those who cannot sign in, until they are read.
+                allowed.update({g: None for g in audiences if g.startswith(DOMAIN_MEMBERS_GROUP_PREFIX)})
+                self._sync_ledger.note_incomplete()
+            if self._listing_cut or not domains_read:
+                await self._write_audience_groups_on_cut_listing(audiences, allowed, stored_groups)
+                self._audience_groups = set(audiences)
+                self._audience_loaded = True
+                return
+            digests: dict[str, str] = {}
+            for group_id, (_, members) in audiences.items():
+                people = {f"{(u.email or '').lower()}|{u.source_user_id}" for u in members}
+                digests[group_id] = f"{group_id}|{self._people_digest(people)}"
+            try:
+                saved = await self.drive_delta_sync_point.read_sync_point(AUDIENCE_DIGESTS_SYNC_POINT_KEY) or {}
+            except Exception as e:
+                self.logger.warning(f"Could not read which discoverable-share groups are up to date; writing them all: {e}")
+                saved = {}
+            now = get_epoch_timestamp_in_ms()
+            full = now - int(saved.get("written_at") or 0) >= AUDIENCE_REWRITE_MAX_AGE_MS
+            written = set() if full else set(saved.get("digests") or [])
+            changed = sorted(g for g, digest in digests.items() if digest not in written or g not in stored_groups)
+            # Not written, so a full sync in progress must be told they are kept, or the unlink after it removes
+            # their members and every grant made to them.
+            unchanged = set(digests) - set(changed)
+            self.data_entities_processor.note_kept_user_groups(
+                self.connector_id, [g for g in all_stored if g.source_user_group_id in unchanged]
+            )
+            if changed:
+                # Forgotten first: a write that fails part way may have stored some of them, and none may then be
+                # skipped as unchanged while the store holds other people than they should.
+                await self.drive_delta_sync_point.update_sync_point(AUDIENCE_DIGESTS_SYNC_POINT_KEY, {
+                    "digests": sorted(written - {e for e in written if e.rpartition("|")[0] in changed}),
+                })
+                await self.data_entities_processor.on_new_user_groups([
+                    (
+                        AppUserGroup(
+                            source_user_group_id=group_id,
+                            app_name=self.connector_name,
+                            connector_id=self.connector_id,
+                            name=audiences[group_id][0],
+                            description="Enabled people a discoverable share is open to",
+                        ),
+                        audiences[group_id][1],
+                    )
+                    for group_id in changed
+                ])
+                await self.drive_delta_sync_point.update_sync_point(AUDIENCE_DIGESTS_SYNC_POINT_KEY, {
+                    "digests": sorted(digests.values()),
+                    "written_at": now if full else int(saved.get("written_at") or 0),
+                })
+        except Exception as e:
+            # Like a group that failed in the listing: the stored groups stay as they were, grants are still
+            # written to them, and the run is reported incomplete so the write is tried again.
+            self._sync_ledger.note_incomplete()
+            self.logger.error(f"Error writing the discoverable-share groups; the stored ones are kept: {e}", exc_info=True)
+            return
+        self._audience_groups = set(audiences)
+        self._audience_members = {g: {(u.email or "").lower() for u in members} for g, (_, members) in audiences.items()}
+        self._audience_loaded = True
+
+    async def _write_audience_groups_on_cut_listing(
+        self, audiences: dict[str, tuple[str, list[AppUser]]], allowed: dict[str, set[str] | None], stored_groups: dict
+    ) -> None:
+        """A cut user listing, or one read without the verified domains, may only narrow: a person it leaves out (or
+        a domain group's person whose reach cannot be worked out) is unknown and keeps their place. Each group
+        keeps its stored people, less those the listing shows unable to sign in and those on a domain the group may no
+        longer hold (a narrower answer from Google applies at once), plus the listed people it should hold. Each group is
+        then written in full again on the next complete listing."""
+        # Forgotten first, so that write is not skipped as unchanged.
+        await self.drive_delta_sync_point.update_sync_point(AUDIENCE_DIGESTS_SYNC_POINT_KEY, {"digests": [], "written_at": 0})
+        self._audience_members = {}
+        for group_id, (name, listed) in audiences.items():
+            domains = allowed.get(group_id)
+            held: set[str] = set()
+            if group_id in stored_groups:
+                for user in await self.data_entities_processor.get_users_with_permission_to_node(
+                    stored_groups[group_id].id, CollectionNames.GROUPS.value, raise_on_error=True
+                ):
+                    email = (user.email or "").lower()
+                    if not email:
+                        continue
+                    if self._is_inactive_email(email) or (domains is not None and _email_domain(email) not in domains):
+                        await self.data_entities_processor.on_user_group_member_removed(group_id, email, self.connector_id)
+                    else:
+                        held.add(email)
+            await self.data_entities_processor.on_new_user_groups([(
+                AppUserGroup(
+                    source_user_group_id=group_id,
+                    app_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    name=name,
+                    description="Enabled people a discoverable share is open to",
+                ),
+                listed,
+            )], replace_members=False)
+            self._audience_members[group_id] = held | {(u.email or "").lower() for u in listed}
+
+    async def _domain_reach(self, domains: set[str], enabled: list[AppUser]) -> dict[str, set[str]]:
+        """For each verified domain D, the other verified domains whose people Google has shown a share with D reaches.
+
+        Google documents only that a domain permission refers to its domain, not whether it reaches the account's
+        other domains, so each pair of domains is asked on its own (`_reach_pair`): one answer says nothing of
+        another. A yes counts only once a later run, asking other people, says yes too; a no counts at once. An answer
+        is kept with the domains it was asked for, until it is DOMAIN_REACH_MAX_AGE_MS old or the domains change; a
+        pair without one is asked again on the next run that has a file to ask with. Until then the share reaches D's
+        own people only. A check that learns nothing (an error, or no file or person to ask) leaves the stored answer
+        as it is and asks again next run, but a yes not answered again within DOMAIN_REACH_KEEP_MAX_MS is dropped.
+        """
+        if len(domains) < 2:
+            return {}
+        now = get_epoch_timestamp_in_ms()
+        # Stamped with the run's start, so "from an earlier run" is exact: two runs never start in the same millisecond,
+        # but one may start in the millisecond the last one wrote its answers.
+        stamp = self._run_started_at or now
+        reach: dict[str, set[str]] = {}
+        for domain in sorted(domains):
+            key = f"{DOMAIN_REACH_SYNC_POINT_PREFIX}{domain}"
+            stored = await self.drive_delta_sync_point.read_sync_point(key) or {}
+            # JSON text: the graph stores refuse nested maps.
+            state = json.loads(stored.get("state") or "{}") if stored.get("domains") == sorted(domains) else {}
+            answers: dict[str, list] = state.get("answers") or {}
+            found = self._reach_candidates.get(domain) or []
+            candidates: list[dict] = list(state.get("candidates") or [])
+            for candidate in found:
+                _add_reach_candidate(candidates, candidate)
+            ordered: list[dict] | None = None
+            for other in sorted(domains - {domain}):
+                # [answer, when asked, the people who last said yes, when they did]
+                covered, checked_at, yes_by, yes_at = answers.get(other) or [None, 0, [], 0]
+                if now - int(checked_at) >= DOMAIN_REACH_MAX_AGE_MS or (
+                    covered is None and (int(checked_at) < self._run_started_at or found)
+                ):
+                    if ordered is None:
+                        ordered, candidates = await self._reach_candidates_in_order(domain, candidates, enabled)
+                    result, people = await self._reach_pair(domain, other, ordered, enabled, set(yes_by))
+                    if result:
+                        # Someone who can briefly share each file with the person asked could make one run say yes.
+                        confirmed = bool(yes_at) and int(yes_at) < self._run_started_at and not people & set(yes_by)
+                        covered = True if confirmed else None
+                        answers[other] = [covered, stamp, sorted(people), stamp]
+                    elif result is False:
+                        covered = False
+                        answers[other] = [False, stamp, [], 0]
+                    elif covered is None:
+                        answers[other] = [None, stamp, yes_by, yes_at]
+                    elif covered and now - int(checked_at) >= DOMAIN_REACH_KEEP_MAX_MS:
+                        covered = None
+                        answers[other] = [None, stamp, [], 0]
+                        self.logger.warning(
+                            f"Could not check again for {DOMAIN_REACH_KEEP_MAX_MS // 86_400_000} days whether a share "
+                            f"with {domain} reaches the people of {other}; it reaches {domain} only until it is"
+                        )
+                    # Otherwise nothing was learned: the stored answer stands and is asked again next run.
+                    if result is not None:
+                        self.logger.info(
+                            f"A share with {domain} {'does not reach' if result is False else 'reaches'} the people of "
+                            f"{other}{'' if result is False or covered else '; asked again next run, of other people'}"
+                        )
+                if covered:
+                    reach.setdefault(domain, set()).add(other)
+            if ordered is not None or candidates != list(state.get("candidates") or []):
+                await self.drive_delta_sync_point.update_sync_point(key, {
+                    "domains": sorted(domains), "state": json.dumps({"answers": answers, "candidates": candidates}),
+                })
+        return reach
+
+    async def _owner_view(self, source: GoogleDriveDataSource, file_id: str) -> tuple[str, tuple | None, list[str]] | None:
+        """A My Drive file as its owner reads it now: a digest of everything the check depends on (its folder and
+        every permission), its sole domain share as (domain, owners), and its folders. None in a shared drive or with
+        more permissions than one page holds."""
+        meta = await source.files_get(fileId=file_id, fields="id, driveId, parents, trashed", supportsAllDrives=True)
+        listed = await source.permissions_list(
+            fileId=file_id, supportsAllDrives=True, pageSize=100,
+            fields="nextPageToken, permissions(id, type, role, domain, emailAddress, deleted, allowFileDiscovery)",
+        )
+        if meta.get("driveId") or meta.get("trashed") or listed.get("nextPageToken"):
+            return None
+        permissions = listed.get("permissions") or []
+        sole = _sole_domain_share(permissions)
+        parents = sorted(meta.get("parents") or [])
+        state = json.dumps([parents, sorted(json.dumps(p, sort_keys=True) for p in permissions)])
+        return hashlib.sha256(state.encode()).hexdigest()[:16], (sole[0], sorted(sole[1])) if sole else None, parents
+
+    async def _reach_candidates_in_order(
+        self, domain: str, candidates: list[dict], enabled: list[AppUser]
+    ) -> tuple[list[dict], list[dict]]:
+        """The candidates to ask with: still shared with the domain alone, outside a shared drive, and looking as
+        they did on an earlier run, those at the top of the owner's My Drive first. And the candidates to keep, with
+        how each looks now; only those found no longer fit to ask with (deleted, in the trash, shared otherwise) are
+        left out, and one that could not be read for another reason is kept."""
+        ranked: list[tuple[bool, dict]] = []
+        keep: list[dict] = []
+        for candidate in candidates:
+            owner = next((u for u in enabled if (u.email or "").lower() in candidate["owners"]), None)
+            if owner is None:
+                continue
+            try:
+                source = await self._build_user_drive_data_source(owner)
+                view = await self._owner_view(source, candidate["file_id"])
+                if view is None or view[1] != (domain, candidate["owners"]):
+                    continue
+                root = (await source.files_get(fileId="root", fields="id")).get("id")
+            except Exception as e:
+                if isinstance(e, HttpError) and e.resp.status == HttpStatusCode.NOT_FOUND.value:
+                    continue  # deleted, or no longer the owner's: it makes room for another file
+                self.logger.warning(f"Could not read file {candidate['file_id']} to check how far a share with {domain} reaches: {e}")
+                keep.append(candidate)
+                continue
+            if candidate.get("view") != view[0]:
+                # New, or changed since: asked with only once a later run finds it the same.
+                keep.append({**candidate, "view": view[0], "seen_at": self._run_started_at or get_epoch_timestamp_in_ms()})
+                continue
+            keep.append(candidate)
+            if int(candidate.get("seen_at") or 0) < self._run_started_at:
+                ranked.append((root not in view[2], candidate))
+        return [c for _, c in sorted(ranked, key=lambda r: r[0])], keep
+
+    async def _reach_pair(
+        self, domain: str, other: str, ordered: list[dict], enabled: list[AppUser], exclude: set[str]
+    ) -> tuple[bool | None, set[str]]:
+        """Whether a share with `domain` reaches the people of `other`, asking no one in `exclude`: no as soon as a
+        file says so, yes only once files of two different owners say so, as one owner can open a single file to the
+        person being asked. None (unknown) otherwise. With the people who said yes."""
+        covered_by: list[set[str]] = []
+        people: set[str] = set()
+        for candidate in ordered:
+            answer, person = await self._probe_domain_reach(candidate, domain, other, enabled, exclude)
+            if answer is False:
+                return False, set()
+            if answer and all(owners.isdisjoint(candidate["owners"]) for owners in covered_by):
+                covered_by.append(set(candidate["owners"]))
+                people.add(person)
+                if len(covered_by) == 2:
+                    return True, people
+        return None, set()
+
+    async def _probe_domain_reach(
+        self, candidate: dict, domain: str, other: str, enabled: list[AppUser], exclude: set[str]
+    ) -> tuple[bool | None, str]:
+        """Open a My Drive file whose only permissions are its owners and one discoverable share with `domain`, as an
+        enabled person of `other` with no address on `domain` and not in `exclude`, picked at random each time: found
+        means the share reaches them, "not found" that it does not. The owner reads the file before and after, and it
+        must look as it did on the earlier run and the same both times, or a share or move made in between could
+        answer. None (unknown) for anything else: no such file or person any more, a change, or another error. With
+        the person asked."""
+        file_id, owners = candidate["file_id"], candidate["owners"]
+        owner = next((u for u in enabled if (u.email or "").lower() in owners), None)
+        people = [
+            u for u in enabled
+            if _email_domain(u.email) == other and (u.email or "").lower() not in owners
+            and (u.email or "").lower() not in exclude
+            and domain not in self._alias_domains.get((u.email or "").lower(), set())
+        ]
+        if owner is None or not people:
+            return None, ""
+        person = secrets.choice(people)
+        email = (person.email or "").lower()
+        try:
+            owner_source = await self._build_user_drive_data_source(owner)
+            before = await self._owner_view(owner_source, file_id)
+            if before is None or before[1] != (domain, owners) or before[0] != candidate.get("view"):
+                return None, email
+            source = await self._build_user_drive_data_source(person)
+            try:
+                await source.files_get(fileId=file_id, fields="id", supportsAllDrives=True)
+                answer = True
+            except HttpError as e:
+                if e.resp.status != HttpStatusCode.NOT_FOUND.value:
+                    raise
+                answer = False
+            if await self._owner_view(owner_source, file_id) != before:
+                self.logger.info(f"File {file_id} changed while checking how far a share with {domain} reaches; asked again later")
+                return None, email
+        except Exception as e:
+            self.logger.warning(f"Could not check how far a share with {domain} reaches with file {file_id}: {e}")
+            return None, email
+        return answer, email
+
+    async def _load_audience_groups(self) -> None:
+        """The audience groups the store holds, when this process has not written them (a reindex or a failed
+        write). Permissions are never written without knowing them: that would drop a stored audience grant."""
+        if self._audience_loaded:
+            return
+        stored = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
+        self._audience_groups = {
+            g.source_user_group_id for g in stored if _is_audience_group(g.source_user_group_id)
+        }
+        self._audience_loaded = True
+
+    def _discoverable_audience(self, share: dict) -> str | None:
+        """The group a discoverable domain or "anyone" share grants, or None. A link-only share is found by
+        nobody without the URL, and a domain that is not one of the account's verified domains is another
+        organization's. A domain share grants its domain's group, whose members `_write_audience_groups` sets.
+        The caller reads the verified domains first, and fails the item when the group is not stored."""
+        if share.get("allowFileDiscovery") is not True:
+            return None
+        kind = (share.get("type") or "").lower()
+        if kind == "anyone":
+            return ALL_MEMBERS_GROUP_ID
+        if kind == "domain" and (domain := (share.get("domain") or "").lower()) in (self._account_domains or ()):
+            return DOMAIN_MEMBERS_GROUP_PREFIX + domain
+        return None
+
     async def _restore_returning_users(self) -> None:
         """An account active again lost its grants while it was not; reading its listings from the start
-        writes them back."""
+        writes them back. The first run after discoverable shares began to be stored reads everyone's, since
+        an item already stored has no grant for them until it is read again, and so does the first run after the
+        verified domains change: a share with a domain that was not one of them was stored without its grant, and a
+        change feed reports no change on it."""
+        marker = await self.drive_delta_sync_point.read_sync_point(DISCOVERABLE_SHARES_SYNC_POINT_KEY)
+        domains = sorted(self._account_domains) if self._account_domains is not None else None
+        read_all = not marker or (domains is not None and marker.get("domains") != domains)
         for user in self.synced_users:
-            if (user.email or "").lower() not in self._returning_emails:
+            if not read_all and (user.email or "").lower() not in self._returning_emails:
                 continue
             keys = [generate_record_sync_point_key(RecordType.DRIVE.value, "users", user.source_user_id)]
             keys += [
@@ -864,7 +1418,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             ]
             for key in keys:
                 await self.drive_delta_sync_point.delete_sync_point(key)
-            self.logger.info(f"{user.email} is active again; their Drive is read in full this run")
+            self.logger.info(f"{user.email}: their Drive is read in full this run")
+        if read_all:
+            # Without a checkpoint a user's read starts over until it completes, so marking it now is enough.
+            await self.drive_delta_sync_point.update_sync_point(
+                DISCOVERABLE_SHARES_SYNC_POINT_KEY, {"done": True, **({"domains": domains} if domains is not None else {})}
+            )
         await self._user_status.save()
 
     def _is_inactive_email(self, email: str | None) -> bool:
@@ -895,8 +1454,21 @@ class GoogleDriveTeamConnector(BaseConnector):
         """
         if not self._external_emails:
             return
-
         emails = list(self._external_emails)
+        if self._listing_cut:
+            # A person missing from a cut listing looks external: those on a domain of the listed people, of the last
+            # complete listing, or verified for the Workspace (an alias domain with no listed account) are held back
+            # (their membership waits for a complete listing). If the verified domains cannot be read, the listed and
+            # last complete listing's domains still hold people back, and this run's collaborators are not dropped.
+            try:
+                verified = await self._workspace_domains()
+            except Exception as e:
+                self.logger.warning(f"Workspace domains could not be read; holding back by the listed domains only: {e}")
+                verified = set()
+            domains = {e.rpartition("@")[2] for e in self.synced_user_emails} | await self._user_status.known_domains() | verified
+            emails = [e for e in emails if e.rpartition("@")[2] not in domains]
+            if not emails:
+                return
         try:
             await self.data_entities_processor.on_external_app_users(
                 emails, self.connector_id
@@ -1206,6 +1778,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         inherited_permissions_disabled: bool = False,
         inherits_from_drive: bool = True,
         can_list_children: bool = False,
+        can_share: bool = False,
         item_drive_id: str | None = None,
     ) -> Tuple[List[Permission], bool, List[str]]:
         """
@@ -1222,6 +1795,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             list of user emails that have a direct "file"-type grant per `permissionDetails` - only
             populated for items inside a Shared Drive, since Google omits `permissionDetails` elsewhere)
         """
+        await self._load_audience_groups()
         permissions: List[Permission] = []
         direct_permissions: list[Permission] = []
         organizer_permissions: list[Permission] = []
@@ -1229,13 +1803,18 @@ class GoogleDriveTeamConnector(BaseConnector):
         individually_shared_emails: set[str] = set()
         page_token: Optional[str] = None
         anyone_with_link_permission_type: Optional[PermissionType] = None
+        source_entries = 0
 
         # Use provided drive_data_source or fall back to service account's data source
         data_source = drive_data_source if drive_data_source else self.drive_data_source
+        if item_drive_id and not is_drive:
+            await self._load_listed_shared_drives()
         # Read before any grant is, so an unreadable restriction fails the item and keeps what is stored.
         restrict, allowed_email = await self._restriction_filter(
             resource_id if is_drive else item_drive_id, is_drive=is_drive
         )
+        # Not on a drive itself, nor in another organization's shared drive: its audience is not this account's.
+        audiences_apply = not is_drive and not (item_drive_id and item_drive_id not in self._listed_shared_drive_ids)
 
         while True:
             try:
@@ -1248,7 +1827,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     # nextPageToken must be asked for: a partial response leaves out every field it does not
                     # name, and without it only the first page of a long list was ever read.
                     "fields": "nextPageToken, permissions(id, displayName, type, role, domain, emailAddress, "
-                              "deleted, permissionDetails)"
+                              "deleted, allowFileDiscovery, permissionDetails)"
                 }
 
                 # Only use domain admin access for shared drives
@@ -1258,6 +1837,27 @@ class GoogleDriveTeamConnector(BaseConnector):
                 result = await data_source.permissions_list(**params)
 
                 permissions_data = result.get("permissions", [])
+                source_entries += len(permissions_data)
+                if audiences_apply and any(
+                    p.get("type") == "domain" and p.get("allowFileDiscovery") is True for p in permissions_data
+                ):
+                    # A failed read fails the item, which keeps what is stored. Not as an HttpError: a refused
+                    # domain list is not a refused permission list.
+                    try:
+                        await self._workspace_domains()
+                    except HttpError as e:
+                        raise RuntimeError(f"The Workspace domains could not be read: {e}") from e
+                    sole = None if item_drive_id or page_token or result.get("nextPageToken") else _sole_domain_share(permissions_data)
+                    if sole and sole[0] in self._account_domains:
+                        # A file that can ask Google how far a share with its domain reaches (`_domain_reach`).
+                        _add_reach_candidate(
+                            self._reach_candidates.setdefault(sole[0], []), {"file_id": resource_id, "owners": sorted(sole[1])}
+                        )
+                if audiences_apply and (missing := {
+                    g for p in permissions_data if not p.get("deleted") and (g := self._discoverable_audience(p))
+                } - self._audience_groups):
+                    # Written without it, the item would lose the grant for good once its change is passed.
+                    raise RuntimeError(f"Audience groups {sorted(missing)} are not stored yet; the item is read again next run")
 
                 # Process each permission
                 for perm_data in permissions_data:
@@ -1274,15 +1874,23 @@ class GoogleDriveTeamConnector(BaseConnector):
                         # Link sharing names no grantee, so it is not stored as a
                         # grant. It still becomes a direct grant for the syncing
                         # user, below.
-                        if perm_type.lower() in ("anyone", "anyonewithlink", "anyone_with_link"):
+                        is_anyone = perm_type.lower() in ("anyone", "anyonewithlink", "anyone_with_link")
+                        if is_anyone:
                             anyone_with_link_permission_type = permission_type
-                            continue
 
-                        entity_type = self._map_drive_permission_type_to_entity_type(perm_type)
-                        if entity_type is None:
-                            continue
-
-                        email = perm_data.get("emailAddress")
+                        # A discoverable share is found in Drive search by its whole audience, so it is a grant
+                        # to the audience's people (a group); a link-only one is found by nobody.
+                        audience = self._discoverable_audience(perm_data) if audiences_apply else None
+                        if audience:
+                            entity_type = EntityType.GROUP
+                            email = audience
+                        else:
+                            if is_anyone:
+                                continue
+                            entity_type = self._map_drive_permission_type_to_entity_type(perm_type)
+                            if entity_type is None:
+                                continue
+                            email = perm_data.get("emailAddress")
                         external_id = perm_data.get("id")
                         if entity_type == EntityType.USER and self._is_inactive_email(email):
                             continue
@@ -1367,6 +1975,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         # handled above. Record the access they demonstrably have instead of leaving a
         # record nobody can see. is_fallback=True keeps this from replacing a real ACL
         # that another user's sync already learned.
+        # A user who can change the item's sharing can read it, and its list is never empty, so a list the source
+        # answered with no entries is not a list: failing the item keeps the grants stored and reads it again next
+        # run. Entries the connector left out itself (a suspended owner, a link share) are an answer, not this case.
+        # shortcut: a refusal (403) from such a user is still taken as ordinary, upgrade if one is seen to hide a revoke.
+        if not permissions and not source_entries and can_share:
+            raise RuntimeError(f"Empty permission list for {resource_id} from a user who can share it")
         if not permissions and inherited_permissions_disabled and not can_list_children:
             return ([], True, [])
         if not permissions and user_email:
@@ -1414,12 +2028,26 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _drive_restrictions_of(self, drive_id: str) -> dict[str, bool]:
         """The restrictions of one of this domain's shared drives. A drive whose listing carried none is asked
-        for directly; a failed read raises rather than reading as unrestricted."""
+        for directly; a failed read raises rather than reading as unrestricted.
+
+        An answer with no restrictions object is unknown, never unrestricted, whatever is stored: the drive is read
+        as restricted in every way that only narrows access, for this run alone, and the run is reported incomplete.
+        _reconcile_drive_restrictions makes those limits reach every item and marks the drive."""
         if drive_id not in self._drive_restrictions:
             got = await self.drive_data_source.drives_get(
                 driveId=drive_id, useDomainAdminAccess=True, fields="id,restrictions"
             )
-            self._drive_restrictions[drive_id] = self._restriction_flags(got.get("restrictions"))
+            restrictions = got.get("restrictions")
+            if isinstance(restrictions, dict):
+                self._drive_restrictions[drive_id] = self._restriction_flags(restrictions)
+            else:
+                self._sync_ledger.note_incomplete()
+                self._assumed_restrictions.add(drive_id)
+                self.logger.warning(
+                    f"{len(self._assumed_restrictions)} shared drive(s) answered without restrictions: read as "
+                    "restricted this run, listed in full on the next answer that has them"
+                )
+                self._drive_restrictions[drive_id] = dict.fromkeys(DRIVE_RESTRICTION_FLAGS, True)
         return self._drive_restrictions[drive_id]
 
     @staticmethod
@@ -1466,6 +2094,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             out: list[Permission] = []
             seen: set[tuple[str, str]] = set()
             for p in perms:
+                if _is_audience_group(p.external_id):
+                    # Its people are the account's own, so a domain restriction keeps it; a members-only
+                    # drive is read by its members alone.
+                    if not members_only:
+                        out.append(p)
+                    continue
                 if p.entity_type != EntityType.GROUP:
                     if email_ok(p.email or ""):
                         out.append(p)
@@ -1548,7 +2182,11 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def _reconcile_drive_restrictions(self, drive: dict) -> None:
         """A drive whose restrictions differ from the ones its items were last synced under is listed again in
         full for every user: a change feed reports no change on an item whose share a restriction now cuts
-        or restores. The new restrictions are remembered only once that is done, so a failure repeats it."""
+        or restores. The new restrictions are remembered only once that is done, so a failure repeats it.
+
+        Assumed restrictions (an answer without them) are never saved. The first run that assumes them reads the
+        drive again under them, so they reach every item, and marks it; later runs that still assume them keep the
+        tokens. The first answer that has them lists the drive again because of the mark."""
         drive_id = drive.get("id")
         if not drive_id:
             return
@@ -1557,14 +2195,24 @@ class GoogleDriveTeamConnector(BaseConnector):
         now = await self._drive_restrictions_of(drive_id)
         key = f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}"
         stored = await self.drive_delta_sync_point.read_sync_point(key)
+        assumed = bool((stored or {}).get(DRIVE_RESTRICTIONS_ASSUMED))
+        if drive_id in self._assumed_restrictions:
+            if not assumed:
+                await self._read_drive_again(drive_id, reseed=True)
+                # Marked only once the tokens are gone, so a failure in between reads it again next run.
+                await self.drive_delta_sync_point.update_sync_point(key, {DRIVE_RESTRICTIONS_ASSUMED: True})
+            return
         hidden = [str(g) for g in ((stored or {}).get("hidden_groups") or [])]
         seen = dict(str(e).rpartition("|")[::2] for e in ((stored or {}).get("group_hashes") or []))
-        relist = now != self._restriction_flags(stored)
+        relist = assumed or now != self._restriction_flags(stored)
         for group in hidden:
             if relist:
                 break
             # Relist only when it can help: a group hidden earlier can be read now.
             relist = await self._group_member_emails(group) is not None
+        # The limits changed or a hidden group can be read: a file shared out of the drive with someone who is not a
+        # member reaches them only through their own shared-with-me listing, which no change feed reports again.
+        reseed = relist
         for group, digest in seen.items():
             if relist:
                 break
@@ -1576,17 +2224,101 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._hidden_groups[drive_id] = set(hidden)
             self._group_digests[drive_id] = seen
             return
-        for user in self.synced_users:
-            await self.drive_delta_sync_point.delete_sync_point(
-                generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
-            )
-        await self.drive_delta_sync_point.update_sync_point(key, {**now, "hidden_groups": [], "group_hashes": []})
+        await self._read_drive_again(drive_id, reseed=reseed)
+        await self.drive_delta_sync_point.update_sync_point(
+            key, {**now, "hidden_groups": [], "group_hashes": [], DRIVE_RESTRICTIONS_ASSUMED: False}
+        )
         self._hidden_groups[drive_id] = set()
         self._group_digests[drive_id] = {}
 
     @staticmethod
+    def _track_failed_items() -> set[str]:
+        """Start collecting the ids of the items that fail in the listing this task reads next."""
+        failed: set[str] = set()
+        _failed_items.set(failed)
+        return failed
+
+    async def _fetch_failed_items(self, ids: list[str], source: GoogleDriveDataSource) -> list[dict]:
+        """The items a listing failed on, fetched again by id as the same user. One that is gone or out of their
+        reach is dropped, since their change feed reports that; one in the trash is deleted if it was ever written,
+        and never written now; one that fails again is kept to retry."""
+        found: list[dict] = []
+        for file_id in ids:
+            try:
+                metadata = await source.files_get(
+                    fileId=file_id, supportsAllDrives=True, fields=DRIVE_WORKSPACE_FILE_GET_FIELDS
+                )
+            except HttpError as e:
+                if e.resp.status == HttpStatusCode.NOT_FOUND.value:
+                    continue
+                reasons = ", ".join(sorted(drive_error_reasons(e))) or "no reason given"
+                self.logger.warning(
+                    f"Reading a failed item again by id failed (HTTP {e.resp.status}: {reasons}); it is read again "
+                    "next run"
+                )
+                self._sync_ledger.fail_item()
+                if (failed := _failed_items.get()) is not None:
+                    failed.add(file_id)
+                continue
+            if metadata.get("trashed"):
+                await self._delete_gone_item(file_id)
+                continue
+            found.append(metadata)
+        return found
+
+    def _too_many_failed(self, failed: set[str]) -> bool:
+        if failed:
+            self.logger.warning(f"{len(failed)} item(s) could not be read; they are read again on the next runs")
+        return len(failed) > MAX_FAILED_ITEMS
+
+    async def _keep_failed_items(self, key: str, failed: set[str]) -> bool:
+        """False when too many items failed to keep by id: the checkpoint is then dropped, and its listing is read
+        again in full next run."""
+        if not self._too_many_failed(failed):
+            return True
+        await self.drive_delta_sync_point.delete_sync_point(key)
+        return False
+
+    def _reseed_fields(self, failed: set[str], *, asked: bool) -> dict[str, object]:
+        """What a complete shared-with-me read saves on the user's checkpoint. While an item failed the mark is set:
+        the next runs read those items again by id, or the whole listing past the cap."""
+        if not (asked or failed):
+            return {}
+        if self._too_many_failed(failed):
+            return {RESEED_SHARED_WITH_ME: True, FAILED_ITEMS: []}
+        if failed:
+            return {RESEED_SHARED_WITH_ME: True, FAILED_ITEMS: sorted(failed)}
+        return {RESEED_SHARED_WITH_ME: False, FAILED_ITEMS: []}
+
+    async def _read_drive_again(self, drive_id: str, *, reseed: bool) -> None:
+        """Every synced user lists the drive from the start. With reseed, each also reads the files shared with them
+        again before their own token moves on: a file shared out of the drive with someone who is not a member
+        reaches them only that way, and no change feed reports it when the drive's limits change. Their token is
+        kept, so removals their feed reports still apply."""
+        for user in self.synced_users:
+            await self.drive_delta_sync_point.delete_sync_point(
+                generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
+            )
+            if reseed:
+                # Cost: one shared-with-me listing per synced user, on a change of the limits, which is rare. Ids
+                # left to retry are dropped: only a whole listing answers for a change of the limits.
+                await self.drive_delta_sync_point.update_sync_point(
+                    generate_record_sync_point_key(RecordType.DRIVE.value, "users", user.source_user_id),
+                    {RESEED_SHARED_WITH_ME: True, FAILED_ITEMS: []},
+                )
+
+    @staticmethod
     def _people_digest(people: set[str]) -> str:
         return hashlib.sha256("\n".join(sorted(people)).encode()).hexdigest()[:16]
+
+    async def _load_group_marks(self, drive_id: str) -> None:
+        """The marks stored for a drive this run has not read them for (a reindex on a fresh instance), so saving
+        one keeps the others."""
+        if drive_id in self._group_digests:
+            return
+        stored = await self.drive_delta_sync_point.read_sync_point(f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}") or {}
+        self._hidden_groups[drive_id] = {*self._hidden_groups.get(drive_id, ()), *map(str, stored.get("hidden_groups") or [])}
+        self._group_digests[drive_id] = dict(str(e).rpartition("|")[::2] for e in stored.get("group_hashes") or [])
 
     async def _save_group_marks(self, drive_id: str) -> None:
         # Flat lists of strings: the graph stores refuse nested maps.
@@ -1602,6 +2334,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Grants were written with a group the directory could not list hidden. The change feed will not
         report those items again once it can, so the group is remembered and the drive is listed in full on
         the run that finds it readable."""
+        await self._load_group_marks(drive_id)
         hidden = self._hidden_groups.setdefault(drive_id, set())
         if group not in hidden:
             hidden.add(group)
@@ -1611,6 +2344,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         """The grants written for a restricted drive depend on who is in the groups consulted. The change
         feed reports nothing when a group changes, so the people are remembered and the drive is listed in
         full on the run that finds them different."""
+        await self._load_group_marks(drive_id)
         digests = self._group_digests.setdefault(drive_id, {})
         digest = self._people_digest(people)
         if digests.get(group) != digest:
@@ -1672,6 +2406,54 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
             raise
 
+    async def _list_shared_drives(self) -> list[dict]:
+        """Every shared drive of this domain, before the DRIVE_IDS filter. Kept as the drives listed."""
+        self.logger.info("Fetching all shared drives from Google Drive...")
+        all_drives: list[dict] = []
+        page_token: str | None = None
+
+        while True:
+            try:
+                # Fetch shared drives with pagination
+                result = await self.drive_data_source.drives_list(
+                    pageSize=100,  # Maximum allowed by Google Drive API
+                    pageToken=page_token,
+                    useDomainAdminAccess=True,
+                    # Without a field mask the restrictions that narrow every grant in the drive are left out.
+                    fields="nextPageToken,drives(id,name,createdTime,restrictions)",
+                )
+
+                drives_data = result.get("drives", [])
+
+                all_drives.extend(drives_data)
+
+                # Check for next page
+                page_token = result.get("nextPageToken")
+                if not page_token:
+                    break
+
+                self.logger.info(f"Fetched {len(drives_data)} shared drives (total so far: {len(all_drives)})")
+
+            except Exception as e:
+                self.logger.error(f"Error fetching shared drives page: {e}", exc_info=True)
+                raise
+
+        self.logger.info(f"Fetched {len(all_drives)} total shared drives")
+        self._listed_shared_drive_ids = {d["id"] for d in all_drives if d.get("id")}
+        self._shared_drives_listed = True
+        return all_drives
+
+    async def _load_listed_shared_drives(self) -> None:
+        """The domain's shared drives, when this process has not listed them (a reindex on a fresh instance). Not
+        listed, every shared drive reads as another organization's, and its items lose their audience grants and
+        restrictions. A failed listing fails the item, which keeps its stored grants and is retried."""
+        if self._shared_drives_listed:
+            return
+        try:
+            await self._list_shared_drives()
+        except Exception as e:
+            raise _ItemReadFailed(f"The shared drives could not be listed: {e}") from e
+
     async def _sync_record_groups(self) -> List[Dict]:
         """Sync record groups (drives) for all users.
 
@@ -1684,38 +2466,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 raise ValueError("Drive data source not initialized")
 
             # Step 1: Sync shared drives
-            self.logger.info("Fetching all shared drives from Google Drive...")
-            all_drives: List[Dict] = []
-            page_token: Optional[str] = None
-
-            while True:
-                try:
-                    # Fetch shared drives with pagination
-                    result = await self.drive_data_source.drives_list(
-                        pageSize=100,  # Maximum allowed by Google Drive API
-                        pageToken=page_token,
-                        useDomainAdminAccess=True,
-                        # Without a field mask the restrictions that narrow every grant in the drive are left out.
-                        fields="nextPageToken,drives(id,name,createdTime,restrictions)",
-                    )
-
-                    drives_data = result.get("drives", [])
-
-                    all_drives.extend(drives_data)
-
-                    # Check for next page
-                    page_token = result.get("nextPageToken")
-                    if not page_token:
-                        break
-
-                    self.logger.info(f"Fetched {len(drives_data)} shared drives (total so far: {len(all_drives)})")
-
-                except Exception as e:
-                    self.logger.error(f"Error fetching shared drives page: {e}", exc_info=True)
-                    raise
-
-            self.logger.info(f"Fetched {len(all_drives)} total shared drives")
-            self._listed_shared_drive_ids = {d["id"] for d in all_drives if d.get("id")}
+            all_drives = await self._list_shared_drives()
 
             all_drives = [d for d in all_drives if self._pass_drive_ids_filter(d.get("id", ""))]
             self.logger.info(f"Processing {len(all_drives)} shared drives after DRIVE_IDS filter")
@@ -2199,11 +2950,12 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def _handle_removed_change(
         self,
         file_id: str | None,
-        user: AppUser,
+        user: AppUser | None,
         owner_sources: dict[str, GoogleDriveDataSource],
         drive_id: str | None = None,
     ) -> None:
-        """Apply a `removed` change from one user's changes feed.
+        """Apply a `removed` change from one user's changes feed (None: an undecided one of a user no longer in the
+        directory, decided by everyone else).
 
         Drive reports `removed` both when a file is deleted and when only this user lost
         access to it. For a My Drive file the owner is asked first: a clean "not found",
@@ -2214,7 +2966,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         this user's access here.
         Any failed read or delete raises, so the user's checkpoint stays put and the
         change is read again next sync; ``_apply_removed_change`` bounds how long an
-        unrecognised 403 can do that.
+        unrecognised 403 can do that. When whether others can still open it is not
+        known yet, this user's own grant is removed before that.
         """
         if not file_id:
             return
@@ -2223,6 +2976,25 @@ class GoogleDriveTeamConnector(BaseConnector):
         )
         if record is None:
             return
+        try:
+            await self._decide_removed_change(record, user, owner_sources, drive_id)
+        except _RemovalUndecided:
+            await self._drop_reporters_grant(record, user)
+            raise
+
+    async def _drop_reporters_grant(self, record: Record, user: AppUser | None) -> None:
+        """The user who reported a file removed can no longer open it, whatever the others can: their own grant goes
+        now. A failure raises, so the change is held and the grant is removed when it is read again, also when the
+        file itself is kept. A user no longer in the directory lost every direct grant then (`_apply_user_status`)."""
+        if user is None:
+            return
+        await self.data_entities_processor.delete_permission_from_record(
+            record_id=record.id, user_email=user.email, connector_id=record.connector_id
+        )
+
+    async def _decide_removed_change(
+        self, record: Record, user: AppUser | None, owner_sources: dict[str, GoogleDriveDataSource], drive_id: str | None
+    ) -> None:
         # A shared drive file's OWNER edges are its organizers, and an organizer who
         # left the drive gets "not found" too, so the owner is never asked for one.
         if drive_id and (
@@ -2245,6 +3017,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             return
         # Deleting only their direct USER edge would leave group- and drive-derived
         # access intact, and stale access is the worse way to be wrong here.
+        if user is None:
+            return
         self.logger.info(f"Removing permission from record {record.record_name} for user {user.email}")
         await self.data_entities_processor.delete_permission_from_record(
             record_id=record.id, user_email=user.email, connector_id=record.connector_id
@@ -2257,17 +3031,21 @@ class GoogleDriveTeamConnector(BaseConnector):
         owner_sources: dict[str, GoogleDriveDataSource],
         held: FolderFailureRuns,
         sync_point_key: str,
-    ) -> HttpError | None:
+    ) -> Exception | None:
         """Apply a `removed` change, giving up on one an unrecognised 403 keeps failing.
 
         Returns that 403 while the file has failed fewer than MAX_UNRECOGNISED_403_RUNS
         runs in a row, so the caller holds the checkpoint once the rest of the feed is
         read. At the limit only this user's access is dropped and the checkpoint may
-        move on; the record stays for everyone else. Any other failure raises as before.
+        move on; the record stays for everyone else. An undecided check is bounded the
+        same way (`_bounded_removal`). Any other failure raises as before.
         """
         file_id = change.get("fileId")
         try:
-            await self._handle_removed_change(file_id, user, owner_sources, drive_id=change.get("driveId"))
+            return await self._bounded_removal(
+                file_id, change.get("driveId"), held, sync_point_key, self._undecided_key(user),
+                partial(self._handle_removed_change, file_id, user, owner_sources, drive_id=change.get("driveId")),
+            )
         except HttpError as e:
             if not file_id or not is_unrecognised_403(e):
                 raise
@@ -2296,36 +3074,323 @@ class GoogleDriveTeamConnector(BaseConnector):
                     record_id=record.id, user_email=user.email, connector_id=record.connector_id
                 )
             return None
-        if file_id:
-            held.clear(file_id)
+
+    async def _bounded_removal(
+        self,
+        file_id: str | None,
+        drive_id: str | None,
+        held: FolderFailureRuns,
+        sync_point_key: str,
+        undecided_key: str,
+        apply: Callable[[], Awaitable[None]],
+    ) -> _RemovalUndecided | None:
+        """Apply a removed change whose check may stay undecided (people a cut user listing left out, nobody asked
+        answering). Returns that while the file has been undecided fewer than MAX_UNRECOGNISED_403_RUNS runs in a
+        row, so the caller holds its checkpoint once the rest of the feed is read; the record and its other grants
+        stay. At the limit the file is kept, listed under `undecided_key` to be checked again on later runs, and
+        the checkpoint may move on: one file nobody answers for must not hold every later change. The reporting
+        user's own grant is already gone. Any other failure raises, so the change is read again."""
+        if not file_id:
+            await apply()
+            return None
+        try:
+            await apply()
+        except _RemovalUndecided as e:
+            runs = held.record_failure(file_id)
             await self._save_held_removed_changes(held, sync_point_key)
+            if runs < MAX_UNRECOGNISED_403_RUNS:
+                self.logger.warning(
+                    f"Not yet known whether anyone else can open file {file_id} ({e}); the change is read again "
+                    f"next run (attempt {runs} of {MAX_UNRECOGNISED_403_RUNS})"
+                )
+                return e
+            self.logger.error(
+                f"Still not known after {MAX_UNRECOGNISED_403_RUNS} runs whether anyone else can open file {file_id} "
+                f"({e}); it is kept and checked again on later runs, and the other changes move on"
+            )
+            await self._park_undecided_removal(undecided_key, f"{file_id}:{drive_id or ''}")
+            return None
+        held.clear(file_id)
+        await self._save_held_removed_changes(held, sync_point_key)
         return None
+
+    @staticmethod
+    def _undecided_key(user: AppUser, drive_id: str | None = None) -> str:
+        return f"{UNDECIDED_REMOVALS_SYNC_POINT_PREFIX}{user.source_user_id}" + (f"_{drive_id}" if drive_id else "")
+
+    @staticmethod
+    def _undecided_part_key(undecided_key: str, part: int) -> str:
+        return f"{undecided_key}_part{part}" if part else undecided_key
+
+    async def _read_undecided(self, undecided_key: str) -> tuple[int, list[list[str]]]:
+        """The part the next run checks again, and every part of an undecided list, the first one included."""
+        first = await self.drive_delta_sync_point.read_sync_point(undecided_key) or {}
+        parts = []
+        for part in range(max(int(first.get(UNDECIDED_PARTS) or 1), 1)):
+            doc = first if not part else (
+                await self.drive_delta_sync_point.read_sync_point(self._undecided_part_key(undecided_key, part)) or {}
+            )
+            stored = doc.get(UNDECIDED_REMOVALS)
+            parts.append([str(x) for x in stored] if isinstance(stored, list) else [])
+        return int(first.get(UNDECIDED_NEXT_PART) or 0) % len(parts), parts
+
+    async def _park_undecided_removal(self, undecided_key: str, entry: str) -> None:
+        """Add an entry to an undecided list, in the first part with room or a new one. Nothing is dropped: the key
+        is indexed first, and a new part is counted before it is written, so no write that fails part way leaves an
+        entry where neither the recheck nor the cleanup finds it. A failure raises."""
+        _, parts = await self._read_undecided(undecided_key)
+        if any(entry in part for part in parts):
+            return
+        async with self._undecided_keys_lock:
+            index = await self.drive_delta_sync_point.read_sync_point(UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY) or {}
+            keys = [str(k) for k in index.get("keys") or []]
+            if undecided_key not in keys:
+                await self.drive_delta_sync_point.update_sync_point(
+                    UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY, {"keys": sorted([*keys, undecided_key])}
+                )
+        part = next((n for n, p in enumerate(parts) if len(p) < MAX_UNDECIDED_REMOVALS), len(parts))
+        if part == len(parts):
+            parts.append([])
+            await self.drive_delta_sync_point.update_sync_point(undecided_key, {UNDECIDED_PARTS: len(parts)})
+            self.logger.warning(
+                f"{sum(map(len, parts))} removed files are undecided on one list; it goes on to part {part}"
+            )
+        await self.drive_delta_sync_point.update_sync_point(
+            self._undecided_part_key(undecided_key, part), {UNDECIDED_REMOVALS: sorted([*parts[part], entry])}
+        )
+
+    async def _keep_records_no_listing_may_show(self) -> None:
+        """Keep the files no listing may show from a full sync's removals. A file in a shared drive no synced user is
+        in, shared with an audience alone, is in no listing while its audience opens it.
+
+        Each file on an undecided list counts as seen, so the stale-record cleanup never deletes one: only its recheck
+        settles it. In a full sync the runner started, which then unlinks every record the run did not write, each
+        file on an undecided list, and each stored record this run did not see that is granted to an audience group,
+        is noted kept, a batch at a time. That is decided here, by paging the stored records, whatever the cleanup
+        then does (an incremental run, nothing listed, a failure): the removal check and the cleanup's audience check
+        (`_unseen_records_an_audience_may_open`) remove one nobody can open. A failed read marks the run incomplete,
+        so neither the cleanup nor the unlink removes anything."""
+        reconcile = self._sync_ledger.can_reconcile
+        full_sync = self.data_entities_processor.full_sync_running(self.connector_id) is True
+        if not (reconcile or full_sync):
+            return
+        kept = 0
+        try:
+            index = await self.drive_delta_sync_point.read_sync_point(UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY) or {}
+            for key in index.get("keys") or []:
+                for part in (await self._read_undecided(str(key)))[1]:
+                    self._undecided_file_ids.update(entry.partition(":")[0] for entry in part)
+            if reconcile:
+                for file_id in self._undecided_file_ids:
+                    self._sync_ledger.see(file_id)
+            if full_sync:
+                batch: list[str] = []
+                for file_id in sorted(self._undecided_file_ids):
+                    record = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id, external_record_id=file_id
+                    )
+                    if record is not None:
+                        batch.append(record.id)
+                    if len(batch) >= KEPT_RECORDS_BATCH:
+                        self.data_entities_processor.note_kept_records(self.connector_id, batch)
+                        kept, batch = kept + len(batch), []
+                self.data_entities_processor.note_kept_records(self.connector_id, batch)
+                kept += len(batch)
+                kept += await self._keep_unseen_audience_records_linked()
+        except Exception as e:
+            self.logger.warning(
+                f"The undecided removals could not be read ({type(e).__name__}); nothing unseen is removed or unlinked"
+            )
+            self._sync_ledger.note_incomplete()
+            return
+        self.logger.info(
+            f"{len(self._undecided_file_ids)} undecided removal(s) kept out of the stale-record cleanup; "
+            f"{kept} kept linked through the full sync"
+        )
+
+    async def _keep_unseen_audience_records_linked(self) -> int:
+        """Note kept each stored record this run did not see that is granted to an audience group, paging the stored
+        records as the stale-record cleanup does. Returns how many. A failed or unreadable page raises."""
+        page_size = drive_full_sync_reconciler.RECONCILE_PAGE_SIZE
+        kept, after_key = 0, None
+        while True:
+            page = await self.data_entities_processor.get_records_by_status(
+                self.connector_id, None, limit=page_size, is_placeholder=False, after_key=after_key
+            )
+            if not isinstance(page, list):
+                raise TypeError("the stored record listing was not readable")
+            batch: list[str] = []
+            for record in page:
+                if not record.id or record.external_record_id in self._sync_ledger.seen:
+                    continue
+                groups = await self.data_entities_processor.get_groups_with_permission_to_node(
+                    record.id, CollectionNames.RECORDS.value, raise_on_error=True
+                )
+                if any(_is_audience_group(g.source_user_group_id) for g in groups):
+                    batch.append(record.id)
+            self.data_entities_processor.note_kept_records(self.connector_id, batch)
+            kept += len(batch)
+            if len(page) < page_size or not getattr(page[-1], "id", None):
+                return kept
+            after_key = page[-1].id
+
+    async def _unseen_records_an_audience_may_open(self, unseen: list[Record]) -> set[str]:
+        """The records a complete full sync did not see that may still exist: those granted to an audience group
+        whose people are not shown unable to open them. A file in a shared drive no synced user is in, shared with an
+        audience alone, is in no listing (My Drive's leaves out shared drive files, and "shared with me" only user and
+        group grants), yet its audience opens it. Each is checked as for any removal: someone who can open it, or an
+        answer nobody gives, keeps it; a clean "nobody can" lets the cleanup remove it. Any other failure raises."""
+        kept: set[str] = set()
+        for record in unseen:
+            groups = await self.data_entities_processor.get_groups_with_permission_to_node(
+                record.id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            if not any(_is_audience_group(g.source_user_group_id) for g in groups):
+                continue
+            try:
+                if not await self._another_synced_user_can_open(record, None, {}):
+                    continue
+            except _RemovalUndecided:
+                if record.external_record_id not in self._undecided_file_ids:
+                    # Checked again on every run until a clean answer, whatever later deletes the user lists.
+                    drive_id = record.external_record_group_id if record.external_record_group_id in self._synced_drive_ids else ""
+                    await self._park_undecided_removal(UNDECIDED_KEPT_KEY, f"{record.external_record_id}:{drive_id}")
+            kept.add(record.id)
+        return kept
+
+    async def _settle_by_asking(self, file_id: str, user: AppUser | None) -> _Settled:
+        """Settle an undecided removal of a file in no shared drive (a shared drive's go through
+        `_apply_shared_drive_removal`, which asks its members too) by asking everyone else who may open it
+        (`_another_synced_user_can_open`): someone can, it is kept; a clean "nobody can", it is removed. A group
+        whose members cannot be read, or nobody answering, decides nothing."""
+        record = await self.data_entities_processor.get_record_by_external_id(
+            connector_id=self.connector_id, external_record_id=file_id
+        )
+        if record is None:
+            return _Settled.REMOVED
+        try:
+            if await self._another_synced_user_can_open(record, user, {}, unknown_is_undecided=True):
+                return _Settled.KEPT
+        except _RemovalUndecided as e:
+            self.logger.info(f"Whether anyone else can open file {file_id} is still not settled: {e}")
+            return _Settled.UNDECIDED
+        await self._delete_record_tree(record)
+        return _Settled.REMOVED
+
+    async def _recheck_unvisited_undecided_removals(self) -> None:
+        """Check again the undecided lists no user's run reached: their user left the shared drive, so nobody walks
+        it for them, is no longer synced, or is no longer in the directory. Everyone else who may open a file is
+        asked, as for any removal, and the user too while they can still sign in. A list's keys are never deleted,
+        so one whose user has gone is still checked here every run; until a clean answer, its files stay spared by
+        the stale-record cleanup."""
+        try:
+            index = await self.drive_delta_sync_point.read_sync_point(UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY) or {}
+            keys = [k for k in map(str, index.get("keys") or []) if k not in self._undecided_visited]
+            active = await self._synced_user_emails() if keys else set()
+        except Exception as e:
+            self.logger.warning(f"The undecided removals could not be listed ({type(e).__name__}); checked next run")
+            return
+        for key in keys:
+            reporter = next(
+                (u for u in self.synced_users if key == (own := self._undecided_key(u)) or key.startswith(f"{own}_")),
+                None,
+            )
+            # Source user ids hold no "_", so what follows the first one is the shared drive.
+            drive_id = key.removeprefix(UNDECIDED_REMOVALS_SYNC_POINT_PREFIX).partition("_")[2] or None
+            try:
+                source = (
+                    await self._build_user_drive_data_source(reporter)
+                    if reporter and reporter.email and reporter.email.lower() in active else None
+                )
+
+                async def settle(
+                    file_id: str, entry_drive_id: str | None, reporter: AppUser | None = reporter,
+                    drive_id: str | None = drive_id, source: GoogleDriveDataSource | None = source,
+                ) -> _Settled:
+                    # A shared drive file, by its list or its entry: its members are asked too.
+                    if drive := drive_id or entry_drive_id:
+                        return await self._apply_shared_drive_removal(
+                            file_id, reporter, drive, source, ask_audience=True
+                        )
+                    return await self._settle_by_asking(file_id, reporter)
+
+                await self._recheck_undecided_removals(key, reporter, source, settle)
+            except Exception as e:
+                self.logger.warning(f"An undecided list could not be checked again ({type(e).__name__}); next run")
+
+    async def _recheck_undecided_removals(
+        self,
+        undecided_key: str,
+        user: AppUser | None,
+        source: GoogleDriveDataSource | None,
+        settle: Callable[[str, str | None], Awaitable[_Settled]],
+    ) -> None:
+        """At the start of a run, full listing or not, check again the removals kept undecided past the limit, one
+        part of the list per run, the parts in turn, until a clean answer settles each: the file is removed or kept
+        as for any removed change, the user can open it again (their feed then reports what changed), or its record
+        is gone (never by the stale-record cleanup, which spares these). One still undecided, or whose check fails,
+        stays listed. Nothing here holds a checkpoint. Without a source the user is not asked (they cannot sign in)."""
+        self._undecided_visited.add(undecided_key)
+        part, parts = await self._read_undecided(undecided_key)
+        part = next((n % len(parts) for n in range(part, part + len(parts)) if parts[n % len(parts)]), part)
+        entries = parts[part]
+        left: list[str] = []
+        for entry in entries:
+            file_id, _, drive_id = entry.partition(":")
+            try:
+                record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id, external_record_id=file_id
+                )
+                if record is None or (
+                    user is not None and source is not None and await self._user_can_open(record, user, {user.email: source})
+                ):
+                    continue
+                if await settle(file_id, drive_id or None) is _Settled.UNDECIDED:
+                    left.append(entry)
+            except Exception as e:
+                self.logger.warning(f"Whether anyone else can open file {file_id} is still not settled: {e}")
+                left.append(entry)
+        if left != entries:
+            await self.drive_delta_sync_point.update_sync_point(
+                self._undecided_part_key(undecided_key, part), {UNDECIDED_REMOVALS: left}
+            )
+        if len(parts) > 1 and entries:
+            await self.drive_delta_sync_point.update_sync_point(
+                undecided_key, {UNDECIDED_NEXT_PART: (part + 1) % len(parts)}
+            )
 
     async def _apply_shared_drive_removal(
         self,
         file_id: str | None,
-        user: AppUser,
+        user: AppUser | None,
         drive_id: str,
-        user_drive_data_source: GoogleDriveDataSource,
-    ) -> None:
+        user_drive_data_source: GoogleDriveDataSource | None,
+        *,
+        ask_audience: bool = False,
+    ) -> _Settled:
         """Apply a `removed` change from a shared drive's feed.
 
         Drive reports `removed` when a file is deleted, but also when it moved to another drive or My Drive,
         and when a limited-access folder shut this member out. Deleting on the change alone dropped a moved
         file whenever its new place was synced first, and a restricted one for every other member. So the
         record goes only when no synced user who could have it can open it, or it is in the trash. A read
-        that fails another way raises, so the drive's checkpoint stays and the change is read again.
+        that fails another way raises, so the drive's checkpoint stays and the change is read again. Returns what
+        was decided: KEPT when someone can open it, UNDECIDED when a member group of the drive could not be read.
+        `ask_audience` (checking an undecided removal again) also asks the people of its audience groups, after the
+        drive's members and the record's holders: a file in a drive no synced user is in is reached through them.
         """
         if not file_id:
-            return
+            return _Settled.REMOVED
         record = await self.data_entities_processor.get_record_by_external_id(
             connector_id=self.connector_id, external_record_id=file_id
         )
         if record is None:
-            return
-        sources = {user.email: user_drive_data_source}
+            return _Settled.REMOVED
+        unknown = False
+        sources = {user.email: user_drive_data_source} if user and user_drive_data_source else {}
 
         async def still_open(item: Record) -> bool:
+            nonlocal unknown
             for candidate in await self._removal_candidates(item, user, drive_id):
                 source = sources.get(candidate.email)
                 if source is None:
@@ -2343,22 +3408,42 @@ class GoogleDriveTeamConnector(BaseConnector):
                     return False
                 self.logger.info(f"Keeping {item.record_name}: {candidate.email} can still open it")
                 return True
+            if drive_id in self._drive_members_unread:
+                # Unknown is not empty: a member of that group may still open it. Kept, as for a group grant whose
+                # members cannot be read, so a refusal that does not clear does not hold the drive's changes.
+                self.logger.info(f"Keeping {item.record_name}: a member group of its drive could not be read")
+                await self._drop_reporters_grant(item, user)
+                unknown = True
+                return True
+            holders = await self.data_entities_processor.get_users_with_permission_to_node(
+                item.id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            self._raise_if_cut_listing_left_out(
+                item, {*self._drive_member_emails.get(drive_id, ()), *((u.email or "").lower() for u in holders)}, user
+            )
+            if ask_audience:
+                return await self._another_synced_user_can_open(item, user, sources, unknown_is_undecided=True)
             return False
 
-        if await still_open(record):
-            return
-        if record.mime_type in FOLDER_MIME_TYPES:
-            await remove_folder_confirming_contents(
-                self.data_entities_processor, self.connector_id, record, still_open, self.logger
-            )
-        else:
-            await self.data_entities_processor.on_record_deleted(record_id=record.id)
+        try:
+            if await still_open(record):
+                return _Settled.UNDECIDED if unknown else _Settled.KEPT
+            if record.mime_type in FOLDER_MIME_TYPES:
+                await remove_folder_confirming_contents(
+                    self.data_entities_processor, self.connector_id, record, still_open, self.logger
+                )
+            else:
+                await self.data_entities_processor.on_record_deleted(record_id=record.id)
+            return _Settled.REMOVED
+        except _RemovalUndecided:
+            await self._drop_reporters_grant(record, user)
+            raise
 
-    async def _removal_candidates(self, record: Record, user: AppUser, drive_id: str) -> list[AppUser]:
+    async def _removal_candidates(self, record: Record, user: AppUser | None, drive_id: str) -> list[AppUser]:
         """Synced users who could still open a file a drive feed reported removed: the reporting user, the
         drive's synced members, and those the record grants access to. At most MAX_IMPERSONATION_CANDIDATES."""
         synced = await self._synced_user_emails()
-        wanted: list[str] = [user.email.lower()]
+        wanted: list[str] = [user.email.lower()] if user else []
         if drive_id in self._synced_drive_ids:
             if drive_id not in self._drive_member_emails:
                 members: list[str] = []
@@ -2366,7 +3451,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                     if permission.entity_type == EntityType.USER and permission.email:
                         members.append(permission.email.lower())
                     elif permission.entity_type == EntityType.GROUP and permission.external_id:
-                        members.extend(sorted(await self._synced_group_members(permission.external_id) or ()))
+                        # Everyone in it, synced or not: only synced users are asked, and the rest can keep a file.
+                        people = await self._group_member_emails(permission.external_id)
+                        if people is None:
+                            self._drive_members_unread.add(drive_id)
+                        members.extend(sorted(people or ()))
                 self._drive_member_emails[drive_id] = members
             wanted.extend(self._drive_member_emails[drive_id])
         holders = await self.data_entities_processor.get_users_with_permission_to_node(
@@ -2380,7 +3469,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 out.append(by_email[email])
             if len(out) >= MAX_IMPERSONATION_CANDIDATES:
                 break
-        if user not in out:
+        # A reporter who can no longer sign in (an undecided list checked again without its user's run) cannot answer.
+        if user is not None and user not in out and user.email.lower() in synced:
             out.insert(0, user)
         return out
 
@@ -2458,15 +3548,20 @@ class GoogleDriveTeamConnector(BaseConnector):
         return self._deployment_emails
 
     async def _another_synced_user_can_open(
-        self, record: Record, removed_for: AppUser, owner_sources: dict[str, GoogleDriveDataSource]
+        self, record: Record, removed_for: AppUser | None, owner_sources: dict[str, GoogleDriveDataSource],
+        *, unknown_is_undecided: bool = False,
     ) -> bool:
-        """Whether a synced user other than ``removed_for`` can still open the record's file.
+        """Whether a synced user other than ``removed_for`` (None: a user no longer in the directory) can still open
+        the record's file.
 
         Asks each active synced user the graph holds a permission for, directly or
-        through a group grant. "Not found", a known permission refusal, or the trash
-        count as unable. A group whose members the directory won't list counts as
-        able, so the file is kept; any other failure raises, so the change is read
-        again next sync.
+        through a group grant, then up to AUDIENCE_PROBES people of each audience group
+        granted on it. "Not found", a known permission refusal, or the trash count as
+        unable; for an audience, only "not found" or the trash. A group whose members the
+        directory won't list counts as able, so the file is kept; any other failure, and
+        an audience none of whose people asked said "not found", raises, so the change is
+        read again next sync. So does a cut user listing that left out someone who may
+        still open it: an empty pool of people to ask is not "nobody can".
         """
         holders = await self.data_entities_processor.get_users_with_permission_to_node(
             record.id, CollectionNames.RECORDS.value, raise_on_error=True
@@ -2475,24 +3570,109 @@ class GoogleDriveTeamConnector(BaseConnector):
             record.id, CollectionNames.RECORDS.value, raise_on_error=True
         )
         holder_emails = {(u.email or "").lower() for u in holders} & await self._synced_user_emails()
+        # Everyone who may open it, listed or not: a cut user listing leaves some of them out of the people asked.
+        may_open = {(u.email or "").lower() for u in holders}
+        audiences: list[str] = []
         for group in groups:
+            if _is_audience_group(group.source_user_group_id):
+                audiences.append(group.source_user_group_id)
+                continue
             members = await self._synced_group_members(group.source_user_group_id)
             if members is None:
+                if unknown_is_undecided:
+                    raise _RemovalUndecided(f"The members of a group that can open {record.record_name} are unread")
                 self.logger.info(
                     f"Keeping {record.record_name}: the members of {group.source_user_group_id}, "
                     "which can open it, could not be read"
                 )
                 return True
             holder_emails |= members
-        askable = [
-            u for u in self.synced_users
-            if u.email and u.email.lower() in holder_emails
-            and u.email.lower() != removed_for.email.lower()
-        ]
-        for other in askable:
-            if await self._user_can_open(record, other, owner_sources):
+            may_open |= self._group_people.get(group.source_user_group_id) or set()
+
+        by_email = {u.email.lower(): u for u in self.synced_users if u.email}
+        others = {e: u for e, u in by_email.items() if not removed_for or e != removed_for.email.lower()}
+        for email in sorted(holder_emails):
+            if email in others and await self._user_can_open(record, others[email], owner_sources):
                 return True
+        # Everyone in an audience has the same access, so a few of them answer for all: "not found" for one of them
+        # says its share is gone. Picked at random, so no fixed few decide every time; never kept only because the
+        # audience is large, which would keep its grant for good.
+        synced = await self._synced_user_emails()
+        unanswered: list[str] = []
+        for group_id in dict.fromkeys(audiences):
+            # The people it always holds first; then those it holds by Google's answer (another domain a share
+            # with this one reaches), when they run out.
+            asked: list[AppUser] = []
+            for people in self._audience_people(group_id):
+                pool = [others[e] for e in people if e in synced and e in others and e not in holder_emails]
+                asked += secrets.SystemRandom().sample(pool, min(AUDIENCE_PROBES - len(asked), len(pool)))
+            refused = False
+            for other in asked:
+                answer = await self._audience_member_can_open(record, other, owner_sources)
+                if answer:
+                    return True
+                refused |= answer is False
+            if asked and not refused:
+                unanswered.append(group_id)
+            elif group_id not in self._audience_members and (not refused or self._listing_cut):
+                # Who the group holds is unknown (its write failed): nobody else asked is not nobody.
+                unanswered.append(group_id)
+            # Whatever the people asked said: one "not found" speaks for its own domain's people, and a cut listing
+            # does not show all of them, so the people it left out still make the answer unknown.
+            may_open |= self._audience_members.get(group_id, set())
+        if unanswered:
+            raise _RemovalUndecided(
+                f"No one asked of {', '.join(unanswered)} answered whether {record.record_name} can still be opened"
+            )
+        self._raise_if_cut_listing_left_out(record, may_open, removed_for)
         return False
+
+    def _raise_if_cut_listing_left_out(self, record: Record, may_open: set[str], removed_for: AppUser | None) -> None:
+        """On a cut user listing, people it left out were not asked whether they can open the file, so "nobody can"
+        is not known: raise, and the change is read again on a complete listing. Only the account's own people who
+        are not known to be unable to sign in count."""
+        if not self._listing_cut:
+            return
+        domains = self._account_domains
+        left_out = sorted(
+            e for e in may_open
+            if e and e not in self.synced_user_emails and (not removed_for or e != (removed_for.email or "").lower())
+            and not self._is_inactive_email(e) and (domains is None or _email_domain(e) in domains)
+        )
+        if left_out:
+            raise _RemovalUndecided(
+                f"The user listing was cut, and {len(left_out)} people it left out may still open {record.record_name}"
+            )
+
+    def _audience_people(self, group_id: str) -> tuple[list[str], list[str]]:
+        """The people an audience group holds, as (those it always holds: everyone listed for "anyone" shares, the
+        listed people on a domain for its shares; the others it holds as last written, such as the people of each
+        domain Google showed a share with it reaches)."""
+        domain = group_id.removeprefix(DOMAIN_MEMBERS_GROUP_PREFIX) if group_id != ALL_MEMBERS_GROUP_ID else None
+        own = sorted(
+            e for u in self.synced_users
+            if (e := (u.email or "").lower()) and (domain is None or _email_domain(e) == domain)
+        )
+        return own, sorted(self._audience_members.get(group_id, set()) - set(own))
+
+    async def _audience_member_can_open(
+        self, record: Record, user: AppUser, sources: dict[str, GoogleDriveDataSource]
+    ) -> bool | None:
+        """Whether a person of an audience can open the file. Only "not found" (or the trash) is a no: a refusal can
+        come from the person's own settings, such as Drive turned off for them. None for that and any other error."""
+        try:
+            source = sources.get(user.email) or await self._build_user_drive_data_source(user)
+            sources[user.email] = source
+            metadata = await source.files_get(fileId=record.external_record_id, supportsAllDrives=True, fields="id, trashed")
+        except HttpError as e:
+            if e.resp.status == HttpStatusCode.NOT_FOUND.value:
+                return False
+            self.logger.warning(f"Could not ask a person of its audience whether they can open {record.record_name}: {e}")
+            return None
+        except Exception as e:
+            self.logger.warning(f"Could not ask a person of its audience whether they can open {record.record_name}: {e}")
+            return None
+        return not metadata.get("trashed")
 
     async def _user_can_open(
         self, record: Record, user: AppUser, sources: dict[str, GoogleDriveDataSource]
@@ -2829,9 +4009,13 @@ class GoogleDriveTeamConnector(BaseConnector):
         *,
         bypass_folder_filter: bool = False,
         force_shared_with_me: bool = False,
+        raise_on_failure: bool = False,
     ) -> Optional[RecordUpdate]:
         """
         Process a single Google Drive file and detect changes.
+
+        A failure is counted on the sync ledger and answered with None; with ``raise_on_failure`` it is raised
+        as well, so a caller outside a sync can tell it from "nothing to do" without reading shared counts.
 
         Args:
             metadata: Google Drive file metadata dictionary
@@ -3048,6 +4232,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     inherited_permissions_disabled=limited_access,
                     inherits_from_drive=not item_drive_id or file_record.external_record_group_id == item_drive_id,
                     can_list_children=bool((metadata.get("capabilities") or {}).get("canListChildren")),
+                    can_share=bool((metadata.get("capabilities") or {}).get("canShare")),
                     item_drive_id=item_drive_id,
                 )
 
@@ -3059,6 +4244,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                     if existing_record is not None:
                         if new_permissions:
                             await self.data_entities_processor.add_permission_to_record(existing_record, new_permissions)
+                        elif user_email and not (await self._restriction_filter(item_drive_id, is_drive=False))[1](user_email):
+                            # The drive's limits leave this reader out: their stored grant goes, everyone else's stays.
+                            await self.data_entities_processor.delete_permission_from_record(
+                                existing_record.id, user_email, self.connector_id
+                            )
                         # Written as a metadata update, never as a new record: in a full sync the first write of
                         # a new record replaces its stored grants with the list given, and this user's single
                         # grant is not the file's list. A reader reaching the file first removed everyone else.
@@ -3121,7 +4311,47 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"Error processing Google Drive file {metadata.get('id', 'unknown')}: {ex}", exc_info=True)
             self._sync_ledger.fail_item()
+            if (failed := _failed_items.get()) is not None and metadata.get("id"):
+                failed.add(str(metadata["id"]))
+            await self._stop_inheriting_of_unreadable_limited_item(metadata)
+            if raise_on_failure:
+                raise _ItemReadFailed(str(metadata.get('id', 'unknown'))) from ex
             return None
+
+    async def _stop_inheriting_of_unreadable_limited_item(self, metadata: dict) -> None:
+        """An item that is limited-access, whose permissions could not be read, inherits nothing: that is known from
+        its own metadata, not from the unreadable list. What a folder above it shares (a discoverable share's audience
+        included) must stop reaching it now. Its own stored grants stay, and the next successful read rewrites
+        everything.
+
+        A My Drive item's permission list also names what it inherits, so its stored audience grants may have come
+        from above. An audience group a record above it also holds (every one, when that cannot be read) loses its
+        grant on the item until the next successful read. One nothing above holds is the item's own share and
+        stays, so an item that is never read again does not lose it for good."""
+        file_id = metadata.get("id")
+        if not (file_id and metadata.get("inheritedPermissionsDisabled")):
+            return
+        try:
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=file_id
+            )
+            if existing is None:
+                return
+            await self.data_entities_processor.stop_inheriting_permissions(existing.id, self.connector_id)
+            try:
+                parent = existing.parent_external_record_id and await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id, external_record_id=existing.parent_external_record_id
+                )
+                above = await self.data_entities_processor.get_groups_with_access_to_record(parent) if parent else []
+                from_above = {g.source_user_group_id for g in above if _is_audience_group(g.source_user_group_id)}
+            except Exception as e:
+                self.logger.warning(f"Could not read the grants above unreadable limited item {file_id}: {e}")
+                await self._load_audience_groups()
+                from_above = set(self._audience_groups)
+            for group_id in sorted(from_above):
+                await self.data_entities_processor.delete_group_permission_from_record(existing.id, group_id, self.connector_id)
+        except Exception as e:
+            self.logger.error(f"Could not stop the inheritance of unreadable limited item {file_id}: {e}")
 
     async def _process_drive_items_generator(
         self,
@@ -3673,6 +4903,15 @@ class GoogleDriveTeamConnector(BaseConnector):
         batch_records = []
         batch_count = 0
 
+        async def settle(file_id: str, removed_drive_id: str | None) -> _Settled:
+            if removed_drive_id:  # a shared drive file: its members are asked too
+                return await self._apply_shared_drive_removal(
+                    file_id, user, removed_drive_id, user_drive_data_source, ask_audience=True
+                )
+            return await self._settle_by_asking(file_id, user)
+
+        await self._recheck_undecided_removals(self._undecided_key(user), user, user_drive_data_source, settle)
+
         failures_before = self._sync_ledger.item_failures
 
         # 6. If pageToken doesn't exist (full sync)
@@ -3757,6 +4996,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             # page token is stored so a failure here replays on the next run instead of
             # being skipped for good; afterwards changes_list carries the deltas.
             holds = SharedFolderWalkHolds(sync_point)
+            shared_failed = self._track_failed_items()
             try:
                 await self.sync_shared_with_me(
                     user=user,
@@ -3792,10 +5032,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Save start page token to sync point after initial sync. A fresh feed
             # starts every removed change's count over.
             stale_removals = {HELD_REMOVED_CHANGES: []} if (sync_point or {}).get(HELD_REMOVED_CHANGES) else {}
+            reseeded = self._reseed_fields(shared_failed, asked=bool((sync_point or {}).get(RESEED_SHARED_WITH_ME)))
             await self.drive_delta_sync_point.update_sync_point(
                 sync_point_key,
                 {"pageToken": start_page_token, **holds.checkpoint_changes(), **stale_removals,
-                 **released(sync_point)}
+                 **reseeded, **released(sync_point)}
             )
 
             self.logger.info(f"✅ Full sync completed for user {user.email}. Processed {total_files} files. Saved page token: {start_page_token[:20]}...")
@@ -3809,7 +5050,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             total_changes = 0
             owner_sources: dict[str, GoogleDriveDataSource] = {}
             held_removals = FolderFailureRuns(sync_point.get(HELD_REMOVED_CHANGES))
-            removal_retry_error: HttpError | None = None
+            removal_retry_error: Exception | None = None
 
             while True:
                 # Prepare changes_list parameters
@@ -3943,10 +5184,60 @@ class GoogleDriveTeamConnector(BaseConnector):
             if removal_retry_error is not None:
                 raise removal_retry_error
 
-            if self._sync_ledger.item_failures > failures_before:
+            reseeded: dict[str, object] = {}
+            failures_before_reseed = self._sync_ledger.item_failures
+            if sync_point.get(RESEED_SHARED_WITH_ME):
+                shared_failed = self._track_failed_items()
+                retry = [str(i) for i in sync_point.get(FAILED_ITEMS) or []]
+                holds = SharedFolderWalkHolds(sync_point)
+                walk = DrivePageWalk()
+                try:
+                    if retry:
+                        items = [
+                            m for m in await self._fetch_failed_items(retry, user_drive_data_source)
+                            if m.get("driveId") and m["driveId"] not in (member_drive_ids or set())
+                        ]
+                        batch_records, _, _ = await self._process_shared_with_me_items(
+                            items=items,
+                            user=user,
+                            user_permission_id=user_permission_id,
+                            personal_drive_id=drive_id,
+                            context_name=f"shared with me for user {user.email}",
+                            batch_records=[],
+                            batch_count=0,
+                            total_counter=0,
+                            drive_data_source=user_drive_data_source,
+                            tracked_folder_ids=tracked_folder_ids,
+                        )
+                        await self._process_remaining_batch_records(batch_records, f"user {user.email}")
+                    else:
+                        await self.sync_shared_with_me(
+                            user=user,
+                            user_drive_data_source=user_drive_data_source,
+                            user_permission_id=user_permission_id,
+                            drive_id=drive_id,
+                            tracked_folder_ids=tracked_folder_ids,
+                            member_drive_ids=member_drive_ids,
+                            holds=holds,
+                            walk=walk,
+                        )
+                except Exception:
+                    if holds.changes():
+                        await self.drive_delta_sync_point.update_sync_point(sync_point_key, holds.changes())
+                    raise
+                # A partial listing keeps the mark and is read again in full; items that failed are kept to retry.
+                if walk.incomplete:
+                    reseeded = holds.changes()
+                else:
+                    reseeded = {**({} if retry else holds.checkpoint_changes()), **self._reseed_fields(shared_failed, asked=True)}
+
+            # The re-read's failures are carried by their ids, not by holding the feed: a hold would read the feed
+            # again on every run one of them keeps failing.
+            reseed_failures = self._sync_ledger.item_failures - failures_before_reseed
+            if self._sync_ledger.item_failures - reseed_failures > failures_before:
                 hold = hold_again(sync_point)
                 if hold is not None:
-                    await self.drive_delta_sync_point.update_sync_point(sync_point_key, hold)
+                    await self.drive_delta_sync_point.update_sync_point(sync_point_key, {**hold, **reseeded})
                     self.logger.warning(
                         f"Some changes for {user.email} could not be stored; they are read again next run"
                     )
@@ -3959,12 +5250,14 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Update sync point with latest page token
             if current_page_token and current_page_token != page_token:
                 self.logger.info(f"💾 Updating sync point from {page_token[:20]}... to {current_page_token[:20]}...")
-                checkpoint: dict[str, object] = {"pageToken": current_page_token, **released(sync_point)}
+                checkpoint: dict[str, object] = {"pageToken": current_page_token, **reseeded, **released(sync_point)}
                 # Counts at the limit were kept until now, so a replay gave up again at once.
                 if held_removals.folder_ids():
                     checkpoint[HELD_REMOVED_CHANGES] = []
                 await self.drive_delta_sync_point.update_sync_point(sync_point_key, checkpoint)
                 self.logger.info(f"✅ Incremental sync completed for user {user.email}. Processed {total_changes} changes.")
+            elif reseeded:
+                await self.drive_delta_sync_point.update_sync_point(sync_point_key, reseeded)
             else:
                 self.logger.info("Sync point not updated (token unchanged)")
 
@@ -4338,7 +5631,20 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                         batch_records = []
                         batch_count = 0
+
+                        async def settle_in_drive(
+                            file_id: str, _: str | None, drive_id: str = drive_id,
+                            source: GoogleDriveDataSource = user_drive_data_source,
+                        ) -> _Settled:
+                            return await self._apply_shared_drive_removal(
+                                file_id, user, drive_id, source, ask_audience=True
+                            )
+
+                        await self._recheck_undecided_removals(
+                            self._undecided_key(user, drive_id), user, user_drive_data_source, settle_in_drive
+                        )
                         drive_failures_before = self._sync_ledger.item_failures
+                        drive_failed = self._track_failed_items()
 
                         # If pageToken doesn't exist (full sync)
                         if not page_token:
@@ -4449,6 +5755,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                             )
                             if hold:
                                 await self.drive_delta_sync_point.update_sync_point(sync_point_key, hold)
+                            if hold is None and not await self._keep_failed_items(sync_point_key, drive_failed):
+                                hold = {}  # too many to keep by id: the drive is listed in full again
                             if not listing_finished or search_incomplete or hold is not None:
                                 self._sync_ledger.note_skipped_drive()
                                 self.logger.warning(
@@ -4460,7 +5768,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                             await self.drive_delta_sync_point.update_sync_point(
                                 sync_point_key,
-                                {"pageToken": start_page_token, **released(sync_point)}
+                                {"pageToken": start_page_token, **released(sync_point),
+                                 FAILED_ITEMS: sorted(drive_failed)}
                             )
 
                             self.logger.info(
@@ -4475,6 +5784,30 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                             current_page_token = page_token
                             total_changes = 0
+
+                            failures_before_retry = self._sync_ledger.item_failures
+                            if retry := [str(i) for i in sync_point.get(FAILED_ITEMS) or []]:
+                                again = [
+                                    m for m in await self._fetch_failed_items(retry, user_drive_data_source)
+                                    if m.get("driveId") == drive_id  # moved away: its new place lists it
+                                ]
+                                if again:
+                                    batch_records, batch_count, total_changes = await self._process_drive_files_batch(
+                                        files=again,
+                                        user_id=user_permission_id,
+                                        user_email=user.email,
+                                        drive_id=drive_id,
+                                        is_shared_drive=True,
+                                        context_name=f"drive '{drive_name}' for user {user.email}",
+                                        batch_records=batch_records,
+                                        batch_count=batch_count,
+                                        total_counter=total_changes,
+                                        drive_data_source=user_drive_data_source,
+                                        tracked_folder_ids=tracked_folder_ids
+                                    )
+                            retry_failures = self._sync_ledger.item_failures - failures_before_retry
+                            drive_held = FolderFailureRuns(sync_point.get(HELD_REMOVED_CHANGES))
+                            drive_removal_error: Exception | None = None
 
                             while True:
                                 try:
@@ -4520,9 +5853,15 @@ class GoogleDriveTeamConnector(BaseConnector):
                                         if is_removed:
                                             # Deleted, moved to another drive, or only this user lost
                                             # access: removed only once no synced user can open it.
-                                            await self._apply_shared_drive_removal(
-                                                change.get("fileId"), user, drive_id, user_drive_data_source,
+                                            error = await self._bounded_removal(
+                                                change.get("fileId"), drive_id, drive_held, sync_point_key,
+                                                self._undecided_key(user, drive_id),
+                                                partial(
+                                                    self._apply_shared_drive_removal,
+                                                    change.get("fileId"), user, drive_id, user_drive_data_source,
+                                                ),
                                             )
+                                            drive_removal_error = drive_removal_error or error
                                             continue
 
                                         if file_metadata and file_metadata.get("trashed"):
@@ -4590,18 +5929,32 @@ class GoogleDriveTeamConnector(BaseConnector):
                             )
 
                             # Update sync point with latest page token, unless a change on it
-                            # could not be stored: then the feed is read again from where it was.
+                            # could not be stored: then the feed is read again from where it was. Items read
+                            # again by id are carried by their ids, so they hold nothing.
                             hold = (
                                 hold_again(sync_point)
-                                if self._sync_ledger.item_failures > drive_failures_before
+                                if self._sync_ledger.item_failures - retry_failures > drive_failures_before
                                 else None
                             )
-                            if hold is not None:
+                            if drive_removal_error is not None:
+                                # The whole feed was read, so removals undecided alike use their runs together.
+                                self._sync_ledger.note_incomplete()
+                                if retry or drive_failed:
+                                    await self.drive_delta_sync_point.update_sync_point(
+                                        sync_point_key, {FAILED_ITEMS: sorted(drive_failed)}
+                                    )
+                                self.logger.warning(
+                                    f"A removed file in drive '{drive_name}' is not settled yet; the drive's "
+                                    "changes are read again next run"
+                                )
+                            elif hold is not None:
                                 await self.drive_delta_sync_point.update_sync_point(sync_point_key, hold)
                                 self.logger.warning(
                                     f"Some changes in drive '{drive_name}' could not be stored; they are "
                                     "read again next run"
                                 )
+                            elif not await self._keep_failed_items(sync_point_key, drive_failed):
+                                pass  # too many to keep by id: the drive is listed in full again
                             elif current_page_token and current_page_token != page_token:
                                 self.logger.info(
                                     f"💾 Updating sync point for drive '{drive_name}' "
@@ -4609,13 +5962,20 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 )
                                 await self.drive_delta_sync_point.update_sync_point(
                                     sync_point_key,
-                                    {"pageToken": current_page_token, **released(sync_point)}
+                                    {"pageToken": current_page_token, **released(sync_point),
+                                     FAILED_ITEMS: sorted(drive_failed),
+                                     # Counts at the limit were kept until now, so a replay gave up again at once.
+                                     **({HELD_REMOVED_CHANGES: []} if drive_held.folder_ids() else {})}
                                 )
                                 self.logger.info(
                                     f"✅ Incremental sync completed for shared drive '{drive_name}' for user {user.email}. "
                                     f"Processed {total_changes} changes."
                                 )
                             else:
+                                if retry or drive_failed:
+                                    await self.drive_delta_sync_point.update_sync_point(
+                                        sync_point_key, {FAILED_ITEMS: sorted(drive_failed)}
+                                    )
                                 self.logger.info(f"Sync point not updated for drive '{drive_name}'")
 
                         synced_drive_ids.add(drive_id)
@@ -4925,6 +6285,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.warning(f"Could not read the groups granted on record {record.id}: {e}")
             return candidates
         for group in groups:
+            if _is_audience_group(group.source_user_group_id):
+                continue  # not a Workspace group: the directory has nothing to list, and the owner is granted too
             try:
                 members = await self._fetch_group_members(group.source_user_group_id, include_derived=True)
             except Exception as e:
@@ -5197,6 +6559,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             org_id = self.data_entities_processor.org_id
             updated_records = []
             non_updated_records = []
+            unreadable: list[Record] = []
             for record in records:
                 try:
                     updated_record_data = await self._check_and_fetch_updated_record(org_id, record)
@@ -5205,9 +6568,19 @@ class GoogleDriveTeamConnector(BaseConnector):
                         updated_records.append((updated_record, permissions))
                     else:
                         non_updated_records.append(record)
+                except _ItemReadFailed:
+                    unreadable.append(record)
                 except Exception as e:
                     self.logger.error(f"Error checking record {record.id} at source: {e}")
                     continue
+
+            if unreadable:
+                # Skipped, not processed: the caller marked them NOT_STARTED for this run. FAILED is what a
+                # retry of failed records selects, so they are reindexed once their permissions can be read.
+                self.logger.warning(f"{len(unreadable)} records were not reindexed: their permissions could not be read")
+                await self.data_store_provider.compare_and_set_indexing_status(
+                    [r.id for r in unreadable], ProgressStatus.NOT_STARTED.value, ProgressStatus.FAILED.value
+                )
 
             # Update DB only for records that changed at source
             if updated_records:
@@ -5313,7 +6686,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 record_group_id,
                 is_shared_drive=in_shared_drive and not is_shared_with_me,
                 drive_data_source=user_drive_data_source,
-                force_shared_with_me=is_shared_with_me
+                force_shared_with_me=is_shared_with_me,
+                # An unreadable item is not an unchanged one: it is not re-queued with the grants stored.
+                raise_on_failure=True,
             )
 
             if not record_update or record_update.is_deleted:
@@ -5332,6 +6707,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             return None
 
+        except _ItemReadFailed:
+            raise
         except Exception as e:
             self.logger.error(f"Error checking Google Drive enterprise record {record.id} at source: {e}")
             return None

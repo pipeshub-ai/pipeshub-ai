@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 #: Bumped when the meaning of a field changes; the backfill rewrites every point stamped with an older version.
-SCOPE_FIELDS_VERSION = 5
+SCOPE_FIELDS_VERSION = 6
 
 PATH_IDS_FIELD = "pathIds"
 ACL_SCOPE_FIELD = "aclScope"

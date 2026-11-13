@@ -528,6 +528,7 @@
     "created": "建立時間",
     "updated": "更新時間",
     "source": "來源",
+    "actions": "動作",
     "noData": "沒有可用的資料",
     "loading": "正在載入資料…",
     "selectAll": "全選",
@@ -579,6 +580,8 @@
     "pagination": {
       "showing": "顯示第 {{start}}-{{end}} 項，共 {{total}} 項",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "顯示第 {{start}}-{{end}} 項，至少 {{total}} 項",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "每頁 {{value}} 筆"
     },
     "yes": "是",
@@ -736,6 +739,8 @@
     "indexingStatus": {
       "completed": "已完成",
       "inProgress": "進行中",
+      "embeddingProgress_one": "正在嵌入 {{done, number}} / {{total, number}} 個區塊",
+      "embeddingProgress_other": "正在嵌入 {{done, number}} / {{total, number}} 個區塊",
       "failed": "失敗",
       "fileTypeNotSupported": "不支援的檔案類型",
       "notStarted": "尚未開始",
@@ -791,7 +796,8 @@
     "nameRules": {
       "folderSeparator": "資料夾名稱不能包含「/」或「\\」。",
       "collectionExists": "你已有名為「{{name}}」的集合。請換一個名稱。"
-    }
+    },
+    "sourcesNotReady": "部分來源仍在準備中，尚未列出（{{count}}）。請稍後再試。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -933,7 +939,17 @@
     "copy": "複製",
     "fork": "分叉對話",
     "forkFromHere": "從此處分叉",
+    "forkedHere": "已在此處分叉",
+    "untitledChat": "未命名聊天",
+    "forkedFrom": "分叉自",
+    "copiedUpToHere": "已複製到此處 · 新訊息從下方開始",
+    "forkOriginUnavailable": "原始對話已無法使用",
     "regenerate": "重新產生",
+    "answerHidden": {
+      "lost": "此回答使用了您已無權存取的內容。",
+      "unconfirmed": "無法確認您的存取權限，請重試。",
+      "askAgain": "重新提問"
+    },
     "readAloud": "朗讀",
     "stopReading": "停止朗讀",
     "ttsNotSupported": "此瀏覽器不支援文字轉語音",
@@ -1604,6 +1620,15 @@
         "done": "已完成",
         "error": "失敗"
       }
+    },
+    "webSearchSetup": {
+      "title": "網頁搜尋尚未設定",
+      "adminBody": "您的組織尚未設定搜尋供應商。請在 Workspace → 網頁搜尋 中選擇一個，為所有人開啟網頁搜尋。",
+      "memberBody": "您的組織尚未設定網頁搜尋供應商，因此回答無法使用網路。",
+      "memberHint": "請聯絡管理員在 Workspace → 網頁搜尋 中進行設定。",
+      "setUp": "設定網頁搜尋",
+      "notNow": "暫時不要",
+      "gotIt": "知道了"
     }
   },
   "workspaceMenu": {
@@ -3428,7 +3453,14 @@
         "badge": "需要處理",
         "title": "需要處理",
         "openAuthentication": "更新驗證",
-        "viewSteps": "查看設定步驟"
+        "viewSteps": "查看設定步驟",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki 拒絕成員與頁面結構查詢",
+            "message": "私人空間只能使用先前同步時確認的存取權限進行同步，且僅限確認後的 {{days}} 天內。從未同步過或確認時間更早的私人空間會被略過，且頁面階層無法使用。開放空間不受影響。 完整同步（包括因變更篩選條件而啟動的同步）會使私人空間停止這樣同步，直到 Drupal Wiki 再次列出其成員。",
+            "message_dated": "私人空間只能使用先前同步時確認的存取權限進行同步，且僅限確認後的 {{days}} 天內。從未同步過或確認時間更早的私人空間會被略過，且頁面階層無法使用。開放空間不受影響。 完整同步（包括因變更篩選條件而啟動的同步）會使私人空間停止這樣同步，直到 Drupal Wiki 再次列出其成員。 正在使用的最早存取權限確認於 {{confirmedOn}}。"
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "組織中的所有人都會看到這些資料",
@@ -3438,6 +3470,104 @@
         "cancel": "取消",
         "continueTeam": "繼續使用團隊連接器",
         "goToPersonal": "設定個人連接器"
+      },
+      "accessCheck": {
+        "open": "檢查某人的存取權限",
+        "title": "檢查某人的存取權限",
+        "description": "查看某人能否讀取此連接器中的記錄，以及無法讀取的原因。",
+        "personLabel": "人員",
+        "personPlaceholder": "選擇人員",
+        "peopleLoading": "正在載入人員...",
+        "peopleFailed": "無法載入人員清單。",
+        "recordLabel": "記錄 ID",
+        "recordHint": "開啟記錄並複製其 ID。",
+        "check": "檢查",
+        "checking": "正在檢查...",
+        "close": "關閉",
+        "resultHeading": "結果",
+        "restrictedArea": "受限區域",
+        "theyFallback": "此人",
+        "pathLabel": "位置：{{path}}",
+        "reference": "參考編號：{{ref}}（如果原因看起來不對，請提供給支援人員）",
+        "verdict": {
+          "granted": "{{name}} 可以檢視此記錄。",
+          "denied": "{{name}} 無法檢視此記錄。"
+        },
+        "reason": {
+          "granted": "如果它在搜尋中缺失，可能是尚未建立索引，或連接器仍在同步。",
+          "not_linked": "{{name}} 沒有連結到此連接器的帳戶。",
+          "no_grant": "{{container}} 中沒有任何內容授予 {{name}} 存取權限。",
+          "restricted_container": "{{container}} 僅限其他人存取。",
+          "item_restricted": "此記錄有自己的限制，{{name}} 不在其中。",
+          "parent_not_readable": "{{name}} 無法開啟此記錄所需的上層項目。",
+          "pending_rewrite": "此記錄所在的資料夾正在更新。",
+          "syncing": "連接器尚未完成此部分的同步。",
+          "scheme_unreadable": "連接器無法讀取此區域的存取規則，因此對所有人隱藏。",
+          "deleted_at_source": "此記錄已在來源端刪除。",
+          "unexplained": "我們無法顯示原因。"
+        },
+        "next": {
+          "not_linked": "請在來源端修復帳戶，然後同步。",
+          "no_grant": "請在來源端新增 {{name}}。",
+          "restricted_container": "請讓擁有者新增 {{name}}。",
+          "item_restricted": "請讓擁有者新增 {{name}}。",
+          "parent_not_readable": "請將上層項目共用給 {{name}}。",
+          "pending_rewrite": "請等待幾分鐘後再檢查。",
+          "syncing": "請等待同步完成。",
+          "scheme_unreadable": "請在來源端修復同步帳戶的權限。",
+          "deleted_at_source": "無需操作。",
+          "unexplained": "請聯絡支援人員並提供參考編號。"
+        },
+        "errors": {
+          "failed": "無法完成檢查。請再試一次。",
+          "notFound": "在此連接器中找不到該人員或記錄。",
+          "rateLimited": "檢查次數過多。請一分鐘後再試。"
+        },
+        "peopleRetry": "重試",
+        "askedAbout": "關於記錄 {{record}}"
+      },
+      "access": {
+        "title": "存取",
+        "loading": "正在載入存取詳細資料…",
+        "loadError": "無法載入存取詳細資料。",
+        "retry": "重試",
+        "reach": "{{connector}} 中的變更會在{{interval}}內同步到 PipesHub。",
+        "reachUnknown": "{{connector}} 中的變更會在下次同步時送達 PipesHub。",
+        "syncNow": "立即同步權限",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "權限",
+          "succeeded": "上次重新整理：{{when}}。",
+          "failed": "上次權限重新整理失敗，因此來源中的最新變更可能尚未生效。請選擇「立即同步權限」重試。",
+          "never": "權限尚未重新整理。在首次同步完成之前，此連接器的內容將保持隱藏。",
+          "running": "正在重新整理權限。",
+          "incomplete": "上一次權限重新整理沒有執行到結束。"
+        },
+        "pending": {
+          "label": "等待套用",
+          "none": "沒有等待中的項目。",
+          "some_other": "{{count}} 個資料夾正在更新。更新完成前，所有人都看不到它們，通常需要幾分鐘。",
+          "overflow": "某項變更涉及整個連接器，因此需要完整重建其權限索引。在此之前，搜尋會逐筆檢查結果，因此不會因此隱藏任何內容。",
+          "unknown": "未知：無法讀取等待更新的資料夾清單。請參閱「需要關注」。"
+        },
+        "attention": {
+          "label": "需要處理（{{count}}）",
+          "none": "沒有需要處理的事項。",
+          "warning": "{{container}} 中有 {{items}} 個項目被隱藏。同步帳戶無法讀取此容器的權限。",
+          "fix": "解決方式：在 {{vendor}} 中為同步帳戶授予 {{permission}} 權限，然後選擇「立即同步權限」。",
+          "showAll": "再顯示 {{count}} 項",
+          "warningNoContainer": "同步帳戶無法讀取部分項目的權限，因此這些項目被隱藏。",
+          "rebuild": "此連接器的權限索引需要完整重建。在此之前，搜尋會逐筆檢查結果，因此不會因此隱藏任何內容。",
+          "unfinished": "某項權限變更沒有順利完成。請執行 PipesHub 的人員檢查此連接器的權限索引。",
+          "stale": "部分項目無法由較快的搜尋檢查，會改由經典搜尋尋找。",
+          "sweep": "此連接器的權限更新持續失敗。請執行 PipesHub 的人員檢查其記錄。",
+          "other": "此連接器的權限需要有人查看。",
+          "unreadable": "無法讀取等待更新的資料夾清單。請讓執行 PipesHub 的人員重建此連接器的權限索引。在此期間，搜尋會逐筆檢查結果。"
+        }
       }
     },
     "mcpServers": {
@@ -4149,6 +4279,11 @@
         "settingDefault": "正在設定…",
         "editConfiguration": "編輯設定",
         "deleteConfiguration": "刪除設定"
+      },
+      "duckduckgoWarning": "在共用伺服器上可能被封鎖或限速，不建議團隊使用。",
+      "notSetUp": {
+        "title": "網路搜尋尚未設定。",
+        "description": "請在下方選擇一個供應商來開啟。在此之前，組織中的任何人都無法在聊天中搜尋網路。"
       }
     },
     "profile": {
@@ -5823,5 +5958,20 @@
     },
     "nothingNew": "此節點沒有更多內容可顯示。",
     "tableOnly": "為保持流暢，僅顯示表格。"
+  },
+  "accessNotice": {
+    "permissions_updating": "部分來源正在更新權限，因此幾分鐘內可能缺少一些結果。",
+    "connector_syncing": "{{name}} 仍在同步，因此來自它的結果可能不完整。",
+    "connector_syncing_unnamed": "有來源仍在同步，因此來自它的結果可能不完整。",
+    "check_unavailable": "我們暫時無法檢查您有權存取哪些文件，因此不顯示結果。請一分鐘後再試。",
+    "emptySyncing": "暫時沒有可搜尋的內容。{{name}} 仍在同步。",
+    "emptySyncing_unnamed": "暫時沒有可搜尋的內容。有來源仍在同步。",
+    "noAccess": {
+      "title": "您無權存取此項目",
+      "body": "它可能已被移動、刪除或受到限制。請詢問擁有者，或在您有連結時從原處開啟。",
+      "justGotAccess": "剛在來源端取得存取權限？新的存取權限會在下次同步後顯示。",
+      "copyDetails": "複製詳細資料給管理員",
+      "copied": "詳細資料已複製"
+    }
   }
 }

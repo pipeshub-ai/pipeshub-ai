@@ -31,6 +31,7 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     LayoutRegionType,
 )
 from app.services.messaging.config import messaging_env
+from app.services.resource_governor.kinds import ParseKind
 from app.utils.indexing_helpers import generate_simple_row_text
 from app.utils.indexing_metrics import track_indexing_enrichment
 from app.utils.llm import get_llm_for_role
@@ -227,6 +228,7 @@ class PDFPlumberOpenCVProcessor:
             label=doc_name,
             size=len(pdf_bytes),
             timeout=messaging_env.pdf_record_processing_timeout,
+            kind=ParseKind.PDF_LAYOUT,
         )
         for pd in pages_data:
             self.logger.debug(

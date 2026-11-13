@@ -17,11 +17,13 @@ from __future__ import annotations
 import contextlib
 import logging
 import random  # noqa: TC003
+import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from app.services.permissions.currency import app_is_current
 from app.services.permissions.pending import parse
+from app.services.permissions.rewrite_lease import REWRITE_LEASE_SECONDS, RewriteLease
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
     ScopeFields,
@@ -34,12 +36,23 @@ from app.services.permissions.structure_generation import (
     register_pending_roots,
 )
 from app.services.vector_db import scope_expr as sx
-from app.services.vector_db.filters import ScopeFilter
+from app.services.vector_db.const.const import (
+    PAYLOAD_KEYWORD_INDEXES,
+    SCOPE_INTEGER_INDEXES,
+    SCOPE_KEYWORD_INDEXES,
+)
+from app.services.vector_db.filters import ScopeFilter, ScopeFilterUnsupported
+from app.services.vector_db.models import (
+    FieldCondition,
+    FilterExpression,
+    HybridSearchRequest,
+)
 from app.services.vector_db.scope_backfill import DONE, ScopeBackfill
 from app.services.vector_db.scope_rewrite import (
     RewriteResult,
     ScopeRewriteJob,
 )
+from tests.integration.vector_db.helpers import make_dense
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
 
 from . import mutations
@@ -119,6 +132,7 @@ class Log:
     audits: int = 0
     points: int = 0
     stale_seen: int = 0
+    search_mismatch: list[tuple] = field(default_factory=list)  # a store's search with the filter does not return what the filter tree admits
 
 
 @dataclass
@@ -145,13 +159,15 @@ class Env:
                    collection: str = COLL, create: bool = True) -> Env:
         vdb = vdb or FencedMemoryVectorDB()
         loaded = await load(vdb, collection, {NAME: world}, share=share, chunks=chunks, create=create)
+        for field_name, schema in (*PAYLOAD_KEYWORD_INDEXES, *SCOPE_KEYWORD_INDEXES, *SCOPE_INTEGER_INDEXES):      # (the search filter reads them)
+            await vdb.create_index(collection, field_name, schema)
         await vdb.make_searchable(collection)      # (a set_payload finds only the points a search sees)
-        backfill = ScopeBackfill(loaded.graph, vdb, loaded.locator, log)
+        backfill = ScopeBackfill(loaded.graph, vdb, loaded.locator, log, clock=advancing_clock())
         for app in loaded.apps:
             done = await backfill.run_connector(ORG, app)
             assert done.state == DONE, done.line()
         await vdb.make_searchable(collection)
-        env = cls(vdb, loaded, world, world, share, chunks, backfill, ScopeRewriteJob(loaded.graph, vdb, loaded.locator, settle_seconds=settle_seconds))
+        env = cls(vdb, loaded, world, world, share, chunks, backfill, ScopeRewriteJob(loaded.graph, vdb, loaded.locator, settle_seconds=settle_seconds, clock=advancing_clock()))
         # points the first back-fill left on the stale marker (a stale count alone also counts a placeholder, which has a virtual record and no point)
         env.unstamped = sum(1 for f in (await read_stamps(vdb, loaded)).values() if f is not None and f.version == 0)
         assert not env.unstamped, f"the first back-fill left {env.unstamped} point(s) on the stale marker: the world is not one to start from"
@@ -287,6 +303,28 @@ class Env:
                     into.inexact.append((*tag, "admitted" if admitted else "refused"))
 
 
+    async def store_audit(self, into: Log) -> None:
+        """The real store's search with the scope filter returns exactly the points the filter tree admits (what the rewrite wrote is searchable)."""
+        world, layer = self.world, OracleScopeLayer()
+        current, roots = await self.current(), self.pending()
+        blocked = frozenset(a for a in self.apps if parse(self.graph.app_docs.get(a, {}).get(PENDING_KEY)))
+        pids = {p: v for v, ps in self.loaded.points.items() for p in ps}
+        payloads = {str(p.id): p.payload for p in await self.vdb.retrieve_points(self.loaded.collection, list(pids))}
+        for viewer in world.users():
+            flt = ScopeFilter.of(_prefixed(await layer.viewer_scopes(world, viewer), roots, blocked), current, version=SCOPE_FIELDS_VERSION,
+                                 generation=current_scope_generation())
+            req = HybridSearchRequest(dense_query=make_dense([1.0]), filter=FilterExpression(must=[FieldCondition(key="metadata.orgId", value=ORG)]),
+                                      limit=1000, scope_filter=flt)
+            try:
+                [hits] = await self.vdb.query_nearest_points(self.loaded.collection, [req])
+            except ScopeFilterUnsupported:
+                continue      # the store refuses this filter (Redis: ids with capital letters); the product reads such a viewer with the legacy filter
+            got = {str(h.id) for h in hits}
+            want = {pid for pid in pids if pid in payloads and sx.evaluate(sx.admits(flt), payloads[pid])}
+            if got != want:
+                into.search_mismatch.append((viewer, sorted(want - got)[:3], sorted(got - want)[:3]))
+
+
 def _prefixed(scopes: ViewerScopes, pending: Collection[str], blocked: Collection[str] = ()) -> ViewerScopes:
     def add(xs: frozenset[str]) -> frozenset[str]:
         return frozenset(PREFIX + x for x in xs)
@@ -358,6 +396,18 @@ def random_change(world: World, rng: random.Random) -> Mutation | None:
     return Mutation("moved", node.id, ref=to.id, value=to.id if to.kind == "group" else "")
 
 
+def advancing_clock(offset: float = 0) -> Any:
+    """A clock for a job's lease that moves a lease's length on every reading: a run killed or failed half way leaves its lease behind, and the
+    next run of the same job (what a restarted process is) finds it run out. A test that wants the lease held uses its own clock."""
+    t = [time.time() + offset]
+
+    def now() -> float:
+        t[0] += REWRITE_LEASE_SECONDS + 1
+        return t[0]
+
+    return now
+
+
 class Killed(BaseException):
     """A process killed mid-run: not an Exception, so nothing in the job may swallow it."""
 
@@ -410,8 +460,11 @@ async def held_up_writer(env: Env, layer: str, monkeypatch: Any) -> None:
     from .model import Mutation as M
 
     await env.change((M("moved", "page:Handbook", "space:ALL", "space:ALL"),))
-    b = ScopeRewriteJob(env.graph, env.vdb, env.loaded.locator, settle_seconds=0.5)
+    # (B starts after A's lease has run out, which is how a second rewriter gets in at all)
+    b = ScopeRewriteJob(env.graph, env.vdb, env.loaded.locator, settle_seconds=0.5, clock=advancing_clock(offset=100 * REWRITE_LEASE_SECONDS))
     seen, held, stale_writes, violations = Log(), {"done": False}, [], []      # (a failed assert inside a request would be taken for a failed root)
+    if layer == "generation_check":      # (the lease would stop A first: each layer is shown alone)
+        monkeypatch.setattr(RewriteLease, "holds", lambda self, app: True)
     if layer == "store_fence":
         async def no_check(*a: Any, **k: Any) -> None:
             return None
@@ -430,7 +483,7 @@ async def held_up_writer(env: Env, layer: str, monkeypatch: Any) -> None:
                     await b.run_connector(ORG, PREFIX + "app")
 
         await asyncio.to_thread(asyncio.run, b_finishes())
-        assert not await env.problems()
+        violations.extend(await env.problems())      # (not an assert: the job takes a failed assert in a request for a failed root)
 
     async def at_the_door(name: str) -> str | None:
         if layer == "generation_check" and name == "retrieve_points":

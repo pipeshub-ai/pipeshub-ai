@@ -7,8 +7,10 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.core.db.uow import QUERY_LOG_SKIP
 from app.core.org_context import current_or_system, current_org_id, spawn_in_request
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+from app.utils.db_query_log import CALLER_FRAME, caller_origin
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -19,6 +21,9 @@ if TYPE_CHECKING:
 
 _HIER = ("PARENT_CHILD", "ATTACHMENT")
 _VALIDATOR = NodeSchemaValidator()
+# The bound of the vetted lookups of graph_0007 and graph_0008 (value mentions: one more): a read that returns that many rows may be partial, and the caller reads with its own statement.
+VETTED_BOUND = 100_000
+MENTIONS_BOUND = 100_001
 
 
 class NotImplementedInPostgres(NotImplementedError):
@@ -95,21 +100,26 @@ class _Txn:
     error, and later calls fail at once; a caller is never left awaiting a task that is gone. Cancelling the calling task rolls the unit back and
     gives the connection up."""
 
-    def __init__(self, db: KernelDB, ctx: OrgContext) -> None:
+    def __init__(self, db: KernelDB, ctx: OrgContext, *, snapshot: bool = False) -> None:
         self._db = db
+        # a read-only repeatable-read unit: every call reads one snapshot (custom plans, as the listing's own reads)
+        self.snapshot = snapshot
+        self._opts: dict[str, Any] = {"isolation": "repeatable_read", "custom_plan": True} if snapshot else {"write": True}
         self._who = (ctx.kind, ctx.org_id)       # the org the transaction began under; every call must run under it
         self._q: asyncio.Queue | None = None
         self._task: asyncio.Task | None = None
         self._ended: BaseException | None = None
+        self._commit_origin = None  # the frame that asked for the commit, for its db.query record
 
     async def _main(self) -> None:
         try:
-            async with (self._db.jobs_uow(write=True) if current_or_system().kind == "system" else self._db.uow(write=True)) as tx:
+            async with (self._db.jobs_uow(**self._opts) if current_or_system().kind == "system" else self._db.uow(**self._opts)) as tx:
                 while True:
                     item = await self._q.get()
                     if item in ("commit", "rollback"):
                         if item == "rollback":
                             raise _Rollback
+                        CALLER_FRAME.set(self._commit_origin)  # this task's own context: the COMMIT below names its caller
                         break
                     fn, fut = item
                     try:
@@ -150,12 +160,16 @@ class _Txn:
         fut = asyncio.get_running_loop().create_future()
         from app.services.graph_db.postgres.kg.guard import current_writer
         writers = current_writer.get()      # the task keeps the context of the call that opened it: each call brings its own writer along
+        # A task that fn spawns inherits the origin, keeping that frame and its locals alive while it runs.
+        origin = caller_origin(QUERY_LOG_SKIP)
 
         async def as_this_caller(tx: Tx) -> Any:  # noqa: ANN401
             token = current_writer.set(writers)
+            caller = CALLER_FRAME.set(origin)
             try:
                 return await fn(tx)
             finally:
+                CALLER_FRAME.reset(caller)
                 current_writer.reset(token)
         await self._q.put((as_this_caller, fut))
         try:
@@ -180,6 +194,8 @@ class _Txn:
             if how == "commit" and self._ended is not None and not isinstance(self._ended, TransactionClosed):
                 raise self._ended      # a commit on a transaction that was lost is not a commit
             return
+        if how == "commit":
+            self._commit_origin = caller_origin(QUERY_LOG_SKIP)
         await self._q.put(how)
         await asyncio.wait({self._task})
         if how == "commit" and self._ended is not None and not isinstance(self._ended, TransactionClosed):
@@ -254,6 +270,12 @@ class PgBase:
     async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         tid = str(uuid.uuid4())
         self._txns[tid] = _Txn(self._db, current_or_system())     # the org is fixed here
+        return tid
+
+    async def begin_snapshot(self) -> str:
+        """A read-only transaction whose calls all read one snapshot; ended by :meth:`rollback_transaction`."""
+        tid = str(uuid.uuid4())
+        self._txns[tid] = _Txn(self._db, current_or_system(), snapshot=True)
         return tid
 
     async def commit_transaction(self, transaction: str) -> None:

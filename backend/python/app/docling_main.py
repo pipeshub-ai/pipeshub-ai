@@ -11,8 +11,10 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.api.validation_errors import input_free_422
 from app.config.constants.http_status_code import HttpStatusCode
 from app.containers.docling import DoclingAppContainer, initialize_container
 from app.modules.parsers.pdf.docling_processor import (
@@ -33,6 +35,7 @@ from app.services.docling.docling_service import (
 from app.services.messaging.config import messaging_env
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
+from app.services.resource_governor.policy import docling_working_set_gb
 from app.telemetry.setup import setup_telemetry
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.logger import install_log_redaction
@@ -114,6 +117,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         reserve_embedding_cpus=await is_local_cpu_embedding_configured(
             config_service, logger
         ),
+        # Every permit here is a Docling conversion: its own working set, whatever the
+        # PdfPlumber parent base or the lane charges are.
+        heavy_working_set_gb=docling_working_set_gb(),
     )
     app.state.governor = governor
     set_resource_governor(governor)
@@ -159,11 +165,14 @@ app = FastAPI(
     title="Docling Processing Service",
     description="Microservice for PDF processing using Docling",
     version="1.0.0",
+    exception_handlers={RequestValidationError: input_free_422},
 )
 
 # Trace context — outermost.
 app.add_middleware(RequestContextMiddleware)
 
+# The mounted app answers its own routes' 422s, so it needs the handler too.
+docling_app.add_exception_handler(RequestValidationError, input_free_422)
 # Mount the Docling service routes
 app.mount("/", docling_app)
 

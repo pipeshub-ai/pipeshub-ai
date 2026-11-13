@@ -98,6 +98,12 @@ class TestChatQueryModel:
         with pytest.raises(ValidationError, match="Invalid reasoningEffort"):
             ChatQuery(query="q", reasoningEffort="extreme")
 
+    def test_reasoning_effort_message_does_not_quote_the_value(self) -> None:
+        from app.config.constants.ai_models import validate_reasoning_effort
+        with pytest.raises(ValueError, match="Invalid reasoningEffort. Must be one of: ") as caught:
+            validate_reasoning_effort("F47SEED-ada@example.com")
+        assert "F47SEED" not in str(caught.value)
+
     def test_project_instructions_defaults_to_none(self):
         from app.api.routes.chatbot import ChatQuery
         q = ChatQuery(query="q")

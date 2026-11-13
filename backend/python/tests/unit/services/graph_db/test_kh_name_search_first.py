@@ -138,7 +138,7 @@ async def test_neo4j_the_matches_are_read_once_for_concurrent_pages() -> None:
     provider = _neo4j(["r1"])
     await asyncio.gather(*(
         provider.get_knowledge_hub_connector_page_v3(
-            app, ORG, ["uk1"], [APP, "app2"], [], flatten=True,
+            app, ORG, ["uk1"], [APP, "app2"], flatten=True, grants_by_connector={APP: [], "app2": []},
             filters={"search_query": "x"}, name_parents=False, user_key=None,
         ) for app in (APP, "app2")
     ))

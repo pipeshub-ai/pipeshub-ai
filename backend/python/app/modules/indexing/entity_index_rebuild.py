@@ -181,14 +181,17 @@ class EntityIndexState:
 
 
 def entity_index_marker(
-    fingerprint: str, stamp: str = "", *, version: int = ENTITY_INDEX_VERSION,
+    fingerprint: str, stamp: str = "", *, version: int = ENTITY_INDEX_VERSION, order: str = "",
 ) -> str:
     """``stamp`` is ``EntityVectorStore.collection_stamp``: a document done
-    under another stamp was projected into a collection that is gone."""
-    return f"v{version}{'@' + stamp if stamp else ''}:{fingerprint}"
+    under another stamp was projected into a collection that is gone.
+    ``order`` is the graph store's page order (``IGraphDBProvider.ENTITY_INDEX_PAGE_ORDER``):
+    a cursor saved under another order may skip rows, so its pass starts over.
+    Empty for a store that pages as it always has, so its marker is unchanged."""
+    return f"v{version}{'@' + stamp if stamp else ''}{'.' + order if order else ''}:{fingerprint}"
 
 
-_MARKER = re.compile(r"v\d+(?:@[0-9a-z]+)?:(.+)", re.DOTALL)
+_MARKER = re.compile(r"v\d+(?:@[0-9a-z]+)?(?:\.[0-9a-z]+)?:(.+)", re.DOTALL)
 
 
 def fingerprint_of(marker: object) -> str | None:
@@ -302,7 +305,7 @@ class EntityIndexRebuilder:
         # collection: a collection without its stamp gets a new one, which no
         # document has reached, so every pass runs again.
         stamp = await self.store.collection_stamp()
-        marker = entity_index_marker(fingerprint, stamp)
+        marker = entity_index_marker(fingerprint, stamp, order=getattr(self.graph, "ENTITY_INDEX_PAGE_ORDER", ""))
 
         # The candidate is read across orgs; the rest of its work runs in the org that owns it.
         with system("entity_index_rebuild"):

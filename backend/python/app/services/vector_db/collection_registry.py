@@ -33,6 +33,8 @@ from app.services.vector_db.collection_manifest import (
 from app.services.vector_db.collections import CollectionType, sanitize_collection_name
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
+    CONTENT_REV_FIELD,
+    EMBED_KEY_FIELD,
     PAYLOAD_KEYWORD_INDEXES,
     SCOPE_INTEGER_INDEXES,
     SCOPE_KEYWORD_INDEXES,
@@ -55,6 +57,9 @@ _EXISTENCE_CACHE_TTL_SECONDS = 60
 # writing to `collection_name`?". Only a multi-collection strategy needs the
 # answer; see CollectionRegistry.resolve_delete_scope.
 LivenessProbe = Callable[[DeleteContext, str], Awaitable[bool]]
+
+
+_FENCE_FIELDS = frozenset({CONTENT_REV_FIELD, EMBED_KEY_FIELD})
 
 
 @dataclass(frozen=True)
@@ -134,6 +139,9 @@ class CollectionRegistry:
         # Collections whose lexical scoring this process has already brought up
         # to date, so the write path asks the vector DB once, not every TTL.
         self._lexically_reconciled: set[str] = set()
+        # Collections whose resume-fence indexes could not be created. Resuming queries
+        # those fields, so it is off for them until a later ensure succeeds.
+        self._fence_missing: set[str] = set()
 
     @property
     def strategy(self) -> CollectionStrategy:
@@ -268,6 +276,8 @@ class CollectionRegistry:
         """
         name = self.resolve_write_collection(ctx)
         if self._existence.matches_dimension(name, embedding_size):
+            if name in self._fence_missing:
+                await self._ensure_payload_indexes(name, only=_FENCE_FIELDS)
             return name
 
         existing_dim = await self._existing_dimension(name)
@@ -373,20 +383,32 @@ class CollectionRegistry:
         info = await self._vector_db_service.get_collection_info(name)
         return info.dense_dimension if info.exists else None
 
-    async def _ensure_payload_indexes(self, name: str) -> None:
+    def fence_ready(self, name: str) -> bool:
+        """False while the fields a resumed embedding run filters on are not known to be indexed."""
+        return name not in self._fence_missing
+
+    async def _ensure_payload_indexes(self, name: str, only: frozenset[str] | None = None) -> None:
         indexes = PAYLOAD_KEYWORD_INDEXES + ((*SCOPE_KEYWORD_INDEXES, *SCOPE_INTEGER_INDEXES) if scope_fields_enabled() else ())
+        fence_failed = False
         for field_name, schema in indexes:
+            if only is not None and field_name not in only:
+                continue
             try:
                 await self._vector_db_service.create_index(
                     collection_name=name, field_name=field_name, field_schema=schema
                 )
             except Exception as e:
                 err = str(e).lower()
-                if "already exists" in err or "already exist" in err or "conflict" in err:
+                if "already exists" in err or "already exist" in err or "conflict" in err or "duplicate field" in err:
                     continue
+                fence_failed = fence_failed or field_name in _FENCE_FIELDS
                 self._logger.warning(
                     "Failed to create payload index %s on %s: %s", field_name, name, e
                 )
+        if fence_failed:
+            self._fence_missing.add(name)
+        else:
+            self._fence_missing.discard(name)
 
     async def reconcile_lexical_scoring(self) -> list[str]:
         """Bring every managed collection's keyword scoring up to date.

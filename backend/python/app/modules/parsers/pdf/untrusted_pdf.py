@@ -40,6 +40,7 @@ from app.modules.parsers.pdf.pdf_inspection import (
     open_pdf,
     repair_pdf,
 )
+from app.services.resource_governor.kinds import ParseKind
 from app.utils.env_config import env_float, env_int
 
 if TYPE_CHECKING:
@@ -162,7 +163,8 @@ async def _try(fn: Callable[..., T], content: bytes, *args: object, label: str) 
 
 async def _in_worker(fn: Callable[..., T], content: bytes, *args: object, label: str) -> T:
     return await parse_pool.submit(
-        fn, content, *args, label=label, size=len(content), timeout=inspection_timeout_seconds()
+        fn, content, *args, label=label, size=len(content), timeout=inspection_timeout_seconds(),
+        kind=ParseKind.INSPECT,
     )
 
 

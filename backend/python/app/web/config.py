@@ -8,11 +8,6 @@ from app.config.constants.service import config_node_constants
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
 
-# Never stored: the config API shows it as the default whenever no stored provider is marked
-# default, including for an org that has configured nothing.
-DEFAULT_PROVIDER = "duckduckgo"
-
-
 def _normalized(provider: object) -> str:
     return str(provider or "").strip().lower()
 
@@ -46,9 +41,9 @@ async def resolve_web_search(
     """``{"provider", "configuration"}`` for a run, or None when web search can't be set up.
 
     With ``provider`` (an agent's own attachment, stored as a provider name), the first stored
-    configuration of that type, or an empty one when it isn't stored or the store can't be read. Without it, the org default, or
-    DuckDuckGo when none is marked default; None when the store can't be read. The provider name
-    is passed through even when unknown, so the tool reports it instead of quietly using another.
+    configuration of that type, or an empty one when it isn't stored or the store can't be read. Without it, the org default;
+    None when no provider is marked default (an admin has not set web search up) or the store can't be read. The provider
+    name is passed through even when unknown, so the tool reports it instead of quietly using another.
     """
     wanted = _normalized(provider)
     try:
@@ -66,6 +61,5 @@ async def resolve_web_search(
         return _selection(wanted, next((p for p in entries if _normalized(p.get("provider")) == wanted), None), entries)
 
     default = next((p for p in entries if p.get("isDefault")), None)
-    if default is None:
-        return _selection(DEFAULT_PROVIDER, None, entries)
-    return _selection(_normalized(default.get("provider")) or DEFAULT_PROVIDER, default, entries)
+    name = _normalized(default.get("provider")) if default else ""
+    return _selection(name, default, entries) if name else None

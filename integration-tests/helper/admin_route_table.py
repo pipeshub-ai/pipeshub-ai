@@ -230,6 +230,10 @@ _OAUTH_BODY = {"oauthInstanceName": "it-admin-probe", "config": {"clientId": "x"
 # Python handlers that refuse every member, called through the Node gateway the
 # way the web app calls them. Python answers 403; Node passes it through.
 PYTHON_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
+    # A member gets the 404 of a route that does not exist, not a 403, so the route does not confirm it is there.
+    _py("GET", "/api/v1/connectors/:connectorId/permissions/explain",
+        "connectors/api/permission_explain_router.py::explain_permission",
+        refusal_status=404, refusal_words="not found"),
     # Python checks the admin before it reads the body, so an admin sending an
     # empty config gets "config is required" and nothing is written.
     _py("POST", "/api/v1/oauth/:connectorType", "connectors/api/router.py::create_oauth_config",
@@ -264,6 +268,9 @@ PYTHON_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
         member_body={"clientId": "x"}),
     _py("DELETE", f"{_TOOLSETS}/oauth-configs/:toolsetType/:oauthConfigId",
         "api/routes/toolsets.py::delete_toolset_oauth_config"),
+    # A member gets the 404 of a missing connector, so the route does not confirm the connector exists.
+    _py("GET", "/api/v1/connectors/:connectorId/permissions/status",
+        "connectors/api/router.py::get_permission_status", refusal_status=404, refusal_words="removed"),
 )
 
 # The admin body for rows marked ``admin="admin_body"``: past the admin check,

@@ -9,7 +9,8 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.edition_config import (
@@ -23,7 +24,8 @@ from app.edition_config import (
 from app.core.envelope import configure_from_config as configure_envelope
 from app.core.org_context import spawn_detached, for_org, system
 from app.core.org_jobs import for_each_org
-from app.api.middlewares.request_context import RequestContextMiddleware
+from app.api.middlewares.request_log import install_request_logging, mark_request_failure
+from app.api.validation_errors import input_free_422
 from app.modules.demo_data.router import demo_data_router
 from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
@@ -33,6 +35,8 @@ from app.agents.mcp.registry import get_mcp_registry
 from app.agents.registry.toolset_registry import get_toolset_registry
 from app.api.routes.api_toolsets import router as api_toolsets_router  # noqa: E402 - after set_service_suffix, like its neighbours
 from app.api.routes.entity import router as entity_router
+from app.api.routes.local_repos import BodyLimit as LocalReposBodyLimit  # noqa: E402
+from app.api.routes.local_repos import router as local_repos_router  # noqa: E402
 from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.config.configuration_service import ConfigurationService
@@ -65,6 +69,7 @@ from app.connectors.core.sync.task_manager import (
 )
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.api.artifacts_router import artifacts_router
+from app.connectors.api.permission_explain_router import permission_explain_router  # noqa: E402
 from app.connectors.sources.localKB.api.kb_router import install_push_routes, kb_router
 from app.connectors.sources.web.crawl4ai_fetcher import close_shared_fetcher  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.connectors.sources.localKB.api.knowledge_hub_router import (
@@ -100,7 +105,6 @@ from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_messages import SOMETHING_WENT_WRONG
 
 container = ConnectorAppContainer.init("connector_service")
 
@@ -1215,6 +1219,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         name="storage_release",
     )
 
+    # Sweeps what indexing still writes for a connector after its delete.
+    from app.connectors.services.late_write_sweep import run_late_write_sweep_loop
+    app.state.late_write_sweep_task = spawn_detached(
+        run_late_write_sweep_loop(app_container, graph_provider), name="late_write_sweep",
+    )
+
     # Here, not in indexing: it publishes re-index events on this service's producer.
     from app.connectors.services.stored_content_heal import run_stored_content_heal_loop
     app.state.stored_content_heal_task = spawn_detached(
@@ -1229,6 +1239,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         run_flat_storage_migration(app_container, graph_provider), name="flat_storage_migration",
     )
 
+    # PostgreSQL graph: project the change log into the typed graph, restamp, and take each connector to enforce. One service runs it (this one, the owner of graph writes).
+    app.state.kg_worker = None
+    try:
+        from app.services.graph_db.postgres.kg.worker import (
+            start_for as start_kg_worker,
+        )
+
+        app.state.kg_worker = start_kg_worker(graph_provider, logger)
+    except Exception as e:      # the service runs without it: reads stay on the walk, and the change log is drained at the next start
+        logger.error(f"Failed to start the kg worker: {e}", exc_info=True)
+
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
 
@@ -1242,11 +1263,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, Exception):
             pass
     logger.info("🔄 Shut down application started")
+    kg_worker = getattr(app.state, "kg_worker", None)
+    if kg_worker is not None:
+        try:
+            await kg_worker.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping the kg worker at shutdown: {e}")
     # The code-edge reconciler stops before the task managers drain, so its
     # sweep cannot start a build into the unwind.
     for task_name in (
         "connector_metrics_task", "trash_purge_task", "storage_release_task",
-        "stored_content_heal_task", "code_edge_build_reconcile_task",
+        "late_write_sweep_task", "stored_content_heal_task", "code_edge_build_reconcile_task",
         "flat_storage_migration_task",
     ):
         task = getattr(app.state, task_name, None)
@@ -1265,6 +1292,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Accessible-records cache closed")
     except Exception as e:
         logger.error(f"❌ Error closing accessible-records cache: {e}")
+    try:
+        from app.connectors.sources.localKB.push import api as kb_push_api
+
+        await kb_push_api.close_runtime(app)
+    except Exception as e:
+        logger.warning(f"Error stopping the knowledge-base push runtime at shutdown: {e}")
     # Shutdown all container resources
     try:
         await shutdown_container_resources(app_container)
@@ -1283,6 +1316,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
     dependencies=_app_dependencies,
+    exception_handlers={RequestValidationError: input_free_422},
 )
 configure_app(app, "connectors")
 
@@ -1301,62 +1335,22 @@ EXCLUDE_PATHS = [
 async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     """
     Authentication middleware that authenticates all requests by default,
-    except for paths explicitly excluded (webhooks, health checks, OAuth callbacks).
+    except for paths explicitly excluded (webhooks, health checks).
     """
-    logger = app.container.logger()  # type: ignore
-    request_path = request.url.path
-    logger.debug(f"Middleware processing request: {request_path}")
-
-    # Check if path should be excluded from authentication
-    should_exclude = False
-
-    # Check exact path matches for webhooks and health
-    if request_path in EXCLUDE_PATHS:
-        should_exclude = True
-        logger.debug(f"Excluding exact path match: {request_path}")
-
-    # Check for OAuth callback paths (pattern-based exclusion)
-    # if "/oauth/callback" in request_path:
-    #     should_exclude = True
-    #     logger.debug(f"Excluding OAuth callback path: {request_path}")
-
-
-
-    # If path should be excluded, skip authentication
-    if should_exclude:
-        logger.debug(f"Skipping authentication for excluded path: {request_path}")
+    if request.url.path in EXCLUDE_PATHS:
         return await call_next(request)
 
-    # All other paths require authentication
     try:
-        logger.debug(f"Applying authentication for path: {request_path}")
         authenticated_request = await authMiddleware(request)
-
     except HTTPException as exc:
-        # Handle authentication errors
-        logger.warning(f"Authentication failed for {request_path}: {exc.detail}")
+        mark_request_failure(request, exc)
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    except Exception as e:
-        # Handle unexpected errors
-        logger.error(f"Unexpected error during authentication for {request_path}: {str(e)}", exc_info=True)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal server error"},
-        )
-
-    try:
-        return await call_next(authenticated_request)
-    except Exception:
-        # call_next re-raises the route's exception; log it once here, inside the request context.
-        logger.exception("Unhandled exception while processing %s %s", request.method, request_path)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal server error"},
-        )
+    # A route's exception is logged and answered by http.request.end (request_log).
+    return await call_next(authenticated_request)
 
 
-# Trace context — outermost, before auth.
-app.add_middleware(RequestContextMiddleware)
+# Trace context and the request line — outside auth, so both see every request.
+install_request_logging(app)
 # Telemetry: outermost metrics middleware; pusher started/stopped in lifespan.
 telemetry = setup_telemetry(app, service_name="connector_service")
 
@@ -1701,29 +1695,16 @@ install_push_routes(app)  # the push routes and the ENABLE_KB_PUSH gate (off by 
 app.include_router(knowledge_hub_router)
 app.include_router(demo_data_router)
 app.include_router(connector_router)
+app.add_middleware(LocalReposBodyLimit)
+app.include_router(local_repos_router)
 app.include_router(artifacts_router)
+app.include_router(permission_explain_router)
 if oauth_apps_router is not None:
     app.include_router(oauth_apps_router)
 if sharing_router is not None:
     app.include_router(sharing_router)
 if knowledge_hub_service_factory is not None:
     app.dependency_overrides[get_knowledge_hub_service] = knowledge_hub_service_factory
-
-
-
-# Global error handler
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger = app.container.logger()  # type: ignore
-    logger.error("Global error: %s", str(exc), exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "status": "error",
-            "message": SOMETHING_WENT_WRONG,
-            "path": request.url.path,
-        },
-    )
 
 
 def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, reload: bool = True) -> None:
@@ -1753,6 +1734,7 @@ def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, rel
         host=host,
         port=port,
         log_level="info",
+        access_log=False,
         reload=reload,
         workers=workers,
         timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),

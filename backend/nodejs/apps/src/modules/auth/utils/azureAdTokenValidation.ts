@@ -4,9 +4,11 @@ import jwkToPem from 'jwk-to-pem';
 import {
   BadRequestError,
   ServiceUnavailableError,
-  UnauthorizedError,
+  WrongCredentialError,
 } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
+import { withCause } from '../../../libs/errors/base.error';
+import { authRefusal } from './sign-in-audit';
 const logger = Logger.getInstance({
   service: 'Azure Ad Token Validation',
 });
@@ -54,7 +56,10 @@ export const validateAzureAdUser = async (
 ): Promise<JwtPayload> => {
   const idToken = credentials.idToken;
   if (typeof idToken !== 'string' || idToken === '') {
-    throw new BadRequestError(MICROSOFT_SIGN_IN_FAILED);
+    throw authRefusal(
+      new BadRequestError(MICROSOFT_SIGN_IN_FAILED),
+      'sso_token_invalid',
+    );
   }
   const clientId = config.clientId?.trim();
   if (!clientId) {
@@ -65,7 +70,12 @@ export const validateAzureAdUser = async (
   const tenant = (config.tenantId || 'common').trim();
 
   const decoded = jwt.decode(idToken, { complete: true });
-  if (decoded === null) throw new UnauthorizedError(MICROSOFT_SIGN_IN_FAILED);
+  if (decoded === null) {
+    throw authRefusal(
+      new WrongCredentialError(MICROSOFT_SIGN_IN_FAILED),
+      'sso_token_invalid',
+    );
+  }
 
   let openIdConfig: { data: OpenIdConfiguration };
   let jwks: { data: JsonWebKeySet };
@@ -78,18 +88,24 @@ export const validateAzureAdUser = async (
       timeout: MICROSOFT_METADATA_TIMEOUT_MS,
     });
   } catch (error) {
-    logger.warn('Could not reach Microsoft to check the sign-in', {
-      reason: error instanceof Error ? error.message : String(error),
-    });
-    throw new ServiceUnavailableError(
-      "We couldn't reach Microsoft to check your sign-in. Please try again in a moment.",
+    // Not a refusal: the error middleware logs the outage once, with this cause.
+    throw withCause(
+      new ServiceUnavailableError(
+        "We couldn't reach Microsoft to check your sign-in. Please try again in a moment.",
+      ),
+      error,
     );
   }
 
   const signingKey = jwks.data.keys?.find(
     (key) => key.kid === decoded.header.kid,
   );
-  if (!signingKey) throw new UnauthorizedError(MICROSOFT_SIGN_IN_FAILED);
+  if (!signingKey) {
+    throw authRefusal(
+      new WrongCredentialError(MICROSOFT_SIGN_IN_FAILED),
+      'sso_token_invalid',
+    );
+  }
 
   let verified: JwtPayload;
   try {
@@ -97,18 +113,23 @@ export const validateAzureAdUser = async (
       algorithms: ['RS256'],
       audience: clientId,
     });
-    if (typeof result === 'string') throw new UnauthorizedError(WRONG_ACCOUNT);
+    if (typeof result === 'string')
+      throw new WrongCredentialError(WRONG_ACCOUNT);
     verified = result;
   } catch (error) {
     if (error instanceof jwt.TokenExpiredError) {
-      throw new UnauthorizedError(
-        'Your Microsoft sign-in expired. Please sign in again.',
+      throw authRefusal(
+        new WrongCredentialError(
+          'Your Microsoft sign-in expired. Please sign in again.',
+        ),
+        'sso_token_expired',
       );
     }
-    logger.warn('Rejected a Microsoft ID token', {
-      reason: error instanceof Error ? error.message : String(error),
-    });
-    throw new UnauthorizedError(WRONG_ACCOUNT);
+    // A bad signature or audience, or a string payload.
+    throw withCause(
+      authRefusal(new WrongCredentialError(WRONG_ACCOUNT), 'sso_token_invalid'),
+      error,
+    );
   }
 
   // A tenant-specific configuration publishes its own issuer; the multi-tenant
@@ -127,11 +148,14 @@ export const validateAzureAdUser = async (
     verified.iss !== expectedIssuer ||
     !allowedForAuthority
   ) {
-    logger.warn('Rejected a Microsoft ID token from an unexpected tenant', {
+    logger.debug('Rejected a Microsoft ID token from an unexpected tenant', {
       tokenTenant: tid,
       configuredTenant: tenant,
     });
-    throw new UnauthorizedError(WRONG_ACCOUNT);
+    throw authRefusal(
+      new WrongCredentialError(WRONG_ACCOUNT),
+      'sso_wrong_tenant',
+    );
   }
 
   return verified;

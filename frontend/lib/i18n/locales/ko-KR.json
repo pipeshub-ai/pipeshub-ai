@@ -528,6 +528,7 @@
     "created": "생성일",
     "updated": "업데이트일",
     "source": "소스",
+    "actions": "작업",
     "noData": "데이터가 없습니다",
     "loading": "데이터 로드 중...",
     "selectAll": "모두 선택",
@@ -579,6 +580,8 @@
     "pagination": {
       "showing": "{{total}}개 중 {{start}}-{{end}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "최소 {{total}}개 중 {{start}}-{{end}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "페이지당 {{value}}개"
     },
     "yes": "예",
@@ -736,6 +739,8 @@
     "indexingStatus": {
       "completed": "완료",
       "inProgress": "진행 중",
+      "embeddingProgress_one": "임베딩 중 {{done, number}} / {{total, number}}개 청크",
+      "embeddingProgress_other": "임베딩 중 {{done, number}} / {{total, number}}개 청크",
       "failed": "실패",
       "fileTypeNotSupported": "지원되지 않는 파일 형식",
       "notStarted": "시작 전",
@@ -791,7 +796,8 @@
     "nameRules": {
       "folderSeparator": "폴더 이름에는 \"/\" 또는 \"\\\"를 사용할 수 없습니다.",
       "collectionExists": "\"{{name}}\" 컬렉션이 이미 있습니다. 다른 이름을 선택하세요."
-    }
+    },
+    "sourcesNotReady": "일부 소스가 아직 준비 중이라 목록에 표시되지 않습니다({{count}}). 잠시 후 다시 시도하세요."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -933,7 +939,17 @@
     "copy": "복사",
     "fork": "채팅 분기",
     "forkFromHere": "여기서 분기",
+    "forkedHere": "여기서 분기됨",
+    "untitledChat": "제목 없는 채팅",
+    "forkedFrom": "분기 원본:",
+    "copiedUpToHere": "여기까지 복사됨 · 새 메시지는 아래부터 시작됩니다",
+    "forkOriginUnavailable": "원본 채팅을 더 이상 사용할 수 없습니다",
     "regenerate": "다시 생성",
+    "answerHidden": {
+      "lost": "이 답변은 더 이상 접근할 수 없는 콘텐츠를 사용했습니다.",
+      "unconfirmed": "접근 권한을 확인하지 못했습니다. 다시 시도하세요.",
+      "askAgain": "다시 질문하기"
+    },
     "readAloud": "소리 내어 읽기",
     "stopReading": "읽기 중지",
     "ttsNotSupported": "이 브라우저에서는 텍스트 음성 변환이 지원되지 않습니다",
@@ -1604,6 +1620,15 @@
         "done": "완료",
         "error": "실패"
       }
+    },
+    "webSearchSetup": {
+      "title": "웹 검색이 아직 설정되지 않았습니다",
+      "adminBody": "조직에 구성된 검색 공급자가 없습니다. Workspace → 웹 검색에서 하나를 선택하면 모두가 웹 검색을 사용할 수 있습니다.",
+      "memberBody": "조직에서 아직 웹 검색 공급자를 설정하지 않아 답변에 웹을 사용할 수 없습니다.",
+      "memberHint": "관리자에게 Workspace → 웹 검색에서 설정해 달라고 요청하세요.",
+      "setUp": "웹 검색 설정",
+      "notNow": "나중에",
+      "gotIt": "확인"
     }
   },
   "workspaceMenu": {
@@ -3428,7 +3453,14 @@
         "badge": "조치 필요",
         "title": "조치 필요",
         "openAuthentication": "인증 업데이트",
-        "viewSteps": "설정 단계 보기"
+        "viewSteps": "설정 단계 보기",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki가 구성원 및 페이지 구조 쿼리를 거부합니다",
+            "message": "비공개 스페이스는 이전 동기화에서 확인된 액세스 권한으로만, 확인 후 {{days}}일 동안만 동기화됩니다. 한 번도 동기화되지 않았거나 그보다 오래전에 확인된 비공개 스페이스는 건너뛰며, 페이지 계층 구조를 사용할 수 없습니다. 공개 스페이스는 영향을 받지 않습니다. 필터 변경으로 시작된 동기화를 포함한 전체 동기화는 Drupal Wiki가 구성원을 다시 나열할 때까지 비공개 스페이스에 대해 이를 중단합니다.",
+            "message_dated": "비공개 스페이스는 이전 동기화에서 확인된 액세스 권한으로만, 확인 후 {{days}}일 동안만 동기화됩니다. 한 번도 동기화되지 않았거나 그보다 오래전에 확인된 비공개 스페이스는 건너뛰며, 페이지 계층 구조를 사용할 수 없습니다. 공개 스페이스는 영향을 받지 않습니다. 필터 변경으로 시작된 동기화를 포함한 전체 동기화는 Drupal Wiki가 구성원을 다시 나열할 때까지 비공개 스페이스에 대해 이를 중단합니다. 사용 중인 가장 오래된 액세스 권한은 {{confirmedOn}}에 확인되었습니다."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "조직의 모든 사람이 이 데이터를 보게 됩니다",
@@ -3438,6 +3470,104 @@
         "cancel": "취소",
         "continueTeam": "팀 커넥터로 계속",
         "goToPersonal": "개인 커넥터 설정"
+      },
+      "accessCheck": {
+        "open": "사용자의 접근 권한 확인",
+        "title": "사용자의 접근 권한 확인",
+        "description": "이 커넥터의 레코드를 특정 사용자가 읽을 수 있는지, 읽을 수 없다면 이유가 무엇인지 확인합니다.",
+        "personLabel": "사용자",
+        "personPlaceholder": "사용자 선택",
+        "peopleLoading": "사용자를 불러오는 중...",
+        "peopleFailed": "사용자 목록을 불러오지 못했습니다.",
+        "recordLabel": "레코드 ID",
+        "recordHint": "레코드를 열어 ID를 복사하세요.",
+        "check": "확인",
+        "checking": "확인하는 중...",
+        "close": "닫기",
+        "resultHeading": "결과",
+        "restrictedArea": "제한된 영역",
+        "theyFallback": "이 사용자",
+        "pathLabel": "위치: {{path}}",
+        "reference": "참조: {{ref}} (이유가 잘못된 것 같으면 지원팀에 전달하세요)",
+        "verdict": {
+          "granted": "{{name}}님은 이 레코드를 볼 수 있습니다.",
+          "denied": "{{name}}님은 이 레코드를 볼 수 없습니다."
+        },
+        "reason": {
+          "granted": "검색에 나타나지 않는다면 아직 색인되지 않았거나 커넥터가 아직 동기화 중일 수 있습니다.",
+          "not_linked": "{{name}}님의 계정이 이 커넥터에 연결되어 있지 않습니다.",
+          "no_grant": "{{container}}의 어떤 항목도 {{name}}님에게 접근 권한을 주지 않습니다.",
+          "restricted_container": "{{container}}은(는) 다른 사용자로 제한되어 있습니다.",
+          "item_restricted": "이 레코드에는 자체 제한이 있으며 {{name}}님은 포함되어 있지 않습니다.",
+          "parent_not_readable": "{{name}}님은 이 레코드에 필요한 상위 항목을 열 수 없습니다.",
+          "pending_rewrite": "이 레코드가 있는 폴더를 업데이트하는 중입니다.",
+          "syncing": "커넥터가 이 부분의 동기화를 아직 끝내지 않았습니다.",
+          "scheme_unreadable": "커넥터가 이 영역의 접근 규칙을 읽을 수 없어 모든 사용자에게 숨겨져 있습니다.",
+          "deleted_at_source": "이 레코드는 원본에서 삭제되었습니다.",
+          "unexplained": "이유를 표시할 수 없습니다."
+        },
+        "next": {
+          "not_linked": "원본에서 계정을 수정한 다음 동기화하세요.",
+          "no_grant": "원본에서 {{name}}님을 추가하세요.",
+          "restricted_container": "소유자에게 {{name}}님을 추가해 달라고 요청하세요.",
+          "item_restricted": "소유자에게 {{name}}님을 추가해 달라고 요청하세요.",
+          "parent_not_readable": "상위 항목을 {{name}}님과 공유하세요.",
+          "pending_rewrite": "몇 분 기다린 후 다시 확인하세요.",
+          "syncing": "동기화가 끝날 때까지 기다리세요.",
+          "scheme_unreadable": "원본에서 동기화 계정의 권한을 수정하세요.",
+          "deleted_at_source": "할 일이 없습니다.",
+          "unexplained": "지원팀에 문의하고 참조를 알려 주세요."
+        },
+        "errors": {
+          "failed": "확인하지 못했습니다. 다시 시도하세요.",
+          "notFound": "이 커넥터에서 해당 사용자 또는 레코드를 찾을 수 없습니다.",
+          "rateLimited": "확인 요청이 너무 많습니다. 1분 후에 다시 시도하세요."
+        },
+        "peopleRetry": "다시 시도",
+        "askedAbout": "레코드 {{record}} 관련"
+      },
+      "access": {
+        "title": "접근",
+        "loading": "접근 세부 정보를 불러오는 중…",
+        "loadError": "접근 세부 정보를 불러오지 못했습니다.",
+        "retry": "다시 시도",
+        "reach": "{{connector}}의 변경 사항은 {{interval}} 이내에 PipesHub에 반영됩니다.",
+        "reachUnknown": "{{connector}}의 변경 사항은 다음 동기화 때 PipesHub에 반영됩니다.",
+        "syncNow": "지금 권한 동기화",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "권한",
+          "succeeded": "마지막 새로 고침: {{when}}.",
+          "failed": "마지막 권한 새로 고침에 실패했으므로 원본의 최근 변경 사항이 아직 반영되지 않았을 수 있습니다. 다시 시도하려면 '지금 권한 동기화'를 선택하세요.",
+          "never": "권한을 아직 새로 고치지 않았습니다. 첫 동기화가 끝날 때까지 이 커넥터의 콘텐츠는 숨겨집니다.",
+          "running": "권한을 새로 고치는 중입니다.",
+          "incomplete": "마지막 권한 새로 고침이 끝까지 실행되지 않았습니다."
+        },
+        "pending": {
+          "label": "적용 대기 중",
+          "none": "대기 중인 항목이 없습니다.",
+          "some_other": "폴더 {{count}}개를 업데이트하는 중입니다. 업데이트가 끝날 때까지(보통 몇 분) 모든 사용자에게 숨겨집니다.",
+          "overflow": "변경 사항이 커넥터 전체에 영향을 주어 권한 인덱스를 완전히 다시 만들어야 합니다. 그때까지 검색은 각 결과를 확인하므로 이 때문에 숨겨지는 것은 없습니다.",
+          "unknown": "알 수 없음: 업데이트를 기다리는 폴더 목록을 읽을 수 없습니다. '확인 필요'를 참고하세요."
+        },
+        "attention": {
+          "label": "확인 필요 ({{count}})",
+          "none": "확인할 항목이 없습니다.",
+          "warning": "{{container}}의 항목 {{items}}개가 숨겨져 있습니다. 동기화 계정이 이 컨테이너의 권한을 읽을 수 없습니다.",
+          "fix": "해결: {{vendor}}에서 동기화 계정에 {{permission}} 권한을 부여한 다음 '지금 권한 동기화'를 선택하세요.",
+          "showAll": "{{count}}개 더 보기",
+          "warningNoContainer": "동기화 계정이 권한을 읽을 수 없어 일부 항목이 숨겨져 있습니다.",
+          "rebuild": "이 커넥터의 권한 인덱스를 완전히 다시 만들어야 합니다. 그때까지 검색은 각 결과를 확인하므로 이 때문에 숨겨지는 것은 없습니다.",
+          "unfinished": "권한 변경이 깔끔하게 끝나지 않았습니다. PipesHub를 운영하는 담당자에게 이 커넥터의 권한 인덱스를 확인해 달라고 요청하세요.",
+          "stale": "일부 항목은 빠른 검색으로 확인할 수 없어 기본 검색으로 찾습니다.",
+          "sweep": "이 커넥터의 권한 업데이트가 계속 실패하고 있습니다. PipesHub를 운영하는 담당자에게 로그를 확인해 달라고 요청하세요.",
+          "other": "이 커넥터의 권한에 대해 사람이 확인해야 할 사항이 있습니다.",
+          "unreadable": "업데이트를 기다리는 폴더 목록을 읽을 수 없습니다. PipesHub를 운영하는 담당자에게 이 커넥터의 권한 인덱스를 다시 만들어 달라고 요청하세요. 그동안 검색은 각 결과를 확인합니다."
+        }
       }
     },
     "mcpServers": {
@@ -4149,6 +4279,11 @@
         "settingDefault": "설정 중…",
         "editConfiguration": "구성 편집",
         "deleteConfiguration": "구성 삭제"
+      },
+      "duckduckgoWarning": "공유 서버에서는 차단되거나 속도가 제한될 수 있어 팀에는 권장하지 않습니다.",
+      "notSetUp": {
+        "title": "웹 검색이 아직 설정되지 않았습니다.",
+        "description": "아래에서 제공업체를 선택해 켜세요. 그때까지는 조직의 누구도 채팅에서 웹을 검색할 수 없습니다."
       }
     },
     "profile": {
@@ -5823,5 +5958,20 @@
     },
     "nothingNew": "이 노드에 더 표시할 항목이 없습니다.",
     "tableOnly": "원활한 동작을 위해 표만 표시합니다."
+  },
+  "accessNotice": {
+    "permissions_updating": "일부 소스가 권한을 업데이트하고 있어 몇 분 동안 일부 결과가 보이지 않을 수 있습니다.",
+    "connector_syncing": "{{name}}이(가) 아직 동기화 중이므로 해당 결과가 불완전할 수 있습니다.",
+    "connector_syncing_unnamed": "소스가 아직 동기화 중이므로 해당 결과가 불완전할 수 있습니다.",
+    "check_unavailable": "지금은 접근할 수 있는 문서를 확인하지 못해 결과를 표시하지 않습니다. 1분 후에 다시 시도하세요.",
+    "emptySyncing": "아직 검색할 항목이 없습니다. {{name}}이(가) 동기화 중입니다.",
+    "emptySyncing_unnamed": "아직 검색할 항목이 없습니다. 소스가 동기화 중입니다.",
+    "noAccess": {
+      "title": "이 항목에 접근할 수 없습니다",
+      "body": "이동, 삭제 또는 제한되었을 수 있습니다. 소유자에게 문의하거나, 링크가 있다면 원래 위치에서 여세요.",
+      "justGotAccess": "방금 원본에서 접근 권한을 받으셨나요? 새 권한은 다음 동기화 후에 표시됩니다.",
+      "copyDetails": "관리자용 세부 정보 복사",
+      "copied": "세부 정보를 복사했습니다"
+    }
   }
 }

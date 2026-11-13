@@ -553,7 +553,12 @@ class DataSourceEntitiesProcessor:
         if getattr(error, "schema_reported", False):
             return
         error.schema_reported = True
-        self.logger.error("Graph write rejected by schema validation (collection=%s): %s", error.collection, error)
+        # Where and which rule, never the message: jsonschema's text quotes the rejected value.
+        rule = error.original_error
+        self.logger.error(
+            "Graph write rejected by schema validation (collection=%s)", error.collection,
+            extra={"schema_path": getattr(rule, "json_path", None), "validator": getattr(rule, "validator", None)},
+        )
         record_schema_rejection(error.collection)
 
     def _must_propagate(self, error: Exception, tx_store: TransactionStore | None) -> bool:
@@ -2142,8 +2147,25 @@ class DataSourceEntitiesProcessor:
         ):
             record.queued_at = get_epoch_timestamp_in_ms()
 
-    @staticmethod
-    def _keeps_stored_indexing(record: Record, existing_record: Record, *, reindex_restored: bool) -> bool:
+    @classmethod
+    def _content_changed(cls, new_record: Record, old_record: Record) -> bool:
+        """Whether indexing would read *new_record* differently from *old_record*.
+
+        A new revision, but also the same bytes read as another file type (a GCS
+        object whose Content-Type changed keeps its MD5 revision; a rename to
+        another extension keeps a Drive revision). The save and a move decide on
+        it alike. A code file's path is not compared here: it is part of its
+        external id, so a save (matched on that id) cannot change it, and the
+        stored row a save reads is a base Record with no file_path, which would
+        read as a new path on every sync. A move compares it (_code_path_changed).
+        """
+        return (
+            new_record.external_revision_id != old_record.external_revision_id
+            or cls._file_type_changed(new_record, old_record)
+        )
+
+    @classmethod
+    def _keeps_stored_indexing(cls, record: Record, existing_record: Record, *, reindex_restored: bool) -> bool:
         """Whether a connector save leaves the stored indexing state as it is.
 
         It does when the content indexing saw is unchanged and the stored status
@@ -2161,16 +2183,9 @@ class DataSourceEntitiesProcessor:
         """
         if record.is_placeholder or reindex_restored:
             return False
-        if record.external_revision_id != existing_record.external_revision_id:
+        if cls._content_changed(record, existing_record):
             return False
         stored = existing_record.indexing_status
-        if (
-            stored == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
-            and DataSourceEntitiesProcessor._file_type_changed(record, existing_record)
-        ):
-            # The type can become supported with the revision unchanged (an object
-            # store's MD5 does not move): the outcome was for the old type.
-            return False
         if stored == ProgressStatus.QUEUED.value:
             return record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
         return stored in INDEXING_OUTCOME_STATUSES or stored in INDEXING_PENDING_STATUSES
@@ -3301,8 +3316,8 @@ class DataSourceEntitiesProcessor:
         self._report_schema_rejection(error)
         _stats_sink().records[RecordOutcome.FAILED] += 1
         self.logger.error(
-            "Record %s quarantined, skipped: write rejected by schema validation (collection=%s): %s",
-            record.id, error.collection, error,
+            "Record %s quarantined, skipped: write rejected by schema validation (collection=%s)",
+            record.id, error.collection,
         )
 
     @retry_on_deadlock()
@@ -3769,11 +3784,9 @@ class DataSourceEntitiesProcessor:
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
                     )
-                    needs_reindex = (
-                        content_changed
-                        or self._file_type_changed(new_record, old_record)
-                        or self._code_path_changed(new_record, old_record)
-                    )
+                    needs_reindex = self._content_changed(
+                        new_record, old_record
+                    ) or self._code_path_changed(new_record, old_record)
 
                     is_kb_item = new_record.origin == OriginTypes.UPLOAD
                     if not is_kb_item:
@@ -6341,7 +6354,8 @@ class DataSourceEntitiesProcessor:
         connector_id: str
     ) -> bool:
         try:
-            async with self.data_store_provider.transaction() as tx_store:
+            # a webhook event outside any sync: nothing else moves the viewer-scope version for this grant
+            async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
                 # 1. Look up the user by email
                 user = await tx_store.get_user_by_email(user_email)
                 if not user:
@@ -7088,6 +7102,43 @@ class DataSourceEntitiesProcessor:
 
         async with self.data_store_provider.transaction() as tx_store:
             await self._handle_record_permissions(record, permissions, tx_store)
+
+    @retry_on_deadlock()
+    async def stop_inheriting_permissions(self, record_id: str, connector_id: str) -> None:
+        """Remove the record's edges to the records it inherits permissions from. Its own grants stay. A failed read
+        of the edges raises, so nothing is left unremoved."""
+        async with self.data_store_provider.transaction() as tx_store:
+            edges = await tx_store.get_edges_from_node(
+                f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.INHERIT_PERMISSIONS.value,
+                raise_on_error=True,
+            )
+            for edge in edges:
+                parent_collection, _, parent_id = str(edge.get("_to") or "").partition("/")
+                if not parent_id:
+                    continue
+                if parent_collection == CollectionNames.RECORD_GROUPS.value:
+                    await tx_store.delete_inherit_permissions_relation_record_group(record_id, parent_id)
+                else:
+                    await tx_store.delete_inherit_permissions_relation_record(record_id, parent_id)
+        if edges:
+            await self._access_changed([connector_id])
+
+    @retry_on_deadlock()
+    async def delete_group_permission_from_record(self, record_id: str, group_external_id: str, connector_id: str) -> None:
+        """Delete a group's (by its id at the source) permission edge to a record. A group the store does not hold
+        has no edge; a failed read of it raises, so nothing is left unremoved."""
+        async with self.data_store_provider.transaction() as tx_store:
+            group = await tx_store.get_user_group_by_external_id(connector_id, group_external_id, raise_on_error=True)
+            if group is None:
+                return
+            deleted = await tx_store.batch_delete_edges([{
+                "from_id": group.id,
+                "from_collection": CollectionNames.GROUPS.value,
+                "to_id": record_id,
+                "to_collection": CollectionNames.RECORDS.value,
+            }], collection=CollectionNames.PERMISSION.value)
+        if deleted:
+            await self._access_changed([connector_id])
 
     @retry_on_deadlock()
     async def delete_permission_from_record(

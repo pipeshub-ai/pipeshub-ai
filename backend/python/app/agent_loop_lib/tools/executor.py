@@ -41,7 +41,7 @@ from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.tools.base import ToolOutput
 from app.agent_loop_lib.tools.errors import ToolNotFoundError, ToolValidationError
 from app.agent_loop_lib.tools.registry import ToolRegistry
-from app.utils.error_class import classify_error, level_for, log_failure, logged_level
+from app.utils.error_class import already_logged, classify_error, level_for, log_failure
 from app.utils.logging_fields import log_event, log_fields
 
 if TYPE_CHECKING:
@@ -69,7 +69,7 @@ OnPending = Callable[[ToolCall, PendingApproval], Awaitable[None]]
 
 _USAGE_HINT_DESCRIPTION_LIMIT = 100
 MAX_LOGGED_TOOL_NAME = 128
-# The `ToolOutput.end_fields` keys `tool_call.end` carries besides `reason`.
+# The `ToolOutput.end_fields` keys `tool_call.end` carries besides `reason` (`level` is read apart: not a field).
 _END_FIELD_KEYS = ("error_class", "status", "mcp_reason")
 _UNKNOWN_TOOL = MappingProxyType({"reason": "unknown_tool", "error_class": "not_found"})
 _EXCEPTION = MappingProxyType({"reason": "exception"})
@@ -77,29 +77,32 @@ _EXCEPTION = MappingProxyType({"reason": "exception"})
 
 def log_tool_call_end(
     *, outcome: str, reason: str | None = None, error_class: str | None = None,
-    cause: BaseException | None = None, tool: str | None = None, **fields: object,
+    cause: BaseException | None = None, tool: str | None = None, level: int | None = None, **fields: object,
 ) -> None:
     """The one ``tool_call.end`` line of a tool call: ``outcome`` is success, failure or skipped,
     ``reason`` the exit (exception, tool_error, bad_args, denied, ...). A failure with a ``cause``
     is logged once with its class and no error text (it can echo the arguments); another failure
     at its class's level, WARNING when unclassified; success and skipped at INFO. A call parked
     for approval isn't over yet: DEBUG, and the settled card logs the line. Pass ``tool`` and
-    ``tool_call_id`` where `call_tool` hasn't bound them."""
+    ``tool_call_id`` where `call_tool` hasn't bound them. ``level`` (the ``level`` key of
+    ``ToolOutput.end_fields``) lowers a ``misconfigured`` failure's line, a repeat inside its hourly
+    gate; for any other class, or a higher level, it is ignored."""
     if tool is not None:
         fields["tool"] = tool[:MAX_LOGGED_TOOL_NAME]
     if cause is not None:
         cls = error_class or classify_error(cause)
-        prior = logged_level(cause)
-        if prior is None or prior < level_for(cls):
+        lowered = cls == "misconfigured" and level is not None and level < level_for(cls)
+        want = level if lowered else level_for(cls)
+        if not already_logged(cause, want):
             # Marks it (an outer handler's line then drops to DEBUG); the stack once, at ERROR.
             log_failure(
-                logger, "tool_call.end", cause, error_class=cls, include_error_text=False,
+                logger, "tool_call.end", cause, level=want, error_class=cls, include_error_text=False,
                 outcome=outcome, reason=reason, **fields,
             )
             return
         # Already logged (another call failed with the same exception): this call's line, at its level, no second stack.
         log_event(
-            logger, "tool_call.end", level=level_for(cls), outcome=outcome, reason=reason, error_class=cls,
+            logger, "tool_call.end", level=want, outcome=outcome, reason=reason, error_class=cls,
             error_type=type(cause).__name__, **fields,
         )
         return
@@ -118,6 +121,7 @@ class _Ended:
     reason: str | None = "exception"
     output: ToolOutput | None = None
     duration_ms: int | None = None
+    deny_reason: str | None = None
 
 
 def _collapse_repeated_name(name: str) -> str | None:
@@ -272,7 +276,8 @@ class ToolExecutor:
         fields = {key: output.end_fields.get(key) for key in _END_FIELD_KEYS} if output is not None else {}
         cause = raised or (output.cause if output is not None and ended.outcome == "failure" else None)
         log_tool_call_end(
-            outcome=ended.outcome, reason=ended.reason, cause=cause,
+            outcome=ended.outcome, reason=ended.reason, cause=cause, deny_reason=ended.deny_reason,
+            level=output.end_fields.get("level") if output is not None else None,
             kind=tool.log_kind if tool is not None else None, duration_ms=ended.duration_ms, **fields,
         )
 
@@ -327,6 +332,7 @@ class ToolExecutor:
             if on_denied is not None:
                 await on_denied(reason)
             ended.outcome, ended.reason = "skipped", "denied"
+            ended.deny_reason = pre_ctx.decision_code
             return CoreToolResult(tool_call_id=call.id, name=call.name, content=reason, is_error=True)
 
         from app.agent_loop_lib.transport.opik_tracing import (
@@ -426,6 +432,8 @@ class ToolExecutor:
                     data=core_result.content,
                     error=str(core_result.content) if core_result.is_error else None,
                     sources=list(core_result.sources),
+                    cause=core_result.cause,
+                    end_fields=core_result.end_fields,
                 )
             tool = self._registry.resolve_by_name(resolved_name)
         except ToolNotFoundError:

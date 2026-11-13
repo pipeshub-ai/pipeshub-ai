@@ -986,6 +986,18 @@ class OpenSearchService(IVectorDBService):
         )
         return [self._hit_to_point(doc) for doc in result.get("docs", []) if doc.get("found")]
 
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        """``mget`` with the source switched off: realtime, and no payload or vector crosses the wire."""
+        await self._assert_connected()
+        if not ids:
+            return set()
+        result = await self.client.mget(  # type: ignore
+            index=collection_name,
+            body={"ids": list(ids)},
+            _source=False,
+        )
+        return {doc["_id"] for doc in result.get("docs", []) if doc.get("found")}
+
     async def _clause_limit(self) -> int:
         """The cluster's ``indices.query.bool.max_clause_count`` (1024 unless set), read once. If it cannot be read the default is assumed: a
         smaller assumed limit only refuses a filter, it never sends a search that fails."""

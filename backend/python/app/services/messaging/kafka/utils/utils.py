@@ -7,6 +7,7 @@ if TYPE_CHECKING:
 
 from app.services.messaging.kafka.config.kafka_config import kafka_security_kwargs
 from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
+from app.exceptions.non_retryable import NonRetryableError
 from app.edition_services import (
     EntityEventService,
     EventService,
@@ -163,24 +164,11 @@ class KafkaUtils:
         )
 
         async def handle_entity_message(message: StreamMessage) -> bool:
-            try:
-                event_type = message.eventType
-                payload = message.payload
-
-                if not event_type:
-                    logger.error("Missing event_type in message")
-                    return False
-
-                if not payload:
-                    logger.error("Missing payload in message")
-                    return False
-
-                logger.info(f"Processing entity event: {event_type}")
-                return await entity_event_service.process_event(event_type, payload)
-
-            except Exception as e:
-                logger.error(f"Error processing entity message: {str(e)}", exc_info=True)
-                return False
+            if not message.eventType:
+                raise NonRetryableError("entity message has no eventType")
+            if not message.payload:
+                raise NonRetryableError("entity message has no payload")
+            return await entity_event_service.process_event(message.eventType, message.payload)
 
         return handle_entity_message
 
@@ -291,36 +279,32 @@ class KafkaUtils:
         logger = app_container.logger()
 
         async def handle_sync_message(message: StreamMessage) -> bool:
-            try:
-                event_type = message.eventType
-                payload = message.payload
+            event_type = message.eventType
+            payload = message.payload
 
-                if not event_type:
-                    logger.error("Missing event_type in sync message")
-                    return False
+            if not event_type:
+                raise NonRetryableError("sync message has no eventType")
 
-                connector = None
-                if "." in event_type:
-                    connector = event_type.split(".")[0].lower()
-                else:
-                    connector = payload.get("connector")
-
+            if "." in event_type:
+                connector = event_type.split(".")[0].lower()
                 if not connector:
-                    logger.error("Missing connector in event_type or payload")
-                    return False
+                    raise NonRetryableError("sync event names no connector")
+            else:
+                connector = payload.get("connector")
+                if not connector:
+                    # Node's config manager publishes events no connector consumes here
+                    # (connectorPublicUrlChanged, gmailUpdates*Event): not addressed to this consumer.
+                    logger.debug(f"Skipping sync event without a connector: {event_type}")
+                    return True
 
-                logger.debug(f"Processing sync event: {event_type} for connector {connector}")
+            logger.debug(f"Processing sync event: {event_type} for connector {connector}")
 
-                event_service = EventService(
-                    logger=logger,
-                    graph_provider=graph_provider,
-                    app_container=app_container,
-                )
-                return await event_service.process_event(event_type, payload)
-
-            except Exception as e:
-                logger.error(f"Error processing sync message: {str(e)}", exc_info=True)
-                return False
+            event_service = EventService(
+                logger=logger,
+                graph_provider=graph_provider,
+                app_container=app_container,
+            )
+            return await event_service.process_event(event_type, payload)
 
         return handle_sync_message
 
@@ -388,24 +372,16 @@ class KafkaUtils:
         )
 
         async def handle_aiconfig_message(message: StreamMessage) -> bool:
-            try:
-                event_type = message.eventType
-                payload = message.payload
+            event_type = message.eventType
 
-                if not event_type:
-                    logger.error("Missing event_type in AI config message")
-                    return False
+            if not event_type:
+                raise NonRetryableError("AI config message has no eventType")
 
-                # Only process AI configuration events
-                if event_type not in ["llmConfigured", "embeddingModelConfigured"]:
-                    logger.debug(f"Skipping non-AI config event: {event_type}")
-                    return True
+            # Only process AI configuration events
+            if event_type not in ["llmConfigured", "embeddingModelConfigured"]:
+                logger.debug(f"Skipping non-AI config event: {event_type}")
+                return True
 
-                logger.info(f"Processing AI config event: {event_type}")
-                return await aiconfig_event_service.process_event(event_type, payload)
-
-            except Exception as e:
-                logger.error(f"Error processing AI config message: {str(e)}", exc_info=True)
-                return False
+            return await aiconfig_event_service.process_event(event_type, message.payload)
 
         return handle_aiconfig_message
