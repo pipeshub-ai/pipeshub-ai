@@ -170,30 +170,39 @@ class KhBrowseMixin(PgBase):
         lead = LeadBudget()      # the request's placeholder walks: its page, its total and its arrows share one budget
         arrows = (hidden, admitted_of, org, transaction, tops, lead)      # what deciding a placeholder and an arrow reads
         on: dict[int, bool] = {}      # a record's arrow, once decided (never while a placeholder below it is undecided)
+        # The first row a call looks at may not end it (a request must move on). Its undecided placeholders are walked on one more budget, the request's second and last
+        # (so a request's walks read at most twice LEAD_NODES rows); a head still undecided when that runs out is listed (``shown``): the viewer may open it, so listing it
+        # cannot over-share, and leaving it out would hide it. Its arrow is off while undecided, as on any page, and the total is capped.
+        head_lead = LeadBudget(decided=lead.decided)
+        shown: set[int] = set()
 
         def record(r: Any) -> bool:  # noqa: ANN401
             return r["kind"] == 3 and not r["folder"]
 
+        def settled(r: Any) -> bool:  # noqa: ANN401
+            return not record(r) or r["sk"] in on or r["sk"] in shown
+
         async def keep(rows: list[Any], head: int | None) -> tuple[list[Any], int | None]:
             """The sidebar's rows (``only_containers``): the groups and the folders, and a record only where its arrow is on, as the page's arrows decide it. A record whose
             arrow waits on a placeholder the request's budget left undecided ends the rows there, and its sk is handed back (the caller resumes before it); ``head``, the
-            first row the caller looked at, is decided by walks of its own budget instead, so a request always moves on."""
-            ask = [r for r in rows if record(r) and r["sk"] not in on]
+            first row the caller looked at, is walked on ``head_lead`` instead, and listed when that cannot decide it either."""
+            ask = [r for r in rows if not settled(r)]
             if ask:
                 read = await self._kq(lambda tx: self._kh_arrows_read(tx, org, ask, hidden, sets, gset, access, tops=chain_tops_apply(app_doc)), transaction)
                 unsure: set[int] = set()
                 lit = await self._kh_arrows(read, ask, *arrows, undecided=unsure)
                 on.update((r["sk"], r["sk"] in lit) for r in ask if r["sk"] not in unsure)
-                while head in unsure and head not in on:      # each pass's first walk has a budget of its own and ends: one more placeholder decided
+                one = (read[0], [k for k in read[1] if k["parent"] == head], read[2], read[3])
+                while head in unsure:      # each pass decides one more of its placeholders, until head_lead runs out
                     unsure, known = set(), len(lead.decided)
-                    one = (read[0], [k for k in read[1] if k["parent"] == head], read[2], read[3])
-                    lit = await self._kh_arrows(one, [r for r in ask if r["sk"] == head], *arrows[:5], LeadBudget(decided=lead.decided), undecided=unsure)
+                    lit = await self._kh_arrows(one, [r for r in ask if r["sk"] == head], *arrows[:5], head_lead, undecided=unsure)
                     if head not in unsure:
                         on[head] = head in lit
-                    elif len(lead.decided) == known:      # no walk ended (never expected): resume before it rather than loop
+                    elif len(lead.decided) == known:
+                        shown.add(head)
                         break
-            stop = next((i for i, r in enumerate(rows) if record(r) and r["sk"] not in on), len(rows))
-            return [r for r in rows[:stop] if not record(r) or on[r["sk"]]], rows[stop]["sk"] if stop < len(rows) else None
+            stop = next((i for i, r in enumerate(rows) if not settled(r)), len(rows))
+            return [r for r in rows[:stop] if not record(r) or on.get(r["sk"]) or r["sk"] in shown], rows[stop]["sk"] if stop < len(rows) else None
         walk = (*arrows, keep if side else None)      # what listing a child reads (``_kh_listed``)
         resume, capped, out, read = None, False, None, None
         if u["done"] is not None:
@@ -214,6 +223,7 @@ class KhBrowseMixin(PgBase):
         else:
             page, resume = await self._kh_browse_wide(p, where, links, limit, sort_field, order, after, direction, walk)
             total, counts, capped = (await self._kh_browse_total(p, where, links, sets, gset, walk)) if include_total else (0, dict(NO_COUNTS), False)
+        capped = capped or bool(shown)      # a record listed with its arrow undecided: the total is no more exact than the arrow
         if out is None:      # the rows and their arrows in one read
             out, read = await self._kh_flat_rows(org, app_id, app_doc, page, sort_field, transaction, also=lambda tx: self._kh_arrows_read(tx, org, page, hidden, sets, gset, access,
                                                                                                                   tops=chain_tops_apply(app_doc)),

@@ -885,3 +885,55 @@ async def test_a_sidebar_record_whose_placeholder_the_budget_leaves_undecided_is
         after = page.get("resume") or {"nullRank": last["nullRank"], "sortKey": last["sortKey"], "id": last["id"]}
     assert seen == ["a1", "b1", "zfold"], seen
     assert capped[0] is True, capped
+
+
+@pytest.mark.parametrize("mode", ["served", "walk"])
+async def test_a_sidebar_head_record_with_many_deep_placeholders_reads_at_most_twice_the_budget_and_is_listed(pg_db, monkeypatch, mode) -> None:
+    """The first record of a folder holds 30 placeholders, each a chain of ten that leads nowhere: deciding its arrow would read 300 rows. A request reads at most twice
+    LEAD_NODES rows of placeholder walks (its own budget, and one for the first row it looks at), then lists the record with its arrow off and the total capped: the viewer may
+    open it. Every page moves on, and every row is listed once, at any page size."""
+    p, org = prov(pg_db), new_org()
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "G", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+        chains = [[f"h-s{i:02d}-{j}" for j in range(10)] for i in range(30)]
+        recs = [("fold", {"mimeType": "application/vnd.folder"}), ("h", {}), ("m", {"mimeType": "application/vnd.folder"}), ("z", {}), ("z-kid", {}),
+                *((s, {"isPlaceholder": True}) for c in chains for s in c)]
+        await p.batch_upsert_nodes([{"_key": i, "recordName": i, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", **extra} for i, extra in recs],
+                                   "records")
+        hops = [*(("fold", i) for i in ("h", "m", "z")), ("z", "z-kid"), *(("h", c[0]) for c in chains), *((c[j], c[j + 1]) for c in chains for j in range(9))]
+        await p.batch_create_edges([edge(a, "records", b, "records", relationshipType="PARENT_CHILD") for a, b in hops], "nodeRelations")
+        await p.batch_create_edges([edge(i, "records", "g1", "recordGroups") for i, _ in recs], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        granted = [i for i, _ in recs]
+        await p.batch_create_edges([edge("u1", "users", i, "records", type="USER", role="READER") for i in granted], "permission")
+    await flip(pg_db, org)
+    if mode == "walk":
+        await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+    monkeypatch.setattr(kh_listing, "LEAD_NODES", 20)
+    requests: list[int] = []      # the placeholder-walk rows of each request
+    real_kq = kh_listing.KhListingMixin._kq
+
+    async def kq(self, fn, transaction) -> object:
+        got = await real_kq(self, fn, transaction)
+        if requests and isinstance(got, list) and got and "parent" in got[0]:
+            requests[-1] += len(got)
+        return got
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kq", kq)
+    for size in (1, 2, 50):
+        seen, after, first = [], None, None
+        for _ in range(10):
+            requests.append(0)
+            page = await browse(p, org, "fold", granted, limit=size, after=after, filters={"only_containers": True})
+            first = first or page
+            seen += [r["id"] for r in page["rows"]]
+            if not page["hasMore"]:
+                break
+            last = page["rows"][-1] if page["rows"] else None
+            nxt = page.get("resume") or {"nullRank": last["nullRank"], "sortKey": last["sortKey"], "id": last["id"]}
+            assert nxt != after, (size, seen)      # the page moved on
+            after = nxt
+        assert seen == ["h", "m", "z"], (size, seen)
+        assert first["totalCapped"] is True and {r["id"]: r["hasChildren"] for r in first["rows"]}.get("h") is False, first
+    assert max(requests) <= 2 * 20, requests
