@@ -102,6 +102,7 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
   'listArtifactSets',
   'listAttachmentsAndCitedRecords',
   'listBranches',
+  'listForksOf',
   'listStaleBranches',
   'listByEmails',
   'listByFolders',

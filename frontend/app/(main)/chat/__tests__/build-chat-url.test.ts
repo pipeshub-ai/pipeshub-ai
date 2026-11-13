@@ -49,6 +49,12 @@ describe('buildChatHref', () => {
     expect(buildChatHref({})).toBe('/chat/');
   });
 
+  it('adds messageId only alongside a conversationId', () => {
+    expect(buildChatHref({ conversationId: 'c1', messageId: 'm1' })).toBe('/chat/?conversationId=c1&messageId=m1');
+    expect(buildChatHref({ messageId: 'm1' })).toBe('/chat/');
+    expect(buildChatHref({ conversationId: 'c1', messageId: null })).toBe('/chat/?conversationId=c1');
+  });
+
   it('adds agentId', () => {
     expect(buildChatHref({ agentId: 'a1' })).toBe('/chat/?agentId=a1');
   });
