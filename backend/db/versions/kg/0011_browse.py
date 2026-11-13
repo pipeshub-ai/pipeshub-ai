@@ -2,8 +2,8 @@
 from alembic import op
 from db.lib.ddl import ensure_partitioned_index
 
-revision = "kg_0010"
-down_revision = "kg_0009"
+revision = "kg_0011"
+down_revision = "kg_0010"
 branch_labels = None
 depends_on = None
 older_code_compatible = "adds indexes only; an index changes no answer older code reads"

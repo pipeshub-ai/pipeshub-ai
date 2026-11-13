@@ -19,6 +19,16 @@ CAP = 5000
 STAMP_COLS = ("sk", "coll", "id", "kind", "path", "class_id", "self_lit", "seed", "own_grant", "under_deleted", "legacy_reason", "leaf")
 RECORD_COLS = ("sk", "coll", "id", "kind", "app_sk", "group_sk", "parent_sk", "rule", "model", "vrid", "name", "name_key", "updated_ms", "created_ms",
                "size_bytes", "record_type", "origin", "external_id", "deleted", "placeholder", "granted")
+# The per-item checks of w_records_upsert (kg manifest) on the values a node's document supplies: one row that fails a check refuses the whole call. The id is not here: a key
+# the node-key writer took (``w_nodes_upsert``, the same bound) is one this writer takes.
+RECORD_LENGTHS = {"vrid": (0, 256), "record_type": (0, 64), "external_id": (0, 2000)}
+RECORD_ENUMS = {"rule": ("OPEN", "STRICT", "RESTRICTED"), "model": ("APP_LEVEL", "RECORD_LEVEL", "RECORD_GROUP_LEVEL"), "origin": ("CONNECTOR", "UPLOAD")}
+
+
+def record_refusals(row: dict) -> list[str]:
+    """The columns of a records row that ``w_records_upsert`` would refuse (none: it takes the row)."""
+    return [c for c, (lo, hi) in RECORD_LENGTHS.items() if row[c] is not None and not lo <= len(row[c]) <= hi] + \
+        [c for c, allowed in RECORD_ENUMS.items() if row[c] is not None and row[c] not in allowed]
 
 
 def _chunks(rows: list, n: int = CAP) -> Iterator[list]:

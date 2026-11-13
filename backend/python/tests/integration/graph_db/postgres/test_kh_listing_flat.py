@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import secrets
 
+import asyncpg
 import pytest
 
 from app.exceptions.graph_db_exceptions import (
@@ -419,8 +421,8 @@ async def _seed_named(p, db, org: str, names: dict[str, str]) -> None:
 @pytest.mark.parametrize("sort_dir", ["ASC", "DESC"])
 async def test_names_longer_than_the_indexed_prefix_page_in_the_order_of_the_whole_name_both_ways(pg_db, sort_dir) -> None:
     """The name indexes key on a prefix of the name: names that share it, end inside it, or split a surrogate pair at its edge still page, forward and back, in the order of the whole
-    name and then the id. Names of thousands of characters are copied and listed among names that share their prefix: the longest the copy takes (4,000 characters, ``w_records_upsert``),
-    here outside the BMP so 16,000 bytes of key that do not compress, and names of multi-byte characters inside the BMP."""
+    name and then the id. Names of thousands of characters are copied whole and listed among names that share their prefix: 5,000 characters outside the BMP (20,000 bytes of key that do
+    not compress), its first 4,000 and 4,001 (the bound the copy once had), and names of multi-byte characters inside the BMP."""
     import random
     rng = random.Random(5713)
     stem = "x" * (kgl.NAME_PREFIX // 2)      # code units of UTF-16: exactly the indexed prefix
@@ -429,11 +431,13 @@ async def test_names_longer_than_the_indexed_prefix_page_in_the_order_of_the_who
         tail = "".join(rng.choice("abé\U0001f600") for _ in range(rng.randint(0, 3)))
         names[f"r{i:04d}"] = rng.choice([stem + tail, stem[:-1] + tail, stem[:-2] + tail, tail or "a"])
     names["r0040"] = names["r0001"]           # the same name: the id decides
-    names["r0041"] = "".join(chr(rng.randint(0x20000, 0x2A6DF)) for _ in range(4000))
+    names["r0041"] = "".join(chr(rng.randint(0x20000, 0x2A6DF)) for _ in range(5000))
     names["r0042"] = names["r0041"][:-1] + "a"       # shares the prefix (and all but the last character) with r0041
     names["r0043"] = names["r0041"][:2000]           # shares the prefix and ends before r0041 does
     names["r0044"] = "".join(chr(rng.randint(0x4E00, 0x9FFF)) for _ in range(3000))
     names["r0045"] = names["r0044"][:2500] + "\u00e9"
+    names["r0046"] = names["r0041"][:4000]
+    names["r0047"] = names["r0041"][:4001]
     p, org = prov(pg_db), new_org()
     await _seed_named(p, pg_db, org, names)
 
@@ -451,6 +455,23 @@ async def test_names_longer_than_the_indexed_prefix_page_in_the_order_of_the_who
             break
         after = page.get("resume") or {k: page["rows"][0][k] for k in ("nullRank", "sortKey", "id")}
     assert back == want[:-1]
+
+
+async def test_a_record_named_longer_than_the_copy_once_took_is_copied_whole_and_its_connector_is_listed(pg_db) -> None:
+    """One record whose name is 5,000 characters outside the BMP, beside a record with a short name: the batch is copied (the records writer once refused any name over 4,000
+    characters, which failed the batch and left the whole connector not ready), kg holds the name whole, and the listing serves both rows in the order of the whole name."""
+    long = "".join(chr(0x20000 + i) for i in range(5000))
+    names = {"r0000": long, "r0001": "Short"}
+    p, org = prov(pg_db), new_org()
+    await _seed_named(p, pg_db, org, names)
+    got, _, first = await walk(p, org, 5, granted_ids=sorted(names))
+    assert got == ["r0001", "r0000"] and first["total"] == 2 and [r["name"] for r in first["rows"]] == ["Short", long]
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        stored = await con.fetchval("SELECT name FROM kg.records WHERE org_id = $1 AND id = 'r0000' AND coll = 3", org)
+    finally:
+        await con.close()
+    assert stored == long
 
 
 async def test_a_change_to_the_whole_connector_that_commits_after_the_check_is_not_read_by_the_page(pg_db, monkeypatch) -> None:
