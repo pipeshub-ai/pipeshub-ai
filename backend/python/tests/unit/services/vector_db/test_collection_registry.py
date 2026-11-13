@@ -102,6 +102,76 @@ class TestRegistryBasics:
         assert registry.strategy_name == "single"
 
 
+class TestOllamaUpgradeDimensions:
+    @pytest.mark.parametrize("stored_dimension", [512, "512"])
+    async def test_existing_collection_keeps_native_width(self, stored_dimension) -> None:
+        registry = _make_registry(_make_vdb(exists=True, dimension=768))
+        config = {"provider": "ollama", "configuration": {
+            "model": "embeddinggemma", "dimensions": stored_dimension,
+        }}
+
+        effective = await registry.resolve_embedding_config(config)
+        # Simulate the width Ollama returns for the effective request. Before
+        # the upgrade this saved setting was ignored and vectors were 768 wide.
+        width = int(effective["configuration"]["dimensions"])
+        assert await registry.ensure_collection(RecordContext(org_id="org"), width) == "records"
+        assert width == 768
+        assert config["configuration"]["dimensions"] == stored_dimension
+        registry._vector_db_service.create_collection.assert_not_called()
+        registry._vector_db_service.delete_collection.assert_not_called()
+
+    async def test_new_installation_uses_configured_width(self) -> None:
+        registry = _make_registry()
+        config = {"provider": "ollama", "configuration": {"dimensions": 512}}
+        assert await registry.resolve_embedding_config(config) == config
+
+    @pytest.mark.parametrize("provider,dimensions", [("openAI", 512), ("ollama", None)])
+    async def test_unaffected_settings_do_not_probe_storage(self, provider, dimensions) -> None:
+        registry = _make_registry()
+        config = {"provider": provider, "configuration": {"dimensions": dimensions}}
+        assert await registry.resolve_embedding_config(config) is config
+        registry._vector_db_service.get_collection_info.assert_not_called()
+
+    async def test_explicitly_migrated_collection_uses_new_width(self) -> None:
+        registry = _make_registry(_make_vdb(exists=True, dimension=512))
+        config = {"provider": "ollama", "configuration": {"dimensions": 512}}
+        assert await registry.resolve_embedding_config(config) == config
+
+    async def test_storage_failure_does_not_apply_new_dimension(self) -> None:
+        vdb = _make_vdb()
+        vdb.get_collection_info.side_effect = RuntimeError("vector DB unreachable")
+        registry = _make_registry(vdb)
+        with pytest.raises(RuntimeError, match="unreachable"):
+            await registry.resolve_embedding_config({
+                "provider": "ollama", "configuration": {"dimensions": 512},
+            })
+
+    async def test_conflicting_record_widths_require_explicit_migration(self) -> None:
+        registry = _make_registry()
+        registry.list_managed_collections = AsyncMock(return_value=[
+            ManagedCollection("records_a", "records", 768, "per_connector"),
+            ManagedCollection("records_b", "records", 512, "per_connector"),
+        ])
+        registry._vector_db_service.get_collection_info.side_effect = [
+            VectorCollectionInfo(name="records_a", exists=True, dense_dimension=768),
+            VectorCollectionInfo(name="records_b", exists=True, dense_dimension=512),
+        ]
+        with pytest.raises(VectorStoreError, match="different dimensions"):
+            await registry.resolve_embedding_config({
+                "provider": "ollama", "configuration": {"dimensions": 512},
+            })
+
+    async def test_stale_manifest_does_not_pin_a_removed_collection(self) -> None:
+        registry = _make_registry()
+        registry.list_managed_collections = AsyncMock(return_value=[
+            ManagedCollection("records", "records", 768, "single"),
+            ManagedCollection("entities", "entities", 1024, "single"),
+        ])
+        config = {"provider": "ollama", "configuration": {"dimensions": 512}}
+        assert await registry.resolve_embedding_config(config) is config
+        registry._vector_db_service.get_collection_info.assert_awaited_once_with("records")
+
+
 # ---------------------------------------------------------------------------
 # ensure_collection
 # ---------------------------------------------------------------------------

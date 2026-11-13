@@ -1754,6 +1754,8 @@ class VectorStore(Transformer):
                 (c for c in embedding_configs if c.get("isDefault")), embedding_configs[0]
             )
             provider = config["provider"]
+            if provider == "ollama":
+                config = await self.collection_registry.resolve_embedding_config(config)
             configuration = config["configuration"]
             dense_embeddings = get_embedding_model(provider, config)
             is_multimodal = config.get("isMultimodal")
