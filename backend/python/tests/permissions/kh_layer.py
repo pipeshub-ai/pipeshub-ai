@@ -347,8 +347,9 @@ async def _browse(
             below = await open_(row, row_type)
             if below is SKIPPED:
                 continue
-            if below is None:      # a row is listed only where it opens (a leaf to an empty list)
-                add("browse", f"{node}: lists {row}, and the browse refuses to open it")
+            if below is None:      # a row is listed only where it opens (a leaf to an empty list), but past the walk's hop cap (`refused_by_cap`)
+                kind = "gap" if refused_by_cap(reference, world, viewer, row) else "browse"
+                add(kind, f"{node}: lists {row}, and the browse refuses to open it")
             lists = lists_of[row] = bool(below)
             if bool(getattr(item, "hasChildren", False)) != lists:
                 add("arrow", f"{node}: {row} hasChildren {item.hasChildren}, opening it lists something: {lists}")
