@@ -26,6 +26,8 @@ from .kh_worlds import (
     FOLDERSTUB,
     KEYCLASH,
     KH_WORLDS,
+    OPENGRANT,
+    OPENGRANTTEAM,
     OPENGROUP,
     OPENSTUB,
     SCOPEDTWO,
@@ -270,6 +272,26 @@ async def test_an_open_app_reads_only_its_records_as_members_and_lists_only_its_
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
             await layer.release([OPENGROUP, XSTUB])
+
+
+async def test_a_granted_strict_group_below_a_seed_the_app_does_not_reach_is_read_and_listed_nowhere(graph_layers) -> None:
+    """OPENGROUP with the strict group granted to the viewer, directly (OPENGRANT) or through a group of users (OPENGRANTTEAM). The oracle denies it: its
+    only chain to the App runs through a declaration (R7 skips it), and a strict node is no seed. The access check of each store says the same, and the
+    browse of the seed lists exactly what the check admits."""
+    oracle = OracleLayer()
+    for world in (OPENGRANT, OPENGRANTTEAM):
+        v = oracle.explain(world, "u", ["gs"])["gs"]
+        assert (v.admitted, v.reason) == (False, "R7:rgl-parent-skipped@d")
+    for layer in graph_layers:
+        await layer.preload([OPENGRANT, OPENGRANTTEAM])
+        try:
+            for world in (OPENGRANT, OPENGRANTTEAM):
+                assert await layer.admitted(world, "u", ["k", "gs", "go"]) == {"k", "go"}, layer.name
+                assert await children_of(layer, world, "u", "k", "record") == {"go": False}, layer.name
+                bad = _bad(await check_world(layer, world, "opengrant"))
+                assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([OPENGRANT, OPENGRANTTEAM])
 
 
 @pytest.mark.parametrize("kind", sorted(gen.GENERATORS))

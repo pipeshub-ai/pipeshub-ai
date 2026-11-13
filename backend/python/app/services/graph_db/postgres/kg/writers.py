@@ -50,6 +50,14 @@ class KgWriter:
             n += await self.tx.fetchval("/* pipeshub:kg.w_records_upsert */ SELECT kg.w_records_upsert($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)", *args)
         return n
 
+    async def listing_set(self, rows: list[tuple[int, int, str, int, bool, bool, bool, bytes | None]]) -> int:
+        """The listing columns: (sk, coll code, id, kind code, folder, hide_children, alien, name_sort), of rows the caller has just written (the writer is an upsert)."""
+        n = 0
+        for part in _chunks(sorted(rows)):
+            n += await self.tx.fetchval("/* pipeshub:kg.w_listing_set */ SELECT kg.w_listing_set($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::boolean[], $6::boolean[], $7::boolean[], $8::bytea[])",
+                                        *[[r[i] for r in part] for i in range(8)])
+        return n
+
     async def classes_set(self, rows: list[tuple[int, int, int | None, str, bytes]]) -> int:
         """New classes, by id (an existing id is left as it is): (id, app_sk, group_sk, clauses as JSON text, hash)."""
         return sum([await self.tx.fetchval("/* pipeshub:kg.w_classes_set */ SELECT kg.w_classes_set($1::bigint[], $2::bigint[], $3::bigint[], $4::text[]::jsonb[], $5::bytea[])",

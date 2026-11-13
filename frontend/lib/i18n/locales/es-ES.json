@@ -451,6 +451,7 @@
     "created": "Creado",
     "updated": "Actualizado",
     "source": "Origen",
+    "actions": "Acciones",
     "noData": "No hay datos disponibles",
     "loading": "Cargando datos...",
     "selectAll": "Seleccionar todo",
@@ -502,6 +503,8 @@
     "pagination": {
       "showing": "Mostrando {{start}}-{{end}} de {{total}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "Mostrando {{start}}-{{end}} de al menos {{total}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "{{value}} por página"
     },
     "yes": "Sí",
@@ -717,7 +720,8 @@
     "nameRules": {
       "folderSeparator": "Los nombres de carpeta no pueden contener \"/\" ni \"\\\".",
       "collectionExists": "Ya tienes una colección llamada \"{{name}}\". Elige otro nombre."
-    }
+    },
+    "sourcesNotReady": "Algunas fuentes aún se están preparando y todavía no aparecen ({{count}}). Inténtalo de nuevo en un momento."
   },
   "connectorTypes": {
     "slack": "Slack",

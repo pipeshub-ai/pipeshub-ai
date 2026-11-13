@@ -528,6 +528,7 @@
     "created": "建立時間",
     "updated": "更新時間",
     "source": "來源",
+    "actions": "動作",
     "noData": "沒有可用的資料",
     "loading": "正在載入資料…",
     "selectAll": "全選",
@@ -579,6 +580,8 @@
     "pagination": {
       "showing": "顯示第 {{start}}-{{end}} 項，共 {{total}} 項",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "顯示第 {{start}}-{{end}} 項，至少 {{total}} 項",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "每頁 {{value}} 筆"
     },
     "yes": "是",
@@ -793,7 +796,8 @@
     "nameRules": {
       "folderSeparator": "資料夾名稱不能包含「/」或「\\」。",
       "collectionExists": "你已有名為「{{name}}」的集合。請換一個名稱。"
-    }
+    },
+    "sourcesNotReady": "部分來源仍在準備中，尚未列出（{{count}}）。請稍後再試。"
   },
   "connectorTypes": {
     "slack": "Slack",

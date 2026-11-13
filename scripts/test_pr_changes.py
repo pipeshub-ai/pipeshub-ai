@@ -123,6 +123,12 @@ class TestDecisions(unittest.TestCase):
         checks = runs("frontend/app/(main)/chat/page.tsx")
         self.assertEqual(checks, {"frontend", "codeql_javascript", "e2e_smoke"})
 
+    def test_the_sort_fields_the_api_checks_run_the_python_unit_tests(self) -> None:
+        # test_knowledge_hub_sort_matches_spec.py reads this file; a pull request
+        # that changes only it must not skip the check that rejects a bad value.
+        checks = runs("frontend/app/(main)/knowledge-base/sort-fields.json")
+        self.assertTrue({"frontend", "python_unit"} <= checks)
+
     def test_a_workflow_change_runs_its_own_checks_and_the_actions_scan(self) -> None:
         checks = runs(".github/workflows/unit-test.yml")
         self.assertTrue({"node_unit", "python_unit", "redis_cluster", "codeql_actions"} <= checks)
