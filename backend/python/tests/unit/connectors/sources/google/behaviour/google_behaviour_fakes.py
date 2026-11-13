@@ -23,6 +23,7 @@ import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -292,11 +293,13 @@ class FakeEntitiesProcessor:
         self.org_id = org_id
         self.records: dict[str, Any] = {}
         self.permissions: dict[str, list[Any]] = {}
+        self.stopped_inheriting: set[str] = set()
         self.record_groups: dict[str, Any] = {}
         self.record_group_permissions: dict[str, list[Any]] = {}
         self.app_users: dict[str, Any] = {}
         self.user_groups: dict[str, tuple[Any, list[Any]]] = {}
         self.kept_user_groups: list[str] = []
+        self.external_app_users: set[str] = set()
         self.active_users: list[Any] = []
         self.deleted: list[str] = []
         self.metadata_updates: list[Any] = []
@@ -311,10 +314,38 @@ class FakeEntitiesProcessor:
         self.fail_group_permission_lookup = False
         self.linked_authenticators: list[tuple[str, str, str, str]] = []
         self.deleted_groups: list[str] = []
+        # The record ids the running full sync wrote or noted kept; None when no full sync runs.
+        self.full_sync_seen: set[str] | None = None
 
     def _check_write(self, external_id: str | None) -> None:
         if external_id in self.fail_writes_for:
             raise RuntimeError(f"database unavailable while writing {external_id}")
+
+    # A full sync the runner started: what it writes is noted, and once it has run to the end the runner removes
+    # the grants of every record it did not write nor note kept (`unlink_missed_by_full_sync`).
+    def begin_full_sync_run(self, connector_id: str) -> set[str]:
+        self.full_sync_seen = set()
+        return self.full_sync_seen
+
+    def full_sync_running(self, connector_id: str) -> bool:
+        return self.full_sync_seen is not None
+
+    def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        if self.full_sync_seen is not None:
+            self.full_sync_seen.update(record_ids)
+
+    def _note_written(self, record: Record) -> None:
+        if self.full_sync_seen is not None and record.id:
+            self.full_sync_seen.add(record.id)
+
+    def unlink_missed_by_full_sync(self) -> set[str]:
+        """End the full sync as the runner does: the records it missed lose their grants. Returns their ids."""
+        seen, self.full_sync_seen = self.full_sync_seen or set(), None
+        missed = {r.id for r in self.records.values() if r.id not in seen}
+        for record in self.records.values():
+            if record.id in missed:
+                self.permissions[record.external_record_id] = []
+        return missed
 
     def by_id(self, record_id: str) -> Record | None:
         return next((r for r in self.records.values() if r.id == record_id), None)
@@ -440,6 +471,8 @@ class FakeEntitiesProcessor:
             if raise_on_error:
                 raise RuntimeError("graph unavailable while reading the record's permissions")
             return []
+        if node_collection == "groups":  # a group's members
+            return next((list(members) for group, members in self.user_groups.values() if group.id == node_id), [])
         record = self.by_id(node_id)
         if record is None:
             return []
@@ -481,6 +514,7 @@ class FakeEntitiesProcessor:
             self.records[record.external_record_id] = record
             self._upsert_permissions(record.external_record_id, permissions)
             self._ensure_parent(record)
+            self._note_written(record)
 
     def _upsert_permissions(self, external_id: str, permissions: list[Any]) -> None:
         existing = self.permissions.setdefault(external_id, [])
@@ -511,6 +545,7 @@ class FakeEntitiesProcessor:
         self._check_write(record.external_record_id)
         self.metadata_updates.append(record)
         self.records[record.external_record_id] = record
+        self._note_written(record)
         # The real processor routes this through _process_record -> _handle_parent_record.
         self._ensure_parent(record)
 
@@ -518,10 +553,12 @@ class FakeEntitiesProcessor:
         self._check_write(record.external_record_id)
         self.content_updates.append(record)
         self.records[record.external_record_id] = record
+        self._note_written(record)
 
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self._check_write(record.external_record_id)
         self.permissions[record.external_record_id] = list(permissions)
+        self._note_written(record)
 
     async def add_permission_to_record(self, record: Record, permissions: list[Any]) -> None:
         self._check_write(record.external_record_id)
@@ -535,6 +572,31 @@ class FakeEntitiesProcessor:
             self.permissions[record.external_record_id] = [
                 p for p in self.permissions.get(record.external_record_id, []) if p.email != user_email
             ]
+
+    async def stop_inheriting_permissions(self, record_id: str, connector_id: str) -> None:
+        record = self.by_id(record_id)
+        if record is not None:
+            self.stopped_inheriting.add(record.external_record_id)
+
+    async def delete_group_permission_from_record(self, record_id: str, group_external_id: str, connector_id: str) -> None:
+        record = self.by_id(record_id)
+        if record is not None:
+            self.permissions[record.external_record_id] = [
+                p for p in self.permissions.get(record.external_record_id, [])
+                if not (p.entity_type == EntityType.GROUP and p.external_id == group_external_id)
+            ]
+
+    async def get_groups_with_access_to_record(self, record: Record) -> list[Any]:
+        """The groups granted on the record and the records above it, by parent."""
+        out: list[Any] = []
+        node: Record | None = record
+        while node is not None:
+            out += [
+                SimpleNamespace(source_user_group_id=p.external_id)
+                for p in self.permissions.get(node.external_record_id, []) if p.entity_type == EntityType.GROUP
+            ]
+            node = self.records.get(node.parent_external_record_id) if node.parent_external_record_id else None
+        return out
 
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
         record = self.by_id(record_id)
@@ -586,9 +648,27 @@ class FakeEntitiesProcessor:
     async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
         self.kept_user_groups.append(external_group_id)
 
-    async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
+    def note_kept_user_groups(self, connector_id: str, groups: list[Any]) -> None:
+        self.kept_user_groups.extend(g.source_user_group_id for g in groups)
+
+    async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]], *, replace_members: bool = True) -> None:
         for group, members in groups:
-            self.user_groups[group.source_user_group_id] = (group, list(members))
+            stored = self.user_groups.get(group.source_user_group_id)
+            if stored is not None and not replace_members:  # the stored group keeps its id and its people
+                have = {(m.email or "").lower() for m in stored[1]}
+                self.user_groups[group.source_user_group_id] = (
+                    stored[0], [*stored[1], *(m for m in members if (m.email or "").lower() not in have)]
+                )
+            else:
+                self.user_groups[group.source_user_group_id] = (group, list(members))
+
+    async def on_user_group_member_removed(self, external_group_id: str, user_email: str, connector_id: str) -> bool:
+        stored = self.user_groups.get(external_group_id)
+        if stored is None:
+            return False
+        kept = [m for m in stored[1] if (m.email or "").lower() != user_email.lower()]
+        self.user_groups[external_group_id] = (stored[0], kept)
+        return len(kept) != len(stored[1])
 
     async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
         return [group for group, _ in self.user_groups.values()]
@@ -613,6 +693,16 @@ class FakeEntitiesProcessor:
             self.user_groups[key] = (group, kept_members)
         return removed
 
+    async def on_external_app_users(self, emails: list[str], connector_id: str) -> None:
+        self.external_app_users.update(e.lower() for e in emails)
+
+    async def reap_external_app_users(self, connector_id: str) -> int:
+        """Drop the collaborators no stored grant names any more, as the real processor does."""
+        granted = {(p.email or "").lower() for perms in self.permissions.values() for p in perms if p.email}
+        gone = self.external_app_users - granted
+        self.external_app_users -= gone
+        return len(gone)
+
     async def reindex_existing_records(self, records: list[Any]) -> None:
         self.reindexed.extend(records)
 
@@ -632,6 +722,7 @@ class FakeSyncPointStore:
     def __init__(self) -> None:
         self.sync_points: dict[str, dict[str, Any]] = {}
         self.writes: list[tuple[str, dict[str, Any]]] = []
+        self.status_changes: list[tuple[list[str], str, str]] = []
 
     async def get_sync_point(self, key: str, raise_on_error: bool = False) -> dict[str, Any] | None:
         return self.sync_points.get(key)
@@ -649,6 +740,9 @@ class FakeSyncPointStore:
         matches = [v for k, v in self.sync_points.items() if k.endswith(key_suffix)]
         assert len(matches) <= 1, f"ambiguous sync point suffix {key_suffix}: {list(self.sync_points)}"
         return matches[0] if matches else None
+
+    async def compare_and_set_indexing_status(self, record_ids: list[str], expected: str, new: str) -> None:
+        self.status_changes.append((list(record_ids), expected, new))
 
     @asynccontextmanager
     async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeSyncPointStore"]:

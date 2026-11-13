@@ -1,11 +1,13 @@
-"""Domain, "anyone" and "anyone with the link" shares grant nobody access.
+"""Link-only domain, "anyone" and "anyone with the link" shares (not discoverable) grant nobody access.
 
 Sources such as Google Drive report shares to a whole domain, to anyone, or to
-anyone holding the link. PipesHub deliberately does not honour them: the Drive
-connector hands the sync no grant for them (the permission model has no such
-grantee), so a colleague who was not named on a file cannot find or open it.
-That is a product decision, and this test keeps it from changing by accident,
-for example by someone mapping one of them to an organization grant. Search
+anyone holding the link. When such a share is not discoverable, nobody can
+find the file without its URL, so the Drive connector hands the sync no grant
+for it and a colleague who was not named on the file cannot find or open it.
+(A discoverable share is different: it grants the audience's people, and is
+covered by the connector's behaviour tests.) This test keeps the link-only
+case from changing by accident, for example by someone mapping one of them to
+an organization grant. Search
 does not read ``anyone`` documents, so one left by older data or a stray writer
 grants nothing; the last test pins that too.
 
@@ -236,6 +238,8 @@ async def _drive_permissions(env: _Env, shares: list[dict]) -> list[Permission]:
     connector.logger = logger
     connector.synced_user_emails = set()
     connector._external_emails = set()
+    connector._audience_groups = set()  # no audience group exists, so a share naming one grants nothing
+    connector._audience_loaded = True
     connector.drive_data_source = MagicMock()
     connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": shares})
     permissions, is_fallback, _ = await connector._fetch_permissions("file", user_email=env.owner["email"])
@@ -248,8 +252,8 @@ async def _sync_the_two_files(env: _Env) -> tuple[FileRecord, FileRecord]:
     named_share = _file(env, "shared-with-colleague.txt")
     link_style = await _drive_permissions(env, [
         {"id": "p-owner", "type": "user", "role": "owner", "emailAddress": env.owner["email"]},
-        {"id": "p-domain", "type": "domain", "role": "reader", "domain": DOMAIN},
-        {"id": "p-anyone", "type": "anyone", "role": "reader"},
+        {"id": "p-domain", "type": "domain", "role": "reader", "domain": DOMAIN, "allowFileDiscovery": False},
+        {"id": "p-anyone", "type": "anyone", "role": "reader", "allowFileDiscovery": False},
         {"id": "p-link", "type": "anyoneWithLink", "role": "reader"},
     ])
     named = [Permission(type=PermissionType.READ, entity_type=EntityType.USER, email=env.colleague["email"])]

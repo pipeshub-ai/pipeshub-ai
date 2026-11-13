@@ -176,6 +176,8 @@ MATRIX_PYTHON = (
     f"{COMPOSE}/docker-compose.integration.graph-db.yml",
     f"{COMPOSE}/docker-compose.integration.kv.yml",
     ".github/workflows/backend-matrix.yml",
+    # Which test files each suite runs.
+    "scripts/integration_discovery.py",
 ) + INTEGRATION_HELPERS + PYTHON_PACKAGING
 
 for _suite in ("messaging", "vector", "kv", "graph", "gitlab"):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -26,6 +27,7 @@ from app.models.blocks import (
 from app.models.entities import Priority, Record, RecordType, Status, TicketRecord
 from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts import store as store_module
+from app.modules.artifacts import writer as writer_module
 from app.modules.artifacts.models import MANIFEST_PATH, PROPERTIES_PATH
 from app.modules.artifacts.store import MAX_FILES_PER_CALL, NodeArtifactStore
 from app.modules.artifacts.writer import (
@@ -39,7 +41,7 @@ from app.modules.record_metadata.builtin import ticket_metadata
 from tests.unit.modules.artifacts.fake_storage import FakeStorage
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
 REV = "0123456789abcdef"
 PNG = b"\x89PNG\r\n\x1a\n" + b"pixels" * 50
@@ -278,6 +280,64 @@ class TestWriteRevision:
         assert (MANIFEST_PATH in storage.put_order) is manifest_stored
         assert any(path != MANIFEST_PATH for path in storage.put_order) is files_go_up
         assert next(replies, None) is None
+
+    async def test_a_write_that_lost_its_place_leaves_no_file_in_the_newer_writes_set(
+        self, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two records sharing content store one revision's set at the same paths, with different bytes
+        (record.json carries each record's own identity). X passes its check before its files go up, then Y
+        takes over the stored record and writes its set while X is held there. When both are done, every
+        file Y's manifest names must be the bytes Y wrote, not X's late ones."""
+        x = _record(_text_blocks(3, 10))
+        y = x.model_copy(update={"id": "rec-2", "record_name": "copy.pdf"})
+        stored = {"run": "gen:x"}
+        y_waits = asyncio.Event()
+        real_lock = writer_module._set_write_lock
+
+        def set_write_lock(*key: str) -> asyncio.Lock:
+            lock = real_lock(*key)
+            if lock.locked():
+                y_waits.set()
+            return lock
+
+        monkeypatch.setattr(writer_module, "_set_write_lock", set_write_lock)
+
+        async def write(record: Record, run: str, still_current: Callable[[], Awaitable[bool]]) -> object:
+            return await _writer(storage).write_revision(
+                record, "org-1", "vr-1", REV, record.block_containers, stored_run=run, still_current=still_current,
+            )
+
+        async def y_current() -> bool:
+            return stored["run"] == "gen:y"
+
+        y_write: asyncio.Task[object] | None = None
+
+        async def x_current() -> bool:
+            nonlocal y_write
+            if stored["run"] != "gen:x":
+                return False
+            # X is current at its check; Y takes over and writes its set before X's files go up.
+            stored["run"] = "gen:y"
+            y_write = asyncio.create_task(write(y, "gen:y", y_current))
+            waiting = asyncio.create_task(y_waits.wait())
+            await asyncio.wait({y_write, waiting}, return_when=asyncio.FIRST_COMPLETED)
+            waiting.cancel()
+            return True
+
+        assert await write(x, "gen:x", x_current) is None
+        assert y_write is not None and await y_write is not None
+
+        root = FakeStorage.root("vr-1", REV)
+        manifest = json.loads(storage.puts[f"{root}/{MANIFEST_PATH}"].data)
+        assert manifest["storedRun"] == "gen:y"
+        listed = [
+            *(f for e in manifest["artifacts"].values() for f in (e.get("parts") or e.get("files") or [])),
+            *(e for e in manifest["artifacts"].values() if e.get("path")),
+        ]
+        assert listed
+        for entry in listed:
+            assert hashlib.sha256(storage.puts[f"{root}/{entry['path']}"].data).hexdigest() == entry["sha256"], entry
+        assert json.loads(storage.puts[f"{root}/record.json"].data)["id"] == "rec-2"
 
     async def test_more_files_than_one_presign_takes(self, storage: FakeStorage) -> None:
         images = [_image_block(i, _uri("image/png", PNG + i.to_bytes(4, "big"))) for i in range(1200)]

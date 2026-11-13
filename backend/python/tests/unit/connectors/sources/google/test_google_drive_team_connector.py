@@ -507,6 +507,7 @@ class TestSyncUsers:
     @staticmethod
     def _cut_listing_connector(stored: dict | None = None) -> tuple:
         conn = _make_connector()
+        conn._account_domains = {"x.com"}  # read: unread domains alone make a run incomplete
         state = {
             "workspace_user_status": {
                 "inactive": ["gone@x.com"], "known": ["a@x.com", "b@x.com", "gone@x.com", "lost@x.com"], "domains": ["x.com", "alias.org"],

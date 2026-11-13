@@ -100,6 +100,8 @@ class FakeServer(EmbeddingServerEmbeddings):
         self.arrived = 0
         self.max_arrived = 0
         self.requests = 0
+        # Per client call cut off by its timeout, by request number: how long it had been at the server, in loop time.
+        self.timed_out: dict[int, float] = {}
         self.oldest_started: float | None = None
         self.tasks: list[asyncio.Future[None]] = []
 
@@ -120,13 +122,19 @@ class FakeServer(EmbeddingServerEmbeddings):
     async def aembed_documents(self, texts: list[str], **_kwargs: Any) -> list[list[float]]:
         # The real server cannot cancel an encode that is running: the slot is held until it ends,
         # whatever the client does.
+        loop = asyncio.get_running_loop()
+        arrived_at = loop.time()
         self.requests += 1
+        number = self.requests
         self.arrived += 1
         self.max_arrived = max(self.max_arrived, self.arrived)
-        task = asyncio.ensure_future(self._serve(self.requests))
+        task = asyncio.ensure_future(self._serve(number))
         self.tasks.append(task)
         try:
             await asyncio.shield(task)
+        except asyncio.CancelledError:
+            self.timed_out[number] = loop.time() - arrived_at
+            raise
         finally:
             self.arrived -= 1
         return [[1.0] for _ in texts]
@@ -237,14 +245,41 @@ class TestQueueingIsNotTimingOut:
         assert server.requests == 24
         assert dict(_clean_env.drain().timeouts) == {}
 
+    @staticmethod
+    def assert_none_timed_out_on_queue_wait(server: FakeServer, results: list[Any], feedback: DownstreamFeedback) -> None:
+        # The wall clock can stall past a timeout inside a 0.01 s attempt (a full GC in a long-running
+        # worker, a busy runner descheduling the process), so the guarantee is not "no timeout": it is that
+        # a timeout falls only on an attempt that spent the whole timeout at the server, never in the queue.
+        assert [r for r in results if isinstance(r, Exception)] == []
+        assert server.max_arrived == 1
+        assert all(at_server >= 0.9 * 0.5 for at_server in server.timed_out.values()), server.timed_out
+        assert server.requests == 150 + len(server.timed_out)
+        assert dict(feedback.drain().timeouts) == ({SERVICE: len(server.timed_out)} if server.timed_out else {})
+
     async def test_150_queued_attempts_at_width_one_none_times_out_on_queue_wait(self, _clean_env: DownstreamFeedback) -> None:
         # The queue (150 x 0.01 s) is three attempt timeouts long; one batch's work is a fiftieth of one.
         server = FakeServer(make_gate(Health(encode_gate(1))), slots=1, work=0.01)
         with fast(0.5):
             results = await embed(store_for(server), 150)
-        assert [r for r in results if isinstance(r, Exception)] == []
-        assert server.requests == 150
-        assert dict(_clean_env.drain().timeouts) == {}
+        self.assert_none_timed_out_on_queue_wait(server, results, _clean_env)
+
+    async def test_a_stall_inside_one_attempt_times_out_that_attempt_alone(
+        self, _clean_env: DownstreamFeedback, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+
+        def work(number: int) -> float:
+            if number == 75:
+                # What a loop blocked for 0.6 s sees when it runs again: every deadline in that span is due.
+                monkeypatch.setattr(loop, "time", lambda: real_time() + 0.6)
+            return 0.01
+
+        server = FakeServer(make_gate(Health(encode_gate(1))), slots=1, work=work)
+        with fast(0.5):
+            results = await embed(store_for(server), 150)
+        assert 75 in server.timed_out
+        self.assert_none_timed_out_on_queue_wait(server, results, _clean_env)
 
 
 class TestCancellation:

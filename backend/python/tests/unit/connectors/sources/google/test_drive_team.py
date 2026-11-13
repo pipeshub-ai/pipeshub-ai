@@ -165,6 +165,7 @@ def connector():
         conn.admin_data_source = AsyncMock()
         conn.drive_data_source = AsyncMock()
         conn.config = {"credentials": {}}
+        conn._shared_drives_listed = True  # as after a run's listing; tests set the drives listed
         yield conn
 
 
@@ -517,6 +518,88 @@ class TestFetchPermissions:
         assert [p.email for p in result.new_permissions] == ["viewer@example.com"]
         assert connector._sync_ledger.item_failures == 0
 
+    @pytest.mark.parametrize("answer", [{"id": "sd-1"}, {"id": "sd-1", "restrictions": "x"}])
+    @pytest.mark.parametrize("stored", [
+        {},
+        {"hidden_groups": [], "group_hashes": []},
+        {"driveMembersOnly": False, "domainUsersOnly": False},  # looser flags than a drive tightened since
+        {"driveMembersOnly": False, "domainUsersOnly": True},
+    ])
+    async def test_a_drive_answer_without_a_restrictions_object_is_read_as_restricted_whatever_is_stored(
+        self, connector, answer, stored
+    ) -> None:
+        # Unknown is not unrestricted, and stored flags may be stale: both flags only narrow access, and this run
+        # reads the drive again under them so they reach every item. The stored flags stay; the mark is saved last.
+        connector.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=stored)
+        connector.drive_delta_sync_point.delete_sync_point = AsyncMock()
+        connector.drive_delta_sync_point.update_sync_point = AsyncMock()
+        connector.drive_data_source.drives_get = AsyncMock(return_value=answer)
+        connector._drive_restrictions = {}
+        connector.synced_users = [MagicMock(source_user_id="u1")]
+
+        await connector._reconcile_drive_restrictions({"id": "sd-1"})
+
+        assert await connector._drive_restrictions_of("sd-1") == {"driveMembersOnly": True, "domainUsersOnly": True}
+        assert connector._sync_ledger.has_gaps
+        deleted = [c.args[0].split("/", 1)[1] for c in connector.drive_delta_sync_point.delete_sync_point.await_args_list]
+        assert deleted == ["drives/u1_sd-1"]
+        writes = [(c.args[0].split("/", 1)[-1], c.args[1]) for c in connector.drive_delta_sync_point.update_sync_point.await_args_list]
+        assert writes == [("users/u1", {"reseed_shared_with_me": True, "failed_items": []}), ("shared_drive_restrictions_sd-1", {"assumed": True})]
+
+    async def test_a_drive_still_answering_without_restrictions_is_not_read_again(self, connector) -> None:
+        connector.drive_delta_sync_point.read_sync_point = AsyncMock(
+            return_value={"driveMembersOnly": False, "domainUsersOnly": False, "assumed": True}
+        )
+        connector.drive_delta_sync_point.delete_sync_point = AsyncMock()
+        connector.drive_delta_sync_point.update_sync_point = AsyncMock()
+        connector.drive_data_source.drives_get = AsyncMock(return_value={"id": "sd-1"})
+        connector._drive_restrictions = {}
+        connector.synced_users = [MagicMock(source_user_id="u1")]
+
+        await connector._reconcile_drive_restrictions({"id": "sd-1"})
+
+        assert await connector._drive_restrictions_of("sd-1") == {"driveMembersOnly": True, "domainUsersOnly": True}
+        connector.drive_delta_sync_point.delete_sync_point.assert_not_awaited()
+        connector.drive_delta_sync_point.update_sync_point.assert_not_awaited()
+
+    @pytest.mark.parametrize("stored", [{"assumed": True}, {"driveMembersOnly": True, "domainUsersOnly": False, "assumed": True}])
+    async def test_the_first_answer_with_restrictions_after_an_assumed_run_lists_the_drive_in_full(self, connector, stored) -> None:
+        connector.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=stored)
+        connector.drive_delta_sync_point.delete_sync_point = AsyncMock()
+        connector.drive_delta_sync_point.update_sync_point = AsyncMock()
+        connector._drive_restrictions = {}
+        connector.synced_users = [MagicMock(source_user_id="u1")]
+
+        await connector._reconcile_drive_restrictions({"id": "sd-1", "restrictions": {}})
+
+        # The drive is read from the start; the user's own files shared with them are read again, token kept.
+        deleted = [c.args[0] for c in connector.drive_delta_sync_point.delete_sync_point.await_args_list]
+        assert [k.split("/", 1)[1] for k in deleted] == ["drives/u1_sd-1"]
+        writes = {c.args[0].split("/", 1)[-1]: c.args[1] for c in connector.drive_delta_sync_point.update_sync_point.await_args_list}
+        assert writes == {
+            "users/u1": {"reseed_shared_with_me": True, "failed_items": []},
+            "shared_drive_restrictions_sd-1": {
+                "driveMembersOnly": False, "domainUsersOnly": False, "hidden_groups": [], "group_hashes": [], "assumed": False,
+            },
+        }
+
+    def test_a_shared_read_keeps_its_mark_and_the_failed_ids_until_none_remain(self, connector, caplog) -> None:
+        assert connector._reseed_fields(set(), asked=False) == {}
+        assert connector._reseed_fields(set(), asked=True) == {"reseed_shared_with_me": False, "failed_items": []}
+        assert connector._reseed_fields({"f2", "f1"}, asked=False) == {"reseed_shared_with_me": True, "failed_items": ["f1", "f2"]}
+        # Past the cap the ids are not kept: the whole listing is read again. The log names a count only.
+        many = {f"secret-{i}" for i in range(501)}
+        assert connector._reseed_fields(many, asked=True) == {"reseed_shared_with_me": True, "failed_items": []}
+        assert "secret-" not in caplog.text and "501" in caplog.text
+
+    async def test_too_many_failed_items_drop_the_checkpoint_so_the_listing_is_read_again(self, connector) -> None:
+        connector.drive_delta_sync_point.delete_sync_point = AsyncMock()
+
+        assert await connector._keep_failed_items("k", {"f1"}) is True
+        connector.drive_delta_sync_point.delete_sync_point.assert_not_awaited()
+        assert await connector._keep_failed_items("k", {f"f{i}" for i in range(501)}) is False
+        connector.drive_delta_sync_point.delete_sync_point.assert_awaited_once_with("k")
+
     async def test_empty_list_for_a_member_of_a_limited_folder_gives_their_own_fallback(self, connector) -> None:
         connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
 
@@ -602,6 +685,7 @@ class TestSyncRecordGroups:
         connector.drive_data_source.drives_list = AsyncMock(return_value={
             "drives": [_make_shared_drive("sd-1", "Shared 1")],
         })
+        connector.drive_data_source.drives_get = AsyncMock(return_value={"id": "sd-1", "restrictions": {}})
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": [
                 {"id": "p1", "role": "organizer", "type": "user", "emailAddress": "admin@example.com"},
