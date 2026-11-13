@@ -33,16 +33,27 @@ ALLOWED = {
 }
 
 
+_SQL = re.compile(r"\b(?:SELECT|FROM|WHERE|JOIN|AND|OR|ORDER\s+BY|GROUP\s+BY|LIMIT|UNION|EXISTS|ANY)\b|\$\d|::", re.I)
+# a whole row of the table handed out again: ``SELECT *`` over a subquery that hands it out
+_OUTER_STAR = re.compile(r"\bSELECT\s+\*\s+FROM\s*\(\s*SELECT\s+(?:\w+\.)?\*\s+FROM\s+kg\.records\b", re.I)
+
+
 def reads(sql_texts: list[str]) -> set[str]:
-    """The reads of copied columns of kg.records in one source, given as its SQL texts (a query may be split across texts that share the source's aliases)."""
+    """The reads of copied columns of kg.records in one source, given as its SQL texts. A query may be split across texts: the aliases are the source's, and a source that names
+    the table has every SQL text of it read for bare column names (a fragment ``" FROM kg.records"`` and another ``"SELECT external_id"`` are one query)."""
     aliases = {m.group(1).lower() for s in sql_texts for rx in (_BOUND, _SUBQUERY) for m in rx.finditer(s)}
+    # a text is SQL when it has a keyword of it or names a column of an alias of the table (a list of columns kept apart from its statement)
+    texts = [s for s in sql_texts if _SQL.search(s) or any(m.group(1).lower() in aliases for m in re.finditer(r"\b(\w+)\.\w+", s))]
     found: set[str] = set()
-    for s in sql_texts:
+    if not any("kg.records" in s for s in texts):
+        return found
+    for s in texts:
         found |= {m.group(0) for m in re.finditer(rf"\b(\w+)\.({_C})\b", s) if m.group(1).lower() in aliases}
-        if "kg.records" in s:
-            if any(not s[:m.start()].rstrip().endswith("(") for m in _STAR.finditer(s)):      # a subquery's star is read through its alias, above
-                found.add("*")
-            found |= {m.group(1) for m in re.finditer(rf"(?<![.\w'\">])({_C})(?![\w'\"])", s) if not _quoted_or_doc(s, m.start())}
+        if any(m.group(1).lower() in aliases for m in re.finditer(r"\b(\w+)\.\*", s)) or _OUTER_STAR.search(s):
+            found.add("*")                                  # ``alias.*`` of the table or of a subquery that hands its row out, or ``SELECT *`` over such a subquery
+        if any(not s[:m.start()].rstrip().endswith("(") for m in _STAR.finditer(s)):      # a subquery's star is read through its alias, above
+            found.add("*")
+        found |= {m.group(1) for m in re.finditer(rf"(?<![.\w'\">])({_C})(?![\w'\"])", s) if not _quoted_or_doc(s, m.start())}
     return found
 
 
@@ -94,6 +105,13 @@ def test_the_scan_finds_the_modules_it_must_read() -> None:
     (["SELECT * FROM kg.records WHERE org_id = $1"], {"*"}),
     (["SELECT sk, external_id FROM kg.records WHERE org_id = $1"], {"external_id"}),
     (["SELECT r.sk FROM kg.records r WHERE r.org_id = $1", " AND r.vrid = $2"], {"r.vrid"}),                  # a query composed from two texts
+    (["SELECT external_id", " FROM kg.records WHERE org_id = $1"], {"external_id"}),                         # a bare column in another text than the table
+    (["SELECT x.* FROM (SELECT * FROM kg.records) x"], {"*"}),                                               # the whole row through a subquery's alias
+    (["SELECT * FROM (SELECT * FROM kg.records WHERE org_id = $1) x"], {"*"}),
+    (["SELECT r.* FROM kg.records r"], {"*"}),
+    (["SELECT r.id FROM unnest($2::text[]) q CROSS JOIN LATERAL (SELECT * FROM kg.records k WHERE k.id = q.id LIMIT 3) r"], set()),   # as read.py: only safe columns of the row
+    (["origin", "SELECT r.sk FROM kg.records r"], set()),                                                   # a dict key of the source is no SQL
+    (["r.sk, r.id, vrid", "SELECT {cols} FROM kg.records r"], {"vrid"}),                                     # a list of columns kept apart from its statement
     (["SELECT r.sk, r.name_key FROM kg.records AS r WHERE r.org_id = $1"], set()),
     (["SELECT n.doc->>'origin' AS o FROM graph.nodes n JOIN kg.records r ON r.id = n.id"], set()),
     (["SELECT x.model FROM retrieval.spaces x"], set()),
