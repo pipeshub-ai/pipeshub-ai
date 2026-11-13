@@ -458,6 +458,40 @@ memberships: [[u, t]]
 gates: [[u, A]]
 """))
 
+# XHOP: the walk from App A passes through x, a RESTRICTED record of App B under A that the viewer is granted in B: a grant counts on a node of any
+# gated App. So c (a STRICT record of A under the folder f and under x, inheriting from x only) is read through x and listed and counted in the
+# flatten, and g (a group of A under x, inheriting from it) is opened from A through x and lists d.
+XHOP = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: B, kind: app, app_type: DRIVE}
+  - {id: f, kind: record, connector: A, rule: OPEN, parents: [A]}
+  - {id: x, kind: record, connector: B, rule: RESTRICTED, parents: [A], inherits: [A]}
+  - {id: c, kind: record, connector: A, rule: STRICT, parents: [f, x], inherits: [x]}
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [x], inherits: [x], belongs: [A]}
+  - {id: d, kind: record, connector: A, rule: OPEN, parents: [g], inherits: [g], belongs: [g]}
+grants: [[u, f], [u, x]]
+gates: [[u, A], [u, B]]
+"""))
+
+# XLINK: the viewer reads App B as the source account s, which is granted y (of B) and x (of C), both RESTRICTED records under App A. A source account's
+# grant counts inside its own connector only: the walk from A passes y, so e (under y) is read, and not x, so c (under x) is not.
+XLINK = world_from_data(yaml.safe_load("""
+principals: [{id: u}, {id: s}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: B, kind: app, app_type: DRIVE}
+  - {id: C, kind: app, app_type: DRIVE}
+  - {id: y, kind: record, connector: B, rule: RESTRICTED, parents: [A], inherits: [A]}
+  - {id: e, kind: record, connector: A, rule: STRICT, parents: [y], inherits: [y]}
+  - {id: x, kind: record, connector: C, rule: RESTRICTED, parents: [A], inherits: [A]}
+  - {id: c, kind: record, connector: A, rule: STRICT, parents: [x], inherits: [x]}
+grants: [[s, y], [s, x]]
+gates: [[u, A], [u, C]]
+links: [[u, s, B]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
-             OPENGROUP, XSTUB, OPENGRANT, OPENGRANTTEAM]
+             OPENGROUP, XSTUB, OPENGRANT, OPENGRANTTEAM, XHOP, XLINK]
