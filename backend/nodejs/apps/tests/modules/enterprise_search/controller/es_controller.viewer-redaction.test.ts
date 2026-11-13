@@ -649,6 +649,7 @@ describe('lost access hides the whole answer, for the owner too', () => {
     sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
     sinon.stub(Users, 'find').returns(chain([]))
     sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', userId: OWNER, initiator: OWNER, status: 'complete' }))
+    sinon.stub(ChatSession, 'find').returns(chain([]))
     sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([answer()]))
     const r = res()
