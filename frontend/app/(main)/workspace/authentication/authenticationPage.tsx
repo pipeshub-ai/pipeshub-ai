@@ -378,7 +378,13 @@ export default function AuthenticationPage() {
                       href="https://docs.pipeshub.com/contact-us"
                       target="_blank"
                       rel="noreferrer"
-                      style={{ color: 'var(--accent-11)', textDecoration: 'none' }}
+                      className="touch-size"
+                      style={{
+                        color: 'var(--accent-11)',
+                        textDecoration: 'none',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                      }}
                     >
                       {t('workspace.authentication.enterpriseSso.contactSales')}
                     </a>
