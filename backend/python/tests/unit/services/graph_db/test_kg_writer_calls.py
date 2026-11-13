@@ -75,7 +75,7 @@ async def test_the_listing_columns_go_out_sorted_by_key_and_in_the_writers_argum
 
 
 def test_the_projectors_copy_of_the_records_writers_checks_is_the_manifests() -> None:
-    """``record_refusal`` must refuse exactly what ``w_records_upsert`` refuses of a document's values, or a refused row fails its whole batch again."""
+    """``record_refusals`` must refuse exactly what ``w_records_upsert`` refuses of a document's values, or a refused row fails its whole batch again."""
     from pathlib import Path
 
     import yaml
@@ -84,14 +84,14 @@ def test_the_projectors_copy_of_the_records_writers_checks_is_the_manifests() ->
     manifest = Path(__file__).resolve().parents[5] / "db" / "versions" / "kg" / "vetted" / "manifest.yaml"
     fn = next(f for f in yaml.safe_load(manifest.read_text(encoding="utf-8"))["functions"] if f["name"] == "kg.w_records_upsert")
     args = list(zip(RECORD_COLS, fn["args"], strict=True))      # the writer takes its arguments in the order of RECORD_COLS
-    lengths = {c: tuple(a["item_length"]) for c, a in args if "item_length" in a}
+    lengths = {c: tuple(a["item_length"]) for c, a in args if "item_length" in a and c != "id"}      # the id: bounded by the node-key writer first
     enums = {c: tuple(a["item_enum"]) for c, a in args if "item_enum" in a}
     assert lengths == RECORD_LENGTHS and enums == RECORD_ENUMS
 
 
-@pytest.mark.parametrize("over, refused", [({}, None), ({"name": "\U00020000" * 5000, "name_key": "\U00020000" * 5000}, None), ({"rule": "ADMIN"}, "rule"),
-                                           ({"external_id": "e" * 2001}, "external_id"), ({"id": ""}, "id"), ({"rule": None, "model": None, "origin": None}, None)])
-def test_a_records_row_is_refused_by_the_column_the_writer_would_refuse(over: dict, refused: str | None) -> None:
-    from app.services.graph_db.postgres.kg.writers import record_refusal
+@pytest.mark.parametrize("over, refused", [({}, []), ({"name": "\U00020000" * 5000, "name_key": "\U00020000" * 5000}, []), ({"rule": "ADMIN"}, ["rule"]),
+                                           ({"external_id": "e" * 2001, "origin": "ELSEWHERE"}, ["external_id", "origin"]), ({"rule": None, "model": None, "origin": None}, [])])
+def test_a_records_row_is_refused_by_the_columns_the_writer_would_refuse(over: dict, refused: list[str]) -> None:
+    from app.services.graph_db.postgres.kg.writers import record_refusals
     base = {**row(1), "rule": "OPEN", "model": "RECORD_LEVEL", "origin": "CONNECTOR"}
-    assert record_refusal({**base, **over}) == refused
+    assert record_refusals({**base, **over}) == refused

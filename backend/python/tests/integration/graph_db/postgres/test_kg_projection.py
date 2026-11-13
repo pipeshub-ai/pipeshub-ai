@@ -9,6 +9,7 @@ import logging
 import pytest
 
 from app.services.graph_db.postgres.kg import backfill as bf
+from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.locks import lock_apps
 from app.services.graph_db.postgres.kg.model import edge_ends
 from app.services.graph_db.postgres.kg.project import Stats, decode, project
@@ -188,28 +189,65 @@ async def test_a_projection_of_one_connector_waits_for_another_holding_its_lock(
     await asyncio.wait_for(other, 20)
 
 
-async def test_a_row_the_writer_refuses_is_left_out_and_logged_and_the_rest_of_the_batch_is_written(pg_db, caplog) -> None:
-    """A record whose access rule is none of the three the records writer takes, in one batch with a renamed record: the renamed row is written, the refused one is left out
-    with an error that names it, and its connector, which kg served, is taken off the readers. The copy of the connector then runs to its end instead of failing on that row."""
-    p, org = prov(pg_db), new_org()
+async def _three_connectors(p, db, org: str) -> None:
+    """The world of ``load_world`` (connector app1) and two more connectors, app2 and app3, each with a record; all three copied, verified and served."""
     await load_world(p, org)
-    assert await flip(pg_db, org) == (1, 1)
     with ctx(org):
-        await p.batch_upsert_nodes([{"_key": "bad", "recordName": "Bad", "connectorId": "app1", "orgId": org, "accessRule": "ADMIN"}], "records")
-        await p.batch_upsert_nodes([{"_key": "f1", "recordName": "Renamed", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
-    with caplog.at_level(logging.ERROR, logger="app.services.graph_db.postgres.kg.project"):
-        st = await run(p, org, {("records", "bad"), ("records", "f1")})
-    assert st.refused == {("records", "bad")}
-    assert any("rule column of records bad" in r.getMessage() for r in caplog.records)
-    rows = (await held(p, org))["records"]
-    assert "bad" not in rows and rows["f1"][4] == "Renamed"
+        await p.batch_upsert_nodes([{"_key": a, "name": a, "type": "DRIVE", "orgId": org} for a in ("app2", "app3")], "apps")
+        await p.batch_upsert_nodes([{"_key": f"x{n}", "recordName": f"X{n}", "connectorId": f"app{n}", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for n in (2, 3)], "records")
+    assert await flip(db, org) == (3, 3)
 
-    async def mode(tx) -> str:
-        return await tx.fetchval("SELECT s.mode FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk WHERE s.org_id = $1 AND k.coll = 1 AND k.id = 'app1'", org)
+
+async def _modes(p, org: str) -> dict[str, str]:
+    async def go(tx) -> dict[str, str]:
+        return {r["id"]: r["mode"] for r in await tx.fetch("""SELECT k.id, s.mode FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+            WHERE s.org_id = $1 AND k.coll = 1""", org)}
     with ctx(org):
-        assert await p._q(mode, None) == "legacy"
-    out = await bf.backfill(pg_db, org, "app1", page=2)      # every page projects; the verify finds the row kg cannot hold
-    assert not out.flipped
+        return await p._q(go, None)
+
+
+async def _refused_move(p, db, org: str, caplog, doc: dict) -> Stats:
+    """f1 (app1's) changes to ``doc`` with an access rule the records writer refuses, in one batch with a rename of app3's x3."""
+    await _three_connectors(p, db, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "f1", "recordName": "Moved", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", "accessRule": "ADMIN", **doc}], "records")
+        await p.batch_upsert_nodes([{"_key": "x3", "recordName": "Renamed", "connectorId": "app3", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
+    with caplog.at_level(logging.ERROR, logger="app.services.graph_db.postgres.kg.project"):
+        st = await run(p, org, {("records", "f1"), ("records", "x3")})
+    assert st.refused == {("records", "f1")} and any("rule column of records f1" in r.getMessage() for r in caplog.records)
+    assert (await held(p, org))["records"]["x3"][4] == "Renamed"           # the rest of the batch is written
+    return st
+
+
+async def test_a_refused_record_that_moves_to_another_connector_leaves_no_row_under_the_one_it_left(pg_db, caplog) -> None:
+    """f1 moves from app1 to app2 and its new access rule is refused. Its row is rewritten under app2 with the refused column empty, so app1 no longer holds (or serves) the row
+    it had; app2, whose copy of f1 is not exact, goes off the readers; app1 and app3 stay served, and a drain of the log goes through."""
+    p, org = prov(pg_db), new_org()
+    await _refused_move(p, pg_db, org, caplog, {"connectorId": "app2"})
+    f1 = (await held(p, org))["records"]["f1"]
+    assert (f1[1], f1[4], f1[10]) == ("app2", "Moved", None)
+    assert await _modes(p, org) == {"app1": "enforce", "app2": "legacy", "app3": "enforce"}
+    await drain_org(pg_db, org)
+    assert (await held(p, org))["records"]["f1"][1] == "app2"
+
+
+async def test_a_refused_record_whose_connector_is_cleared_leaves_no_row_under_the_one_it_left(pg_db, caplog) -> None:
+    p, org = prov(pg_db), new_org()
+    await _refused_move(p, pg_db, org, caplog, {"connectorId": None})       # a stored document keeps the keys an upsert leaves out: the connector is cleared, not omitted
+    f1 = (await held(p, org))["records"]["f1"]
+    assert (f1[1], f1[4], f1[10]) == (None, "Moved", None)
+    assert await _modes(p, org) == {"app1": "enforce", "app2": "enforce", "app3": "enforce"}
+
+
+async def test_a_refused_record_that_stays_takes_only_its_own_connector_off_the_readers(pg_db, caplog) -> None:
+    """f1 stays in app1 and is renamed; its access rule is refused. The row is written (renamed, the rule empty), app1 goes off the readers and the other two stay served. A copy
+    of app1 then runs to its end and is not served: the verify finds the value kg cannot hold."""
+    p, org = prov(pg_db), new_org()
+    await _refused_move(p, pg_db, org, caplog, {"connectorId": "app1"})
+    f1 = (await held(p, org))["records"]["f1"]
+    assert (f1[1], f1[4], f1[10]) == ("app1", "Moved", None)
+    assert await _modes(p, org) == {"app1": "legacy", "app2": "enforce", "app3": "enforce"}
+    assert not (await bf.backfill(pg_db, org, "app1", page=2)).flipped
 
 
 async def test_the_other_organisation_is_not_touched(pg_db) -> None:
