@@ -2027,6 +2027,7 @@ def connector():
         dep.get_all_user_groups = AsyncMock(return_value=[])
         dep.remove_user_access_to_connector = AsyncMock(return_value=0)
         dep.on_new_user_groups = AsyncMock()
+        c._shared_drives_listed = True  # as after a run's listing; tests set the drives listed
         yield c
 
 
