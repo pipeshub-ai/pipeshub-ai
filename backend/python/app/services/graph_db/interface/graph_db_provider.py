@@ -7926,7 +7926,7 @@ class IGraphDBProvider(ABC):
         page = page[:limit]
         if direction == "prev":
             page.reverse()
-        await self._kh_v3_settle_held_arrows(page, app_id=app_id, org_id=org_id, access=access, transaction=transaction)
+        await self._kh_v3_settle_held_arrows(page, app_id=app_id, org_id=org_id, access=access, transaction=transaction, listed_under=listed_under)
         if name_parents:
             await self._kh_v3_name_parents(
                 page, org_id=org_id, apps={app_id}, access=access, listed_under=listed_under,
@@ -7967,16 +7967,23 @@ class IGraphDBProvider(ABC):
 
     async def _kh_v3_settle_held_arrows(
         self, page: list[dict[str, Any]], *, app_id: str, org_id: str, access: dict[str, Any] | None, transaction: str | None,
+        listed_under: str | None = None,
     ) -> None:
         """A row's arrow is on only where opening the row lists something, which the queries cannot say alone:
 
         * a group the viewer holds a granted record in (``khHeld``) lists it only if it is a chain-top: asked of the chain-top walk a browse of the
           group runs;
-        * a row the walk from the App does not reach (``khFromApp`` false: a seed, a chain-top, a declared member) opens only if the batch check
-          admits it, as the start of its own browse is admitted: asked of the same check.
+        * a row the walk from the App does not reach and the page's declared scope does not hold (``khFromApp`` false: a seed, a chain-top)
+          opens only if the batch check admits it, as the start of its own browse is admitted (a browse of a start it refuses lists nothing):
+          asked of the same check;
+        * a row whose rules select no child (``khKids``: its children they leave undecided) lists one when the check admits it: asked of the
+          same check, and for a row of the point above only once the row itself is admitted.
         """
         asked = [row for row in page if row.pop("khHeld", False) and not row.get("hasChildren") and row.get("nodeType") == "recordGroup"]
-        unreached = [row for row in page if not row.pop("khFromApp", True)]
+        # A stub is listed only where opening it lists something, so it is not asked again.
+        unreached = [row for row in page if not row.pop("khFromApp", True) and not row.get("isPlaceholder")]
+        # A browse row's hierarchy children of the App (no stub), read only for a row whose rules select no child.
+        kids = {row["id"]: row.pop("khKids", None) or [] for row in page}
         if access is None:
             return
 
@@ -7989,11 +7996,22 @@ class IGraphDBProvider(ABC):
 
         for row, lists in zip(asked, await asyncio.gather(*(lists_a_chain_top(r) for r in asked)), strict=True):
             row["hasChildren"] = lists
-        unreached = [row for row in unreached if row.get("hasChildren")]
-        if unreached:
-            openable = (await self.check_access("", org_id, node_ids=[row["id"] for row in unreached], access=access, transaction=transaction)).node_ids
-            for row in unreached:
-                row["hasChildren"] = row["id"] in openable
+        # A row with no child the rules select still has an arrow when the check admits one of its children (a second parent's walk, an App
+        # member, below a seed): the browse of the row lists it (`_kh_v3_undecided`). A row the walk does not reach has an arrow only if the
+        # check admits the row as well. Only the rows whose answer is open are asked: one check, and a second for the children of an unreached
+        # row the first one admits.
+        bare = [row for row in page if not row.get("hasChildren") and row.get("nodeType") != "app" and kids[row["id"]]] if listed_under is not None else []
+        unreached = [row for row in unreached if row.get("hasChildren") or kids[row["id"]]]
+        closed = {row["id"] for row in unreached}
+        admitted = await self._kh_v3_admitted(
+            closed | {k for row in bare if row["id"] not in closed for k in kids[row["id"]]}, org_id=org_id, access=access, transaction=transaction)
+        later = {k for row in bare if row["id"] in closed and row["id"] in admitted for k in kids[row["id"]]} - admitted
+        if later:
+            admitted |= await self._kh_v3_admitted(later, org_id=org_id, access=access, transaction=transaction)
+        for row in unreached:
+            row["hasChildren"] = bool(row.get("hasChildren")) and row["id"] in admitted
+        for row in bare:
+            row["hasChildren"] = (row["id"] not in closed or row["id"] in admitted) and any(k in admitted for k in kids[row["id"]])
 
     async def name_knowledge_hub_parents(
         self,
@@ -8182,7 +8200,7 @@ class IGraphDBProvider(ABC):
         grants_by_connector: dict[str, list[str]],
         transaction: str | None,
         probe: dict[str, Any] | None = None,
-        cross: dict[str, Any] | None = None,
+        cross: list[str] | None = None,
     ) -> tuple[bool, list[str], list[str]]:
         """What the batch check says about a browse start: whether it admits the
         start, which of its ancestors it admits (the breadcrumb of a start the
@@ -8212,13 +8230,19 @@ class IGraphDBProvider(ABC):
         # Every grant held: the walk to a declaration can pass through a node of another connector (a backend that lists one connector's
         # grants tests the others' on their nodes, ``cross``).
         granted = list(dict.fromkeys(g for ids in grants_by_connector.values() for g in ids or ()))
-        unproved = [d for d in declared if d not in granted]        # a declaration the viewer is granted is read as one without asking the walk
-        if unproved:
-            reached = set(await self._kh_v3_declared_reached(
-                unproved, app_id, granted, probe, transaction, **({"cross": cross} if cross is not None else {})))
-            declared = [d for d in declared if d in granted or d in reached]
-        scope = await self._kh_v3_declared_groups(declared, transaction) if declared else []
+        scope = await self._kh_v3_declared_scope(
+            declared, app_id, granted, probe, transaction, **({"cross": cross} if cross is not None else {})) if declared else []
         return True, [a for a in ancestors if a in admitted], scope
+
+    async def _kh_v3_declared_scope(
+        self, declared: list[str], app_id: str, granted: list[str], probe: dict[str, Any] | None, transaction: str | None,
+        cross: list[str] | None = None,
+    ) -> list[str]:
+        """The scope of these declared groups the check admits, as the check's declared arm reads it: those the viewer is granted or the walk
+        from the App reaches (where a group is admitted some other way, below a seed, what hangs under it is not readable through it), and the
+        groups under them, group to group, deleted groups cut. ``probe``: grants are tested from the node, as on the rest of the page.
+        ``cross``: the other connectors' grants, tested on their nodes along the walk."""
+        raise NotImplementedError
 
     async def _kh_v3_chain_tops(
         self,
@@ -8321,20 +8345,32 @@ class IGraphDBProvider(ABC):
         of ``app_id`` among the start and them."""
         raise NotImplementedError
 
-    async def _kh_v3_declared_groups(
-        self, declared: list[str], transaction: str | None,
-    ) -> list[str]:
-        """The groups under these declared groups, group to group, deleted groups
-        cut: the check's declared-scope arm."""
-        raise NotImplementedError
+    # A browse asks the batch check about the children of a node its rules do not select (``undecided``), at most this many per node: the first by id,
+    # read the same way for the browse of the node and for the node's arrow, so the two agree. A browse reads one more, to tell when the cap
+    # leaves some out (`_kh_v3_capped` logs it).
+    # shortcut: past this many undecided children of one node the rest are not listed (never one the check refuses); page them with the browse's
+    # own sort and cursor (as the flat listing windows a connector) once the log shows a node past the cap.
+    _KH_UNDECIDED_MAX = 200
 
-    async def _kh_v3_declared_reached(
-        self, declared: list[str], app_id: str, granted_ids: list[str], probe: dict[str, Any] | None, transaction: str | None,
-        cross: dict[str, Any] | None = None,
-    ) -> list[str]:
-        """Of these declared groups, those the viewer is granted or the walk from the App reaches (the check's declared arm). ``probe``: grants are
-        tested from the node, as on the rest of the page. ``cross``: the other connectors' grants, tested on their nodes along the walk."""
-        raise NotImplementedError
+    def _kh_v3_capped(self, undecided: list[str], node_id: str) -> list[str]:
+        """The undecided children a browse of ``node_id`` asks about, read with one past the cap: the first ``_KH_UNDECIDED_MAX``, and a log line
+        when there were more (the rest are not listed)."""
+        if len(undecided) <= self._KH_UNDECIDED_MAX:
+            return undecided
+        self.logger.warning(
+            "kh browse of %s: more than %d children its rules leave to the access check; only the first %d by id are asked about and listed",
+            node_id, self._KH_UNDECIDED_MAX, self._KH_UNDECIDED_MAX)
+        return undecided[:self._KH_UNDECIDED_MAX]
+
+    async def _kh_v3_admitted(
+        self, ids: Iterable[str], *, org_id: str, access: dict[str, Any], transaction: str | None,
+    ) -> frozenset[str]:
+        """Of ``ids``, those the batch check admits. A browse lists them beside what its rules select, so it lists every child the viewer may open,
+        by whatever arm of the check."""
+        ids = set(ids)
+        if not ids:
+            return frozenset()
+        return (await self.check_access("", org_id, node_ids=ids, access=access, transaction=transaction)).node_ids
 
     async def get_knowledge_hub_access_v3(
         self,

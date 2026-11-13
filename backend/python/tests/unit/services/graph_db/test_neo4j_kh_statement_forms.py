@@ -120,9 +120,9 @@ def test_the_grantees_of_the_probe_are_the_grantees_of_the_grant_list() -> None:
     import inspect
 
     grants = Neo4jProvider._kh_v3_connector_grants_cypher()
-    grantees = inspect.getsource(Neo4jProvider._kh_v3_connector_grantees)
-    mine = "(kh_b.connectorId IS NULL OR kh_b.connectorId = $connector_id)"
-    assert mine in grants and mine in grantees
+    grantees = inspect.getsource(Neo4jProvider._kh_v3_connector_grantees).replace("{{", "{").replace("}}", "}")
+    # Every principal the user holds counts, whatever connector it came from, as in the batch check and get_knowledge_hub_access_v3.
+    assert "kh_b.connectorId IS NULL" not in grants and "kh_b.connectorId IS NULL" not in grantees
     for fragment in (
         "(u)-[:PERMISSION {{type: 'USER'}}]->(kh_b:Group|Role|Teams)",
         "(u)-[:BELONGS_TO]->(kh_org:Organization)",
@@ -130,7 +130,7 @@ def test_the_grantees_of_the_probe_are_the_grantees_of_the_grant_list() -> None:
         "WHERE kh_link.connectorId = $connector_id",
         "(kh_src)-[kh_e:PERMISSION]->(kh_b)",
     ):
-        assert fragment in grantees, fragment
+        assert fragment.replace("{{", "{").replace("}}", "}") in grantees, fragment
         assert fragment.replace("{{", "{").replace("}}", "}") in grants, fragment
     # The source account's organization grants nothing in either.
     assert "(kh_src)-[:BELONGS_TO]" not in grants and "(kh_src)-[:BELONGS_TO]" not in grantees
