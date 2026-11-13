@@ -152,6 +152,21 @@ def test_a_connector_that_stops_being_ready_mid_listing_restarts_it_counted_afre
     assert again.total == 9 and again.not_ready == ["c2"] and [r["id"] for r in again.rows] == ["a00", "a01", "a02", "a03"]
 
 
+@pytest.mark.parametrize("connectors", [["c1"], ["c1", "c2"]], ids=["only_one", "every_one"])
+def test_a_walk_whose_every_queried_connector_stops_being_ready_is_restarted_not_retried(connectors: list[str]) -> None:
+    """Every connector the next page asks stops being ready: the cursor is refused (a 400, start again), not answered as not ready (a 503 the caller
+    retries with the same cursor and its stale total). A first page with nothing ready is still the not-ready answer."""
+    from app.utils.kh_cursor import CursorError
+    rows = {c: [row(f"{c}-{i:02d}", f"{c}{i:02d}") for i in range(9)] for c in connectors}
+    provider = NotReadyProvider(rows, set())
+    first = asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4))
+    provider.not_ready = set(connectors)
+    with pytest.raises(CursorError):
+        asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4, cursor_token=first.next_cursor))
+    with pytest.raises(KnowledgeHubListingNotReady):
+        asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4))
+
+
 def test_when_every_connector_is_not_ready_the_page_is_refused() -> None:
     provider = NotReadyProvider({"c1": [row("a", "a")], "c2": [row("b", "b")]}, {"c1", "c2"})
     with pytest.raises(KnowledgeHubListingNotReady):

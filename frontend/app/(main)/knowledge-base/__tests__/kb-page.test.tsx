@@ -1714,6 +1714,30 @@ describe('Knowledge base page — All Records', () => {
     expect(await screen.findByRole('row', { name: 'Later.xlsx' })).toBeTruthy();
   });
 
+  it('starts again from the first page when a cursor is refused, and a first page that is not ready is retried a few times, not for ever', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) => {
+      if (params?.cursor === 'n2') throw { type: 'VALIDATION_ERROR', message: 'start the listing from its first page', statusCode: 400 };
+      if (api.hub.getAllRootItems.mock.calls.length > 1) {
+        throw { type: 'SERVER_ERROR', message: 'This source is still being prepared.', statusCode: 503, originalError: { response: { headers: { 'retry-after': '1' } } } };
+      }
+      return hubResponse([CONNECTOR_FILE], { pagination: { page: 1, limit: 50, totalItems: 60, totalPages: 2, startIndex: 1, endIndex: 50, hasNext: true, hasPrev: false, nextCursor: 'n2', prevCursor: null } });
+    });
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    fireEvent.click(screen.getByRole('button', { name: /Next/ }));
+
+    await waitFor(() => expect(api.hub.getAllRootItems.mock.calls.length).toBeGreaterThanOrEqual(3));
+    expect(api.hub.getAllRootItems.mock.calls[2][0]).not.toHaveProperty('cursor');      // the refused cursor is dropped: the listing starts again
+    expect(await screen.findByText(/busy right now/)).toBeTruthy();
+    // the first page, the refused cursor, the first page again and three retries of it, a second apart; then no more
+    await waitFor(() => expect(api.hub.getAllRootItems.mock.calls.length).toBe(6), { timeout: 8000 });
+    await new Promise((r) => setTimeout(r, 2500));
+    expect(api.hub.getAllRootItems.mock.calls.length).toBe(6);
+    expect(api.hub.getAllRootItems.mock.calls.slice(2).every(([params]) => !(params as { cursor?: string })?.cursor)).toBe(true);
+  }, 20000);
+
   it('goes on backwards from an empty page reached by Previous', async () => {
     withCollections();
     const earlier = hubNode({ id: 'rec-earlier', name: 'Earlier.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
