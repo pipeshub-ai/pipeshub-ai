@@ -110,26 +110,29 @@ async def test_the_sidebar_lists_the_records_that_have_children(containers_graph
 async def test_every_statement_of_a_browse_sidebar_plans_small(containers_graph, arango_provider, monkeypatch) -> None:
     """ArangoDB plans each statement anew, and planning, not execution, was most of a browse sidebar's time: it grows faster than the plan. With
     the sidebar's record test inline the slim statement planned to over 1,000 nodes (about 150 ms of a 160 ms call); it is read apart for the
-    records that can have an arrow, and no statement of the call plans to more than ``MAX_NODES``."""
+    records that can have an arrow, and no statement of the call plans to more than 900 nodes, explained with the optimizer rules it runs with."""
     max_nodes = 900
     client = arango_provider.http_client
-    sent: list[tuple[str, dict]] = []
+    sent: list[tuple[str, dict, dict]] = []
     execute = client.execute_aql
 
     async def capture(query: str, bind_vars: dict | None = None, *args: Any, **kwargs: Any) -> list:  # noqa: ANN401
-        sent.append((query, bind_vars or {}))
+        sent.append((query, bind_vars or {}, (kwargs.get("options") or {}).get("optimizer") or {}))
         return await execute(query, bind_vars, *args, **kwargs)
 
     monkeypatch.setattr(client, "execute_aql", capture)
     rows = await _rows(arango_provider, filters={"only_containers": True})
     monkeypatch.undo()
     assert set(rows) == {"sc-parent", "sc-stub"}
-    assert any("kh_side" in q for q, _ in sent) and any("LET kh_has" in q for q, _ in sent)
+    assert any("kh_side" in q for q, _, _ in sent) and any("LET kh_has" in q for q, _, _ in sent)
+    # the sidebar's statements run with the listing's rules (`_KH_V3_QUERY_OPTIONS`), and are explained with them
+    assert all(o.get("rules") for q, _, o in sent if "kh_side" in q or "LET kh_has" in q)
 
     session = await client._get_session()
     sizes = []
-    for query, bind in sent:
-        async with session.post(f"{client.base_url}/_db/{client.database}/_api/explain", json={"query": query, "bindVars": bind}) as resp:
+    for query, bind, optimizer in sent:
+        body = {"query": query, "bindVars": bind, **({"options": {"optimizer": optimizer}} if optimizer else {})}
+        async with session.post(f"{client.base_url}/_db/{client.database}/_api/explain", json=body) as resp:
             assert resp.status == 200, await resp.text()
             sizes.append(len((await resp.json())["plan"]["nodes"]))
     assert max(sizes) <= max_nodes, sorted(sizes)
