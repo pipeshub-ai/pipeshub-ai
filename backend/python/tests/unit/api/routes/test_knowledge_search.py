@@ -415,12 +415,37 @@ async def test_the_neighbors_answer_matches_the_published_schema_and_dates_a_rec
     assert {k: v for k, v in preview.items() if k in dates} == dates
 
 
-async def test_the_search_answer_matches_the_published_schema_with_its_notes() -> None:
-    payload = {
-        "status": "success", "results": [], "ignoredEntityTypes": ["galaxy"], "kindNotes": ["x is not searched"],
-        "scopeNote": "limited",
-    }
-    _validate("EntitySearchResponse", payload)
+async def _search_answer(hits: list) -> dict:
+    """What the route answers for ``hits`` (as the access check kept them), extraction off."""
+    ed ="app.agents.actions.knowledge_graph.ops.entity_discovery"
+    state = {"org_id": ORG, "user_id": USER, "config_service": MagicMock(), "filters": {},
+             "entity_vector_store": MagicMock(), "graph_provider": MagicMock()}
+    with patch.object(ks, "_entity_state", AsyncMock(return_value=state)), \
+         patch(f"{ed}.load_entity_access_context", AsyncMock(return_value=_context())), \
+         patch(f"{ed}.search_entities_for_user", AsyncMock(return_value=hits)), \
+         patch(f"{ed}.limited_scope_note", return_value="limited"), \
+         patch(f"{ed}._named_entities_enabled", AsyncMock(return_value=False)):
+        return json.loads((await ks.search_entities(_request(), ks.EntitySearchQuery(query="acme"), MagicMock())).body)
+
+
+async def test_the_search_answer_is_exactly_what_the_published_schema_documents() -> None:
+    from app.modules.retrieval.entity_permissions import EntityHit
+
+    row = {"_key": RID, "recordName": "Doc", "recordType": "FILE", "connectorId": "c1"}
+    found = await _search_answer([
+        EntityHit("u1", "person", "Ada", 0.9, [row], True),
+        EntityHit("o1", "organization", "Acme", 0.8, [row], False),
+        EntityHit(RID, "record", "Acme plan", 0.7, [row], False, indexing_status="QUEUED", indexed=False),
+    ])
+    empty = await _search_answer([])
+    for payload in (found, empty):
+        _validate("EntitySearchResponse", payload)
+    schema = yaml.safe_load(_SPEC.read_text(encoding="utf-8"))["components"]["schemas"]["EntitySearchResponse"]
+    item = schema["properties"]["results"]["items"]["properties"]
+    # every field the route writes is documented, and every documented field is one the route writes
+    assert set(found) | set(empty) == set(schema["properties"])
+    assert {k for r in found["results"] for k in r} == set(item)
+    assert "scopeNote" in empty and "scopeNote" not in found
     with pytest.raises(jsonschema.ValidationError):
         _validate("EntitySearchResponse", {"results": [{"entityId": 1}]})
 
