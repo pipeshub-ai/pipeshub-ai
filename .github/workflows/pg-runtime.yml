@@ -113,7 +113,7 @@ jobs:
               --ignore=tests/integration/graph_db/postgres/test_kh_listing_flat.py
               --ignore=tests/integration/graph_db/postgres/test_robustness.py
               --ignore=tests/integration/graph_db/postgres/test_role_batch.py
-            graph_cases: 1462
+            graph_cases: 1463
     services:
       redis:
         image: redis:7.4-bookworm
