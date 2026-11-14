@@ -664,7 +664,7 @@ async def test_a_browse_of_many_chain_top_holders_resolves_the_chain_tops_once(p
         await p.batch_create_edges([edge("u1", "users", i, "recordGroups" if i.startswith("g") else "records", type="USER", role="READER") for i in granted], "permission")
     await flip(pg_db, org)
     calls: dict[str, int] = {}
-    for name in ("_kh_v3_chain_top_groups", "_kh_v3_chain_top_candidates", "_kh_v3_chain_top_facts"):
+    for name in ("_kh_v3_chain_top_groups", "_kh_v3_chain_top_candidates", "_kh_v3_chain_top_hidden"):
         real = getattr(kh_browse.KhBrowseMixin, name)
 
         async def counted(self, *a, _real=real, _name=name, **kw) -> object:
@@ -673,7 +673,7 @@ async def test_a_browse_of_many_chain_top_holders_resolves_the_chain_tops_once(p
         monkeypatch.setattr(kh_browse.KhBrowseMixin, name, counted)
     page = await browse(p, org, "fold", granted, limit=50)
     assert [r["id"] for r in page["rows"]] == groups[:50] and all(r["hasChildren"] for r in page["rows"]) and page["total"] == 300, page["rows"][:3]
-    assert calls == {"_kh_v3_chain_top_groups": 1, "_kh_v3_chain_top_candidates": 1, "_kh_v3_chain_top_facts": 1}, calls
+    assert calls == {"_kh_v3_chain_top_groups": 1, "_kh_v3_chain_top_candidates": 1, "_kh_v3_chain_top_hidden": 1}, calls
 
 
 async def test_a_request_reads_at_most_its_budget_over_all_its_placeholder_walks_and_resumes_at_one_it_cannot_finish(pg_db, monkeypatch) -> None:
