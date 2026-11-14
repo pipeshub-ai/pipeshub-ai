@@ -9,7 +9,7 @@ import shlex
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from cachetools import TTLCache
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -20,6 +20,7 @@ from app.agents.actions.storage_search.storage_search import (
     _GREP_SHORT_VALUE_LETTERS,
     _SHORT_VALUE_LETTERS,
     _MAX_FIND_RECORDS,
+    PIPELINE_TIMEOUT_SECS,
     _listing_command_error,
     StoragePatternMatch,
     _validate_command,
@@ -28,6 +29,7 @@ from app.agents.actions.storage_search.storage_search import (
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
+from app.core.org_context import spawn_in_request
 from app.models.entities import USER_EMAIL_PLACEHOLDER, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.retrieval.selection_scope import (
@@ -49,7 +51,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,
     requested_scope_ids,
 )
-from app.utils.env_utils import accuracy_feature_enabled, high_accuracy_mode
+from app.utils.env_utils import accuracy_feature_enabled, env_bool, env_int, high_accuracy_mode
 from app.utils.exact_text_index import (
     LexicalSearcher,
     plan_command,
@@ -69,7 +71,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_PATTERN_MATCH_TIMEOUT = 30
+# Per source; PATTERN_MATCH_TIMEOUT_SECS sets it with one grep pipeline's run time.
+_PATTERN_MATCH_TIMEOUT = PIPELINE_TIMEOUT_SECS
 # Whole command generation, a retry included.
 _LLM_GREP_TIMEOUT = 15.0
 _LLM_GREP_ATTEMPT_TIMEOUT = 10.0
@@ -79,7 +82,8 @@ _GREP_LLM_TTL_SECS = 300.0
 # Runs inside the total budget before any grep, so a stalled config read must not eat it.
 _GREP_LLM_LOOKUP_TIMEOUT = 3.0
 # Whole pattern match per search call: LLM grep generation plus every grep round.
-_PATTERN_MATCH_TOTAL_BUDGET = 35.0
+# Raise it with PATTERN_MATCH_TIMEOUT_SECS, or a longer grep is still cut here.
+_PATTERN_MATCH_TOTAL_BUDGET = float(env_int("PATTERN_MATCH_TOTAL_BUDGET_SECS", 35, lo=5, hi=300) or 35)
 # How long a search that asked for the short keyword-search budget waits for
 # the pattern match once its semantic results are in, before it goes on with
 # the matches found so far. Measured on agent chats over MCP: semantic results
@@ -99,6 +103,18 @@ KEYWORD_SEARCH_BUDGETS = ("short", "full")
 # between first and second place so one command cannot decide the order.
 _RRF_K = 60
 _GREP_RANK_FUSION_ENV_VAR = "GREP_RANK_FUSION"
+_GREP_SHARED_CONTENT_ENV_VAR = "GREP_SHARED_CONTENT"
+_GREP_RANK_ALL_OUTPUT_ENV_VAR = "GREP_RANK_ALL_OUTPUT"
+# Storage outside a scoped search that holds content records of the scope share
+# (deduplicated content is stored once, under the connector that indexed it
+# first). Skipped when little of what a grep there walks is shared: its hits
+# would be mostly records outside the scope.
+_MIN_CONTENT_OWNER_SHARE = 0.02
+_MAX_CONTENT_OWNER_DIRS = 5
+_CONTENT_OWNER_TTL_SECS = 600
+# Runs beside command generation; a slower lookup is given up rather than let
+# it hold back every grep.
+_CONTENT_OWNER_LOOKUP_TIMEOUT = 5.0
 # "false" sends every exact-text search back to the file scan.
 _PATTERN_MATCH_INDEX_ENV_VAR = "PATTERN_MATCH_INDEX"
 # At or under this many indexed chunks, every command is also scanned: a full
@@ -271,6 +287,9 @@ _MAX_GREP_STDOUT_BYTES = 4_000_000
 # Deep hierarchies (Confluence page trees) produce paths of several hundred chars,
 # so the tool's default 8K cap would keep only a few dozen lines.
 _MAX_GREP_OUTPUT_CHARS = 200_000
+# With GREP_RANK_ALL_OUTPUT every kept line is ranked before the permission
+# check, so the cap only bounds that work; output past it is narrowed instead.
+_RANK_ALL_OUTPUT_CHARS = 1_000_000
 _MAX_SCOPED_SEARCH_PATHS = 20
 _ZERO_COUNT_FILTER = "grep -v ':0$'"
 
@@ -856,6 +875,10 @@ def _parse_grep_response(
 _grep_llm_cache: TTLCache = TTLCache(maxsize=256, ttl=_GREP_LLM_TTL_SECS)
 # The agent often repeats a search query within a turn (retries, other sources).
 _grep_commands_cache: TTLCache = TTLCache(maxsize=512, ttl=600)
+# Keyed by org and scope; storage outside the scope worth grepping for it.
+_content_owner_cache = TTLCache[tuple[str, tuple[str, ...]], list[str], float](
+    maxsize=256, ttl=_CONTENT_OWNER_TTL_SECS,
+)
 
 
 async def _grep_generation_llm(
@@ -922,10 +945,7 @@ async def resolve_connector_ids_for_search(
     - A selection below app level → the apps it touches; ``merge_pattern_match_results``
       then drops every hit outside the selection.
     """
-    touched = selection_app_ids(filters)
-    if touched is not None:
-        return touched
-    scope = requested_scope_ids(filters)
+    scope = _scoped_connector_ids(filters)
     if scope is not None:
         return list(scope)
     if filters and filters.get(STRICT_SCOPE_FILTER_KEY):
@@ -936,6 +956,71 @@ async def resolve_connector_ids_for_search(
     except Exception:
         logger.warning("pattern_match: org app lookup failed, grep searches nothing", exc_info=True)
         return []
+
+
+def _scoped_connector_ids(filters: dict[str, Any] | None) -> tuple[str, ...] | None:
+    """The connectors a scoped request searches, or None when it searches every one."""
+    touched = selection_app_ids(filters)
+    if touched is not None:
+        return tuple(touched)
+    return requested_scope_ids(filters)
+
+
+async def content_owner_connector_ids(
+    graph_provider: IGraphDBProvider,
+    org_id: str,
+    scope: Iterable[str] | None,
+    logger_instance: logging.Logger,
+) -> list[str]:
+    """Connectors outside *scope* whose storage holds enough content that
+    records of the scope share to be worth grepping too.
+
+    ``[]`` when unscoped (every connector is searched already) and when the
+    lookup fails, so a failure never widens the search.
+    """
+    if not scope:
+        return []
+    scope_ids = tuple(sorted(set(scope)))
+    key = (org_id, scope_ids)
+    cached = _content_owner_cache.get(key)
+    if cached is not None:
+        return cached
+    try:
+        shares = await asyncio.wait_for(
+            graph_provider.get_content_owner_connector_ids(
+                list(scope_ids), org_id, timeout_seconds=_CONTENT_OWNER_LOOKUP_TIMEOUT,
+            ),
+            timeout=_CONTENT_OWNER_LOOKUP_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        # Kept for the cache's lifetime: the same scope would time out again.
+        logger_instance.warning(
+            "pattern_match: shared-content lookup took over %.0fs, not grepping outside the scope",
+            _CONTENT_OWNER_LOOKUP_TIMEOUT,
+        )
+        _content_owner_cache[key] = []
+        return []
+    except NotImplementedError:
+        logger_instance.info("pattern_match: this graph store cannot find shared content, not grepping outside the scope")
+        _content_owner_cache[key] = []
+        return []
+    except Exception:
+        logger_instance.warning("pattern_match: shared-content lookup failed", exc_info=True)
+        return []
+    owners: list[str] = []
+    for cid, share in sorted(shares.items(), key=lambda kv: (-kv[1].shared, kv[0])):
+        if cid in scope_ids:
+            continue
+        if share.held <= 0 or share.shared / share.held < _MIN_CONTENT_OWNER_SHARE:
+            logger_instance.info(
+                "pattern_match: not grepping %s, %d of the %d contents it holds shared with the scope",
+                cid, share.shared, share.held,
+            )
+            continue
+        owners.append(cid)
+    owners = owners[:_MAX_CONTENT_OWNER_DIRS]
+    _content_owner_cache[key] = owners
+    return owners
 
 
 async def _fetch_container_group_rows(
@@ -1281,6 +1366,7 @@ async def run_pattern_match_with_llm_grep(
                 retrieval_service=retrieval_service, commands=commands,
                 max_records_per_connector=max_records_per_connector,
                 readable_only=readable_only,
+                deadline=time.monotonic() + _PATTERN_MATCH_TOTAL_BUDGET,
             ),
             timeout=_PATTERN_MATCH_TOTAL_BUDGET,
         )
@@ -1312,9 +1398,11 @@ async def _run_pattern_match_with_llm_grep(
     commands: list[str] | None = None,
     max_records_per_connector: int = _MAX_RECORDS_PER_CONNECTOR,
     readable_only: bool = False,
+    deadline: float | None = None,
 ) -> list[dict[str, Any]]:
     """*found* collects the best hit per record as each LLM command finishes,
-    so the caller still has them if the total budget cancels this."""
+    so the caller still has them if the total budget cancels this. *deadline*
+    (``time.monotonic()``) is when that budget runs out."""
     if not await check_pattern_match_eligible(config_service, logger_instance):
         return []
     searcher = await _index_searcher(retrieval_service, logger_instance)
@@ -1323,18 +1411,28 @@ async def _run_pattern_match_with_llm_grep(
         "found": found, "coverage": coverage, "logger_instance": logger_instance,
         "small_store": searcher is not None and await _is_small_store(searcher, org_id, user_id, logger_instance),
     }
-    llm_grep_cmds: list[str] | None = list(commands) if commands else None
-    if llm is not None and not commands:
-        cache_key = (org_id, query.strip(), (user_query or "").strip())
-        llm_grep_cmds = _grep_commands_cache.get(cache_key)
-        if llm_grep_cmds is None:
-            llm_grep_cmds = await generate_grep_command_via_llm(
-                query=query, llm=await _grep_generation_llm(config_service, org_id, llm),
-                logger_instance=logger_instance, user_query=user_query,
-                on_llm_usage=on_llm_usage,
-            )
-            if llm_grep_cmds:
-                _grep_commands_cache[cache_key] = llm_grep_cmds
+    owners_task: asyncio.Task[list[str]] | None = None
+    if env_bool(_GREP_SHARED_CONTENT_ENV_VAR, False):
+        # Looked up while the commands are written, so it adds no time of its own.
+        owners_task = cast("asyncio.Task[list[str]]", spawn_in_request(content_owner_connector_ids(
+            graph_provider, org_id, _scoped_connector_ids(filters), logger_instance,
+        ), name="pattern-match-shared-content"))
+    try:
+        llm_grep_cmds: list[str] | None = list(commands) if commands else None
+        if llm is not None and not commands:
+            cache_key = (org_id, query.strip(), (user_query or "").strip())
+            llm_grep_cmds = _grep_commands_cache.get(cache_key)
+            if llm_grep_cmds is None:
+                llm_grep_cmds = await generate_grep_command_via_llm(
+                    query=query, llm=await _grep_generation_llm(config_service, org_id, llm),
+                    logger_instance=logger_instance, user_query=user_query,
+                    on_llm_usage=on_llm_usage,
+                )
+                if llm_grep_cmds:
+                    _grep_commands_cache[cache_key] = llm_grep_cmds
+        content_owner_ids = await owners_task if owners_task is not None else []
+    finally:
+        await cancel_task_if_running(owners_task)
 
     common: dict[str, Any] = {
         "query": query,
@@ -1347,6 +1445,8 @@ async def _run_pattern_match_with_llm_grep(
         "coverage": coverage,
         "max_records_per_connector": max_records_per_connector,
         "readable_only": readable_only,
+        "content_owner_ids": content_owner_ids,
+        "deadline": deadline,
     }
     keyword_cmd = None if commands else build_grep_command_from_query(query)
     scan_cmds = list(llm_grep_cmds or [])
@@ -1618,6 +1718,8 @@ async def execute_pattern_match_pipeline(
     coverage: PatternMatchCoverage | None = None,
     max_records_per_connector: int = _MAX_RECORDS_PER_CONNECTOR,
     readable_only: bool = False,
+    content_owner_ids: Iterable[str] = (),
+    deadline: float | None = None,
 ) -> list[dict]:
     """Full pipeline: eligibility check → build grep → resolve connectors → run.
 
@@ -1633,6 +1735,9 @@ async def execute_pattern_match_pipeline(
     the lightweight ``validate_grep_command`` check is skipped — the
     command still goes through ``_validate_command`` in ``run_pattern_match``
     which is the real security gate and allows xargs.
+
+    *content_owner_ids*: storage outside a scoped request to grep as well
+    (``content_owner_connector_ids``). *deadline*: as in ``run_pattern_match``.
     """
     if not await check_pattern_match_eligible(config_service, logger_instance):
         logger_instance.info("pattern_match pipeline: storage not local, skipping")
@@ -1667,6 +1772,7 @@ async def execute_pattern_match_pipeline(
         "pattern_match pipeline: grep=%r connectors=%s",
         grep_command, connector_ids,
     )
+    scoped = _scoped_connector_ids(filters) is not None
     return await run_pattern_match(
         config_service=config_service,
         org_id=org_id,
@@ -1678,6 +1784,9 @@ async def execute_pattern_match_pipeline(
         coverage=coverage,
         max_records_per_connector=max_records_per_connector,
         readable_only=readable_only,
+        scope_connector_ids=frozenset(connector_ids) if scoped else None,
+        content_owner_ids=content_owner_ids,
+        deadline=deadline,
     )
 
 
@@ -1694,6 +1803,9 @@ async def run_pattern_match(
     coverage: PatternMatchCoverage | None = None,
     max_records_per_connector: int = _MAX_RECORDS_PER_CONNECTOR,
     readable_only: bool = False,
+    scope_connector_ids: frozenset[str] | None = None,
+    content_owner_ids: Iterable[str] = (),
+    deadline: float | None = None,
 ) -> list[dict]:
     """Run grep pattern match across connectors. Returns raw, UNADJUDICATED records.
 
@@ -1708,9 +1820,23 @@ async def run_pattern_match(
       the ones they can.
     - Anything else (RECORD_LEVEL, or groups needing verification) → grep
       the whole connector directory.
+    - *content_owner_ids* (a scoped request, with *scope_connector_ids* its
+      connectors): storage outside the scope that holds content the scope's
+      records share → grep the whole directory. A hit there is kept only when
+      it names a record of the scope the user may read and that record's own
+      text matched, and it is not counted in *coverage*.
+
+    With ``GREP_RANK_ALL_OUTPUT``, every record a grep lists is ranked, not
+    only the readable ones, and output cut at its size limit is narrowed by a
+    second grep while *deadline* (``time.monotonic()``, the search's total
+    budget) and *timeout* leave time for it.
     """
     if not connector_ids or not command:
         return []
+    owner_ids = (
+        [cid for cid in dict.fromkeys(content_owner_ids) if cid not in connector_ids]
+        if scope_connector_ids is not None else []
+    )
 
     valid, err = _validate_command(command)
     if not valid:
@@ -1751,13 +1877,18 @@ async def run_pattern_match(
         "graph_provider": graph_provider,
     }
     storage_tool = StoragePatternMatch(state)
+    rank_all = env_bool(_GREP_RANK_ALL_OUTPUT_ENV_VAR, False)
+    connector_deadline = time.monotonic() + timeout
+    if deadline is not None:
+        connector_deadline = min(connector_deadline, deadline)
 
     # Per connector, the outcome of its last grep; read once into *coverage*.
     outcomes: dict[str, str] = {}
 
     async def _run_grep(
         connector_id: str, cmd: str, *, allowed_vrids: frozenset[str] | None = None,
-    ) -> list[dict] | None:
+        content_owner: bool = False,
+    ) -> list[dict[str, Any]] | None:
         """Run one grep against a connector; None when the command itself failed
         (as opposed to matching nothing), so callers can fall back."""
         try:
@@ -1768,7 +1899,11 @@ async def run_pattern_match(
                 readable_only=readable_only,
                 allowed_vrids=allowed_vrids,
                 max_stdout_bytes=_MAX_GREP_STDOUT_BYTES,
-                max_output_chars=_MAX_GREP_OUTPUT_CHARS,
+                max_output_chars=_RANK_ALL_OUTPUT_CHARS if rank_all else _MAX_GREP_OUTPUT_CHARS,
+                scope_connector_ids=scope_connector_ids if content_owner else None,
+                content_owner=content_owner,
+                rank_all_output=rank_all,
+                deadline=connector_deadline if rank_all else None,
             )
         except Exception:
             logger_instance.warning(
@@ -1905,10 +2040,20 @@ async def run_pattern_match(
         )
         return records
 
+    async def _search_content_owner(connector_id: str) -> list[dict[str, Any]]:
+        records = await _run_grep(connector_id, command, content_owner=True) or []
+        logger_instance.info(
+            "pattern_match _search_connector: cid=%s shared content, records=%d",
+            connector_id, len(records),
+        )
+        return records
+
     # Per connector, so one slow connector cannot discard everyone else's results.
-    async def _search_connector_bounded(connector_id: str) -> list[dict]:
+    async def _search_connector_bounded(connector_id: str, *, content_owner: bool = False) -> list[dict]:
         try:
-            return await asyncio.wait_for(_search_connector(connector_id), timeout=timeout)
+            return await asyncio.wait_for(
+                (_search_content_owner if content_owner else _search_connector)(connector_id), timeout=timeout,
+            )
         except asyncio.TimeoutError:
             logger_instance.warning(
                 "Pattern match timed out after %ds for cid=%s", timeout, connector_id,
@@ -1919,6 +2064,7 @@ async def run_pattern_match(
     try:
         results = await asyncio.gather(
             *(_search_connector_bounded(cid) for cid in connector_ids),
+            *(_search_connector_bounded(cid, content_owner=True) for cid in owner_ids),
             return_exceptions=True,
         )
     finally:
@@ -1929,7 +2075,7 @@ async def run_pattern_match(
     for i, result in enumerate(results):
         if isinstance(result, Exception):
             logger_instance.info("Pattern match connector %d error: %s", i, result)
-            if coverage is not None:
+            if coverage is not None and i < len(connector_ids):
                 coverage.failed.add(connector_ids[i])
             continue
         logger_instance.info(
