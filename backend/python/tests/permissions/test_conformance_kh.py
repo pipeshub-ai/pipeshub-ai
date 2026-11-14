@@ -55,6 +55,7 @@ from .kh_worlds import (
     STUBQ,
     STUBSEED,
     TWOWAY,
+    UNPLACED,
     WIDE,
     XBADGE,
     XDECL,
@@ -487,3 +488,18 @@ async def test_generated_worlds_count_what_the_viewer_may_read(graph_layers, kin
             graph_layers, partial(check_worlds, worlds=worlds[mine.start:mine.stop], tag=f"{kind}-{seed}", first=mine.start))
         where = f"{{store}} {kind} seed {seed} worlds {mine.start}-{mine.stop - 1}"
         _assert_each_store(results, where, where)
+
+
+async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(graph_layers) -> None:
+    """UNPLACED: r1's parent and own group are closed, so the App lists it; r2's own group opens, so it is listed there and not under the App; r3
+    is granted but the check denies it, so it is listed nowhere."""
+    async def run(layer: GraphCheckLayer) -> list[KhFinding]:
+        await layer.preload([UNPLACED])
+        try:
+            assert await children_of(layer, UNPLACED, "u", "A", "app") == {"open": True, "r1": False}
+            assert await children_of(layer, UNPLACED, "u", "open", "recordGroup") == {"r2": False}
+            return await check_world(layer, UNPLACED, "unplaced")
+        finally:
+            await layer.release([UNPLACED])
+
+    _assert_each_store(await on_every_store(graph_layers, run), "{store} unplaced", "{store}")

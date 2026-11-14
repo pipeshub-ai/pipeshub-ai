@@ -494,41 +494,17 @@ class KhBrowseMixin(PgBase):
             return [{"id": n["id"], "handle": n["id"], "sk": n["sk"], "parents": n["parents"], "ownGroups": [{"id": g, "deleted": d} for g, d in n["own"]]} for n in nodes.values()]
         return await self._kq(read, transaction) if node_ids else []
 
-    async def _kh_v3_chain_top_facts(self, app_id: str, node_ids: list[str], group_ids: list[str], transaction: str | None) -> dict[str, set[str]]:
+    async def _kh_v3_chain_top_hidden(self, app_id: str, node_ids: list[str], transaction: str | None) -> set[str]:
         org = current_org_id()
 
-        async def read(tx: Tx) -> dict[str, set[str]]:
+        async def read(tx: Tx) -> set[str]:
             app_sk = await tx.fetchval(kgl.APP_KEY, org, app_id)
             if app_sk is None:
-                return {"hidden": set(node_ids), "underApp": set()}
-            hidden: set[int] = set(await tx.fetchval(kgl.HIDDEN, org, app_sk)) if await tx.fetchval(kgl.HAS_HIDER, org, app_sk) else set()
-            nodes = {r["id"]: r["sk"] for r in await tx.fetch(kgl.CHAIN_ROWS, org, sorted({*node_ids, *group_ids}))}
-            # up the hierarchy from the groups (the primary parent and the hierarchy links), as far as the check's walk goes: the groups that reach the App
-            starts = {nodes[g] for g in group_ids if g in nodes}
-            up: dict[int, set[int]] = {}
-            frontier, seen = set(starts), set(starts)
-            for _ in range(access_sql.MAX_HOPS):
-                if not frontier:
-                    break
-                for r in await tx.fetch(kgl.CHAIN_BY_SK, org, sorted(frontier)):
-                    if r["parent_sk"] is not None:
-                        up.setdefault(r["sk"], set()).add(r["parent_sk"])
-                for r in await tx.fetch(LINKS, org, sorted(frontier)):
-                    if r["kind"] == 1:
-                        up.setdefault(r["child_sk"], set()).add(r["parent_sk"])
-                frontier = {p for sk in frontier for p in up.get(sk, ())} - seen - {app_sk}
-                seen |= frontier
-
-            def reaches(sk: int) -> bool:
-                level, met = {sk}, {sk}
-                for _ in range(access_sql.MAX_HOPS):
-                    level = {p for x in level for p in up.get(x, ())} - met
-                    if app_sk in level:
-                        return True
-                    met |= level
-                return False
-            return {"hidden": {i for i, sk in nodes.items() if sk in hidden and i in set(node_ids)},
-                    "underApp": {g for g in group_ids if g in nodes and reaches(nodes[g])}}
+                return set(node_ids)
+            if not await tx.fetchval(kgl.HAS_HIDER, org, app_sk):
+                return set()
+            hidden = set(await tx.fetchval(kgl.HIDDEN, org, app_sk))
+            return {r["id"] for r in await tx.fetch(kgl.CHAIN_ROWS, org, sorted(set(node_ids))) if r["sk"] in hidden}
         return await self._kq(read, transaction)
 
 

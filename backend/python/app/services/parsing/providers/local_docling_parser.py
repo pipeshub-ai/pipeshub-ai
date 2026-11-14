@@ -8,6 +8,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from app.config import file_types
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor, lease_scope
 from app.services.parsing.interface import (
     IParser,
@@ -22,17 +23,10 @@ from app.utils.lazy_heavy import ensure_docling
 # time is answered as backpressure instead of holding the request open.
 LEASE_WAIT_SECONDS = 120.0
 
-_SUPPORTED_FORMATS = ["pdf", "docx", "doc", "pptx", "ppt", "md", "mdx"]
+_SUPPORTED_FORMATS = list(file_types.DOCLING_FORMATS)
 
-_FORMAT_EXTS = {
-    "pdf": ".pdf",
-    "docx": ".docx",
-    "doc": ".docx",   # converted upstream
-    "pptx": ".pptx",
-    "ppt": ".pptx",   # converted upstream
-    "md": ".md",
-    "mdx": ".md",
-}
+# doc and ppt arrive converted upstream, so they are named .docx and .pptx.
+_FORMAT_EXTS = file_types.DOCLING_NAME_EXTENSIONS
 
 
 class LocalDoclingParser:

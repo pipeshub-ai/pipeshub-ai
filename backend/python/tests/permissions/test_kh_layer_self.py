@@ -296,16 +296,15 @@ gates: [[u, A]]
 """))
 
 
-# Where the placement rule (`place_chain_tops`) puts r under the App, by store shape. It puts a chain-top with no openable own group under the App only
-# when an own group hangs from the App, so on ArangoDB's graph (no s, so g hangs from nothing) r goes nowhere. A rule that puts such a record
-# under the App whatever its own group's chain changes the ArangoDB entry to {"r"}.
-UNDER_THE_APP = {"as written": {"r"}, "arango": set()}
+# Where the placement rule (`place_chain_tops`) puts r under the App, by store shape. It puts a chain-top with no own group the viewer may open
+# under the App wherever that group hangs, so r is under the App on ArangoDB's graph too (no s there, so g hangs from nothing).
+UNDER_THE_APP = {"as written": {"r"}, "arango": {"r"}}
 
 
 def test_the_app_places_a_chain_top_by_the_graph_the_store_holds() -> None:
     """r's own group g hangs from the App through s, whose rule no connector writes, and ArangoDB keeps no node with an unknown rule (`arango_graph`).
-    The layer reads parents, own groups and the chain to the App from each store's own graph (`kh_layer.stored`), so its expectation for the App is
-    `UNDER_THE_APP` of that store; the check admits r on both."""
+    The layer reads parents and own groups from each store's own graph (`kh_layer.stored`), so its expectation for the App is `UNDER_THE_APP` of
+    that store; the check admits r on both."""
     for reference, shape in ((OracleLayer(), "as written"), (OracleLayer(arango_graph), "arango")):
         assert reference.explain(STORED, "u", ["r"])["r"].admitted
         assert kh_layer.chain_tops(reference, STORED, "u", "A") == UNDER_THE_APP[shape], shape
