@@ -137,14 +137,14 @@ def _cpu_seconds(source: str) -> float:
     return total
 
 
-def _client(args: argparse.Namespace, idx: int, go, done, out) -> None:
+def _client(args: argparse.Namespace, idx: int, go, done, out, taken) -> None:
     if args.client_cores:
         lo, hi = (int(x) for x in args.client_cores.split("-"))
         os.sched_setaffinity(0, range(lo, hi + 1))
-    asyncio.run(_client_main(args, idx, go, done, out))
+    asyncio.run(_client_main(args, idx, go, done, out, taken))
 
 
-async def _client_main(args: argparse.Namespace, idx: int, go, done, out) -> None:
+async def _client_main(args: argparse.Namespace, idx: int, go, done, out, taken) -> None:
     from app.services.vector_db.models import HybridSearchRequest, SparseVector
 
     c = _corpus(args.corpus)
@@ -162,11 +162,9 @@ async def _client_main(args: argparse.Namespace, idx: int, go, done, out) -> Non
         if not res or any(getattr(r, "degraded", None) for r in res):        # an empty answer is a failure to answer too
             stats["degraded"] += 1
 
-    async def run(qids: list[int], lat: list[float]) -> None:
-        it = iter(qids)
-
+    async def run(next_query, lat: list[float]) -> None:
         async def worker() -> None:
-            for qi in it:
+            while (qi := next_query()) is not None:
                 t = time.perf_counter()
                 try:
                     await one(qi)
@@ -175,13 +173,15 @@ async def _client_main(args: argparse.Namespace, idx: int, go, done, out) -> Non
                 lat.append((time.perf_counter() - t) * 1000)
         await asyncio.gather(*[worker() for _ in range(_share(args.clients, args.procs, idx))])
 
-    await run(list(range(idx * 7, idx * 7 + 64)), [])          # warm-up: connections, caches
+    warm = iter(range(idx * 7, idx * 7 + 64))
+    await run(lambda: next(warm, None), [])          # warm-up: connections, caches
     stats.update(degraded=0, errors=0)
     out.put(("ready", idx, None))
     go.wait()
     lat: list[float] = []
     t0 = time.perf_counter()
-    await run([idx * 101 + i * args.procs + 13 for i in range(_share(args.queries, args.procs, idx))], lat)
+    # one queue of queries for every worker of every process: all of them stay busy until the total runs out
+    await run(lambda: _take(taken, args.queries), lat)
     out.put(("result", idx, {"lat": lat, "t0": t0, "t1": time.perf_counter(), **stats}))
     done.wait(600)                     # the server CPU is sampled before any client disconnects
     await svc.disconnect()
@@ -190,6 +190,15 @@ async def _client_main(args: argparse.Namespace, idx: int, go, done, out) -> Non
 def _share(total: int, parts: int, idx: int) -> int:
     """Part ``idx`` of ``total`` split over ``parts`` so that the parts add up to it (the first ones take the remainder)."""
     return total // parts + (1 if idx < total % parts else 0)
+
+
+def _take(taken, total: int) -> int | None:
+    """The next query of the run from a counter shared by every process (a ``multiprocessing.Value``), or None once ``total`` are taken."""
+    with taken.get_lock():
+        if taken.value >= total:
+            return None
+        taken.value += 1
+        return taken.value - 1
 
 
 def _gather(out, kind: str, procs: list) -> dict[int, object]:
@@ -217,8 +226,8 @@ def _gather(out, kind: str, procs: list) -> dict[int, object]:
 def _run(args: argparse.Namespace) -> dict:
     args.procs = min(args.procs, args.clients)
     ctx = mp.get_context("spawn")
-    go, done, out = ctx.Event(), ctx.Event(), ctx.Queue()
-    procs = [ctx.Process(target=_client, args=(args, i, go, done, out)) for i in range(args.procs)]
+    go, done, out, taken = ctx.Event(), ctx.Event(), ctx.Queue(), ctx.Value("q", 0)
+    procs = [ctx.Process(target=_client, args=(args, i, go, done, out, taken)) for i in range(args.procs)]
     for p in procs:
         p.start()
     cpu = dict(s.split("=", 1) for s in args.cpu)

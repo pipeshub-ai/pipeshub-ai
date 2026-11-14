@@ -16,6 +16,44 @@ def test_clients_and_queries_are_split_so_the_parts_add_up() -> None:
     assert sum(bench._share(2001, 4, i) for i in range(4)) == 2001
 
 
+def _pull(taken, total: int, workers: int, out) -> None:
+    """A client process: ``workers`` threads take queries from the shared counter until it runs out (each search takes 2 ms)."""
+    import threading
+    import time
+
+    got: list[int] = []
+
+    def worker() -> None:
+        while (qi := bench._take(taken, total)) is not None:
+            time.sleep(0.002)
+            got.append(qi)
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    out.put((workers, got))
+
+
+def test_every_worker_of_every_process_takes_from_one_queue_until_the_total_is_taken() -> None:
+    """--clients 7 over 4 processes is 2, 2, 2 and 1 workers: a process's share of the queries must follow its workers, so that no
+    worker runs out while another process still has queries (fixed shares of 500 left the 2-worker processes idle half the run)."""
+    ctx = mp.get_context("fork")
+    taken, out = ctx.Value("q", 0), ctx.Queue()
+    procs = [ctx.Process(target=_pull, args=(taken, 400, w, out)) for w in (2, 2, 2, 1)]
+    for p in procs:
+        p.start()
+    got = [out.get(timeout=60) for _ in procs]
+    for p in procs:
+        p.join(10)
+    every = [qi for _, g in got for qi in g]
+    assert sorted(every) == list(range(400))                                       # each query once, none left over
+    assert bench._take(taken, 400) is None
+    one = [len(g) for w, g in got if w == 1]
+    two = [len(g) for w, g in got if w == 2]
+    assert max(one) < min(two)                                                    # the share follows the workers, not the process count
+
+
 def test_a_client_that_exits_before_it_is_ready_stops_the_run_and_says_which() -> None:
     ctx = mp.get_context("fork")
     out = ctx.Queue()
