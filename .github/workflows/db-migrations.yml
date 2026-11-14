@@ -38,8 +38,8 @@ jobs:
             suites: ''
           - shard: graph
             files: tests/test_graph.py tests/test_retrieval.py
-            min_tests: 166
-            suites: '--expect-suite tests.test_graph=144 --expect-suite tests.test_retrieval=22'
+            min_tests: 170
+            suites: '--expect-suite tests.test_graph=144 --expect-suite tests.test_retrieval=26'
           - shard: vetted
             files: tests/test_vetted.py tests/test_vetted_kernel.py tests/test_change_log.py
             min_tests: 534

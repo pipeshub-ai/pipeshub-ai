@@ -45,7 +45,7 @@ _KNOBS: dict[str, tuple[float, float, float]] = {
     "check_recheck_s": (604_800.0, 60.0, 31_536_000.0), # a finished check is repeated after this long
     "connector_ttl_s": (10.0, 0.0, 3_600.0),            # how long the org's connector set (for dropping the arms of an all-connectors user) is reused
     "connector_fail_ttl_s": (300.0, 0.0, 86_400.0),     # after a check that could not finish, the arms stay applied this long without trying again
-    "connector_check_ms": (150, 10, 10_000),            # budget of that lookup; over it, the arms are applied
+    "connector_check_ms": (1_000, 10, 10_000),          # statement budget of that lookup, which no search waits for; over it, the arms are applied
     "lexical_overfetch": (4, 1, 100),                   # lexical rows asked for, per row wanted, when a post-filter on entity or block columns applies
     "estimate_ttl_s": (60.0, 0.0, 86_400.0),            # how long a candidate count is reused
     "leaf_ttl_s": (300.0, 0.0, 86_400.0),               # how long a leaf's size is reused
@@ -105,7 +105,7 @@ class Tuning:
     check_recheck_s: float = 604_800.0
     connector_ttl_s: float = 10.0
     connector_fail_ttl_s: float = 300.0
-    connector_check_ms: int = 150
+    connector_check_ms: int = 1_000
     lexical_overfetch: int = 4
     estimate_ttl_s: float = 60.0
     leaf_ttl_s: float = 300.0
