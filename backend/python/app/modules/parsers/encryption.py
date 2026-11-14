@@ -9,6 +9,9 @@ Two formats, two kinds of evidence, and neither reads an error message:
   header, the FAT entries the directory chain walks through and the directory
   itself are read, never the content, so the cost does not grow with the file.
 
+OpenDocument files keep the zip and list ``encryption-data`` for each encrypted entry in their
+manifest (``raise_if_odf_encrypted``).
+
 Legacy .doc, .xls and .ppt are not covered: their encryption flags sit inside
 streams (the Word FIB, the BIFF ``FilePass`` record, the PowerPoint
 ``CurrentUser`` atom) and, for small files, inside the mini stream. They still
@@ -81,6 +84,36 @@ def raise_if_password_protected_office(
         return
     if has_encrypted_package(content):
         raise PasswordProtectedError(PASSWORD_PROTECTED_MESSAGE, details={"format": ext or mime_type})
+
+
+_ODF_MANIFEST = "META-INF/manifest.xml"
+_ODF_MANIFEST_MAX_BYTES = 1024 * 1024
+_ODF_MANIFEST_NS = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"
+
+
+def raise_if_odf_encrypted(content: bytes) -> None:
+    """Raise ``PasswordProtectedError`` for an OpenDocument file saved with a password.
+
+    Its manifest then lists ``manifest:encryption-data`` for the encrypted entries. Anything that
+    is not a readable zip with a manifest passes, for the converter to report.
+    """
+    import io
+    import zipfile
+
+    from lxml import etree
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            info = archive.getinfo(_ODF_MANIFEST)
+            if info.file_size > _ODF_MANIFEST_MAX_BYTES:
+                return
+            data = archive.read(info)
+        parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False)
+        manifest = etree.fromstring(data, parser)
+    except (zipfile.BadZipFile, KeyError, OSError, ValueError, EOFError, etree.XMLSyntaxError):
+        return
+    if next(manifest.iter(f"{{{_ODF_MANIFEST_NS}}}encryption-data"), None) is not None:
+        raise PasswordProtectedError(PASSWORD_PROTECTED_MESSAGE, details={"format": "odt"})
 
 
 def pdfium_password_error(exc: BaseException) -> bool:

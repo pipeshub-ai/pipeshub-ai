@@ -14,7 +14,13 @@ import {
 } from '../../../../src/modules/storage/mimetypes/mimetypes'
 
 // Extensions the registry has added to the upload table since the snapshot in the fixture.
-const ADDED_SINCE_MAIN: Record<string, string> = {}
+const ADDED_SINCE_MAIN: Record<string, string> = {
+  cfg: 'text/plain',
+  docm: 'application/vnd.ms-word.document.macroEnabled.12',
+  dotx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+  potx: 'application/vnd.openxmlformats-officedocument.presentationml.template',
+  xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12',
+}
 
 // Same bytes as Python's json.dumps(sort_keys=True, separators=(',', ':')).
 const canonicalJson = (value: unknown): string => {

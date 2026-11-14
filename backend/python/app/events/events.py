@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from bs4 import BeautifulSoup
 
+from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CODE_FILE_EXTENSION_VALUES,
@@ -23,6 +24,7 @@ from app.config.constants.arangodb import (
     get_mime_type_for_extension,
     normalize_file_extension,
 )
+from app.config.file_types import Route
 from app.events.dedup import (
     DedupDecision,
     DuplicateMatch,
@@ -63,6 +65,7 @@ from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
 from app.modules.parsers.encryption import raise_if_password_protected_office
+from app.modules.parsers.file_prep import needs_preparing, prepare_file
 from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
@@ -109,7 +112,7 @@ from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_errors import RETRY_SCHEDULED
+from app.utils.user_errors import RETRY_SCHEDULED, binary_text_file
 
 
 def _record_key(doc: dict[str, Any] | None) -> str | None:
@@ -1568,6 +1571,13 @@ class EventProcessor:
             reads_as_code_file = self._reads_as_code_file(
                 record_type, mime_type, code_ext, record_name
             )
+            dispatch = file_types.legacy_route(
+                mime_type, extension, code_extension=code_ext, reads_as_code_file=reads_as_code_file,
+                is_code_file_record=record_type == RecordTypes.CODE_FILE.value,
+            )
+            if dispatch is not None and dispatch.file_type is not None and dispatch.file_type.ext_wins:
+                # A docm, or a .log a repository stored as text/plain, is not source.
+                reads_as_code_file = False
             scans_for_secrets = self._scans_for_secrets(
                 record_type, reads_as_code_file=reads_as_code_file
             )
@@ -1898,6 +1908,24 @@ class EventProcessor:
                 # extraction and read_code all derive from these bytes.
                 file_content = await self._redact_code_secrets(doc, record_name, file_content)
 
+            route = dispatch.route if dispatch is not None else None
+            if dispatch is not None and needs_preparing(dispatch.file_type):
+                # Ahead of both pipelines: the password check reads the file as it arrived, and
+                # each pipeline then parses the plain package or the decoded text.
+                prepared = await prepare_file(
+                    file_content, dispatch.file_type, extension=extension, mime_type=mime_type
+                )
+                if prepared is None:
+                    await self.processor._mark_record(
+                        record_id,
+                        ProgressStatus.FILE_TYPE_NOT_SUPPORTED,
+                        reason=binary_text_file(code_ext),
+                    )
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
+                file_content, extension, mime_type = prepared.content, prepared.extension, prepared.mime_type
+
             # ── New service pipeline (opt-in via USE_PARSING_SERVICE=true) ──
             if self._use_service_pipeline():
                 if isinstance(file_content, str):
@@ -1967,7 +1995,7 @@ class EventProcessor:
             raise_if_password_protected_office(
                 file_content, extension=extension, mime_type=mime_type
             )
-            if mime_type == MimeTypes.GOOGLE_SLIDES.value:
+            if route is Route.GOOGLE_SLIDES:
                 self.logger.info("🚀 Processing Google Slides")
                 async for event in self.processor.process_pptx_document(
                     recordName=record_name,
@@ -1985,7 +2013,7 @@ class EventProcessor:
                     yield event
                 return
 
-            if mime_type == MimeTypes.GOOGLE_DOCS.value:
+            if route is Route.GOOGLE_DOCS:
                 self.logger.info("🚀 Processing Google Docs")
                 async for event in self.processor.process_docx_document(
                     recordName=record_name,
@@ -2003,7 +2031,7 @@ class EventProcessor:
                     yield event
                 return
 
-            if mime_type == MimeTypes.GOOGLE_SHEETS.value:
+            if route is Route.GOOGLE_SHEETS:
                 self.logger.info("🚀 Processing Google Sheets")
                 async for event in self.processor.process_excel_document(
                     recordName=record_name,
@@ -2021,7 +2049,7 @@ class EventProcessor:
                     yield event
                 return
 
-            if mime_type == MimeTypes.HTML.value:
+            if route is Route.HTML:
                 async for event in self.processor.process_html_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2040,7 +2068,7 @@ class EventProcessor:
 
             # Must precede the PLAIN_TEXT branch: code files routinely arrive as
             # text/plain, and that branch returns early.
-            if reads_as_code_file:
+            if route is Route.CODE:
                 async for event in self.processor.process_code_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2056,7 +2084,7 @@ class EventProcessor:
                     yield event
                 return
 
-            if mime_type == MimeTypes.PLAIN_TEXT.value:
+            if route is Route.TXT:
                 async for event in self.processor.process_txt_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2076,7 +2104,7 @@ class EventProcessor:
                     yield event
                 return
 
-            if mime_type == MimeTypes.BLOCKS.value:
+            if route is Route.BLOCKS:
                 self.logger.debug("🚀 Processing Blocks Container")
                 async for event in self.processor.process_blocks(
                     recordName=record_name,
@@ -2094,7 +2122,7 @@ class EventProcessor:
                     yield event
                 return
 
-            if mime_type == MimeTypes.GMAIL.value:
+            if route is Route.GMAIL:
                 async for event in self.processor.process_gmail_message(
                     recordName=record_name,
                     recordId=record_id,
@@ -2111,7 +2139,7 @@ class EventProcessor:
                     yield event
                 return
 
-            if extension == ExtensionTypes.PDF.value or mime_type == MimeTypes.PDF.value:
+            if route is Route.PDF:
                 async for event in self._dispatch_pdf_binary(
                     record_name=record_name,
                     record_id=record_id,
@@ -2127,7 +2155,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension == ExtensionTypes.EPUB.value or mime_type == MimeTypes.EPUB.value:
+            elif route is Route.EPUB:
                 async for event in self.processor.process_epub_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2143,7 +2171,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension == ExtensionTypes.DOCX.value or mime_type == MimeTypes.DOCX.value:
+            elif route is Route.DOCX:
                 async for event in self.processor.process_docx_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2159,7 +2187,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension == ExtensionTypes.DOC.value or mime_type == MimeTypes.DOC.value:
+            elif route is Route.DOC:
                 async for event in self.processor.process_doc_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2175,7 +2203,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension == ExtensionTypes.XLSX.value or mime_type == MimeTypes.XLSX.value:
+            elif route is Route.XLSX:
                 async for event in self.processor.process_excel_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2191,7 +2219,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension == ExtensionTypes.XLS.value or mime_type == MimeTypes.XLS.value:
+            elif route is Route.XLS:
                 async for event in self.processor.process_xls_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2207,7 +2235,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension == ExtensionTypes.CSV.value or mime_type == MimeTypes.CSV.value:
+            elif route is Route.CSV:
                 async for event in self.processor.process_delimited_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2220,7 +2248,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension == ExtensionTypes.TSV.value or mime_type == MimeTypes.TSV.value:
+            elif route is Route.TSV:
                 async for event in self.processor.process_delimited_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2234,23 +2262,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension == ExtensionTypes.HTML.value or mime_type == MimeTypes.HTML.value:
-                async for event in self.processor.process_html_document(
-                    recordName=record_name,
-                    recordId=record_id,
-                    version=record_version,
-                    source=connector,
-                    orgId=org_id,
-                    html_binary=file_content,
-                    virtual_record_id=virtual_record_id,
-                    event_type=event_type,
-                    prev_virtual_record_id=prev_virtual_record_id,
-                ):
-                    if event.event == IndexingEvent.PARSING_COMPLETE:
-                        file_content = content_bytes = None
-                    yield event
-
-            elif extension == ExtensionTypes.PPTX.value or mime_type == MimeTypes.PPTX.value:
+            elif route is Route.PPTX:
                 async for event in self.processor.process_pptx_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2266,7 +2278,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension == ExtensionTypes.PPT.value or mime_type == MimeTypes.PPT.value:
+            elif route is Route.PPT:
                 async for event in self.processor.process_ppt_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2282,7 +2294,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension == ExtensionTypes.MD.value or mime_type == MimeTypes.MARKDOWN.value:
+            elif route is Route.MD:
                 async for event in self.processor.process_md_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2295,7 +2307,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension == ExtensionTypes.MDX.value or mime_type == MimeTypes.MDX.value:
+            elif route is Route.MDX:
                 async for event in self.processor.process_mdx_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2311,27 +2323,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension == ExtensionTypes.TXT.value or mime_type == MimeTypes.PLAIN_TEXT.value:
-                async for event in self.processor.process_txt_document(
-                    recordName=record_name,
-                    recordId=record_id,
-                    version=record_version,
-                    source=connector,
-                    orgId=org_id,
-                    txt_binary=file_content,
-                    virtual_record_id=virtual_record_id,
-                    recordType=record_type,
-                    connectorName=connector,
-                    origin=origin,
-                    event_type=event_type,
-                    prev_virtual_record_id=prev_virtual_record_id,
-                ):
-                    if event.event == IndexingEvent.PARSING_COMPLETE:
-                        file_content = content_bytes = None
-                    yield event
-
-
-            elif mime_type == MimeTypes.SQL_TABLE.value or extension == ExtensionTypes.SQL_TABLE.value:
+            elif route is Route.SQL_TABLE:
                 self.logger.info(f"🚀 Processing SQL Table: {record_name}")
                 async for event in self.processor.process_sql_structured_data(
                     recordName=record_name,
@@ -2346,7 +2338,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif mime_type == MimeTypes.SQL_VIEW.value or extension == ExtensionTypes.SQL_VIEW.value:
+            elif route is Route.SQL_VIEW:
                 self.logger.info(f"🚀 Processing SQL View: {record_name}")
                 async for event in self.processor.process_sql_structured_data(
                     recordName=record_name,
@@ -2361,7 +2353,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension == ExtensionTypes.JSON.value or mime_type == MimeTypes.JSON.value:
+            elif route is Route.JSON:
                 async for event in self.processor.process_structured_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2375,7 +2367,7 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif extension in {ExtensionTypes.YAML.value, ExtensionTypes.YML.value} or mime_type == MimeTypes.YAML.value:
+            elif route is Route.YAML:
                 async for event in self.processor.process_structured_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2389,27 +2381,58 @@ class EventProcessor:
                         file_content = content_bytes = None
                     yield event
 
-            elif (
-                 extension in {
-                    ExtensionTypes.PNG.value,
-                    ExtensionTypes.JPG.value,
-                    ExtensionTypes.JPEG.value,
-                    ExtensionTypes.WEBP.value,
-                    ExtensionTypes.SVG.value,
-                }
-                or mime_type in {
-                    MimeTypes.PNG.value,
-                    MimeTypes.JPG.value,
-                    MimeTypes.JPEG.value,
-                    MimeTypes.WEBP.value,
-                    MimeTypes.SVG.value,
-                }
-            ):
+            elif route is Route.IMAGE:
                 # Route image files to the image processor
                 async for event in self.processor.process_image(
                     record_id,
                     file_content,
                     virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
+                    yield event
+
+            elif route is Route.MSG:
+                async for event in self.processor.process_msg_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    msg_binary=file_content,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
+                    yield event
+
+            elif route is Route.LIBREOFFICE_DOCX and dispatch.file_type and dispatch.file_type.libreoffice_from:
+                async for event in self.processor.process_libreoffice_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    binary=file_content,
+                    input_ext=dispatch.file_type.libreoffice_from,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
+                    yield event
+
+            elif route is Route.PLAIN_TEXT:
+                async for event in self.processor.process_plain_text_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    text_binary=file_content,
+                    virtual_record_id=virtual_record_id,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):

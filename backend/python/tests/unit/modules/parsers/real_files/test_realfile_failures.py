@@ -337,7 +337,7 @@ class TestFormatSupportProbe:
     ) -> None:
         fake_libreoffice()
         with caplog.at_level(logging.DEBUG), pytest.raises(DocumentProcessingError) as caught:
-            await convert_with_libreoffice(b"{\\rtf1 damaged", "rtf", "docx")
+            await convert_with_libreoffice(b"damaged", "ods", "xlsx")
         assert not isinstance(caught.value, LibreOfficeCouldNotReadFileError)
         assert "component" not in caplog.text
         assert not _probe_runs(tmp_path / "libreoffice-args.log")
