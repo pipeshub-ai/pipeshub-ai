@@ -70,6 +70,10 @@ async def test_concurrent_pushes_and_sweeps_leave_nothing_and_never_fail(h, tmp_
     sweeper = asyncio.create_task(S.sweep_loop(h.svc.spool, 0.0, floor_s=-1))
     try:
         results = await asyncio.gather(*(h.push(image_body([], text=f"t{i}", key=f"k{i}")) for i in range(20)))
+        # the sweep runs in a thread, so the pushes can all finish before its first pass does
+        async with asyncio.timeout(10):
+            while dead.exists():
+                await asyncio.sleep(0.01)
     finally:
         sweeper.cancel()
         with contextlib.suppress(asyncio.CancelledError):
