@@ -39,7 +39,9 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 if TYPE_CHECKING:
-    from app.connectors.sources.google.drive.individual.connector import GoogleDriveIndividualConnector
+    from app.connectors.sources.google.drive.individual.connector import (
+        GoogleDriveIndividualConnector,
+    )
 
 
 # ---------------------------------------------------------------------------
