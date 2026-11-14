@@ -20,6 +20,7 @@ from app.models.entities import Record
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.typed_record import typed_record
 from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
+from app.services.graph_db.interface.graph_db_provider import UNSUPPORTED_PAGE_FIELDS
 from app.services.graph_db.postgres.base import (
     _VALIDATOR,
     PgBase,
@@ -180,7 +181,8 @@ class RecordsMixin(PgBase):
             self.logger.error("Failed to check record existence: %s", e)
             return set()
 
-    async def get_records_by_record_ids(self, record_ids: list[str], org_id: str, visibility: RecordVisibility = RecordVisibility.LIVE) -> list[dict[str, Any]]:
+    async def get_records_by_record_ids(self, record_ids: list[str], org_id: str, visibility: RecordVisibility = RecordVisibility.LIVE, *,
+                                        raise_on_error: bool = False) -> list[dict[str, Any]]:
         org = current_org_id()
         if not record_ids:
             return []
@@ -192,6 +194,8 @@ class RecordsMixin(PgBase):
             return [_rec(r["doc"]) for r in rows]
         except Exception as e:
             self.logger.error("Failed to fetch records by record IDs: %s", e)
+            if raise_on_error:
+                raise
             return []
 
     async def get_typed_records_batch(self, record_ids: list[str], *, raise_on_error: bool = False) -> dict[str, Record]:
@@ -306,6 +310,38 @@ class RecordsMixin(PgBase):
             SET doc = doc || jsonb_build_object('indexingStatus', $4::text) || $5::jsonb
             WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'indexingStatus' = $3 RETURNING id""",
                                               org, ids, expected, new_status, _j(extra)), transaction, write=True)
+        return [r["id"] for r in rows]
+
+    async def list_unsupported_page(self, org_id: str, connector_id: str, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        """A page of the vetted read of graph_0012 (index nodes_record_unsupported), in byte order of the id. Arguments the function refuses take the
+        plain statement, which reads the same rows in the same order."""
+        org = current_org_id()
+        n = max(1, int(limit))
+        after = after_key or ""
+        if isinstance(connector_id, str) and 0 < len(connector_id) <= 200 and len(after) <= 200 and n <= 1000:
+            rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.records_unsupported_page */ SELECT node_id AS id, doc FROM graph.records_unsupported_page($1, $2, $3)",
+                                                     connector_id, after, n), None)
+        else:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.list_unsupported_page */ SELECT n.id, n.doc FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'indexingStatus' = $2 AND n.doc->>'connectorId' = $3
+                  AND ($4::text = '' OR n.id COLLATE ucs_basic > $4::text COLLATE ucs_basic) AND coalesce(n.doc->>'isDeleted', '') <> 'true'
+                ORDER BY n.id COLLATE ucs_basic LIMIT $5""", org, ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, connector_id, after, n), None)
+        return [{"_key": r["id"], **{f: _doc(r["doc"]).get(f) for f in UNSUPPORTED_PAGE_FIELDS}} for r in rows]
+
+    async def transition_unsupported(self, record_ids: list[str], to_status: str) -> list[str]:
+        """One statement per batch: the update re-reads the status of a row it waited for, so a record another writer moved on is left alone."""
+        org = current_org_id()
+        ids = _uniq(record_ids)
+        if not ids:
+            return []
+        extra: dict[str, Any] = {"reason": None}
+        if to_status == ProgressStatus.QUEUED.value:
+            extra["queuedAtTimestamp"] = get_epoch_timestamp_in_ms()
+        _VALIDATOR.validate_node_update(_RECORDS, {"indexingStatus": to_status, **{k: v for k, v in extra.items() if v is not None}})
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.transition_unsupported */ UPDATE graph.nodes
+            SET doc = doc || jsonb_build_object('indexingStatus', $4::text) || $5::jsonb
+            WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'indexingStatus' = $3 RETURNING id""",
+                                                 org, ids, ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, to_status, _j(extra)), None, write=True)
         return [r["id"] for r in rows]
 
     async def update_indexing_status_for_record_ids(self, record_ids: list[str], status: str) -> None:

@@ -530,3 +530,23 @@ functions:
         WHERE s.org_id = v_org AND s.coll = 'stageStates' AND s.doc->>'virtualRecordId' = ANY(p_virtual_record_ids) AND s.doc->>'rev' IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = v_org AND r.coll = 'records' AND r.doc->>'virtualRecordId' = s.doc->>'virtualRecordId' AND r.doc->>'contentRev' = s.doc->>'rev')
         LIMIT 100000;
+
+  # One page of a connector's live records at FILE_TYPE_NOT_SUPPORTED after an id (byte order, as records_page_by_connector), for the file-type re-queue
+  # (partial index nodes_record_unsupported).
+  - name: graph.records_unsupported_page
+    class: read
+    scope: org
+    grants: [pipeshub_connectors]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_after, type: text, default: "''", length: [0, 200]}
+      - {name: p_limit, type: int, default: "1000", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'indexingStatus' = 'FILE_TYPE_NOT_SUPPORTED' AND n.doc->>'connectorId' = p_connector_id
+          AND (p_after = '' OR n.id COLLATE ucs_basic > p_after COLLATE ucs_basic) AND coalesce(n.doc->>'isDeleted', '') <> 'true'
+        ORDER BY n.doc->>'connectorId', n.id COLLATE ucs_basic LIMIT p_limit;      -- the connector in the order, as records_page_by_connector: under row-level security the planner would sort the whole connector

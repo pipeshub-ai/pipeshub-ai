@@ -226,7 +226,7 @@ CLASSIFICATION: dict[str, str] = {
     # ---- node replace (SET n = $node, full validation)
     "update_node_if_match": _R,
     # ---- targeted raw writes of one schema'd field
-    "compare_and_set_indexing_status": _T, "compare_and_set_record_fields": _T, "stamp_external_org_parents": _T,
+    "compare_and_set_indexing_status": _T, "transition_unsupported": _T, "compare_and_set_record_fields": _T, "stamp_external_org_parents": _T,
     "update_indexing_status_for_record_ids": _T, "reset_indexing_status_for_connector": _T,
     "batch_update_connector_status": _T, "update_drive_sync_state": _T, "update_user_sync_state": _T,
     "update_queued_duplicates_status": _T, "claim_push_record": _T, "retag_push_record": _T,
@@ -650,6 +650,18 @@ async def test_compare_and_set_indexing_status_rejects_a_bogus_status() -> None:
     await _rejected(p, p.compare_and_set_indexing_status(["r1"], ProgressStatus.QUEUED.value, BOGUS))
 
 
+@pytest.mark.parametrize("status", [ProgressStatus.QUEUED.value, ProgressStatus.AUTO_INDEX_OFF.value])
+async def test_transition_unsupported_accepts_the_statuses_it_moves_to(status: str) -> None:
+    p = _provider()
+    await p.transition_unsupported(["r1"], status)
+    assert len(_writes(p)) == 1
+
+
+async def test_transition_unsupported_rejects_a_bogus_status() -> None:
+    p = _provider()
+    await _rejected(p, p.transition_unsupported(["r1"], BOGUS))
+
+
 @pytest.mark.parametrize("status", [s.value for s in ProgressStatus])
 async def test_reset_indexing_status_for_connector_accepts_every_status(status: str) -> None:
     p = _provider()
@@ -976,7 +988,7 @@ async def test_switch_values_other_than_off_keep_validation_on(monkeypatch: pyte
 COVERED = (
     set(NODE_DRIVERS) | set(EDGE_DRIVERS)
     | {
-        "set_record_properties", "compare_and_set_indexing_status", "compare_and_set_record_fields",
+        "set_record_properties", "compare_and_set_indexing_status", "transition_unsupported", "compare_and_set_record_fields",
         "update_indexing_status_for_record_ids", "reset_indexing_status_for_connector",
         "batch_update_connector_status", "update_drive_sync_state", "update_user_sync_state", "update_edge",
         "create_organization_if_absent",

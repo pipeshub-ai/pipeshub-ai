@@ -215,6 +215,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     KH_LISTING_STATE_FLAG,
     REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
+    UNSUPPORTED_PAGE_FIELDS,
     AccessibleContainers,
     CodeFileInfo,
     IGraphDBProvider,
@@ -748,6 +749,12 @@ _INDEX_NOT_FOUND = "Neo.ClientError.Schema.IndexNotFound"
 # statistics the planner can prefer (orgId, recordType) and then sort every page.
 _RECORD_ORG_ID_INDEX = "record_org_id_key"
 _RECORD_ORG_ID_HINT = "USING INDEX record:Record(orgId, id)"
+# The file-type re-queue's paging index, created by ensure_schema.
+_UNSUPPORTED_PAGE_INDEX = "record_connector_status_id"
+_UNSUPPORTED_PAGE_HINT = "USING INDEX r:Record(connectorId, indexingStatus, id)"
+_UNSUPPORTED_PAGE_HINT_WARNING = (
+    "The file-type re-queue's index %s is not ready; paging records without it until it is: %s"
+)
 _RECORD_ORG_ID_HINT_WARNING = (
     "The record-people backfill's index %s is not ready; paging records without it until it is: %s"
 )
@@ -1382,6 +1389,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_parked_while_off IF NOT EXISTS "
             "FOR (n:Record) ON (n.connectorId, n.indexingStatus, n.reason, n.id)"
+        )
+
+        # COMPOSITE: a connector's records in one status, in a keyset on id: the
+        # file-type re-queue pages FILE_TYPE_NOT_SUPPORTED by it. The parked-while-off
+        # index holds the reason before id, so it cannot serve this seek.
+        indexes.append(
+            "CREATE INDEX record_connector_status_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.connectorId, n.indexingStatus, n.id)"
         )
 
         # COMPOSITE: "did this connector index anything since?", asked for a
@@ -9419,6 +9434,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_ids: list[str],
         org_id: str,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their record IDs (node id property).
@@ -9468,6 +9485,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch records by record IDs: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
+            if raise_on_error:
+                raise
             return []
 
     # ==================== Permission Operations ====================
@@ -16786,6 +16805,77 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 expected, new_status, str(e),
             )
             raise
+
+    async def list_unsupported_page(
+        self,
+        org_id: str,
+        connector_id: str,
+        after_key: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        projection = ", ".join(f".{f}" for f in UNSUPPORTED_PAGE_FIELDS)
+
+        # A seek of record_connector_status_id that reads the page in the index's order and stops at the
+        # limit. The hint: with orgId also filtered the planner otherwise seeks the org's index and sorts
+        # every match. ORDER BY names the index's properties in sequence, or Neo4j sorts. "" rather than
+        # null for the first page: the composite index needs a predicate on each of its properties.
+        def page(hint: str) -> str:
+            return f"""
+            MATCH (r:Record)
+            {hint}
+            WHERE r.connectorId = $connector_id AND r.indexingStatus = $status AND r.id > $after
+              AND r.orgId = $org_id AND {cypher_live_record("r")}
+            WITH r ORDER BY r.connectorId, r.indexingStatus, r.id LIMIT $limit
+            RETURN r{{_key: r.id, {projection}}} AS r
+            """
+
+        rows = await self._execute_hinted(
+            page(_UNSUPPORTED_PAGE_HINT),
+            page(""),
+            {
+                "connector_id": connector_id,
+                "status": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                "after": after_key or "",
+                "org_id": org_id,
+                "limit": max(1, int(limit)),
+            },
+            None,
+            index=_UNSUPPORTED_PAGE_INDEX,
+            warning=_UNSUPPORTED_PAGE_HINT_WARNING,
+        )
+        return [row["r"] for row in rows or []]
+
+    async def transition_unsupported(self, record_ids: list[str], to_status: str) -> list[str]:
+        keys = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not keys:
+            return []
+        now = get_epoch_timestamp_in_ms()
+        written: dict[str, Any] = {"indexingStatus": to_status}
+        if to_status == ProgressStatus.QUEUED.value:
+            written["queuedAtTimestamp"] = now
+        self.validator.validate_node_update(CollectionNames.RECORDS.value, written)
+        stamp = ", n.queuedAtTimestamp = $now" if to_status == ProgressStatus.QUEUED.value else ""
+        # Locked before the status is read, as compare_and_set_indexing_status does, so a status the
+        # indexing service committed while this waited is the one compared.
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{collection_to_label(CollectionNames.RECORDS.value)})
+            WHERE n.id IN $keys
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            WHERE n.indexingStatus = $expected
+            SET n.indexingStatus = $to, n.reason = null{stamp}
+            RETURN n.id AS id
+            """,
+            parameters={
+                "keys": keys,
+                "expected": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                "to": to_status,
+                "now": now,
+            },
+        )
+        return [row["id"] for row in rows or [] if row.get("id")]
 
     # ==================== Pipeline stage states ====================
 
