@@ -289,6 +289,8 @@ class DriveWorld:
         role = self.direct_role(meta["id"], email) or self.member_role(meta["id"], email)
         capabilities = dict(meta.get("capabilities") or {})
         capabilities["canEdit"] = role in ("owner", "organizer", "fileOrganizer", "writer")
+        # Who may change sharing (https://developers.google.com/workspace/drive/api/guides/ref-roles).
+        capabilities.setdefault("canShare", role in ("owner", "organizer", "fileOrganizer", "writer"))
         capabilities["canDownload"] = role is not None
         meta["capabilities"] = capabilities
         # Real Drive omits a parent the caller cannot open (an item shared on its own). Opt-in:

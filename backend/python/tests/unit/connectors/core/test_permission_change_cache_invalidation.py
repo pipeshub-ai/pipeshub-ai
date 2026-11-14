@@ -171,6 +171,37 @@ class TestRemovalsDropTheConnector:
         tx.batch_delete_edges.assert_not_called()
         notify.assert_not_called()
 
+    async def test_users_own_grants_go_from_many_records_in_one_write_per_batch(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.get_user_by_email = AsyncMock(return_value=_user())
+        # Each store's edge shape: ArangoDB `_from`; Neo4j and PostgreSQL from_collection / from_id.
+        tx.get_edges_to_node = AsyncMock(side_effect=[
+            [{"_from": "users/user-key"}, {"_from": "groups/g-1"}],
+            [{"from_collection": "users", "from_id": "user-key"}, {"from_collection": "users", "from_id": "other"}],
+            [],
+        ])
+        tx.batch_delete_edges = AsyncMock(return_value=2)
+        proc = _processor(tx, events)
+
+        removed = await proc.remove_user_grants_from_records(["rec-1", "rec-2", "rec-3"], {"ana@example.com"}, CONNECTOR)
+
+        assert removed == 2
+        edges = tx.batch_delete_edges.await_args.args[0]
+        assert [(e["from_id"], e["to_id"]) for e in edges] == [("user-key", "rec-1"), ("user-key", "rec-2")]
+        tx.batch_delete_edges.assert_awaited_once()
+        _dropped_after_commit(events)
+
+    async def test_an_unreadable_record_fails_the_removal(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.get_user_by_email = AsyncMock(return_value=_user())
+        tx.get_edges_to_node = AsyncMock(side_effect=RuntimeError("graph down"))
+        proc = _processor(tx, events)
+
+        with pytest.raises(RuntimeError):
+            await proc.remove_user_grants_from_records(["rec-1"], {"ana@example.com"}, CONNECTOR)
+
+        tx.batch_delete_edges.assert_not_called()
+
     async def test_record_unshared_from_a_group_deletes_that_groups_edge(self, notify, events) -> None:
         tx = AsyncMock()
         tx.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(id="g-1"))

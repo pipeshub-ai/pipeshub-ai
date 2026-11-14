@@ -64,19 +64,21 @@ async def connector(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPa
 async def test_folders_queued_one_after_another_all_stay(connector: GoogleDriveTeamConnector) -> None:
     await connector._queue_limited_subtree("sd-1", "folder-a")
     await connector._queue_limited_subtree("sd-1", "folder-b")
-    await connector._queue_limited_subtree("sd-1", "folder-a")  # queued once
+    await connector._queue_limited_subtree("sd-1", "folder-a")  # queued once: queued again, it starts over
 
-    assert await connector._load_limited_pending() == {("sd-1", "folder-a"): None, ("sd-1", "folder-b"): None}
+    fresh = {"after": None, "stripped": False}
+    assert await connector._load_limited_pending() == {("sd-1", "folder-a"): fresh, ("sd-1", "folder-b"): fresh}
 
 
 async def test_a_cursor_written_back_is_read_back(connector: GoogleDriveTeamConnector) -> None:
     await connector._save_limited_pending([
-        {"drive": "sd-1", "folder": "folder-a", "after": "record-0042"},
-        {"drive": "sd-2", "folder": "folder-c", "after": None},
+        {"drive": "sd-1", "folder": "folder-a", "after": "record-0042", "stripped": True},
+        {"drive": "sd-2", "folder": "folder-c", "after": None, "stripped": False},
     ])
 
     assert await connector._load_limited_pending() == {
-        ("sd-1", "folder-a"): "record-0042", ("sd-2", "folder-c"): None,
+        ("sd-1", "folder-a"): {"after": "record-0042", "stripped": True},
+        ("sd-2", "folder-c"): {"after": None, "stripped": False},
     }
 
     await connector._save_limited_pending([])

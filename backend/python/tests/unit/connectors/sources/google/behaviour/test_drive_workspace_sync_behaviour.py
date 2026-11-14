@@ -3103,7 +3103,9 @@ async def test_a_drive_with_no_manager_gives_its_reading_members_no_grant_that_o
     ws.world.add_item("f", "x.txt", parent="dir")
     await ws.sync()
     assert BOB not in ws.records.perm_emails("f") and reaches(ws, BOB, "f"), "a member, through the drive"
-    assert sum("sd-1 has no active Manager" in r.getMessage() for r in caplog.records) == 1, "once per run"
+    assert sum(
+        "sd-1 has no active member who can read its items' sharing" in r.getMessage() for r in caplog.records
+    ) == 1, "once per run"
 
     ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
     await ws.sync()
@@ -3168,20 +3170,49 @@ async def test_the_items_below_a_folder_turning_limited_are_checked_over_several
     import app.connectors.sources.google.drive.team.connector as drive_connector
 
     monkeypatch.setattr(drive_connector, "LIMITED_SUBTREE_MAX_CHECKS", 1)
-    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader", carol: "reader"})
     ws.world.folder("dir", "Plans", parent="sd-1")
-    ws.world.add_item("f1", "a.txt", parent="dir")
-    ws.world.add_item("f2", "b.txt", parent="dir")
+    ws.world.add_item("f1", "a.txt", parent="dir", perms=[reader(BOB)])  # his own grants, which the limit keeps
+    ws.world.add_item("f2", "b.txt", parent="dir", perms=[reader(BOB)])
+    ws.world.add_item("f3", "c.txt", parent="dir")
     await ws.sync()
-    _old_style_grant(ws, "f1", BOB)
-    _old_style_grant(ws, "f2", BOB)
+    _old_style_grant(ws, "f3", carol)
 
     ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
     await ws.sync()
-    assert sum(BOB in ws.records.perm_emails(f) for f in ("f1", "f2")) == 1, "one checked this run, one left"
+    # Every member's own grant below the folder goes at once, so nothing a grant does not name stays open;
+    # the bound only paces giving back the grants the lists name: one this run.
+    assert carol not in ws.records.perm_emails("f3")
+    assert sum(BOB in ws.records.perm_emails(f) for f in ("f1", "f2")) == 1
 
-    await ws.sync()  # nothing changed at the source: the item left is checked from the checkpoint
-    assert not reaches(ws, BOB, "f1") and not reaches(ws, BOB, "f2")
+    await ws.sync()  # nothing changed at the source: the rest is read from the checkpoint, one item a run
+    await ws.sync()
+    assert BOB in ws.records.perm_emails("f1") and BOB in ws.records.perm_emails("f2")
+    assert carol not in ws.records.perm_emails("f3")
+
+
+async def test_no_member_keeps_a_stand_in_grant_below_a_limited_folder_past_the_run_it_turned_limited(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+
+    monkeypatch.setattr(drive_connector, "LIMITED_SUBTREE_MAX_CHECKS", 1)
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    items = [f"f{i}" for i in range(5)]
+    for item in items:
+        ws.world.add_item(item, f"{item}.txt", parent="dir")
+    await ws.sync()
+    for item in items:
+        _old_style_grant(ws, item, BOB)
+
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+
+    # However many items lie below, the bound does not leave any open to him for another run.
+    assert not any(reaches(ws, BOB, item) for item in items)
 
 
 async def test_a_folder_the_bound_never_reached_stays_pending_until_it_is_checked(
@@ -3217,7 +3248,9 @@ async def test_a_member_a_group_grant_admits_keeps_their_grant_below_a_folder_tu
     ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
     await ws.sync()
 
-    assert BOB in ws.records.perm_emails("f"), "the item's group grant admits him, so his grant is not a stand-in"
+    # His own grant stood in for membership and goes; the item's group grant, which admits him, stays.
+    assert ("team@example.com", "GROUP", "READ") in ws.grants("f")
+    assert BOB in {m.email for m in ws.records.user_groups["team@example.com"][1]}
 
 
 async def test_a_manager_keeps_their_grant_on_a_limited_folder_below_one_turning_limited(ws: Workspace) -> None:
@@ -3305,6 +3338,45 @@ async def test_a_person_a_my_drive_limited_folder_lists_for_its_metadata_only_ge
     assert BOB not in ws.records.perm_emails("locked"), "he sees its name, not its content"
     fields = [r.query.get("fields", "") for r in ws.http.requests if r.path == "/drive/v3/files/locked/permissions"]
     assert fields and all("view" in f for f in fields), "the read asks for each entry's view"
+
+
+def _viewer_list_for(ws: Workspace, file_id: str, reader_email: str, entries: list[dict]) -> None:
+    """The reader's permission read of the item answers these entries (a list a Viewer is not given in full);
+    anyone else's is as usual."""
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern == r"^/drive/v3/files/([^/]+)/permissions$")
+
+    def answer(req: ApiRequest) -> object:
+        if req.identity == reader_email and req.path == f"/drive/v3/files/{file_id}/permissions":
+            return {"permissions": entries}
+        return real(req)
+
+    ws.http.route("GET", r"/drive/v3/files/([^/]+)/permissions", answer)  # the latest route matching wins
+
+
+async def test_a_viewers_list_of_a_shared_drive_item_is_read_again_by_one_who_can_read_sharing(ws: Workspace) -> None:
+    carol, dana = "carol@example.com", "dana@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_user(dana)
+    ws.world.add_drive("sd-1", "Team", {BOB: "reader", dana: "organizer"})
+    ws.world.add_item("f", "x.txt", parent="sd-1", perms=[reader(carol)])
+    # A Viewer "can't access detailed file permissions" (ref-roles), so whatever it is given is not the item's list.
+    _viewer_list_for(ws, "f", BOB, [{"id": "p-bob", "type": "user", "role": "reader", "emailAddress": BOB}])
+    await ws.sync()
+
+    assert carol in ws.records.perm_emails("f"), "read as Dana, a Manager"
+    assert BOB not in ws.records.perm_emails("f"), "a member: through the drive"
+
+
+async def test_with_no_manager_a_contributor_reads_a_shared_drive_items_sharing(ws: Workspace) -> None:
+    carol, erin = "carol@example.com", "erin@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_user(erin)
+    # No Manager; Erin, a Contributor (writer), "can access detailed file permissions" (ref-roles).
+    ws.world.add_drive("sd-1", "Team", {BOB: "reader", erin: "writer"})
+    ws.world.add_item("f", "x.txt", parent="sd-1", perms=[reader(carol)])
+    await ws.sync()
+
+    assert carol in ws.records.perm_emails("f"), "her direct grant is learned from Erin's read"
 
 
 async def test_a_member_group_that_holds_a_whole_domain_leaves_its_people_unknown(ws: Workspace) -> None:
@@ -3520,17 +3592,19 @@ async def test_a_limited_item_whose_permission_list_comes_back_empty_stops_inher
 
 
 async def test_a_limited_shared_drive_item_answered_with_an_empty_list_keeps_its_own_audience_share(ws: Workspace) -> None:
-    ws.world.add_drive("sd-1", "Team", {BOB: "reader"})
+    dana = "dana@example.com"
+    ws.world.add_user(dana)
+    # Dana, a Manager, lets the first run read the item's sharing; then she leaves and nobody can.
+    ws.world.add_drive("sd-1", "Team", {BOB: "reader", dana: "organizer"})
     ws.world.folder("dir", "Plans", parent="sd-1", perms=[discoverable("anyone")])
     # A folder: "limited access isn't available for files"
     # (https://developers.google.com/workspace/drive/api/guides/limited-expansive-access).
     ws.world.folder("f", "Sub", parent="dir", perms=[discoverable("anyone")])
-    ws.world.files["f"].perm_access = "all"
     await ws.sync()
     assert ("workspace-members", "GROUP", "READ") in ws.grants("f")
 
+    del ws.world.drives["sd-1"]["members"][dana]
     ws.world._mutate("f", lambda: ws.world._bump("f", inheritedPermissionsDisabled=True))
-    ws.world.files["f"].perm_access = None
     await ws.sync()
 
     assert "f" in ws.records.stopped_inheriting
@@ -3670,7 +3744,9 @@ async def test_a_member_a_domain_share_reaches_from_another_domain_keeps_their_g
     ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
     await ws.sync()
 
-    assert LABS in ws.records.perm_emails("g"), "the share with example.com reaches him, so his grant is not a stand-in"
+    # His own grant stood in for membership and goes; the share with example.com, which reaches him, stays.
+    assert ("domain-members:example.com", "GROUP", "READ") in ws.grants("g")
+    assert LABS in domain_members(ws, "example.com")
 
 
 async def test_google_answers_that_a_share_with_a_domain_reaches_its_own_people_only(ws: Workspace) -> None:

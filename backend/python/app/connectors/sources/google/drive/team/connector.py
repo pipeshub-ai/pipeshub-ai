@@ -539,7 +539,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._drive_has_member_cache: dict[str, bool] = {}
         self._drive_member_emails: dict[str, list[str]] = {}
         # Per shared drive, this run: the synced users who are its Managers.
-        self._drive_managers: dict[str, list[str]] = {}
+        self._drive_managers: dict[str, tuple[list[str], list[str]]] = {}
         self._manager_sources: dict[str, GoogleDriveDataSource] = {}
         # (item id, None for a member of its drive, else the reader): the item's list read as a Manager, this run.
         self._manager_reads: dict[tuple[str, str | None], tuple | None] = {}
@@ -3607,32 +3607,37 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._upgrade_drives.add(drive_id)
 
     async def _clear_cut_out_grants_below_limited_folders(self) -> None:
-        """For every folder that turned limited, this run or an earlier one not finished, take from its stored
-        descendants the grants of their own held by members of the drive that the item's list (read as a Manager)
-        does not name: a limit cuts the members' access through the drive, and such a grant only stood in for it.
-        At most LIMITED_SUBTREE_MAX_CHECKS descendants a run; the rest, and a folder whose check failed, wait on
+        """For every folder that turned limited, this run or an earlier one not finished, settle the grants its
+        stored descendants hold for members of the drive, who now reach them only if a grant names them: a limit cuts
+        the members' access through the drive, and a grant of a member's own could have stood in for it.
+
+        First, at once and for the whole subtree, the members' own grants on the descendants go, in batches on the
+        store (Managers', who keep access through limits, stay). Then each descendant's list is read as a member who
+        can read sharing, and the members it names directly get their grants back, at most
+        LIMITED_SUBTREE_MAX_CHECKS descendants a run: until a descendant is read, a member it names directly cannot
+        open it here (a short under-admit, never an over-admit). The rest, and a folder whose step failed, wait on
         the checkpoint for the next run."""
         pending = await self._load_limited_pending()
-        left: list[dict[str, str | None]] = []
+        left: list[dict[str, object]] = []
         budget = LIMITED_SUBTREE_MAX_CHECKS
         children_by_drive: dict[str, dict[str, list[Record]]] = {}
-        for (drive_id, folder_id), after in sorted(pending.items(), key=lambda kv: kv[0]):
+        for (drive_id, folder_id), state in sorted(pending.items(), key=lambda kv: kv[0]):
             try:
                 if drive_id not in children_by_drive:
                     children_by_drive[drive_id] = await self._stored_children_of_drive(drive_id)
-                done, left_after, budget = await self._clear_cut_out_grants_below(
-                    drive_id, folder_id, after, budget, children_by_drive[drive_id]
+                state, budget = await self._clear_cut_out_grants_below(
+                    drive_id, folder_id, state, budget, children_by_drive[drive_id]
                 )
             except Exception as e:
                 self.logger.warning(
-                    f"The items below limited folder {folder_id} could not be checked ({type(e).__name__}: {e}); "
-                    "they are checked again next run"
+                    f"The items below limited folder {folder_id} could not be settled ({type(e).__name__}: {e}); "
+                    "they are settled next run"
                 )
                 self._sync_ledger.note_incomplete()
-                left.append({"drive": drive_id, "folder": folder_id, "after": after})
+                left.append({"drive": drive_id, "folder": folder_id, **state})
                 continue
-            if not done:  # its cursor may still be unset: a folder the budget never reached stays too
-                left.append({"drive": drive_id, "folder": folder_id, "after": left_after})
+            if state is not None:  # not finished, whether or not its cursor is set
+                left.append({"drive": drive_id, "folder": folder_id, **state})
         if pending:
             async with self._limited_pending_lock:
                 await self._save_limited_pending(left)
@@ -3641,8 +3646,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             done = sorted(set(marker.get(STAND_IN_CLEANED_DRIVES) or []) | self._upgrade_drives)
             await self.drive_delta_sync_point.update_sync_point(STAND_IN_CLEANUP_SYNC_POINT_KEY, {STAND_IN_CLEANED_DRIVES: done})
 
-    async def _load_limited_pending(self) -> dict[tuple[str, str], str | None]:
-        """The folders waiting for their descendants to be checked, with the cursor of each."""
+    async def _load_limited_pending(self) -> dict[tuple[str, str], dict[str, object]]:
+        """The folders waiting for their descendants to be settled: whether their members' own grants were taken
+        off yet ("stripped"), and the last descendant read since ("after")."""
         stored = await self.drive_delta_sync_point.read_sync_point(LIMITED_SUBTREES_SYNC_POINT_KEY) or {}
         raw = stored.get("pending") or "[]"
         try:
@@ -3650,25 +3656,24 @@ class GoogleDriveTeamConnector(BaseConnector):
         except ValueError:
             entries = []
         return {
-            (entry["drive"], entry["folder"]): entry.get("after")
+            (entry["drive"], entry["folder"]): {"after": entry.get("after"), "stripped": bool(entry.get("stripped"))}
             for entry in entries or [] if isinstance(entry, dict) and entry.get("drive") and entry.get("folder")
         }
 
-    async def _save_limited_pending(self, entries: list[dict[str, str | None]]) -> None:
+    async def _save_limited_pending(self, entries: list[dict[str, object]]) -> None:
         await self.drive_delta_sync_point.update_sync_point(
             LIMITED_SUBTREES_SYNC_POINT_KEY, {"pending": json.dumps(entries, sort_keys=True)}
         )
 
     async def _queue_limited_subtree(self, drive_id: str, folder_id: str) -> None:
         """Note a folder that turned limited on the checkpoint at once: the user's feed checkpoint can move past
-        the change before the run checks the folder's descendants, and nothing would report it again."""
+        the change before the run settles the folder's descendants, and nothing would report it again. A folder
+        already waiting starts over: it turned limited again."""
         async with self._limited_pending_lock:
             pending = await self._load_limited_pending()
-            if (drive_id, folder_id) in pending:
-                return
-            pending[(drive_id, folder_id)] = None
+            pending[(drive_id, folder_id)] = {"after": None, "stripped": False}
             await self._save_limited_pending(
-                [{"drive": d, "folder": f, "after": a} for (d, f), a in sorted(pending.items(), key=lambda kv: kv[0])]
+                [{"drive": d, "folder": f, **state} for (d, f), state in sorted(pending.items(), key=lambda kv: kv[0])]
             )
 
     async def _stored_children_of_drive(self, drive_id: str) -> dict[str, list[Record]]:
@@ -3693,15 +3698,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             page_after = page[-1].id
 
     async def _clear_cut_out_grants_below(
-        self, drive_id: str, folder_id: str, after: str | None, budget: int, children: dict[str, list[Record]]
-    ) -> tuple[bool, str | None, int]:
-        """Check the stored descendants of one limited folder, in id order from past `after`. Returns whether all
-        were checked, the last id checked (the cursor to go on from), and the budget left. A failed read raises.
-
-        A member keeps their own grant on a descendant when anything Drive counts for it admits them: a user grant
-        the item's list (read as a Manager) names, a group grant on it whose members include them, a domain or
-        everyone share on it, or the Manager role on the drive (Managers keep access through limits). Only a grant
-        none of these explain, one that stood in for the membership the limit cut, goes."""
+        self, drive_id: str, folder_id: str, state: dict[str, object], budget: int, children: dict[str, list[Record]]
+    ) -> tuple[dict[str, object] | None, int]:
+        """Settle the stored descendants of one limited folder. Returns the state to keep pending (None when it is
+        finished) and the budget left. A failed read raises."""
         below: list[Record] = []
         todo, seen = [folder_id], {folder_id}
         while todo:
@@ -3714,64 +3714,31 @@ class GoogleDriveTeamConnector(BaseConnector):
         if drive_id in self._drive_members_unread:
             # Unknown, not empty: anyone could be a member through the group, so nothing is decided; it stays pending.
             raise RuntimeError(f"A member group of shared drive {drive_id} could not be listed")
-        managers = set(await self._drive_manager_emails(drive_id))
+        cut = members - set(await self._drive_manager_emails(drive_id))
+        below.sort(key=lambda r: r.id)
+        if not state.get("stripped"):
+            await self.data_entities_processor.remove_user_grants_from_records(
+                [r.id for r in below if r.id], cut, self.connector_id
+            )
+            state = {"after": None, "stripped": True}
+        after = state.get("after")
         read_as = {"inherited_permissions_disabled": False, "inherits_from_drive": True, "item_drive_id": drive_id}
-        last: str | None = None
-        for record in sorted(below, key=lambda r: r.id):
+        for record in below:
             if after is not None and record.id <= after:
                 continue
             if budget <= 0:
-                return False, last or after, 0
+                return state, 0
             budget -= 1
-            holders = {
-                (u.email or "").lower()
-                for u in await self.data_entities_processor.get_users_with_permission_to_node(
-                    record.id, CollectionNames.RECORDS.value, raise_on_error=True
-                )
-            }
-            cut = sorted((holders & members) - managers - {""})
-            if cut:
-                managed = await self._permissions_as_drive_manager(record.external_record_id, drive_id, cut[0], read_as)
-                # No Manager can list it: a member reaches it through the drive only (decision for such drives).
-                admitted = await self._admitted_by(managed[0]) if managed is not None else set()
-                for email in cut:
-                    if admitted is not None and email not in admitted and not self._audience_admits(managed, email):
-                        await self.data_entities_processor.delete_permission_from_record(
-                            record.id, email, self.connector_id
-                        )
-            last = record.id
-        return True, None, budget
-
-    async def _admitted_by(self, permissions: list[Permission]) -> set[str] | None:
-        """The people a list's user and group grants admit, the groups' members included. None when a group's
-        members cannot be listed: who it admits is unknown, so nobody's grant may go."""
-        admitted = {(p.email or "").lower() for p in permissions if p.entity_type == EntityType.USER and p.email}
-        for p in permissions:
-            if p.entity_type != EntityType.GROUP or not p.external_id or _is_audience_group(p.external_id):
-                continue
-            people = await self._group_member_emails(p.external_id)
-            if people is None:
-                return None
-            admitted |= {e.lower() for e in people}
-        return admitted
-
-    def _audience_admits(self, managed: tuple | None, email: str) -> bool:
-        """Whether a domain or everyone share on the list admits the person. A domain share also admits the people
-        of the other verified domains Google has shown it reaches, who are in its group (`_audience_members`). Raises
-        when that group's people are not known this run: who it admits is unknown, so nothing may go."""
-        for p in (managed[0] if managed is not None else ()):
-            group = p.external_id if p.entity_type == EntityType.GROUP else None
-            if group == ALL_MEMBERS_GROUP_ID:
-                return True
-            if not group or not group.startswith(DOMAIN_MEMBERS_GROUP_PREFIX):
-                continue
-            if group[len(DOMAIN_MEMBERS_GROUP_PREFIX):].lower() == _email_domain(email):
-                return True
-            if group not in self._audience_members:
-                raise RuntimeError(f"The people of audience group {group} are not known this run")
-            if email in self._audience_members[group]:
-                return True
-        return False
+            managed = await self._permissions_as_drive_manager(record.external_record_id, drive_id, None, read_as)
+            # No one can read it: a member reaches it through the drive only (decision for such drives).
+            named = [
+                p for p in (managed[0] if managed is not None else ())
+                if p.entity_type == EntityType.USER and (p.email or "").lower() in cut
+            ]
+            if named:
+                await self.data_entities_processor.add_permission_to_record(record, named)
+            state = {"after": record.id, "stripped": True}
+        return None, budget
 
     async def _is_drive_member(self, drive_id: str, email: str) -> bool:
         """Whether the person is a member of the shared drive. Raises when they are not on its member list but a
@@ -3799,35 +3766,49 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._drive_member_emails[drive_id] = members
         return self._drive_member_emails[drive_id]
 
-    async def _drive_manager_emails(self, drive_id: str) -> list[str]:
-        """Active Workspace users who are Managers of a shared drive, directly or through a member group, this run.
-        Not only those this deployment syncs: reading an item's sharing as one syncs nothing of theirs. A member
-        group the directory cannot list adds nobody."""
+    async def _drive_members_by_role(self, drive_id: str) -> tuple[list[str], list[str]]:
+        """Active Workspace users who are a shared drive's Managers, and those who are its Content managers or
+        Contributors, directly or through a member group, this run. Not only those this deployment syncs: reading an
+        item's sharing as one syncs nothing of theirs. A member group the directory cannot list adds nobody."""
         if drive_id not in self._drive_managers:
-            managers: list[str] = []
+            by_type: dict[PermissionType, list[str]] = {PermissionType.OWNER: [], PermissionType.WRITE: []}
             for permission in (await self._fetch_permissions(drive_id, is_drive=True))[0]:
-                if permission.type != PermissionType.OWNER:
+                if permission.type not in by_type:
                     continue
                 if permission.entity_type == EntityType.USER and permission.email:
-                    managers.append(permission.email.lower())
+                    by_type[permission.type].append(permission.email.lower())
                 elif permission.entity_type == EntityType.GROUP and permission.external_id:
-                    managers.extend(sorted(await self._group_member_emails(permission.external_id) or ()))
+                    by_type[permission.type].extend(sorted(await self._group_member_emails(permission.external_id) or ()))
             active = {u.email.lower() for u in self.synced_users if u.email and u.is_active}
-            self._drive_managers[drive_id] = [e for e in dict.fromkeys(managers) if e in active]
-            if not self._drive_managers[drive_id]:
+            managers = [e for e in dict.fromkeys(by_type[PermissionType.OWNER]) if e in active]
+            writers = [e for e in dict.fromkeys(by_type[PermissionType.WRITE]) if e in active and e not in managers]
+            self._drive_managers[drive_id] = (managers, writers)
+            if not managers and not writers:
                 self.logger.warning(
-                    f"Shared drive {drive_id} has no active Manager, so the sharing of its items cannot be read: its "
-                    "members reach them through the drive only. Adding an active Manager to the drive restores exact "
-                    "sharing"
+                    f"Shared drive {drive_id} has no active member who can read its items' sharing, so its members "
+                    "reach them through the drive only. Adding an active Manager to the drive restores exact sharing"
                 )
         return self._drive_managers[drive_id]
+
+    async def _drive_manager_emails(self, drive_id: str) -> list[str]:
+        """Active Workspace users who are Managers of a shared drive; they keep access through limited folders."""
+        return (await self._drive_members_by_role(drive_id))[0]
+
+    async def _drive_sharing_readers(self, drive_id: str) -> list[str]:
+        """Who can read a shared drive item's sharing, Managers first: "Can access detailed file permissions" is Yes
+        for Managers, Content managers and Contributors, No for Commenters and Viewers
+        (https://developers.google.com/workspace/drive/api/guides/ref-roles). Only Managers keep access through a
+        limited folder (https://developers.google.com/workspace/drive/api/guides/limited-expansive-access), so a
+        Content manager or Contributor a limit cuts out is passed over when their read is refused."""
+        managers, writers = await self._drive_members_by_role(drive_id)
+        return [*managers, *writers]
 
     async def _permissions_as_drive_manager(
         self, file_id: str, drive_id: str, user_email: str | None, read_as: dict
     ) -> tuple[list[Permission], bool, list[str]] | None:
-        """The item's permission list read as a Manager of its shared drive, for a reader Google answers with no
-        list. Managers keep access through limited folders and can always list sharing, so their list is the
-        item's. None when no Manager could read it: the reader's own grant is all that is known then.
+        """The item's permission list read as a member of its shared drive who can read sharing (Managers first,
+        then Content managers and Contributors), for a reader who cannot. None when none could read it: the
+        reader's own grant is all that is known then.
 
         `user_email` stays the reader, so a link share still grants the reader as their own full read would. The
         list is the same for every member of the drive, so it is read once per item and run for all of them, the
@@ -3850,7 +3831,7 @@ class GoogleDriveTeamConnector(BaseConnector):
     ) -> tuple[list[Permission], bool, list[str]] | None:
         by_email = {u.email.lower(): u for u in self.synced_users if u.email and u.is_active}
         tried = 0
-        for email in await self._drive_manager_emails(drive_id):
+        for email in await self._drive_sharing_readers(drive_id):
             if email == (user_email or "").lower() or email not in by_email:
                 continue
             if tried >= MAX_IMPERSONATION_CANDIDATES:
@@ -3860,10 +3841,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             if source is None:
                 source = self._manager_sources[email] = await self._build_user_drive_data_source(by_email[email])
             try:
-                # can_share: a Manager's empty list is not an answer, so the item fails and keeps what is stored.
+                # can_share: an empty list from one who can read sharing is not an answer; the next is asked.
                 read = await self._fetch_permissions(
                     file_id, is_drive=False, user_email=user_email, drive_data_source=source, can_share=True, **read_as
                 )
+            except _EmptyPermissionList:
+                continue
             except HttpError as e:
                 if e.resp.status == HttpStatusCode.NOT_FOUND.value or is_permission_denied_403(e):
                     continue
@@ -4698,12 +4681,23 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if list_read and not item_drive_id and existing_record is not None and not is_fallback_permissions:
                     await self._forget_empty_list_runs(file_id)
                 member_reads_through_drive = False
-                if is_fallback_permissions and item_drive_id:
-                    # A shared drive reader cannot list the item's sharing; a manager of its drive always can.
+                reader_lists = bool((metadata.get("capabilities") or {}).get("canShare")) or (
+                    bool(item_drive_id) and (user_email or "").lower() in await self._drive_sharing_readers(item_drive_id)
+                )
+                if item_drive_id and (is_fallback_permissions or not reader_lists):
+                    # Commenters and Viewers "can't access detailed file permissions", so whatever list they get is
+                    # not the item's (https://developers.google.com/workspace/drive/api/guides/ref-roles); a member
+                    # who can read sharing reads it instead.
                     managed = await self._permissions_as_drive_manager(file_id, item_drive_id, user_email, read_as)
                     if managed is not None:
                         new_permissions, is_fallback_permissions, individually_shared_emails = managed
-                    elif read_as["inherits_from_drive"] and user_email and (
+                    elif not is_fallback_permissions:
+                        # Nobody can read it: only the reader's own access is known.
+                        restrict = (await self._restriction_filter(item_drive_id, is_drive=False))[0]
+                        own = [Permission(email=user_email, type=PermissionType.READ, entity_type=EntityType.USER)]
+                        new_permissions = await restrict(own) if user_email else []
+                        is_fallback_permissions, individually_shared_emails = True, []
+                    if managed is None and read_as["inherits_from_drive"] and user_email and (
                         await self._is_drive_member(item_drive_id, user_email)
                     ):
                         # No Manager can list it: a member reaches it from the drive through the folders above, as in
