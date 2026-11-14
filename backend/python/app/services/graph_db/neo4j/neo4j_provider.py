@@ -21208,17 +21208,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return [{**item, "handle": item["id"]} for item in ((rows or [{}])[0].get("items") or [])]
 
-    async def _kh_v3_chain_top_facts(
-        self,
-        app_id: str,
-        node_ids: list[str],
-        group_ids: list[str],
-        transaction: str | None,
-    ) -> dict[str, set[str]]:
-        hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
-        # Up from the group one parent per step, the App compared at the end: bound
-        # in the pattern, the App becomes the planner's start and the walk covers
-        # the whole connector.
+    async def _kh_v3_chain_top_hidden(
+        self, app_id: str, node_ids: list[str], transaction: str | None,
+    ) -> set[str]:
         # With listing state every group that hides its children carries the label,
         # and its count is a stored number: when there is none nothing is hidden,
         # and the walk up from every candidate (the bulk of this statement) is skipped.
@@ -21237,23 +21229,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WHERE {self._kh_v3_hidden_above("c", "ct")} OR {self._kh_v3_in_hidden_group("c", "cg")}
                 RETURN collect(c.id) AS hidden
             }}
-            CALL () {{
-                UNWIND $groups AS kh_gid
-                MATCH (g:RecordGroup {{id: kh_gid}})
-                WHERE EXISTS {{
-                    MATCH (g) ((kh_x)<-[kh_r:NODE_RELATION]-(kh_y)
-                               WHERE kh_r.relationshipType {hierarchy}){{1,50}} (kh_top:App)
-                    WHERE kh_top.id = $app_id
-                }}
-                RETURN collect(g.id) AS underApp
-            }}
-            RETURN hidden, underApp
+            RETURN hidden
             """,
-            parameters={"app_id": app_id, "nodes": node_ids, "groups": group_ids},
+            parameters={"nodes": node_ids},
             txn_id=transaction,
         )
-        row = (rows or [{}])[0]
-        return {"hidden": set(row.get("hidden") or []), "underApp": set(row.get("underApp") or [])}
+        return set((rows or [{}])[0].get("hidden") or [])
 
     @staticmethod
     def _kh_deleted(v: str, *, state: bool) -> str:

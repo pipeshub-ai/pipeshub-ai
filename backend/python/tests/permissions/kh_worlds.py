@@ -812,6 +812,24 @@ gates: [[u, A]]
 links: [[u, s, B]]
 """))
 
+# UNPLACED: three granted records under a folder p the viewer may not open. r1's own group `shut` is closed and hangs from nothing, so no node lists r1
+# but the App: it is listed there. r2's own group `open` is granted (a chain-top of the App itself), so r2 is listed under it and not under the App.
+# r3 is granted but RESTRICTED and inherits nothing: the check denies it, and it is listed nowhere.
+UNPLACED = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: p, kind: record, connector: A, rule: RESTRICTED, parents: [f], inherits: [f], belongs: [f]}
+  - {id: shut, kind: group, connector: A, rule: RESTRICTED}
+  - {id: open, kind: group, connector: A, rule: OPEN}
+  - {id: r1, kind: record, connector: A, rule: OPEN, parents: [p], belongs: [shut]}
+  - {id: r2, kind: record, connector: A, rule: OPEN, parents: [p], belongs: [open]}
+  - {id: r3, kind: record, connector: A, rule: RESTRICTED, parents: [p], belongs: [shut]}
+grants: [[u, r1], [u, r2], [u, r3], [u, open]]
+gates: [[u, A]]
+"""))
+
 # a Jira project with a security level: the level's group L carries access only (``accessOnly``). It is never a row, and each issue under it is
 # listed once, where it is filed: t1, t2 and the epic E2 under the project, s1 under the epic E, s2 under E2, the sub-task st under t1. t2's
 # reporter w reads it through the project alone; x holds the level and cannot browse the project. o, open and granted to y alone, hangs under L and
@@ -839,4 +857,4 @@ KH_WORLDS = [LEVELS, CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
              SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ, OPENGRANT, OPENGRANTTEAM, SIDESEED,
              STUBSEED, NESTSTUB, CAPSTUB, HIDESEED, FLATSIDE, REACHSTUB,
-             SCOPEDSIDE, XHOP, XLINK, DECLHIDE, XBADGE, XLINKBADGE]
+             SCOPEDSIDE, XHOP, XLINK, DECLHIDE, XBADGE, XLINKBADGE, UNPLACED]

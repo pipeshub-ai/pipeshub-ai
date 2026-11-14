@@ -168,9 +168,9 @@ def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> 
     """The granted rows a browse of ``node`` (an App or a group) lists beside its hierarchy children, by the placement rule the stores share
     (``GraphDBProvider._kh_v3_chain_tops``, ``place_chain_tops``): a live, OPEN, non-placeholder record or group of the App the viewer is
     granted, with no hierarchy parent the viewer may open and not the App's hierarchy child, outside a group that hides its children. It is
-    listed under each of its own groups (a record's groups, a group's parent groups) the viewer may open; with none, under the App when it
-    has no own group or one that hangs from the App. A group's browse places only the records that belong to it. None in an App that opens
-    everything. The parents, groups and chains to the App are read from the world as the store holds it (`stored`), as the store reads them."""
+    listed under each of its own groups (a record's groups, a group's parent groups) the viewer may open; with none, under the App, wherever
+    its own groups hang: nothing else lists it. A group's browse places only the records that belong to it. None in an App that opens
+    everything. The parents and groups are read from the world as the store holds it (`stored`), as the store reads them."""
     asked_world, world = world, stored(reference, world)
     if node not in {n.id for n in world.nodes}:      # a node the store does not keep lists nothing
         return set()
@@ -203,8 +203,7 @@ def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> 
         if n.id not in ok or set(hier(n)) & ok:
             continue
         openable = set(own(n)) & ok
-        if node in openable or (target.kind == "app" and not openable and (
-                not own(n) or any(not world.node(g).deleted and app_id in {a.id for a in _ancestors(world, world.node(g))} for g in own(n)))):
+        if node in openable or (target.kind == "app" and not openable):
             out.add(n.id)
     return out
 

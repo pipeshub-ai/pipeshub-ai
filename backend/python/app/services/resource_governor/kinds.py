@@ -22,6 +22,7 @@ import os
 import threading
 from enum import StrEnum
 
+from app.config import file_types
 from app.modules.parsers.excel.limits import (
     excel_document_memory_bytes,
     excel_load_max_bytes,
@@ -88,52 +89,14 @@ TEXT_PARENT_SLOPES: dict[ParseKind, float] = {
 }
 TEXT_PARENT_BASE_GB = 16 * MIB / GIB
 
-_PDF_EXTENSIONS = frozenset({"pdf"})
-_EXCEL_EXTENSIONS = frozenset({"xlsx", "xls", "xlsm"})
-_DOCLING_EXTENSIONS = frozenset({"docx", "doc", "pptx", "ppt"})
-_CSV_EXTENSIONS = frozenset({"csv", "tsv"})
-_TEXT_EXTENSIONS = frozenset({"txt", "md", "mdx", "html", "htm", "json", "yaml", "yml", "sql_table", "sql_view"})
-_CODE_EXTENSIONS = frozenset({
-    "c", "h", "cpp", "cc", "cxx", "hpp", "hxx", "cs", "java", "py", "js", "jsx", "mjs", "cjs", "ts",
-    "tsx", "go", "rs", "rb", "php", "swift", "kt", "kts", "dart", "sh", "bash",
-})
-_MIME_KINDS: dict[str, ParseKind] = {
-    "application/pdf": ParseKind.PDF,
-    "application/vnd.ms-excel": ParseKind.EXCEL_LOAD,
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ParseKind.EXCEL_LOAD,
-    "application/msword": ParseKind.DOCLING_DOCX,
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ParseKind.DOCLING_DOCX,
-    "application/vnd.ms-powerpoint": ParseKind.DOCLING_DOCX,
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ParseKind.DOCLING_DOCX,
-    "text/csv": ParseKind.CSV,
-    "text/tab-separated-values": ParseKind.CSV,
-    "text/plain": ParseKind.TEXT,
-    "text/markdown": ParseKind.TEXT,
-    "text/mdx": ParseKind.TEXT,
-    "text/html": ParseKind.TEXT,
-    "application/json": ParseKind.TEXT,
-    "application/yaml": ParseKind.TEXT,
-    "application/x-yaml": ParseKind.TEXT,
-}
-
 
 def classify_kind(extension: str | None, mime_type: str | None) -> ParseKind:
     """The kind of a record, from its extension, else its mime type, as ``tiers.classify`` does.
 
     Anything not recognised is ``UNKNOWN``, which is charged the old safe figures.
     """
-    ext = (extension or "").lower().lstrip(".")
-    for names, kind in (
-        (_PDF_EXTENSIONS, ParseKind.PDF),
-        (_EXCEL_EXTENSIONS, ParseKind.EXCEL_LOAD),
-        (_DOCLING_EXTENSIONS, ParseKind.DOCLING_DOCX),
-        (_CSV_EXTENSIONS, ParseKind.CSV),
-        (_TEXT_EXTENSIONS, ParseKind.TEXT),
-        (_CODE_EXTENSIONS, ParseKind.CODE),
-    ):
-        if ext in names:
-            return kind
-    return _MIME_KINDS.get((mime_type or "").lower(), ParseKind.UNKNOWN)
+    kind = file_types.kind(extension, mime_type)
+    return ParseKind(kind) if kind else ParseKind.UNKNOWN
 
 
 def explicit_lane_working_set_bytes(environ: dict[str, str] | None = None) -> int | None:
