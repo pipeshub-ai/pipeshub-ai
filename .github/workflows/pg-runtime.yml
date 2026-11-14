@@ -33,6 +33,9 @@ on:
       - 'backend/python/tests/integration/graph_db/postgres/**'
       - 'backend/python/tests/integration/graph_db/test_code_graph_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
+      # postgres/test_drupal_wiki_access.py drives the connector through drupal_wiki_world.py.
+      - 'backend/python/tests/integration/graph_db/drupal_wiki_world.py'
+      - 'backend/python/app/connectors/sources/drupal_wiki/**'
       - 'backend/python/tests/integration/real_graph.py'
       - 'backend/python/tests/permissions/**'
       - 'backend/python/tests/integration/graph_permissions/loaders.py'
