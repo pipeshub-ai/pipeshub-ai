@@ -804,7 +804,7 @@ def _aql_frontier(v: str, from_app: str, *, hiding: bool = True) -> str:
             f" RETURN {_aql_undecided('kh_fy', hiding=hiding)}[* RETURN PARSE_IDENTIFIER(CURRENT).key]))")
 
 
-def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False, hiding: bool = True) -> str:
+def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False, hiding: bool = True, record: bool = False) -> str:
     """Whether expanding ``v`` would list a child: a hierarchy child that passes the browse's own rule
     (``_aql_browse_child``), or, where the App opens everything, a record filed in it. A group or folder
     always answers yes: finding out means reading every hidden child, which cost far more than the page
@@ -813,7 +813,8 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
     that belong to it, so an arrow is not lit by children the expansion hides. ``kh_opens`` and the binds
     ``@granted``, ``@kh_scope``, ``@kh_from_app`` (false below a seed) and ``@kh_seeded`` (rows that are seeds)
     must be in scope. ``exact`` answers a declared group too, which costs every row several subqueries, so it is
-    asked of a page's rows and not of every node the sidebar filter reads."""
+    asked of a page's rows and not of every node the sidebar filter reads. ``record``: ``v`` is known to be a record (exact only), so the group
+    and declared-group arms, which never hold for one, are left out of the plan."""
     # A browse row decides its own children's way in from the row itself (below two parents it may be reached from the App by one and not the
     # other), not from the folder it is listed under: `kh_row_from_app`, set in the page's `enrich_exact` query (`_aql_row_from_app`).
     seeded = f"@kh_from_app AND {v}._id NOT IN @kh_seeded"
@@ -874,6 +875,10 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
     # What belongs to ``v`` is `kh_filed`, one subquery per row that the page query also reads for the chain-top question; for a
     # group it is a granted record held in it, which a browse of the group lists only as a chain-top (`_kh_v3_page_result` asks the chain-top
     # walk), so only a node that is not a group takes its arrow from it here.
+    if record:
+        # Planning, not execution, is most of the sidebar statement's time, and grows faster than its plan: the declared arm, a second copy of
+        # the children walk, doubled it for a record that can never take that arm.
+        return f"({v}.hideChildren != true AND (kh_filed OR LENGTH({children} LIMIT 1 RETURN 1) > 0))"
     return (f"({v}.hideChildren != true AND ((NOT {group} AND kh_filed)"
             f" OR {gated(f'NOT {declared}', children)} OR {gated(declared, in_scope)}))")
 
@@ -20822,19 +20827,26 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "kh_collection": visible.collection, "org_id": org_id, "app_id": app_id,
                     "kh_unplaced_only": visible.unplaced_members_only,
                     "kh_placed": visible.placed, "kh_placed_groups": visible.placed_groups,
-                    # The stub pass reads these; the rest only when the sidebar filter reads hasChildren
-                    # (an unused bind fails the statement).
+                    # The stub pass reads these; the rest only when a flatten's sidebar filter reads hasChildren (a browse's reads it apart,
+                    # `sidebar_rows`; an unused bind fails the statement).
                     **({"kh_placeholders": lists_placeholders, "granted": row_ctx["granted"],
-                        "kh_scope": row_ctx["kh_scope"]} if lists_placeholders or sidebar else {}),
+                        "kh_scope": row_ctx["kh_scope"]} if lists_placeholders or (sidebar and not exact_arrows) else {}),
                     **({"kh_start": start_handle} if lists_placeholders else {}),
-                    # a browse's sidebar reads each row's own reach, not the start's (an unused bind fails the statement)
-                    **({k: v for k, v in row_ctx.items() if not (exact_arrows and k in ("kh_from_app", "kh_seeded"))} if sidebar else {}),
+                    **(row_ctx if sidebar and not exact_arrows else {}),
                     **({"kh_only": visible.only} if restricted else {}),
                 },
                 txn_id=transaction,
                 batch_size=_KH_V3_BATCH,
                 options=_KH_V3_QUERY_OPTIONS,
             ) or []
+        # A browse sidebar's record that can have an arrow (a fifth field) is kept where `sidebar_rows` lights it, or asks the check below
+        # where that lists nothing; one gone since the slim read is not listed.
+        side = [r[0] for r in slim if len(r) > 4 and r[4]]
+        if side:
+            lit = {h: (has, probe) for h, has, probe in await self._kh_v3_run("sidebar_rows", {
+                "kh_page": side, "app_id": app_id, "org_id": org_id, "granted": row_ctx["granted"], "kh_scope": row_ctx["kh_scope"],
+                "kh_placeholders": lists_placeholders}, transaction, hiding=hiding)}
+            slim = [[*r[:3], lit[r[0]][1]] if len(r) > 4 and r[4] else r for r in slim if not (len(r) > 4 and r[4]) or any(lit.get(r[0], ()))]
         # A row its rules list nothing under is listed (a stub) or kept by the sidebar (a record) where the check admits a child of its frontier
         # (`_aql_frontier`), as opening it lists that child; decided here, before the page is cut, so the counts read the same rows.
         asked = [r[0] for r in slim if len(r) > 3 and r[3]]
@@ -21087,17 +21099,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # here, before the page is cut. Other listings never filter on it, so
         # they skip the edge reads.
         sidebar = any("node.hasChildren" in c for c in conditions)
-        # The sidebar keeps a record exactly where its arrow is on: the page row's own test, read from the record's own reach (walked only for a
-        # record with a hierarchy child), and where that lists nothing, the check's answer on its frontier (`_kh_v3_settle_held_arrows`).
         kid = _aql_has_child("kh_n")
-        # They read the record by `DOCUMENT`: ArangoDB 3.12.4 fails to plan the row's test over the joined loop variable ("missing variable kh_n
-        # ... while planning registers").
-        sidebar_record = (f"\n                    LET kh_sd = DOCUMENT(kh_h)"
-                          f"\n                    LET kh_row_from_app = {kid.replace('kh_n', 'kh_sd')} ? {_aql_row_from_app('kh_sd')} : false"
-                          f"\n                    LET kh_filed = {_aql_kh_filed('kh_sd', every_hop=True, hiding=hiding)}"
-                          f"\n                    LET kh_has = {_aql_kh_has_children('kh_sd', exact=True, every_hop=True, hiding=hiding)}"
-                          # a folder is kept whatever lies below it (`_kh_v2_filters_aql`): only a record asks the check, and only one with a child
-                          f"\n                    LET kh_probe = NOT kh_has AND {_aql_node_type('kh_sd')} == \"record\" AND {kid.replace('kh_n', 'kh_sd')}")
+        # A browse's sidebar keeps a record exactly where its arrow is on, which `sidebar_rows` reads apart (`_kh_v3_page_rows`) for the records
+        # that can have one: a hierarchy child, or a record filed in it where the App opens everything (`_aql_kh_filed`). Planning, not
+        # execution, is most of these statements' time and grows faster than the statement: in this one the test took the sidebar's plan from
+        # about 15 ms to about 150.
+        sidebar_record = (f"\n                    LET kh_side = {kid} OR (kh_opens AND LENGTH(FOR kh_bm IN 1..1 INBOUND kh_n {belongs}"
+                          " LIMIT 1 RETURN 1) > 0)")
 
         # The rows the listing decides (a stub is listed only as the way to something readable), so every hop of the way is tested, unlike an arrow's.
         # A stub's way is read as a browse of the stub reads it, from the stub's own reach (`_aql_row_from_app`), so a stub is listed exactly where
@@ -21117,16 +21125,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Stubs are read apart so that the way-below test, a subquery, runs for them alone.
             stub_filter = ("kh_n.isPlaceholder == true AND @kh_placeholders" if stubs else "kh_n.isPlaceholder != true")
             # A listed stub lists something, by its way or by the check (asked by the page); a group always answers yes.
+            probe = ""
             if stubs:
-                pre, has_children = stub_way, "true"
+                pre, has_children, probe = stub_way, "true", ", kh_probe"
             elif sidebar and collection == records and browse:
-                pre, has_children = sidebar_record, "(kh_has OR kh_probe)"
+                # a folder is kept whatever lies below it (`_kh_v2_filters_aql`): only a record is read again
+                pre, has_children, probe = sidebar_record, "kh_side", ', false, kh_side AND node.nodeType == "record"'
             elif sidebar and collection == records:
                 # A flatten's sidebar keeps a record by the flatten's own arrow: the stricter rule, which no check settles.
                 pre, has_children = "", _aql_kh_has_children("kh_n", hiding=hiding)
             else:
                 pre, has_children = "", "true" if sidebar else "false"
-            probe = ", kh_probe" if pre else ""
             return f"""(
                 FOR kh_h IN {f"UNION_DISTINCT(kh_handles, {reached_stubs})" if stubs else "kh_handles"}
                     FILTER STARTS_WITH(kh_h, "{collection}/")
@@ -21643,6 +21652,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN {{h: kh_h, kids: {_aql_frontier("node", "kh_rfa", hiding=hiding)}}}
             """
         queries["enrich_exact_stubs"] = stubs_pass.replace("KH_OWN_PATH", _aql_row_from_app("node"))
+        # A browse sidebar's record (`_kh_v3_slim_aql`): its arrow, the page row's own test read from the record's own reach (walked only for a
+        # record with a hierarchy child), and whether, where that lists nothing, the check decides it on its frontier (`_kh_v3_settle_held_arrows`).
+        kid = _aql_has_child("kh_sd")
+        queries["sidebar_rows"] = f"""
+            LET kh_app = DOCUMENT("{apps}", @app_id)
+            LET kh_opens = {_AQL_APP_OPENS}
+            FOR kh_h IN @kh_page
+                LET kh_sd = DOCUMENT(kh_h)
+                FILTER kh_sd != null
+                LET kh_row_from_app = {kid} ? {_aql_row_from_app("kh_sd")} : false
+                LET kh_filed = {_aql_kh_filed("kh_sd", every_hop=True, hiding=hiding)}
+                LET kh_has = {_aql_kh_has_children("kh_sd", exact=True, every_hop=True, hiding=hiding, record=True)}
+                RETURN [kh_h, kh_has, NOT kh_has AND {_aql_node_type("kh_sd")} == "record" AND {kid}]
+            """
         queries["enrich"] = (queries["enrich"].replace("KH_ROW_FIELDS", ArangoHTTPProvider._kh_v3_row_aql(exact=False, hiding=hiding)).replace("KH_HELD", "false")
                              .replace("KH_OWN_PATH", "false").replace("KH_FROM_APP", "true").replace("KH_FILED", "false").replace("KH_STUB", "false")
                              .replace("KH_KIDS", "false"))

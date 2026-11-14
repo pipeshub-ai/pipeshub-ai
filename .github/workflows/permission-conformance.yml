@@ -127,7 +127,7 @@ jobs:
               tests/integration/graph_permissions
               --ignore=tests/integration/graph_permissions/test_kh_name_search_first.py
               --ignore=tests/integration/graph_permissions/test_provider_v3_shapes.py
-            cases: 769
+            cases: 770
             pytest_args: --timeout=300
             allow: >-
               test_hierarchy_backfill::test_an_edge_from_a_removed_document_is_no_parent[neo4j]
