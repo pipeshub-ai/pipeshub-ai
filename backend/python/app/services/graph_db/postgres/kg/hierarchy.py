@@ -10,9 +10,11 @@ could not place it: a cycle, or a chain deeper than it stores).
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
-from app.core.org_context import current_or_system
+from app.core.org_context import current_or_system, current_org_id
+from app.services.graph_db.postgres.kg import net
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.telemetry.backend import METRICS_BACKEND
 
@@ -22,6 +24,8 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 logger = logging.getLogger(__name__)
+_SERVED: ContextVar[list[str] | None] = ContextVar("kg_hierarchy_served", default=None)      # the connectors a read was answered for: what a difference demotes
+SAMPLE_WALK = "/* pipeshub:kg.hier_sample_limits */ SELECT set_config('statement_timeout', '10s', true)"
 HIERARCHY = METRICS_BACKEND.counter("pipeshub_kg_hierarchy_total", "Descendant and level reads, by who answered and why the walk did", ["what", "answer"])
 
 
@@ -65,6 +69,21 @@ def _links_up(x: str, kind: int) -> str:
             f"ORDER BY l.child_sk, l.kind)")
 
 
+def _unheld_out(x: str) -> str:
+    """Whether a record-to-record relation leaves the record of id ``x`` for a record kg does not hold: one whose id is longer than kg takes, or one that is gone while its
+    edge stays. The walk follows such an edge (and on from it); kg cannot, so the walk must answer."""
+    return (f"EXISTS (SELECT 1 FROM (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_id >= {x} AND e.from_id <= {x} "
+            f"AND e.from_coll = 'records' AND e.to_coll = 'records' ORDER BY e.from_id) e WHERE NOT EXISTS (SELECT 1 FROM {_id('3', 'e.to_id')} k))")
+
+
+def _unheld_in(x: str, coll: str, froms: str) -> str:
+    """Whether an edge of collection ``coll`` comes into the node of id ``x`` from a node of the collections ``froms`` (an array literal) that kg does not hold: as
+    :func:`_unheld_out`, the other way."""
+    held = _id("(CASE e.from_coll WHEN 'records' THEN 3 ELSE 2 END)::smallint", "e.from_id")
+    return (f"EXISTS (SELECT 1 FROM (SELECT e.from_id, e.from_coll FROM graph.edges e WHERE e.org_id = $1 AND e.coll = '{coll}' AND e.to_id >= {x} AND e.to_id <= {x} "
+            f"ORDER BY e.to_id) e WHERE e.from_coll = ANY('{froms}'::text[]) AND NOT EXISTS (SELECT 1 FROM {held} k))")
+
+
 APP_KEY = "/* pipeshub:kg.hier_app */ SELECT sk FROM (SELECT * FROM kg.node_keys k WHERE k.org_id = $1 AND k.coll = 1 AND k.id >= $2 ORDER BY k.id LIMIT 1) s WHERE s.id = $2"
 NODE = f"""/* pipeshub:kg.hier_node */ SELECT r.sk, a.id AS app_id FROM {_id("$2", "$3")} r LEFT JOIN LATERAL {_sk("r.app_sk", "kg.node_keys")} a ON a.coll = 1"""
 GRAPH_RECORDS = f"""/* pipeshub:kg.hier_graph_records */ SELECT EXISTS (SELECT 1 FROM unnest($2::text[]) q(id) CROSS JOIN LATERAL {_node("'records'", "q.id")} n)"""
@@ -79,6 +98,7 @@ BELOW = f"""/* pipeshub:kg.hier_below */ WITH RECURSIVE w(sk, d) AS (
     UNION SELECT x.sk, w.d + 1 FROM w CROSS JOIN LATERAL ({_below("w.sk", 3)}) x WHERE w.d < $3),
   v AS MATERIALIZED (SELECT r.sk, r.id, r.app_sk, r.path FROM (SELECT DISTINCT sk FROM w) q CROSS JOIN LATERAL {_sk("q.sk")} r)
 SELECT (SELECT coalesce(bool_or(v.app_sk IS DISTINCT FROM $4 OR v.path IS NULL), false) FROM v) AS untrusted,
+  EXISTS (SELECT 1 FROM v WHERE {_unheld_out("v.id")}) AS unheld,
   array(SELECT r.id FROM v CROSS JOIN LATERAL {_node("'records'", "v.id")} r
     WHERE {_DOC.format(c="$5", o="$6", s="$7", x="$8", a="$9")} ORDER BY r.id OFFSET $10 LIMIT $11) AS ids"""
 
@@ -88,7 +108,8 @@ NEST = f"""/* pipeshub:kg.hier_nest */ WITH RECURSIVE nest(sk, d) AS (
     UNION SELECT c.sk, nest.d + 1 FROM nest CROSS JOIN LATERAL ({_below("nest.sk", 2, by="group_sk", link=2)}) x CROSS JOIN LATERAL {_sk("x.sk")} c
       CROSS JOIN LATERAL {_node("'recordGroups'", "c.id")} n
     WHERE nest.d < $4 AND (n.doc->>'orgId' = $3 OR n.doc->>'orgId' IS NULL))
-SELECT r.sk, r.id, r.app_sk, r.path IS NULL AS no_path FROM (SELECT DISTINCT sk FROM nest) q CROSS JOIN LATERAL {_sk("q.sk")} r"""
+SELECT r.sk, r.id, r.app_sk, r.path IS NULL AS no_path, {_unheld_in("r.id", "belongsTo", "{records,recordGroups}")} AS unheld
+FROM (SELECT DISTINCT sk FROM nest) q CROSS JOIN LATERAL {_sk("q.sk")} r"""
 
 # The records that belong to one of the groups $2 (sks) and pass the walk's document filters and its file test (its candidates), then those reachable from a candidate no other
 # candidate is a hierarchy parent of, 100 levels down within the candidates (a cycle of candidates with no root is not returned, as by the walk). ``untrusted`` as for BELOW.
@@ -112,7 +133,8 @@ UP = f"""/* pipeshub:kg.hier_up */ WITH RECURSIVE up(node, sk, k) AS (
       SELECT c.parent_sk AS sk FROM {_sk("up.sk")} c UNION ALL SELECT l.parent_sk FROM {_links_up("up.sk", 1)} l) x
       CROSS JOIN LATERAL {_sk("x.sk")} p
     WHERE up.k < $3 AND p.coll = 3)
-SELECT up.node, up.sk, up.k, r.app_sk, r.path IS NULL AS no_path FROM up CROSS JOIN LATERAL {_sk("up.sk")} r"""
+SELECT up.node, up.sk, up.k, r.app_sk, r.path IS NULL AS no_path, {_unheld_in("r.id", "nodeRelations", "{records}")} AS unheld
+FROM up CROSS JOIN LATERAL {_sk("up.sk")} r"""
 # The members among the sks $2 of the group $3 (its group, or a group link).
 GROUP_MEMBERS = f"""/* pipeshub:kg.hier_group_members */ SELECT c.sk FROM unnest($2::bigint[]) q(sk) CROSS JOIN LATERAL {_sk("q.sk")} c
     WHERE c.group_sk = $3 OR EXISTS (SELECT 1 FROM {_links_up("c.sk", 2)} l WHERE l.parent_sk = $3)"""
@@ -128,6 +150,8 @@ async def _served(tx: Tx, org: str, app_id: str | None) -> int:
     """The sk of a connector kg answers for (``read.serves``, in the caller's snapshot). Raises Fallback."""
     if not app_id or not await kg_read.serves(tx, org, app_id):
         raise Fallback("not_served")
+    if (served := _SERVED.get()) is not None:
+        served.append(app_id)
     return await tx.fetchval(APP_KEY, org, app_id)
 
 
@@ -141,6 +165,8 @@ async def below(tx: Tx, org: str, parent_id: str, connector_id: str, org_id: str
     row = await tx.fetchrow(BELOW, org, start["sk"], bound, app_sk, connector_id, org_id, status, exclude, after, offset, limit)
     if row["untrusted"]:
         raise Fallback("reach")
+    if row["unheld"]:
+        raise Fallback("unheld")
     return list(row["ids"])
 
 
@@ -152,6 +178,8 @@ async def nested_groups(tx: Tx, org: str, group_id: str, connector_id: str, org_
         raise Fallback("unknown")
     if any(r["app_sk"] != app_sk or r["no_path"] for r in rows):
         raise Fallback("reach")
+    if any(r["unheld"] for r in rows):
+        raise Fallback("unheld")                        # a member the walk lists (or a group it follows) that kg does not hold
     return [(r["sk"], r["id"]) for r in rows]
 
 
@@ -180,6 +208,8 @@ async def depths(tx: Tx, org: str, parent_id: str, parent_type: str | None, node
     rows = await tx.fetch(UP, org, node_ids, rec_depth if members_of else safe)
     if any(r["app_sk"] != app_sk or r["no_path"] for r in rows):
         raise Fallback("reach")
+    if any(r["unheld"] for r in rows):
+        raise Fallback("unheld")                        # a parent the walk comes down through that kg does not hold
     missing = set(node_ids) - {r["node"] for r in rows}
     if missing and await tx.fetchval(GRAPH_RECORDS, org, sorted(missing)):
         raise Fallback("not_projected")                 # a record the graph holds and kg does not: the walk may reach it
@@ -198,16 +228,25 @@ async def depths(tx: Tx, org: str, parent_id: str, parent_type: str | None, node
     return out
 
 
-async def answer(provider: Any, what: str, transaction: str | None, fn: Callable[[Tx], Awaitable[Any]]) -> Any:  # noqa: ANN401
+async def answer(provider: Any, what: str, transaction: str | None, fn: Callable[[Tx], Awaitable[Any]],  # noqa: ANN401
+                 walk: Callable[[Tx], Awaitable[Any]] | None = None, shape: Callable[[Any], Any] = lambda x: x) -> Any:  # noqa: ANN401
     """``fn``'s answer from kg in one snapshot (the page's, or a unit of its own), or None when the walk answers (counted with the reason). A caller's own transaction may hold
-    writes kg has not been given, and the system role cannot read kg: both are the walk's."""
+    writes kg has not been given, and the system role cannot read kg: both are the walk's. With ``walk`` (the walk's answer to the same read, in a transaction), a share of
+    the answers is read again by both in one snapshot off the caller's path (:func:`net.maybe_compare`): a difference (``shape`` of kg's answer against the walk's) takes the
+    connector back to the walk."""
     snapshot = bool(transaction) and bool(getattr(provider._txns.get(transaction), "snapshot", False))
     if (transaction and not snapshot) or current_or_system().kind == "system" or not kg_read.enabled():
         HIERARCHY.inc(what, "off")
         return None
-    async def profiled(tx: Tx) -> Any:  # noqa: ANN401
-        await tx.fetchval(PROFILE)
-        return await fn(tx)
+    apps: list[str] = []
+
+    async def profiled(tx: Tx, served: list[str] = apps) -> Any:  # noqa: ANN401
+        token = _SERVED.set(served)
+        try:
+            await tx.fetchval(PROFILE)
+            return await fn(tx)
+        finally:
+            _SERVED.reset(token)
     try:
         if snapshot:
             out = await provider._q(lambda tx: kg_read.in_savepoint(tx, profiled), transaction)
@@ -221,4 +260,15 @@ async def answer(provider: Any, what: str, transaction: str | None, fn: Callable
         HIERARCHY.inc(what, "error")
         return None
     HIERARCHY.inc(what, "kg")
+    if walk is not None:
+        async def differs(tx: Tx) -> bool:
+            await tx.fetchval(SAMPLE_WALK)
+            walked = await walk(tx)                     # first, with the walk's own plan settings
+            try:
+                mine = await profiled(tx, [])
+            except Fallback:
+                return False                            # kg would not answer now: nothing to hold against it
+            return shape(mine) != walked
+        net.maybe_compare(lambda f: provider._db.run(f, isolation="repeatable_read", custom_plan=True), provider._db, current_org_id(), apps,
+                          f"hierarchy_{what}", differs)
     return out

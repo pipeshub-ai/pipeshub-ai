@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from app.services.graph_db.postgres.kg import drainer
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
@@ -277,6 +278,65 @@ async def test_a_change_waiting_in_the_log_takes_the_walk_until_it_is_drained(pg
     assert "e" in got and tally.c[("by_parent", "not_served")], dict(tally.c)
 
 
+async def test_a_record_kg_cannot_hold_takes_the_walk(pg_provider, pg_db, tally) -> None:
+    """A record whose id is longer than kg takes is not in kg: the walk lists it below a, in g2 and as the way down to z; kg sees a relation to a record it does not hold and hands
+    each read to the walk, so the answers stay the walk's (also once the change log no longer holds the rows that name it)."""
+    org, long = new_org(), "L" * 300
+    await _tree(pg_provider, pg_db, org, extra=[{"_key": k, "recordName": k[:9], "connectorId": "app1", "orgId": org, "recordType": "FILE"} for k in (long, "z")],
+                links=[edge("a", "records", long, "records", relationshipType="PARENT_CHILD"), edge(long, "records", "z", "records", relationshipType="PARENT_CHILD")])
+    with ctx(org):
+        await pg_provider.batch_create_edges([edge(long, "records", "g2", "recordGroups")], "belongsTo")
+    await _types_all(org)
+    await drainer.purge_quarantined(pg_db, org)      # the change log rows that name the long id cannot be projected; an operator drops them, and the connector is served again
+    await flip(pg_db, org)
+    tally.c.clear()
+    walk, got = await _walk_and_kg(pg_provider, org)
+    assert got == walk and long in got["below_f"] and "z" in got["below_f"] and long in got["group"]
+    assert await _both(org, lambda: pg_provider.get_node_depths_batch("f", ["z"], 5, None)) == ({"z": 3}, {"z": 3})
+    assert tally.c[("by_parent", "unheld")] and tally.c[("by_group_nest", "unheld")] and tally.c[("depths", "unheld")], dict(tally.c)
+
+
+async def test_an_edge_left_after_its_record_was_removed_takes_the_walk(pg_provider, pg_db, tally) -> None:
+    """a is removed and its edges stay: the walk still goes from f through a to b; kg holds no a (and b has no parent there), sees f's relation to a record it does not hold and
+    hands the read to the walk."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _admin("DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND id = 'a'", org)
+    await flip(pg_db, org)
+    tally.c.clear()
+    walk, got = await _walk_and_kg(pg_provider, org)
+    assert got == walk and "b" in got["below_f"] and got["depth_f"].get("b") == 2
+    assert not _served(tally, "by_parent") and not _served(tally, "depths"), dict(tally.c)
+
+
+@pytest.mark.parametrize("what", ["by_parent", "depths", "by_group"])
+async def test_a_sampled_read_that_differs_from_the_walk_takes_the_connector_back_to_the_walk(pg_provider, pg_db, monkeypatch, what) -> None:
+    """The safety net: with every read sampled, a read kg answers is read again by kg and by the walk in one snapshot; a seeded difference in kg's structure (b moved under f in kg
+    alone, and dropped from g2 there) demotes the connector, and the next read is the walk's."""
+    from app.services.graph_db.postgres.kg import net
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _admin("""UPDATE kg.records SET parent_sk = (SELECT sk FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'f'), group_sk = NULL
+        WHERE org_id = $1 AND coll = 3 AND id = 'b'""", org)
+    monkeypatch.setenv(net.SAMPLE_ENV, "1")
+    with ctx(org):
+        if what == "by_parent":
+            got = _ids(await pg_provider.get_records_by_parent_record("a", "app1", org, 1))
+            assert got == ["a", "c"]                                       # kg answered, from the seeded structure
+        elif what == "depths":
+            assert "b" not in await pg_provider.get_node_depths_batch("a", ["b", "c"], 3, None)
+        else:
+            assert "b" not in _ids(await pg_provider.get_records_by_record_group("g1", "app1", org, -1))
+        await net.settle()
+    async def state(tx) -> str:
+        return await tx.fetchval("""SELECT s.mode FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+            WHERE s.org_id = $1 AND k.coll = 1 AND k.id = 'app1'""", org)
+    with ctx(org):
+        mode = await pg_db.run(state)
+        assert mode == "legacy"
+        assert _ids(await pg_provider.get_records_by_parent_record("a", "app1", org, 1)) == ["a", "b", "c"]      # the walk's, from now on
+
+
 # ---- plans -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 N = 12_000
@@ -321,7 +381,7 @@ def _scans(node: dict[str, Any]) -> list[str]:
         out.append(f"{kind} on {rel}")
     elif rel and kind in ("Index Scan", "Index Only Scan"):
         cond = re.sub(r"(org_id|coll) = [^)]*", "", node.get("Index Cond", ""))
-        if not re.search(r"\b(sk|id|parent_sk|group_sk|child_sk|from_id)\b|ROW\(", cond):
+        if not re.search(r"\b(sk|id|parent_sk|group_sk|child_sk|from_id|to_id)\b|ROW\(", cond):
             out.append(f"{node.get('Index Name')} on {rel} bounded by {node.get('Index Cond')}")
     for child in node.get("Plans", []):
         out += _scans(child)

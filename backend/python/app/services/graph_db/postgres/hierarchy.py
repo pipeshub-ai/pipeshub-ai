@@ -328,12 +328,10 @@ class HierarchyMixin(PgBase):
             return {}
         safe = max(1, min(int(max_depth), 10))
         rec_depth = max(1, safe - 1)
-        got = await kg_hier.answer(self, "depths", None, lambda tx: kg_hier.depths(tx, org, parent_id, parent_type, list(node_ids), safe, rec_depth))
-        if got is not None:
-            return got
-        try:
+
+        async def walk(tx: Tx) -> dict[str, int]:
             if parent_type == "app":
-                rows = await self._rows("""/* pipeshub:graph.get_node_depths_batch_app */ WITH RECURSIVE w(id, lvl) AS (
+                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_app */ WITH RECURSIVE w(id, lvl) AS (
                       SELECT s.id, 1 FROM (SELECT b.from_id AS id FROM graph.nodes g JOIN graph.edges b ON b.org_id = g.org_id AND b.coll = 'belongsTo'
                           AND b.to_coll = 'recordGroups' AND b.to_id = g.id AND b.from_coll = 'records'
                         WHERE g.org_id = $1 AND g.coll = 'recordGroups' AND g.doc->>'connectorId' = $2 AND NOT coalesce((g.doc->>'isDeleted')::boolean, false)
@@ -344,7 +342,7 @@ class HierarchyMixin(PgBase):
                       WHERE w.lvl <= $4)
                     SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) GROUP BY id""", org, parent_id, list(node_ids), rec_depth)
             elif parent_type == "recordGroup":
-                rows = await self._rows("""/* pipeshub:graph.get_node_depths_batch_group */ WITH RECURSIVE w(id, lvl) AS (
+                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_group */ WITH RECURSIVE w(id, lvl) AS (
                       SELECT b.from_id, 1 FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.to_coll = 'recordGroups' AND b.to_id = $2
                         AND b.from_coll = 'records'
                       UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
@@ -352,12 +350,17 @@ class HierarchyMixin(PgBase):
                       WHERE w.lvl <= $4)
                     SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) GROUP BY id""", org, parent_id, list(node_ids), rec_depth)
             else:
-                rows = await self._rows("""/* pipeshub:graph.get_node_depths_batch_record */ WITH RECURSIVE w(id, lvl) AS (SELECT $2::text, 0
+                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_record */ WITH RECURSIVE w(id, lvl) AS (SELECT $2::text, 0
                       UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
                           AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records' AND e.from_id = w.id AND e.to_coll = 'records') nx ON true
                       WHERE w.lvl < $4)
                     SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) AND lvl >= 1 GROUP BY id""", org, parent_id, list(node_ids), safe)
             return {r["id"]: int(r["lvl"]) for r in rows}
+        got = await kg_hier.answer(self, "depths", None, lambda tx: kg_hier.depths(tx, org, parent_id, parent_type, list(node_ids), safe, rec_depth), walk=walk)
+        if got is not None:
+            return got
+        try:
+            return await self._q(walk, None)
         except Exception as e:
             self.logger.error("get_node_depths_batch failed: %s", e)
             return {}
