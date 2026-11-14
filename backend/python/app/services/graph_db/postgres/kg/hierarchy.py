@@ -38,7 +38,10 @@ class Fallback(Exception):
 # Every read below is a seek on the index of its key, whatever the statistics say (a table not analysed yet after a first large sync): the unit turns sorts off (``PROFILE``), and each
 # read asks for its key's order, which only that index gives without a sort (as ``read.BY_ID``). A key read by equality is spelt as a range of one value for the same reason (an
 # equality would leave the order to any index on the org). OFFSET 0 keeps each read on its row. JIT is off: the cost a disabled sort adds would compile every statement (half a second).
-PROFILE = "/* pipeshub:kg.hier_profile */ SELECT set_config('enable_sort', 'off', true), set_config('enable_bitmapscan', 'off', true), set_config('jit', 'off', true)"
+# Sequential scans are off too: a seek is every read's plan, and a table whose statistics say one key holds most of an org's rows must not tip a read to a scan of it
+# (PostgreSQL 18 planned one for the nest after an ANALYZE in CI).
+PROFILE = ("/* pipeshub:kg.hier_profile */ SELECT set_config('enable_sort', 'off', true), set_config('enable_bitmapscan', 'off', true), set_config('enable_seqscan', 'off', true), "
+           "set_config('jit', 'off', true)")
 
 
 def _sk(x: str, table: str = "kg.records") -> str:
