@@ -646,8 +646,8 @@ BROWSE_ISSUES: dict[str, tuple[dict, set[str]]] = {
     "PROJ-21": (_unleveled("21", "PROJ-21", "Task", reporter="dave"), {"dave"} | PROJECT_READERS),
     "PROJ-22": (_unleveled("22", "PROJ-22", "Epic", reporter="bob"), PROJECT_READERS),
     "PROJ-23": (_unleveled("23", "PROJ-23", "Story", reporter="dave", epic="22"), {"dave"} | PROJECT_READERS),
-    # A sub-task follows its parent and gets no grant of its own: dave, not its reporter, does not read it.
-    "PROJ-24": (_unleveled("24", "PROJ-24", "Sub-task", reporter="carol", parent="23"), PROJECT_READERS),
+    # A sub-task too, though its parent is not dave's: Jira lets a sub-task's reporter read it alone.
+    "PROJ-24": (_unleveled("24", "PROJ-24", "Sub-task", reporter="dave", parent="22"), {"dave"} | PROJECT_READERS),
 }
 
 
@@ -667,14 +667,13 @@ async def test_a_reporter_outside_the_project_reads_only_their_own_issues_until_
 ) -> None:
     by_key = await _sync_browse_project(world, [{"type": "reporter"}])
     assert not await _mismatches(world, _browse_readers(), by_key)
-    # The story is not filed under an epic dave cannot read; its sub-task stays under it.
-    assert by_key["PROJ-23"] not in await _listed_under(world, "bob", by_key["PROJ-22"])
-    assert by_key["PROJ-24"] in await _listed_under(world, "carol", by_key["PROJ-23"])
+    # Neither the story nor the sub-task is filed under the epic dave cannot read.
+    assert not {by_key["PROJ-23"], by_key["PROJ-24"]} & await _listed_under(world, "bob", by_key["PROJ-22"])
 
     world["connector"]._issue_security[PROJECT_ID].browse_holders = []
     await _write(world, [issue for issue, _ in BROWSE_ISSUES.values()], again=True)
     assert not await _mismatches(world, dict.fromkeys(by_key, PROJECT_READERS), by_key)
-    assert by_key["PROJ-23"] in await _listed_under(world, "bob", by_key["PROJ-22"])
+    assert {by_key["PROJ-23"], by_key["PROJ-24"]} <= await _listed_under(world, "bob", by_key["PROJ-22"])
 
 
 async def test_unread_holders_keep_the_reporter_of_a_stored_issue_in_a_full_sync_too(world: dict[str, Any]) -> None:
