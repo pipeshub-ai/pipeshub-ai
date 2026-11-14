@@ -263,7 +263,8 @@ async def compare(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> t
     decided = d.admit | d.deny
     if not decided:
         return set(), "undecided"
-    await tx.fetchval("/* pipeshub:kg.sample_limits */ SELECT set_config('statement_timeout', '10s', true)")      # the walk is slower than the reader's own limit
+    # the walk is slower than the reader's own limit, and its plans are its own (PROFILE turned sorts off for the reader's seeks)
+    await tx.fetchval("/* pipeshub:kg.sample_limits */ SELECT set_config('statement_timeout', '10s', true), set_config('enable_sort', 'on', true)")
     walked = {r["id"] for r in await access_sql.accessible_rows(tx, org, sorted(decided), [], access)}
     over, under = d.admit - walked, d.deny & walked
     return {d.apps[i] for i in over | under}, ("over" if over else "under" if under else "same")
