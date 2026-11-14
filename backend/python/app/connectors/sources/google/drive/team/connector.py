@@ -517,6 +517,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._synced_drive_ids: set = set()
         self._drive_has_member_cache: dict[str, bool] = {}
         self._drive_member_emails: dict[str, list[str]] = {}
+        # Per shared drive, this run: the synced users who are its Managers.
+        self._drive_managers: dict[str, list[str]] = {}
+        self._manager_sources: dict[str, GoogleDriveDataSource] = {}
         # Drives with a member group the directory will not list: who else can open their files is unknown.
         self._drive_members_unread: set[str] = set()
         # Per shared drive, this run: its restrictions, and the people and groups that are members.
@@ -775,6 +778,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._synced_drive_ids = set()
             self._drive_has_member_cache = {}
             self._drive_member_emails = {}
+            self._drive_managers = {}
+            self._manager_sources = {}
             self._drive_members_unread = set()
             self._drive_restrictions = {}
             self._assumed_restrictions = set()
@@ -3439,6 +3444,60 @@ class GoogleDriveTeamConnector(BaseConnector):
             await self._drop_reporters_grant(record, user)
             raise
 
+    async def _drive_manager_emails(self, drive_id: str) -> list[str]:
+        """Active Workspace users who are Managers of a shared drive, directly or through a member group, this run.
+        Not only those this deployment syncs: reading an item's sharing as one syncs nothing of theirs. A member
+        group the directory cannot list adds nobody."""
+        if drive_id not in self._drive_managers:
+            managers: list[str] = []
+            for permission in (await self._fetch_permissions(drive_id, is_drive=True))[0]:
+                if permission.type != PermissionType.OWNER:
+                    continue
+                if permission.entity_type == EntityType.USER and permission.email:
+                    managers.append(permission.email.lower())
+                elif permission.entity_type == EntityType.GROUP and permission.external_id:
+                    managers.extend(sorted(await self._group_member_emails(permission.external_id) or ()))
+            active = {u.email.lower() for u in self.synced_users if u.email and u.is_active}
+            self._drive_managers[drive_id] = [e for e in dict.fromkeys(managers) if e in active]
+            if not self._drive_managers[drive_id]:
+                self.logger.warning(
+                    f"Shared drive {drive_id} has no active Manager: an item only its readers sync keeps the sharing "
+                    "stored for it until someone who can list it reads it"
+                )
+        return self._drive_managers[drive_id]
+
+    async def _permissions_as_drive_manager(
+        self, file_id: str, drive_id: str, user_email: str | None, read_as: dict
+    ) -> Tuple[List[Permission], bool, List[str]] | None:
+        """The item's permission list read as a Manager of its shared drive, for a reader Google answers with no
+        list. Managers keep access through limited folders and can always list sharing, so their list is the
+        item's. None when no Manager could read it: the reader's own grant is all that is known then.
+
+        `user_email` stays the reader, so a link share still grants the reader as their own full read would."""
+        by_email = {u.email.lower(): u for u in self.synced_users if u.email and u.is_active}
+        tried = 0
+        for email in await self._drive_manager_emails(drive_id):
+            if email == (user_email or "").lower() or email not in by_email:
+                continue
+            if tried >= MAX_IMPERSONATION_CANDIDATES:
+                break
+            tried += 1
+            source = self._manager_sources.get(email)
+            if source is None:
+                source = self._manager_sources[email] = await self._build_user_drive_data_source(by_email[email])
+            try:
+                # can_share: a Manager's empty list is not an answer, so the item fails and keeps what is stored.
+                read = await self._fetch_permissions(
+                    file_id, is_drive=False, user_email=user_email, drive_data_source=source, can_share=True, **read_as
+                )
+            except HttpError as e:
+                if e.resp.status == HttpStatusCode.NOT_FOUND.value or is_permission_denied_403(e):
+                    continue
+                raise
+            if not read[1]:
+                return read
+        return None
+
     async def _removal_candidates(self, record: Record, user: AppUser | None, drive_id: str) -> list[AppUser]:
         """Synced users who could still open a file a drive feed reported removed: the reporting user, the
         drive's synced members, and those the record grants access to. At most MAX_IMPERSONATION_CANDIDATES."""
@@ -4224,17 +4283,25 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # If drive_data_source is provided, use it; otherwise fall back to service account
                 limited_access = bool(metadata.get("inheritedPermissionsDisabled"))
                 item_drive_id = metadata.get("driveId")
+                read_as = {
+                    "inherited_permissions_disabled": limited_access,
+                    "inherits_from_drive": not item_drive_id or file_record.external_record_group_id == item_drive_id,
+                    "item_drive_id": item_drive_id,
+                }
                 new_permissions, is_fallback_permissions, individually_shared_emails = await self._fetch_permissions(
                     file_id,
                     is_drive=False,
                     user_email=user_email,
                     drive_data_source=drive_data_source,
-                    inherited_permissions_disabled=limited_access,
-                    inherits_from_drive=not item_drive_id or file_record.external_record_group_id == item_drive_id,
                     can_list_children=bool((metadata.get("capabilities") or {}).get("canListChildren")),
                     can_share=bool((metadata.get("capabilities") or {}).get("canShare")),
-                    item_drive_id=item_drive_id,
+                    **read_as,
                 )
+                if is_fallback_permissions and item_drive_id:
+                    # A shared drive reader cannot list the item's sharing; a manager of its drive always can.
+                    managed = await self._permissions_as_drive_manager(file_id, item_drive_id, user_email, read_as)
+                    if managed is not None:
+                        new_permissions, is_fallback_permissions, individually_shared_emails = managed
 
                 if is_fallback_permissions:
                     permissions_changed = False

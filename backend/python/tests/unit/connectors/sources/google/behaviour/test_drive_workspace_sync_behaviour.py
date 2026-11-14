@@ -3050,6 +3050,47 @@ async def test_an_unreadable_limited_item_loses_an_audience_grant_a_folder_above
     assert ("workspace-members", "GROUP", "READ") in ws.grants("dir")
 
 
+async def test_a_shared_drive_reader_gets_no_grant_of_its_own_when_a_manager_can_list_the_item(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f", "x.txt", parent="dir")
+    await ws.sync()
+
+    # Bob reads as a member of the drive: through the folder, so a limit on it cuts him out as Google does.
+    assert BOB not in ws.records.perm_emails("f")
+    assert BOB not in ws.records.perm_emails("dir")
+    assert ws.records.records["f"].inherit_permissions is True
+
+
+async def test_a_reader_cut_out_by_a_limited_folder_keeps_no_grant_below_it(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f", "x.txt", parent="dir")
+    await ws.sync()
+
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+
+    assert ws.records.records["dir"].inherit_permissions is False
+    assert BOB not in ws.records.perm_emails("dir")
+    assert BOB not in ws.records.perm_emails("f"), "only the folder's own grants and its Managers reach below a limit"
+
+
+async def test_a_direct_grant_removed_from_a_shared_drive_item_goes_though_only_readers_sync_it(ws: Workspace) -> None:
+    carol, dana = "carol@example.com", "dana@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_user(dana)  # in the Workspace, not synced here: only Bob's sync reads the drive
+    ws.world.add_drive("sd-1", "Team", {dana: "organizer", BOB: "reader"})
+    ws.world.add_item("f", "x.txt", parent="sd-1", perms=[reader(carol)])
+    await ws.sync()
+    assert carol in ws.records.perm_emails("f")
+
+    ws.world.unshare("f", carol)
+    await ws.sync()
+
+    assert carol not in ws.records.perm_emails("f")
+
+
 async def test_an_unreadable_item_that_is_not_limited_keeps_inheriting(ws: Workspace) -> None:
     ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[discoverable("anyone")])
     await ws.sync()
