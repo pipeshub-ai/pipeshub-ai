@@ -20,6 +20,7 @@ on:
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
       - 'scripts/assert_no_skips.py'
+      - 'scripts/test_permission_conformance_shards.py'
       - '.github/workflows/permission-conformance.yml'
   push:
     branches:
@@ -78,21 +79,25 @@ jobs:
       - name: Run oracle, scenario and matrix tests
         run: |
           cd backend/python
-          pytest tests/permissions -m "not integration" -n 4 --dist worksteal -v -rx --junitxml="$RUNNER_TEMP/oracle-junit.xml"
+          args=(tests/permissions -m "not integration")
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/oracle.collected" "${args[@]}"
+          pytest "${args[@]}" -n 4 --dist worksteal -v -rx --junitxml="$RUNNER_TEMP/oracle-junit.xml"
 
-      # --min-tests pins the suite size, so a module that stopped being collected fails the job; a PR that adds tests raises it.
+      # --collected: exactly the cases the run collected ran, so a module that stopped being collected (an import error) fails the job.
       # The one allowed skip is the strict expected failure that reports matrix cells without a scenario, by its exact name.
       - name: Check the oracle run for skips
         run: |
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 1381 \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --collected "$RUNNER_TEMP/oracle.collected" \
             --allow test_coverage_gaps_are_reported
 
       - name: Run the viewer-scope service tests (no services)
         run: |
           cd backend/python
-          pytest tests/unit/services/permissions -v --junitxml="$RUNNER_TEMP/viewer-scopes-junit.xml"
+          args=(tests/unit/services/permissions)
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/viewer-scopes.collected" "${args[@]}"
+          pytest "${args[@]}" -v --junitxml="$RUNNER_TEMP/viewer-scopes-junit.xml"
           cd ../..
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/viewer-scopes-junit.xml" --min-tests 318
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/viewer-scopes-junit.xml" --collected "$RUNNER_TEMP/viewer-scopes.collected"
 
   graph:
     # named by the shard alone: by default a check's name lists every matrix value, the include keys too
@@ -106,9 +111,10 @@ jobs:
       fail-fast: false
       matrix:
         # The graph-permissions suite and the conformance suite are split by measured time; each shard has its own stores. tests are the
-        # pytest paths; k splits one file by -k into sets that together hold each of its tests once; cases is the shard's case count in the
-        # suite; allow names the skips the shard may report. Shards 2 and 7 run their folder minus what the others name, so a new test file
-        # runs there. scripts/test_permission_conformance_shards.py checks that every case runs exactly once and that the counts add up.
+        # pytest paths; k splits one file by -k into sets that together hold each of its tests once; allow names the skips the shard may
+        # report. Shards 2 and 7 run their folder minus what the others name, so a new test file runs there.
+        # scripts/test_permission_conformance_shards.py checks that every case runs exactly once; each shard checks its run against its
+        # own collection, so no count is written here.
         shard: [1, 2, 3, 4, 5, 6, 7]
         include:
           # The graph-permissions suite ran in no workflow before; it includes the tests that a connector list never shows another
@@ -118,7 +124,6 @@ jobs:
             tests: >-
               tests/integration/graph_permissions/test_kh_name_search_first.py
               tests/integration/graph_permissions/test_provider_v3_shapes.py
-            cases: 73
             pytest_args: --timeout=300
           # Its three skips are tests of one store only.
           - shard: 2
@@ -127,7 +132,6 @@ jobs:
               tests/integration/graph_permissions
               --ignore=tests/integration/graph_permissions/test_kh_name_search_first.py
               --ignore=tests/integration/graph_permissions/test_provider_v3_shapes.py
-            cases: 770
             pytest_args: --timeout=300
             allow: >-
               test_hierarchy_backfill::test_an_edge_from_a_removed_document_is_no_parent[neo4j]
@@ -139,30 +143,25 @@ jobs:
             suite: tests.permissions
             tests: tests/permissions/test_conformance_kh.py
             k: '[adversarial-1of2]'
-            cases: 1
             pytest_args: -p no:logging --timeout=3000
           - shard: 4
             suite: tests.permissions
             tests: tests/permissions/test_conformance_kh.py
             k: not [adversarial-1of2] and [adversarial-2of2]
-            cases: 1
             pytest_args: -p no:logging --timeout=3000
           - shard: 5
             suite: tests.permissions
             tests: tests/permissions/test_conformance_kh.py
             k: not [adversarial-1of2] and not [adversarial-2of2] and golden_worlds
-            cases: 1
             pytest_args: -p no:logging --timeout=3000
           - shard: 6
             suite: tests.permissions
             tests: tests/permissions/test_conformance_kh.py
             k: not [adversarial-1of2] and not [adversarial-2of2] and not golden_worlds
-            cases: 23
             pytest_args: -p no:logging --timeout=3000
           - shard: 7
             suite: tests.permissions
             tests: tests/permissions --ignore=tests/permissions/test_conformance_kh.py
-            cases: 288
             pytest_args: -p no:logging --timeout=3000
             allow: test_generation_paths::test_an_edge_another_transaction_removed_and_this_write_put_back_moves_the_generation[arango]
     services:
@@ -228,13 +227,22 @@ jobs:
           # Log capture off in the conformance shards: pytest keeps every record a test logs, and the Knowledge Hub layer's whole-tree browse
           # logs enough to run out of memory with it on (tens of GB); with it off a run peaks near 1.5 GB. The generated-worlds test browses
           # every node of 50 worlds on both stores, hence the per-test timeout.
-          read -ra paths <<< "$TESTS"
+          read -ra sel <<< "$TESTS"
+          sel+=(-m integration)
+          if [ -n "$K" ]; then sel+=(-k "$K"); fi
           read -ra args <<< "$PYTEST_ARGS"
-          pytest "${paths[@]}" ${K:+-k "$K"} -m integration -v "${args[@]}" --junitxml="$RUNNER_TEMP/graph-junit.xml"
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/graph.collected" "${sel[@]}"
+          pytest "${sel[@]}" -v "${args[@]}" --junitxml="$RUNNER_TEMP/graph-junit.xml"
 
-      # A skipped test here means a store was missing, so a skip fails the job; --expect-suite pins the shard's case count (a PR that adds
-      # tests raises it and the total in the shard script). An allow is matched as a substring of the report's `classname::name`, so each
-      # one names its module.
+      # One shard is enough: the split is the same in every shard. Collecting both folders and the seven shards takes a few minutes.
+      - name: Every graph case runs in exactly one shard
+        if: ${{ matrix.shard == 1 }}
+        env:
+          PERM_GEN_WORLDS: '50'
+        run: python scripts/test_permission_conformance_shards.py --collect
+
+      # A skipped test here means a store was missing, so a skip fails the job; --collected checks that exactly the cases the shard
+      # collected ran. An allow is matched as a substring of the report's `classname::name`, so each one names its module.
       - name: Check the shard for skips
         env:
           ALLOW: ${{ matrix.allow }}
@@ -242,7 +250,7 @@ jobs:
           read -ra allows <<< "$ALLOW"
           args=()
           for a in "${allows[@]}"; do args+=(--allow "$a"); done
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-junit.xml" --expect-suite "${{ matrix.suite }}=${{ matrix.cases }}" "${args[@]}"
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-junit.xml" --collected "$RUNNER_TEMP/graph.collected" "${args[@]}"
 
       - name: Upload the regressions the generator filed
         if: failure()
