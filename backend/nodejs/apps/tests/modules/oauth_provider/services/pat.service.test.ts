@@ -137,12 +137,11 @@ describe('PatService', () => {
       }
     })
 
-    const expiryCases: Array<[30 | 90 | 365 | 'never' | undefined, number]> = [
+    const expiryCases: Array<[7 | 30 | 90 | undefined, number]> = [
+      [7, 7 * SECONDS_PER_DAY],
       [30, 30 * SECONDS_PER_DAY],
       [90, 90 * SECONDS_PER_DAY],
-      [365, 365 * SECONDS_PER_DAY],
-      ['never', 365 * 100 * SECONDS_PER_DAY],
-      [undefined, 30 * SECONDS_PER_DAY],
+      [undefined, 7 * SECONDS_PER_DAY],
     ]
     for (const [expiryDays, expectedSeconds] of expiryCases) {
       it(`resolves expiryDays=${expiryDays} to a ${expectedSeconds}s lifetime`, async () => {
@@ -237,6 +236,27 @@ describe('PatService', () => {
         patClientId,
         userId,
       ])
+    })
+
+    it('lists tokens issued with a 365-day or never-expiring lifetime with their stored expiry', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      const now = Date.now()
+      const year = new Date(now + 365 * SECONDS_PER_DAY * 1000)
+      const never = new Date(now + 365 * 100 * SECONDS_PER_DAY * 1000)
+      mockOAuthTokenService.listAccessTokensForUser.resolves(
+        [year, never].map((expiresAt, i) => ({
+          id: `old-${i}`,
+          tokenType: 'access',
+          scopes: ['kb:read'],
+          createdAt: new Date(now),
+          expiresAt,
+          isRevoked: false,
+        })),
+      )
+
+      const tokens = await service.listTokens(orgId, userId)
+
+      expect(tokens.map((t) => t.expiresAt)).to.deep.equal([year, never])
     })
   })
 

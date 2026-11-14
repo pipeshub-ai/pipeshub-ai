@@ -144,7 +144,7 @@ tags:
         It's shown exactly once, at creation.
 
       **Expiry and scopes**
-      - `expiryDays`: `30` (default), `90`, `365`, or `never`.
+      - `expiryDays`: `7` (default), `30`, or `90`.
       - Scopes default to the org's full configured `MCP_SCOPES` set if none
         are requested; `GET /personal-access-tokens/scopes` lists what's
         available.
@@ -4056,20 +4056,15 @@ components:
           example: ["kb:read", "semantic:write"]
           maxItems: 100
         expiryDays:
-          oneOf:
-            - type: integer
-              enum: [30, 90, 365]
-            - type: string
-              enum: ["never"]
+          type: integer
+          enum: [7, 30, 90]
           description: |
-            Token lifetime. Defaults to `30` if omitted — a token minted
-            without an explicit choice shouldn't default to the longest
-            lifetime. `"never"` is stored as a ~100-year expiry (the
-            underlying schema field is required and TTL-indexed, so there's
-            no literal null option). Any other value, including `null` and the
-            string `"30"`, is a `400` validation error.
-          default: 30
-          example: 30
+            Token lifetime in days. Defaults to `7` if omitted. Any other
+            value, including `365`, `"never"`, `null` and the string `"30"`,
+            is a `400` validation error. Tokens created earlier keep the
+            expiry they were issued with.
+          default: 7
+          example: 7
         knowledgeLimit:
           $ref: '#/components/schemas/KnowledgeLimit'
     PatListItem:
@@ -28441,7 +28436,7 @@ paths:
           description: |
             Invalid request: a `VALIDATION_ERROR` from the body validator (missing,
             empty or over-long `name`, `scopes` not a non-empty list, `expiryDays`
-            other than 30, 90, 365 or "never", a `knowledgeLimit` with a key other than `apps`, `recordGroups` and `records`, an id that is not a UUID, or no id at all or more than 50 once duplicates are dropped), or a requested scope that isn't in
+            other than 7, 30 or 90, a `knowledgeLimit` with a key other than `apps`, `recordGroups` and `records`, an id that is not a UUID, or no id at all or more than 50 once duplicates are dropped), or a requested scope that isn't in
             the org's configured `MCP_SCOPES` (refused by the service, code
             `OAUTH_INVALID_SCOPE`).
 

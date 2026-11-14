@@ -109,17 +109,7 @@ describe('PatController', () => {
 
       await controller.createToken(mockReq, mockRes, mockNext)
 
-      expect(eventBuffer.drain()[0].props.expiry_days).to.equal(30)
-    })
-
-    it("keeps a token that never expires as 'never'", async () => {
-      eventBuffer.drain()
-      mockPatService.createToken.resolves({ id: 't', name: 'n', scopes: [], createdAt: new Date(), expiresAt: null, accessToken: 'x' })
-      mockReq.body = { name: 'n', expiryDays: 'never' }
-
-      await controller.createToken(mockReq, mockRes, mockNext)
-
-      expect(eventBuffer.drain()[0].props.expiry_days).to.equal('never')
+      expect(eventBuffer.drain()[0].props.expiry_days).to.equal(7)
     })
 
     it('counts the token on the Grafana activity counter with org and domain only', async () => {

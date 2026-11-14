@@ -31,7 +31,7 @@ export interface PatScopesApiResponse {
   scopes: PatScopeItem[];
 }
 
-export type PatExpiryOption = 30 | 90 | 365 | 'never';
+export type PatExpiryOption = 7 | 30 | 90;
 
 /** POST /api/v1/personal-access-tokens */
 export interface CreatePatPayload {

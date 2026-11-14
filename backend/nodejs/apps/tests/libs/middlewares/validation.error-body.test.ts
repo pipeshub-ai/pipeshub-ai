@@ -37,7 +37,7 @@ const cases: Case[] = [
   { name: 'pat: wrong type', schema: createPatTokenSchema, req: { body: { name: 123 } } },
   { name: 'pat: empty string / empty array', schema: createPatTokenSchema, req: { body: { name: '', scopes: [] } } },
   { name: 'pat: too long string', schema: createPatTokenSchema, req: { body: { name: 'x'.repeat(101) } } },
-  { name: 'pat: bad union literal', schema: createPatTokenSchema, req: { body: { name: 'n', expiryDays: 7 } } },
+  { name: 'pat: bad union literal', schema: createPatTokenSchema, req: { body: { name: 'n', expiryDays: 365 } } },
   { name: 'pat: array element wrong type', schema: createPatTokenSchema, req: { body: { name: 'n', scopes: ['a', 5] } } },
   { name: 'pat: strict nested unknown key and bad uuid', schema: createPatTokenSchema, req: { body: { name: 'n', knowledgeLimit: { apps: ['nope'], bogus: 1 } } } },
   { name: 'pat: body missing entirely', schema: createPatTokenSchema, req: { body: undefined } },
