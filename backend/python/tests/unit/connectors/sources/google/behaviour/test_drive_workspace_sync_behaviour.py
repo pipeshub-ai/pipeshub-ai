@@ -3224,11 +3224,13 @@ async def test_an_empty_permission_list_for_a_new_my_drive_item_still_grants_its
     assert (BOB, "USER", "READ") in ws.grants("f"), "nothing is stored to go stale, so the reader is not shut out"
 
 
-async def test_an_empty_permission_list_for_a_shared_drive_item_still_grants_its_reader(ws: Workspace) -> None:
+async def test_an_empty_permission_list_for_a_shared_drive_item_still_lets_its_reader_in(ws: Workspace) -> None:
     ws.world.add_drive("sd-1", "Team", {BOB: "reader"})
     ws.world.add_item("g", "x.txt", parent="sd-1")
     await ws.sync()
-    assert (BOB, "USER", "READ") in ws.grants("g"), "a reader of a shared drive item is answered with no entries"
+    # A reader of a shared drive item is answered with no entries. With no Manager to list it, Bob, a member,
+    # reaches it from the drive, not through a grant of his own.
+    assert reaches(ws, BOB, "g")
     assert not ws.incomplete
 
 
