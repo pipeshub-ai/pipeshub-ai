@@ -65,9 +65,13 @@ PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
 PERMISSION_DENIED_403_REASONS = {
     "insufficientFilePermissions",
     "appNotAuthorizedToFile",
-    "domainPolicy",
     "teamDriveMembershipRequired",
 }
+
+# 403 reasons that refuse the app everywhere, not one item: "domainPolicy: The domain administrators have disabled
+# Drive apps." (https://developers.google.com/workspace/drive/api/guides/handle-errors). Never a refusal of the item,
+# and never counted toward skipping it: every run is retried, and fails, until the administrators allow the app.
+APP_WIDE_403_REASONS = {"domainPolicy"}
 
 
 # 403 reasons Drive uses for quota and rate limits. These clear as the quota refills,
@@ -165,7 +169,7 @@ def is_unrecognised_403(error: HttpError) -> bool:
     """True for a 403 that is neither a known permission refusal nor a quota or rate limit."""
     if error.resp.status != HttpStatusCode.FORBIDDEN.value:
         return False
-    if _403_reasons(error) & QUOTA_403_REASONS:
+    if _403_reasons(error) & (QUOTA_403_REASONS | APP_WIDE_403_REASONS):
         return False
     return not is_permission_denied_403(error)
 

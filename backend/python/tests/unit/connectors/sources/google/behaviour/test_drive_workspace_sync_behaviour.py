@@ -1410,6 +1410,19 @@ async def test_an_ancestor_above_one_already_written_is_still_read_by_a_member_w
     assert (carol, "USER", "READ") in ws.grants("top"), "Bob's sweep reads Top again"
 
 
+async def test_a_domain_policy_refusal_of_a_permission_read_grants_nobody_and_is_read_again(ws: Workspace) -> None:
+    ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    # The administrators disabled Drive apps: the app is refused everywhere, so nothing about this item is known.
+    ws.http.fail("GET", "/drive/v3/files/f/permissions", 403, "domainPolicy")
+    await ws.sync()
+    assert "f" not in ws.records.records or not ws.records.perm_emails("f"), "no grant read from a refusal"
+    assert ws.incomplete
+
+    ws.http.clear_faults()
+    await ws.sync()
+    assert {ALICE, BOB} <= ws.records.perm_emails("f")
+
+
 async def test_a_selected_shortcut_syncs_the_folder_it_points_to(ws: Workspace) -> None:
     ws.world.folder("pick", "Picked", parent="root-bob", owner=BOB)
     ws.world.add_item("deep", "deep.txt", parent="pick", owner=BOB)

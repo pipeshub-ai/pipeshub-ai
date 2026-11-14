@@ -138,6 +138,7 @@ from app.connectors.sources.google.drive.team.drive_access import (
     permission_is_direct,
 )
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+    APP_WIDE_403_REASONS,
     QUOTA_403_REASONS,
     drive_error_reasons,
     ANCESTOR_FETCH_CONCURRENCY,
@@ -1954,7 +1955,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # grant this user demonstrably has. A rate limit or an outage is not an empty ACL: it is
                 # raised, so the item is not written without its grants and is read again next run.
                 if http_error.resp.status == HttpStatusCode.FORBIDDEN.value and not (
-                    drive_error_reasons(http_error) & QUOTA_403_REASONS
+                    drive_error_reasons(http_error) & (QUOTA_403_REASONS | APP_WIDE_403_REASONS)
                 ):
                     # A user who can only see a limited-access folder has no content access, and the grant would
                     # pass to its children.
