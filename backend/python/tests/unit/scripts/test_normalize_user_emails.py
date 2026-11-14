@@ -523,3 +523,13 @@ async def test_normalization_proceeds_when_stored_email_matches() -> None:
     assert completed["total_updated"] == 1
 
 
+@pytest.mark.asyncio
+async def test_reject_simultaneous_org_and_all_orgs() -> None:
+    graph = MagicMock()
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(graph, org_id="o1", all_orgs=True, apply=False, logger=logger, out=out)
+    assert code == EXIT_INVALID
+    lines = _lines(out)
+    assert lines[0]["error"] == "Cannot specify both --org and --all-orgs."

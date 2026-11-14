@@ -10575,8 +10575,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.
                     try:
+                        norm_person_email = user.email.strip().lower() if user.email else ""
                         await self.migrate_person_to_user(
-                            user.email, user.id, target_org_id, transaction=transaction
+                            norm_person_email, user.id, target_org_id, transaction=transaction
                         )
                     except Exception as migrate_err:
                         self.logger.error(
@@ -11008,7 +11009,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> str | None:
         """Get entity ID (user or group) by email"""
         try:
-            lookup_emails = list(dict.fromkeys([e for e in (email, email.strip().lower()) if e]))
+            norm_email = email.strip().lower() if email else ""
+            if not norm_email:
+                return None
+            lookup_emails = list(dict.fromkeys([e for e in (email, norm_email) if e]))
             query = """
             MATCH (n)
             WHERE (n:User OR n:Group OR n:Person)
@@ -19074,7 +19078,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # The transfers are written out per relationship type rather than looped:
             # Cypher has no dynamic relationship type without APOC.
             query = f"""
-            MATCH (p:{person_label} {{email: $email, orgId: $org_id}})
+            MATCH (p:{person_label})
+            WHERE p.orgId = $org_id AND (p.email = $email OR (p.email IS NOT NULL AND toLower(trim(p.email)) = $norm_email))
             MATCH (u:{user_label} {{id: $user_key}})
 
             // Undirected on purpose: memberOf points away from the Person while lead and
@@ -19126,7 +19131,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             results = await self.client.execute_query(
                 query,
                 parameters={
-                    "email": email.lower(),
+                    "email": email,
+                    "norm_email": email.strip().lower() if email else "",
                     "user_key": user_key,
                     "org_id": org_id,
                     "split": PersonMigrationMode.SPLIT,

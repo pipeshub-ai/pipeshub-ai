@@ -11533,10 +11533,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             Optional[str]: Entity key (_key) or None
         """
-        if not email:
+        norm_email = email.strip().lower() if email else ""
+        if not norm_email:
             return None
-        lookup_emails = list(dict.fromkeys([e for e in (email, email.strip().lower()) if e]))
-        norm_email = email.strip().lower()
+        lookup_emails = list(dict.fromkeys([e for e in (email, norm_email) if e]))
 
         try:
             # First check users
@@ -11645,39 +11645,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     u_email = user.get("email")
                     if u_email:
                         by_norm.setdefault(u_email.strip().lower(), []).append(user)
-
-                def _has_active_user(u_list: list[dict]) -> bool:
-                    return any(bool(u.get("isActive")) for u in u_list)
-
-                # Check if any original emails need legacy fallback: whenever exact results do not
-                # establish an active user (e.g. missing match, or inactive user found by exact
-                # while an active user with mixed-case email might be in legacy storage).
-                unmatched_norm = [
-                    norm for norm in norm_to_orig
-                    if not _has_active_user(by_norm.get(norm, []))
-                ]
-
-                if unmatched_norm:
-                    legacy_user_query = f"""
-                    FOR doc IN {CollectionNames.USERS.value}
-                        FILTER LOWER(TRIM(doc.email)) IN @emails
-                        RETURN {{email: doc.email, id: doc._key, isActive: doc.isActive}}
-                    """
-                    try:
-                        legacy_users = await self.http_client.execute_aql(
-                            legacy_user_query,
-                            bind_vars={"emails": unmatched_norm},
-                            txn_id=transaction
-                        )
-                        for user in legacy_users or []:
-                            u_email = user.get("email")
-                            if u_email:
-                                norm = u_email.strip().lower()
-                                existing_list = by_norm.setdefault(norm, [])
-                                if not any(x.get("id") == user.get("id") for x in existing_list):
-                                    existing_list.append(user)
-                    except Exception as e:
-                        self.logger.error("Error querying legacy users: %s", str(e))
 
                 for norm, u_list in by_norm.items():
                     if not u_list:
