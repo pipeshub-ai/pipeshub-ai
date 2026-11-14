@@ -155,9 +155,10 @@ CONNECTOR_EMAIL_IDENTITY_INFO = (
 # Notion's API exposes no per-page sharing, so CONNECTOR_EMAIL_IDENTITY_INFO's
 # promise of per-user access rules cannot hold for it.
 CONNECTOR_NOTION_TEAM_ACCESS_INFO = (
-    "Important: Notion's API does not say who may open a page (its sharing, teamspace "
-    "membership and guests are not exposed), so pages this connector syncs are not searchable "
-    "by anyone in PipesHub. Use the Notion Personal connector to search the pages you share "
+    "Important: Notion's integration API does not say who may open a page, so each person "
+    "searches only the synced pages their own Notion personal access token can open: link "
+    "yours under \"Your Notion access\" on this connector. Without one you see only pages "
+    "published to the web. Use the Notion Personal connector to search the pages you share "
     "with it."
 )
 

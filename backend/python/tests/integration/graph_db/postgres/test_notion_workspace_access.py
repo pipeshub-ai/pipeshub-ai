@@ -69,8 +69,9 @@ async def _connector(w: World) -> NotionConnector:
     return connector
 
 
-async def _sync_pages(connector: NotionConnector) -> list[str]:
-    """A top-level page and one under it, saved as the page walk saves them; their record ids."""
+async def _sync_pages(connector: NotionConnector, *, inheriting: tuple[str, ...] = ()) -> list[str]:
+    """A top-level page and one under it, saved as the page walk saves them; their record ids.
+    ``inheriting``: pages stored as an earlier version stored them, inheriting from what is above them."""
     ids = []
     for page_id, parent in (("page-top", {"type": "workspace", "workspace": True}),
                             ("page-child", {"type": "page_id", "page_id": "page-top"})):
@@ -79,6 +80,7 @@ async def _sync_pages(connector: NotionConnector) -> list[str]:
             "created_time": "2026-01-01T00:00:00.000Z", "last_edited_time": "2026-01-02T00:00:00.000Z",
             "properties": {"title": {"type": "title", "title": [{"plain_text": page_id}]}},
         }, "page")
+        record.inherit_permissions = record.inherit_permissions or page_id in inheriting
         await connector.data_entities_processor.on_new_records([(record, [])])
         stored = await connector.data_entities_processor.get_record_by_external_id(APP, page_id)
         ids.append(stored.id)
@@ -100,9 +102,31 @@ async def test_a_workspace_that_inherited_the_app_stops_granting_its_pages(w: Wo
         connector_id=APP, group_type=RecordGroupType.NOTION_WORKSPACE,
         permission_model=PermissionModel.RECORD_GROUP_LEVEL, inherit_permissions=True,
     ), [])])
-    pages = await _sync_pages(connector)
+    pages = await _sync_pages(connector, inheriting=("page-top", "page-child"))
     assert await w.allowed("m", *pages) == set(pages), "the earlier state must be visible for this test to mean anything"
 
     await connector._create_workspace_record_group()
 
     assert await w.allowed("m", *pages) == set(), "The next sync left the workspace granting its pages to every member."
+
+
+async def test_a_page_a_token_lists_opens_with_its_files_and_a_subpage_it_does_not_list_stays_shut(w: World) -> None:
+    """The member's own personal access token lists the top page only (the subpage is restricted from them in
+    Notion). The subpage was stored inheriting from its parent, as an earlier version left it."""
+    connector = await _connector(w)
+    await connector._create_workspace_record_group()
+    top, child = await _sync_pages(connector, inheriting=("page-child",))
+    attachment = connector._transform_to_file_record({
+        "id": "block-pdf", "type": "pdf", "pdf": {"type": "external", "external": {"url": "https://files.example/a.pdf"}},
+    }, "page-top")
+    await connector.data_entities_processor.on_new_records([(attachment, [])])
+    file_id = (await connector.data_entities_processor.get_record_by_external_id(APP, "block-pdf")).id
+    connector._readers = {"page-top": {EMAIL}}
+
+    await connector._apply_page_access()
+
+    assert await w.allowed("m", top, child, file_id) == {top, file_id}, "a grant on a page must reach its files, never a subpage"
+
+    connector._readers = {}
+    await connector._apply_page_access()
+    assert await w.allowed("m", top, child, file_id) == set(), "access stayed after the token stopped listing the page"

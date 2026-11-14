@@ -3086,7 +3086,7 @@ class TestReindexRecords:
         assert updated.id == "rec-1"
         assert updated.record_group_id == "rg-1"
         assert updated.external_record_group_id == "ws-1"
-        assert updated.inherit_permissions is True
+        assert updated.inherit_permissions is False  # a page carries its own readers
         assert perms == []
 
     @pytest.mark.asyncio

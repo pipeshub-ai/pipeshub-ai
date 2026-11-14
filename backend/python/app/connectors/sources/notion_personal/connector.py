@@ -141,6 +141,9 @@ class NotionPersonalConnector(NotionConnector):
     alone is the audience.
     """
 
+    # One audience: every record inherits the workspace, which the creator reaches.
+    _PER_PAGE_ACCESS = False
+
     def __init__(
         self,
         logger: Logger,
