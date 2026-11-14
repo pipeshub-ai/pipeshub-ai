@@ -52,9 +52,12 @@ async function open() {
 }
 
 async function pickDana() {
-  fireEvent.keyDown(screen.getByRole('combobox', { name: 'Person' }), { key: 'Enter' });
+  const person = screen.getByRole('combobox', { name: 'Person' });
+  fireEvent.keyDown(person, { key: 'Enter' });
   await settle();
   fireEvent.click(screen.getByRole('option', { name: 'Dana Reyes' }));
+  // The closed list hands focus back to the picker on a timer; wait for it, as a person's next step always does.
+  await waitFor(() => expect(document.activeElement).toBe(person));
 }
 
 async function check(record = 'rec-1') {
@@ -110,7 +113,7 @@ describe('AccessCheckDialog', () => {
     expect(screen.getByText('Ask its owner to add Dana Reyes.')).toBeTruthy();
     expect(screen.getByText('Where it sits: Finance / a restricted area')).toBeTruthy();
     expect(screen.getByText(/Reference: abcd1234/)).toBeTruthy();
-    expect(document.activeElement).toBe(heading);
+    await waitFor(() => expect(document.activeElement).toBe(heading));
   });
 
   it('says "a restricted area" for a container the admin cannot read, and never a code or a technical word', async () => {
@@ -147,7 +150,7 @@ describe('AccessCheckDialog', () => {
 
     expect((await screen.findByRole('alert')).textContent).toBe(words);
     expect(screen.queryByText(/raw server words/)).toBeNull();
-    expect(document.activeElement?.textContent).toBe('Result');
+    await waitFor(() => expect(document.activeElement?.textContent).toBe('Result'));
   });
 
   it('reads the people only once the dialog is open', async () => {
@@ -212,7 +215,7 @@ describe('AccessCheckDialog', () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(document.activeElement).toBe(opener);
+    await waitFor(() => expect(document.activeElement).toBe(opener));
   });
 
   it('starts clean for another connector: the old result is gone and an answer still on its way is dropped', async () => {
