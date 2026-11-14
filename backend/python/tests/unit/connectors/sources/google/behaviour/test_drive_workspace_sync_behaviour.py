@@ -3050,6 +3050,22 @@ async def test_an_unreadable_limited_item_loses_an_audience_grant_a_folder_above
     assert ("workspace-members", "GROUP", "READ") in ws.grants("dir")
 
 
+async def test_a_limited_item_whose_permission_list_comes_back_empty_stops_inheriting(ws: Workspace) -> None:
+    ws.world.folder("dir", "Team", parent="root-alice", owner=ALICE, perms=[discoverable("anyone"), reader(BOB)])
+    ws.world.add_item("f", "x.txt", parent="dir", owner=ALICE)
+    await ws.sync()
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f"), "the list names what the item inherits"
+
+    ws.world._mutate("f", lambda: ws.world._bump("f", inheritedPermissionsDisabled=True))
+    ws.world.files["f"].perm_access = "empty"  # a 200 with no entries, for everyone who reads it
+    await ws.sync()
+
+    assert "f" in ws.records.stopped_inheriting, "known from its metadata: a limited item inherits nothing"
+    assert ws.records.records["f"].inherit_permissions is False
+    assert ("workspace-members", "GROUP", "READ") not in ws.grants("f"), "the folder's share no longer reaches it"
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("dir")
+
+
 async def test_an_unreadable_item_that_is_not_limited_keeps_inheriting(ws: Workspace) -> None:
     ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[discoverable("anyone")])
     await ws.sync()

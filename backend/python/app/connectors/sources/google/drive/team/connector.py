@@ -4238,9 +4238,14 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                 if is_fallback_permissions:
                     permissions_changed = False
-                    file_record.inherit_permissions = await self.data_entities_processor.inheritance_when_unreadable(
-                        CollectionNames.RECORDS.value, existing_record.id if existing_record else None
-                    )
+                    if limited_access:
+                        # Its own metadata says it inherits nothing, whatever the list it could not read held.
+                        file_record.inherit_permissions = False
+                        await self._stop_inheriting_of_unreadable_limited_item(metadata)
+                    else:
+                        file_record.inherit_permissions = await self.data_entities_processor.inheritance_when_unreadable(
+                            CollectionNames.RECORDS.value, existing_record.id if existing_record else None
+                        )
                     if existing_record is not None:
                         if new_permissions:
                             await self.data_entities_processor.add_permission_to_record(existing_record, new_permissions)
