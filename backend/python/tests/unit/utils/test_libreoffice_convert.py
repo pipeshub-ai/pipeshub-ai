@@ -168,8 +168,9 @@ async def test_a_timed_out_conversion_that_ignores_terminate_is_killed(monkeypat
 
 
 def _alive(pid: int) -> bool:
+    # Z is a zombie; X (EXIT_DEAD) shows for a moment while its parent reaps it.
     try:
-        return Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1][0] != "Z"
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1][0] not in "ZX"
     except (FileNotFoundError, ProcessLookupError):
         return False
 
@@ -191,7 +192,7 @@ async def _read_pid(pid_file: Path) -> int:
 
 @pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="reads process state from /proc")
 @pytest.mark.asyncio
-@pytest.mark.parametrize("how", ["timeout", "cancel"])
+@pytest.mark.parametrize("how", ["timeout", "cancel", "cancel-twice"])
 async def test_no_process_of_the_conversion_survives_a_timeout_or_cancel(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, how: str
 ) -> None:
@@ -201,24 +202,38 @@ async def test_no_process_of_the_conversion_survives_a_timeout_or_cancel(
     monkeypatch.setattr(
         libreoffice_convert, "LIBREOFFICE_CONVERT_TIMEOUT_SECONDS", 1.0 if how == "timeout" else 60
     )
+    terminated = asyncio.Event()
+    real_signal = libreoffice_convert._signal
+
+    def signal_and_note(*args: object, **kwargs: object) -> None:
+        real_signal(*args, **kwargs)
+        terminated.set()
+
+    monkeypatch.setattr(libreoffice_convert, "_signal", signal_and_note)
 
     task = asyncio.create_task(convert_with_libreoffice(b"doc data", "doc", "docx"))
     await asyncio.wait_for(running.wait(), timeout=10)
     worker = int(pid_file.read_text())
     assert _alive(worker)
-    if how == "cancel":
+    if how.startswith("cancel"):
         task.cancel()
+        if how == "cancel-twice":
+            # The second cancel lands while the stop waits out the grace period after TERM.
+            await asyncio.wait_for(terminated.wait(), timeout=5)
+            task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
     else:
         with pytest.raises(DocumentProcessingError, match="timed out"):
             await task
 
-    assert started[0].returncode is not None  # reaped, not a zombie
+    if how != "cancel-twice":  # a second cancel stops waiting; the shielded stop finishes on its own
+        assert started[0].returncode is not None  # reaped, not a zombie
     for _ in range(100):  # the kernel reaps the killed worker asynchronously
-        if not _alive(worker):
+        if not _alive(worker) and started[0].returncode is not None:
             break
         await asyncio.sleep(0.05)
+    assert started[0].returncode is not None
     assert not _alive(worker)
 
 

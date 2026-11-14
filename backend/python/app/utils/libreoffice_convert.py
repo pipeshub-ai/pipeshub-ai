@@ -139,7 +139,15 @@ async def stop_process(process: asyncio.subprocess.Process) -> None:
     soffice.bin running, so a group is killed even when the launcher has
     already exited. A process without its own group is killed only if it
     outlives the grace period.
+
+    Callers run this while handling a cancellation. Another cancel must not
+    abort it between TERM and KILL, so the stop finishes even if the caller
+    stops waiting for it.
     """
+    await asyncio.shield(_stop_process(process))
+
+
+async def _stop_process(process: asyncio.subprocess.Process) -> None:
     group = _leads_own_group(process)
     _signal(process, signal.SIGTERM, group=group)
     try:
