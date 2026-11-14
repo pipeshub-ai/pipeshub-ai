@@ -20,9 +20,9 @@ from tests.integration.graph_db.drupal_wiki_world import (
     DrupalWorld,
     a_deleted_page_goes_on_the_next_sync,
     a_disabled_reader_loses_every_space_until_enabled_again,
-    a_page_shared_into_a_private_space_follows_both_member_lists,
     a_shared_page_reaches_the_other_spaces_readers_and_its_sub_page_does_not,
     logger,
+    the_trash_personal_and_deleted_spaces_are_read_by_nobody,
 )
 from tests.integration.real_graph import (
     backend_unavailable,
@@ -87,5 +87,5 @@ async def test_a_shared_page_is_read_in_both_spaces_and_its_sub_page_only_in_its
     await a_shared_page_reaches_the_other_spaces_readers_and_its_sub_page_does_not(world)
 
 
-async def test_a_page_shared_into_a_private_space_follows_both_member_lists(world: DrupalWorld) -> None:
-    await a_page_shared_into_a_private_space_follows_both_member_lists(world)
+async def test_the_trash_personal_and_deleted_spaces_are_read_by_nobody(world: DrupalWorld) -> None:
+    await the_trash_personal_and_deleted_spaces_are_read_by_nobody(world)

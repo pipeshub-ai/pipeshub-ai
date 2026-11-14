@@ -58,46 +58,16 @@ PAGE = {
 class TestSpacePermissions:
     def test_open_spaces_grant_the_whole_org(self, connector: DrupalWikiConnector) -> None:
         for status in ("AUTHENTICATED", "ANONYMOUS"):
-            permissions = connector._build_space_permissions({"id": 3, "accessStatus": status}, None)
+            permissions = connector._build_space_permissions({"id": 3, "accessStatus": status})
             assert len(permissions) == 1
             assert permissions[0].entity_type == EntityType.ORG
             assert permissions[0].type == PermissionType.READ
 
-    def test_private_space_without_members_grants_nothing(self, connector: DrupalWikiConnector) -> None:
-        assert connector._build_space_permissions({"id": 12, "accessStatus": "PRIVATE"}, None) == []
-
-    def test_every_member_of_a_private_space_gets_one_read_edge(self, connector: DrupalWikiConnector) -> None:
-        # Holding any role means being able to see the space -- an approver cannot
-        # approve a revision without reading it -- so membership is the grant, and
-        # nothing downstream separates the kinds of grant.
-        members = {
-            "users": [
-                {"id": 1, "email": "alice@example.com"},
-                {"id": 2, "email": "bob@example.com"},
-                {"id": 3, "email": "eve@example.com"},
-            ],
-            "groups": [{"id": 5}],
-        }
-        permissions = connector._build_space_permissions({"id": 12, "accessStatus": "PRIVATE"}, members)
-        by_key = {(p.entity_type, p.email or p.external_id): p.type for p in permissions}
-        assert by_key == {
-            (EntityType.USER, "alice@example.com"): PermissionType.READ,
-            (EntityType.USER, "bob@example.com"): PermissionType.READ,
-            (EntityType.USER, "eve@example.com"): PermissionType.READ,
-            (EntityType.GROUP, "5"): PermissionType.READ,
-        }
-
-    def test_duplicate_principal_yields_one_edge(self, connector: DrupalWikiConnector) -> None:
-        members = {
-            "users": [
-                {"id": 1, "email": "alice@example.com"},
-                {"id": 2, "email": "ALICE@example.com"},
-            ],
-            "groups": [],
-        }
-        permissions = connector._build_space_permissions({"id": 12, "accessStatus": "PRIVATE"}, members)
-        assert len(permissions) == 1
-        assert permissions[0].type == PermissionType.READ
+    def test_a_protected_space_grants_nobody(self, connector: DrupalWikiConnector) -> None:
+        # Only the Reader role opens it (handbook node 363), and roles are free checkboxes:
+        # holding some role is no read, and no documented API names the Reader role's holders.
+        assert connector._build_space_permissions({"id": 12, "accessStatus": "PRIVATE"}) == []
+        assert connector._build_space_permissions({"id": 12}) == []
 
 class TestRecords:
     def test_page_record(self, connector: DrupalWikiConnector) -> None:
