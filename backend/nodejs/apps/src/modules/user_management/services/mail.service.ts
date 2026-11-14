@@ -147,9 +147,7 @@ export class MailService {
       const response = await axios.request(config);
       return { statusCode: 200, data: response.data };
     } catch (error: any) {
-      this.logger.error('Error sending mail', {
-        error: error?.response?.data ?? error?.message,
-      });
+      this.logger.error('Error sending mail', { error });
       return {
         statusCode: error?.response?.status || 500,
         data:

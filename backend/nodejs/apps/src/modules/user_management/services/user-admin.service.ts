@@ -12,6 +12,7 @@ import {
   type UserFields,
   type UserRole,
 } from '../../../libs/repositories/user';
+import { userRefusal } from '../utils/user-audit';
 
 const LAST_ADMIN_DEMOTION_MESSAGE =
   'Cannot demote the last admin. Promote another user to admin first.';
@@ -132,7 +133,10 @@ export const assertCanDemoteAdmin = async (
 ): Promise<void> => {
   const adminCount = await getUserRepository().countActiveAdmins(orgId, tx);
   if (adminCount <= 1) {
-    throw new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE);
+    throw userRefusal(
+      new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE),
+      'last_admin',
+    );
   }
 };
 
@@ -150,7 +154,10 @@ export const assertCanPromoteAdmin = async (
   }
   const adminCount = await getUserRepository().countActiveAdmins(orgId, tx);
   if (adminCount + additionalAdmins > MAX_ORG_ADMINS) {
-    throw new BadRequestError(MAX_ORG_ADMINS_MESSAGE);
+    throw userRefusal(
+      new BadRequestError(MAX_ORG_ADMINS_MESSAGE),
+      'admin_limit',
+    );
   }
 };
 
@@ -174,7 +181,10 @@ export const saveUserEnsuringOrgRetainsAdmin = async (
     const adminCount = await users.countActiveAdmins(orgId);
     if (adminCount === 0) {
       await users.setRole(orgId, userId, 'admin');
-      throw new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE);
+      throw userRefusal(
+        new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE),
+        'last_admin',
+      );
     }
   } else {
     await createUnitOfWork(true).run(async (tx) => {
@@ -206,7 +216,10 @@ export const saveUserEnsuringAdminCap = async (
     const adminCount = await users.countActiveAdmins(orgId);
     if (adminCount > MAX_ORG_ADMINS) {
       await users.setRole(orgId, userId, 'member');
-      throw new BadRequestError(MAX_ORG_ADMINS_MESSAGE);
+      throw userRefusal(
+        new BadRequestError(MAX_ORG_ADMINS_MESSAGE),
+        'admin_limit',
+      );
     }
   } else {
     await createUnitOfWork(true).run(async (tx) => {

@@ -73,6 +73,7 @@ export const AUTH_AUDIT_REASONS = {
   ],
   'auth.password.change': ['bad_current_password', 'captcha_failed', 'locked'],
   'auth.email.change': [...TOKEN_REFUSALS, 'link_used', 'email_taken'],
+  'auth.email.verify': TOKEN_REFUSALS,
   'auth.session.refresh': [
     ...TOKEN_REFUSALS,
     'session_ended',
