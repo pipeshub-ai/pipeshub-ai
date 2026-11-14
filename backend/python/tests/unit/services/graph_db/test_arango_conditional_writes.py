@@ -73,3 +73,58 @@ class TestUpdateNodeFieldsIfMatch:
         with pytest.raises(ValueError):
             await p.update_node_fields_if_match("k", "c", {"x": 1}, {"y": 2})
         assert p.http_client.execute_aql.await_count == 1
+
+
+class TestBoundedByTheStoreClock:
+    """With ``clock_at_most`` the write runs in a stream transaction of its own; it must end that transaction on every path, or ArangoDB keeps it
+    (and the document's lock) until its idle timeout."""
+
+    @staticmethod
+    def _client(p: ArangoHTTPProvider, *, late: bool = False) -> None:
+        p.http_client.begin_transaction = AsyncMock(return_value="t1")
+        p.http_client.execute_aql = AsyncMock(side_effect=[[1], [late]])
+        p.http_client.commit_transaction = AsyncMock()
+        p.http_client.abort_transaction = AsyncMock()
+
+    async def test_a_write_within_the_bound_commits_and_one_past_it_is_aborted(self, provider) -> None:
+        p, _ = provider
+        self._client(p)
+        assert await p.update_node_fields_if_match("k", "apps", {"a": 1}, {"a": None}, clock_at_most=1.0) is True
+        p.http_client.commit_transaction.assert_awaited_once_with("t1")
+        p.http_client.abort_transaction.assert_not_awaited()
+        self._client(p, late=True)
+        assert await p.update_node_fields_if_match("k", "apps", {"a": 1}, {"a": None}, clock_at_most=1.0) is False
+        p.http_client.commit_transaction.assert_not_awaited()
+        p.http_client.abort_transaction.assert_awaited_once_with("t1")
+
+    async def test_a_commit_that_raises_aborts_the_transaction(self, provider) -> None:
+        p, _ = provider
+        self._client(p)
+        p.http_client.commit_transaction = AsyncMock(side_effect=RuntimeError("connection reset"))
+        with pytest.raises(RuntimeError, match="connection reset"):
+            await p.update_node_fields_if_match("k", "apps", {"a": 1}, {"a": None}, clock_at_most=1.0)
+        p.http_client.abort_transaction.assert_awaited_once_with("t1")
+
+    async def test_a_cancel_while_the_commit_waits_still_aborts_the_transaction(self, provider) -> None:
+        import asyncio
+
+        p, _ = provider
+        self._client(p)
+        waiting = asyncio.Event()
+
+        async def stuck(txn: str) -> None:
+            waiting.set()
+            await asyncio.Event().wait()            # a commit waiting for a connection
+        p.http_client.commit_transaction = AsyncMock(side_effect=stuck)
+        task = asyncio.ensure_future(p.update_node_fields_if_match("k", "apps", {"a": 1}, {"a": None}, clock_at_most=1.0))
+        await waiting.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        p.http_client.abort_transaction.assert_awaited_once_with("t1")
+
+    async def test_an_abort_that_fails_does_not_hide_the_answer(self, provider) -> None:
+        p, _ = provider
+        self._client(p, late=True)
+        p.http_client.abort_transaction = AsyncMock(side_effect=RuntimeError("gone"))
+        assert await p.update_node_fields_if_match("k", "apps", {"a": 1}, {"a": None}, clock_at_most=1.0) is False

@@ -6827,20 +6827,30 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         (an exclusive one another transaction holds): read in the writing statement, the clock could be older than the write. The second statement is
         compiled after the first holds the document's lock, which it keeps until the commit."""
         txn = await self.http_client.begin_transaction([], [collection])
+        committed = False
         try:
-            applied = bool(await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=txn))
-            if applied:
-                [late] = await self.http_client.execute_aql("RETURN DATE_NOW() > @bound * 1000", bind_vars={"bound": clock_at_most}, txn_id=txn)
-                applied = not late
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await self.http_client.abort_transaction(txn)
-            raise
-        if applied:
+            if not await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=txn):
+                return False
+            [late] = await self.http_client.execute_aql("RETURN DATE_NOW() > @bound * 1000", bind_vars={"bound": clock_at_most}, txn_id=txn)
+            if late:
+                return False
             await self.http_client.commit_transaction(txn)
-        else:
+            committed = True
+            return True
+        finally:
+            if not committed:
+                # Whatever ended the attempt (refused, an error, a commit that failed, a cancel), the transaction is aborted here: "There is no automatic
+                # abort!", it stays open until it has been idle for --transaction.streaming-idle-timeout (60 s by default, 120 s at most), holding the
+                # document's lock (https://docs.arango.ai/arangodb/3.12/develop/transactions/stream-transactions/). "Aborting is an idempotent
+                # operation", and an abort of one already committed is refused with 400
+                # (https://docs.arango.ai/arangodb/3.12/develop/http-api/transactions/stream-transactions/), so it is always tried, shielded from a cancel.
+                await asyncio.shield(self._abort_quietly(txn))
+
+    async def _abort_quietly(self, txn: str) -> None:
+        try:
             await self.http_client.abort_transaction(txn)
-        return applied
+        except Exception:
+            self.logger.warning("could not abort stream transaction %s; ArangoDB drops it after its idle timeout", txn, exc_info=True)
 
     @staticmethod
     def _condition_filters(conditions: Sequence[Cond]) -> tuple[list[str], dict[str, Any]]:
