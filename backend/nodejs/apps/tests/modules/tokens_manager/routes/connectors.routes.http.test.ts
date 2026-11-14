@@ -163,6 +163,99 @@ describe('Connector routes over HTTP', () => {
     })
   })
 
+  describe('/:connectorId/notion/personal-token', () => {
+    const PATH = `/api/v1/connectors/${CONNECTOR_ID}/notion/personal-token`
+    const ROUTE = `/${CONNECTOR_ID}/notion/personal-token`
+    const NOTION_TOKEN = 'ntn_abc123DEF456'
+
+    it("returns the caller's own entry as the connector service gives it", async () => {
+      h.backend.on('GET', PATH, { status: 200, body: { status: 'LINKED', linkedAt: 1 } })
+      const token = sessionToken(h, member)
+
+      const r = await call(h, 'GET', ROUTE, token)
+
+      expect(r.status).to.equal(200)
+      expect(r.body).to.deep.equal({ status: 'LINKED', linkedAt: 1 })
+      expect(single(h.backend.callsTo('GET', PATH)).headers.authorization).to.equal(`Bearer ${token}`)
+    })
+
+    it('forwards only the token on link, whatever else the body holds', async () => {
+      h.backend.on('PUT', PATH, { status: 200, body: { status: 'LINKED' } })
+
+      const r = await call(h, 'PUT', ROUTE, sessionToken(h, member), { token: NOTION_TOKEN, userId: 'someone-else' })
+
+      expect(r.status).to.equal(200)
+      expect(r.body).to.deep.equal({ status: 'LINKED' })
+      expect(single(h.backend.callsTo('PUT', PATH)).body).to.deep.equal({ token: NOTION_TOKEN })
+    })
+
+    for (const [what, token] of [
+      ['an empty token', ''],
+      ['a token with spaces', 'ntn_abc 123'],
+      ['a token longer than 512 characters', 'x'.repeat(513)],
+      ['a token that is not text', 42],
+    ] as const) {
+      it(`refuses ${what} without asking the connector service or echoing it`, async () => {
+        const r = await call(h, 'PUT', ROUTE, sessionToken(h, member), { token })
+
+        expect(r.status).to.equal(400)
+        expect(h.backend.calls).to.have.length(0)
+        if (typeof token === 'string' && token) expect(JSON.stringify(r.body)).not.to.contain(token)
+      })
+    }
+
+    it('refuses a link or remove from an OAuth app token that only has connector:read', async () => {
+      const token = oauthToken(h, member, 'connector:read')
+
+      const put = await call(h, 'PUT', ROUTE, token, { token: NOTION_TOKEN })
+      const del = await call(h, 'DELETE', ROUTE, token)
+
+      expect([put.status, del.status]).to.deep.equal([403, 403])
+      expect(h.backend.calls).to.have.length(0)
+    })
+
+    it('removes the caller\'s token', async () => {
+      h.backend.on('DELETE', PATH, { status: 200, body: { status: 'NOT_LINKED' } })
+
+      const r = await call(h, 'DELETE', ROUTE, sessionToken(h, member))
+
+      expect(r.status).to.equal(200)
+      expect(r.body).to.deep.equal({ status: 'NOT_LINKED' })
+    })
+
+    it('passes on the 404 for a connector that is not a Notion team connector', async () => {
+      h.backend.on('GET', PATH, { status: 404, body: { detail: 'Not found' } })
+
+      const r = await call(h, 'GET', ROUTE, sessionToken(h, member))
+
+      expect(r.status).to.equal(404)
+    })
+
+    it('rejects a request with no token without asking the connector service', async () => {
+      const r = await call(h, 'GET', ROUTE)
+
+      expect(r.status).to.equal(401)
+      expect(h.backend.calls).to.have.length(0)
+    })
+
+    it("lists who linked a token for an admin, and passes on the member's 404", async () => {
+      const LIST = `/api/v1/connectors/${CONNECTOR_ID}/notion/personal-tokens`
+      const adminToken = sessionToken(h, admin)
+      h.backend.on('GET', LIST, (c) =>
+        c.headers.authorization === `Bearer ${adminToken}`
+          ? { status: 200, body: { users: [{ userId: MEMBER_ID, status: 'FAILED', reason: 'revoked' }] } }
+          : { status: 404, body: { detail: 'Not found' } },
+      )
+
+      const asAdmin = await call(h, 'GET', `/${CONNECTOR_ID}/notion/personal-tokens`, adminToken)
+      const asMember = await call(h, 'GET', `/${CONNECTOR_ID}/notion/personal-tokens`, sessionToken(h, member))
+
+      expect(asAdmin.status).to.equal(200)
+      expect(asAdmin.body).to.deep.equal({ users: [{ userId: MEMBER_ID, status: 'FAILED', reason: 'revoked' }] })
+      expect(asMember.status).to.equal(404)
+    })
+  })
+
   describe('GET /record/:recordId/content', () => {
     it('returns the parsed content for a record', async () => {
       h.backend.on('GET', `/api/v1/records/${CONNECTOR_ID}/content`, { status: 200, body: { content: 'hello' } })

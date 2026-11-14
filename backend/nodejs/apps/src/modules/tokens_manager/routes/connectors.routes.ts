@@ -33,6 +33,7 @@ import { VECTOR_STORE_REBUILD_AVAILABLE } from '../../../edition';
 import { AppConfig, loadAppConfig } from '../config/config';
 import { Logger } from '../../../libs/services/logger.service';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
+import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import {
   getConnectorRegistry,
   getConnectorInstances,
@@ -59,6 +60,7 @@ import {
   getActiveAgentInstances,
   getConnectorStats,
   getPermissionStatus,
+  proxyNotionPersonalToken,
   getRecordContent,
   navigateKnowledgeGraph,
   lookupRecord,
@@ -163,6 +165,17 @@ const connectorIdParamSchema = z.object({
         /^[A-Za-z0-9_-]{1,64}$/,
         'Connector ID must be 1-64 chars of letters, digits, underscore, or hyphen',
       ),
+  }),
+});
+
+// Same bounds as the connector service: a token is pasted as it is, never with whitespace.
+const linkNotionPersonalTokenSchema = connectorIdParamSchema.extend({
+  body: z.object({
+    token: z
+      .string()
+      .min(1)
+      .max(512)
+      .regex(/^\S+$/, 'Paste the personal access token as it is, without spaces.'),
   }),
 });
 
@@ -804,6 +817,41 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     ValidationMiddleware.validate(connectorIdParamSchema),
     getPermissionStatus(config),
+  );
+
+  /**
+   * GET|PUT|DELETE /:connectorId/notion/personal-token
+   * The caller's own Notion personal access token for a Notion team connector.
+   * GET /:connectorId/notion/personal-tokens
+   * Admin only: who linked a token and its state, never a token.
+   */
+  router.get(
+    '/:connectorId/notion/personal-token',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    proxyNotionPersonalToken(config, HttpMethod.GET, 'personal-token'),
+  );
+  router.put(
+    '/:connectorId/notion/personal-token',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(linkNotionPersonalTokenSchema),
+    proxyNotionPersonalToken(config, HttpMethod.PUT, 'personal-token'),
+  );
+  router.delete(
+    '/:connectorId/notion/personal-token',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    proxyNotionPersonalToken(config, HttpMethod.DELETE, 'personal-token'),
+  );
+  router.get(
+    '/:connectorId/notion/personal-tokens',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    proxyNotionPersonalToken(config, HttpMethod.GET, 'personal-tokens'),
   );
 
   /**
