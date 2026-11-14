@@ -3342,7 +3342,28 @@
         "loadingOptions": "正在加载选项…",
         "noResults": "未找到结果",
         "optionsLoadFailed": "无法加载此筛选条件的选项。请关闭此列表后重新打开以重试。",
-        "loadingMore": "正在加载更多…"
+        "loadingMore": "正在加载更多…",
+        "folderPaths": {
+          "help": "路径从顶层开始。* 匹配单个文件夹名称中的任意字符，** 匹配任意数量的文件夹，? 匹配一个字符。匹配的文件夹中的所有内容都会包含在内。未匹配任何内容的模式会在连接器卡片上标出。",
+          "examples": {
+            "oneLevel": "customer/*/quotes：每个客户的 quotes 文件夹",
+            "anyDepth": "**/quotes：任意深度下名为 quotes 的每个文件夹（会读取每个文件夹）",
+            "exclude": "archive 配合排除：除 archive 文件夹外的所有内容"
+          },
+          "caseInsensitive": "名称匹配不区分大小写。\\ 和 / 都可分隔文件夹。",
+          "caseSensitive": "名称区分大小写。要在名称中匹配这些字符，请写 \\* 或 \\?。",
+          "notFiles": "模式选择的是文件夹，而不是文件。要选择文件类型，请使用 File Extensions。",
+          "errors": {
+            "climbsOut": "文件夹“{{value}}”必须是从顶层开始的路径，且不含“..”。",
+            "emptySegment": "文件夹“{{value}}”的两个斜杠之间有空文件夹名称。请删除多余的“/”。",
+            "excludesEverything": "排除“{{value}}”后将没有可同步的内容。请删除它，或切换为包含。",
+            "tooLong": "文件夹“{{value}}”超过 1024 个字符。",
+            "uncPath": "文件夹“{{value}}”看起来像网络路径。请从共享的顶层开始，不要包含 \\\\server\\share。",
+            "doubleStarInName": "在文件夹“{{value}}”中，“**”必须是完整的文件夹名称，例如 reports/**/2026。名称的一部分请使用“*”。",
+            "tooManyDoubleStars": "文件夹“{{value}}”使用“**”超过 4 次。请减少使用。",
+            "tooManyStars": "“{{value}}”中的某个文件夹名称包含超过 16 个“*”。请减少使用。"
+          }
+        }
       },
       "syncStrategies": {
         "SCHEDULED": "定时",
@@ -3494,6 +3515,16 @@
             "title": "Drupal Wiki 拒绝成员和页面结构查询",
             "message": "私有空间只能使用之前同步时确认的访问权限进行同步，且仅限确认后的 {{days}} 天内。从未同步过或确认时间更早的私有空间会被跳过，且页面层级不可用。开放空间不受影响。 完整同步（包括因更改筛选器而启动的同步）会使私有空间停止这样同步，直到 Drupal Wiki 再次列出其成员。",
             "message_dated": "私有空间只能使用之前同步时确认的访问权限进行同步，且仅限确认后的 {{days}} 天内。从未同步过或确认时间更早的私有空间会被跳过，且页面层级不可用。开放空间不受影响。 完整同步（包括因更改筛选器而启动的同步）会使私有空间停止这样同步，直到 Drupal Wiki 再次列出其成员。 正在使用的最早访问权限确认于 {{confirmedOn}}。"
+          },
+          "folder_filter_unmatched": {
+            "title": "文件夹模式未匹配任何内容",
+            "message": "此连接器同步的文件夹中没有与 {{values}} 匹配的，因此不会为其同步任何内容。请检查 Folders 筛选器中的拼写。",
+            "title_several": "{{count}} 个文件夹模式未匹配任何内容",
+            "message_several": "此连接器同步的文件夹中没有与 {{values}} 匹配的，因此不会为它们同步任何内容。请检查 Folders 筛选器中的拼写。",
+            "title_exclude": "文件夹模式未匹配任何内容",
+            "message_exclude": "此连接器同步的文件夹中没有与 {{values}} 匹配的，因此它不会排除任何内容。请检查 Folders 筛选器中的拼写。",
+            "title_several_exclude": "{{count}} 个文件夹模式未匹配任何内容",
+            "message_several_exclude": "此连接器同步的文件夹中没有与 {{values}} 匹配的，因此它们不会排除任何内容。请检查 Folders 筛选器中的拼写。"
           }
         }
       },
