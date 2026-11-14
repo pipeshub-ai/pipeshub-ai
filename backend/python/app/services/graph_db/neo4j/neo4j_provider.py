@@ -6383,7 +6383,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 user_dict = dict(results[0]["u"])
                 user_dict = self._neo4j_to_arango_node(user_dict, CollectionNames.USERS.value)
                 candidate = User.from_arango_user(user_dict)
-                if candidate.is_active:
+                is_active = candidate.get("is_active", True) if isinstance(candidate, dict) else getattr(candidate, "is_active", True)
+                if is_active:
                     return candidate
 
             # Legacy fallback query during rollout: runs only when backfill is not complete
@@ -6417,7 +6418,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     legacy_user_dict = dict(legacy_results[0]["u"])
                     legacy_user_dict = self._neo4j_to_arango_node(legacy_user_dict, CollectionNames.USERS.value)
                     legacy_candidate = User.from_arango_user(legacy_user_dict)
-                    if legacy_candidate.is_active or candidate is None:
+                    legacy_is_active = legacy_candidate.get("is_active", True) if isinstance(legacy_candidate, dict) else getattr(legacy_candidate, "is_active", True)
+                    if legacy_is_active or candidate is None:
                         return legacy_candidate
 
             return candidate
@@ -10495,6 +10497,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not users:
                 return
 
+            # Get org_id
+            orgs = await self.get_all_orgs(transaction=transaction)
+            if not orgs:
+                raise Exception("No organizations found in the database")
+            org_id = orgs[0].get("id") or orgs[0].get("_key")
             connector_id = users[0].connector_id
 
             # Get or create app
@@ -10517,13 +10524,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     collection=CollectionNames.APPS.value,
                     transaction=transaction
                 )
-
-            org_id = (app.get("orgId") if app else None) or getattr(users[0], "org_id", None)
-            if not org_id:
-                orgs = await self.get_all_orgs(transaction=transaction)
-                if not orgs:
-                    raise Exception("No organizations found in the database")
-                org_id = orgs[0].get("id") or orgs[0].get("_key")
 
             for user in users:
                 # Check if user exists within connector's organization

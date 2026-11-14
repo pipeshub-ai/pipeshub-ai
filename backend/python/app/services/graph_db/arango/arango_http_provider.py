@@ -8252,7 +8252,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if results:
                 user_data = self._translate_node_from_arango(results[0])
                 candidate = User.from_arango_user(user_data)
-                if candidate.is_active:
+                is_active = candidate.get("is_active", True) if isinstance(candidate, dict) else getattr(candidate, "is_active", True)
+                if is_active:
                     return candidate
 
             # Legacy fallback during rollout: runs separately only for scoped lookups when
@@ -8285,7 +8286,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if legacy_results:
                     legacy_data = self._translate_node_from_arango(legacy_results[0])
                     legacy_candidate = User.from_arango_user(legacy_data)
-                    if legacy_candidate.is_active or candidate is None:
+                    legacy_is_active = legacy_candidate.get("is_active", True) if isinstance(legacy_candidate, dict) else getattr(legacy_candidate, "is_active", True)
+                    if legacy_is_active or candidate is None:
                         return legacy_candidate
 
             return candidate
@@ -11034,6 +11036,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not users:
                 return
 
+            # Get org_id
+            orgs = await self.get_all_orgs()
+            if not orgs:
+                raise Exception("No organizations found in the database")
+            org_id = orgs[0]["_key"]
             connector_id = users[0].connector_id
 
             app = await self.get_document(connector_id, CollectionNames.APPS.value)
@@ -11041,12 +11048,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise Exception(f"Failed to get/create app: {connector_id}")
 
             app_id = app["_id"]
-            org_id = app.get("orgId") or getattr(users[0], "org_id", None)
-            if not org_id:
-                orgs = await self.get_all_orgs()
-                if not orgs:
-                    raise Exception("No organizations found in the database")
-                org_id = orgs[0]["_key"]
 
             for user in users:
                 # Check if user exists within connector's organization
