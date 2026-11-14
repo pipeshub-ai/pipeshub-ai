@@ -732,3 +732,40 @@ class TestTheFifoPathWithFullGates:
 
         assert entry["time_since_delivered"] < 1500
         assert entry["times_delivered"] == 1
+
+
+class TestTheIdleDrainOnEveryRedisVersion:
+    async def test_it_reclaims_a_stopped_consumers_entries_including_a_deleted_one(
+        self, redis_available, redis_client, base_stream, unique_suffix
+    ) -> None:
+        """XAUTOCLAIM replies with three parts on Redis 7 and two on 6.2, where
+        a deleted entry is an empty slot whose id moves to the claimer. The
+        drain took only the first shape, so on 6.2 it reclaimed nothing."""
+        host, port = redis_available
+        group = f"it-drain-shape-{unique_suffix}"
+        topics = RedisLaneRouter(_LANES).lane_topics(base_stream)
+        await _create_groups(redis_client, topics, group)
+        lane = f"{base_stream}.0"
+        stranded = await _leave_pending(redis_client, lane, group, _connector_on_lane(0, "old"), per_consumer=2)
+        first = (await redis_client.xpending_range(lane, group, min="-", max="+", count=1))[0]["message_id"]
+        await redis_client.xdel(lane, first)
+        await asyncio.sleep(_CLAIM_MS / 1000 + 0.3)
+
+        # A long stopped-consumer bound: only the drain takes them here.
+        config = RedisStreamsConfig(
+            host=host, port=port, client_id=f"{group}-client", group_id=group, topics=topics,
+            batch_size=10, block_ms=300, claim_min_idle_ms=_CLAIM_MS, stopped_consumer_after_ms=600_000,
+        )
+        done: list[str] = []
+        consumer = IndexingRedisStreamsConsumer(
+            logging.getLogger("it-drain-shape"), config, fair_scheduler_config=FairSchedulerConfig(
+                enabled=True, key_fields=("orgId", "connectorId"), max_buffered_messages=40,
+                max_per_entity_messages=40,
+            ),
+        )
+        await consumer.start(_handler(done, seconds=0.0))
+        try:
+            await _until(lambda: _done(done, stranded[1:]), "the entries left", timeout=30)
+            await _until(lambda: _nothing_pending(redis_client, lane, group), "an empty pending list", timeout=30)
+        finally:
+            await consumer.stop()

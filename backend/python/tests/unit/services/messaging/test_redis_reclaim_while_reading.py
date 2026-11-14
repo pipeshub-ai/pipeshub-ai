@@ -322,3 +322,54 @@ class TestAnEntryRecoveryCouldNotHandOn:
         assert consumer._scheduler.pending_count == 2
         mine = await _owned(consumer, consumer.consumer_name)
         assert {entry["times_delivered"] for entry in mine} == {2}
+
+
+class TestRetryCapacity:
+    async def test_no_more_is_claimed_once_the_retry_list_is_full(
+        self, consumer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An entry claimed and then not handed on is remembered for another
+        try; past the list's bound one would be forgotten while still pending
+        here, so claiming stops first."""
+        from app.services.messaging.redis_streams import indexing_consumer as module
+
+        monkeypatch.setattr(module, "_UNHANDED_LIMIT", 2)
+        consumer._unhanded = {(LANE, "1-0"): None, (LANE, "1-1"): None}
+        consumer._last_unhanded_retry = float("inf")
+        await _left_by_a_stopped_consumer(consumer, 3)
+
+        await _look(consumer)
+
+        assert len(await _owned(consumer, "replaced")) == 3
+
+
+class TestATrimmedEntryWhoseAcknowledgementFailed:
+    async def test_it_is_acknowledged_on_a_later_pass_even_with_a_full_buffer(self, consumer) -> None:
+        await _left_by_a_stopped_consumer(consumer, 2)
+        trimmed = (await _owned(consumer, "replaced"))[0]["message_id"]
+        real_xclaim, real_xack = consumer.redis.xclaim, consumer.redis.xack
+        failures = {"left": 1}
+
+        async def pre_7_xclaim(*args, **kwargs):  # noqa: ANN202
+            reply = await real_xclaim(*args, **kwargs)
+            return [(None, None) if m == trimmed else (m, f) for m, f in reply]
+
+        async def flaky_xack(*args, **kwargs):  # noqa: ANN202
+            if failures["left"]:
+                failures["left"] -= 1
+                raise ConnectionError("lost the connection")
+            return await real_xack(*args, **kwargs)
+
+        consumer.redis.xclaim = pre_7_xclaim
+        consumer.redis.xack = flaky_xack
+
+        await _look(consumer)
+        assert (LANE, trimmed) in consumer._unhanded
+        await consumer.redis.xdel(LANE, trimmed)
+        await _fill_with_new_events(consumer, BUFFER - consumer._scheduler.pending_count)
+        consumer._last_unhanded_retry = 0.0
+        await _look(consumer)
+
+        mine = [e["message_id"] for e in await _owned(consumer, consumer.consumer_name)]
+        assert trimmed not in mine
+        assert (LANE, trimmed) not in consumer._unhanded

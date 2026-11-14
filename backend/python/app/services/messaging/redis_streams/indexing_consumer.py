@@ -1343,7 +1343,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self._unhanded.pop(next(iter(self._unhanded)))
 
     async def __retry_unhanded(self) -> None:
-        """Offer remembered entries again, oldest first, while there is room.
+        """Offer remembered entries again, oldest first.
 
         Each is first confirmed pending under this consumer (else it was
         acknowledged or taken, and is forgotten) and its payload re-read with
@@ -1352,7 +1352,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         stream meanwhile is acknowledged.
         """
         for topic, message_id in list(self._unhanded)[:_RECOVERY_BATCH]:
-            if not self.running or (self._scheduler is not None and not self.__buffer_has_room()):
+            if not self.running:
                 return
             key = (topic, message_id)
             try:
@@ -1370,6 +1370,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 if not found:
                     await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore[union-attr]
                     del self._unhanded[key]
+                    continue
+                if self._scheduler is not None and not self.__buffer_has_room():
+                    # Kept for a pass with room; one with no body needs none.
                     continue
                 self._unhanded.pop(key, None)
                 await self.__recover_entry(topic, message_id, found[0][1], owned=True)
@@ -1390,7 +1393,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             start_id=start_id,
             count=count,
         )
-        next_id, claimed, _deleted = result
+        # Redis 7 replies (cursor, entries, deleted ids); 6.2 has no third part
+        # and answers a deleted entry with an empty slot instead, which carries
+        # no id: own-pending recovery acknowledges those (it finds no body).
+        next_id, claimed = result[0], [
+            (message_id, fields)
+            for message_id, fields in result[1] or []
+            if message_id is not None and fields is not None
+        ]
         if claimed:
             self.logger.debug(
                 "XAUTOCLAIM on %s took %d idle entry(ies)", topic, len(claimed)
@@ -1822,11 +1832,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         (or, without a scheduler, the dispatch budget) less a headroom kept
         for new events, within the per-look cap."""
         budget = self._dispatch_budget()
+        # Each claim may end up remembered for a retry; never claim past what
+        # that list can hold, or a forgotten entry would stay pending here.
+        retry_room = _UNHANDED_LIMIT - len(self._unhanded)
         if self._scheduler is None:
             headroom = _headroom(budget.total_ceiling)
-            return min(budget.remaining - headroom, _RECLAIM_PER_LOOK)
+            return min(budget.remaining - headroom, _RECLAIM_PER_LOOK, retry_room)
         room = (self.__buffer_room() or 0) - self.__buffer_headroom()
-        return min(room, budget.remaining, _RECLAIM_PER_LOOK)
+        return min(room, budget.remaining, _RECLAIM_PER_LOOK, retry_room)
 
     async def __stopped_owners(self, topic: str) -> list[tuple[str, int]]:
         """Other consumers on ``topic`` silent past ``stopped_consumer_after_ms``,
@@ -1904,6 +1917,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 self.logger.warning(
                     "Could not acknowledge trimmed entry %s on %s: %s", message_id, topic, e
                 )
+                self.__remember_unhanded(topic, message_id)
 
     async def __remove_if_stopped(self, topic: str, name: str) -> None:
         """Remove a stopped consumer that holds nothing, checked and removed in
@@ -2064,6 +2078,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     topic, min=message_id, max=message_id, count=1
                 )
                 if not entries:
+                    # Trimmed or deleted: nothing left to process, and pending
+                    # under this consumer it would hold its lane's head.
+                    await self.__ack_claimed_without_body(topic, [message_id])
                     continue
                 _entry_id, fields = entries[0]
                 found.append((message_id, fields))
