@@ -586,6 +586,7 @@ class TestJiraFullSync:
                 full_name="Alice", is_active=True
             )]
             connector._fetch_users = AsyncMock(return_value=users)
+            connector._keep_licensed_users = AsyncMock(side_effect=lambda found, _mapping: found)  # all licensed
             connector._sync_user_groups = AsyncMock(return_value={})
 
             rg = RecordGroup(
