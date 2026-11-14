@@ -10551,7 +10551,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 target_org_id = user_org if isinstance(user_org, str) and user_org.strip() else org_id
 
                 # Check if user exists within connector's organization
-                user_record = await self.get_user_by_email(user.email, transaction, org_id=target_org_id)
+                user_record = await self.get_user_by_email(
+                    user.email, transaction, raise_on_error=True, org_id=target_org_id
+                )
 
                 if not user_record:
                     # Create new user
@@ -10566,7 +10568,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         transaction=transaction
                     )
 
-                    user_record = await self.get_user_by_email(user.email, transaction, org_id=target_org_id)
+                    user_record = await self.get_user_by_email(
+                        user.email, transaction, raise_on_error=True, org_id=target_org_id
+                    )
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.

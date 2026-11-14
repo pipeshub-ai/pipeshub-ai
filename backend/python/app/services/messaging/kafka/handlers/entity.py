@@ -308,8 +308,9 @@ class EntityEventService(BaseEventService):
             self.logger.debug("Processing user added event for user %s", payload.get("userId"))
             # raise_on_error: the providers answer None to a failed read too, and
             # "nobody" here would mint a second user for someone who is there.
+            lookup_email = payload["email"].strip() if payload.get("email") else ""
             existing_user = await self.graph_provider.get_user_by_email(
-                payload["email"], raise_on_error=True
+                lookup_email, raise_on_error=True
             )
 
             current_timestamp = get_epoch_timestamp_in_ms()

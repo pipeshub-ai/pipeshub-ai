@@ -404,6 +404,39 @@ class TestUserAdded:
         result = await svc.process_event("userAdded", payload)
         assert result is False
 
+    @pytest.mark.asyncio
+    async def test_padded_email_is_trimmed_for_lookup(self):
+        """Surrounding whitespace in email is stripped before querying get_user_by_email."""
+        existing_user = MagicMock()
+        existing_user.id = "existing-key"
+
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_email = AsyncMock(return_value=existing_user)
+        graph_provider.get_document = AsyncMock(
+            return_value={"_key": "org-1", "accountType": "enterprise"}
+        )
+        graph_provider.batch_upsert_nodes = AsyncMock()
+        graph_provider.batch_create_edges = AsyncMock()
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+        svc._get_or_create_knowledge_base = AsyncMock(return_value={})
+        svc._create_user_kb_app_relation = AsyncMock()
+
+        payload = {
+            "orgId": "org-1",
+            "userId": "u-1",
+            "email": "  Alice@Test.COM  \t",
+            "syncAction": "none",
+        }
+        result = await svc.process_event("userAdded", payload)
+        assert result is True
+
+        graph_provider.get_user_by_email.assert_awaited_once_with(
+            "Alice@Test.COM", raise_on_error=True
+        )
+
+
 
 # ===================================================================
 # userUpdated

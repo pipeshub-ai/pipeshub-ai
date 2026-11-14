@@ -11077,7 +11077,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 target_org_id = user_org if isinstance(user_org, str) and user_org.strip() else org_id
 
                 # Check if user exists within connector's organization
-                user_record = await self.get_user_by_email(user.email, transaction, org_id=target_org_id)
+                user_record = await self.get_user_by_email(
+                    user.email, transaction, raise_on_error=True, org_id=target_org_id
+                )
 
                 if not user_record:
                     # Create new user
@@ -11087,7 +11089,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         transaction=transaction
                     )
 
-                    user_record = await self.get_user_by_email(user.email, transaction, org_id=target_org_id)
+                    user_record = await self.get_user_by_email(
+                        user.email, transaction, raise_on_error=True, org_id=target_org_id
+                    )
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.
@@ -11539,6 +11543,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = f"""
             FOR doc IN {CollectionNames.USERS.value}
                 FILTER doc.email IN @emails || LOWER(TRIM(doc.email)) == @norm_email
+                SORT doc.isActive DESC, doc._key ASC
                 LIMIT 1
                 RETURN doc._key
             """
@@ -11634,15 +11639,50 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     bind_vars={"emails": user_query_emails},
                     txn_id=transaction
                 )
-                # Group returned users by normalized email and prefer active user over inactive stub
+                # Group returned users by normalized email
                 by_norm: dict[str, list[dict]] = {}
                 for user in users or []:
                     u_email = user.get("email")
                     if u_email:
                         by_norm.setdefault(u_email.strip().lower(), []).append(user)
 
+                def _has_active_user(u_list: list[dict]) -> bool:
+                    return any(bool(u.get("isActive")) for u in u_list)
+
+                # Check if any original emails need legacy fallback: whenever exact results do not
+                # establish an active user (e.g. missing match, or inactive user found by exact
+                # while an active user with mixed-case email might be in legacy storage).
+                unmatched_norm = [
+                    norm for norm in norm_to_orig
+                    if not _has_active_user(by_norm.get(norm, []))
+                ]
+
+                if unmatched_norm:
+                    legacy_user_query = f"""
+                    FOR doc IN {CollectionNames.USERS.value}
+                        FILTER LOWER(TRIM(doc.email)) IN @emails
+                        RETURN {{email: doc.email, id: doc._key, isActive: doc.isActive}}
+                    """
+                    try:
+                        legacy_users = await self.http_client.execute_aql(
+                            legacy_user_query,
+                            bind_vars={"emails": unmatched_norm},
+                            txn_id=transaction
+                        )
+                        for user in legacy_users or []:
+                            u_email = user.get("email")
+                            if u_email:
+                                norm = u_email.strip().lower()
+                                existing_list = by_norm.setdefault(norm, [])
+                                if not any(x.get("id") == user.get("id") for x in existing_list):
+                                    existing_list.append(user)
+                    except Exception as e:
+                        self.logger.error(f"❌ Error querying legacy users: {str(e)}")
+
                 for norm, u_list in by_norm.items():
-                    best_user = max(u_list, key=lambda u: bool(u.get("isActive", True)))
+                    if not u_list:
+                        continue
+                    best_user = max(u_list, key=lambda u: bool(u.get("isActive")))
                     val = (
                         best_user["id"],
                         CollectionNames.USERS.value,
@@ -11652,7 +11692,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         result_map[u["email"]] = val
                     for orig in norm_to_orig.get(norm, []):
                         result_map[orig] = val
-                self.logger.debug(f"✅ Found {len(users)} users")
+                self.logger.debug(f"✅ Found {len(by_norm)} users")
             except Exception as e:
                 self.logger.error(f"❌ Error querying users: {str(e)}")
 

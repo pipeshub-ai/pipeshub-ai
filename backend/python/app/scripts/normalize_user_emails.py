@@ -212,10 +212,8 @@ async def normalize_emails_for_org(
                         valid_candidates.append(c)
                     else:
                         logger.info(
-                            "Skipping user %s: email changed concurrently from %r to %r",
+                            "Skipping user %s: email changed concurrently before normalization write",
                             cid,
-                            c.get("email"),
-                            doc.get("email"),
                         )
                 elif doc is None:
                     # Document was deleted concurrently or get_document is not available
