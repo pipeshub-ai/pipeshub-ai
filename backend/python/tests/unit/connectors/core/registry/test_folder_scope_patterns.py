@@ -579,20 +579,22 @@ class TestSchema:
         assert field["pathStyle"] == "posix"
         assert field["folderWildcards"] is True
 
-    @pytest.mark.parametrize(("module", "cls", "style"), [
-        ("app.connectors.sources.smb.connector", "SmbConnector", "windows"),
-        ("app.connectors.sources.cifs.connector", "CifsConnector", "windows"),
-        ("app.connectors.sources.azure_files.connector", "AzureFilesConnector", "windows"),
-        ("app.connectors.sources.s3.connector", "S3Connector", None),
-        ("app.connectors.sources.minio.connector", "MinIOConnector", None),
-        ("app.connectors.sources.google_cloud_storage.connector", "GCSConnector", None),
-        ("app.connectors.sources.azure_blob.connector", "AzureBlobConnector", None),
+    @pytest.mark.parametrize(("module", "cls", "style", "wildcards"), [
+        ("app.connectors.sources.smb.connector", "SmbConnector", "windows", True),
+        ("app.connectors.sources.cifs.connector", "CifsConnector", "windows", True),
+        ("app.connectors.sources.azure_files.connector", "AzureFilesConnector", "windows", False),
+        ("app.connectors.sources.s3.connector", "S3Connector", None, False),
+        ("app.connectors.sources.minio.connector", "MinIOConnector", None, False),
+        ("app.connectors.sources.google_cloud_storage.connector", "GCSConnector", None, False),
+        ("app.connectors.sources.azure_blob.connector", "AzureBlobConnector", None, False),
     ])
-    def test_each_connector_declares_its_path_style_and_no_wildcards_yet(self, module, cls, style) -> None:
+    def test_each_connector_declares_its_path_style_and_whether_it_reads_wildcards(
+        self, module, cls, style, wildcards
+    ) -> None:
         import importlib
 
         connector = getattr(importlib.import_module(module), cls)
         fields = connector._connector_metadata["config"]["filters"]["sync"]["schema"]["fields"]
         field = next(f for f in fields if f["name"] == "folder_paths")
         assert field.get("pathStyle") == style
-        assert "folderWildcards" not in field
+        assert field.get("folderWildcards", False) is wildcards
