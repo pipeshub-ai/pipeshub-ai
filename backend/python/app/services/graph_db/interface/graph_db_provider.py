@@ -43,6 +43,11 @@ _T = TypeVar("_T")
 # Set once `stamp_kh_listing_state` has covered every node written before.
 KH_LISTING_STATE_FLAG = "/migrations/kh_listing_state_v1"
 
+# The record fields a page of `list_unsupported_page` carries besides `_key`.
+UNSUPPORTED_PAGE_FIELDS = (
+    "orgId", "connectorId", "recordType", "recordName", "mimeType", "sizeInBytes", "isInternal", "isPlaceholder",
+)
+
 # Hierarchy hops the access check walks. Whatever lists what the check may admit
 # has to follow inheritance at least this far, or deeper records drop out unseen.
 ACCESS_WALK_MAX_DEPTH = 50
@@ -2796,6 +2801,32 @@ class IGraphDBProvider(ABC):
         Raises:
             Exception: whatever the database raised. A failed write is never answered
                        as an empty list, which means "no id held `expected`".
+        """
+        pass
+
+    @abstractmethod
+    async def list_unsupported_page(
+        self,
+        org_id: str,
+        connector_id: str,
+        after_key: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """One page of a connector's live records at FILE_TYPE_NOT_SUPPORTED, in key order after ``after_key``.
+
+        Each row carries ``_key`` plus the fields in ``UNSUPPORTED_PAGE_FIELDS``. A page is a range read
+        of an index on (connector, status, key); a page shorter than ``limit`` is the last. A failure
+        raises: an empty page reads as "nothing left".
+        """
+        pass
+
+    @abstractmethod
+    async def transition_unsupported(self, record_ids: list[str], to_status: str) -> list[str]:
+        """Move each record still at FILE_TYPE_NOT_SUPPORTED to ``to_status`` and clear its reason, in one statement.
+
+        A move into QUEUED also stamps ``queuedAtTimestamp``, as ``compare_and_set_indexing_status`` does.
+        Returns the ids moved; a record that left FILE_TYPE_NOT_SUPPORTED meanwhile is left alone. A
+        failure raises.
         """
         pass
 

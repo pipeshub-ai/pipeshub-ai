@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 
+from app.config.constants.arangodb import ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
@@ -26,6 +27,7 @@ from app.connectors.sources.network_share.errors import NetworkShareAuthError
 from app.connectors.sources.network_share.permissions import app_level_permissions
 from app.connectors.sources.network_share.record_mapper import (
     RecordMapper,
+    is_on_disk,
     revision_id,
 )
 from app.connectors.sources.network_share.walker import ShareWalker, WalkResult
@@ -422,3 +424,42 @@ async def reindex_records(
         await processor.on_new_records(updated)
     if unchanged:
         await processor.reindex_existing_records(unchanged)
+
+
+async def requeue_parked_records(
+    *,
+    data_source: INetworkShareDataSource,
+    processor: DataSourceEntitiesProcessor,
+    records: list[Record],
+    indexing_filters: FilterCollection,
+    logger: Logger,
+) -> list[str]:
+    """Send back to indexing the parked records (AUTO_INDEX_OFF, no reason) whose files are on disk.
+
+    A file moved to slower storage, one the share no longer lists, or one that cannot be read stays
+    parked: reading it would make the server recall it. Each file read is taken from AUTO_INDEX_OFF
+    to NOT_STARTED before its event is sent, so a lost event leaves it to the stranded-record sweep.
+    Returns the ids whose event was sent.
+    """
+    if not records or not indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+        return []
+    on_disk: list[Record] = []
+    for record in records:
+        try:
+            io_path = io_share_and_path(record)
+            if not io_path:
+                continue
+            entry = await data_source.stat(*io_path)
+            if entry is not None and not entry.is_directory and is_on_disk(entry):
+                on_disk.append(record)
+        except Exception:
+            logger.warning("Could not check record %s at the share; it stays for manual indexing", record.id, exc_info=True)
+    if not on_disk:
+        return []
+    moved = set(await processor.data_store_provider.compare_and_set_indexing_status(
+        [r.id for r in on_disk], ProgressStatus.AUTO_INDEX_OFF.value, ProgressStatus.NOT_STARTED.value,
+    ))
+    ready = [r for r in on_disk if r.id in moved]
+    for record in ready:
+        record.indexing_status = ProgressStatus.NOT_STARTED.value
+    return await processor.reindex_existing_records(ready) if ready else []

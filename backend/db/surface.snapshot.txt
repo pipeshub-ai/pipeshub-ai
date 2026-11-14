@@ -1201,6 +1201,7 @@ func graph.record_by_external(text,text) owner=pipeshub_vetted_graph secdef=true
 func graph.records_by_revision(text[],text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=fabfcd807dfc2dc04e8e24e2166fe227 ext=-
 func graph.records_by_virtual_id(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=3df6f9c4d84262a8f7f4e7737a445350 ext=-
 func graph.records_page_by_connector(text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=c8e66f78a7a13bd1a9d13be306081920 ext=-
+func graph.records_unsupported_page(text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=f68e3b77011ee2fcc824ba844e39a954 ext=-
 func graph.stage_states_by_revision(text,text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=60eaee6b0646cff685230c159b49ebff ext=-
 func graph.stage_states_page(text,text,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=a3208be1a7eb86259c302986beb3a97f ext=-
 func graph.stage_states_stale(text[],bigint,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=5bf31d0a9c981b840094d9d290c48b93 ext=-
@@ -1347,6 +1348,7 @@ funcacl graph.records_by_virtual_id(text[]) pipeshub_query EXECUTE
 funcacl graph.records_page_by_connector(text,text,integer) pipeshub_connectors EXECUTE
 funcacl graph.records_page_by_connector(text,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.records_page_by_connector(text,text,integer) pipeshub_query EXECUTE
+funcacl graph.records_unsupported_page(text,text,integer) pipeshub_connectors EXECUTE
 funcacl graph.stage_states_by_revision(text,text) pipeshub_connectors EXECUTE
 funcacl graph.stage_states_by_revision(text,text) pipeshub_indexing EXECUTE
 funcacl graph.stage_states_by_revision(text,text) pipeshub_query EXECUTE
@@ -1508,6 +1510,7 @@ index graph.nodes_record_connector_id on graph.nodes unique=false exclusion=fals
 index graph.nodes_record_external on graph.nodes unique=false exclusion=false valid=true def=722f3304e57357338b93de57feed4e54
 index graph.nodes_record_parent on graph.nodes unique=false exclusion=false valid=true def=355737265fa9f21dc8128c5a660c4f99
 index graph.nodes_record_trash on graph.nodes unique=false exclusion=false valid=true def=dfea55500a23daf82e044379884face6
+index graph.nodes_record_unsupported on graph.nodes unique=false exclusion=false valid=true def=7eaf118ae019fc9d31cd549544e76e1e
 index graph.nodes_record_virtual_rev on graph.nodes unique=false exclusion=false valid=true def=a10c3897ff0363e31ff8ae7c8069dcea
 index graph.nodes_record_vrid on graph.nodes unique=false exclusion=false valid=true def=c8f1528dde8fa54a9cf01bc2dfd49d53
 index graph.nodes_role_by_external on graph.nodes unique=false exclusion=false valid=true def=353135118a2dd9ecdfe83e015234d030

@@ -283,6 +283,8 @@ class TestAbstractMethodInventory:
         "update_indexing_status_for_record_ids",
         "reset_indexing_status_for_connector",
         "compare_and_set_indexing_status",
+        "list_unsupported_page",
+        "transition_unsupported",
         "claim_push_record",
         "retag_push_record",
         "get_existing_record_keys",

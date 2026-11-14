@@ -168,6 +168,10 @@ class BaseConnector(ABC):
     # alone, so dispose_connector() closes that processor's broker connection.
     # Left False for a shared org processor, which other instances still use.
     _owns_entities_processor: bool = False
+    # True where reading a file can cost the source (a network share recalls a file moved to
+    # slower storage): the file-type re-queue then leaves the records for manual indexing and
+    # requeue_records takes back only what it can read without that cost.
+    REQUEUE_PARKED: bool = False
 
     def __init__(
         self,
@@ -433,6 +437,14 @@ class BaseConnector(ABC):
     @abstractmethod
     async def reindex_records(self, record_results: List[Record]) -> None:
         raise NotImplementedError("This method should be implemented by the subclass")
+
+    async def requeue_records(self, records: list[Record]) -> None:
+        """Send records already in the graph back to indexing, unchanged at the source.
+
+        The file-type re-queue calls it for records it moved out of FILE_TYPE_NOT_SUPPORTED. The
+        default publishes them as they are stored, skipping placeholders and internal records.
+        """
+        await self.data_entities_processor.reindex_existing_records(records)
 
     @classmethod
     @abstractmethod

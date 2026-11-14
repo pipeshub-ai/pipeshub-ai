@@ -44,6 +44,11 @@ _HIDDEN_SYSTEM = FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
 _NOT_ON_DISK = FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
 
 
+def is_on_disk(entry: DirectoryEntry) -> bool:
+    """False for a file moved to slower storage, which reading would make the server recall."""
+    return not (entry.attributes & _NOT_ON_DISK)
+
+
 def usable_file_id(file_id: int | None) -> bool:
     return file_id is not None and file_id != 0
 
@@ -216,7 +221,7 @@ class RecordMapper:
             indexing_status = ProgressStatus.COMPLETED.value
         # A file moved to slower storage is listed but not read unasked: reading
         # every one would make the server fetch them all back.
-        elif indexing_manual or entry.attributes & _NOT_ON_DISK:
+        elif indexing_manual or not is_on_disk(entry):
             indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         else:
             indexing_status = ProgressStatus.QUEUED.value

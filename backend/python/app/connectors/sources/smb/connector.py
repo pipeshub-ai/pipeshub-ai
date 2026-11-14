@@ -53,6 +53,7 @@ from app.connectors.sources.network_share.operations import (
     ShareWalkReport,
     create_share_groups,
     reindex_records,
+    requeue_parked_records,
     stream_file,
     walk_shares,
 )
@@ -163,6 +164,7 @@ if TYPE_CHECKING:
     )\
     .build_decorator()
 class SmbConnector(BaseConnector):
+    REQUEUE_PARKED = True
     # An edition swaps these two by subclassing instead of copying init / create_connector.
     # ConnectorFactory builds the processor from processor_cls.
     processor_cls: type[NetworkShareEntitiesProcessor] = NetworkShareEntitiesProcessor
@@ -437,6 +439,17 @@ class SmbConnector(BaseConnector):
             await self.data_source.close()
         self.data_source = None
         await self._release_thread_lease()
+
+    async def requeue_records(self, records: list[Record]) -> None:
+        if not self.data_source:
+            raise ConnectionError("SMB connector is not initialized.")
+        await requeue_parked_records(
+            data_source=self.data_source,
+            processor=self.data_entities_processor,
+            records=records,
+            indexing_filters=self.indexing_filters,
+            logger=self.logger,
+        )
 
     async def reindex_records(self, record_results: list[Record]) -> None:
         if not self.data_source:
