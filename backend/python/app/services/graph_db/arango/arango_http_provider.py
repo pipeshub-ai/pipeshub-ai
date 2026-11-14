@@ -11848,7 +11848,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         user_id: str,
         transaction: str | None = None,
     ) -> int:
-        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups."""
+        """Delete the user's own PERMISSION edges to the connector's records, record groups, user groups and roles."""
         query = """
         FOR perm IN permission
             FILTER perm._from == @user
@@ -11862,7 +11862,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query=query,
             bind_vars={"user": f"users/{user_id}", "connector_id": connector_id,
                        "targets": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
-                                   CollectionNames.GROUPS.value]},
+                                   CollectionNames.GROUPS.value, CollectionNames.ROLES.value]},
             txn_id=transaction,
         )
         return len(result or [])

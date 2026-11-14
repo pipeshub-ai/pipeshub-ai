@@ -29,8 +29,8 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     JiraConnector,
     _ParentLevel,
 )
-from app.models.entities import AppUser, TicketRecord
-from app.models.permission import EntityType
+from app.models.entities import AppUser, RecordType, TicketRecord
+from app.models.permission import EntityType, Permission, PermissionType
 
 PROJECT_ID = "p-1"
 SCHEME = {"id": 10002, "name": "PROJ issue security scheme", "levels": [{"id": "10102", "name": "Leadership"}]}
@@ -519,6 +519,24 @@ async def test_the_upgrade_sync_hands_its_reread_projects_to_the_stub_sweep() ->
     projects = [(MagicMock(short_name=k, external_group_id=k), []) for k in results]
     stats = await c._sync_all_project_issues(projects, [], 1)
     assert stats["leveled_reread_project_ids"] == {"p-1"} and stats["full_sync_project_ids"] == set()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_of_the_synced_users_skips_the_stub_sweep() -> None:
+    """An empty directory would take every stub's level grants away; the next sync sweeps."""
+    c = _connector()
+    c._issue_security[PROJECT_ID] = _present()
+    stub = TicketRecord(
+        id="rid", org_id="org-1", record_name="x", record_type="TICKET", external_record_id="1001", version=0,
+        origin="CONNECTOR", connector_name="JIRA", connector_id="conn-sec", external_record_group_id=PROJECT_ID,
+        record_group_type="PROJECT", is_placeholder=True, external_revision_id=None, access_rule=AccessRule.OPEN)
+    c._bulk_fetch_ancestor_level = AsyncMock(return_value=[_issue({"id": "10102"})])
+    c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+    c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=ConnectionError("graph unavailable"))
+    await c._sweep_placeholder_records({PROJECT_ID}, set())
+    c.data_entities_processor.get_all_app_users.assert_awaited_once_with("conn-sec", raise_on_error=True)
+    c.data_entities_processor.on_new_records.assert_not_awaited()
+    c._bulk_fetch_ancestor_level.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1702,3 +1720,202 @@ class TestSkippedHoldersAreReportedOncePerLevel:
         with caplog.at_level(logging.WARNING, logger="test.jira.sec"):
             await c._build_issue_records(issues, PROJECT_ID, _users())
         assert len([r for r in caplog.records if "were not granted" in r.getMessage()]) == 1
+
+
+class TestIssueGrantsNameListedAccountsOnly:
+    """An issue's own grants name only accounts in the synced directory (licensed and active); an account listed
+    again, or for the first time, gets them back when the issues naming it are read again."""
+
+    @staticmethod
+    def _ctx(holders: list | None = None, levels: dict | None = None) -> IssueSecurityContext:
+        return IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, scheme_id="1", members_readable=True,
+                                    members_by_level=levels or {},
+                                    browse_holders=[{"type": "reporter"}] if holders is None else holders)
+
+    @pytest.mark.asyncio
+    async def test_a_reporter_outside_the_directory_is_not_granted_even_with_an_email_in_the_payload(self) -> None:
+        issue = _issue()
+        issue["fields"]["reporter"] = {"accountId": "acc-x", "emailAddress": "former@x.com", "displayName": "F"}
+        _, perms, _ = await _build(_connector(), issue, IssueSecurityContext(
+            knowledge=SchemeKnowledge.NONE, browse_holders=[{"type": "reporter"}, {"type": "assignee"}]))
+        assert {p.email for p in perms} == {"asg@x.com"}
+
+    @pytest.mark.asyncio
+    async def test_a_level_user_holder_outside_the_directory_is_not_granted(self) -> None:
+        holders = {"10102": [{"type": "user", "parameter": "acc-x",
+                              "user": {"accountId": "acc-x", "emailAddress": "former@x.com"}}, {"type": "assignee"}]}
+        _, perms, _ = await _build(_connector(), _issue({"id": "10102"}), _present(holders))
+        assert {p.email for p in perms} == {"asg@x.com"}
+
+    @pytest.mark.parametrize("not_in_full", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_refused", "empty"])
+    def test_a_directory_not_read_in_full_counts_the_linked_accounts_and_no_one_else(self, not_in_full: str) -> None:
+        c = _connector()
+        c._stored_app_users = [AppUser(app_name="JIRA", connector_id="c", source_user_id="acc-l", org_id="org-1",
+                                       email="linked@x.com", full_name="L", is_active=True)]
+        c._listed_account_ids = {"acc-l"}
+        perms = [Permission(entity_type=EntityType.USER, email="Linked@x.com", type=PermissionType.READ),
+                 Permission(entity_type=EntityType.USER, email="withdrawn@x.com", type=PermissionType.READ),
+                 Permission(entity_type=EntityType.GROUP, external_id="g", type=PermissionType.READ)]
+        assert c._directory_grants(perms, {}) == perms[2:]
+        if not_in_full == "empty":
+            c._listed_account_ids = set()  # no one listed, though accounts were linked: not a read of the whole list
+        else:
+            setattr(c, not_in_full, True)
+        # A linked account the read missed keeps its grant; one only the payload names (withdrawn) does not.
+        assert c._directory_grants(perms, {}) == [perms[0], perms[2]]
+
+    @staticmethod
+    def _pass(c: JiraConnector, stored: str | None = None) -> tuple[list, list]:
+        saved: list = []
+        naming: list = []
+        c._update_project_sync_checkpoint = AsyncMock(side_effect=lambda _k, **kw: saved.append(kw["people_reread"]))
+
+        async def fetch(*_a: object, naming: str | None = None, **_kw: object) -> AsyncIterator:
+            naming_seen.append(naming)
+            return
+            yield
+
+        naming_seen = naming
+        c._fetch_issues_batched = fetch
+        return saved, naming
+
+    @pytest.mark.asyncio
+    async def test_newly_listed_accounts_have_their_issues_read_again_and_are_then_cleared(self) -> None:
+        c = _connector()
+        saved, naming = self._pass(c)
+        c._newly_listed_account_ids = ["acc-1", 'bad"id']
+        ctx = self._ctx(levels={"10102": [{"type": "user", "parameter": "acc-1"}], "10103": [{"type": "group", "value": "g"}],
+                                "10104": [{"type": "groupCustomField", "parameter": "customfield_10050"}]},
+                        holders=[{"type": "reporter"}, {"type": "userCustomField", "parameter": "customfield_10040"}])
+        ctx.custom_field_ids = ["customfield_10040", "customfield_10050"]
+        await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, ctx, {"people_reread": '["acc-0"]'}, covered=False)
+        assert saved == ['["acc-0", "acc-1", "bad\\"id"]', "[]"]  # saved before the pass, cleared after it
+        # Not cf[10050]: a group field holds group names, and an account id there makes Jira refuse the whole query.
+        assert naming == ['reporter in ("acc-0", "acc-1") OR assignee in ("acc-0", "acc-1") '
+                          'OR cf[10040] in ("acc-0", "acc-1") OR level in (10102)']
+
+    @pytest.mark.asyncio
+    async def test_a_pass_that_skipped_an_issue_keeps_the_accounts_for_the_next_sync(self) -> None:
+        c = _connector()
+        saved, _ = self._pass(c)
+        c._newly_listed_account_ids = ["acc-1"]
+
+        async def fail(*_a: object, **_kw: object) -> None:
+            c._issue_build_failures += 1
+        c._reread_issues_naming = fail
+        await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, self._ctx(), None, covered=False)
+        assert saved == ['["acc-1"]']
+
+    @pytest.mark.asyncio
+    async def test_unread_holders_keep_the_accounts_without_a_pass(self) -> None:
+        c = _connector()
+        saved, naming = self._pass(c)
+        c._newly_listed_account_ids = ["acc-1"]
+        ctx = self._ctx()
+        ctx.browse_holders = None
+        await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, ctx, None, covered=False)
+        assert saved == ['["acc-1"]'] and naming == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("covered", "holders"), [(True, None), (False, [])], ids=["read_in_full", "names_nobody"])
+    async def test_a_project_read_in_full_or_naming_nobody_needs_no_pass(self, covered: bool, holders: list | None) -> None:
+        c = _connector()
+        saved, naming = self._pass(c)
+        c._newly_listed_account_ids = ["acc-1"]
+        await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, self._ctx(holders=holders), {"people_reread": '["acc-0"]'},
+                                         covered=covered)
+        assert naming == [] and saved == ["[]"]
+
+    @pytest.mark.asyncio
+    async def test_newly_listed_accounts_are_saved_before_they_are_linked_and_kept_until_handed_on(self) -> None:
+        c = _connector()
+        store: dict = {"people_reread": {"accounts": '["acc-0"]'}}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
+        assert await c._note_people_to_reread({"acc-1"}) == ["acc-0", "acc-1"]
+        assert json.loads(store["people_reread"]["accounts"]) == ["acc-0", "acc-1"]
+        assert await c._note_people_to_reread(set()) == ["acc-0", "acc-1"]  # an earlier sync failed before handing them on
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("failed", "skipped", "unresolved", "swept", "cleared"), [
+        ([], [], set(), True, True), (["PROJ"], [], set(), True, False), ([], ["OPS"], set(), True, False),
+        ([], [], {"OPS"}, True, False), ([], [], set(), False, False)],
+        ids=["all_handed_on", "a_project_failed", "a_project_not_built", "a_selected_key_not_looked_up", "stub_sweep_skipped"])
+    async def test_the_saved_accounts_are_cleared_only_once_every_project_took_them(
+        self, failed: list, skipped: list, unresolved: set, swept: bool, cleared: bool,
+    ) -> None:
+        """A selected project the search missed and whose former key could not be looked up (a 503) was not read:
+        it still owes its re-read. So do the stubs of a project read again while the sweep was skipped."""
+        c = _connector()
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.update_sync_point = AsyncMock()
+        c._newly_listed_account_ids = ["acc-1"]
+        c._skipped_project_keys = skipped
+        c._unresolved_selected_keys = unresolved
+        await c._people_to_reread_handed_on({"failed_project_keys": failed}, swept=swept)
+        assert c.issues_sync_point.update_sync_point.await_count == (1 if cleared else 0)
+
+    @pytest.mark.asyncio
+    async def test_a_project_that_read_the_accounts_issues_again_has_its_stubs_re_secured(self) -> None:
+        """Its stubs (ancestors backfilled earlier) may name the account too; the sweep only revisits a
+        backfilled stub in a project reported as read again."""
+        c = _connector()
+        c._newly_listed_account_ids = ["acc-1"]
+        c._reread_issues_naming = AsyncMock()
+        _, _, _, result = await TestMemberChangeRereadsOnlyTheAffectedLevels._sync(
+            self, stored_levels=_present().level_fingerprints(), connector=c)
+        c._reread_issues_naming.assert_awaited_once()
+        assert result["leveled_reread"] is True
+
+    @pytest.mark.asyncio
+    async def test_on_a_list_not_read_in_full_a_linked_level_holder_named_by_account_id_alone_keeps_the_grant(self) -> None:
+        """mia (acc-9) is linked but missing from a list cut short, and the level names her by account id with no
+        email. Read in full, she is gone from Jira and gets nothing; nor does she when the short list showed her
+        deactivated."""
+        for complete, shown_deactivated in ((True, False), (False, False), (False, True)):
+            c = _connector()
+            c._stored_app_users = _users()
+            c._listed_account_ids = {"acc-1", "acc-2"}
+            c._seen_account_ids = {"acc-1", "acc-2"} | ({"acc-9"} if shown_deactivated else set())
+            c._user_read_unfinished = not complete
+            c._issue_security[PROJECT_ID] = _present(members={"10102": [
+                {"type": "user", "parameter": "acc-9", "user": {"accountId": "acc-9"}}]})
+            c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+            records, _ = await c._build_issue_records([_issue({"id": "10102"})], PROJECT_ID, _users()[:2])
+            assert {p.email for p in records[0][1]} == (set() if complete or shown_deactivated else {"mia@x.com"})
+
+    @pytest.mark.asyncio
+    async def test_linking_users_between_syncs_saves_their_re_read_first(self) -> None:
+        c = _connector()
+        c.data_source = MagicMock()
+        order: list[str] = []
+        listed = _users()
+        c._fetch_users = AsyncMock(return_value=listed)
+        c._stored_app_users = [listed[0]]
+        c._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
+        c._keep_licensed_users = AsyncMock(side_effect=lambda users, _m: users)
+        c._note_people_to_reread = AsyncMock(side_effect=lambda ids: order.append(("note", sorted(ids))))
+        c.data_entities_processor.on_new_app_users = AsyncMock(side_effect=lambda _u: order.append(("link",)))
+        c._sync_user_groups = AsyncMock(return_value=None)
+        c._list_projects_with_filter = AsyncMock(return_value=[])
+        c._sync_project_lead_roles = AsyncMock()
+        await c._link_users_groups_and_roles()
+        assert order == [("note", ["acc-2", "acc-9"]), ("link",)]
+
+
+class TestSweepAncestorReads:
+    """A stub whose ancestor could not be read (not "Jira has no such issue") is not swept: the sweep says so, and
+    an account listed again stays owed until a sweep reads it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("status", "swept"), [(200, True), (503, False)], ids=["read", "unavailable"])
+    async def test_a_failed_ancestor_read_reports_the_sweep_incomplete(self, status: int, swept: bool) -> None:
+        c = _connector()
+        stub = MagicMock(record_type=RecordType.TICKET, external_record_group_id=PROJECT_ID, external_record_id="77",
+                         external_revision_id="1", parent_external_record_id=None)
+        c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        response = MagicMock(status=status, json=MagicMock(return_value={"issues": []}))
+        c._call_with_retry = AsyncMock(return_value=response)
+        assert await c._sweep_placeholder_records({PROJECT_ID}, {PROJECT_ID}) is swept

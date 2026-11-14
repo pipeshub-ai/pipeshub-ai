@@ -292,6 +292,16 @@ class PermissionsMixin(PgBase):
         if record:
             await self.delete_edge(user_id, "users", record.id, "records", "permission", transaction)
 
+    async def remove_user_access_to_connector(self, connector_id: str, user_id: str, transaction: str | None = None) -> int:
+        """The user's own PERMISSION edges to the connector's records, record groups, user groups and roles go; grants
+        through groups, teams or the organization stay. Returns how many went."""
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.remove_user_access_to_connector */ WITH gone AS (
+            DELETE FROM graph.edges p USING graph.nodes n
+            WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = $2
+              AND p.to_coll IN ('records', 'recordGroups', 'groups', 'roles')
+              AND n.org_id = p.org_id AND n.coll = p.to_coll AND n.id = p.to_id AND n.doc->>'connectorId' = $3
+            RETURNING 1) SELECT count(*) FROM gone""", current_org_id(), user_id, connector_id), transaction, write=True) or 0
+
     # ---- teams ---------------------------------------------------------------------------------------------------
     async def batch_update_team_member_roles(self, team_id: str, user_roles: list[dict[str, str]], timestamp: int, transaction: str | None = None) -> list[dict]:
         """Sets the role on each listed user's edge to the team (a user with no edge is skipped); the updated edges come back. A user named twice gets the last role."""

@@ -1292,9 +1292,28 @@ class TestFetchUsersPhases:
 
         await connector._withdraw_ineligible_app_users(kept, {"dead", "unlic", "old"})
 
+        # Their own grants go too: the org's All team may still pass them through the gate.
         connector.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with(
-            "conn-jira-cov", [stored[0], stored[1]]
+            "conn-jira-cov", [stored[0], stored[1]], drop_grants=True
         )
+        assert connector._stored_app_users == stored[2:], "the withdrawn no longer count as linked this sync"
+
+    @pytest.mark.asyncio
+    async def test_a_stored_account_gone_from_the_directory_is_ineligible(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[
+            AppUser(id="n1", app_name=Connectors.JIRA, connector_id="c", source_user_id="gone", email="g@x.com", full_name="g"),
+            AppUser(id="n2", app_name=Connectors.JIRA, connector_id="c", source_user_id="u2", email="h@x.com", full_name="h"),
+        ])
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, [
+            {"accountId": "u2", "accountType": "atlassian", "active": True}]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await connector._fetch_users()
+        assert connector._deactivated_account_ids == {"gone"}
 
     @pytest.mark.asyncio
     async def test_reverse_lookup_skipped_when_all_resolved(self):

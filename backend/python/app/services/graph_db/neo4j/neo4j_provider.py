@@ -11351,10 +11351,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         user_id: str,
         transaction: str | None = None,
     ) -> int:
-        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups."""
+        """Delete the user's own PERMISSION edges to the connector's records, record groups, user groups and roles."""
         query = """
         MATCH (u:User {id: $user_id})-[p:PERMISSION]->(n)
-        WHERE (n:Record OR n:RecordGroup OR n:Group) AND n.connectorId = $connector_id
+        WHERE (n:Record OR n:RecordGroup OR n:Group OR n:Role) AND n.connectorId = $connector_id
         DELETE p
         RETURN count(p) AS removed
         """
