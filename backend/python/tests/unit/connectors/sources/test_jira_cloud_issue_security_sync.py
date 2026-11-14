@@ -30,7 +30,7 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     _ParentLevel,
 )
 from app.models.entities import AppUser, TicketRecord
-from app.models.permission import EntityType
+from app.models.permission import EntityType, Permission, PermissionType
 
 PROJECT_ID = "p-1"
 SCHEME = {"id": 10002, "name": "PROJ issue security scheme", "levels": [{"id": "10102", "name": "Leadership"}]}
@@ -1702,3 +1702,96 @@ class TestSkippedHoldersAreReportedOncePerLevel:
         with caplog.at_level(logging.WARNING, logger="test.jira.sec"):
             await c._build_issue_records(issues, PROJECT_ID, _users())
         assert len([r for r in caplog.records if "were not granted" in r.getMessage()]) == 1
+
+
+class TestIssueGrantsNameListedAccountsOnly:
+    """An issue's own grants name only accounts in the synced directory (licensed and active); an account listed
+    again, or for the first time, gets them back when the issues naming it are read again."""
+
+    @staticmethod
+    def _ctx(holders: list | None = None, levels: dict | None = None) -> IssueSecurityContext:
+        return IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, scheme_id="1", members_readable=True,
+                                    members_by_level=levels or {},
+                                    browse_holders=[{"type": "reporter"}] if holders is None else holders)
+
+    @pytest.mark.asyncio
+    async def test_a_reporter_outside_the_directory_is_not_granted_even_with_an_email_in_the_payload(self) -> None:
+        issue = _issue()
+        issue["fields"]["reporter"] = {"accountId": "acc-x", "emailAddress": "former@x.com", "displayName": "F"}
+        _, perms, _ = await _build(_connector(), issue, IssueSecurityContext(
+            knowledge=SchemeKnowledge.NONE, browse_holders=[{"type": "reporter"}, {"type": "assignee"}]))
+        assert {p.email for p in perms} == {"asg@x.com"}
+
+    @pytest.mark.asyncio
+    async def test_a_level_user_holder_outside_the_directory_is_not_granted(self) -> None:
+        holders = {"10102": [{"type": "user", "parameter": "acc-x",
+                              "user": {"accountId": "acc-x", "emailAddress": "former@x.com"}}, {"type": "assignee"}]}
+        _, perms, _ = await _build(_connector(), _issue({"id": "10102"}), _present(holders))
+        assert {p.email for p in perms} == {"asg@x.com"}
+
+    def test_a_directory_read_cut_short_drops_nothing(self) -> None:
+        c = _connector()
+        perms = [Permission(entity_type=EntityType.USER, email="former@x.com", type=PermissionType.READ),
+                 Permission(entity_type=EntityType.GROUP, external_id="g", type=PermissionType.READ)]
+        assert c._directory_grants(perms, {}) == perms[1:]
+        c._user_read_unfinished = True
+        assert c._directory_grants(perms, {}) == perms
+
+    @staticmethod
+    def _pass(c: JiraConnector, stored: str | None = None) -> tuple[list, list]:
+        saved: list = []
+        naming: list = []
+        c._update_project_sync_checkpoint = AsyncMock(side_effect=lambda _k, **kw: saved.append(kw["people_reread"]))
+
+        async def fetch(*_a: object, naming: str | None = None, **_kw: object) -> AsyncIterator:
+            naming_seen.append(naming)
+            return
+            yield
+
+        naming_seen = naming
+        c._fetch_issues_batched = fetch
+        return saved, naming
+
+    @pytest.mark.asyncio
+    async def test_newly_listed_accounts_have_their_issues_read_again_and_are_then_cleared(self) -> None:
+        c = _connector()
+        saved, naming = self._pass(c)
+        c._newly_listed_account_ids = ["acc-1", 'bad"id']
+        ctx = self._ctx(levels={"10102": [{"type": "user", "parameter": "acc-1"}], "10103": [{"type": "group", "value": "g"}]})
+        ctx.custom_field_ids = ["customfield_10040"]
+        await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, ctx, {"people_reread": '["acc-0"]'}, covered=False)
+        assert saved == ['["acc-0", "acc-1", "bad\\"id"]', "[]"]  # saved before the pass, cleared after it
+        assert naming == ['reporter in ("acc-0", "acc-1") OR assignee in ("acc-0", "acc-1") '
+                          'OR cf[10040] in ("acc-0", "acc-1") OR level in (10102)']
+
+    @pytest.mark.asyncio
+    async def test_a_pass_that_skipped_an_issue_keeps_the_accounts_for_the_next_sync(self) -> None:
+        c = _connector()
+        saved, _ = self._pass(c)
+        c._newly_listed_account_ids = ["acc-1"]
+
+        async def fail(*_a: object, **_kw: object) -> None:
+            c._issue_build_failures += 1
+        c._reread_issues_naming = fail
+        await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, self._ctx(), None, covered=False)
+        assert saved == ['["acc-1"]']
+
+    @pytest.mark.asyncio
+    async def test_unread_holders_keep_the_accounts_without_a_pass(self) -> None:
+        c = _connector()
+        saved, naming = self._pass(c)
+        c._newly_listed_account_ids = ["acc-1"]
+        ctx = self._ctx()
+        ctx.browse_holders = None
+        await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, ctx, None, covered=False)
+        assert saved == ['["acc-1"]'] and naming == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("covered", "holders"), [(True, None), (False, [])], ids=["read_in_full", "names_nobody"])
+    async def test_a_project_read_in_full_or_naming_nobody_needs_no_pass(self, covered: bool, holders: list | None) -> None:
+        c = _connector()
+        saved, naming = self._pass(c)
+        c._newly_listed_account_ids = ["acc-1"]
+        await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, self._ctx(holders=holders), {"people_reread": '["acc-0"]'},
+                                         covered=covered)
+        assert naming == [] and saved == ["[]"]

@@ -5490,9 +5490,14 @@ class DataSourceEntitiesProcessor:
             raise e
 
     @retry_on_deadlock()
-    async def withdraw_app_user_access(self, connector_id: str, users: list[AppUser]) -> None:
+    async def withdraw_app_user_access(
+        self, connector_id: str, users: list[AppUser], *, drop_grants: bool = False,
+    ) -> None:
         """Remove the user-app relation of stored app users (``get_all_app_users``, so each id is
-        the user's node). Without it no grant of the connector reaches the user."""
+        the user's node). Without it no grant of the connector reaches the user, unless the gate is
+        passed another way (the org's All team), so ``drop_grants`` also removes the user's own grants
+        on the connector's records, record groups, user groups and roles in the same transaction.
+        The connector then writes them again for a user it lists again."""
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             for user_id in {u.id for u in users if u.id}:
                 await tx_store.delete_edge(
@@ -5500,6 +5505,8 @@ class DataSourceEntitiesProcessor:
                     connector_id, CollectionNames.APPS.value,
                     CollectionNames.USER_APP_RELATION.value,
                 )
+                if drop_grants:
+                    await tx_store.remove_user_access_to_connector(connector_id, user_id)
         self.logger.info(f"Withdrew connector {connector_id} from {len(users)} user(s) no longer eligible at the source")
 
     @retry_on_deadlock()

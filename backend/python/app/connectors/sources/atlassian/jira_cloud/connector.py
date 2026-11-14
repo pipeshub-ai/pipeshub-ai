@@ -277,6 +277,10 @@ INCREMENTAL_OVERLAP_MS: int = 2 * 60 * 1000
 ISSUE_PLACEMENT: str = "stories-under-readable-epic"
 # Parents named in one ``parent in (...)`` clause when their children are re-read.
 SUBTASK_REREAD_CHUNK: int = 50
+# Accounts per JQL when re-reading the issues that name newly listed accounts.
+PEOPLE_REREAD_CHUNK: int = 50
+# An Atlassian account id ("557058:f58131cb-...", "5b10ac8d82e05b22cc7d4ef5"), safe to quote in JQL.
+JIRA_ACCOUNT_ID = re.compile(r"[A-Za-z0-9:_-]{1,128}")
 # What _files_under_parent needs to know about a parent, which Jira's `parent` field does
 # not carry. Read in bulk, PLACEHOLDER_SWEEP_BATCH parents per call.
 PARENT_LEVEL_FIELDS: list[str] = ["security", "project", "issuetype"]
@@ -557,6 +561,7 @@ class JiraConnector(BaseConnector):
         # Cleared when run_sync ends, so a _fetch_projects call outside it reads the mapping itself.
         self._stored_app_users: list[AppUser] = []
         self._deactivated_account_ids: set[str] = set()
+        self._newly_listed_account_ids: list[str] = []
         self._app_roles_mapping: Optional[dict[str, list[dict[str, str]]]] = None
         # Selected project key -> the key Jira gives that project now, as of the last listing.
         self._renamed_project_keys: dict[str, str] = {}
@@ -970,6 +975,11 @@ class JiraConnector(BaseConnector):
             licensed_users = await self._keep_licensed_users(jira_users, self._app_roles_mapping)
             unlicensed_ids = {u.source_user_id for u in jira_users} - {u.source_user_id for u in licensed_users}
             jira_users = licensed_users
+            # Their issues were written without their own grants (or lost them when withdrawn).
+            linked_before = {u.source_user_id for u in self._stored_app_users}
+            self._newly_listed_account_ids = sorted(
+                {u.source_user_id for u in jira_users if u.source_user_id} - linked_before
+            )
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
@@ -1310,7 +1320,7 @@ class JiraConnector(BaseConnector):
             reporter_email=issue_data["reporter_email"],
             assignee_email=issue_data["assignee_email"],
         )
-        return permissions
+        return self._directory_grants(permissions, user_by_account_id)
 
     def _build_ancestor_stub(
         self,
@@ -1591,6 +1601,7 @@ class JiraConnector(BaseConnector):
         issue_placement: str | None = None,
         subtask_parents: str | None = None,
         browse_holders: str | None = None,
+        people_reread: str | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -1612,6 +1623,7 @@ class JiraConnector(BaseConnector):
             "issue_placement": issue_placement if issue_placement is not None else existing.get("issue_placement"),
             "subtask_parents": subtask_parents if subtask_parents is not None else existing.get("subtask_parents"),
             "browse_holders": browse_holders if browse_holders is not None else existing.get("browse_holders"),
+            "people_reread": people_reread if people_reread is not None else existing.get("people_reread"),
         }
 
         await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
@@ -2275,10 +2287,15 @@ class JiraConnector(BaseConnector):
         # Phase 2: Jira bulk fetch (1 paginated API call)
         # ====================================================================
         raw_jira_users = await self._fetch_all_jira_users_bulk()
+        listed_active = {
+            u["accountId"] for u in raw_jira_users
+            if u.get("accountType") == "atlassian" and u.get("active", True) and u.get("accountId")
+        }
+        # Deactivated, or gone from the directory: neither can sign in. Only acted on after a complete read.
         self._deactivated_account_ids = {
             u["accountId"] for u in raw_jira_users
             if u.get("accountType") == "atlassian" and not u.get("active", True) and u.get("accountId")
-        }
+        } | {u.source_user_id for u in cached_app_users if u.source_user_id and u.source_user_id not in listed_active}
 
         all_active_account_ids: set[str] = set()
         visible_email_map: dict[str, str] = {}  # email.lower() -> accountId
@@ -2697,7 +2714,17 @@ class JiraConnector(BaseConnector):
             if u.source_user_id in ineligible_ids and (u.email or "").lower() not in kept_emails
         ]
         if gone:
-            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            # Their own grants go too: the org's All team may still pass them through the gate.
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)
+
+    def _directory_grants(self, permissions: list[Permission], user_by_account_id: dict[str, AppUser]) -> list[Permission]:
+        """An issue's own grants (reporter, assignee, user fields, level members) name only accounts in the
+        synced directory: Jira treats an account without product access, or a deactivated one, as anonymous.
+        A directory read cut short is not the whole directory, so nothing is dropped then."""
+        if self._user_read_unfinished:
+            return permissions
+        listed = {u.email.lower() for u in user_by_account_id.values() if u.email}
+        return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed]
 
     async def _fallback_permissions_for_forbidden_scheme(
         self,
@@ -4410,6 +4437,10 @@ class JiraConnector(BaseConnector):
             await self._record_security_levels(
                 project_key, levels_to_save, force=security.defer_checkpoint
             )
+        await self._reread_for_newly_listed(
+            project_key, project_id, jira_users, stats, security, project_sync_data,
+            covered=is_new_project or reread == "project",
+        )
         placement_reread = False
         if (project_sync_data or {}).get("issue_placement") != ISSUE_PLACEMENT:
             failures_before = self._issue_build_failures
@@ -4582,6 +4613,60 @@ class JiraConnector(BaseConnector):
             if batch:
                 await self._process_new_records(batch, project_key, stats)
 
+    async def _reread_for_newly_listed(
+        self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
+        security: IssueSecurityContext, checkpoint: dict[str, Any] | None, *, covered: bool,
+    ) -> None:
+        """An issue's own grants name only listed accounts, and a withdrawn account loses them, so an
+        account listed again (or for the first time) gets them back only when its issues are read again.
+        The accounts are saved before the pass and cleared after it, so a pass that fails is repeated."""
+        try:
+            pending = set(json.loads((checkpoint or {}).get("people_reread") or "[]"))
+        except (TypeError, ValueError):
+            pending = set()
+        pending |= set(self._newly_listed_account_ids)
+        names_people = security.browse_holders is None or security.browse_holders or security.members_by_level
+        if covered or not security.enforce or not names_people:
+            if pending - set(self._newly_listed_account_ids):
+                await self._update_project_sync_checkpoint(project_key, people_reread="[]")
+            return
+        if not pending:
+            return
+        await self._update_project_sync_checkpoint(project_key, people_reread=json.dumps(sorted(pending)))
+        if security.browse_holders is None:
+            return  # holders unknown: an issue read now keeps its stored grants; the next sync that reads them re-reads
+        failures_before = self._issue_build_failures
+        await self._reread_issues_naming(project_key, project_id, users, stats, sorted(pending), security)
+        if self._issue_build_failures == failures_before:
+            await self._update_project_sync_checkpoint(project_key, people_reread="[]")
+
+    async def _reread_issues_naming(
+        self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
+        account_ids: list[str], security: IssueSecurityContext,
+    ) -> None:
+        """Rebuild the stored issues that name these accounts where an issue's own grants come from:
+        reporter, assignee, a user field a holder reads, or a level that names them."""
+        ids = [a for a in account_ids if JIRA_ACCOUNT_ID.fullmatch(a)]
+        fields = ["reporter", "assignee", *(f"cf[{f.removeprefix('customfield_')}]" for f in security.custom_field_ids)]
+        for start in range(0, len(ids), PEOPLE_REREAD_CHUNK):
+            chunk = ids[start:start + PEOPLE_REREAD_CHUNK]
+            quoted = ", ".join(f'"{a}"' for a in chunk)
+            clauses = [f"{f} in ({quoted})" for f in fields]
+            levels = sorted(
+                lid for lid, holders in security.members_by_level.items() if str(lid).isdigit() and any(
+                    isinstance(h, dict) and (h.get("parameter") in chunk or ((h.get("user") or {}).get("accountId") in chunk))
+                    for h in holders
+                )
+            )
+            if levels:
+                clauses.append(f"level in ({', '.join(levels)})")
+            async for batch, _more, _ts in self._fetch_issues_batched(
+                project_key, project_id, users, None, None, is_new_project=True, stored_only=True,
+                naming=" OR ".join(clauses),
+            ):
+                if batch:
+                    await self._process_new_records(batch, project_key, stats)
+
     async def _fetch_issues_batched(
         self,
         project_key: str,
@@ -4595,6 +4680,7 @@ class JiraConnector(BaseConnector):
         leveled_only: bool = False,
         stored_only: bool = False,
         parent_ids: list[str] | None = None,
+        naming: str | None = None,
     ) -> AsyncGenerator[tuple[list[tuple[Record, list[Permission], bool]], bool, Optional[int]], None]:
         """
         Fetch issues for a project in batches, yielding processed records.
@@ -4641,6 +4727,8 @@ class JiraConnector(BaseConnector):
         if parent_ids:
             # Only the children of these issues (ids are numeric).
             jql_conditions.append(f'parent in ({", ".join(str(int(i)) for i in parent_ids)})')
+        if naming:
+            jql_conditions.append(f"({naming})")
 
         # Build final JQL (ORDER BY required for consistent pagination)
         # Add id ASC as secondary sort for stable ordering when timestamps are equal
@@ -5344,6 +5432,7 @@ class JiraConnector(BaseConnector):
                 reporter_email=reporter_email,
                 assignee_email=assignee_email,
             )
+            permissions = self._directory_grants(permissions, user_by_account_id)
             if skipped_holders and (logged := (project_id, read_security_level(fields)[1], ",".join(skipped_holders))) \
                     not in self._skipped_holders_logged:
                 self._skipped_holders_logged.add(logged)
@@ -6963,8 +7052,9 @@ class JiraConnector(BaseConnector):
 
             # Resolve emails against the synced user directory once. Jira's issue GET usually
             # omits emailAddress, so without this the reindex path would null out already-resolved
-            # creator/reporter/assignee emails (and degrade the ticket-user edges).
-            synced_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+            # creator/reporter/assignee emails (and degrade the ticket-user edges). A failed read raises:
+            # an empty directory would take every issue's own grants away.
+            synced_users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
             synced_user_by_account_id: dict[str, AppUser] = {
                 u.source_user_id: u for u in synced_users if u.source_user_id
             }
@@ -7222,6 +7312,7 @@ class JiraConnector(BaseConnector):
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
             )
+            permissions = self._directory_grants(permissions, user_by_account_id)
             if not settled or skipped_holders:
                 # The level could not be read in full (a null level always can), or a holder
                 # did not resolve (application roles are read by the sync): writing would

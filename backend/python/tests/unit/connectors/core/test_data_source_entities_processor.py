@@ -207,6 +207,25 @@ class TestPlaceholdersAreRestricted:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("drop_grants", [True, False])
+    async def test_withdraw_takes_the_users_own_grants_only_when_asked(self, drop_grants: bool) -> None:
+        from app.config.constants.arangodb import Connectors
+        from app.models.entities import AppUser
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.delete_edge = AsyncMock()
+        tx_store.remove_user_access_to_connector = AsyncMock(return_value=2)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        user = AppUser(id="node-1", app_name=Connectors.JIRA, connector_id="c", source_user_id="a", email="a@x.com", full_name="a")
+
+        await proc.withdraw_app_user_access("conn-1", [user], drop_grants=drop_grants)
+
+        if drop_grants:
+            tx_store.remove_user_access_to_connector.assert_awaited_once_with("conn-1", "node-1")
+        else:
+            tx_store.remove_user_access_to_connector.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_withdraw_drops_the_access_cache_when_a_later_delete_fails(self) -> None:
         # Without explicit transactions the first delete has already committed.
         from app.config.constants.arangodb import Connectors
