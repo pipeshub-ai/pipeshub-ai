@@ -44,9 +44,11 @@ class SelectolaxHtmlParser:
       using ``<base>``, canonical link, or other heuristics in the document.
     """
 
-    def __init__(self, **kwargs: object) -> None:
+    def __init__(self, *, allow_remote_fetch: bool = True, **kwargs: object) -> None:
         self._converter = HtmlToBlocksConverter()
         self._logger = kwargs.get("logger") or logging.getLogger(__name__)
+        # False for a mail's HTML: fetching its remote images would tell the sender it was read.
+        self._allow_remote_fetch = allow_remote_fetch
 
     # ------------------------------------------------------------------
     # Public API
@@ -76,7 +78,7 @@ class SelectolaxHtmlParser:
             
             urls_to_convert = [image["url"] for image in images]
             base64_urls = await ImageParser.urls_to_base64(
-                urls_to_convert, allow_remote_fetch=True  # file bytes, not a pushed blocks document
+                urls_to_convert, allow_remote_fetch=self._allow_remote_fetch
             )
 
             for i, image in enumerate(images):

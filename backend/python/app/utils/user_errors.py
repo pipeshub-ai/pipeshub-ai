@@ -176,6 +176,18 @@ def unsupported_file_type(extension: str | None) -> str:
     return f"PipesHub can't read {what} yet. Convert the file to PDF, DOCX or TXT to make it searchable."
 
 
+def file_too_large_to_read(extension: str | None) -> str:
+    ext = (extension or "").strip().lstrip(".").lower()
+    what = f".{ext} file" if ext and ext not in {"unknown", "none"} else "file"
+    return f"This {what} is larger than 256 MB, so PipesHub doesn't read it."
+
+
+def binary_text_file(extension: str | None) -> str:
+    ext = (extension or "").strip().lstrip(".").lower()
+    what = f".{ext} file" if ext and ext not in {"unknown", "none"} else "file"
+    return f"This {what} holds binary data, not text, so PipesHub can't read it."
+
+
 # What a synced item is called in a reason. Some sources let a file be fixed
 # where it lives, but not all (a mail attachment can't be edited), so reasons
 # say what a new copy in the source leads to rather than asking for an edit.
@@ -705,6 +717,12 @@ def _reason(exc: BaseException | None) -> str:
         if getattr(e, "code", None) == ParseErrorCode.UNSUPPORTED_FORMAT:
             details = getattr(e, "details", None) or {}
             return unsupported_file_type(details.get("extension"))
+        # A file found damaged says why in its own words, ahead of the processing error
+        # that wraps it in-process (which would read as a generic unreadable file).
+        if getattr(e, "code", None) == ParseErrorCode.PARSE_FAILED:
+            user_reason = (getattr(e, "details", None) or {}).get("user_reason")
+            if isinstance(user_reason, str) and user_reason:
+                return user_reason
         if _llm_not_configured(e):
             return str(e)
         if e.args and isinstance(e.args[0], str) and e.args[0] in _STORED_AS_WRITTEN:

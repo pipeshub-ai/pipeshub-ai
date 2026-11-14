@@ -25,22 +25,12 @@ from app.services.parsing.interface import (
 
 logger = logging.getLogger(__name__)
 
-# Code sources with a tree-sitter grammar map to "code"; the rest stay on "txt"
-# (registered MarkdownIt parser).
 _MIME_TO_FORMAT: dict[str, str] = file_types.MIME_FORMATS
 _EXT_TO_FORMAT: dict[str, str] = file_types.EXTENSION_FORMATS
 
-
-def _normalize_format(mime_type: str, extension: str) -> str | None:
-    """Return a canonical format key or None if unknown."""
-    ext_format = _EXT_TO_FORMAT.get((extension or "").lower().lstrip("."))
-    # Mime normally wins, but a source file read out of a git tree arrives as
-    # text/plain, which would send every .go and .java to the prose parser.
-    if ext_format == "code":
-        return ext_format
-    if mime_type and mime_type in _MIME_TO_FORMAT:
-        return _MIME_TO_FORMAT[mime_type]
-    return ext_format
+# A source file read out of a git tree, or a type its extension decides, goes by its extension
+# (it arrives as text/plain); otherwise the mime wins over the extension.
+_normalize_format = file_types.parse_format
 
 
 class ParserRegistry:

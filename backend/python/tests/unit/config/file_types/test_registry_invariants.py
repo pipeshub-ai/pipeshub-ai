@@ -8,15 +8,16 @@ import pytest
 
 from app.config import file_types
 from app.config.constants.arangodb import ExtensionTypes, MimeTypes
-from app.config.file_types import FileType, FilterRole, Route
+from app.config.file_types import FileType, FilterRole, Prep, Route
 from app.utils import libreoffice_convert
 from tests.unit.config.file_types import gen_pinned_decisions as gen
+from tests.unit.config.file_types.allowed_deltas import ALLOWED_DELTAS
 
 _APP = Path(__file__).resolve().parents[4] / "app"
 _TYPES = file_types.FILE_TYPES
 
-# The gate accepts it, but the legacy dispatch has no branch for it (F23).
-_INDEXABLE_WITHOUT_ROUTE = {"htm"}
+# Indexable types the legacy dispatch has no branch for (once htm, F23).
+_INDEXABLE_WITHOUT_ROUTE: set[str] = set()
 
 # The legacy handler each route reaches, as the black-box snapshot records it.
 _ROUTE_HANDLER = {
@@ -45,6 +46,9 @@ _ROUTE_HANDLER = {
     Route.YAML: "process_structured_document",
     Route.IMAGE: "process_image",
     Route.CODE: "process_code_document",
+    Route.MSG: "process_msg_document",
+    Route.LIBREOFFICE_DOCX: "process_libreoffice_document",
+    Route.PLAIN_TEXT: "process_plain_text_document",
 }
 
 
@@ -94,12 +98,13 @@ def test_an_indexable_type_has_a_registered_parser_and_a_route() -> None:
 
 def test_the_route_is_the_branch_the_legacy_dispatch_takes() -> None:
     legacy = {
-        (r[0], r[1]): r[5]
+        (r[0], r[1]): ALLOWED_DELTAS.get(gen.case_key(r), {}).get("legacy", r[5])
         for r in gen.load()["rows"]
         if r[3] == "FILE" and not isinstance(r[0], (list, dict)) and not isinstance(r[1], (list, dict))
     }
     for ft in _TYPES:
-        if ft.route is None:
+        # A prepared type's pinned bytes ("hello world") are refused before any branch is reached.
+        if ft.route is None or ft.prep in (Prep.OOXML_WORD, Prep.OOXML_SLIDES):
             continue
         case = (ft.extensions[0], None) if ft.ext_indexable else (None, ft.canonical_mime)
         assert legacy[case] == _ROUTE_HANDLER[ft.route], ft.key
@@ -107,7 +112,7 @@ def test_the_route_is_the_branch_the_legacy_dispatch_takes() -> None:
 
 def test_the_filter_roles_follow_the_gate() -> None:
     legacy = {ft.key for ft in _TYPES if ft.filter is FilterRole.OFFER_LEGACY}
-    assert legacy == {"heic", "heif", "pyi", "mts", "cts", "scala", "groovy", "gradle", "lua", "code", "blocks"}
+    assert legacy == {"heic", "heif", "code", "blocks"}
     for ft in _TYPES:
         if ft.filter is FilterRole.OFFER:
             assert ft.ext_indexable, ft.key
@@ -139,7 +144,8 @@ def test_every_mime_enum_value_is_a_registered_spelling() -> None:
 def test_an_indexable_file_type_is_stored_under_a_mime_enum_value() -> None:
     values = {m.value for m in MimeTypes}
     for ft in _TYPES:
-        if ft.indexable and not ft.internal:
+        # A code grammar taken by extension alone (pyi, scala) is not stored under its own mime.
+        if ft.mime_indexable and not ft.internal:
             assert ft.canonical_mime in values, ft.key
 
 

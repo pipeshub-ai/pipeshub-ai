@@ -177,6 +177,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libmariadb-dev
 
+      # odt and rtf are converted by LibreOffice Writer; the tests that convert real files run in
+      # the modules shard and must not skip there (checked below).
+      - name: Install LibreOffice Writer
+        if: ${{ matrix.shard == 'modules' }}
+        run: sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui
+
       - name: Install uv
         run: pip install uv
 
@@ -258,6 +264,17 @@ jobs:
           python3 ../../scripts/assert_no_skips.py junit-pgvector.xml --min-tests 1 \
             --expect-suite 'tests.unit.services.vector_db.test_pgvector_core=110' \
             --expect-suite 'tests.unit.services.vector_db.test_pgvector_placement=8'
+
+      # The real odt and rtf conversions run again with a report of their own, so a LibreOffice the
+      # runner lost fails the build instead of skipping them.
+      - name: LibreOffice conversion suite ran in full
+        if: ${{ matrix.shard == 'modules' }}
+        working-directory: backend/python
+        run: |
+          pytest -p no:cacheprovider tests/unit/modules/parsers/real_files/test_realfile_libreoffice_types.py \
+            --timeout=300 --junitxml=junit-libreoffice.xml
+          python3 ../../scripts/assert_no_skips.py junit-libreoffice.xml --min-tests 1 \
+            --expect-suite 'tests.unit.modules.parsers.real_files.test_realfile_libreoffice_types=15'
 
       # upload-artifact skips dotfiles unless told otherwise, and every coverage
       # data file is one. Not named python-coverage-report-*: weekly-coverage.yml

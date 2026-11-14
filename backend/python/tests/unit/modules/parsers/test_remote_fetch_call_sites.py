@@ -23,18 +23,18 @@ SINK_NAMES = {"urls_to_base64", "_fetch_single_url"}
 
 # (file, enclosing function) -> "file" (a literal True: bytes a user or connector
 # supplied, never a pushed blocks document) or "guarded" (the keyword is a
-# variable derived from the push markers).
+# variable derived from the push markers, or the caller's choice for a mail).
 SINK_CALLS: dict[tuple[str, str], str] = {
     ("agents/actions/util/parse_file.py", "handle_html"): "file",
     ("agents/actions/util/parse_file.py", "_markdown_string_to_blocks"): "file",
     ("events/processor.py", "_process_blockgroup_images"): "guarded",
     ("events/processor.py", "_process_single_blockgroup_html"): "guarded",
-    ("events/processor.py", "process_html_document"): "file",
+    ("events/processor.py", "process_html_document"): "guarded",  # False for a mail's HTML (.msg), True otherwise
     ("events/processor.py", "process_md_document"): "file",
     ("modules/parsers/blocks/blocks_parser.py", "_process_blockgroup_images"): "guarded",
     ("modules/parsers/blocks/blocks_parser.py", "_process_single_blockgroup_html"): "guarded",
-    ("modules/parsers/html_parser/docling_html_parser.py", "parse"): "file",
-    ("modules/parsers/html_parser/selectolax_html_parser.py", "parse"): "file",
+    ("modules/parsers/html_parser/docling_html_parser.py", "parse"): "guarded",  # False for a mail's HTML (.msg), True otherwise
+    ("modules/parsers/html_parser/selectolax_html_parser.py", "parse"): "guarded",  # False for a mail's HTML (.msg), True otherwise
     ("modules/parsers/markdown/docling_markdown_parser.py", "parse"): "file",
     ("modules/parsers/markdown/markdown_it_parser.py", "parse"): "file",
     # The sink handing the keyword to its own single-URL worker.
