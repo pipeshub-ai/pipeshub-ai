@@ -11,7 +11,6 @@ import asyncio
 import dataclasses
 import time
 import uuid
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import asyncpg
@@ -80,6 +79,8 @@ from app.services.vector_db.pgvector.visibility import Scope, scope_of
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from app.config.configuration_service import ConfigurationService
     from app.core.db import KernelDB, Tx
 
@@ -670,7 +671,7 @@ class PgVectorService(IVectorDBService):
     async def upsert_points(
         self, collection_name: str, points: list[VectorPoint], *, computed_at: datetime | None = None
     ) -> None:
-        """``computed_at``: when the membership arrays the points carry were read from the graph (default: now). A group's arrays are
+        """``computed_at``: when the membership arrays the points carry were read from the graph (default: the database's clock now). A group's arrays are
         replaced only by a writer with a later time, so an index run that read its arrays before the membership sync wrote newer ones
         passes the time it read them and loses to the sync; without it the call time is used, which is right for a run that reads the
         graph and writes at once and makes the last writer win otherwise."""
@@ -681,7 +682,6 @@ class PgVectorService(IVectorDBService):
         if len(orgs) != 1:
             raise OrgMismatch("a batch of points must belong to one organisation")
         coll = await catalog.require_collection(collection_name)
-        computed_at = computed_at or datetime.now(UTC)
         for start in range(0, len(points), writes.UPSERT_BATCH):
             batch = writes.prepare(points[start:start + writes.UPSERT_BATCH])
             if len(set(batch.dims)) != 1:
@@ -739,7 +739,6 @@ class PgVectorService(IVectorDBService):
         payload. One transaction."""
         db, catalog = self._assert_connected()
         coll = await catalog.require_collection(collection_name)
-        t = computed_at or datetime.now(UTC)
         membership = writes.membership_of(payload)
         group_filter = compile_filter(expr, first_param=3) if expr is not None else None
         merge_filter = compile_filter(expr, first_param=5) if expr is not None else None
@@ -754,7 +753,7 @@ class PgVectorService(IVectorDBService):
             if membership and selected:
                 keys = await writes.group_keys_of_ids(tx, org, coll.collection_id, selected)
                 if keys:
-                    await writes.write_groups(tx, org, coll.collection_id, dict.fromkeys(keys, membership), t, allow_empty=True)
+                    await writes.write_groups(tx, org, coll.collection_id, dict.fromkeys(keys, membership), computed_at, allow_empty=True)
             if merge_ids is not None and not merge_ids:
                 return                                           # the filter matched no point
             await writes.merge_payload(tx, org, coll.collection_id, payload, None if merge_ids is not None else merge_filter, merge_ids, replace=replace)

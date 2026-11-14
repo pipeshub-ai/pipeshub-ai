@@ -160,6 +160,37 @@ async def test_group_clock_skew_reports_the_group_rows_ahead_of_the_database_clo
     assert (await store.group_clock_skew(B, min_ahead_seconds=30))[0] == 1
 
 
+async def db_now(store: PgVectorService) -> datetime:
+    with org_context.for_org(A, job="test"):
+        return await store.fence_time()
+
+
+async def test_a_group_row_ahead_of_the_database_clock_does_not_refuse_a_later_writer(store) -> None:
+    """A row a host with a clock hours ahead wrote: a rewrite fenced by the database's clock replaces it, and so does a write that names no time."""
+    await store.upsert_points("records", [point(A, "p1", conn=["c1"])], computed_at=datetime.now(UTC) + timedelta(hours=2))
+    members = "SELECT kind, member_id FROM retrieval.group_members WHERE org_id = $1 AND group_key = 'r1' ORDER BY 1, 2"
+    await store.update_payloads_by_ids("records", {pid(f"{A}/p1"): {"connectorIds": ["c2"]}}, org_id=A, computed_at=await db_now(store))
+    assert [tuple(r) for r in await sql(store, members, A)] == [(1, "c2")]
+    assert await store.group_clock_skew(A, min_ahead_seconds=1) == (0, 0.0)
+    await store.set_payload("records", {"connectorIds": ["c3"]}, flt(A, virtualRecordId="r1"))
+    assert [tuple(r) for r in await sql(store, members, A)] == [(1, "c3")]
+
+
+async def test_a_host_clock_ahead_of_the_database_writes_no_group_row_ahead_of_it(store, monkeypatch) -> None:
+    from app.services.vector_db.pgvector import pgvector as module
+
+    class Ahead(datetime):
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return datetime.now(tz) + timedelta(hours=2)
+    monkeypatch.setattr(module, "datetime", Ahead, raising=False)
+    await store.upsert_points("records", [point(A, "p1", conn=["c1"])])
+    await store.set_payload("records", {"connectorIds": ["c2"]}, flt(A, virtualRecordId="r1"))
+    assert await store.group_clock_skew(A, min_ahead_seconds=1) == (0, 0.0)
+    await store.update_payloads_by_ids("records", {pid(f"{A}/p1"): {"connectorIds": ["c3"]}}, org_id=A, computed_at=await db_now(store))
+    assert [tuple(r) for r in await sql(store, "SELECT member_id FROM retrieval.group_members WHERE org_id = $1 AND group_key = 'r1'", A)] == [("c3",)]
+
+
 async def test_a_shared_vrid_is_deleted_for_one_org_only(store) -> None:
     await store.upsert_points("records", [point(A, "p1", "shared"), point(A, "p2", "shared", terms=(5,))])
     await store.upsert_points("records", [point(B, "p1", "shared")])
