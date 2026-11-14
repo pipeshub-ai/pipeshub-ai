@@ -236,12 +236,12 @@ async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "
 
 async def check_worlds(layer: GraphCheckLayer, worlds: list[World], tag: str) -> list[KhFinding]:
     """`check_world` of every world on one store, loaded and released `CHUNK` at a time (`<tag>-<index>` names each); a chunk is released even
-    when a check of it raises."""
+    when its load or a check of it raises or is cancelled (`preload` names the worlds before it loads them)."""
     found: list[KhFinding] = []
     for start in range(0, len(worlds), CHUNK):
         chunk = worlds[start:start + CHUNK]
-        await layer.preload(chunk)
         try:
+            await layer.preload(chunk)
             for offset, world in enumerate(chunk):
                 found += await check_world(layer, world, f"{tag}-{start + offset}")
         finally:

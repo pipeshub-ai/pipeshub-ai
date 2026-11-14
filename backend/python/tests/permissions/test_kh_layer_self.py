@@ -13,6 +13,7 @@ import yaml
 
 from . import kh_layer
 from .graph import Namespace
+from .layers import GraphCheckLayer
 from .runner import OracleLayer
 from .scenario import world_from_data
 
@@ -214,3 +215,50 @@ async def test_a_stop_that_is_no_exception_stops_every_store_and_releases_their_
         await kh_layer.on_every_store([neo, arango], lambda layer: kh_layer.check_worlds(layer, worlds, "t"))
     assert neo.held == set() and arango.held == set()
     assert len(arango.checked) < len(worlds)
+
+
+def _graph_layer(load, unload) -> GraphCheckLayer:
+    return GraphCheckLayer("t", None, load, unload, narrow=False)
+
+
+async def test_a_store_stopped_while_it_loads_a_chunk_releases_what_it_registered(monkeypatch) -> None:
+    """The other store's stop cancels this one inside `_load`, after `preload` has given the worlds their prefixes: the chunk is still released,
+    so no partly loaded world is left behind under a prefix a later `preload` would take as loaded."""
+    loading, unloaded = asyncio.Event(), []
+
+    async def load(_nodes, _edges) -> None:
+        loading.set()
+        await asyncio.Event().wait()
+
+    async def unload(prefixes) -> None:
+        unloaded.append(prefixes)
+    layer = _graph_layer(load, unload)
+    task = asyncio.ensure_future(kh_layer.check_worlds(layer, [WORLD], "t"))
+    await loading.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert unloaded == [["w0-"]] and layer._prefix == {}
+
+
+async def test_a_release_cancelled_midway_keeps_the_world_for_a_later_release() -> None:
+    """A delete that is cancelled half done leaves records: the world stays tracked until its delete returns, so a later release removes them."""
+    unloads: list[list[str]] = []
+
+    async def unload(prefixes) -> None:
+        unloads.append(prefixes)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    async def load(_nodes, _edges) -> None:
+        return None
+    layer = _graph_layer(load, unload)
+    await layer.preload([WORLD])
+    task = asyncio.ensure_future(layer.release([WORLD]))
+    await asyncio.sleep(0)      # the release is inside its delete
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert WORLD in layer._prefix
+    await layer.release([WORLD])
+    assert layer._prefix == {} and unloads == [["w0-"], ["w0-"]]
