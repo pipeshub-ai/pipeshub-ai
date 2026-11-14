@@ -434,6 +434,18 @@ class BaseConnector(ABC):
     async def reindex_records(self, record_results: List[Record]) -> None:
         raise NotImplementedError("This method should be implemented by the subclass")
 
+    async def records_excluded_by_indexing_filters(self, records: list[Record]) -> set[str]:
+        """Ids of ``records`` the connector's current indexing filters keep out of the index.
+
+        A reindex leaves these out. ``AUTO_INDEX_OFF`` marks both a record waiting to
+        be indexed by hand and one an indexing filter excludes, so the status alone
+        cannot tell them apart; only the connector knows which filter governs which
+        record. Read the filters' own values, not ``FilterCollection.is_enabled``:
+        with manual indexing on, that answers "off" for every filter, and the
+        records it waits on would never be indexable.
+        """
+        return set()
+
     @classmethod
     @abstractmethod
     async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str, data_entities_processor: "DataSourceEntitiesProcessor", **kwargs) -> "BaseConnector":

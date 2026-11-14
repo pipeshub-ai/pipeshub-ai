@@ -912,13 +912,18 @@ class FilterCollection(BaseModel):
             return default
         return f.value
 
-    def is_enabled(self, key: str | Enum, default: bool | None = True) -> bool:
+    def is_enabled(
+        self, key: str | Enum, default: bool | None = True, *, honour_manual_sync: bool = True,
+    ) -> bool:
         """
         Check if boolean filter is enabled.
 
         Args:
             key: Filter key (string or enum)
             default: Value if filter not found (default: True = enabled)
+            honour_manual_sync: False reads the filter's own value even with manual
+                indexing on, for "is this record type switched off" rather than
+                "is it indexed automatically"
 
         Returns:
             - True if filter value is truthy (True, non-empty string/list)
@@ -953,7 +958,8 @@ class FilterCollection(BaseModel):
         # For other indexing filters, check if manual sync is enabled
         # Only apply override if enable_manual_sync filter exists and is explicitly enabled
         manual_sync_filter = self.get("enable_manual_sync")
-        if (manual_sync_filter is not None
+        if (honour_manual_sync
+            and manual_sync_filter is not None
             and not manual_sync_filter.is_empty()
             and manual_sync_filter.type == FilterType.BOOLEAN
             and manual_sync_filter.value is True):
@@ -1158,7 +1164,9 @@ async def load_connector_filters(
 
     Returns:
         Tuple of (sync_filters, indexing_filters)
-        Returns empty collections if config not found or on error.
+        Returns empty collections if config not found or on error. A caller for
+        which empty filters are not a safe answer to a failed read uses
+        ``load_connector_filters_strict``.
 
     Expected config structure:
         {
@@ -1178,15 +1186,33 @@ async def load_connector_filters(
         }
     """
     log = logger or _logger
-    empty_filters = (FilterCollection(), FilterCollection())
-    config_path = f"/services/connectors/{connector_id}/config"
-
-    # Fetch config from service
     try:
-        config = await config_service.get_config(config_path)
+        return await load_connector_filters_strict(config_service, connector_name, connector_id, log)
     except Exception as e:
         log.error(f"Failed to fetch config for {connector_id}: {e}")
-        return empty_filters
+        return FilterCollection(), FilterCollection()
+
+
+async def load_connector_filters_strict(
+    config_service: ConfigurationService,
+    connector_name: str,
+    connector_id: str,
+    logger: Logger | None = None,
+) -> tuple[FilterCollection, FilterCollection]:
+    """``load_connector_filters``, except that a failed config read raises.
+
+    Empty filters mean "nothing switched off", so a caller that acted on them
+    after a failed read would sync and index what the admin excluded. A
+    connector with no config, a disabled one or one with no filters still gets
+    empty collections: those are answers, not failures.
+    """
+    log = logger or _logger
+    empty_filters = (FilterCollection(), FilterCollection())
+    # Without raise_on_error, get_config answers a store failure with None,
+    # which reads below as "no config" and gives empty filters.
+    config = await config_service.get_config(
+        f"/services/connectors/{connector_id}/config", raise_on_error=True
+    )
 
     # Handle missing or disabled config
     if not config:

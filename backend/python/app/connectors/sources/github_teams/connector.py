@@ -50,6 +50,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.code_indexing_flags import (
     branch_filter_field,
     exclude_paths_filter_field,
+    records_excluded_by_repo_indexing_filters,
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
@@ -68,6 +69,7 @@ from app.connectors.core.registry.filters import (
     OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
+    load_connector_filters_strict,
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.github_teams.common.apps import GitHubTeamsApp
@@ -476,6 +478,20 @@ class GitHubTeamsConnector(BaseConnector):
     async def reindex_records(self, records: list[Record]) -> None:
         """Reindex a list of records: refresh changed work items, re-queue others."""
         await self.streaming.reindex_records(records)
+
+    async def records_excluded_by_indexing_filters(self, records: list[Record]) -> set[str]:
+        # The saved filters, not those of the last sync: a toggle changed since then
+        # decides this reindex. Strict, because empty filters after a failed read
+        # would let the reindex index every type the admin switched off.
+        _, indexing_filters = await load_connector_filters_strict(
+            self.config_service, "githubteams", self.connector_id, self.logger
+        )
+        return await records_excluded_by_repo_indexing_filters(
+            records, indexing_filters,
+            lambda external_id: self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_id
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Signed URL / webhooks (not implemented)
