@@ -23,30 +23,38 @@ from app.services.vector_db.strategies.single import SingleCollectionStrategy
 
 
 def make_config_service() -> MagicMock:
-    """An in-memory ConfigurationService: get/set/create-if-absent over a dict."""
+    """An in-memory ConfigurationService over a dict: get, set, create-if-absent, delete and key listing.
+
+    Extra keyword arguments (raise_on_error, use_cache, keep_in_cache) are accepted and ignored:
+    this store never fails and has no cache, and callers pass them as they would to the real one.
+    """
     store: dict = {}
 
-    # raise_on_error is accepted and ignored: this store never fails, and the
-
-    # manifest passes it on delete paths, where the real get_config honours it.
-
-    async def get_config(key, default=None, raise_on_error=False):
+    async def get_config(key, default=None, **_) -> object:
         return store.get(key, default)
 
-    async def set_config(key, value):
+    async def set_config(key, value, **_) -> bool:
         store[key] = value
         return True
 
-    async def create_config_if_absent(key, value):
+    async def create_config_if_absent(key, value, **_) -> bool:
         if key in store:
             return False
         store[key] = value
         return True
 
+    async def delete_config(key, **_) -> bool:
+        return store.pop(key, None) is not None
+
+    async def list_keys_in_directory(directory, **_) -> list[str]:
+        return [key for key in store if key.startswith(directory)]
+
     svc = MagicMock()
     svc.get_config = AsyncMock(side_effect=get_config)
     svc.set_config = AsyncMock(side_effect=set_config)
     svc.create_config_if_absent = AsyncMock(side_effect=create_config_if_absent)
+    svc.delete_config = AsyncMock(side_effect=delete_config)
+    svc.list_keys_in_directory = AsyncMock(side_effect=list_keys_in_directory)
     svc._store = store
     return svc
 
