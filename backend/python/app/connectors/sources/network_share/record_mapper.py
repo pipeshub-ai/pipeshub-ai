@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from app.config import file_types
 from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
@@ -79,13 +80,20 @@ def external_record_id(share: str, nfc_path: str) -> str:
 def mime_for(rel_path: str, *, is_directory: bool) -> str:
     if is_directory:
         return MimeTypes.FOLDER.value
+    base = rel_path.rsplit("/", 1)[-1]
+    extension = base.rpartition(".")[2] if "." in base else None
+    # A type indexed since the registry's second version is stored under its own mime, which the
+    # host's table may not know (.cfg) or may spell as another type's (text/plain for .log).
+    own = file_types.canonical_mime_for_new_extension(extension)
+    if own is not None:
+        return own
     guessed, _ = mimetypes.guess_type(rel_path)
-    if not guessed:
-        return MimeTypes.BIN.value
-    try:
-        return MimeTypes(guessed).value
-    except ValueError:
-        return MimeTypes.BIN.value
+    if guessed:
+        try:
+            return MimeTypes(guessed).value
+        except ValueError:
+            pass
+    return MimeTypes.BIN.value
 
 
 @dataclass(frozen=True)

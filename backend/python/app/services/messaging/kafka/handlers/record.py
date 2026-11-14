@@ -11,10 +11,10 @@ import aiohttp  # type: ignore
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     FOLDER_MIME_TYPES,
-    SUPPORTED_CODE_FILE_EXTENSIONS,
     CollectionNames,
     EventTypes,
     OriginTypes,
@@ -27,7 +27,6 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
-from app.config.file_types import GATE_EXTENSIONS, GATE_MIMES
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
 from app.events.events import EventProcessor
@@ -119,7 +118,6 @@ from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
 from app.telemetry.modules.record_storage_metrics import record_rejected_too_large
 from app.utils.api_call import make_api_call
-from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.indexing_timing import stage
 from app.utils.jwt import generate_jwt
 from app.utils.loop_bridge import run_on_loop
@@ -136,6 +134,7 @@ from app.utils.user_errors import (
     STORED_CONTENT_MISSING,
     duplicate_failed,
     duplicate_password_protected,
+    file_too_large_to_read,
     is_password_protected,
     rate_limited_gave_up,
     rate_limited_will_retry,
@@ -204,6 +203,9 @@ def stored_documents_give_up_seconds() -> float:
 _PARSE_NOW_NO_ACCESS = "the requesting user cannot access the record"
 
 
+_DISABLED_TYPES_TTL_SECONDS = 60.0
+
+
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
                 config_service: ConfigurationService,
@@ -224,6 +226,8 @@ class RecordEventHandler(BaseEventService):
         # Edge-build requests failed since the last one that went through. An
         # outage fails one per code file; one traceback says it (O-12).
         self._edge_request_failures = 0
+        # The file types an admin turned off, and when they were read.
+        self._disabled_types: tuple[frozenset[str], float] | None = None
         # The producer's client is bound to the loop that created it — the main
         # loop this handler is constructed on (indexing_main.start_kafka_consumers).
         # process_event runs on the indexing consumer's worker-thread loop, so
@@ -235,6 +239,23 @@ class RecordEventHandler(BaseEventService):
             )
         except RuntimeError:
             self._producer_loop = None
+
+    async def _disabled_file_types(self) -> frozenset[str]:
+        """The file types turned off in the KV store (or by FILE_TYPES_DISABLED when it has none)."""
+        now = time.monotonic()
+        if self._disabled_types is not None and now - self._disabled_types[1] < _DISABLED_TYPES_TTL_SECONDS:
+            return self._disabled_types[0]
+        try:
+            config = await self.config_service.get_config(file_types.FILE_TYPES_CONFIG_KEY)
+        except Exception:
+            # Unreadable, the setting turns nothing off: every type indexes as it did before it existed.
+            self.logger.warning("Could not read the disabled file types; none are disabled", exc_info=True)
+            config = None
+        if config is None:
+            config = file_types.disabled_from_env(os.environ.get("FILE_TYPES_DISABLED"))
+        keys = file_types.disabled_keys(config)
+        self._disabled_types = (keys, now)
+        return keys
 
     async def _redis_client(self) -> "Redis":
         loop = asyncio.get_running_loop()
@@ -2079,19 +2100,7 @@ class RecordEventHandler(BaseEventService):
                 if record_name and "." in record_name:
                     code_file_extension = record_name.rsplit(".", 1)[-1].lower()
 
-            if (extension is None or extension == "unknown") and mime_type is not None and mime_type != "unknown":
-                derived_extension = get_extension_from_mimetype(mime_type)
-                if derived_extension:
-                    extension = derived_extension
-
-            if extension == "unknown" and mime_type != "text/gmail_content":
-                record_name = payload.get("recordName")
-                if record_name and "." in record_name:
-                    extension = record_name.split(".")[-1]
-
-            self.logger.debug("🚀 Checking for mime_type")
-            self.logger.debug("🚀 mime_type: %s", mime_type)
-            self.logger.debug("🚀 extension: %s", extension)
+            self.logger.debug("mime_type: %s, extension: %s", mime_type, extension)
 
             # Folder / tree-node records are skeleton graph entries with no
             # streamable content (created by tree-aware connectors like
@@ -2138,37 +2147,34 @@ class RecordEventHandler(BaseEventService):
 
             is_code_file = doc.get("recordType") == RecordTypes.CODE_FILE.value
 
-            supported_mime_types = GATE_MIMES
-            supported_extensions = GATE_EXTENSIONS
+            # A CODE_FILE's mime is not trustworthy: connectors that walk a git tree default it
+            # to text/plain for anything they don't recognise, which would let archives and media
+            # through as text. It is judged on the filename extension alone.
+            known_size = doc.get("sizeInBytes")
+            decision = file_types.gate_decision(
+                mime=mime_type,
+                extension=extension,
+                record_name=payload.get("recordName"),
+                is_code_file=is_code_file,
+                code_file_extension=code_file_extension,
+                size_bytes=known_size,
+                disabled=await self._disabled_file_types(),
+            )
 
-            if is_code_file:
-                # A CODE_FILE's mime is not trustworthy — connectors that walk a
-                # git tree default it to text/plain for anything they don't
-                # recognise, which would let archives and media through as text.
-                # Judge it on the filename extension alone: a known language, or
-                # a type the generic pipeline handles (images, json, yaml).
-                judged_extension = code_file_extension
-                is_supported = (
-                    code_file_extension in SUPPORTED_CODE_FILE_EXTENSIONS
-                    or code_file_extension in supported_extensions
-                )
-            else:
-                judged_extension = extension
-                is_supported = (
-                    mime_type in supported_mime_types
-                    or extension in supported_extensions
-                )
-
-            if not is_supported:
+            if not decision.supported:
                 self.logger.info(
-                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {judged_extension} 🔴🔴🔴"
+                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {decision.judged_extension} 🔴🔴🔴"
                 )
-
+                reason = (
+                    file_too_large_to_read(decision.judged_extension)
+                    if decision.refusal == "too_large"
+                    else unsupported_file_type(decision.judged_extension)
+                )
                 await self.__update_document_status(
                     record_id=record_id,
                     indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
                     extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    reason=unsupported_file_type(judged_extension),
+                    reason=reason,
                 )
 
                 # Yield both events for unsupported file types
@@ -2176,11 +2182,8 @@ class RecordEventHandler(BaseEventService):
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
-
-
             # Always: the consumer holds a record that would sit on its file
             # waiting for a parse slot back until it is not downloaded yet.
-            known_size = doc.get("sizeInBytes")
             yield PipelineEvent(
                 event=IndexingEvent.START_DOWNLOAD,
                 data=PipelineEventData(

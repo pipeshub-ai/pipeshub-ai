@@ -1,7 +1,7 @@
 // Generated from backend/python/app/config/file_types.py. Do not edit by hand:
 // run `python -m app.config.file_types --emit node` from backend/python.
 
-export const REGISTRY_VERSION = 1;
+export const REGISTRY_VERSION = 2;
 
 export const UPLOAD_EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
   '3gp': 'video/3gpp',
@@ -21,6 +21,7 @@ export const UPLOAD_EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
   c: 'text/x-c',
   cab: 'application/vnd.ms-cab-compressed',
   cc: 'text/x-c++',
+  cfg: 'text/x-cfg',
   cjs: 'application/javascript',
   cpio: 'application/x-cpio',
   cpp: 'text/x-c++',
@@ -36,7 +37,9 @@ export const UPLOAD_EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
   deb: 'application/vnd.debian.binary-package',
   dll: 'application/x-msdownload',
   doc: 'application/msword',
+  docm: 'application/vnd.ms-word.document.macroEnabled.12',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  dotx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
   dwg: 'image/vnd.dwg',
   dxf: 'image/vnd.dxf',
   dylib: 'application/x-mach-o-dylib',
@@ -87,7 +90,7 @@ export const UPLOAD_EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
   kmz: 'application/vnd.google-earth.kmz',
   kt: 'text/x-kotlin',
   kts: 'text/x-kotlin',
-  log: 'text/plain',
+  log: 'text/x-log',
   lz: 'application/lzip',
   m4a: 'audio/x-m4a',
   md: 'text/markdown',
@@ -119,6 +122,7 @@ export const UPLOAD_EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
   php: 'text/x-php',
   png: 'image/png',
   pot: 'application/vnd.ms-powerpoint',
+  potx: 'application/vnd.openxmlformats-officedocument.presentationml.template',
   pps: 'application/vnd.ms-powerpoint',
   ppt: 'application/vnd.ms-powerpoint',
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -159,6 +163,7 @@ export const UPLOAD_EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
   x3d: 'model/x3d+xml',
   xlm: 'application/vnd.ms-excel',
   xls: 'application/vnd.ms-excel',
+  xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   xlt: 'application/vnd.ms-excel',
   xml: 'text/xml',
@@ -173,6 +178,7 @@ export const INDEXABLE_EXTENSIONS: readonly string[] = [
   'bash',
   'c',
   'cc',
+  'cfg',
   'cjs',
   'cpp',
   'cs',
@@ -180,7 +186,9 @@ export const INDEXABLE_EXTENSIONS: readonly string[] = [
   'cxx',
   'dart',
   'doc',
+  'docm',
   'docx',
+  'dotx',
   'epub',
   'go',
   'h',
@@ -196,17 +204,22 @@ export const INDEXABLE_EXTENSIONS: readonly string[] = [
   'jsx',
   'kt',
   'kts',
+  'log',
   'md',
   'mdx',
   'mjs',
+  'msg',
+  'odt',
   'pdf',
   'php',
   'png',
+  'potx',
   'ppt',
   'pptx',
   'py',
   'rb',
   'rs',
+  'rtf',
   'sh',
   'svg',
   'swift',
@@ -216,10 +229,11 @@ export const INDEXABLE_EXTENSIONS: readonly string[] = [
   'txt',
   'webp',
   'xls',
+  'xlsm',
   'xlsx',
   'yaml',
   'yml',
 ];
 
 export const CONTENT_SHA256 =
-  '3060ed28d981ebbba6f8c82ccea9c2e8188263f99c196f4951a3e1b46a571208';
+  '675325848705ee4b353cd31a50e7e37bbd5ef2348d8c4ecd5a3dab587291f14e';
