@@ -614,3 +614,22 @@ async def test_a_project_without_a_scheme_is_read_by_the_same_people_open_or_str
 
     assert after == before
     assert all(after[name] == set(by_key.values()) for name in PROJECT_READERS) and after["dave"] == set()
+
+
+async def test_a_reader_who_loses_jira_product_access_reads_nothing(world: dict[str, Any]) -> None:
+    """Jira treats an account outside every application role's groups as anonymous, whatever its grants:
+    carol keeps her project grant and her level, and reads none of it once she loses product access."""
+    await _sync_project(world)
+    by_key = await _ticket_ids(world)
+    connector = world["connector"]
+    # The roles go through the connector's own read, which notes that they were read in full.
+    roles = MagicMock(status=200, json=MagicMock(return_value=[{"key": "jira-software", "groups": ["jira-software-users"]}]))
+    connector._get_fresh_datasource = AsyncMock(return_value=MagicMock(get_all_application_roles_v2=AsyncMock(return_value=roles)))
+    connector._fetch_group_members = AsyncMock(return_value=[PEOPLE[n] for n in PEOPLE if n != "carol"])
+    connector._stored_app_users = await world["processor"].get_all_app_users(world["connector_id"])
+
+    kept = await connector._eligible_users(_users(world))
+
+    assert sorted(u.full_name for u in kept) == ["alice", "bob", "dave"]
+    expected = {key: who - {"carol"} for key, who in _readers().items()}
+    assert not await _mismatches(world, expected, by_key)

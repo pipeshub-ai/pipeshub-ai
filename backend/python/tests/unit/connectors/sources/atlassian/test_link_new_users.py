@@ -84,6 +84,7 @@ def _jira(cls: type) -> MagicMock:
     c._sync_project_roles = AsyncMock()
     c._sync_project_lead_roles = AsyncMock()
     c.data_entities_processor.on_new_app_users = AsyncMock()
+    c._note_newly_listed = AsyncMock(return_value=[])
     return c
 
 
@@ -122,11 +123,15 @@ async def test_jira_cloud_pass_keeps_stored_roles_when_groups_were_unreadable() 
 @pytest.mark.asyncio
 async def test_jira_data_center_pass_keeps_the_sync_state() -> None:
     c = _jira(JiraDataCenterConnector)
+    c._fetch_users = AsyncMock(return_value=["u", "unlicensed"])
+    c._eligible_users = AsyncMock(side_effect=lambda users: [u for u in users if u == "u"])
     await JiraDataCenterConnector._link_users_and_groups(c)
+    c.data_entities_processor.on_new_app_users.assert_awaited_once_with(["u"])
     c._sync_user_groups.assert_awaited_once_with(["u"])
-    assert (c._kept_unread_access, c._user_read_unfinished) == (True, True)
+    assert (c._kept_unread_access, c._user_read_unfinished, c._app_roles_unread) == (True, True, True)
     assert c._kept_after_refusal == [("projects", "")]
     assert c._dc_name_to_source_id == {"x": "y"}
+    assert c._projects_naming_unread_roles == {"P"}
 
 
 @pytest.mark.asyncio

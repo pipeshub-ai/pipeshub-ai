@@ -21,6 +21,7 @@ from atlassian_behaviour_fakes import (
 from test_jira_dc_sync_behaviour import (
     API,
     EPIC_FIELD,
+    LICENSED,
     IssueSearch,
     JiraRecordsDb,
     attachment,
@@ -946,3 +947,103 @@ class TestReindex:
 
         written = {r.external_record_id: r for batch in db.record_batches for r in batch}["2"]
         assert hidden_from_project(written) and readers(db, "2") == set()
+
+
+class TestProductAccessRegained:
+    async def test_an_account_that_gains_product_access_gets_its_level_grants_without_the_issue_changing(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """A level's user holder resolves only through the linked accounts, so the leveled issues are read again
+        for an account newly linked, though none changed."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="carol-key", user={"key": "carol-key", "name": "carol"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="alice"))
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key", "carol-key")
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert ("USER", "carol@example.com") not in readers(db, "2")
+
+        db.cached_app_users = list(db.app_users)
+        product_group(*LICENSED)
+        batches_before = len(db.record_batches)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
+        assert "2" in {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}
+
+    async def test_a_project_a_key_filter_left_out_reads_its_levels_again_when_it_is_next_synced(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """Carol is linked by a sync whose project-key filter leaves ENG out. ENG's leveled issues are read again
+        when a later sync includes it, and only then; the saved accounts stay until every project has had them."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="carol-key", user={"key": "carol-key", "name": "carol"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="alice"))
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key", "carol-key")
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert ("USER", "carol@example.com") not in readers(db, "2")
+
+        product_group(*LICENSED)
+        connector.config_service.config["filters"] = {
+            "sync": {"values": {"project_keys": {"operator": "not_in", "type": "list", "value": ["ENG"]}}}}
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") not in readers(db, "2"), "ENG was not synced"
+
+        connector.config_service.config["filters"] = {}
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
+
+        batches_before = len(db.record_batches)
+        await sync(connector, jql_search, recent=[])
+        assert "2" not in {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}, (
+            "read again once"
+        )
+        assert store.values_for("project_ENG").get("people_handed") == "[]", (
+            "the hand-out ended with the sync that cleared the saved accounts, so a later listing starts a new one"
+        )
+
+    async def test_an_account_withdrawn_and_linked_again_gets_its_level_grants_again(self, jira, db, store, jql_search) -> None:
+        """The first hand-out of carol ends once every project had her; linked again after a withdrawal, she starts
+        a new one, so her level grant, dropped meanwhile, comes back though the issue did not change."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="carol-key", user={"key": "carol-key", "name": "carol"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="alice"))
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key", "carol-key")
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        product_group(*LICENSED)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
+
+        product_group("alice-key", "bob-key", "dave-key")
+        await sync(connector, jql_search, recent=[])
+        assert [u.source_user_id for u in db.withdrawn_users] == ["carol-key"]
+        db.record_permissions["2"] = [p for p in db.record_permissions["2"] if p.email != "carol@example.com"]
+
+        product_group(*LICENSED)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
