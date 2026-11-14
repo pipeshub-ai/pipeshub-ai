@@ -193,8 +193,8 @@ class CountItem(BaseModel):
 class CountsInfo(BaseModel):
     """Response model for counts information"""
     items: List[CountItem] = Field(..., description="Breakdown of counts by type")
-    total: int = Field(..., description="Total number of nodes; a lower bound when `capped` is true")
-    capped: bool = Field(False, description="True when `total` and the counts stopped at the provider's cap")
+    total: int = Field(..., description="Total number of nodes; not exact when `capped` is true")
+    capped: bool = Field(False, description="True when `total` and the counts are not exact (usually lower), for the reasons `pagination.totalCapped` lists")
 
 class PermissionsInfo(BaseModel):
     """Response model for permissions information"""

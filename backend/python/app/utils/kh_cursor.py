@@ -202,7 +202,7 @@ class KnowledgeHubCursor:
     direction: str = "next"
     items_seen: int = 0
     total: int | None = None
-    # ``total`` is a lower bound (the provider stopped counting at its cap); carried with the
+    # ``total`` is not exact (usually lower; see ``totalCapped`` in the API spec); carried with the
     # total so every page of the listing says the same.
     total_capped: bool = False
     counts_by_type: dict[str, int] | None = None
