@@ -6779,10 +6779,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         updates: dict[str, Any],
         expected: dict[str, Any],
         transaction: str | None = None,
+        *,
+        clock_at_most: float | None = None,
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if_match`."""
         if not expected:
             raise ValueError("update_node_fields_if_match needs an expectation")
+        if clock_at_most is not None and transaction is not None:
+            raise ValueError("update_node_fields_if_match: clock_at_most is checked in a transaction of its own on ArangoDB, not in the caller's")
         bind_vars: dict[str, Any] = {"@collection": collection, "key": key, "updates": dict(updates)}
         filters = []
         for i, (name, value) in enumerate(expected.items()):
@@ -6804,11 +6808,34 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # instead of waiting on a lock. Run its statement again, with backoff: the expectation is
         # checked against the winner's write, so it applies or is refused, as a lock would have made
         # it. Inside a transaction the owner decides, so the conflict is raised.
+        if clock_at_most is not None:
+            return bool(await self._retry_write_conflicts(lambda: self._write_then_check_clock(collection, query, bind_vars, clock_at_most), None))
         rows = await self._retry_write_conflicts(
             lambda: self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction),
             transaction,
         )
         return bool(rows)
+
+    async def _write_then_check_clock(self, collection: str, query: str, bind_vars: dict[str, Any], clock_at_most: float) -> bool:
+        """``query`` in a stream transaction of its own, then the store's clock in a second statement, committed only while the clock is not past
+        ``clock_at_most``. AQL folds `DATE_NOW()` into a constant when it compiles a statement, before the statement waits for a collection lock
+        (an exclusive one another transaction holds): read in the writing statement, the clock could be older than the write. The second statement is
+        compiled after the first holds the document's lock, which it keeps until the commit."""
+        txn = await self.http_client.begin_transaction([], [collection])
+        try:
+            applied = bool(await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=txn))
+            if applied:
+                [late] = await self.http_client.execute_aql("RETURN DATE_NOW() > @bound * 1000", bind_vars={"bound": clock_at_most}, txn_id=txn)
+                applied = not late
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await self.http_client.abort_transaction(txn)
+            raise
+        if applied:
+            await self.http_client.commit_transaction(txn)
+        else:
+            await self.http_client.abort_transaction(txn)
+        return applied
 
     @staticmethod
     def _condition_filters(conditions: Sequence[Cond]) -> tuple[list[str], dict[str, Any]]:

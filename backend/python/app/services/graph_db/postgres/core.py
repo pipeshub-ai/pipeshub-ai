@@ -271,17 +271,24 @@ class CoreMixin(PgBase):
                 AND n.doc->$3::text = ANY (SELECT v::jsonb FROM unnest($4::text[]) v)""", org, collection, _field(field_name), vals), transaction)
         return [self._shape(_doc(r["doc"]), collection, return_fields) for r in rows]
 
-    async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, transaction: str | None = None) -> bool:
+    async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, transaction: str | None = None, *,
+                                          clock_at_most: float | None = None) -> bool:
         if not expected:
             raise ValueError("update_node_fields_if_match needs an expectation")
         org = current_org_id()
         upd = {k: v for k, v in updates.items() if k not in ("_key", "_id", "id")}      # as update_node; a None removes the field
         _VALIDATOR.validate_node_update(collection, upd)
-        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node_fields_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
+        async def go(tx: Tx) -> int:
+            if clock_at_most is not None:
+                # The row lock first, in a statement of its own: the UPDATE reads its clock before it waits for a lock, and does not read it again when
+                # the holder rolls back or only locked the row, so a write that waited past the bound would apply.
+                await tx.execute("/* pipeshub:graph.lock_node */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3 FOR UPDATE", org, collection, key)
+            return await tx.fetchval("""/* pipeshub:graph.update_node_fields_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
             WHERE org_id = $1 AND coll = $2 AND id = $3 AND NOT EXISTS (SELECT 1 FROM jsonb_each($5::jsonb) f WHERE n.doc->f.key IS DISTINCT FROM f.value
-                AND NOT (f.value = 'null'::jsonb AND n.doc->f.key IS NULL)) RETURNING 1) SELECT count(*) FROM u""",
-                                                  org, collection, key, _j(upd), _j(expected)), transaction, write=True)
-        return bool(r)
+                AND NOT (f.value = 'null'::jsonb AND n.doc->f.key IS NULL))
+                AND ($6::float8 IS NULL OR extract(epoch FROM clock_timestamp()) <= $6::float8) RETURNING 1) SELECT count(*) FROM u""",
+                                     org, collection, key, _j(upd), _j(expected), clock_at_most)
+        return bool(await self._q(go, transaction, write=True))
 
     # ---- generic edges -----------------------------------------------------------------------------------------
     async def batch_create_edges(
