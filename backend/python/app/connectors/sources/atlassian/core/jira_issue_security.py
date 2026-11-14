@@ -536,11 +536,13 @@ def _permissions_for_holder(
         return grants, False, None
 
     if holder_type == HOLDER_REPORTER:
-        add_user(reporter_email)
+        if not _deactivated(fields.get("reporter")):
+            add_user(reporter_email)
         return grants, False, None
 
     if holder_type == HOLDER_ASSIGNEE:
-        add_user(assignee_email)
+        if not _deactivated(fields.get("assignee")):
+            add_user(assignee_email)
         return grants, False, None
 
     if holder_type == HOLDER_PROJECT_LEAD:
@@ -602,6 +604,11 @@ def _field_entries(value: object) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, dict)]
     return []
+
+
+def _deactivated(user: object) -> bool:
+    """A deactivated account cannot sign in to Jira, so it reads nothing there."""
+    return isinstance(user, dict) and user.get("active") is False
 
 
 def browse_issue_holders(permission_grants: object) -> list[dict[str, Any]]:

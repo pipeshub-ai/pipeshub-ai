@@ -611,6 +611,17 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         }, user_by_account_id={"acc-7": type("U", (), {"email": "seven@ex.com"})()})
         assert grants == {(EntityType.USER, "rep@ex.com"), (EntityType.USER, "seven@ex.com"), (EntityType.GROUP, "g-9")}
 
+    def test_a_deactivated_reporter_or_assignee_is_not_granted_whatever_their_email(self) -> None:
+        gone = {"key": "k", "active": False, "emailAddress": "rep@ex.com"}
+        _, grants, _ = self._apply([{"type": "reporter"}, {"type": "assignee"}], {"reporter": gone, "assignee": {"active": True}})
+        assert grants == {(EntityType.USER, "asg@ex.com")}
+        record = _record()
+        level, _ = apply_issue_access(
+            record, {"security": {"id": "20"}, "assignee": {"active": False}}, is_subtask=False, project_key="PROJ",
+            context=_present(members={"20": [{"type": "assignee"}]}), assignee_email="asg@ex.com",
+        )
+        assert level == [] and record.access_rule == AccessRule.RESTRICTED
+
     def test_the_same_person_in_two_roles_is_granted_once(self) -> None:
         _, grants, _ = self._apply([{"type": "reporter"}, {"type": "assignee"}], assignee_email="rep@ex.com")
         assert grants == {(EntityType.USER, "rep@ex.com")}
