@@ -159,7 +159,7 @@ class _Config:
     def __init__(self, values: dict[str, Any]) -> None:
         self.values = values
 
-    async def get_config(self, key: str, use_cache: bool = True) -> Any:  # noqa: ANN401
+    async def get_config(self, key: str, use_cache: bool = True, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
         return self.values.get(key)
 
     async def set_config(self, key: str, value: Any) -> bool:  # noqa: ANN401
@@ -380,3 +380,40 @@ async def test_a_waiting_page_is_sent_again_once_its_back_off_is_over_not_on_eve
 
     assert due == {"drive.reindex": [s.key("docm")], "kb.reindex": [s.key("kb-upload")]}
     assert after == {}
+
+
+async def test_the_record_read_raises_when_asked_and_answers_empty_otherwise(seed: _Seed) -> None:
+    s = seed
+    bad = [s.key("docm"), object()]  # a value the store's client cannot send: a real failed read
+    with for_org(s.org, job="test"):
+        assert await s.graph.get_records_by_record_ids(bad, s.org) == []
+        with pytest.raises(Exception):  # noqa: B017
+            await s.graph.get_records_by_record_ids(bad, s.org, raise_on_error=True)
+        found = await s.graph.get_records_by_record_ids([s.key("docm")], s.org, raise_on_error=True)
+    assert [d.get("_key") or d.get("id") for d in found] == [s.key("docm")]
+
+
+async def test_a_failed_read_during_the_drain_keeps_the_outbox_and_the_next_start_recovers(
+    seed: _Seed, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    s = seed
+    config = _Config(_manual(s.manual))
+    await _run(s, config, _Kafka(raises=True))
+    entries = [k for k in config.values if k.startswith("/migrations/file_type_requeue_outbox/")]
+    assert entries
+
+    real_read = s.graph.get_records_by_record_ids
+
+    async def failing_read(ids: list[str], org_id: str, *args: object, **kwargs: object) -> list[dict[str, Any]]:
+        return await real_read([*ids, object()], org_id, *args, **kwargs)
+
+    monkeypatch.setattr(s.graph, "get_records_by_record_ids", failing_read)
+    during = await _run(s, config)
+    assert _mine(during, s) == {} and FLAG_KEY not in config.values
+    assert all(k in config.values for k in entries)
+
+    monkeypatch.setattr(s.graph, "get_records_by_record_ids", real_read)
+    after = await _run(s, config)
+    assert _mine(after, s) == {
+        "drive.reindex": [s.key("docm")], "kb.reindex": [s.key("kb-upload")], "smb.reindex": [s.key("share")],
+    }
