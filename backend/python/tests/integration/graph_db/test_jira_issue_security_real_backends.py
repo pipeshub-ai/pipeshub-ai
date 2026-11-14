@@ -378,16 +378,21 @@ async def test_a_story_stored_under_its_project_moves_under_its_epic_when_read_a
     assert by_key["PROJ-10"] in await _listed_under(world, "bob", by_key["PROJ-6"])
 
 
-async def _reindex(world: dict[str, Any], issue: dict) -> None:
-    """Re-index the stored copy of ``issue`` against the source's current state of it."""
+async def _reindex(world: dict[str, Any], issue: dict, *, context: IssueSecurityContext | None = None) -> None:
+    """Re-index the stored copy of ``issue`` against the source's current state of it. With
+    ``context``, the project's security and Browse holders are read as a fresh process reads them."""
     connector = world["connector"]
     ds = MagicMock()
     ds.get_issue = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value=issue)))
     parents = [i for i, _ in ISSUES.values() if i["id"] == (issue["fields"]["parent"] or {}).get("id")]
     ds.bulk_fetch_issues = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value={"issues": parents})))
+    grants = [{"permission": "BROWSE_PROJECTS", "holder": h} for h in (context.browse_holders or [])] if context else []
+    ds.get_assigned_permission_scheme = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value={"id": 7})))
+    ds.get_permission_scheme_grants = AsyncMock(
+        return_value=MagicMock(status=200, json=MagicMock(return_value={"permissions": grants})))
     connector._get_fresh_datasource = AsyncMock(return_value=ds)
     connector.data_source = ds
-    connector._load_issue_security = AsyncMock(return_value=connector._issue_security[PROJECT_ID])
+    connector._load_issue_security = AsyncMock(return_value=context or connector._issue_security[PROJECT_ID])
     connector.indexing_filters = MagicMock()
     stored = await world["processor"].get_record_by_external_id(
         connector_id=world["connector_id"], external_record_id=issue["id"])
@@ -479,6 +484,34 @@ async def test_the_reporter_of_a_sub_task_reads_it_alone_and_it_leaves_its_paren
                  again=True)
     assert not await _mismatches(world, readers, by_key)
     assert by_key["PROJ-12"] in await _listed_under(world, "bob", by_key["PROJ-10"])
+
+
+async def test_a_reindex_in_a_fresh_process_keeps_the_sub_task_with_its_reporter(world: dict[str, Any]) -> None:
+    """The sync files dave's sub-task off its parent and grants him it; a reindex run by a process that
+    has not synced (nothing cached) must place it the same way, not take it from him."""
+    await _sync_project(world)
+    connector = world["connector"]
+    context = connector._issue_security[PROJECT_ID]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    label = "sub-task of the unleveled story under the unleveled epic"
+    parent, _ = ISSUES["unleveled story under the unleveled epic"]
+    context.browse_holders = [{"type": "reporter"}]
+    await _write(world, [parent, _edited(label, "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})],
+                 again=True)
+    expected = {**readers, "PROJ-12": PROJECT_READERS | {"dave"}}
+    assert not await _mismatches(world, expected, by_key)
+
+    fresh = IssueSecurityContext(knowledge=context.knowledge, scheme_id=context.scheme_id,
+                                 members_readable=context.members_readable, members_by_level=context.members_by_level,
+                                 browse_holders=[{"type": "reporter"}])
+    connector._issue_security.clear()
+    connector._parent_levels.clear()
+    connector._browse_issue_holders.clear()
+    await _reindex(world, _edited(label, "2024-06-17T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]}),
+                   context=fresh)
+    assert not await _mismatches(world, expected, by_key)
+    assert by_key["PROJ-12"] not in await _listed_under(world, "bob", by_key["PROJ-10"])
 
 
 async def test_an_unread_scheme_keeps_the_reporter_of_a_stored_issue_and_the_story_where_it_was_filed(
