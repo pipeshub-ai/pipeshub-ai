@@ -243,6 +243,9 @@ MAX_FAILED_ITEMS = 500
 # MAX_HELD_RUNS), read again by id on later runs like FAILED_ITEMS. Kept apart from FAILED_ITEMS, which belongs to
 # the shared-with-me re-read.
 FEED_FAILED_ITEMS = "feed_failed_items"
+# On the connector's checkpoint: stored My Drive items whose permission list came back empty, with the runs in a
+# row it did, as JSON text of {file id: runs}. After MAX_HELD_RUNS their grants are cut down to what is proven.
+EMPTY_LIST_RUNS_SYNC_POINT_KEY = "empty_permission_list_runs"
 # Removed files whose check stayed undecided for MAX_UNRECOGNISED_403_RUNS runs, as "fileId:driveId", per user and per
 # user and shared drive, on keys of their own: re-reading a feed in full deletes its checkpoint, never these. Each is
 # kept and checked again on later runs until a clean answer settles it, without holding anything. None is ever dropped
@@ -315,6 +318,10 @@ def _delegated_scopes() -> list[str]:
 
 class _ItemReadFailed(Exception):
     """An item's permissions could not be read: it is neither changed nor unchanged."""
+
+
+class _EmptyPermissionList(RuntimeError):
+    """A permission list with no entries where the item must have some: not an answer for it."""
 
 
 class _RemovalUndecided(RuntimeError):
@@ -542,6 +549,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._upgrade_drives: set[str] = set()
         self._limited_subtrees: dict[str, set[str]] = {}
         self._limited_pending_lock = asyncio.Lock()
+        # This run: the empty-list runs per stored My Drive item (EMPTY_LIST_RUNS_SYNC_POINT_KEY), and the items counted.
+        self._empty_list_runs: dict[str, int] | None = None
+        self._empty_list_counted: set[str] = set()
+        self._empty_list_lock = asyncio.Lock()
+        self._empty_list_readers: dict[str, set[str]] = {}
         # Drives with a member group the directory will not list: who else can open their files is unknown.
         self._drive_members_unread: set[str] = set()
         # Per shared drive, this run: its restrictions, and the people and groups that are members.
@@ -806,6 +818,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._manager_read_locks = {}
             self._upgrade_drives = set()
             self._limited_subtrees = {}
+            self._empty_list_runs = None
+            self._empty_list_counted = set()
+            self._empty_list_readers = {}
             self._drive_members_unread = set()
             self._drive_restrictions = {}
             self._assumed_restrictions = set()
@@ -2017,7 +2032,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # grant; a new item has nothing stored to keep, so it still gets the reader's grant.
         # shortcut: a refusal (403) from such a user is still taken as ordinary, upgrade if one is seen to hide a revoke.
         if not permissions and not source_entries and (can_share or (item_is_stored and not (is_drive or item_drive_id))):
-            raise RuntimeError(
+            raise _EmptyPermissionList(
                 f"Empty permission list for {resource_id}, from a user who can share it or for a stored My Drive item"
             )
         if not permissions and inherited_permissions_disabled and not can_list_children:
@@ -2069,6 +2084,87 @@ class GoogleDriveTeamConnector(BaseConnector):
             False,
             [e for e in individually_shared_emails if allowed_email(e)],
         )
+
+    async def _permissions_as_owner(
+        self, file_id: str, metadata: dict, user_email: str | None, *, limited_access: bool
+    ) -> tuple[list[Permission], bool, list[str]] | None:
+        """A My Drive item's list read as its owner, for a reader who got an empty one: the owner can always read
+        its sharing ("Can access detailed file permissions", owner: Yes,
+        https://developers.google.com/workspace/drive/api/guides/ref-roles). None when the owner is the reader, is
+        not an active user of this Workspace, or cannot be asked."""
+        owner = next(
+            (o.get("emailAddress", "").lower() for o in metadata.get("owners") or [] if o.get("emailAddress")), ""
+        )
+        by_email = {u.email.lower(): u for u in self.synced_users if u.email and u.is_active}
+        if not owner or owner == (user_email or "").lower() or owner not in by_email:
+            return None
+        source = await self._build_user_drive_data_source(by_email[owner])
+        try:
+            read = await self._fetch_permissions(
+                file_id, is_drive=False, user_email=user_email, drive_data_source=source,
+                inherited_permissions_disabled=limited_access, can_share=True, item_is_stored=True,
+            )
+        except _EmptyPermissionList:
+            return None
+        except HttpError as e:
+            if e.resp.status == HttpStatusCode.NOT_FOUND.value or is_permission_denied_403(e):
+                return None
+            raise
+        return None if read[1] else read
+
+    async def _proven_grants_after_held_runs(
+        self, file_id: str, metadata: dict, user_email: str | None
+    ) -> tuple[list[Permission], bool, list[str]] | None:
+        """Count a run in which a stored My Drive item's list came back empty (once per run). After MAX_HELD_RUNS
+        such runs its list is what can be proven, its owner and the reader who opened it, so a grant removed
+        meanwhile does not stay for good. None until then: the item fails and keeps what is stored."""
+        async with self._empty_list_lock:
+            runs = await self._load_empty_list_runs()
+            if file_id not in self._empty_list_counted:
+                self._empty_list_counted.add(file_id)
+                runs[file_id] = runs.get(file_id, 0) + 1
+                await self._save_empty_list_runs(runs)
+            if runs[file_id] < MAX_HELD_RUNS:
+                return None
+        proven = [
+            Permission(email=o["emailAddress"], type=PermissionType.OWNER, entity_type=EntityType.USER)
+            for o in metadata.get("owners") or [] if o.get("emailAddress")
+        ]
+        # Every reader who opened it this run, not only this one: each read replaces the stored list.
+        readers = self._empty_list_readers.setdefault(file_id, set())
+        if user_email:
+            readers.add(user_email.lower())
+        owners = {(p.email or "").lower() for p in proven}
+        proven += [
+            Permission(email=email, type=PermissionType.READ, entity_type=EntityType.USER)
+            for email in sorted(readers - owners)
+        ]
+        self.logger.warning(
+            f"The permission list of {file_id} came back empty {MAX_HELD_RUNS} runs in a row; only its owner and its "
+            "reader keep access until a list can be read"
+        )
+        return DrivePermissionBatch(proven, saw_permission_details=False), False, []
+
+    async def _load_empty_list_runs(self) -> dict[str, int]:
+        if self._empty_list_runs is None:
+            stored = await self.drive_delta_sync_point.read_sync_point(EMPTY_LIST_RUNS_SYNC_POINT_KEY) or {}
+            try:
+                runs = json.loads(stored.get("runs") or "{}")
+            except ValueError:
+                runs = {}
+            self._empty_list_runs = {str(k): int(v) for k, v in runs.items()} if isinstance(runs, dict) else {}
+        return self._empty_list_runs
+
+    async def _save_empty_list_runs(self, runs: dict[str, int]) -> None:
+        await self.drive_delta_sync_point.update_sync_point(
+            EMPTY_LIST_RUNS_SYNC_POINT_KEY, {"runs": json.dumps(runs, sort_keys=True)}
+        )
+
+    async def _forget_empty_list_runs(self, file_id: str) -> None:
+        async with self._empty_list_lock:
+            runs = await self._load_empty_list_runs()
+            if runs.pop(file_id, None) is not None:
+                await self._save_empty_list_runs(runs)
 
     async def _drive_restrictions_of(self, drive_id: str) -> dict[str, bool]:
         """The restrictions of one of this domain's shared drives. A drive whose listing carried none is asked
@@ -4553,16 +4649,30 @@ class GoogleDriveTeamConnector(BaseConnector):
                     "inherits_from_drive": not item_drive_id or file_record.external_record_group_id == item_drive_id,
                     "item_drive_id": item_drive_id,
                 }
-                new_permissions, is_fallback_permissions, individually_shared_emails = await self._fetch_permissions(
-                    file_id,
-                    is_drive=False,
-                    user_email=user_email,
-                    drive_data_source=drive_data_source,
-                    can_list_children=bool((metadata.get("capabilities") or {}).get("canListChildren")),
-                    can_share=bool((metadata.get("capabilities") or {}).get("canShare")),
-                    item_is_stored=existing_record is not None,
-                    **read_as,
-                )
+                try:
+                    new_permissions, is_fallback_permissions, individually_shared_emails = await self._fetch_permissions(
+                        file_id,
+                        is_drive=False,
+                        user_email=user_email,
+                        drive_data_source=drive_data_source,
+                        can_list_children=bool((metadata.get("capabilities") or {}).get("canListChildren")),
+                        can_share=bool((metadata.get("capabilities") or {}).get("canShare")),
+                        item_is_stored=existing_record is not None,
+                        **read_as,
+                    )
+                    list_read = True
+                except _EmptyPermissionList:
+                    if item_drive_id:
+                        raise
+                    read = await self._permissions_as_owner(file_id, metadata, user_email, limited_access=limited_access)
+                    list_read = read is not None
+                    if read is None:
+                        read = await self._proven_grants_after_held_runs(file_id, metadata, user_email)
+                    if read is None:
+                        raise
+                    new_permissions, is_fallback_permissions, individually_shared_emails = read
+                if list_read and not item_drive_id and existing_record is not None and not is_fallback_permissions:
+                    await self._forget_empty_list_runs(file_id)
                 member_reads_through_drive = False
                 if is_fallback_permissions and item_drive_id:
                     # A shared drive reader cannot list the item's sharing; a manager of its drive always can.
