@@ -1,8 +1,8 @@
 """kg: the projection reads ``accessOnly`` of a record group (a group that carries access only is no row of a listing)"""
 from alembic import op
 
-revision = "kg_0013"
-down_revision = "kg_0012"
+revision = "kg_0014"
+down_revision = "kg_0013"
 branch_labels = None
 depends_on = None
 older_code_compatible = "adds a key to the projected subset of a document; older code reads the keys it knows and ignores the new one"
