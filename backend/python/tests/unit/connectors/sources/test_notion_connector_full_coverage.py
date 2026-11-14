@@ -12,6 +12,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
     ProgressStatus,
 )
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
@@ -2645,6 +2646,7 @@ class TestCreateWorkspaceRecordGroup:
         conn.data_entities_processor.on_new_record_groups.assert_awaited_once()
         [(group, permissions)] = conn.data_entities_processor.on_new_record_groups.await_args.args[0]
         assert group.inherit_permissions is False
+        assert group.permission_model is None, "reaching the workspace must not stand in for a record check"
         assert permissions == []
 
     @pytest.mark.asyncio
@@ -2657,12 +2659,14 @@ class TestCreateWorkspaceRecordGroup:
             id="rg-1", org_id="org-1", name="My Workspace", external_group_id="ws-1",
             connector_name=Connectors.NOTION, connector_id="notion-conn-1",
             group_type=RecordGroupType.NOTION_WORKSPACE, inherit_permissions=True,
+            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
         )
         conn._mock_tx.get_record_group_by_external_id = AsyncMock(return_value=stored)
         await conn._create_workspace_record_group()
         [(group, permissions)] = conn.data_entities_processor.on_new_record_groups.await_args.args[0]
         assert group.id == "rg-1"
         assert group.inherit_permissions is False
+        assert group.permission_model is None
         assert permissions == []
 
     @pytest.mark.asyncio

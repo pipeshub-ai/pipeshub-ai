@@ -57,7 +57,9 @@ RECORD_GROUP_LEVEL_SITES = [
     # The mailbox group is written twice: once per user, and again when a departed user loses the grant.
     ("app/connectors/sources/google/gmail/team/connector.py", 2),
     ("app/connectors/sources/microsoft/outlook/connector.py", 3),
-    ("app/connectors/sources/notion/connector.py", 2),
+    # Notion's workspace grants nobody (its API does not say who may open a page), so it must not declare
+    # that reaching it admits its records: none, and a declaration coming back fails here.
+    ("app/connectors/sources/notion/connector.py", 0),
     ("app/connectors/sources/slack/team/connector.py", 2),
     ("app/connectors/sources/slack/individual/connector.py", 2),
 ]

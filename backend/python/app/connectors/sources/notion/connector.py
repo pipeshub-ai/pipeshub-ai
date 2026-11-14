@@ -24,7 +24,6 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
-    PermissionModel,
     CollectionNames,
     Connectors,
     MimeTypes,
@@ -4576,8 +4575,10 @@ class NotionConnector(BaseConnector):
         sharing, teamspace pages show a plain workspace parent, and ``/v1/users``
         lists no guests. Workspace membership therefore proves nothing about a page,
         so the workspace neither inherits the app nor carries a grant, and nothing
-        synced here is readable through it. Written on every run, so a workspace
-        stored while it still inherited the app loses that edge.
+        synced here is readable through it. It is not RECORD_GROUP_LEVEL either:
+        reaching it must never stand in for checking a record. Written on every run,
+        so a workspace stored while it still inherited the app loses that edge and
+        that declaration.
         """
         try:
             if not self.workspace_id:
@@ -4598,11 +4599,11 @@ class NotionConnector(BaseConnector):
                     connector_name=self.connector_name,
                     connector_id=self.connector_id,
                     group_type=RecordGroupType.NOTION_WORKSPACE,
-                    permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                     created_at=get_epoch_timestamp_in_ms(),
                     updated_at=get_epoch_timestamp_in_ms(),
                 )
             record_group.inherit_permissions = False
+            record_group.permission_model = None
 
             # [] clears any grant an earlier version wrote on the workspace.
             await self.data_entities_processor.on_new_record_groups([(record_group, [])])

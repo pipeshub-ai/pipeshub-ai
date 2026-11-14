@@ -299,7 +299,7 @@ class NotionExpected:
             connector_name=Connectors.NOTION,
             name=workspace_name,
             group_type=RecordGroupType.NOTION_WORKSPACE,
-            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
+            permission_model=None,
         )
 
     @staticmethod
