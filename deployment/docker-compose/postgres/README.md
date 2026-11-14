@@ -30,12 +30,14 @@ Start order: `postgres` healthy, `pgbouncer` healthy, `pipeshub-migrate` exits 0
 For a **new** install that should run on one database: documents (`DOC_STORE=postgres`), the graph (`DATA_STORE=postgres`), vectors (`VECTOR_DB_TYPE=pgvector`), configuration (`KV_STORE_TYPE=postgres`), the message queue (`MESSAGE_BROKER=postgres`), the crawl scheduler (`CRAWL_SCHEDULER=postgres`) and what Redis would hold across processes (`REDIS_MODE=postgres`) all live in this PostgreSQL. The MongoDB, Qdrant, Redis, Neo4j, ArangoDB, etcd and Kafka services are removed from the project, so no profile selection (`--profile "*"` included) starts them. An install that already runs those stores keeps them: this override copies no data. Run from a repository checkout with Docker Compose v2.24.4 or later. The simplest way is the installer, which generates the passwords and keeps the override for later runs (`--stop`, `--upgrade`, `--uninstall`); its summary then lists `postgres` for the graph, key-value store and broker:
 
 ```bash
+cd deployment/docker-compose
 PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml ./install.sh
 ```
 
-By hand, put the nine `PG_*_PASSWORD` values in `.env` (see `env.template`) (`COMPOSE_PROFILES` needs no store profile, for example `COMPOSE_PROFILES=sandbox`; a store profile left in it starts nothing); `postgres`, `pgbouncer` and `pipeshub-migrate` start without their profiles:
+By hand, put the nine `PG_*_PASSWORD` values in `deployment/docker-compose/.env` (see `env.template` there) (`COMPOSE_PROFILES` needs no store profile, for example `COMPOSE_PROFILES=sandbox`; a store profile left in it starts nothing); `postgres`, `pgbouncer` and `pipeshub-migrate` start without their profiles:
 
 ```bash
+cd deployment/docker-compose     # where .env and the compose files are
 docker compose -f docker-compose.yml -f docker-compose.postgres-only.yml -p pipeshub-ai up -d --build
 ```
 

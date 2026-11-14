@@ -46,7 +46,16 @@ if [[ $EUID -ne 0 ]] && \
    [[ -S /var/run/docker.sock ]] && \
    ! docker info >/dev/null 2>&1; then
   if command -v sudo >/dev/null 2>&1; then
-    exec sudo "${BASH_SOURCE[0]}" "$@"
+    # sudo resets the environment, so the PIPESHUB_* settings read below are handed over explicitly (only these: sudo logs
+    # its command line).
+    _sudo_env=()
+    for _v in PIPESHUB_DEPLOY_TYPE PIPESHUB_GRAPH_DB PIPESHUB_BROKER PIPESHUB_KV_STORE PIPESHUB_VERSION PIPESHUB_IMAGE_SOURCE \
+              PIPESHUB_NO_PULL PIPESHUB_PORT PIPESHUB_PROJECT PIPESHUB_PUBLIC_URL PIPESHUB_IMAGE PIPESHUB_COMPOSE_OVERRIDES \
+              PIPESHUB_ENV_EXTRA PIPESHUB_INSTALL_REF PIPESHUB_BLOCK_PRIVATE_ADDRESSES; do
+      [[ -n "${!_v+x}" ]] && _sudo_env+=("$_v=${!_v}")
+    done
+    # ${a[@]+...}: bash 3.2 treats an empty array as unbound under set -u.
+    exec sudo env ${_sudo_env[@]+"${_sudo_env[@]}"} "${BASH_SOURCE[0]}" "$@"
   fi
   # sudo not available — fall through; the pre-flight check will give a clear error
 fi

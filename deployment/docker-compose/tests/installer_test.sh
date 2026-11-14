@@ -601,6 +601,34 @@ check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=
   fi
 )
 
+# When docker needs root the installer runs itself again through sudo, which resets the environment: the PIPESHUB_* settings must be
+# handed over on the command line, or a fresh install falls back to the default stores. A recording sudo keeps only its arguments.
+(
+  work="$TMP_ROOT/sudo-reexec"; mkdir -p "$work/bin"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  printf '#!/usr/bin/env bash\n[ "$1" = info ] && exit 1\nexit 0\n' >"$work/bin/docker"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >"$SUDO_LOG"\n' >"$work/bin/sudo"
+  chmod +x "$work/bin/docker" "$work/bin/sudo"
+  if [[ $EUID -eq 0 || ! -S /var/run/docker.sock ]]; then
+    pass "sudo re-exec keeps the PIPESHUB_* settings (skipped: running as root or no docker socket)"
+  else
+    (cd "$work" && PATH="$work/bin:$PATH" SUDO_LOG="$work/sudo.log" PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml \
+      PIPESHUB_PROJECT='my proj' PIPESHUB_UNRELATED_TOKEN=secret bash ./install.sh --yes >/dev/null 2>&1)
+    args="$(cat "$work/sudo.log" 2>/dev/null)"
+    check "sudo re-exec passes PIPESHUB_COMPOSE_OVERRIDES" "$args" "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml"
+    check "sudo re-exec passes a value with a space as one argument" "$args" $'\nPIPESHUB_PROJECT=my proj\n'
+    check "sudo re-exec keeps the installer's own arguments" "$args" $'/install.sh\n--yes'
+    check_exact "sudo re-exec passes no variable the installer does not read" "$(printf '%s\n' "$args" | grep -c UNRELATED)" "0"
+    # With no PIPESHUB_* setting at all the empty list must not trip set -u.
+    (cd "$work" && env -u PIPESHUB_COMPOSE_OVERRIDES PATH="$work/bin:$PATH" SUDO_LOG="$work/sudo.log" bash ./install.sh --yes >/dev/null 2>&1)
+    check_exact "sudo re-exec with no PIPESHUB_* setting" "$(cat "$work/sudo.log" 2>/dev/null | head -1)" "env"
+  fi
+)
+# Every PIPESHUB_* variable the installer reads is in the list it hands to sudo.
+_read="$(grep -oE '\$\{?PIPESHUB_[A-Z_]+' "$INNER_INSTALLER" | tr -d '${' | sort -u)"
+_kept="$(awk '/_sudo_env=\(\)/{g=1} g&&/; do$/{print; exit} g{print}' "$INNER_INSTALLER" | grep -oE 'PIPESHUB_[A-Z_]+' | sort -u)"
+check_exact "the sudo re-exec list covers every PIPESHUB_* the installer reads" "$(comm -23 <(printf '%s\n' "$_read") <(printf '%s\n' "$_kept"))" ""
+
 # --uninstall keeps the PostgreSQL volume unless --delete-postgres is given, also with --yes (checked with a recording docker).
 (
   work="$TMP_ROOT/uninstall-pg"; mkdir -p "$work/bin"
