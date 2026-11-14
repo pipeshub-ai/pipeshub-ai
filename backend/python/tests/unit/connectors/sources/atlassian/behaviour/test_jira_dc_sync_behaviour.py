@@ -896,6 +896,26 @@ class TestProductAccess:
         assert db.withdrawn_users == []
         assert {m.email for m in db.groups_saved["devs"]} <= {"bob@example.com", "carol@example.com"}
 
+    @pytest.mark.parametrize(
+        "groups",
+        [pytest.param([None], id="null"), pytest.param([""], id="empty name"), pytest.param(["  "], id="blank name"),
+         pytest.param([{"name": "jira-software-users"}], id="an object"), pytest.param([7], id="a number"),
+         pytest.param(["jira-software-users", None], id="one good one bad")],
+    )
+    async def test_a_role_with_a_group_entry_that_is_not_a_group_name_leaves_product_access_unknown(
+        self, jira, db, store, search, groups,
+    ) -> None:
+        """Dropping the entry would leave a role that looks read in full with fewer groups, or none."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response([{"key": "jira-software", "groups": groups}]))
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"} and db.withdrawn_users == []
+
     async def test_roles_read_in_full_with_no_groups_give_no_account_product_access(self, jira, db, store, search) -> None:
         """Only an administrator can read the roles, so the answer is the whole picture: access comes only through
         a role's groups, and no role has one."""

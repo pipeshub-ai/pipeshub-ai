@@ -527,6 +527,8 @@ class JiraDataCenterConnector(BaseConnector):
         self._newly_listed_user_keys: set[str] = set()
         # The newly listed accounts the project being synced has not been handed yet (``people_handed``).
         self._accounts_to_hand: set[str] = set()
+        # Projects whose checkpoint holds ``people_handed`` after this sync's walk.
+        self._handed_projects: set[str] = set()
         self._own_key: str | None = None  # the account the connector authenticates as
         # Keys of the active members of the application roles' groups (Jira product access);
         # None when they could not all be read.
@@ -1058,11 +1060,17 @@ class JiraDataCenterConnector(BaseConnector):
 
             # Sync issues for all projects
             last_sync_time = await self._get_issues_sync_checkpoint()
+            self._handed_projects = set()
             sync_stats = await self._sync_all_project_issues(projects, jira_users, last_sync_time)
-            if self._newly_listed_user_keys and not sync_stats.get("failed_project_keys") and not allowed_keys:
+            handed_on = bool(self._newly_listed_user_keys) and not sync_stats.get("failed_project_keys") \
+                and not allowed_keys
+            if handed_on:
                 # Every project with a level map now carries the retry marker, saved before its walk. A project-key
                 # filter leaves projects out, which take the accounts when next synced (``people_handed``).
                 await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": "[]"})
+                # An account listed again later (withdrawn meanwhile) starts a new hand-out.
+                for project_key in sorted(self._handed_projects):
+                    await self._update_project_sync_checkpoint(project_key, people_handed="[]")
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
@@ -2067,7 +2075,10 @@ class JiraDataCenterConnector(BaseConnector):
 
             for role in roles_data:
                 role_key = role.get("key") if isinstance(role, dict) else None
-                if not role_key or not isinstance(role.get("groups"), list):
+                groups = role.get("groups") if isinstance(role, dict) else None
+                if not role_key or not isinstance(groups, list) or not all(
+                    isinstance(g, str) and g.strip() for g in groups
+                ):
                     # Unreadable, or no key: it may be a role a project grants, so the roles
                     # missing from this mapping are unknown, not "no groups".
                     self._app_roles_unread = True
@@ -3569,6 +3580,8 @@ class JiraDataCenterConnector(BaseConnector):
         except (TypeError, ValueError):
             handed = set()
         self._accounts_to_hand = self._newly_listed_user_keys - handed
+        if handed:
+            self._handed_projects.add(project_key)
         if self._accounts_to_hand and stored_levels and "*" not in stored_levels and not is_new_project:
             # An issue's level grants name only listed accounts, and a withdrawn one lost them: an account
             # listed again (or for the first time) gets them back when the leveled issues are read again.
@@ -3718,6 +3731,7 @@ class JiraDataCenterConnector(BaseConnector):
             # After the levels: a walk that fails before here hands the accounts again next time.
             await self._update_project_sync_checkpoint(
                 project_key, people_handed=json.dumps(sorted(self._newly_listed_user_keys)))
+            self._handed_projects.add(project_key)
 
         if total_issues_processed == 0:
             self.logger.info(f"ℹ️ No new/updated issues for project {project_key}")
