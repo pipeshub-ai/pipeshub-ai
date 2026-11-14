@@ -58,7 +58,7 @@ class SearchPage:
     end_index: int
     next_cursor: str | None
     prev_cursor: str | None
-    # ``total`` is not exact (usually lower; see ``totalCapped`` in the API spec).
+    # ``total`` may not be exact (usually lower; see ``totalCapped`` in the API spec).
     total_capped: bool = False
     # Connectors left out of this page because their copy in the typed graph is not made yet (the others are listed).
     not_ready: list[str] = field(default_factory=list)

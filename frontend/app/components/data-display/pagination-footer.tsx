@@ -16,7 +16,7 @@ export interface PaginationState {
   /** Authoritative flags for sources whose page number is only an estimate. */
   hasPrev?: boolean;
   hasNext?: boolean;
-  /** `totalCount` is not exact (usually lower): the total and the page count read as "at least". */
+  /** `totalCount` may not be exact (usually lower): the total and the page count read as "at least". */
   totalCapped?: boolean;
 }
 
