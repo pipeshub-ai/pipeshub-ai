@@ -65,6 +65,8 @@ HOLDER_ANYONE = "anyone"
 HOLDER_USER_FIELD = "userCustomField"
 HOLDER_GROUP_FIELD = "groupCustomField"
 _FIELD_HOLDERS = (HOLDER_USER_FIELD, HOLDER_GROUP_FIELD)
+# Browse holders that name people on each issue, so the grant goes on the issue, not the project.
+BROWSE_ISSUE_HOLDER_TYPES: tuple[str, ...] = (HOLDER_REPORTER, HOLDER_ASSIGNEE, *_FIELD_HOLDERS)
 # Holders that name the same people on every issue of a project. Reporter, assignee and
 # the field holders name people on each issue, so two issues in one level can differ.
 _SAME_ON_EVERY_ISSUE = frozenset({
@@ -600,6 +602,18 @@ def _field_entries(value: object) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, dict)]
     return []
+
+
+def browse_issue_holders(permission_grants: object) -> list[dict[str, Any]]:
+    """The per-issue Browse holders of a permission scheme's grants; a malformed grant or holder is skipped."""
+    found: list[dict[str, Any]] = []
+    for grant in permission_grants if isinstance(permission_grants, list) else []:
+        if not isinstance(grant, dict) or grant.get("permission") != "BROWSE_PROJECTS":
+            continue
+        holder = grant.get("holder")
+        if isinstance(holder, dict) and holder.get("type") in BROWSE_ISSUE_HOLDER_TYPES:
+            found.append(holder)
+    return found
 
 
 def browse_holder_grants(
