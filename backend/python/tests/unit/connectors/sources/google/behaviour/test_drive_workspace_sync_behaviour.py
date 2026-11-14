@@ -3162,6 +3162,28 @@ async def test_a_folder_turning_limited_takes_an_old_style_grant_off_the_items_b
     assert reaches(ws, ALICE, "f"), "a Manager keeps it"
 
 
+async def test_the_items_below_a_folder_turning_limited_are_checked_over_several_runs_past_the_bound(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+
+    monkeypatch.setattr(drive_connector, "LIMITED_SUBTREE_MAX_CHECKS", 1)
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f1", "a.txt", parent="dir")
+    ws.world.add_item("f2", "b.txt", parent="dir")
+    await ws.sync()
+    _old_style_grant(ws, "f1", BOB)
+    _old_style_grant(ws, "f2", BOB)
+
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+    assert sum(BOB in ws.records.perm_emails(f) for f in ("f1", "f2")) == 1, "one checked this run, one left"
+
+    await ws.sync()  # nothing changed at the source: the item left is checked from the checkpoint
+    assert not reaches(ws, BOB, "f1") and not reaches(ws, BOB, "f2")
+
+
 async def test_a_direct_grant_below_a_folder_turning_limited_stays(ws: Workspace) -> None:
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
     ws.world.folder("dir", "Plans", parent="sd-1")

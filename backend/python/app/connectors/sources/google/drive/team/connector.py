@@ -3508,9 +3508,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                 pending[(drive_id, folder_id)] = None
         left: list[dict[str, str | None]] = []
         budget = LIMITED_SUBTREE_MAX_CHECKS
+        children_by_drive: dict[str, dict[str, list[Record]]] = {}
         for (drive_id, folder_id), after in sorted(pending.items(), key=lambda kv: kv[0]):
             try:
-                left_after, budget = await self._clear_cut_out_grants_below(drive_id, folder_id, after, budget)
+                if drive_id not in children_by_drive:
+                    children_by_drive[drive_id] = await self._stored_children_of_drive(drive_id)
+                left_after, budget = await self._clear_cut_out_grants_below(
+                    drive_id, folder_id, after, budget, children_by_drive[drive_id]
+                )
             except Exception as e:
                 self.logger.warning(
                     f"The items below limited folder {folder_id} could not be checked ({type(e).__name__}: {e}); "
@@ -3528,15 +3533,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             done = sorted(set(marker.get(STAND_IN_CLEANED_DRIVES) or []) | self._upgrade_drives)
             await self.drive_delta_sync_point.update_sync_point(STAND_IN_CLEANUP_SYNC_POINT_KEY, {STAND_IN_CLEANED_DRIVES: done})
 
-    async def _clear_cut_out_grants_below(
-        self, drive_id: str, folder_id: str, after: str | None, budget: int
-    ) -> tuple[str | None, int]:
-        """Check the stored descendants of one limited folder, in id order from past `after`. Returns the last id
-        checked when the budget ran out first (None when all were), and the budget left. A failed read raises."""
+    async def _stored_children_of_drive(self, drive_id: str) -> dict[str, list[Record]]:
+        """The stored records of a shared drive by their parent's external id. A failed read raises."""
+        children: dict[str, list[Record]] = {}
         group = await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, drive_id)
         if group is None or not getattr(group, "id", None):
-            return None, budget
-        children: dict[str, list[Record]] = {}
+            return children
         page_after: str | None = None
         page_size = drive_full_sync_reconciler.RECONCILE_PAGE_SIZE
         while True:
@@ -3549,8 +3551,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if record.parent_external_record_id:
                     children.setdefault(record.parent_external_record_id, []).append(record)
             if len(page) < page_size or not getattr(page[-1], "id", None):
-                break
+                return children
             page_after = page[-1].id
+
+    async def _clear_cut_out_grants_below(
+        self, drive_id: str, folder_id: str, after: str | None, budget: int, children: dict[str, list[Record]]
+    ) -> tuple[str | None, int]:
+        """Check the stored descendants of one limited folder, in id order from past `after`. Returns the last id
+        checked when the budget ran out first (None when all were), and the budget left. A failed read raises."""
         below: list[Record] = []
         todo, seen = [folder_id], {folder_id}
         while todo:
