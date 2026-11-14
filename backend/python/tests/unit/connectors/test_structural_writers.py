@@ -1188,6 +1188,35 @@ async def test_a_renewal_that_gives_up_twice_is_tried_again_at_the_next_write_so
             assert await sg.recover_expired_writes(provider, "c1") == 0
 
 
+async def test_a_write_opened_without_a_lease_is_counted_closed_once_even_when_its_close_applied_and_then_raised(monkeypatch) -> None:
+    """The lease list does not read, so the block opens the connector with the plain counter (no token). Its close is an increment: when it applies
+    and its answer is lost, the failure path that closes again must not count it a second time (with another write open, opened == closed would read
+    the connector as current while that write still runs)."""
+    from app.core import org_context
+
+    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
+    monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+    apps = _AppDocs(provider, ["c1"])
+    apps.docs["c1"].update({"scopeProjectionOpenWrites": "{nope", "scopeProjectionOpened": 1})     # another write is open, and the list does not read
+    plain = provider.increment_node_field.side_effect
+
+    async def applies_then_raises(key, collection, field, *args, **kwargs) -> int:
+        value = await plain(key, collection, field, *args, **kwargs)
+        if field == "scopeProjectionClosed":
+            raise TimeoutError("applied, but the answer never came")
+        return value
+    provider.increment_node_field = AsyncMock(side_effect=applies_then_raises)
+
+    async def failing_write(*args, **kwargs) -> None:
+        raise RuntimeError("connection reset")
+    provider.batch_create_edges = AsyncMock(side_effect=failing_write)
+    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(RuntimeError, match="connection reset"):
+        async with store_provider.transaction() as tx:
+            await _Scratch.via_local_alias(tx, "r1")
+    doc = apps.docs["c1"]
+    assert doc["scopeProjectionOpened"] == 2 and doc["scopeProjectionClosed"] == 1          # the other write is still counted open
+
+
 async def test_a_connector_is_not_closed_when_its_mark_did_not_land(monkeypatch) -> None:
     from app.core import org_context
 

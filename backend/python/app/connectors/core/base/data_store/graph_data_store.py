@@ -390,7 +390,11 @@ class GraphTransactionStore(TransactionStore):
             return
         provider = self.graph_provider._provider
         if self._org_marked_for_unclassified:
-            # a long block renews its leases before a write, so the sweep never reads it as dead and closes it while it still writes
+            # a long block renews its leases before a write, so the sweep never reads it as dead and closes it while it still writes.
+            # shortcut: nothing in the store fences the forwarded write itself: one that reaches the graph more than half a lease plus the grace
+            # (420 s) after this check can land after the sweep closed its lease, and a pass that ran in between reads current until the block's
+            # own mark lands (never, if the process dies first). Only without explicit transactions (NEO4J_EXPLICIT_TRANSACTIONS=false); upgrade
+            # by refusing unclassified writes there, or by a fence every provider write checks, if that mode is kept.
             if monotonic() - self._renewed_at > OPEN_WRITE_SECONDS / 2:
                 renewed = True
                 for connector_id in sorted(self.opened):
@@ -1735,6 +1739,10 @@ class GraphDataStore(DataStoreProvider):
         of an applied one would count a write that is still running as closed). A close that does not land (logged) leaves the connector opened, which
         is not current, until its lease runs out and the sweep closes it."""
         for connector_id in sorted((tx_store.opened.keys() & tx_store.marked) - tx_store.closed):
+            if tx_store.opened[connector_id] is None:
+                # a plain counter close is tried once for the whole block: an error proves nothing (the increment may have applied), and a second
+                # call (the failure path closes again) would count a write that is still running as closed
+                tx_store.closed.add(connector_id)
             if await close_write(self.graph_provider, connector_id, tx_store.opened[connector_id]):
                 tx_store.closed.add(connector_id)
                 continue
