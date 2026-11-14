@@ -3050,20 +3050,51 @@ async def test_an_unreadable_limited_item_loses_an_audience_grant_a_folder_above
     assert ("workspace-members", "GROUP", "READ") in ws.grants("dir")
 
 
-async def test_a_limited_item_whose_permission_list_comes_back_empty_stops_inheriting(ws: Workspace) -> None:
-    ws.world.folder("dir", "Team", parent="root-alice", owner=ALICE, perms=[discoverable("anyone"), reader(BOB)])
-    ws.world.add_item("f", "x.txt", parent="dir", owner=ALICE)
+async def test_an_empty_permission_list_for_a_my_drive_item_is_read_again_so_a_removed_grant_goes(ws: Workspace) -> None:
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB), reader(carol)])
     await ws.sync()
-    assert ("workspace-members", "GROUP", "READ") in ws.grants("f"), "the list names what the item inherits"
+    assert (carol, "USER", "READ") in ws.grants("f")
+
+    ws.world.unshare("f", carol)
+    ws.world.files["f"].perm_access = "empty"  # a 200 with no entries: a My Drive item's list always names its owner
+    await ws.sync()
+    assert ws.incomplete, "not an answer: the item is read again"
+    assert (BOB, "USER", "READ") in ws.grants("f"), "what was stored stays meanwhile"
+
+    ws.world.files["f"].perm_access = None
+    await ws.sync()
+    assert not ws.incomplete
+    assert (carol, "USER", "READ") not in ws.grants("f")
+    assert (BOB, "USER", "READ") in ws.grants("f")
+
+
+async def test_an_empty_permission_list_for_a_shared_drive_item_still_grants_its_reader(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {BOB: "reader"})
+    ws.world.add_item("g", "x.txt", parent="sd-1")
+    await ws.sync()
+    assert (BOB, "USER", "READ") in ws.grants("g"), "a reader of a shared drive item is answered with no entries"
+    assert not ws.incomplete
+
+
+async def test_a_limited_item_whose_permission_list_comes_back_empty_stops_inheriting(ws: Workspace) -> None:
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_drive("sd-1", "Team", {BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1", perms=[reader(carol)])
+    ws.world.add_item("f", "x.txt", parent="dir")
+    ws.world.files["f"].perm_access = "all"
+    await ws.sync()
+    assert ws.records.records["f"].inherit_permissions is True
 
     ws.world._mutate("f", lambda: ws.world._bump("f", inheritedPermissionsDisabled=True))
-    ws.world.files["f"].perm_access = "empty"  # a 200 with no entries, for everyone who reads it
+    ws.world.files["f"].perm_access = None  # Bob, a shared drive reader, is answered with no entries
     await ws.sync()
 
     assert "f" in ws.records.stopped_inheriting, "known from its metadata: a limited item inherits nothing"
     assert ws.records.records["f"].inherit_permissions is False
-    assert ("workspace-members", "GROUP", "READ") not in ws.grants("f"), "the folder's share no longer reaches it"
-    assert ("workspace-members", "GROUP", "READ") in ws.grants("dir")
+    assert (carol, "USER", "READ") not in ws.grants("f"), "the folder's share no longer reaches it"
 
 
 async def test_an_unreadable_item_that_is_not_limited_keeps_inheriting(ws: Workspace) -> None:

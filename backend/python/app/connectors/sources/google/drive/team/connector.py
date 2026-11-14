@@ -1978,9 +1978,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         # A user who can change the item's sharing can read it, and its list is never empty, so a list the source
         # answered with no entries is not a list: failing the item keeps the grants stored and reads it again next
         # run. Entries the connector left out itself (a suspended owner, a link share) are an answer, not this case.
+        # A My Drive item's list always names its owner, so an empty one is not a list either: only a shared drive
+        # item answers its readers with no entries. Taken as the fallback, it kept a just-removed grant.
         # shortcut: a refusal (403) from such a user is still taken as ordinary, upgrade if one is seen to hide a revoke.
-        if not permissions and not source_entries and can_share:
-            raise RuntimeError(f"Empty permission list for {resource_id} from a user who can share it")
+        if not permissions and not source_entries and (can_share or not (is_drive or item_drive_id)):
+            raise RuntimeError(f"Empty permission list for {resource_id}, which is not an answer for this item")
         if not permissions and inherited_permissions_disabled and not can_list_children:
             return ([], True, [])
         if not permissions and user_email:
