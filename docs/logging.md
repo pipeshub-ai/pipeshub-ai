@@ -365,7 +365,9 @@ carries them: the handler's own, and the ack, retry or dead-letter decision. Bef
   `ai_config.refresh_failed`) and raises; `message.end` does not repeat its text. A handler returns true when done or when the
   message is not for it (skipped at DEBUG), false only to ask for it again, and raises on failure, so the consumer's classifier
   decides: a terminal error (4xx, validation, `NonRetryableError` for a malformed message) is dead-lettered on its first delivery,
-  a transient one is retried. A user event's failure carries
+  a transient one is retried. The sync handler's connector build (an init event, or the lazy init that start, resync and
+  reindex do) raises its failure the same way and logs nothing itself: the consumer's line (`message.end`; `message.handler_failed` on
+  Postgres) is its only line. A user event's failure carries
   `target_user_id`, the user the event is about (`user_id` is who sent it). `target_user_id` is not passed through the provider's
   `log_identity`.
 - The message value and its payload are never logged whole. Lines carry only the ids taken from it (`record_id`, `connector_id`,

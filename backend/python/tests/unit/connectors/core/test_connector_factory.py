@@ -439,8 +439,8 @@ class TestInitializeConnector:
         mock_connector.on_background_init_failed.assert_awaited_once_with(None)
 
     @pytest.mark.asyncio
-    async def test_init_exception_returns_none(self):
-        """If init() raises, returns None."""
+    async def test_init_exception_is_reported_disposed_and_raised(self):
+        """If init() raises, the connector hears why and the caller gets the failure (F27)."""
         logger = MagicMock()
         data_store = MagicMock()
         config_service = MagicMock()
@@ -455,18 +455,19 @@ class TestInitializeConnector:
         mock_processor.initialize = AsyncMock()
         mock_processor_cls = MagicMock(return_value=mock_processor)
 
-        result = await ConnectorFactory.initialize_connector(
-            name="test_init_exc",
-            logger=logger,
-            data_store_provider=data_store,
-            config_service=config_service,
-            connector_id="conn-7",
-            scope="personal",
-            created_by="user-123",
-            data_entities_processor_cls=mock_processor_cls,
-        )
+        with pytest.raises(RuntimeError, match="init boom"):
+            await ConnectorFactory.initialize_connector(
+                name="test_init_exc",
+                logger=logger,
+                data_store_provider=data_store,
+                config_service=config_service,
+                connector_id="conn-7",
+                scope="personal",
+                created_by="user-123",
+                data_entities_processor_cls=mock_processor_cls,
+            )
 
-        assert result is None
+        logger.error.assert_not_called()  # the caller logs it once
         (error,) = mock_connector.on_background_init_failed.await_args.args
         assert str(error) == "init boom", "the connector hears why it could not start"
 

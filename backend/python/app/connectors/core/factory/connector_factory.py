@@ -387,7 +387,7 @@ class ConnectorFactory:
         created_by: str,
         **kwargs,
     ) -> BaseConnector | None:
-        """Create and initialize a connector"""
+        """Create and initialize a connector: None when init() returns False; what init() raised, re-raised."""
         connector = await cls.create_connector(
             name=name,
             logger=logger,
@@ -412,13 +412,9 @@ class ConnectorFactory:
                 logger.info(f"Initialized {name} {connector_id} connector successfully")
                 return connector
             except Exception as e:
-                logger.error(
-                    f"Failed to initialize {name} {connector_id} connector: {str(e)}",
-                    exc_info=True,
-                )
                 await connector.on_background_init_failed(e)
                 await cls._dispose_failed(connector, name, connector_id, logger)
-                return None
+                raise
 
         return None
 

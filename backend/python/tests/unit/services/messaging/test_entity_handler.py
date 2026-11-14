@@ -16,7 +16,11 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.connector.connector_service import connector_sync_lock
 from app.connectors.core.sync.sync_runner import _run_sync_alone
+from app.core.org_context import for_org
 from app.exceptions.non_retryable import NonRetryableError
+from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.graph_db.postgres.identity import IdentityMixin
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 from app.utils.logger import log_record_fields
 
@@ -509,7 +513,7 @@ class TestUserUpdated:
         both providers do, rather than against the call arguments."""
         store = {"user-key-1": {"id": "user-key-1", "isActive": True}}
 
-        async def read_then_delete(user_id: str) -> dict:
+        async def read_then_delete(user_id: str, **_: object) -> dict:
             seen = dict(store["user-key-1"])
             # `_handle_user_deleted` on the other replica, in the window.
             store["user-key-1"]["isActive"] = False
@@ -577,20 +581,28 @@ class TestUserUpdated:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_db_error_raises(self):
-        graph_provider = AsyncMock()
-        graph_provider.get_user_by_user_id = AsyncMock(
-            side_effect=Exception("DB fail")
-        )
+    @pytest.mark.parametrize("provider", ["arango", "neo4j", "postgres"])
+    async def test_a_failed_user_lookup_raises_instead_of_not_found(self, provider: str) -> None:
+        """The providers' own failure path: each answers None to a failed read unless asked to raise."""
+        down = RuntimeError("graph down")
+        if provider == "arango":
+            graph_provider = ArangoHTTPProvider.__new__(ArangoHTTPProvider)
+            graph_provider.logger = MagicMock()
+            graph_provider.http_client = MagicMock(execute_aql=AsyncMock(side_effect=down))
+        elif provider == "neo4j":
+            graph_provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+            graph_provider.client = MagicMock(execute_query=AsyncMock(side_effect=down))
+        else:
+            graph_provider = object.__new__(IdentityMixin)
+            graph_provider.logger = MagicMock()
+            graph_provider._one = AsyncMock(side_effect=down)
+        graph_provider.batch_upsert_nodes = AsyncMock()
         svc = _make_entity_service(graph_provider=graph_provider)
 
-        payload = {
-            "userId": "u-1",
-            "orgId": "org-1",
-            "email": "alice@test.com",
-        }
-        with pytest.raises(Exception, match="DB fail"):
+        payload = {"userId": "u-1", "orgId": "org-1", "email": "alice@test.com"}
+        with for_org("org-1", job="t"), pytest.raises(RuntimeError, match="graph down"):
             await svc.process_event("userUpdated", payload)
+        graph_provider.batch_upsert_nodes.assert_not_awaited()
 
 
 # ===================================================================
@@ -1587,6 +1599,8 @@ class TestGetOrCreateKnowledgeBaseCreationActive:
         assert kb_data["vectorMembershipBackfilled"] is True
         failed = [r for r in caplog.records if r.getMessage() == "entity_event.step_failed"]
         assert [log_record_fields(r)["step"] for r in failed] == ["register_kb_connector"]
+        # Since F27 this is the only line for a KB connector that fails to start: it names the instance.
+        assert log_record_fields(failed[0])["connector_id"] == result["kb_id"]
 
 
 # ===================================================================
