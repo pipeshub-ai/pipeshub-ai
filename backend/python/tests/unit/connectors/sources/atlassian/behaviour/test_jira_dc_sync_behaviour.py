@@ -24,6 +24,7 @@ from atlassian_behaviour_fakes import (
 )
 from fastapi import HTTPException
 
+from app.config.constants.arangodb import AccessRule
 from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     DC_EPIC_LINK_SCHEMA_CUSTOM,
@@ -32,7 +33,7 @@ from app.connectors.sources.atlassian.jira_data_center.connector import (
 )
 from app.connectors.utils.record_ids import new_record_id
 from app.models.entities import AppUser, FileRecord, Record, RecordType, TicketRecord
-from app.models.permission import EntityType, PermissionType
+from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.jira.jira import JiraRESTClientViaToken
@@ -2692,17 +2693,28 @@ class TestBrowseHolders:
         await connector.run_sync()
         assert len(db.record_batches) == before
 
-    async def test_a_level_cleared_while_the_scheme_is_unread_drops_the_old_grants_but_an_absent_level_keeps_them(
-        self, jira, db, store, search
+    @pytest.mark.parametrize("level_field", ["absent", "null"])
+    async def test_while_the_scheme_is_unread_an_open_issue_keeps_its_holders_grants(
+        self, jira, db, store, search, level_field
     ) -> None:
-        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
+        """The issue search always asks for ``security``, so an issue without a level comes back with it null."""
+        level = {} if level_field == "absent" else {"security": None}
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1", **level)], REPORTER)
         scheme_unread(jira)
 
-        search.add("ENG", 0, [story("1001", "ENG-1", ts(2))])
+        search.add("ENG", 0, [story("1001", "ENG-1", ts(2), **level)])
         await connector.run_sync()
-        assert grants(db, "1001") == [CAROL]
+        assert grants(db, "1001") == [CAROL] and db.records["1001"].access_rule == AccessRule.OPEN
 
-        search.add("ENG", 0, [story("1001", "ENG-1", ts(3), security=None)])
+    async def test_a_level_cleared_while_the_scheme_is_unread_drops_the_old_levels_grants(
+        self, jira, db, store, search
+    ) -> None:
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1", security=None)], REPORTER)
+        db.records["1001"].access_rule = AccessRule.RESTRICTED  # stored with a level: its grants are the level's
+        db.record_permissions["1001"] = [Permission(entity_type=EntityType.USER, email="dave@example.com", type=PermissionType.READ)]
+        scheme_unread(jira)
+
+        search.add("ENG", 0, [story("1001", "ENG-1", ts(2), security=None)])
         await connector.run_sync()
         assert grants(db, "1001") == []
 
@@ -2734,6 +2746,35 @@ class TestBrowseHolders:
         search.add("ENG", 0, [story("1003", "ENG-3", ts(2), **{EPIC_FIELD: "ENG-1"})])
         await connector.run_sync()
         assert other_db.records["1003"].parent_external_record_id == "1001"
+
+    async def test_a_sub_task_stays_where_it_was_filed_while_the_scheme_is_unread(self, jira, db, store, search) -> None:
+        parent = story("1001", "ENG-1", security=None)
+        child = issue("1002", "ENG-2", ts(2), parent="1001")
+        child["fields"]["security"] = None
+        connector = await self.sync(jira, db, store, search, [parent, child], REPORTER)
+        assert db.records["1002"].parent_external_record_id is None and grants(db, "1002") == [CAROL]
+
+        scheme_unread(jira)
+        changed = {**child, "fields": {**child["fields"], "updated": ts(3)}}
+        search.add("ENG", 0, [changed])
+        await connector.run_sync()
+        assert db.records["1002"].parent_external_record_id is None and grants(db, "1002") == [CAROL]
+
+    @pytest.mark.parametrize("level_field", ["absent", "null"])
+    async def test_a_reindex_with_an_unreadable_scheme_keeps_an_open_issues_grants(
+        self, jira, db, store, search, level_field
+    ) -> None:
+        stub_site(jira, search)
+        scheme_unread(jira)
+        connector, _ = await make_connector(db, store)
+        ticket = stored_ticket()
+        db.records["1001"] = ticket
+        db.record_permissions["1001"] = [Permission(entity_type=EntityType.USER, email="carol@example.com", type=PermissionType.READ)]
+        level = {} if level_field == "absent" else {"security": None}
+        jira.on("GET", f"{API}/issue/1001", story("1001", "ENG-1", ts(6), **level))
+        await connector.reindex_records([ticket])
+        assert db.records["1001"].version == 3
+        assert db.records["1001"].access_rule == AccessRule.OPEN and db.records["1001"].rewrite_permissions is False
 
     async def test_a_reindex_reads_the_holders_and_applies_them(self, jira, db, store, search) -> None:
         stub_site(jira, search)

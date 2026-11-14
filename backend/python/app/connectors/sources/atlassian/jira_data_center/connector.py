@@ -3977,6 +3977,23 @@ class JiraDataCenterConnector(BaseConnector):
 
             start_at = next_start
 
+    @staticmethod
+    def _hold_grants_while_holders_unread(
+        record: Record, security: IssueSecurityContext | None, stored: Record | None,
+    ) -> None:
+        """While the Browse holders are unread, an open top-level issue keeps the grants stored for it (its
+        holders'), whether its level came back null or not at all. One stored RESTRICTED had a level, whose
+        holders those grants are, so it loses them."""
+        if (
+            security is None or not security.enforce or security.browse_holders is not None or stored is None
+            or record.parent_external_record_id or record.access_rule == AccessRule.RESTRICTED
+        ):
+            return
+        if stored.access_rule == AccessRule.RESTRICTED:
+            record.access_rule, record.rewrite_permissions = AccessRule.STRICT, True
+        else:
+            record.access_rule, record.rewrite_permissions = AccessRule.OPEN, False
+
     async def _keeps_stored_grants(self, record: Record) -> bool:
         """An issue already stored whose access rule was set without its grants (a level or the
         Browse holders not read, which may pass on a retry), so the grants it has stay."""
@@ -4803,7 +4820,7 @@ class JiraDataCenterConnector(BaseConnector):
 
     async def _files_under_parent(
         self, fields: dict[str, Any], parent_id: str, security: IssueSecurityContext | None,
-        *, stored_parent: str | None = None, is_subtask: bool = False,
+        *, stored_parent: str | None = None, stored: bool = False, is_subtask: bool = False,
     ) -> bool:
         """Whether an issue is filed under its parent issue.
 
@@ -4816,13 +4833,18 @@ class JiraDataCenterConnector(BaseConnector):
         A story whose reporter or assignee may read it through a Browse holder, without the epic,
         is not filed under it; while the holders are unread it stays where it was (``stored_parent``).
         A sub-task carries its parent's level, so it leaves its parent only where such a holder may read
-        it alone, and only when neither it nor its parent has a level; while the holders are unread it stays.
+        it alone, and only when neither it nor its parent has a level; while the holders are unread a stored
+        one stays where it was (``stored``, ``stored_parent``) and a new one under its parent.
         """
         if security is None or not security.enforce:
             return True
         if is_subtask:
             present, level_id = read_security_level(fields)
-            if not security.browse_holders or level_id is not None:
+            if level_id is not None:
+                return True
+            if security.browse_holders is None:
+                return not stored or stored_parent == parent_id
+            if not security.browse_holders:
                 return True
             if security.knowledge == SchemeKnowledge.NONE:
                 return False  # no scheme: no level on it or its parent
@@ -4989,6 +5011,7 @@ class JiraDataCenterConnector(BaseConnector):
                     and not await self._files_under_parent(
                         fields, parent_external_id, security,
                         stored_parent=existing_record.parent_external_record_id if existing_record else None,
+                        stored=existing_record is not None and not existing_record.is_placeholder,
                         is_subtask=issue_data["is_subtask"],
                     )
                 ):
@@ -5059,6 +5082,10 @@ class JiraDataCenterConnector(BaseConnector):
                         app_roles_mapping=self._app_roles_mapping,
                         reporter_email=reporter_email,
                         assignee_email=assignee_email,
+                    )
+                    self._hold_grants_while_holders_unread(
+                        issue_record, security,
+                        existing_record if existing_record and not existing_record.is_placeholder else None,
                     )
                     if (
                         issue_record.access_rule == AccessRule.RESTRICTED and not issue_record.rewrite_permissions
@@ -6629,7 +6656,7 @@ class JiraDataCenterConnector(BaseConnector):
                 self._parent_levels.pop(str(parent_external_id), None)
                 if not await self._files_under_parent(
                     fields, str(parent_external_id), security, stored_parent=record.parent_external_record_id,
-                    is_subtask=issue_data["is_subtask"],
+                    stored=True, is_subtask=issue_data["is_subtask"],
                 ):
                     parent_external_id = None
 
@@ -6691,6 +6718,7 @@ class JiraDataCenterConnector(BaseConnector):
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
             )
+            self._hold_grants_while_holders_unread(issue_record, security, record)
             if (not settled or skipped_holders) and getattr(record, "access_rule", None) != AccessRule.RESTRICTED:
                 # Stored open, and the issue is not known to be without a level now: closed, not left readable
                 # by the project. (A stored leveled issue keeps its grants below; its level is not stored.)
