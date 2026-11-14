@@ -3095,6 +3095,21 @@ async def test_a_reader_cut_out_by_a_limited_folder_keeps_no_grant_below_it(ws: 
     assert BOB not in ws.records.perm_emails("f"), "only the folder's own grants and its Managers reach below a limit"
 
 
+async def test_a_shared_drive_item_is_read_as_its_manager_once_for_all_its_reading_members(ws: Workspace) -> None:
+    dana = "dana@example.com"
+    ws.world.add_user(dana)
+    ws.world.add_drive("sd-1", "Team", {dana: "organizer", ALICE: "reader", BOB: "reader"})
+    ws.world.add_item("f", "x.txt", parent="sd-1")
+    await ws.sync()
+
+    as_manager = [
+        r for r in ws.http.requests
+        if r.identity == dana and r.path == "/drive/v3/files/f/permissions" and not r.query.get("pageToken")
+    ]
+    assert len(as_manager) == 1, "the list is the same for every member, so one Manager read serves them all"
+    assert reaches(ws, ALICE, "f") and reaches(ws, BOB, "f")
+
+
 async def test_a_link_shared_item_gives_a_drive_member_no_grant_that_outlasts_a_limited_folder(ws: Workspace) -> None:
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
     ws.world.folder("dir", "Plans", parent="sd-1")

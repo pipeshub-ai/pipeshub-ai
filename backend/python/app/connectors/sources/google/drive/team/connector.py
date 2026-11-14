@@ -520,6 +520,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Per shared drive, this run: the synced users who are its Managers.
         self._drive_managers: dict[str, list[str]] = {}
         self._manager_sources: dict[str, GoogleDriveDataSource] = {}
+        # (item id, None for a member of its drive, else the reader): the item's list read as a Manager, this run.
+        self._manager_reads: dict[tuple[str, str | None], tuple | None] = {}
+        self._manager_read_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
         # Drives with a member group the directory will not list: who else can open their files is unknown.
         self._drive_members_unread: set[str] = set()
         # Per shared drive, this run: its restrictions, and the people and groups that are members.
@@ -780,6 +783,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._drive_member_emails = {}
             self._drive_managers = {}
             self._manager_sources = {}
+            self._manager_reads = {}
+            self._manager_read_locks = {}
             self._drive_members_unread = set()
             self._drive_restrictions = {}
             self._assumed_restrictions = set()
@@ -3494,7 +3499,25 @@ class GoogleDriveTeamConnector(BaseConnector):
         list. Managers keep access through limited folders and can always list sharing, so their list is the
         item's. None when no Manager could read it: the reader's own grant is all that is known then.
 
-        `user_email` stays the reader, so a link share still grants the reader as their own full read would."""
+        `user_email` stays the reader, so a link share still grants the reader as their own full read would. The
+        list is the same for every member of the drive, so it is read once per item and run for all of them, the
+        members' syncs that run side by side included."""
+        member = (user_email or "").lower() in await self._drive_member_email_list(drive_id)
+        key = (file_id, None if member else (user_email or "").lower())
+        async with self._manager_read_locks.setdefault(key, asyncio.Lock()):
+            if key not in self._manager_reads:
+                self._manager_reads[key] = await self._read_as_drive_manager(file_id, drive_id, user_email, read_as)
+        read = self._manager_reads[key]
+        if read is None:
+            return None
+        permissions, is_fallback, shared = read
+        return DrivePermissionBatch(
+            list(permissions), saw_permission_details=getattr(permissions, "saw_permission_details", False)
+        ), is_fallback, list(shared)
+
+    async def _read_as_drive_manager(
+        self, file_id: str, drive_id: str, user_email: str | None, read_as: dict
+    ) -> tuple[list[Permission], bool, list[str]] | None:
         by_email = {u.email.lower(): u for u in self.synced_users if u.email and u.is_active}
         tried = 0
         for email in await self._drive_manager_emails(drive_id):
