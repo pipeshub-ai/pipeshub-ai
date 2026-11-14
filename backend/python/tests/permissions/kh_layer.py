@@ -54,6 +54,8 @@ SAMPLED_FIRST = 20  # the first nodes a viewer opens, and one node in SAMPLE_EVE
 SAMPLE_EVERY = 4
 MAX_PAGES = 400
 CHUNK = 25  # worlds a store holds at once (`check_worlds`): a store larger than its page cache slows every statement
+# The generated worlds of one generator are checked in this many tests of consecutive worlds (`world_part`), so CI runs them in separate jobs.
+PARTS = 2
 
 
 SKIPPED: Any = object()  # a browse the layer did not run: past its budget of opens (`MAX_OPENS`)
@@ -234,16 +236,21 @@ async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "
     return found
 
 
-async def check_worlds(layer: GraphCheckLayer, worlds: list[World], tag: str) -> list[KhFinding]:
-    """`check_world` of every world on one store, loaded and released `CHUNK` at a time (`<tag>-<index>` names each); a chunk is released even
-    when its load or a check of it raises or is cancelled (`preload` names the worlds before it loads them)."""
+def world_part(count: int, part: int) -> range:
+    """The indexes of the ``part``-th of `PARTS` runs of consecutive worlds out of ``count``: the parts hold each index once."""
+    return range(part * count // PARTS, (part + 1) * count // PARTS)
+
+
+async def check_worlds(layer: GraphCheckLayer, worlds: list[World], tag: str, first: int = 0) -> list[KhFinding]:
+    """`check_world` of every world on one store, loaded and released `CHUNK` at a time (`<tag>-<index>` names each, counted from ``first``);
+    a chunk is released even when its load or a check of it raises or is cancelled (`preload` names the worlds before it loads them)."""
     found: list[KhFinding] = []
     for start in range(0, len(worlds), CHUNK):
         chunk = worlds[start:start + CHUNK]
         try:
             await layer.preload(chunk)
             for offset, world in enumerate(chunk):
-                found += await check_world(layer, world, f"{tag}-{start + offset}")
+                found += await check_world(layer, world, f"{tag}-{first + start + offset}")
         finally:
             await layer.release(chunk)
     return found

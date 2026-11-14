@@ -84,7 +84,7 @@ jobs:
       # The one allowed skip is the strict expected failure that reports matrix cells without a scenario, by its exact name.
       - name: Check the oracle run for skips
         run: |
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 1375 \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 1376 \
             --allow test_coverage_gaps_are_reported
 
       - name: Run the viewer-scope service tests (no services)
@@ -99,43 +99,69 @@ jobs:
     name: graph (shard ${{ matrix.shard }})
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    # CI runner speed varies widely (shard 1 took 38 min, shard 2 34-51, shard 3 30-42), so every shard gets the same headroom
+    # A hosted runner can be twice as slow as another (one run of the adversarial worlds took 34 minutes, another passed 58), so the shards are
+    # sized to take at most about half of this on the slowest runner seen
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        # Run one after the other, the graph-permissions suite and the conformance suite took about 80 of the job's 90 minutes, so they are
-        # split by measured time; each shard has its own stores. tests are the pytest paths; k splits one file by -k into sets that together
-        # hold each of its tests once; cases is the shard's case count in the suite; allow names the skips the shard may report. Shard 4 runs
-        # tests/permissions minus what the others name, so a new conformance file runs there.
-        # scripts/test_permission_conformance_shards.py checks that every case runs exactly once and that the counts add up.
-        shard: [1, 2, 3, 4]
+        # The graph-permissions suite and the conformance suite are split by measured time; each shard has its own stores. tests are the
+        # pytest paths; k splits one file by -k into sets that together hold each of its tests once; cases is the shard's case count in the
+        # suite; allow names the skips the shard may report. Shards 2 and 7 run their folder minus what the others name, so a new test file
+        # runs there. scripts/test_permission_conformance_shards.py checks that every case runs exactly once and that the counts add up.
+        shard: [1, 2, 3, 4, 5, 6, 7]
         include:
           # The graph-permissions suite ran in no workflow before; it includes the tests that a connector list never shows another
-          # organization's connectors. Its three skips are tests of one store only.
+          # organization's connectors. Its three slowest files run here, about half of it.
           - shard: 1
             suite: tests.integration.graph_permissions
-            tests: tests/integration/graph_permissions
-            cases: 842
+            tests: >-
+              tests/integration/graph_permissions/test_kh_name_search_first.py
+              tests/integration/graph_permissions/test_provider_v3_arrow_matches_expansion.py
+              tests/integration/graph_permissions/test_provider_v3_shapes.py
+            cases: 149
+            pytest_args: --timeout=300
+          # Its three skips are tests of one store only.
+          - shard: 2
+            suite: tests.integration.graph_permissions
+            tests: >-
+              tests/integration/graph_permissions
+              --ignore=tests/integration/graph_permissions/test_kh_name_search_first.py
+              --ignore=tests/integration/graph_permissions/test_provider_v3_arrow_matches_expansion.py
+              --ignore=tests/integration/graph_permissions/test_provider_v3_shapes.py
+            cases: 693
             pytest_args: --timeout=300
             allow: >-
               test_hierarchy_backfill::test_an_edge_from_a_removed_document_is_no_parent[neo4j]
               test_redundant_group_edges::test_the_tree_labels_follow_the_edges[arango]
               test_record_links::test_a_hierarchy_write_does_not_overwrite_a_link_waiting_for_the_migration[neo4j]
-          # test_conformance_kh.py alone takes most of the conformance suite: its adversarial worlds run on their own
-          - shard: 2
-            suite: tests.permissions
-            tests: tests/permissions/test_conformance_kh.py
-            k: '[adversarial]'
-            cases: 1
-            pytest_args: -p no:logging --timeout=3000
+          # test_conformance_kh.py alone takes most of the conformance suite. Each half of the adversarial worlds (`PARTS` in kh_layer.py) and
+          # the golden worlds run on their own; the proptest worlds and the hand worlds share a shard.
           - shard: 3
             suite: tests.permissions
             tests: tests/permissions/test_conformance_kh.py
-            k: not [adversarial]
-            cases: 19
+            k: '[adversarial-1of2]'
+            cases: 1
             pytest_args: -p no:logging --timeout=3000
           - shard: 4
+            suite: tests.permissions
+            tests: tests/permissions/test_conformance_kh.py
+            k: not [adversarial-1of2] and [adversarial-2of2]
+            cases: 1
+            pytest_args: -p no:logging --timeout=3000
+          - shard: 5
+            suite: tests.permissions
+            tests: tests/permissions/test_conformance_kh.py
+            k: not [adversarial-1of2] and not [adversarial-2of2] and golden_worlds
+            cases: 1
+            pytest_args: -p no:logging --timeout=3000
+          - shard: 6
+            suite: tests.permissions
+            tests: tests/permissions/test_conformance_kh.py
+            k: not [adversarial-1of2] and not [adversarial-2of2] and not golden_worlds
+            cases: 19
+            pytest_args: -p no:logging --timeout=3000
+          - shard: 7
             suite: tests.permissions
             tests: tests/permissions --ignore=tests/permissions/test_conformance_kh.py
             cases: 288

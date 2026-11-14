@@ -17,6 +17,7 @@ import pytest
 
 from . import gen
 from .kh_layer import (
+    PARTS,
     KhFinding,
     browse_pages,
     check_world,
@@ -24,6 +25,7 @@ from .kh_layer import (
     children_of,
     on_every_store,
     refused_by_cap,
+    world_part,
 )
 from .kh_worlds import (
     APPSIDE,
@@ -408,9 +410,13 @@ async def test_a_granted_strict_group_below_a_seed_the_app_does_not_reach_is_rea
             await layer.release([OPENGRANT, OPENGRANTTEAM])
 
 
-@pytest.mark.parametrize("kind", sorted(gen.GENERATORS))
-async def test_generated_worlds_count_what_the_viewer_may_read(graph_layers, kind: str) -> None:
+@pytest.mark.parametrize(("kind", "part"), [(kind, part) for kind in sorted(gen.GENERATORS) for part in range(PARTS)],
+                         ids=[f"{kind}-{part + 1}of{PARTS}" for kind in sorted(gen.GENERATORS) for part in range(PARTS)])
+async def test_generated_worlds_count_what_the_viewer_may_read(graph_layers, kind: str, part: int) -> None:
     for seed in gen.seeds():
         worlds = gen.generate(kind, seed, gen.world_count())
-        results = await on_every_store(graph_layers, partial(check_worlds, worlds=worlds, tag=f"{kind}-{seed}"))
-        _assert_each_store(results, f"{{store}} {kind} seed {seed}", f"{{store}} {kind} seed {seed}")
+        mine = world_part(len(worlds), part)
+        results = await on_every_store(
+            graph_layers, partial(check_worlds, worlds=worlds[mine.start:mine.stop], tag=f"{kind}-{seed}", first=mine.start))
+        where = f"{{store}} {kind} seed {seed} worlds {mine.start}-{mine.stop - 1}"
+        _assert_each_store(results, where, where)
