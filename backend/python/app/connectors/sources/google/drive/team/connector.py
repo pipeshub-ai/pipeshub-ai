@@ -2020,7 +2020,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             (perm.email or "").lower() == user_email.lower() for perm in stored
         ) and not (
             item_drive_id and inherits_from_drive and not is_drive
-            and user_email.lower() in (await self._drive_member_principals(item_drive_id))[0]
+            and user_email.lower() in await self._drive_member_email_list(item_drive_id)
         ):
             stored = [*stored, Permission(
                 email=user_email,
@@ -3449,6 +3449,22 @@ class GoogleDriveTeamConnector(BaseConnector):
             await self._drop_reporters_grant(record, user)
             raise
 
+    async def _drive_member_email_list(self, drive_id: str) -> list[str]:
+        """Everyone who is a member of a shared drive, directly or through a member group, synced or not, this run.
+        A member group the directory cannot list adds nobody, and marks the drive's members unread."""
+        if drive_id not in self._drive_member_emails:
+            members: list[str] = []
+            for permission in (await self._fetch_permissions(drive_id, is_drive=True))[0]:
+                if permission.entity_type == EntityType.USER and permission.email:
+                    members.append(permission.email.lower())
+                elif permission.entity_type == EntityType.GROUP and permission.external_id:
+                    people = await self._group_member_emails(permission.external_id)
+                    if people is None:
+                        self._drive_members_unread.add(drive_id)
+                    members.extend(sorted(people or ()))
+            self._drive_member_emails[drive_id] = members
+        return self._drive_member_emails[drive_id]
+
     async def _drive_manager_emails(self, drive_id: str) -> list[str]:
         """Active Workspace users who are Managers of a shared drive, directly or through a member group, this run.
         Not only those this deployment syncs: reading an item's sharing as one syncs nothing of theirs. A member
@@ -3509,19 +3525,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         synced = await self._synced_user_emails()
         wanted: list[str] = [user.email.lower()] if user else []
         if drive_id in self._synced_drive_ids:
-            if drive_id not in self._drive_member_emails:
-                members: list[str] = []
-                for permission in (await self._fetch_permissions(drive_id, is_drive=True))[0]:
-                    if permission.entity_type == EntityType.USER and permission.email:
-                        members.append(permission.email.lower())
-                    elif permission.entity_type == EntityType.GROUP and permission.external_id:
-                        # Everyone in it, synced or not: only synced users are asked, and the rest can keep a file.
-                        people = await self._group_member_emails(permission.external_id)
-                        if people is None:
-                            self._drive_members_unread.add(drive_id)
-                        members.extend(sorted(people or ()))
-                self._drive_member_emails[drive_id] = members
-            wanted.extend(self._drive_member_emails[drive_id])
+            wanted.extend(await self._drive_member_email_list(drive_id))
         holders = await self.data_entities_processor.get_users_with_permission_to_node(
             record.id, CollectionNames.RECORDS.value, raise_on_error=True
         )
