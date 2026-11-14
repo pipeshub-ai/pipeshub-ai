@@ -988,3 +988,39 @@ async def test_a_sidebar_samples_about_as_many_records_children_as_it_lists_and_
         assert nxt != after
         after = nxt
     assert seen == recs, (len(seen), len(set(seen)))
+
+
+async def test_a_sidebar_page_reads_each_records_children_once_and_within_the_requests_bound(pg_db, monkeypatch) -> None:
+    """Ten records of a folder, each with 200 children the classes do not decide (a pending restamp). A sidebar page samples them to decide the records' arrows, and the
+    rows it returns reuse those arrows: no record's children are read twice, and the request reads no more than its bound (plus the first row's own sample)."""
+    p, org = prov(pg_db), new_org()
+    recs = [f"r{i}" for i in range(10)]
+    kids = {r: [f"{r}-k{j:03d}" for j in range(200)] for r in recs}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "G", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+        nodes = ["fold", *recs, *(k for ks in kids.values() for k in ks)]
+        await p.batch_upsert_nodes([{"_key": i, "recordName": i, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR",
+                                     **({"mimeType": "application/vnd.folder"} if i == "fold" else {})} for i in nodes], "records")
+        await p.batch_create_edges([*(edge("fold", "records", r, "records", relationshipType="PARENT_CHILD") for r in recs),
+                                    *(edge(r, "records", k, "records", relationshipType="PARENT_CHILD") for r, ks in kids.items() for k in ks)], "nodeRelations")
+        await p.batch_create_edges([edge(i, "records", "g1", "recordGroups") for i in nodes], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        await p.batch_create_edges([edge("u1", "users", i, "records", type="USER", role="READER") for i in nodes], "permission")
+    await flip(pg_db, org)
+    await _admin("UPDATE kg.records SET r13 = true WHERE org_id = $1 AND coll = 3 AND id LIKE 'r%-k%'", org)      # the live check decides the children
+    monkeypatch.setattr(kh_browse, "SIDEBAR_SCAN_MAX", 1000)
+    reads: dict[int, int] = {}
+    real = kh_listing.KhListingMixin._kh_arrows_read
+
+    async def counted(self, *a, **kw) -> object:
+        got = await real(self, *a, **kw)
+        for k in got[1]:
+            reads[k["parent"]] = reads.get(k["parent"], 0) + 1
+        return got
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_arrows_read", counted)
+    page = await browse(p, org, "fold", nodes, filters={"only_containers": True}, include_total=False)
+    listed = [r["id"] for r in page["rows"]]
+    assert listed and listed == recs[:len(listed)] and all(r["hasChildren"] for r in page["rows"]) and page["hasMore"], listed
+    assert max(reads.values()) <= 200 and sum(reads.values()) <= 1000 + 200, reads

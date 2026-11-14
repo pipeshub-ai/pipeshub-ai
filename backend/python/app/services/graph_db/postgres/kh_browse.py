@@ -261,11 +261,16 @@ class KhBrowseMixin(PgBase):
             page, resume = await self._kh_browse_wide(p, where, links, limit, sort_field, order, after, direction, walk)
             total, counts, capped = (await self._kh_browse_total(p, where, links, sets, gset, walk)) if include_total else (0, dict(NO_COUNTS), False)
         capped = capped or bool(shown)      # a record listed with its arrow undecided: the total is no more exact than the arrow
+        # A sidebar's records were settled by ``keep``: their arrows are reused, not sampled again; what the rows still read counts against the request's bound
+        known = {c["sk"]: bool(on.get(c["sk"])) for c in page if side and record(c) and settled(c)}
+        fresh = [c for c in page if c["sk"] not in known]
+        bound, cut = (max(0, SIDEBAR_SCAN_MAX - scan["rows"]) if side else None), set()
         if out is None:      # the rows and their arrows in one read
-            out, read = await self._kh_flat_rows(org, app_id, app_doc, page, sort_field, transaction, also=lambda tx: self._kh_arrows_read(tx, org, page, hidden, sets, gset, access,
-                                                                                                                  tops=chain_tops_apply(app_doc)),
+            out, read = await self._kh_flat_rows(org, app_id, app_doc, page, sort_field, transaction, also=lambda tx: self._kh_arrows_read(tx, org, fresh, hidden, sets, gset, access,
+                                                                                                                  tops=chain_tops_apply(app_doc), bound=bound, cut=cut),
                                                  under=u["under"])
-        lists = await self._kh_arrows(read, page, *arrows)
+            scan["rows"] += len(read[1]) if read else 0
+        lists = await self._kh_arrows(read, fresh, *arrows) | {sk for sk, lit in known.items() if lit}
         for row, c in zip(out, page, strict=True):
             row["hasChildren"] = c["sk"] in lists
         payload: dict[str, Any] = {"rows": out, "total": total if include_total else None, "nRecord": counts["record"], "nFolder": counts["folder"], "nGroup": counts["recordGroup"]}
