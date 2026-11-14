@@ -7,12 +7,10 @@ take the caller from the session, never from the body.
 import asyncio
 import json
 from collections.abc import Iterator
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import jsonschema
 import pytest
-import yaml
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
@@ -24,6 +22,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityRecordPage,
 )
 from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+from tests.support.openapi_spec import openapi_spec
 
 ORG, USER, RID, VRID = "org-1", "user-1", "rec-1", "vrid-1"
 
@@ -370,12 +369,9 @@ def test_both_graph_providers_answer_the_calls_the_routes_make(provider) -> None
     assert not getattr(cls, "__abstractmethods__", frozenset())
 
 
-_SPEC = Path(__file__).resolve().parents[4].parent / "nodejs" / "apps" / "src" / "modules" / "api-docs" / "pipeshub-openapi.yaml"
-
-
 def _validate(schema_name: str, payload: dict) -> None:
     """Check a payload against the published schema (resolved against the spec's own components)."""
-    components = yaml.safe_load(_SPEC.read_text(encoding="utf-8"))["components"]
+    components = openapi_spec()["components"]
     jsonschema.validate(payload, {"$ref": f"#/components/schemas/{schema_name}", "components": components})
 
 
@@ -446,7 +442,7 @@ async def test_the_search_answer_is_exactly_what_the_published_schema_documents(
     empty, _ = await _search_answer([])
     for payload in (found, empty):
         _validate("EntitySearchResponse", payload)
-    schema = yaml.safe_load(_SPEC.read_text(encoding="utf-8"))["components"]["schemas"]["EntitySearchResponse"]
+    schema = openapi_spec()["components"]["schemas"]["EntitySearchResponse"]
     item = schema["properties"]["results"]["items"]["properties"]
     # every field the route writes is documented, and every documented field is one the route writes
     assert set(found) | set(empty) == set(schema["properties"])
