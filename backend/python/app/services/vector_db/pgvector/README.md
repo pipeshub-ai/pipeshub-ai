@@ -24,4 +24,12 @@ used, and an unknown value is a startup error naming the setting. Schema: `backe
 
 Every write names its org (a point's `metadata.orgId`, a filter's `metadata.orgId`, or `org_id=`); the ambient org is only cross-checked. A search names its org in its filter; an empty list inside a hand-built condition finds nothing (`filter_collection` keeps an empty list as a condition that matches nothing, on every provider, so a filter built from an empty accessible set sees nothing; callers still short-circuit before searching). A search with a lexical query (term ids and weights) also runs the vetted `retrieval.search_sparse` (scores, membership arms and tombstones applied inside it; the extra conditions on point columns are applied to the rows it returns, so those searches ask for `lexical_overfetch` rows per row wanted), and the dense and lexical answers are fused by reciprocal rank as the other providers fuse them. A lexical leg that fails or runs out of time answers nothing and flags the result as degraded.
 
+Throughput: with the database as the bottleneck, a hybrid search costs about three times the server CPU of the same search on Qdrant
+(about 1.7 times with the scope filter, which is costly on Qdrant too). Most of it is the lexical leg: `search_sparse` reads, sums and
+ranks every posting of the query's terms (about half a microsecond each, 20,000 for a typical query on a 57,000-chunk corpus), six times
+the CPU of Qdrant's sparse index; the dense leg costs
+1.2 to 1.6 times Qdrant's (the bit-index walk that yields the rerank candidates, plus a membership probe per candidate when the filter
+has arms), and the per-search round trips under a tenth of the total. Compare the two stores on your own corpus and
+cores with `tests/perf/bench_pgvector_search.py`.
+
 Tests: `tests/unit/services/vector_db/test_pgvector_*.py`; `tests/integration/vector_db/test_pgvector_*.py` against a migrated database through PgBouncer.
