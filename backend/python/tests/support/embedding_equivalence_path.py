@@ -161,7 +161,7 @@ def _bfloat16_loader(self, load, model_name=None):  # noqa: ANN202
 
 
 @contextlib.contextmanager
-def dynamic_activation_variant():
+def dynamic_activation_variant():  # noqa: ANN201
     """The control: int8 layers that also quantise activations per batch, so a text's vector depends on its neighbours."""
 
     from app.utils import int8_linear
