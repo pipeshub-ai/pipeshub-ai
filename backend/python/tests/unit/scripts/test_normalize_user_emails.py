@@ -354,3 +354,172 @@ async def test_normalization_flag_not_set_on_dry_run_or_single_org() -> None:
     )
     config_service.set_config.assert_not_called()
 
+
+@pytest.mark.asyncio
+async def test_normalization_flag_set_config_false_returns_partial() -> None:
+    from app.services.graph_db.interface.graph_db_provider import (
+        USER_EMAIL_NORMALIZATION_FLAG,
+    )
+
+    graph = MagicMock()
+    graph.get_all_orgs = AsyncMock(side_effect=[[{"id": "org_1"}], []])
+    graph.fetch_unnormalized_users = AsyncMock(return_value=[])
+
+    config_service = MagicMock()
+    config_service.set_config = AsyncMock(return_value=False)
+
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(
+        graph,
+        all_orgs=True,
+        apply=True,
+        logger=logger,
+        out=out,
+        config_service=config_service,
+    )
+    assert code == EXIT_PARTIAL
+    config_service.set_config.assert_awaited_once_with(
+        USER_EMAIL_NORMALIZATION_FLAG, {"done": True}
+    )
+
+
+@pytest.mark.asyncio
+async def test_normalization_flag_set_config_exception_returns_partial() -> None:
+    from app.services.graph_db.interface.graph_db_provider import (
+        USER_EMAIL_NORMALIZATION_FLAG,
+    )
+
+    graph = MagicMock()
+    graph.get_all_orgs = AsyncMock(side_effect=[[{"id": "org_1"}], []])
+    graph.fetch_unnormalized_users = AsyncMock(return_value=[])
+
+    config_service = MagicMock()
+    config_service.set_config = AsyncMock(side_effect=RuntimeError("store unavailable"))
+
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(
+        graph,
+        all_orgs=True,
+        apply=True,
+        logger=logger,
+        out=out,
+        config_service=config_service,
+    )
+    assert code == EXIT_PARTIAL
+    config_service.set_config.assert_awaited_once_with(
+        USER_EMAIL_NORMALIZATION_FLAG, {"done": True}
+    )
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_org_and_all_orgs_rejected() -> None:
+    graph = MagicMock()
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(graph, org_id="o1", all_orgs=True, logger=logger, out=out)
+    assert code == EXIT_INVALID
+    lines = _lines(out)
+    assert lines[0]["error"] == "Cannot specify both --org and --all-orgs."
+
+
+@pytest.mark.asyncio
+async def test_single_org_run_does_not_set_global_flag() -> None:
+    graph = MagicMock()
+    graph.fetch_unnormalized_users = AsyncMock(return_value=[])
+
+    config_service = MagicMock()
+    config_service.set_config = AsyncMock()
+
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(
+        graph,
+        org_id="o1",
+        apply=True,
+        logger=logger,
+        out=out,
+        config_service=config_service,
+    )
+    assert code == EXIT_SUCCESS
+    config_service.set_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_normalization_skips_when_stored_email_changed() -> None:
+    graph = MagicMock()
+    candidates = [
+        {"id": "u1", "orgId": "o1", "email": "Alice@Acme.COM", "newEmail": "alice@acme.com"},
+    ]
+    graph.fetch_unnormalized_users = AsyncMock(side_effect=[candidates, []])
+    # Concurrent write changed the stored email
+    graph.get_document = AsyncMock(return_value={"id": "u1", "email": "alice_concurrent@acme.com"})
+    graph.batch_upsert_nodes = AsyncMock()
+
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(graph, org_id="o1", apply=True, logger=logger, out=out, batch_size=10)
+    assert code == EXIT_SUCCESS
+    graph.batch_upsert_nodes.assert_not_awaited()
+    lines = _lines(out)
+    completed = lines[-1]
+    assert completed["status"] == "completed"
+    assert completed["total_scanned"] == 1
+    assert completed["total_updated"] == 0
+
+
+@pytest.mark.asyncio
+async def test_normalization_skips_when_stored_user_deleted() -> None:
+    graph = MagicMock()
+    candidates = [
+        {"id": "u1", "orgId": "o1", "email": "Alice@Acme.COM", "newEmail": "alice@acme.com"},
+    ]
+    graph.fetch_unnormalized_users = AsyncMock(side_effect=[candidates, []])
+    # Document deleted concurrently
+    graph.get_document = AsyncMock(return_value=None)
+    graph.batch_upsert_nodes = AsyncMock()
+
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(graph, org_id="o1", apply=True, logger=logger, out=out, batch_size=10)
+    assert code == EXIT_SUCCESS
+    graph.batch_upsert_nodes.assert_not_awaited()
+    lines = _lines(out)
+    completed = lines[-1]
+    assert completed["status"] == "completed"
+    assert completed["total_scanned"] == 1
+    assert completed["total_updated"] == 0
+
+
+@pytest.mark.asyncio
+async def test_normalization_proceeds_when_stored_email_matches() -> None:
+    graph = MagicMock()
+    candidates = [
+        {"id": "u1", "orgId": "o1", "email": "Alice@Acme.COM", "newEmail": "alice@acme.com"},
+    ]
+    graph.fetch_unnormalized_users = AsyncMock(side_effect=[candidates, []])
+    graph.get_document = AsyncMock(return_value={"id": "u1", "email": "Alice@Acme.COM"})
+    graph.batch_upsert_nodes = AsyncMock(return_value=True)
+
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(graph, org_id="o1", apply=True, logger=logger, out=out, batch_size=10)
+    assert code == EXIT_SUCCESS
+    assert graph.batch_upsert_nodes.await_count == 1
+    updated = graph.batch_upsert_nodes.await_args.args[0][0]
+    assert updated["id"] == "u1"
+    assert updated["email"] == "alice@acme.com"
+    lines = _lines(out)
+    completed = lines[-1]
+    assert completed["total_scanned"] == 1
+    assert completed["total_updated"] == 1
+
+

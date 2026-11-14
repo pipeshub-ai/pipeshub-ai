@@ -318,3 +318,38 @@ async def test_migrated_knowledge_keeps_the_agents_creator() -> None:
 
 async def test_migrated_knowledge_falls_back_to_system_without_a_creator() -> None:
     assert (await _migrate(None))["createdBy"] == "system"
+
+
+# ---- 7. bulk_get_entity_ids_by_email -------------------------------------------------------------
+
+
+async def test_bulk_get_entity_ids_by_email_query_shape() -> None:
+    p = _provider(rows=[])
+    await p.bulk_get_entity_ids_by_email(["user@example.com"])
+    queries = _queries(p)
+    assert len(queries) >= 1
+    # Check that User isActive defaults to false while other labels default to true
+    assert "CASE WHEN 'User' IN labels(n) THEN coalesce(n.isActive, false) ELSE coalesce(n.isActive, true) END AS isActive" in queries[0]
+
+
+async def test_bulk_get_entity_ids_by_email_active_exact_user_skips_fallback() -> None:
+    p = _provider()
+    p.client.execute_query = AsyncMock(return_value=[
+        {"email": "user@example.com", "id": "u1", "labels": ["User"], "isActive": True}
+    ])
+    res = await p.bulk_get_entity_ids_by_email(["user@example.com"])
+    assert res == {"user@example.com": ("u1", "users", "USER")}
+    assert p.client.execute_query.await_count == 1
+
+
+async def test_bulk_get_entity_ids_by_email_inactive_exact_triggers_fallback_and_picks_active() -> None:
+    p = _provider()
+    # First exact query returns inactive user; second fallback query returns active legacy user
+    p.client.execute_query = AsyncMock(side_effect=[
+        [{"email": "user@example.com", "id": "u-inactive", "labels": ["User"], "isActive": False}],
+        [{"email": "User@Example.COM", "id": "u-active", "labels": ["User"], "isActive": True}],
+    ])
+    res = await p.bulk_get_entity_ids_by_email(["user@example.com"])
+    assert p.client.execute_query.await_count == 2
+    # Active legacy user wins over inactive exact user
+    assert res["user@example.com"] == ("u-active", "users", "USER")

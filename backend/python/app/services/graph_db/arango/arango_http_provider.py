@@ -8165,6 +8165,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FILTER user.email IN @emails
             RETURN user
         """
+        # Read backfill flag before exact query to avoid missing legacy records
+        # if a backfill completes between exact query and flag read.
+        is_backfilled = False
+        if hasattr(self, "config_service") and self.config_service:
+            try:
+                flag = await self.config_service.get_config(USER_EMAIL_NORMALIZATION_FLAG)
+                is_backfilled = bool(flag and flag.get("done") is True)
+            except Exception:
+                is_backfilled = False
+
         try:
             rows = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
             found: dict[str, User] = {}
@@ -8183,14 +8193,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Fallback for unmatched inputs: find legacy unnormalized rows with mixed-case stored emails
             unmatched = [e for e in wanted if e not in found or not found[e].is_active]
-            is_backfilled = False
-            if unmatched and hasattr(self, "config_service") and self.config_service:
-                try:
-                    flag = await self.config_service.get_config(USER_EMAIL_NORMALIZATION_FLAG)
-                    is_backfilled = bool(flag and flag.get("done") is True)
-                except Exception:
-                    is_backfilled = False
-
             if unmatched and not is_backfilled:
                 legacy_query = f"""
                 FOR user IN {CollectionNames.USERS.value}
@@ -8249,6 +8251,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN user
         """
 
+        # Read backfill flag before exact query to avoid missing legacy records
+        # if a backfill completes between exact query and flag read.
+        is_backfilled = False
+        if hasattr(self, "config_service") and self.config_service:
+            try:
+                flag = await self.config_service.get_config(USER_EMAIL_NORMALIZATION_FLAG)
+                is_backfilled = bool(flag and flag.get("done") is True)
+            except Exception:
+                is_backfilled = False
+
         try:
             results = await self.http_client.execute_aql(
                 query,
@@ -8266,14 +8278,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Legacy fallback during rollout: runs when indexed lookup does not find an active
             # user and backfill is not yet complete.
-            is_backfilled = False
-            if hasattr(self, "config_service") and self.config_service:
-                try:
-                    flag = await self.config_service.get_config(USER_EMAIL_NORMALIZATION_FLAG)
-                    is_backfilled = bool(flag and flag.get("done") is True)
-                except Exception:
-                    is_backfilled = False
-
             if not is_backfilled:
                 legacy_query = f"""
                 FOR user IN {CollectionNames.USERS.value}
@@ -11513,9 +11517,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None
     ) -> str | None:
         """
-        Get entity ID by email (searches users and groups).
+        Get entity ID by email (searches users, groups, and people).
 
-        Generic method that works for both users and groups.
+        Matches both the raw email and its normalized lowercase, trimmed form,
+        preserving matches for legacy mixed-case records.
 
         Args:
             email: Email address
@@ -11524,18 +11529,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             Optional[str]: Entity key (_key) or None
         """
-        # First check users
-        query = f"""
-        FOR doc IN {CollectionNames.USERS.value}
-            FILTER doc.email == @email
-            LIMIT 1
-            RETURN doc._key
-        """
+        if not email:
+            return None
+        lookup_emails = list(dict.fromkeys([e for e in (email, email.strip().lower()) if e]))
+        norm_email = email.strip().lower()
 
         try:
+            # First check users
+            query = f"""
+            FOR doc IN {CollectionNames.USERS.value}
+                FILTER doc.email IN @emails || LOWER(TRIM(doc.email)) == @norm_email
+                LIMIT 1
+                RETURN doc._key
+            """
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"email": email},
+                bind_vars={"emails": lookup_emails, "norm_email": norm_email},
                 txn_id=transaction
             )
             if results:
@@ -11544,14 +11553,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # If not found in users, check groups
             query = f"""
             FOR doc IN {CollectionNames.GROUPS.value}
-                FILTER doc.email == @email
+                FILTER doc.email IN @emails || LOWER(TRIM(doc.email)) == @norm_email
                 LIMIT 1
                 RETURN doc._key
             """
-
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"email": email},
+                bind_vars={"emails": lookup_emails, "norm_email": norm_email},
                 txn_id=transaction
             )
             if results:
@@ -11559,14 +11567,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             query = f"""
             FOR doc IN {CollectionNames.PEOPLE.value}
-                FILTER doc.email == LOWER(@email)
+                FILTER doc.email IN @emails || LOWER(TRIM(doc.email)) == @norm_email
                 LIMIT 1
                 RETURN doc._key
             """
-
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"email": email},
+                bind_vars={"emails": lookup_emails, "norm_email": norm_email},
                 txn_id=transaction
             )
             if results:

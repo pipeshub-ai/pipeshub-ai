@@ -2157,6 +2157,18 @@ class TestGetEntityIdByEmail:
         result = await connected_provider.get_entity_id_by_email("user@example.com")
         assert result is None
 
+    async def test_matches_raw_and_normalized_email(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.return_value = ["u1"]
+        result = await connected_provider.get_entity_id_by_email("  Alice@Example.COM  ")
+        assert result == "u1"
+        call_args = connected_provider.http_client.execute_aql.call_args
+        query, kwargs = call_args[0][0], call_args[1]
+        assert "LOWER(TRIM(doc.email)) == @norm_email" in query
+        bind_vars = kwargs["bind_vars"]
+        assert "alice@example.com" in bind_vars["emails"]
+        assert "  Alice@Example.COM  " in bind_vars["emails"]
+        assert bind_vars["norm_email"] == "alice@example.com"
+
 
 # ===================================================================
 # bulk_get_entity_ids_by_email

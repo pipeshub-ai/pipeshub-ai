@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 import sys
 from typing import TYPE_CHECKING, TextIO
@@ -153,6 +154,7 @@ async def normalize_emails_for_org(
     stats = {"scanned": 0, "updated": 0, "failed_batches": 0}
     offset = 0
     written_ids: set[str] = set()
+    skipped_ids: set[str] = set()
 
     while True:
         try:
@@ -170,9 +172,9 @@ async def normalize_emails_for_org(
 
         if apply:
             candidate_ids = {c["id"] for c in candidates if "id" in c}
-            if candidate_ids and candidate_ids.issubset(written_ids):
+            if candidate_ids and candidate_ids.issubset(written_ids | skipped_ids):
                 logger.error(
-                    "Batch for org %s contains only previously written IDs; stopping to prevent infinite loop",
+                    "Batch for org %s contains only previously processed IDs; stopping to prevent infinite loop",
                     org_id,
                 )
                 stats["failed_batches"] += 1
@@ -180,7 +182,7 @@ async def normalize_emails_for_org(
                     json.dumps({
                         "org_id": org_id,
                         "error": "StalledBatchError",
-                        "message": "Batch contains only previously written IDs without progress",
+                        "message": "Batch contains only previously processed IDs without progress",
                     })
                     + "\n"
                 )
@@ -190,20 +192,61 @@ async def normalize_emails_for_org(
 
         if apply:
             now = get_epoch_timestamp_in_ms()
+            valid_candidates = []
+            for c in candidates:
+                cid = c.get("id")
+                if not cid:
+                    continue
+                try:
+                    get_doc = getattr(graph, "get_document", None)
+                    if callable(get_doc):
+                        res = get_doc(cid, CollectionNames.USERS.value)
+                        doc = await res if inspect.isawaitable(res) else res
+                    else:
+                        doc = None
+                except Exception as exc:
+                    logger.warning("Failed to re-read user %s before normalization: %s", cid, exc)
+                    continue
+                if isinstance(doc, dict):
+                    if doc.get("email") == c.get("email"):
+                        valid_candidates.append(c)
+                    else:
+                        logger.info(
+                            "Skipping user %s: email changed concurrently from %r to %r",
+                            cid,
+                            c.get("email"),
+                            doc.get("email"),
+                        )
+                elif doc is None:
+                    # Document was deleted concurrently or get_document is not available
+                    if callable(get_doc):
+                        logger.info("Skipping user %s: document deleted concurrently", cid)
+                        continue
+                    valid_candidates.append(c)
+                else:
+                    # Fallback for mock objects in tests
+                    valid_candidates.append(c)
+
+            skipped_in_batch = {c["id"] for c in candidates if "id" in c and c not in valid_candidates}
+            skipped_ids.update(skipped_in_batch)
+
+            if not valid_candidates:
+                continue
+
             update_nodes = [
                 {
                     "id": c["id"],
                     "email": (c.get("newEmail") or c.get("email", "")).strip().lower(),
                     "updatedAtTimestamp": now,
                 }
-                for c in candidates
+                for c in valid_candidates
             ]
             try:
                 upsert_result = await graph.batch_upsert_nodes(update_nodes, CollectionNames.USERS.value)
                 if not upsert_result:
                     raise RuntimeError(f"batch_upsert_nodes returned falsy result: {upsert_result!r}")
                 stats["updated"] += len(update_nodes)
-                written_ids.update(c["id"] for c in candidates if "id" in c)
+                written_ids.update(c["id"] for c in valid_candidates if "id" in c)
             except Exception as exc:
                 logger.exception("Failed to write normalized email batch for org %s", org_id)
                 stats["failed_batches"] += 1
@@ -252,6 +295,10 @@ async def run_normalization(
     """Entrypoint to normalize user emails across one or all organizations."""
     if batch_size <= 0:
         out.write(json.dumps({"error": "Batch size must be a positive integer."}) + "\n")
+        return EXIT_INVALID
+
+    if org_id and all_orgs:
+        out.write(json.dumps({"error": "Cannot specify both --org and --all-orgs."}) + "\n")
         return EXIT_INVALID
 
     if not org_id and not all_orgs:
@@ -326,16 +373,23 @@ async def run_normalization(
         + "\n"
     )
 
-    if all_orgs and apply and total_stats["total_failed_batches"] == 0:
+    if all_orgs and not org_id and apply and total_stats["total_failed_batches"] == 0:
         cs = config_service or getattr(graph, "config_service", None)
         if cs:
             try:
-                await cs.set_config(USER_EMAIL_NORMALIZATION_FLAG, {"done": True})
+                success = await cs.set_config(USER_EMAIL_NORMALIZATION_FLAG, {"done": True})
+                if success is False:
+                    logger.error(
+                        "Failed to record normalization completion flag %s (set_config returned False)",
+                        USER_EMAIL_NORMALIZATION_FLAG,
+                    )
+                    return EXIT_PARTIAL
             except Exception:
                 logger.exception(
                     "Failed to record normalization completion flag %s",
                     USER_EMAIL_NORMALIZATION_FLAG,
                 )
+                return EXIT_PARTIAL
 
     return EXIT_PARTIAL if total_stats["total_failed_batches"] else EXIT_SUCCESS
 

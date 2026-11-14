@@ -6286,6 +6286,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         wanted = list(dict.fromkeys(e.strip().lower() for e in emails if e and e.strip()))
         if not wanted:
             return {}
+        # Read backfill flag before exact query to avoid missing legacy records
+        # if a backfill completes between exact query and flag read.
+        is_backfilled = False
+        if hasattr(self, "config_service") and self.config_service:
+            try:
+                flag = await self.config_service.get_config(USER_EMAIL_NORMALIZATION_FLAG)
+                is_backfilled = bool(flag and flag.get("done") is True)
+            except Exception:
+                is_backfilled = False
+
         try:
             scoped = org_id is not None
             where_clause = "WHERE u.orgId = $org_id AND u.email IN $emails" if scoped else "WHERE u.email IN $emails"
@@ -6315,14 +6325,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Fallback for unmatched inputs: find legacy unnormalized rows with mixed-case stored emails
             unmatched = [e for e in wanted if e not in found or not found[e].is_active]
-            is_backfilled = False
-            if unmatched and hasattr(self, "config_service") and self.config_service:
-                try:
-                    flag = await self.config_service.get_config(USER_EMAIL_NORMALIZATION_FLAG)
-                    is_backfilled = bool(flag and flag.get("done") is True)
-                except Exception:
-                    is_backfilled = False
-
             if unmatched and not is_backfilled:
                 legacy_where = "WHERE u.orgId = $org_id AND toLower(trim(u.email)) IN $emails" if scoped else "WHERE toLower(trim(u.email)) IN $emails"
                 legacy_query = f"""
@@ -6367,6 +6369,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         normalized_email = email.strip().lower() if email else ""
         if not normalized_email:
             return None
+
+        # Read backfill flag before exact query to avoid missing legacy records
+        # if a backfill completes between exact query and flag read.
+        is_backfilled = False
+        if hasattr(self, "config_service") and self.config_service:
+            try:
+                flag = await self.config_service.get_config(USER_EMAIL_NORMALIZATION_FLAG)
+                is_backfilled = bool(flag and flag.get("done") is True)
+            except Exception:
+                is_backfilled = False
+
         try:
             scoped = org_id is not None
             where_clause = "WHERE u.orgId = $org_id AND u.email = $email" if scoped else "WHERE u.email = $email"
@@ -6396,14 +6409,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     return candidate
 
             # Legacy fallback query during rollout: runs when backfill is not complete.
-            is_backfilled = False
-            if hasattr(self, "config_service") and self.config_service:
-                try:
-                    flag = await self.config_service.get_config(USER_EMAIL_NORMALIZATION_FLAG)
-                    is_backfilled = bool(flag and flag.get("done") is True)
-                except Exception:
-                    is_backfilled = False
-
             if not is_backfilled:
                 legacy_where = "WHERE u.orgId = $org_id AND toLower(trim(u.email)) = $email" if scoped else "WHERE toLower(trim(u.email)) = $email"
                 legacy_query = f"""
@@ -11062,7 +11067,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (n)
             WHERE (n:User OR n:Group OR n:Person)
             AND n.email IN $emails
-            RETURN n.email AS email, n.id AS id, labels(n) AS labels, coalesce(n.isActive, true) AS isActive
+            RETURN n.email AS email, n.id AS id, labels(n) AS labels,
+                   CASE WHEN 'User' IN labels(n) THEN coalesce(n.isActive, false) ELSE coalesce(n.isActive, true) END AS isActive
             """
 
             results = await self.client.execute_query(
@@ -11071,24 +11077,62 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
 
-            # Group entities by normalized email and prefer active User over inactive stub, then User over Group/Person
+            # Group entities by normalized email
             by_norm: dict[str, list[dict]] = {}
             for r in results or []:
                 email = r.get("email")
                 if email:
                     by_norm.setdefault(email.strip().lower(), []).append(r)
 
+            def _has_preferred_entity(r_list: list[dict]) -> bool:
+                for r in r_list:
+                    lbls = r.get("labels", [])
+                    if Neo4jLabel.USERS.value in lbls and bool(r.get("isActive")):
+                        return True
+                return False
+
+            # Check if any original emails need legacy fallback: whenever exact results do not
+            # establish the preferred entity (e.g. unmatched email, or inactive user found
+            # by exact while an active user with mixed-case email might be in fallback).
+            unmatched_norm = [
+                norm for norm in norm_to_orig
+                if not _has_preferred_entity(by_norm.get(norm, []))
+            ]
+
+            if unmatched_norm:
+                fallback_query = """
+                MATCH (n)
+                WHERE (n:User OR n:Group OR n:Person)
+                AND toLower(trim(n.email)) IN $emails
+                RETURN n.email AS email, n.id AS id, labels(n) AS labels,
+                       CASE WHEN 'User' IN labels(n) THEN coalesce(n.isActive, false) ELSE coalesce(n.isActive, true) END AS isActive
+                """
+                fallback_results = await self.client.execute_query(
+                    fallback_query,
+                    parameters={"emails": unmatched_norm},
+                    txn_id=transaction
+                )
+                for r in fallback_results or []:
+                    email = r.get("email")
+                    if email:
+                        norm = email.strip().lower()
+                        existing_list = by_norm.setdefault(norm, [])
+                        if not any(x.get("id") == r.get("id") for x in existing_list):
+                            existing_list.append(r)
+
+            def _priority(r: dict) -> tuple[int, bool]:
+                lbls = r.get("labels", [])
+                is_user = Neo4jLabel.USERS.value in lbls
+                is_group = Neo4jLabel.GROUPS.value in lbls
+                is_person = Neo4jLabel.PEOPLE.value in lbls
+                type_score = 3 if is_user else (2 if is_group else (1 if is_person else 0))
+                active = bool(r.get("isActive", False if is_user else True))
+                return (type_score, active)
+
             result_map = {}
             for norm, r_list in by_norm.items():
-                def _priority(r: dict) -> tuple[int, bool]:
-                    lbls = r.get("labels", [])
-                    is_user = Neo4jLabel.USERS.value in lbls
-                    is_group = Neo4jLabel.GROUPS.value in lbls
-                    is_person = Neo4jLabel.PEOPLE.value in lbls
-                    type_score = 3 if is_user else (2 if is_group else (1 if is_person else 0))
-                    active = bool(r.get("isActive", True))
-                    return (type_score, active)
-
+                if not r_list:
+                    continue
                 best_r = max(r_list, key=_priority)
                 labels = best_r.get("labels", [])
                 collection_name = ""
@@ -11110,61 +11154,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         result_map[r["email"]] = val
                     for orig in norm_to_orig.get(norm, []):
                         result_map[orig] = val
-
-            # Check if any original emails remain unmatched; fallback query for unnormalized nodes
-            unmatched = [e for e in unique_emails if e not in result_map]
-            if unmatched:
-                unmatched_norm = list(dict.fromkeys(e.strip().lower() for e in unmatched if e))
-                fallback_query = """
-                MATCH (n)
-                WHERE (n:User OR n:Group OR n:Person)
-                AND toLower(trim(n.email)) IN $emails
-                RETURN n.email AS email, n.id AS id, labels(n) AS labels, coalesce(n.isActive, true) AS isActive
-                """
-                fallback_results = await self.client.execute_query(
-                    fallback_query,
-                    parameters={"emails": unmatched_norm},
-                    txn_id=transaction
-                )
-                fb_by_norm: dict[str, list[dict]] = {}
-                for r in fallback_results or []:
-                    email = r.get("email")
-                    if email:
-                        fb_by_norm.setdefault(email.strip().lower(), []).append(r)
-
-                for norm, r_list in fb_by_norm.items():
-                    if any(orig in result_map for orig in norm_to_orig.get(norm, [])):
-                        continue
-                    def _fb_priority(r: dict) -> tuple[int, bool]:
-                        lbls = r.get("labels", [])
-                        is_user = Neo4jLabel.USERS.value in lbls
-                        is_group = Neo4jLabel.GROUPS.value in lbls
-                        is_person = Neo4jLabel.PEOPLE.value in lbls
-                        type_score = 3 if is_user else (2 if is_group else (1 if is_person else 0))
-                        active = bool(r.get("isActive", True))
-                        return (type_score, active)
-
-                    best_r = max(r_list, key=_fb_priority)
-                    labels = best_r.get("labels", [])
-                    collection_name = ""
-                    permission_type = ""
-
-                    if Neo4jLabel.USERS.value in labels:
-                        collection_name = CollectionNames.USERS.value
-                        permission_type = "USER"
-                    elif Neo4jLabel.GROUPS.value in labels:
-                        collection_name = CollectionNames.GROUPS.value
-                        permission_type = "GROUP"
-                    elif Neo4jLabel.PEOPLE.value in labels:
-                        collection_name = CollectionNames.PEOPLE.value
-                        permission_type = "USER"
-
-                    if collection_name:
-                        val = (best_r["id"], collection_name, permission_type)
-                        for r in r_list:
-                            result_map[r["email"]] = val
-                        for orig in norm_to_orig.get(norm, []):
-                            result_map[orig] = val
 
             return result_map
 
