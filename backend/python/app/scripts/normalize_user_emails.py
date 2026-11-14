@@ -148,6 +148,7 @@ async def normalize_emails_for_org(
     """Process user email normalization in batches for a given organization (or global)."""
     stats = {"scanned": 0, "updated": 0, "failed_batches": 0}
     offset = 0
+    written_ids: set[str] = set()
 
     while True:
         try:
@@ -162,6 +163,24 @@ async def normalize_emails_for_org(
 
         if not candidates:
             break
+
+        if apply:
+            candidate_ids = {c["id"] for c in candidates if "id" in c}
+            if candidate_ids and candidate_ids.issubset(written_ids):
+                logger.error(
+                    "Batch for org %s contains only previously written IDs; stopping to prevent infinite loop",
+                    org_id,
+                )
+                stats["failed_batches"] += 1
+                out.write(
+                    json.dumps({
+                        "org_id": org_id,
+                        "error": "StalledBatchError",
+                        "message": "Batch contains only previously written IDs without progress",
+                    })
+                    + "\n"
+                )
+                break
 
         stats["scanned"] += len(candidates)
 
@@ -180,6 +199,7 @@ async def normalize_emails_for_org(
                 if not upsert_result:
                     raise RuntimeError(f"batch_upsert_nodes returned falsy result: {upsert_result!r}")
                 stats["updated"] += len(update_nodes)
+                written_ids.update(c["id"] for c in candidates if "id" in c)
             except Exception as exc:
                 logger.exception("Failed to write normalized email batch for org %s", org_id)
                 stats["failed_batches"] += 1

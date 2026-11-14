@@ -61,6 +61,14 @@ class TestGetUsersByEmails:
         p = make(ROWS)
         with for_org("o1", job="t"):
             got = await p.get_users_by_emails(["ANN@acme.com", "bob@acme.com", "nobody@else.com", "ann@acme.com"], org_id="o1")
+        assert _calls(p) in (1, 2)
+        assert {k: u.id for k, u in got.items()} == {"ann@acme.com": "u1", "bob@acme.com": "u2"}
+
+    @pytest.mark.asyncio
+    async def test_all_matched_addresses_use_single_query(self, make) -> None:
+        p = make(ROWS)
+        with for_org("o1", job="t"):
+            got = await p.get_users_by_emails(["ANN@acme.com", "bob@acme.com", "ann@acme.com"], org_id="o1")
         assert _calls(p) == 1
         assert {k: u.id for k, u in got.items()} == {"ann@acme.com": "u1", "bob@acme.com": "u2"}
 

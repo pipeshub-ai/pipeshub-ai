@@ -535,7 +535,6 @@ class EntityEventService(BaseEventService):
                 "firstName",
                 "middleName",
                 "lastName",
-                "email",
             ]
             user_data.update(
                 {

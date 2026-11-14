@@ -251,6 +251,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
+    USER_EMAIL_NORMALIZATION_FLAG,
     AccessibleContainers,
     CodeFileInfo,
     FolderChangedDuringDelete,
@@ -8179,6 +8180,33 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 key = (row.get("email") or "").strip().lower()
                 if key not in found or (u.is_active and not found[key].is_active):
                     found[key] = u
+
+            # Fallback for unmatched inputs: find legacy unnormalized rows with mixed-case stored emails
+            unmatched = [e for e in wanted if e not in found or not found[e].is_active]
+            if unmatched:
+                legacy_query = f"""
+                FOR user IN {CollectionNames.USERS.value}
+                    {org_filter}
+                    FILTER LOWER(TRIM(user.email)) IN @emails
+                    RETURN user
+                """
+                legacy_bind_vars = {"emails": unmatched, **({"org_id": org_id} if scoped else {})}
+                legacy_rows = await self.http_client.execute_aql(
+                    legacy_query, bind_vars=legacy_bind_vars, txn_id=transaction
+                )
+                legacy_matched = []
+                for row in legacy_rows or []:
+                    node = self._translate_node_from_arango(row)
+                    u = User.from_arango_user(node)
+                    legacy_matched.append((row, u))
+                legacy_matched.sort(
+                    key=lambda item: str(item[1].user_id or item[1].id or item[0].get("id") or item[0].get("_key") or "")
+                )
+                for row, u in legacy_matched:
+                    key = (row.get("email") or "").strip().lower()
+                    if key not in found or (u.is_active and not found[key].is_active):
+                        found[key] = u
+
             return found
         except Exception as e:
             self.logger.error(f"❌ Get users by emails failed: {str(e)}")
@@ -8227,26 +8255,38 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if candidate.is_active:
                     return candidate
 
-            # Legacy fallback during rollout: runs separately only when indexed lookup
-            # does not find an active user.
-            legacy_query = f"""
-            FOR user IN {CollectionNames.USERS.value}
-                {org_filter}
-                FILTER LOWER(TRIM(user.email)) == @email
-                SORT user.isActive DESC
-                LIMIT 1
-                RETURN user
-            """
-            legacy_results = await self.http_client.execute_aql(
-                legacy_query,
-                bind_vars=bind_vars,
-                txn_id=transaction
-            )
-            if legacy_results:
-                legacy_data = self._translate_node_from_arango(legacy_results[0])
-                legacy_candidate = User.from_arango_user(legacy_data)
-                if legacy_candidate.is_active or candidate is None:
-                    return legacy_candidate
+            # Legacy fallback during rollout: runs separately only for scoped lookups when
+            # indexed lookup does not find an active user and backfill is not yet complete.
+            if not scoped:
+                return candidate
+
+            is_backfilled = False
+            if hasattr(self, "config_service") and self.config_service:
+                try:
+                    flag = await self.config_service.get_config(USER_EMAIL_NORMALIZATION_FLAG)
+                    is_backfilled = bool(flag and flag.get("done") is True)
+                except Exception:
+                    is_backfilled = False
+
+            if not is_backfilled:
+                legacy_query = f"""
+                FOR user IN {CollectionNames.USERS.value}
+                    {org_filter}
+                    FILTER LOWER(TRIM(user.email)) == @email
+                    SORT user.isActive DESC
+                    LIMIT 1
+                    RETURN user
+                """
+                legacy_results = await self.http_client.execute_aql(
+                    legacy_query,
+                    bind_vars=bind_vars,
+                    txn_id=transaction
+                )
+                if legacy_results:
+                    legacy_data = self._translate_node_from_arango(legacy_results[0])
+                    legacy_candidate = User.from_arango_user(legacy_data)
+                    if legacy_candidate.is_active or candidate is None:
+                        return legacy_candidate
 
             return candidate
 
@@ -8960,9 +9000,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> Person | None:
         """Get a person by (org_id, email) — Person's business key, same as User's."""
         try:
-            query = f"""
+            exact_query = f"""
             FOR doc IN {CollectionNames.PEOPLE.value}
-                FILTER doc.orgId == @org_id AND (doc.email == @email OR TRIM(doc.email) == @stripped OR LOWER(TRIM(doc.email)) == @stripped)
+                FILTER doc.orgId == @org_id AND doc.email == @email
                 LIMIT 1
                 RETURN doc
             """
@@ -8973,9 +9013,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
             results = await self.http_client.execute_aql(
-                query, bind_vars=bind_vars, txn_id=transaction
+                exact_query, bind_vars=bind_vars, txn_id=transaction
             )
-            return Person.from_arango_person(results[0]) if results else None
+            if results:
+                return Person.from_arango_person(results[0])
+
+            fallback_query = f"""
+            FOR doc IN {CollectionNames.PEOPLE.value}
+                FILTER doc.orgId == @org_id AND (TRIM(doc.email) == @stripped OR LOWER(TRIM(doc.email)) == @stripped)
+                LIMIT 1
+                RETURN doc
+            """
+            fallback_results = await self.http_client.execute_aql(
+                fallback_query, bind_vars=bind_vars, txn_id=transaction
+            )
+            return Person.from_arango_person(fallback_results[0]) if fallback_results else None
         except Exception as e:
             self.logger.error(f"❌ Get person by email failed: {str(e)}")
             if raise_on_error:

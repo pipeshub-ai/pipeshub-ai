@@ -165,3 +165,28 @@ async def test_falsy_batch_upsert_fails_batch_and_counts_zero_updated() -> None:
     assert completed["total_scanned"] == 1
     assert completed["total_updated"] == 0
     assert completed.get("total_failed_batches", completed.get("failed_batches")) == 1
+
+
+@pytest.mark.asyncio
+async def test_stalled_batch_apply_mode_halts_and_fails_batch() -> None:
+    graph = MagicMock()
+    candidate = {"id": "u1", "orgId": "o1", "email": "Alice@Acme.COM", "newEmail": "alice@acme.com"}
+    # Returns candidate in batch 1, then returns candidate again in batch 2
+    graph.fetch_unnormalized_users = AsyncMock(side_effect=[[candidate], [candidate]])
+    graph.batch_upsert_nodes = AsyncMock(return_value=True)
+
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(graph, org_id="o1", apply=True, logger=logger, out=out, batch_size=10)
+    assert code == EXIT_PARTIAL
+    lines = _lines(out)
+    error_line = [item for item in lines if item.get("error") == "StalledBatchError"]
+    assert len(error_line) == 1
+
+    completed = lines[-1]
+    assert completed["status"] == "completed"
+    # Should not recount the stalled batch into total_scanned or total_updated
+    assert completed["total_scanned"] == 1
+    assert completed["total_updated"] == 1
+    assert completed["failed_batches"] == 1

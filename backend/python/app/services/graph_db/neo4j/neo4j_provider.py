@@ -215,6 +215,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     KH_LISTING_STATE_FLAG,
     REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
+    USER_EMAIL_NORMALIZATION_FLAG,
     AccessibleContainers,
     CodeFileInfo,
     IGraphDBProvider,
@@ -6312,6 +6313,33 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if key not in found or (u.is_active and not found[key].is_active):
                     found[key] = u
 
+            # Fallback for unmatched inputs: find legacy unnormalized rows with mixed-case stored emails
+            unmatched = [e for e in wanted if e not in found or not found[e].is_active]
+            if unmatched:
+                legacy_where = "WHERE u.orgId = $org_id AND toLower(trim(u.email)) IN $emails" if scoped else "WHERE toLower(trim(u.email)) IN $emails"
+                legacy_query = f"""
+                MATCH (u:User)
+                {legacy_where}
+                RETURN u
+                """
+                legacy_results = await self.client.execute_query(
+                    legacy_query,
+                    parameters={"emails": unmatched, **({"org_id": org_id} if scoped else {})},
+                    txn_id=transaction,
+                )
+                legacy_matched: list[tuple[dict, User]] = []
+                for row in legacy_results or []:
+                    user_dict = self._neo4j_to_arango_node(dict(row["u"]), CollectionNames.USERS.value)
+                    u = User.from_arango_user(user_dict)
+                    legacy_matched.append((user_dict, u))
+                legacy_matched.sort(
+                    key=lambda item: str(item[1].user_id or item[1].id or item[0].get("id") or item[0].get("_key") or "")
+                )
+                for user_dict, u in legacy_matched:
+                    key = (user_dict.get("email") or "").strip().lower()
+                    if key not in found or (u.is_active and not found[key].is_active):
+                        found[key] = u
+
             return found
         except Exception as e:
             self.logger.error(f"❌ Get users by emails failed: {str(e)}")
@@ -6358,28 +6386,39 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if candidate.is_active:
                     return candidate
 
-            # Legacy fallback query during rollout: runs separately so the indexed lookup
-            # path remains strictly seekable. Once backfill is complete, this fallback is dropped.
-            legacy_where = "WHERE u.orgId = $org_id AND toLower(trim(u.email)) = $email" if scoped else "WHERE toLower(trim(u.email)) = $email"
-            legacy_query = f"""
-            MATCH (u:User)
-            {legacy_where}
-            RETURN u
-            ORDER BY coalesce(u.isActive, false) DESC, u.id ASC
-            LIMIT 1
-            """
-            legacy_results = await self.client.execute_query(
-                legacy_query,
-                parameters=parameters,
-                txn_id=transaction
-            )
+            # Legacy fallback query during rollout: runs only when backfill is not complete
+            # and only for scoped lookups to avoid full table scans across all users.
+            if not scoped:
+                return candidate
 
-            if legacy_results:
-                legacy_user_dict = dict(legacy_results[0]["u"])
-                legacy_user_dict = self._neo4j_to_arango_node(legacy_user_dict, CollectionNames.USERS.value)
-                legacy_candidate = User.from_arango_user(legacy_user_dict)
-                if legacy_candidate.is_active or candidate is None:
-                    return legacy_candidate
+            is_backfilled = False
+            if hasattr(self, "config_service") and self.config_service:
+                try:
+                    flag = await self.config_service.get_config(USER_EMAIL_NORMALIZATION_FLAG)
+                    is_backfilled = bool(flag and flag.get("done") is True)
+                except Exception:
+                    is_backfilled = False
+
+            if not is_backfilled:
+                legacy_query = """
+                MATCH (u:User)
+                WHERE u.orgId = $org_id AND toLower(trim(u.email)) = $email
+                RETURN u
+                ORDER BY coalesce(u.isActive, false) DESC, u.id ASC
+                LIMIT 1
+                """
+                legacy_results = await self.client.execute_query(
+                    legacy_query,
+                    parameters=parameters,
+                    txn_id=transaction
+                )
+
+                if legacy_results:
+                    legacy_user_dict = dict(legacy_results[0]["u"])
+                    legacy_user_dict = self._neo4j_to_arango_node(legacy_user_dict, CollectionNames.USERS.value)
+                    legacy_candidate = User.from_arango_user(legacy_user_dict)
+                    if legacy_candidate.is_active or candidate is None:
+                        return legacy_candidate
 
             return candidate
 
@@ -10941,21 +10980,38 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> str | None:
         """Get entity ID (user or group) by email"""
         try:
+            lookup_emails = list(dict.fromkeys([e for e in (email, email.strip().lower()) if e]))
             query = """
             MATCH (n)
-            WHERE (n:User OR n:Group OR n:Person)
-            AND toLower(n.email) = toLower($email)
+            WHERE (n:User OR n:Group OR n:Person OR n:People)
+            AND n.email IN $emails
             RETURN n.id AS id
             LIMIT 1
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"email": email},
+                parameters={"emails": lookup_emails},
                 txn_id=transaction
             )
 
-            return results[0]["id"] if results else None
+            if results:
+                return results[0]["id"]
+
+            # Fallback for unnormalized legacy nodes
+            fallback_query = """
+            MATCH (n)
+            WHERE (n:User OR n:Group OR n:Person OR n:People)
+            AND toLower(trim(n.email)) = $email
+            RETURN n.id AS id
+            LIMIT 1
+            """
+            fallback_results = await self.client.execute_query(
+                fallback_query,
+                parameters={"email": email.strip().lower()},
+                txn_id=transaction
+            )
+            return fallback_results[0]["id"] if fallback_results else None
 
         except Exception as e:
             self.logger.error(f"❌ Get entity ID by email failed: {str(e)}")
@@ -10973,25 +11029,31 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             unique_emails = list(set(emails))
             norm_to_orig: dict[str, list[str]] = {}
+            lookup_emails: list[str] = []
             for e in unique_emails:
                 if e:
-                    norm_to_orig.setdefault(e.strip().lower(), []).append(e)
+                    norm = e.strip().lower()
+                    norm_to_orig.setdefault(norm, []).append(e)
+                    lookup_emails.append(e)
+                    lookup_emails.append(norm)
+
+            lookup_emails = list(dict.fromkeys(lookup_emails))
 
             query = """
             MATCH (n)
-            WHERE (n:User OR n:Group OR n:Person)
-            AND toLower(n.email) IN [e IN $emails | toLower(e)]
+            WHERE (n:User OR n:Group OR n:Person OR n:People)
+            AND n.email IN $emails
             RETURN n.email AS email, n.id AS id, labels(n) AS labels
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"emails": unique_emails},
+                parameters={"emails": lookup_emails},
                 txn_id=transaction
             )
 
             result_map = {}
-            for r in results:
+            for r in results or []:
                 email = r["email"]
                 entity_id = r["id"]
                 labels = r["labels"]
@@ -11015,6 +11077,46 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     norm = (email or "").strip().lower()
                     for orig in norm_to_orig.get(norm, []):
                         result_map[orig] = val
+
+            # Check if any original emails remain unmatched; fallback query for unnormalized nodes
+            unmatched = [e for e in unique_emails if e not in result_map]
+            if unmatched:
+                unmatched_norm = list(dict.fromkeys(e.strip().lower() for e in unmatched if e))
+                fallback_query = """
+                MATCH (n)
+                WHERE (n:User OR n:Group OR n:Person OR n:People)
+                AND toLower(trim(n.email)) IN $emails
+                RETURN n.email AS email, n.id AS id, labels(n) AS labels
+                """
+                fallback_results = await self.client.execute_query(
+                    fallback_query,
+                    parameters={"emails": unmatched_norm},
+                    txn_id=transaction
+                )
+                for r in fallback_results or []:
+                    email = r["email"]
+                    entity_id = r["id"]
+                    labels = r["labels"]
+
+                    collection_name = ""
+                    permission_type = ""
+
+                    if Neo4jLabel.USERS.value in labels:
+                        collection_name = CollectionNames.USERS.value
+                        permission_type = "USER"
+                    elif Neo4jLabel.GROUPS.value in labels:
+                        collection_name = CollectionNames.GROUPS.value
+                        permission_type = "GROUP"
+                    elif Neo4jLabel.PEOPLE.value in labels:
+                        collection_name = CollectionNames.PEOPLE.value
+                        permission_type = "USER"
+
+                    if collection_name:
+                        val = (entity_id, collection_name, permission_type)
+                        result_map[email] = val
+                        norm = (email or "").strip().lower()
+                        for orig in norm_to_orig.get(norm, []):
+                            result_map[orig] = val
 
             return result_map
 
@@ -18677,7 +18779,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             label = collection_to_label(CollectionNames.PEOPLE.value)
             query = f"""
             MATCH (p:{label})
-            WHERE p.orgId = $org_id AND (p.email = $email OR trim(p.email) = $stripped OR toLower(trim(p.email)) = $stripped)
+            WHERE p.orgId = $org_id AND (p.email = $email OR toLower(trim(p.email)) = $stripped)
             RETURN p
             LIMIT 1
             """
