@@ -15,15 +15,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
-
 from app.models.entities import Record
 from app.schema.arango.documents import record_schema
 from app.services.graph_db.common.utils import INTERNAL_RECORD_FIELDS
+from tests.support.openapi_spec import openapi_spec
 from tests.unit.models.test_entities import _record_kwargs
 
 _REPO = Path(__file__).resolve().parents[5]
-_SPEC = _REPO / "backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml"
 
 # The stored record keys its document `_key`; the API returns the same value as
 # `id`. That is the one rename between the two shapes.
@@ -31,7 +29,7 @@ _STORED_ONLY = {"_key"}
 
 
 def _spec_record_properties() -> set[str]:
-    spec = yaml.safe_load(_SPEC.read_text())
+    spec = openapi_spec()
     record = spec["components"]["schemas"]["GetRecordByIdResponseSchema"]["properties"]["record"]
     assert record.get("additionalProperties") is False, (
         "this test only matters while the schema rejects unknown fields"
