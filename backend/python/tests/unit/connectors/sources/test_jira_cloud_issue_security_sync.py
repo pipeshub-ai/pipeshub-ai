@@ -1623,17 +1623,36 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert perms == [] and record.rewrite_permissions is True and record.access_rule == AccessRule.STRICT
 
     @pytest.mark.asyncio
-    async def test_an_issue_that_keeps_its_grants_is_written_by_the_content_update_not_a_full_sync_rewrite(self) -> None:
-        """A full sync's first write through on_new_records replaces an existing record's grants."""
+    @pytest.mark.parametrize(("version", "changed", "kept"), [(1, False, True), (0, False, True), (0, True, False)],
+                             ids=["changed_before", "never_changed_since_its_first_sync", "new_or_promoted"])
+    async def test_an_issue_that_keeps_its_grants_is_written_by_the_content_update_not_a_full_sync_rewrite(
+        self, version: int, changed: bool, kept: bool,
+    ) -> None:
+        """A full sync's first write through on_new_records replaces an existing record's grants. An issue still at
+        version 0 (unchanged since its first sync) is just as existing; only a new issue, or a promoted placeholder
+        (both reported changed), has no stored grants to keep."""
         c = _connector()
         issue = _issue()
         del issue["fields"]["security"]
         record, perms, _ = await _build(c, issue, self._none(None))
-        record.version = 1
+        record.version = version
         c.data_entities_processor.on_record_content_update = AsyncMock()
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
-        await c._process_new_records([(record, perms, False)], "PROJ", {"new_count": 0, "updated_count": 0})
-        c.data_entities_processor.on_record_content_update.assert_awaited_once()
+        await c._process_new_records([(record, perms, changed)], "PROJ", {"new_count": 0, "updated_count": 0})
+        assert c.data_entities_processor.on_record_content_update.await_count == (1 if kept else 0)
+        assert c.data_entities_processor.on_new_records.await_count == (0 if kept else 1)
+
+    @pytest.mark.asyncio
+    async def test_a_held_issue_never_changed_since_its_first_sync_keeps_its_grants_in_a_full_sync(self) -> None:
+        """Held (its parent could not be read) with an empty grant list: a full sync must not write that list."""
+        c = _connector()
+        record, perms, _ = await _build(c, _issue(), _present())
+        record.version = 0
+        record.rewrite_permissions = False
+        c._held_access_ids = {record.external_record_id}
+        c.data_entities_processor.on_record_content_update = AsyncMock()
+        await c._process_new_records([(record, [], False)], "PROJ", {"new_count": 0, "updated_count": 0})
+        c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record)
         c.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio

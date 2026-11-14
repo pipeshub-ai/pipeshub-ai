@@ -4794,7 +4794,9 @@ class JiraConnector(BaseConnector):
             new_count = 0
             edge_rebuild_count = 0
             for record, record_permissions, content_changed in batch:
-                if record.version == 0:
+                # Version 0 is also an issue unchanged since its first sync (content_changed False), which has
+                # stored grants as much as any other: only a new issue or a promoted placeholder has none to keep.
+                if record.version == 0 and (content_changed or not self._keeps_stored_grants(record)):
                     to_upsert.append((record, record_permissions))
                     new_count += 1
                 elif content_changed or self._keeps_stored_grants(record):
