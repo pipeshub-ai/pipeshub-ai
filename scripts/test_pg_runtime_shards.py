@@ -23,7 +23,7 @@ PYTHON = ROOT / "backend/python"
 SUITE = "tests/integration/graph_db/postgres"
 
 # Cases in the whole suite. Adding tests raises this and the graph_cases of the shard that runs them.
-TOTAL = 1738
+TOTAL = 1741
 
 
 def _holds(expression: str, true: set[str]) -> bool:
