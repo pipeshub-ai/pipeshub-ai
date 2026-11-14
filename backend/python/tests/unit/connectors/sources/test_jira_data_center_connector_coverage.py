@@ -920,7 +920,7 @@ async def test_fetch_project_permission_scheme_dc_branches():
         "jira-software": [{"groupId": "expanded-g", "name": "E"}],
     }
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        perms = await conn._fetch_project_permission_scheme("PROJ", app_map)
+        perms = await conn._fetch_project_permission_scheme("PROJ", app_map, {"acc": MagicMock(email="u@example.com")})
     ds.get_permission_scheme_grants_v2.assert_awaited_once()
     types = {(p.entity_type, p.email, p.external_id) for p in perms}
     assert (EntityType.GROUP, None, "gid1") in types
@@ -929,6 +929,38 @@ async def test_fetch_project_permission_scheme_dc_branches():
     assert (EntityType.ORG, None, "anyone_authenticated") in types
     assert (EntityType.ROLE, None, "PROJ_10400") in types
     assert (EntityType.ROLE, None, "PROJ_projectLead") in types
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("parameter", "unfinished", "licensed", "granted"),
+    [
+        pytest.param("acc", False, None, False, id="not in a complete user list"),
+        pytest.param("acc", True, None, True, id="user list cut short"),
+        pytest.param("acc", True, {"other"}, False, id="user list cut short, no product access"),
+        pytest.param("acc", True, {"acc"}, True, id="user list cut short, product access"),
+        pytest.param("ann", False, None, True, id="named by username"),
+    ],
+)
+async def test_a_user_holder_outside_the_synced_users_is_granted_only_while_they_may_be_unread(
+    parameter: str, unfinished: bool, licensed: set[str] | None, granted: bool,
+) -> None:
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn._user_read_unfinished, conn._licensed_keys = unfinished, licensed
+    conn._dc_name_to_source_id = {"ann": "ann-key"}
+    users = {"ann-key": MagicMock(email="ann@example.com")}
+    sch, grants = MagicMock(status=HttpStatusCode.OK.value), MagicMock(status=HttpStatusCode.OK.value)
+    sch.json = MagicMock(return_value={"id": 10})
+    grants.json = MagicMock(return_value={"permissions": [{"permission": "BROWSE_PROJECTS", "holder": {
+        "type": "user", "parameter": parameter, "user": {"emailAddress": f"{parameter}@example.com", "active": True},
+    }}]})
+    ds = MagicMock()
+    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+    ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        perms = await conn._fetch_project_permission_scheme("PROJ", {}, users)
+    assert bool(perms) is granted
 
 
 @pytest.mark.asyncio

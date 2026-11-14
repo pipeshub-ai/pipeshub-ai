@@ -438,7 +438,8 @@ class JiraDataCenterConnector(BaseConnector):
     user_link_steps = ("_link_users_and_groups",)
     _SYNC_STATE = (
         "_kept_unread_access", "_kept_after_refusal", "_user_read_unfinished", "_user_bulk_forbidden",
-        "_dc_name_to_source_id",
+        "_dc_name_to_source_id", "_app_roles_forbidden", "_app_roles_unread", "_projects_naming_unread_roles",
+        "_app_roles_mapping", "_licensed_keys",
     )
 
     def __init__(
@@ -513,6 +514,10 @@ class JiraDataCenterConnector(BaseConnector):
         self._user_bulk_refused: bool = False
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
+        self._stored_app_users: list[AppUser] = []  # read by _fetch_users
+        # Keys of the active members of the application roles' groups (Jira product access);
+        # None when they could not all be read.
+        self._licensed_keys: set[str] | None = None
         # Hierarchy link field ids: None = before init, "" = not found, else customfield id
         self._epic_link_field_id: str | None = None
         self._parent_link_field_id: str | None = None
@@ -958,6 +963,7 @@ class JiraDataCenterConnector(BaseConnector):
                     "project access are kept, and anything with nothing stored is saved from what was read. "
                     "The next sync reads it again"
                 )
+            jira_users = await self._eligible_users(jira_users)
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
@@ -975,8 +981,7 @@ class JiraDataCenterConnector(BaseConnector):
                 self._kept_after_refusal.append(("projects", ""))
                 self._kept_after_refusal.append(("scheme_groups", ""))
 
-            app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
-            self._app_roles_mapping = app_roles_mapping
+            app_roles_mapping = self._app_roles_mapping
 
             # Get project_keys filter if configured (to fetch only those projects)
             allowed_keys = None
@@ -1516,7 +1521,7 @@ class JiraDataCenterConnector(BaseConnector):
         with self._keep_sync_state(*self._SYNC_STATE):
             self._kept_unread_access = False
             self._kept_after_refusal = []
-            jira_users = await self._fetch_users()
+            jira_users = await self._eligible_users(await self._fetch_users())
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
             await self._sync_user_groups(jira_users)
@@ -1539,6 +1544,7 @@ class JiraDataCenterConnector(BaseConnector):
         self._user_read_unfinished = False
 
         cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        self._stored_app_users = cached_app_users
         pipeshub_users = await self.data_entities_processor.get_all_active_users()
 
         cached_key_to_email: dict[str, str] = {
@@ -2304,10 +2310,19 @@ class JiraDataCenterConnector(BaseConnector):
                     user_data = holder.get("user", {})
                     user_email = user_data.get("emailAddress")
 
+                    # The parameter is the user's key or, on some builds, their username.
+                    key = holder_param if holder_param in (user_by_key or {}) else (
+                        self._dc_name_to_source_id.get(str(holder_param).lower(), holder_param)
+                    )
                     resolved_email = None
-                    if user_by_key and holder_param in user_by_key:
-                        resolved_email = user_by_key[holder_param].email
-                    elif user_email:
+                    if user_by_key and key in user_by_key:
+                        resolved_email = user_by_key[key].email
+                    elif (
+                        user_email and user_data.get("active") is not False and self._user_read_unfinished
+                        and (self._licensed_keys is None or key in self._licensed_keys)
+                    ):
+                        # Only a user list cut short leaves out an eligible account. After a complete
+                        # read, one missing from it is deactivated or without Jira product access.
                         resolved_email = user_email
 
                     if resolved_email:
@@ -2376,6 +2391,56 @@ class JiraDataCenterConnector(BaseConnector):
                 "the Browse users and groups global permission."
             ),
         )
+
+    async def _eligible_users(self, jira_users: list[AppUser]) -> list[AppUser]:
+        """The users with Jira product access: active members of a group of some application role.
+
+        Jira treats any other account as anonymous, so its group, role and user grants never
+        reach it, and stored users without it lose the connector. When the roles or a role
+        group's members can't be read, every user is kept.
+        """
+        self._app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+        self._licensed_keys = await self._read_licensed_keys()
+        if self._licensed_keys is not None:
+            kept = [u for u in jira_users if u.source_user_id in self._licensed_keys]
+            if len(kept) < len(jira_users):
+                self.logger.info(f"{len(jira_users) - len(kept)} Jira user(s) without Jira product access left out")
+            jira_users = kept
+        await self._withdraw_ineligible_app_users(jira_users)
+        return jira_users
+
+    async def _read_licensed_keys(self) -> set[str] | None:
+        if self._app_roles_unread or self._app_roles_forbidden:
+            return None
+        names = {g["name"] for groups in self._app_roles_mapping.values() for g in groups if g.get("name")}
+        if not names:
+            return None
+        keys: set[str] = set()
+        for name in sorted(names):
+            members = await self._fetch_group_members(name, name)  # active members only
+            if members is None:
+                self.logger.warning("Could not read the members of product group %s; keeping every Jira user", name)
+                return None
+            keys.update(members)
+        return keys
+
+    async def _withdraw_ineligible_app_users(self, jira_users: list[AppUser]) -> None:
+        """Take the connector away from stored users without product access (deactivated ones
+        included: the product groups are read without them), unless an account with their email
+        keeps it."""
+        licensed = self._licensed_keys
+        if licensed is None:
+            return
+        kept_emails = {
+            (u.email or "").lower() for u in (*jira_users, *self._stored_app_users)
+            if u.source_user_id in licensed
+        }
+        gone = [
+            u for u in self._stored_app_users
+            if u.source_user_id and u.source_user_id not in licensed and (u.email or "").lower() not in kept_emails
+        ]
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
 
     async def _sync_user_groups(self, jira_users: list[AppUser]) -> Optional[GroupMemberships]:
         """
