@@ -200,8 +200,19 @@ async def _sync_project(world: dict[str, Any]) -> None:
             REPORTER_LEVEL: [_user_holder("alice"), {"type": "reporter"}],
         },
     )
+    await _write_levels(world)
     for issue, _ in ISSUES.values():
         await _write(world, [issue])
+
+
+async def _write_levels(world: dict[str, Any], level_ids: list[str] | None = None) -> None:
+    """Write the levels' record groups, as a sync does before it walks the project's issues."""
+    connector = world["connector"]
+    context = connector._issue_security[PROJECT_ID]
+    await connector._write_level_groups(
+        PROJECT_ID, PROJECT_KEY, context, level_ids if level_ids is not None else list(context.members_by_level),
+        {u.source_user_id: u for u in _users(world)},
+    )
 
 
 def _user_holder(name: str) -> dict[str, Any]:
@@ -504,3 +515,85 @@ async def test_reassigning_an_issue_moves_the_assignee_grant_on_the_stored_recor
     ):
         await _write(world, [_edited("plain task", f"{stamp}T10:00:00.000+0000", assignee={"accountId": PEOPLE[assignee]})])
         assert not await _mismatches(world, {**readers, "PROJ-1": who}, by_key)
+
+
+async def test_a_holder_removed_from_a_level_loses_every_issue_of_it_with_one_write(world: dict[str, Any]) -> None:
+    """The level's record group holds its holders once, so the write before the walk takes every
+    issue of the level from alice at once, before any issue is read again. A sub-task keeps a copy
+    of the holders and its parent's readers, so it is closed until it is read again."""
+    await _sync_project(world)
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    world["connector"]._issue_security[PROJECT_ID].members_by_level["10101"] = [_user_holder("bob")]
+    await _write_levels(world, ["10101"])
+    moved = {"PROJ-2": {"bob"}, "PROJ-7": {"bob"}, "PROJ-11": {"bob"}}
+    assert not await _mismatches(world, {**readers, **moved, "PROJ-8": set()}, by_key)
+
+    await _write(world, [ISSUES["sub-task of the leveled story"][0]], again=True)
+    assert not await _mismatches(world, {**readers, **moved, "PROJ-8": {"bob"}}, by_key)
+
+
+async def test_a_level_removed_from_the_scheme_closes_its_issues_at_once(world: dict[str, Any]) -> None:
+    await _sync_project(world)
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    del world["connector"]._issue_security[PROJECT_ID].members_by_level["10102"]
+    await _write_levels(world, ["10102"])
+    assert not await _mismatches(world, {**readers, "PROJ-5": set()}, by_key)
+
+
+async def test_issues_stored_with_a_copy_of_their_holders_take_their_level_groups_when_read_again(
+    world: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The previous shape: every leveled issue RESTRICTED, holding its level's holders, inheriting
+    where it is filed. Read again, each moves to its level's group with no reader gained or lost."""
+    from app.connectors.sources.atlassian.jira_cloud import connector as module
+
+    per_issue = module.apply_issue_access
+    monkeypatch.setattr(module, "apply_issue_access", lambda *a, project_id=None, **kw: per_issue(*a, **kw))
+    await _sync_project(world)
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    assert not await _mismatches(world, readers, by_key)
+
+    monkeypatch.setattr(module, "apply_issue_access", per_issue)
+    for issue, _ in ISSUES.values():
+        await _write(world, [issue], again=True)
+    assert not await _mismatches(world, readers, by_key)
+    graph, inherited = world["graph"], {}
+    for key in ("PROJ-2", "PROJ-7", "PROJ-8", "PROJ-11"):
+        edges = await graph.get_edges_from_node(f"records/{by_key[key]}", CollectionNames.INHERIT_PERMISSIONS.value)
+        inherited[key] = sorted(str(e.get("_to") or f"{e.get('to_collection')}/{e.get('to_id')}").split("/")[0] for e in edges)
+    # the leveled issues inherit their level's group alone; the sub-task its parent issue
+    assert inherited == {"PROJ-2": ["recordGroups"], "PROJ-7": ["recordGroups"], "PROJ-8": ["records"],
+                         "PROJ-11": ["recordGroups"]}
+
+
+async def test_a_level_read_that_will_be_retried_keeps_the_issue_with_its_level(world: dict[str, Any]) -> None:
+    """A transient read writes the issue closed with its stored grants kept; it keeps its level's
+    group and stored rule too, so its readers keep it until the retry."""
+    await _sync_project(world)
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    world["connector"]._issue_security[PROJECT_ID] = IssueSecurityContext(
+        knowledge=SchemeKnowledge.UNKNOWN, defer_checkpoint=True, read_status=503)
+    await _write(world, [_edited("leveled story under the unleveled epic", "2024-06-16T10:00:00.000+0000")])
+    assert not await _mismatches(world, readers, by_key)
+
+
+async def test_an_issue_moved_to_another_level_is_read_by_that_level_alone(world: dict[str, Any]) -> None:
+    """The old level's group must let go of it: its holders would still read it through that group."""
+    await _sync_project(world)
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    await _write(world, [_edited("leveled story under the unleveled epic", "2024-06-16T10:00:00.000+0000",
+                                 security={"id": "10102", "name": "level 10102"})])
+    # its sub-task keeps its copy of the old level's holders until it is read again, and reads as neither meanwhile
+    assert not await _mismatches(world, {**readers, "PROJ-7": {"carol"}, "PROJ-8": set()}, by_key)
+    # listed under its epic and its new level only: the old level's folder no longer holds it
+    graph = world["graph"]
+    groups = {g.get("externalGroupId"): g.get("id") or g.get("_key") for g in await graph.get_nodes_by_filters(
+        CollectionNames.RECORD_GROUPS.value, {"connectorId": world["connector_id"]})}
+    parents = {str(e.get("_from") or f"{e.get('from_collection')}/{e.get('from_id')}").split("/")[-1]
+               for e in await graph.get_edges_to_node(f"records/{by_key['PROJ-7']}", CollectionNames.NODE_RELATIONS.value)}
+    assert parents == {by_key["PROJ-6"], groups[f"level:{PROJECT_ID}:10102"]}

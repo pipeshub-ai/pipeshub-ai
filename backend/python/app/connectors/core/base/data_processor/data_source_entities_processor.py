@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import contextvars
+import functools
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
@@ -264,6 +265,26 @@ class _BatchLookups:
             return value
 
         return lookup
+
+#: Connectors whose records may take their access from a record group of their own (see `Record.access_group_external_id`): a write that
+#: names none keeps the stored one.
+ACCESS_GROUP_CONNECTORS = frozenset({Connectors.JIRA})
+
+
+class AccessGroupMissing(RuntimeError):
+    """A record names an access group that is not in the graph."""
+
+
+def _edge_group(edge: dict, end: str) -> str | None:
+    """The record group at one end (``"_to"`` / ``"_from"``) of an edge, in the shape ArangoDB gives
+    (``"recordGroups/<id>"``) or the generic one (``to_id`` with ``to_collection``); None for any other node."""
+    groups = CollectionNames.RECORD_GROUPS.value
+    ref = str(edge.get(end) or "")
+    if ref.startswith(f"{groups}/"):
+        return ref.split("/", 1)[1]
+    side = end.lstrip("_")
+    return str(edge[f"{side}_id"]) if edge.get(f"{side}_collection") == groups and edge.get(f"{side}_id") else None
+
 
 class ParentPlacement(NamedTuple):
     """Where a record takes its audience, and whether browse hangs off the group.
@@ -1092,7 +1113,8 @@ class DataSourceEntitiesProcessor:
                 # A parent in this group is the permission parent. The flag is for a
                 # caller that must take the audience from the group anyway.
                 permissions_from_group = in_other_group or bool(record.inherit_permissions_from_group)
-                if record.inherit_permissions and not permissions_from_group:
+                # A record that takes its access from a group of its own is only listed under its parent.
+                if record.inherit_permissions and not permissions_from_group and not record.access_group_external_id:
                     await tx_store.create_inherit_permissions_relation_record(
                         record.id, parent_record.id
                     )
@@ -1926,7 +1948,7 @@ class DataSourceEntitiesProcessor:
             # inherits from the record above it, and _handle_parent_record owns
             # that edge. on_updated_record_permissions applies the same rule, or
             # the stored state would depend on which ran last.
-            if record.inherit_permissions and permissions_root:
+            if record.inherit_permissions and permissions_root and not record.access_group_external_id:
                 inherit = True
             elif existing_record is not None or stored_under_its_id:
                 inherit = False
@@ -2728,6 +2750,130 @@ class DataSourceEntitiesProcessor:
             await self._handle_message_entity_edges(record, tx_store)
 
     async def _process_record(
+        self,
+        record: Record,
+        permissions: list[Permission],
+        tx_store: TransactionStore,
+        moved_virtual_record_ids: list[tuple[str, str | None]] | None = None,
+        *,
+        publishes_event: bool = True,
+        pre_old_path: object = _NO_OLD_PATH,
+        narrowed_connectors: set[str] | None = None,
+        permissions_fetched: bool = False,
+        replace_permissions: bool = False,
+        title_changes: dict[str, Record] | None = None,
+    ) -> tuple[Record | None, list[PendingMove]]:
+        """Upsert a record and its edges (see ``_process_record_body``). A record that names an access
+        group (``Record.access_group_external_id``) takes its access from that group alone (see
+        ``_apply_access_group``), and no state between two statements is wider than the old one or
+        the new one."""
+        body = functools.partial(
+            self._process_record_body, record, permissions, tx_store, moved_virtual_record_ids,
+            publishes_event=publishes_event, pre_old_path=pre_old_path, narrowed_connectors=narrowed_connectors,
+            permissions_fetched=permissions_fetched, replace_permissions=replace_permissions, title_changes=title_changes,
+        )
+        if record.access_group_external_id is None and record.connector_name in ACCESS_GROUP_CONNECTORS \
+                and isinstance(record, TicketRecord):
+            await self._keep_access_group(record, tx_store)
+        group = record.access_group_external_id
+        if not isinstance(group, str):
+            return await body()
+        final_rule = record.access_rule
+        stored = (
+            await tx_store.get_record_by_external_id(connector_id=record.connector_id, external_id=record.external_record_id)
+            if group or final_rule == AccessRule.RESTRICTED else None
+        )
+        # A record stored RESTRICTED (a copy of its level's holders, inheriting what it is filed under) is
+        # written closed until its access edges are in place, and gets its final rule then. One that ends
+        # RESTRICTED is closed before its edges change: stored STRICT, it may inherit its group, and until the
+        # rule is written that group's readers would read it without a grant of their own.
+        held_closed = stored is not None and stored.access_rule == AccessRule.RESTRICTED and final_rule != AccessRule.RESTRICTED
+        if held_closed:
+            record.access_rule = AccessRule.RESTRICTED
+        elif (stored is not None and stored.access_rule != AccessRule.RESTRICTED and final_rule == AccessRule.RESTRICTED
+              and not record.is_placeholder):
+            await tx_store.batch_update_nodes(
+                [{"_key": stored.id, "accessRule": AccessRule.RESTRICTED.value}], CollectionNames.RECORDS.value
+            )
+        try:
+            processed, moves = await body()
+        finally:
+            record.access_rule = final_rule
+        if processed is not None and not record.is_placeholder:
+            await self._apply_access_group(record, tx_store)
+            if held_closed:
+                await tx_store.batch_update_nodes(
+                    [{"_key": record.id, "accessRule": final_rule.value}], CollectionNames.RECORDS.value
+                )
+        return processed, moves
+
+    async def _keep_access_group(self, record: Record, tx_store: TransactionStore) -> None:
+        """A write that names no access group (an issue whose level could not be read this time) keeps
+        the stored one, and its stored rule when it keeps its stored grants: handed back to what it is
+        filed under, it would be read by everyone who reads that. Filed in another record group now, it
+        names none, and the edges to the old one go."""
+        existing = await tx_store.get_record_by_external_id(connector_id=record.connector_id, external_id=record.external_record_id)
+        if existing is None or not existing.record_group_id:
+            return
+        held = sorted({
+            gid for edge in await tx_store.get_edges_from_node(
+                f"{CollectionNames.RECORDS.value}/{existing.id}", CollectionNames.INHERIT_PERMISSIONS.value, raise_on_error=True,
+            ) or []
+            if (gid := _edge_group(edge, "_to")) and gid != existing.record_group_id
+        })
+        if not held:
+            return
+        if record.external_record_group_id:
+            filed = await tx_store.get_record_group_by_external_id(
+                connector_id=record.connector_id, external_id=record.external_record_group_id)
+            if filed is None or filed.id != existing.record_group_id:
+                record.access_group_external_id = ""
+                return
+        group = await tx_store.get_record_group_by_id(held[0])
+        if group is None:
+            return
+        record.access_group_external_id = group.external_group_id
+        if not record.rewrite_permissions:
+            record.access_rule = existing.access_rule
+
+    async def _apply_access_group(self, record: Record, tx_store: TransactionStore) -> None:
+        """Make the record inherit its access group and no other record group, and hang under it, beside
+        where it is filed (which it no longer inherits). Edges to any other group it took its access from
+        before are removed. A group that is not there is an error: the record stays as written."""
+        records, groups = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
+        wanted: str | None = None
+        if record.access_group_external_id:
+            group = await tx_store.get_record_group_by_external_id(
+                connector_id=record.connector_id, external_id=record.access_group_external_id
+            )
+            if group is None:
+                raise AccessGroupMissing(
+                    f"record {record.id}: its access group {record.access_group_external_id!r} is not in the graph"
+                )
+            wanted = group.id
+        own = record.record_group_id
+        node = f"{records}/{record.id}"
+        # Its own group is inherited only when it names no access group (that edge is _link_record_to_group's).
+        inherits = [
+            gid for edge in await tx_store.get_edges_from_node(
+                node, CollectionNames.INHERIT_PERMISSIONS.value, raise_on_error=True) or []
+            if (gid := _edge_group(edge, "_to")) and gid != wanted and (gid != own or wanted)
+        ]
+        if wanted is None and not inherits:
+            return
+        # The hierarchy edges go first: the walk admits along them, so an inherit edge left alone admits nothing.
+        for edge in await tx_store.get_edges_to_node(node, CollectionNames.NODE_RELATIONS.value, raise_on_error=True) or []:
+            gid = _edge_group(edge, "_from")
+            if gid and gid != wanted and gid != own:
+                await tx_store.delete_edge(gid, groups, record.id, records, CollectionNames.NODE_RELATIONS.value)
+        for gid in inherits:
+            await tx_store.delete_inherit_permissions_relation_record_group(record.id, gid)
+        if wanted is None:
+            return
+        await tx_store.create_inherit_permissions_relation_record_group(record.id, wanted)
+        await self._create_hierarchy_edge(tx_store, wanted, groups, record.id, records)
+
+    async def _process_record_body(
         self,
         record: Record,
         permissions: list[Permission],

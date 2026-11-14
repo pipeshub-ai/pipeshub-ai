@@ -23,8 +23,11 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     apply_issue_access_settled,
     classify_project_mapping,
     classify_scheme_response,
+    closed_level_groups,
     collect_paged_values,
+    group_held_levels,
     hold_levels_naming_unread_roles,
+    level_group_grants,
     level_reads_alike,
     levels_after_walk,
     plan_level_reread,
@@ -894,3 +897,103 @@ class TestPagingWithTotalOnly:
             return 200, {"values": [{"n": start}], "maxResults": 1000}
         status, values = await collect_paged_values(endless)
         assert values is None
+
+
+class TestLevelGroups:
+    """A leveled issue that is not a sub-task takes its access from its level's record group, which
+    holds the holders that name the same people on every issue once; the issue holds the rest."""
+
+    HOLDERS = {"7": [{"type": "group", "value": "g-1"}, {"type": "reporter"}, {"type": "projectLead"}]}
+
+    def _apply(self, fields: dict, *, is_subtask: bool = False, context: IssueSecurityContext | None = None,
+               project_id: str | None = "p-1", **record) -> tuple[Record, list, list, bool]:
+        rec = _record(**record)
+        grants, skipped, settled = apply_issue_access_settled(
+            rec, fields, is_subtask=is_subtask, project_key="P", context=context or _present(members=self.HOLDERS),
+            reporter_email="rep@x.com", project_id=project_id,
+        )
+        return rec, grants, skipped, settled
+
+    def test_a_leveled_issue_holds_only_the_holders_it_names_and_inherits_its_level_group(self) -> None:
+        rec, grants, _, settled = self._apply({"security": {"id": "7"}}, parent_external_record_id="epic-1")
+        assert (rec.access_rule, rec.access_group_external_id, settled) == (AccessRule.STRICT, "level:p-1:7", True)
+        assert [(g.entity_type, g.email) for g in grants] == [(EntityType.USER, "rep@x.com")]
+        assert rec.parent_external_record_id == "epic-1"  # filed where it was: placement grants nothing
+        group, skipped = level_group_grants(self.HOLDERS["7"], project_key="P", user_by_id={}, app_roles_mapping=None)
+        assert ({(g.entity_type, g.external_id) for g in group}, skipped) == (
+            {(EntityType.GROUP, "g-1"), (EntityType.ROLE, "P_projectLead")}, [])
+        # a holder that depends on the issue is never the group's, even one no issue payload can resolve here
+        group, _ = level_group_grants([*self.HOLDERS["7"], {"type": "userCustomField", "parameter": "cf_1"}],
+                                      project_key="P", user_by_id={}, app_roles_mapping=None)
+        assert {(g.entity_type, g.external_id) for g in group} == {(EntityType.GROUP, "g-1"), (EntityType.ROLE, "P_projectLead")}
+
+    def test_a_sub_task_keeps_a_copy_of_every_holder(self) -> None:
+        rec, grants, _, _ = self._apply({"security": {"id": "7"}}, is_subtask=True)
+        assert (rec.access_rule, rec.access_group_external_id) == (AccessRule.RESTRICTED, "")
+        assert {(g.entity_type, g.external_id or g.email) for g in grants} == {
+            (EntityType.GROUP, "g-1"), (EntityType.USER, "rep@x.com"), (EntityType.ROLE, "P_projectLead")}
+
+    def test_an_issue_with_no_level_or_a_level_without_holders_names_no_group(self) -> None:
+        for fields in ({"security": None}, {"security": {"id": "8"}}):
+            rec, *_ = self._apply(fields)
+            assert rec.access_group_external_id == ""
+        rec, *_ = self._apply({"security": None}, context=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+        assert (rec.access_group_external_id, rec.access_rule) == ("", AccessRule.STRICT)
+        personal = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False)
+        rec, *_ = self._apply({"security": {"id": "7"}}, context=personal)
+        assert rec.access_group_external_id is None
+        rec, grants, _, _ = self._apply({"security": {"id": "8"}})
+        assert (rec.access_rule, grants) == (AccessRule.RESTRICTED, [])
+
+    def test_a_deferred_read_keeps_the_stored_group(self) -> None:
+        context = _present(members=self.HOLDERS, readable=False)
+        context.defer_checkpoint = True
+        rec, grants, _, settled = self._apply({"security": {"id": "7"}}, context=context)
+        assert (rec.access_group_external_id, rec.rewrite_permissions, grants, settled) == (None, False, [], False)
+        context.defer_checkpoint = False
+        rec, *_ = self._apply({"security": {"id": "7"}}, context=context)
+        assert (rec.access_group_external_id, rec.access_rule, rec.rewrite_permissions) == ("", AccessRule.RESTRICTED, True)
+
+    def test_an_unreadable_field_holder_closes_the_issue(self) -> None:
+        context = _present(members={"7": [{"type": "group", "value": "g-1"}, {"type": "userCustomField", "parameter": "cf_1"}]})
+        rec, grants, _, settled = self._apply({"security": {"id": "7"}}, context=context)
+        assert (rec.access_rule, rec.access_group_external_id, grants, settled) == (AccessRule.RESTRICTED, "", [], False)
+
+    def test_without_a_project_no_group_is_managed(self) -> None:
+        rec, grants, _, _ = self._apply({"security": {"id": "7"}}, project_id=None)
+        assert (rec.access_rule, rec.access_group_external_id, len(grants)) == (AccessRule.RESTRICTED, None, 3)
+
+
+class TestSplitLevelDigests:
+    def test_each_half_moves_with_its_own_holders(self) -> None:
+        def digests(holders: list) -> str:
+            return _present(members={"7": holders}).level_fingerprints({"r": [{"groupId": "g-r"}]}, split=True)["7"]
+
+        base = digests([{"type": "group", "value": "g-1"}, {"type": "reporter"}])
+        static, dynamic = base.split(".")
+        group_changed = digests([{"type": "group", "value": "g-2"}, {"type": "reporter"}]).split(".")
+        assert group_changed[0] != static and group_changed[1] == dynamic
+        holder_changed = digests([{"type": "group", "value": "g-1"}, {"type": "assignee"}]).split(".")
+        assert holder_changed[0] == static and holder_changed[1] != dynamic
+        role = _present(members={"7": [{"type": "applicationRole", "parameter": "r"}]})
+        assert role.level_fingerprints({"r": [{"groupId": "a"}]}, split=True)["7"].split(".")[0] != \
+            role.level_fingerprints({"r": [{"groupId": "b"}]}, split=True)["7"].split(".")[0]
+
+    def test_only_a_change_of_the_group_s_holders_is_held_by_the_group(self) -> None:
+        stored = {"1": "s1.d1", "2": "s2.d2", "3": "legacy", "4": "s4.d4", "*": "retry"}
+        current = {"1": "s1x.d1", "2": "s2.d2x", "3": "s3.d3", "4": "s4.d4", "5": "s5.d5"}
+        assert group_held_levels(stored, current) == {"1"}
+        assert group_held_levels(None, current) == set()
+
+    def test_a_level_gone_from_the_scheme_is_closed_only_when_a_group_was_written(self) -> None:
+        stored = {"1": "s1.d1", "2": "legacy", "3": "s3.d3", "*": "retry"}
+        assert closed_level_groups(stored, {"3": "s3.d3"}) == ["1"]
+        assert closed_level_groups(None, {}) == []
+
+    def test_a_project_stored_with_whole_digests_reads_every_level_again_once(self) -> None:
+        """The first sync with groups drops each issue's copy of the holders: every level is re-read."""
+        security = _with_users(**{"1": ["a"], "2": ["b"]})
+        reread, levels, to_save = plan_level_reread(
+            security, security.level_fingerprints(), is_new_project=False, app_roles_mapping={}, split=True)
+        assert (reread, levels, to_save) == ("levels", ["1", "2"], security.level_fingerprints(split=True))
+        assert group_held_levels(security.level_fingerprints(), to_save) == set()

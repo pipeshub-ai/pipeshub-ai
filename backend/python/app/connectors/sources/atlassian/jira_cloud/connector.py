@@ -25,6 +25,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AccessRule,
     AppGroups,
     CollectionNames,
     Connectors,
@@ -90,11 +91,15 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     apply_issue_access,
     apply_issue_access_settled,
     classify_scheme_response,
+    closed_level_groups,
     collect_paged_values,
     custom_field_ids_from_members,
+    group_held_levels,
     hold_levels_naming_unread_roles,
     http_status_is_transient,
     index_members,
+    level_group_external_id,
+    level_group_grants,
     level_reads_alike,
     levels_after_walk,
     plan_level_reread,
@@ -4191,6 +4196,10 @@ class JiraConnector(BaseConnector):
         )
         if knowledge != SchemeKnowledge.PRESENT or scheme_id is None:
             return context
+        context.level_names = {
+            str(level["id"]): str(level.get("name") or level["id"])
+            for level in body.get("levels") or [] if isinstance(level, dict) and level.get("id") is not None
+        } if isinstance(body.get("levels"), list) else {}
         if scheme_has_no_levels(body):
             context.members_readable = True
             return context
@@ -4290,6 +4299,14 @@ class JiraConnector(BaseConnector):
             stored_browse = "?"
         if levels_to_save.get("*") == "held":
             self._never_tightened_security.add(project_key)  # hidden meanwhile, not kept as stored
+        if readable and not security.defer_checkpoint:
+            # Before any issue: a narrowed or removed level takes effect at once, and a new one exists
+            # before an issue takes its access from it. Every sync, so a full sync keeps them.
+            await self._write_level_groups(
+                project_id, project_key, security,
+                [*security.members_by_level, *closed_level_groups(stored_levels, levels_to_save)],
+                {user.source_user_id: user for user in jira_users if user.source_user_id},
+            )
         unreadable = not readable and security.knowledge != SchemeKnowledge.NONE
         if security.defer_checkpoint or (unreadable and reread):
             # Saved before the walk: a page that fails later leaves issues written with their
@@ -4396,7 +4413,8 @@ class JiraConnector(BaseConnector):
             )
             try:
                 await self._reread_leveled_issues(
-                    project_key, project_id, jira_users, stats, changed_levels, every_issue=reread == "project"
+                    project_key, project_id, jira_users, stats, changed_levels, every_issue=reread == "project",
+                    subtasks_only=group_held_levels(stored_levels, levels_to_save) if reread == "levels" else set(),
                 )
             except JiraReadError as e:
                 if e.status != HttpStatusCode.BAD_REQUEST.value or reread != "levels":
@@ -4504,8 +4522,57 @@ class JiraConnector(BaseConnector):
         self, security: IssueSecurityContext, stored: dict[str, str] | None, *, is_new_project: bool,
     ) -> tuple[str | None, list[str] | None, dict[str, str]]:
         return plan_level_reread(
-            security, stored, is_new_project=is_new_project, app_roles_mapping=self._app_roles_mapping
+            security, stored, is_new_project=is_new_project, app_roles_mapping=self._app_roles_mapping, split=True,
         )
+
+    async def _write_level_groups(
+        self, project_id: str, project_key: str, security: IssueSecurityContext, level_ids: list[str],
+        user_by_account_id: dict[str, AppUser],
+    ) -> None:
+        """Write the record group of each level: its holders that name the same people on every
+        issue, once (``level_group_grants``). A level the scheme no longer lists is written with
+        none, so its issues close at once. One write per level, whatever the number of its issues."""
+        groups: list[tuple[RecordGroup, list[Permission]]] = []
+        for level_id in level_ids:
+            grants, skipped = level_group_grants(
+                security.members_by_level.get(level_id, []), project_key=project_key,
+                user_by_id=user_by_account_id, app_roles_mapping=self._app_roles_mapping,
+            )
+            if skipped:
+                self.logger.warning(
+                    f"Security level {level_id} of {project_key}: holders of type {skipped} were not granted")
+            groups.append((RecordGroup(
+                id=str(uuid4()),
+                org_id=self.data_entities_processor.org_id,
+                external_group_id=level_group_external_id(project_id, level_id),
+                parent_external_group_id=project_id,
+                connector_id=self.connector_id,
+                connector_name=self.connector_name,
+                name=f"Security level: {security.level_names.get(level_id, level_id)}",
+                group_type=RecordGroupType.PROJECT,
+                # RESTRICTED under its project: a reader needs a grant here and to browse the project.
+                inherit_permissions=True,
+                access_rule=AccessRule.RESTRICTED,
+            ), grants))
+        if groups:
+            await self.data_entities_processor.on_new_record_groups(groups)
+
+    async def _ensure_level_group(
+        self, external_id: str, project_id: str, project_key: str, security: IssueSecurityContext, level_id: str | None,
+        user_by_account_id: dict[str, AppUser],
+    ) -> list[str]:
+        """Outside a sync: write the level's record group when no sync has yet (a level added since).
+        Returns the holder types its grants would skip, so the caller keeps the stored record rather
+        than write a partial audience (application roles are read by the sync)."""
+        _, skipped = level_group_grants(
+            security.members_by_level.get(level_id or "", []), project_key=project_key,
+            user_by_id=user_by_account_id, app_roles_mapping=self._app_roles_mapping,
+        )
+        if not skipped and level_id and await self.data_entities_processor.get_record_group_by_external_id(
+            self.connector_id, external_id,
+        ) is None:
+            await self._write_level_groups(project_id, project_key, security, [level_id], user_by_account_id)
+        return skipped
 
     async def _record_security_levels(
         self, project_key: str, levels: dict[str, str], *, force: bool = False,
@@ -4571,16 +4638,23 @@ class JiraConnector(BaseConnector):
 
     async def _reread_leveled_issues(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
-        level_ids: list[str] | None, *, every_issue: bool = False,
+        level_ids: list[str] | None, *, every_issue: bool = False, subtasks_only: set[str] | frozenset[str] = frozenset(),
     ) -> None:
         """Rebuild the stored issues in ``level_ids``; when it is None, every stored issue
-        with a level, or every stored issue with ``every_issue``."""
-        async for batch, _more, _ts in self._fetch_issues_batched(
-            project_key, project_id, users, None, None, is_new_project=True,
-            level_ids=level_ids, leveled_only=level_ids is None and not every_issue, stored_only=True,
-        ):
-            if batch:
-                await self._process_new_records(batch, project_key, stats)
+        with a level, or every stored issue with ``every_issue``. Of the levels in
+        ``subtasks_only`` only the sub-tasks are rebuilt: the others take their access from
+        the level's record group, written before the walk."""
+        full = None if level_ids is None else [lid for lid in level_ids if lid not in subtasks_only]
+        subtask_levels = [lid for lid in level_ids or [] if lid in subtasks_only]
+        for ids, subtasks in ((full, False), (subtask_levels, True)):
+            if ids == []:
+                continue
+            async for batch, _more, _ts in self._fetch_issues_batched(
+                project_key, project_id, users, None, None, is_new_project=True,
+                level_ids=ids, leveled_only=ids is None and not every_issue, stored_only=True, subtasks_only=subtasks,
+            ):
+                if batch:
+                    await self._process_new_records(batch, project_key, stats)
 
     async def _fetch_issues_batched(
         self,
@@ -4595,6 +4669,7 @@ class JiraConnector(BaseConnector):
         leveled_only: bool = False,
         stored_only: bool = False,
         parent_ids: list[str] | None = None,
+        subtasks_only: bool = False,
     ) -> AsyncGenerator[tuple[list[tuple[Record, list[Permission], bool]], bool, Optional[int]], None]:
         """
         Fetch issues for a project in batches, yielding processed records.
@@ -4641,6 +4716,8 @@ class JiraConnector(BaseConnector):
         if parent_ids:
             # Only the children of these issues (ids are numeric).
             jql_conditions.append(f'parent in ({", ".join(str(int(i)) for i in parent_ids)})')
+        if subtasks_only:
+            jql_conditions.append("issuetype in subTaskIssueTypes()")
 
         # Build final JQL (ORDER BY required for consistent pagination)
         # Add id ASC as secondary sort for stable ordering when timestamps are equal
@@ -5343,6 +5420,7 @@ class JiraConnector(BaseConnector):
                 app_roles_mapping=self._app_roles_mapping,
                 reporter_email=reporter_email,
                 assignee_email=assignee_email,
+                project_id=project_id,
             )
             if skipped_holders and (logged := (project_id, read_security_level(fields)[1], ",".join(skipped_holders))) \
                     not in self._skipped_holders_logged:
@@ -7221,7 +7299,14 @@ class JiraConnector(BaseConnector):
                 app_roles_mapping=self._app_roles_mapping,
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
+                # The record stays filed where the sync put it; a level of another project waits for the sync.
+                project_id=project_id if project_id and project_id == issue_record.external_record_group_id else None,
             )
+            if settled and not skipped_holders and issue_record.access_group_external_id:
+                skipped_holders = await self._ensure_level_group(
+                    issue_record.access_group_external_id, project_id, project.get("key") or project_ref,
+                    security, read_security_level(fields)[1], user_by_account_id,
+                )
             if not settled or skipped_holders:
                 # The level could not be read in full (a null level always can), or a holder
                 # did not resolve (application roles are read by the sync): writing would
