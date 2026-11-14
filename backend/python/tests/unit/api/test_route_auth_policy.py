@@ -16,8 +16,8 @@ from fastapi.routing import APIRoute
 import app.edition_config  # noqa: F401
 from app.api.middlewares.auth import AUTH_POLICY_ATTR, AuthPolicy
 
-# Routers mounted by query_main and connectors_main. EE routers are None in CE;
-# the EE build must run these tests against its own routers too.
+# Routers mounted by query_main and connectors_main. Extension routers are None here;
+# another build must run these tests against its own routers too.
 _ROUTERS = {
     "search": ("app.api.routes.search", "router"),
     "chatbot": ("app.api.routes.chatbot", "router"),

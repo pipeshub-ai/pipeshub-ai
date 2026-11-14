@@ -8,7 +8,7 @@ import mongoose, { Document, Schema, Model, Types } from 'mongoose';
  * hidden while it is here — refusals included, and they are the most telling
  * of the four — but this is the local record, not an audit trail. Keeping it
  * long enough to be evidence, proving it was not altered, exporting it and
- * reporting on it are what the Enterprise audit log is for, and its shortest
+ * reporting on it are what a dedicated audit log is for, and its shortest
  * retention is ninety days.
  *
  * Thirty days sits clearly below that, and is long enough to answer the

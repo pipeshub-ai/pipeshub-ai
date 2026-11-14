@@ -6,7 +6,7 @@ Code lives in `backend/python/app/services/model_identity/`. Forwarding is off u
 
 ## Editions
 
-| | OSS | EE |
+| | OSS | Extension |
 | --- | --- | --- |
 | Forward user id | yes | yes |
 | Forward groups | only what a resolver returns; OSS ships a no-op resolver | Entra groups, captured at sign-in |
@@ -15,7 +15,7 @@ Code lives in `backend/python/app/services/model_identity/`. Forwarding is off u
 | `signedJwt` mode (ES256 token verified by the gateway from a JWKS) | no | yes |
 | Group source | none | token claim, then Graph overage lookup, then connector-synced graph groups |
 
-EE plugs in through two edition hooks in `app/edition_services.py`: `get_group_membership_resolver(container)` and `register_identity_forwarders(registry)`. OSS code never imports EE.
+An extension plugs in through two edition hooks in `app/edition_services.py`: `get_group_membership_resolver(container)` and `register_identity_forwarders(registry)`. OSS code never imports extensions.
 
 ## High-level design
 
@@ -93,7 +93,7 @@ An org-level policy decides what may leave PipesHub. It applies to every connect
 | Field | Values |
 | --- | --- |
 | `enabled` | boolean |
-| `mode` | `headers`, `template`, `signedJwt` (EE) |
+| `mode` | `headers`, `template`, `signedJwt` (extension) |
 | `preset` | `litellm`, `portkey`, `helicone`, `cloudflare`, `apim`, `custom` |
 | `headerTemplates` | up to 16 `name: value` pairs; placeholders `{{SUBJECT}}`, `{{EMAIL}}`, `{{GROUP_IDS}}`, `{{ORG_ID}}`, `{{WORKLOAD}}`, `{{REQUEST_ID}}`, `{{CONVERSATION_ID}}`, `{{AGENT_ID}}` |
 | `jwtAudience` | required for `signedJwt` |
@@ -126,7 +126,7 @@ The trust boundary in this mode is the virtual key: anyone holding it can claim 
 
 Verified against LiteLLM `v1.106.0` by `backend/python/tests/integration/litellm_identity/`: spend lands on the customer, a customer over budget and a tag over budget are refused with a 4xx that `classify_gateway_error` reads as a budget refusal (not retried), and background work is charged to `svc:pipeshub:<name>`. Tag budgets need a LiteLLM release with BerriAI/litellm#27573.
 
-## Signed-JWT mode (EE)
+## Signed-JWT mode (extension)
 
 ```mermaid
 sequenceDiagram
@@ -163,7 +163,7 @@ Create one LiteLLM team per Entra group, with the group's object id as `team_id`
 
 **JWT authentication is a LiteLLM Enterprise feature.** Without `LITELLM_LICENSE` the proxy answers every signed request with 403. The tests in `backend/python/ee/tests/integration/litellm_identity/test_jwt_mode.py` therefore skip unless `LITELLM_LICENSE` is set, and the signed-JWT path has not been run against a live proxy by the authors of this change; it is covered by unit tests of the signing, keyring and claims. If you cannot license Enterprise, use headers mode.
 
-## Entra groups (EE)
+## Entra groups (extension)
 
 Register an app in Entra with the application permission `GroupMember.Read.All` (admin consent), then store its tenant, client id and secret as the org's directory configuration. PipesHub then:
 
@@ -172,7 +172,7 @@ Register an app in Entra with the application permission `GroupMember.Read.All` 
 3. Stores the membership in `idpGroupMemberships` (Mongo).
 4. At call time the Python service resolves groups through a composite resolver: stored membership, then directory-graph groups synced by connectors. It is cached (10k entries, 5 min; an incomplete result for 15 s) and single-flight per user. Reads refresh a stale membership for at most 2 s.
 
-Python reaches the stored membership through `/api/v1/identity-groups/internal/:userId`, guarded by the scoped token `identity:groups:read`, which must belong to the same user as the path. The routes and schemas are in the EE OpenAPI spec under the tags "Identity Groups" and "LLM Gateway".
+Python reaches the stored membership through `/api/v1/identity-groups/internal/:userId`, guarded by the scoped token `identity:groups:read`, which must belong to the same user as the path. The routes and schemas are in the extension OpenAPI spec under the tags "Identity Groups" and "LLM Gateway".
 
 ## Errors
 

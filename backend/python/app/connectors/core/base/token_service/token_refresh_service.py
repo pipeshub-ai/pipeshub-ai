@@ -284,8 +284,8 @@ class TokenRefreshService:
 
     async def _refresh_org_tokens(self, org_id: str) -> None:
         """Refresh or schedule the tokens of one org's OAuth connectors (called under that org)."""
-        # 1. Get the OAuth connectors from database. Only they hold a token; a
-        # tenant can have thousands of collection Apps, and loading every App
+        # 1. Get the OAuth connectors from database. Only they hold a token; an
+        # org can have thousands of collection Apps, and loading every App
         # here would stall this service's event loop on each pass. The orgId
         # filter matters where the store ignores the bound org (Arango, Neo4j).
         connectors = []

@@ -85,7 +85,7 @@ class DuplicateReconciler:
                 sibling_doc = await self.graph.get_document(sibling_key, _RECORDS, raise_on_error=True)
                 # get_records_by_virtual_record_id is not org-scoped; a
                 # virtualRecordId shared across orgs must not carry this
-                # org's taxonomy to another tenant's record.
+                # org's taxonomy to another org's record.
                 if sibling_doc is None or sibling_doc.get("orgId") != org_id:
                     if sibling_doc is not None:
                         self.logger.warning(

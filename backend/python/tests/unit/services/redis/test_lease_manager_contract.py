@@ -27,7 +27,7 @@ from tests.support.redis_provider_matrix import CLIENT_TRANSPORTS as TRANSPORTS
 _DIFFERENT_SLOT_POOLS = ("indexing", "parsing:light")
 
 # `TRANSPORTS` (standalone/cluster) comes from
-# `tests/support/redis_provider_matrix.py` (T4) so an EE `conftest.py` can
+# `tests/support/redis_provider_matrix.py` (T4) so an extension `conftest.py` can
 # append a `memorydb` entry and run this same suite against it with no
 # changes here.
 

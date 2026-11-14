@@ -299,7 +299,7 @@ class ConnectorRegistry:
             return []
 
     async def belongs_to_org(self, connector_instance: dict[str, Any], org_id: str) -> bool:
-        """Tenant check, applied before any role logic.
+        """Org check, applied before any role logic.
 
         Instances are fetched by id alone, so without this a TEAM connector's
         gate reduces to `is_admin` — and an administrator of one organization

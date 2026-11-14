@@ -140,7 +140,7 @@ A change to a layer must keep `test_protected_messages.py` and the scenario prop
 
 ## 8. History
 
-2026-10: a customer on 0.11.0 saw long multi-turn tool loops switch to the chat's first question.
+2026-10: a user on 0.11.0 saw long multi-turn tool loops switch to the chat's first question.
 
 - **Root cause:** every compaction layer kept `messages[0]`, which in a chat is the first question.
 - **Present since** the agent loop's introduction.

@@ -1,6 +1,6 @@
 import { test, expect } from '../fixtures/base.fixture';
 
-// OSS Groups page is an Enterprise placeholder — table UI lives in EE.
+// OSS Groups page is a placeholder — table UI is not part of this build.
 test.describe.skip('Groups Table', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/workspace/groups/');

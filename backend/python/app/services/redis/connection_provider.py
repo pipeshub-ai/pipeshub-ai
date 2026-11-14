@@ -95,7 +95,7 @@ class IRedisConnectionProvider(ABC):
         it here and caches the result for those builders to read. Default is
         a no-op: neither OSS provider has rotating credentials.
 
-        Idempotent, and safe to call from any startup path; an EE provider
+        Idempotent, and safe to call from any startup path; an extension provider
         that also refreshes on a timer starts that timer here.
         """
         return None

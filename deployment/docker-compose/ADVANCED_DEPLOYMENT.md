@@ -300,7 +300,7 @@ Worth knowing:
 
 ### Using an external secrets manager (optional, for stricter environments)
 
-The defaults above are appropriate for most self-hosted, single-tenant
+The defaults above are appropriate for most self-hosted, single-org
 deployments on a trusted host. If your security policy requires that secrets
 never be written to disk in plain text, you can supply them from a secrets
 manager instead of `.env` — for example Docker/Swarm secrets, HashiCorp Vault,

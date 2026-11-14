@@ -57,7 +57,7 @@ def _redis_from_config(redis_config: RedisConfig) -> "Redis":
     """Fresh, caller-owned client via the connection provider (R14/R21).
 
     Never ``redis.asyncio.Redis(...)`` directly: on ``REDIS_MODE=cluster``
-    (or an EE MemoryDB mode) this transparently hands back a cluster-aware
+    (or an extension MemoryDB mode) this transparently hands back a cluster-aware
     client instead, with no change needed here.
     """
     from app.services.redis.config import ClientOptions, RedisConnectionConfig

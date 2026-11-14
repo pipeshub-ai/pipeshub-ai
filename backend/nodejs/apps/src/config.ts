@@ -60,14 +60,14 @@ export { createFeatureFlagRouter } from './modules/user_management/routes/featur
 export { createOrgConfigRouter } from './modules/user_management/routes/orgConfig.routes';
 export { createRequestRouter } from './modules/user_management/routes/request.routes';
 
-// --- Service account delegation (Community stub, real router in ee/) ---
+// --- Service account delegation (stub; a different build may provide the router) ---
 export { createDelegationRouter } from './modules/oauth_provider/routes/delegation.routes';
 
 /**
  * Whether this edition offers delegation: a service account acting as a named
  * person, rather than with its own access.
  *
- * `false` here, `true` in the Enterprise build. Read by the two places that
+ * `false` here, `true` in a build that supplies it. Read by the two places that
  * are shared between editions — the token endpoint and OpenID discovery — so
  * the Community build refuses the capability outright rather than merely
  * lacking a screen to reach it. Without this, an allow-list row written
@@ -78,7 +78,7 @@ export { createDelegationRouter } from './modules/oauth_provider/routes/delegati
  * request takes.
  *
  * It is not a lock. Anyone running their own build can change it, and the
- * Enterprise value of this feature was never the mechanism — it is the audit
+ * real value of this feature was never the mechanism — it is the audit
  * trail, the organisation-wide view and the alerting, none of which are in
  * this repository at all.
  */

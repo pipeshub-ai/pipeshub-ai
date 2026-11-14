@@ -67,7 +67,7 @@ class ClientOptions:
     ``blocking=True`` is for dedicated connections used for ``XREADGROUP
     BLOCK``, ``SUBSCRIBE``, or any other long-lived call that must not be
     reclaimed by a bounded pool -- standalone honours it by disabling the
-    pool's blocking wait; cluster/EE providers honour it however their
+    pool's blocking wait; cluster/extension providers honour it however their
     client library requires (e.g. a dedicated node connection).
     """
 
@@ -92,7 +92,7 @@ class RedisConnectionConfig:
     ``db`` is DEPRECATED (R4): honoured only by ``StandaloneRedisProvider``.
     The factory rejects ``db != 0`` when the selected mode is not
     ``standalone`` so an upgrade never silently falls back to an empty
-    database. New deployments should isolate tenants via ``key_namespace``
+    database. New deployments should isolate environments via ``key_namespace``
     instead, which is applied inside explicit key builders (R9) -- never as
     a client-level prefix.
     """
@@ -103,7 +103,7 @@ class RedisConnectionConfig:
     password: Optional[str] = None
     # Rotating credentials (e.g. MemoryDB IAM auth); takes precedence over
     # username/password when set (R21). Signature intentionally stable so an
-    # EE provider never needs an interface change to support IAM rotation.
+    # extension provider never needs an interface change to support IAM rotation.
     credentials_provider: Optional[Callable[[], Awaitable[Credentials]]] = None
     tls: bool = False
     tls_reject_unauthorized: bool = True

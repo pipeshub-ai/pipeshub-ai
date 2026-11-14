@@ -4,10 +4,10 @@
 # the data survived.
 # ==============================================================================
 # The first-run smoke proves a fresh install works. It says nothing about the
-# path every existing self-hosted customer takes. A migration that drops a
+# path every existing self-hosted user takes. A migration that drops a
 # collection, a schema change the old data does not satisfy, or an installer
 # that rewrites .env and loses a password all pass a fresh install and break
-# every upgrade — and reach every customer at once.
+# every upgrade — and reach every user at once.
 #
 # What this does:
 #   1. installs PIPESHUB_BASE_VERSION (default: latest published release)
@@ -76,7 +76,7 @@ export HEALTH_WAIT_SECS="${HEALTH_WAIT_SECS:-600}"
 DIAG_DIR="${PIPESHUB_UPGRADE_DIAG:-}"
 
 # Resolve the version to upgrade from: the newest published release, so this
-# always tests the jump a real customer is about to make.
+# always tests the jump a real user is about to make.
 resolve_base_version() {
   local v="${PIPESHUB_BASE_VERSION:-}"
   if [[ -n "$v" ]]; then printf '%s' "$v"; return; fi
@@ -268,7 +268,7 @@ done
 log "secrets preserved across upgrade"
 
 # The upgrade must keep the graph database the data lives in. Switching it would
-# start an empty graph beside the customer's real one.
+# start an empty graph beside the user's real one.
 DATA_STORE_AFTER="$(env_file_val DATA_STORE || true)"
 [[ "$DATA_STORE_AFTER" == "$DATA_STORE_BEFORE" ]] \
   || die "DATA_STORE changed during upgrade (${DATA_STORE_BEFORE:-unset} -> ${DATA_STORE_AFTER:-unset})"

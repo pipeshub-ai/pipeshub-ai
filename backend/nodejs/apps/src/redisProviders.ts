@@ -11,7 +11,7 @@
  * from one .env, so a registration made in the API does not exist in the
  * Slack bot; importing this module everywhere is what keeps the set identical.
  *
- * OSS registers nothing here. An EE checkout uncomments its provider
+ * OSS registers nothing here. An extension checkout uncomments its provider
  * imports below. `REDIS_PROVIDER_MODULE` remains the hook for a provider
  * that lives outside this source tree.
  */

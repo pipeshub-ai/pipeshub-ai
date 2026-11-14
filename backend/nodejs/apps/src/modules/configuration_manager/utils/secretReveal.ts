@@ -18,7 +18,7 @@ export function revealQuery(req: Request): string {
   return isSecretRevealRequested(req) ? '?reveal=true' : '';
 }
 
-/** This edition can only ever hold one org, so there is no other tenant to leak to. */
+/** This edition can only ever hold one org, so there is no other org to leak to. */
 export function isSecretRevealAvailable(): boolean {
   return true;
 }

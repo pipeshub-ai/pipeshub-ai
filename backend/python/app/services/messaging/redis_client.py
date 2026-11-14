@@ -25,7 +25,7 @@ which already solved the loop-affinity half of this for the KV store.
 
 Both now delegate client construction to :class:`IRedisConnectionProvider`
 (``app.services.redis``) instead of building ``redis.asyncio.Redis``
-directly: on ``REDIS_MODE=cluster`` (or an EE MemoryDB mode), the provider
+directly: on ``REDIS_MODE=cluster`` (or an extension MemoryDB mode), the provider
 hands back a cluster-aware client with no change needed here. This registry
 keeps its own per-loop cache on top of the provider because each call site
 (``DistributedConcurrencyManager``, ``RetryManager``) sizes its own
