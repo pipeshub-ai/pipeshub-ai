@@ -287,18 +287,45 @@ def maybe_sample(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaitable[Any]]
     rate = sample_rate()
     if rate <= 0 or random.random() >= rate:
         return
+    nodes = list(decided)
+    ids = random.sample(nodes, min(len(nodes), SAMPLE_IDS))
+    _start("sample", org, lambda: _sample(run, db, org, ids, access))
+
+
+def maybe_compare(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaitable[Any]], db: KernelDB, org: str, apps: Iterable[str], source: str,
+                  differs: Callable[[Tx], Awaitable[bool]]) -> None:
+    """Repeat a share of a read of kg's structure (``kg.hierarchy``) by the walk, off the caller's path: ``differs`` reads both in one snapshot (``run``) and says whether they
+    differ. A difference takes ``apps``, the connectors the read was answered for, back to the walk."""
+    rate = sample_rate()
+    apps = sorted(set(apps))
+    if rate <= 0 or not apps or random.random() >= rate:
+        return
+
+    async def check() -> None:
+        try:
+            diff = await run(differs)
+        except Exception:
+            NET.inc(source, "error")
+            logger.warning("kg %s against the walk failed; nothing changes", source, exc_info=True)
+            return
+        NET.inc(source, "diff" if diff else "same")
+        if diff:
+            await demote(db, org, apps, source=source, why="kg's structure gives another answer than the walk")
+    _start(source, org, check)
+
+
+def _start(source: str, org: str, work: Callable[[], Awaitable[None]]) -> None:
+    """``work`` on a task of its own in the org, within the process's limit of samples in flight."""
     loop = asyncio.get_running_loop()
     live = _SAMPLES.setdefault(loop, set())
     if len(live) >= MAX_SAMPLES:
-        NET.inc("sample", "busy")
+        NET.inc(source, "busy")
         return
-    nodes = list(decided)
-    ids = random.sample(nodes, min(len(nodes), SAMPLE_IDS))
 
     async def in_org() -> None:
         with bind(drainer._ctx(org)):                       # a detached task has no org of its own
-            await _sample(run, db, org, ids, access)
-    task = spawn_detached(in_org(), name="kg-sample")
+            await work()
+    task = spawn_detached(in_org(), name=f"kg-{source}")
     live.add(task)
     task.add_done_callback(live.discard)
 
