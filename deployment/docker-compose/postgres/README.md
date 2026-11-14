@@ -14,9 +14,10 @@ Secrets: the passwords come from the container environment. They are not in the 
 
 ## Document store on PostgreSQL (`docker-compose.postgres-docstore.yml`)
 
-For a **new** install, the Node API can keep its documents (users, organisations, conversations and the rest) in PostgreSQL instead of MongoDB (`DOC_STORE=postgres`). Run from a repository checkout (the migration job's image is built from `backend/db/Dockerfile`). The simplest way is the installer: `PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml ./install.sh`, which sets both profiles and generates the passwords. By hand, put the `PG_*_PASSWORD` values in `.env` and activate **both** profiles `postgres` and `postgres-migrate` (the override depends on services of both):
+For a **new** install, the Node API can keep its documents (users, organisations, conversations and the rest) in PostgreSQL instead of MongoDB (`DOC_STORE=postgres`). Run from a repository checkout (the migration job's image is built from `backend/db/Dockerfile`). The simplest way is the installer, from `deployment/docker-compose`: `PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml ./install.sh`, which sets both profiles and generates the passwords. By hand, put the `PG_*_PASSWORD` values in `.env` and activate **both** profiles `postgres` and `postgres-migrate` (the override depends on services of both):
 
 ```bash
+cd deployment/docker-compose     # where .env and the compose files are
 COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate \
   docker compose -f docker-compose.yml -f docker-compose.postgres-docstore.yml -p pipeshub-ai up -d --build
 ```
@@ -24,6 +25,24 @@ COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate \
 If a profile is missing, compose stops with `service "pipeshub-ai" depends on undefined service "pgbouncer": invalid compose project`; add the profile.
 
 Start order: `postgres` healthy, `pgbouncer` healthy, `pipeshub-migrate` exits 0, then `pipeshub-ai`. The migration job (`python -m db.migrate`, built from `backend/db/Dockerfile`) connects straight to `postgres` (it needs a session and an advisory lock, so not through the pooler) as `pipeshub_migrate`. It is idempotent: a database at head is left as it is, an installed database is upgraded in one transaction, and a failed run changes nothing there. Exit 4 means the catalog or security-surface check found violations; the app is then not started: read `docker compose logs pipeshub-migrate`. Exit codes: `backend/db/README.md`. The app uses the pooled node and jobs logins (`PG_NODE_URL`, `PG_JOBS_URL`, built from the passwords). Cross-process change push (PostgreSQL `LISTEN`) is off, because the pooled node login cannot LISTEN and no direct address (`PG_LISTEN_URL`) is set; only the PostgreSQL-backed key-value store and queue (`KV_STORE_TYPE=postgres`, `MESSAGE_BROKER=postgres`) use it, and this override sets neither. A failed migration stops the app from starting. This does not copy existing MongoDB data, and MongoDB and the other stores stay as they are. `./install.sh --uninstall --yes` keeps the PostgreSQL data volume; add `--delete-postgres` to remove it (an interactive uninstall asks).
+
+## PipesHub on PostgreSQL alone (`docker-compose.postgres-only.yml`)
+
+For a **new** install that should run on one database: documents (`DOC_STORE=postgres`), the graph (`DATA_STORE=postgres`), vectors (`VECTOR_DB_TYPE=pgvector`), configuration (`KV_STORE_TYPE=postgres`), the message queue (`MESSAGE_BROKER=postgres`), the crawl scheduler (`CRAWL_SCHEDULER=postgres`) and what Redis would hold across processes (`REDIS_MODE=postgres`) all live in this PostgreSQL. The MongoDB, Qdrant, Redis, Neo4j, ArangoDB, etcd and Kafka services are removed from the project, so no profile selection (`--profile "*"` included) starts them. An install that already runs those stores keeps them: this override copies no data. Run from a repository checkout with Docker Compose v2.24.4 or later. The simplest way is the installer, which generates the passwords and keeps the override for later runs (`--stop`, `--upgrade`, `--uninstall`); its summary then lists `postgres` for the graph, key-value store and broker:
+
+```bash
+cd deployment/docker-compose
+PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml ./install.sh
+```
+
+By hand, put the nine `PG_*_PASSWORD` values in `deployment/docker-compose/.env` (see `env.template` there) (`COMPOSE_PROFILES` needs no store profile, for example `COMPOSE_PROFILES=sandbox`; a store profile left in it starts nothing); `postgres`, `pgbouncer` and `pipeshub-migrate` start without their profiles:
+
+```bash
+cd deployment/docker-compose     # where .env and the compose files are
+docker compose -f docker-compose.yml -f docker-compose.postgres-only.yml -p pipeshub-ai up -d --build
+```
+
+Start order: `postgres` healthy, `pgbouncer` healthy, `pipeshub-migrate` exits 0, then `pipeshub-placement` (creates each organisation's vector partition before its first vector write; see `backend/db/README.md`), `pipeshub-fold` (keeps the vector point counts) and the app. Query, indexing and connectors each use their own login through PgBouncer; the other processes read configuration as the key-value login, which is also the one that listens for change notifications on a direct connection to `postgres`. A failed migration stops the app from starting, as above. `tests/postgres_only_test.sh` (run by the `postgres-image` workflow) checks on PostgreSQL 17 and 18, with every profile switched on, that no other store renders or runs and that the app selects PostgreSQL for every store. The Helm chart has no equivalent yet.
 
 ## Data volume
 

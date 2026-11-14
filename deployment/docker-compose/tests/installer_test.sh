@@ -220,7 +220,7 @@ check "unset DATA_STORE reuses arango volume" "$inner" "reusing the existing Ara
 check "unset DATA_STORE reuses neo4j volume" "$inner" "reusing the existing Neo4j data volume"
 check "ambiguous both-volumes still errors" "$inner" "data volumes for BOTH graph"
 check "lost graph password guidance" "$inner" "cannot be recovered"
-check "summary graph DB fallback is honest" "$inner" '"${DATA_STORE:-(unset)}"'
+check "summary graph DB fallback is honest" "$inner" '${DATA_STORE:-(unset)}}"'
 check ".env locked to owner-only" "$inner" 'chmod 600 "$ENV_FILE"'
 check ".env chmod failure is fatal" "$inner" "Could not restrict permissions"
 check ".env chmod is guarded" "$inner" '&& ! chmod 600 "$ENV_FILE"; then'
@@ -578,6 +578,76 @@ check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=
   (cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
   check "the override alone brings both profiles" ",$(grep '^COMPOSE_PROFILES=' "$work/.env" | cut -d= -f2-)," ",postgres,postgres-migrate,"
 )
+
+# docker-compose.postgres-only.yml as the override: the installer writes every PostgreSQL password, the project renders with no other
+# store, and the summary names PostgreSQL rather than the graph, KV and broker selections the override replaces.
+(
+  work="$TMP_ROOT/pg-only"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  cp "$COMPOSE_DIR/docker-compose.yml" "$COMPOSE_DIR/docker-compose.postgres-only.yml" "$COMPOSE_DIR/env.template" "$work/"
+  mkdir -p "$work/postgres"
+  printf 'IMAGE_TAG=0.6.0-slim\nSECRET_KEY=abc\nAPP_PORT=3000\nPROJECT_NAME=testproj\nDATA_STORE=neo4j\nCOMPOSE_PROFILES=graph-neo4j,sandbox\nPIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml\n' >"$work/.env"
+  out="$(cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only 2>&1)" && pass "--reconfigure with the PostgreSQL-only override exits 0" || fail "--reconfigure with the PostgreSQL-only override exits 0"
+  summary="$(printf '%s\n' "$out" | grep -E '^  (Graph DB|KV store|Broker):' | tr -s ' ')"
+  check_exact "the summary names PostgreSQL for every store" "$summary" "$(printf ' Graph DB: postgres (docker-compose.postgres-only.yml)\n KV store: postgres (docker-compose.postgres-only.yml)\n Broker: postgres (docker-compose.postgres-only.yml)')"
+  check "the printed command lists the PostgreSQL-only override" "$out" "docker-compose.postgres-only.yml"
+  check ".env has all nine PG passwords" "$(grep -cE '^PG_(ADMIN|NODE|CONNECTORS|INDEXING|QUERY|JOBS|MIGRATE|BACKUP|KV)_PASSWORD=.+' "$work/.env")" "9"
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    services="$(cd "$work" && docker compose --env-file .env -f docker-compose.yml -f docker-compose.postgres-only.yml config --services 2>&1)"
+    check_exact "the project renders with no other store" "$(printf '%s\n' "$services" | grep -cE '^(mongodb|qdrant|redis|neo4j|arango|etcd|zookeeper|kafka-1)$')" "0"
+    check "the project renders the PostgreSQL stack" "$services" "pipeshub-placement"
+  else
+    pass "the project renders with no other store (skipped: no docker compose here)"
+  fi
+)
+
+# When docker needs root the installer runs itself again through sudo, which resets the environment: every setting the installer
+# reads must be named in --preserve-env, or a fresh install falls back to the default stores. The recording sudo acts like one with
+# env_reset: it sees only the variables --preserve-env names, and logs those and its other arguments.
+(
+  work="$TMP_ROOT/sudo-reexec"; mkdir -p "$work/bin"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  printf '#!/usr/bin/env bash\n[ "$1" = info ] && exit 1\nexit 0\n' >"$work/bin/docker"
+  cat >"$work/bin/sudo" <<'STUB'
+#!/usr/bin/env bash
+: >"$SUDO_LOG"
+if [[ "$1" == --preserve-env=* ]]; then
+  IFS=, read -r -a names <<<"${1#--preserve-env=}"; shift
+  for n in "${names[@]}"; do printf 'kept %s=%s\n' "$n" "${!n-}" >>"$SUDO_LOG"; done
+fi
+printf 'arg %s\n' "$@" >>"$SUDO_LOG"
+STUB
+  chmod +x "$work/bin/docker" "$work/bin/sudo"
+  if [[ $EUID -eq 0 || ! -S /var/run/docker.sock ]]; then
+    pass "sudo re-exec keeps the installer's settings (skipped: running as root or no docker socket)"
+  else
+    (cd "$work" && env -i PATH="$work/bin:$PATH" HOME="$HOME" SUDO_LOG="$work/sudo.log" \
+      PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml PIPESHUB_PROJECT='my proj' HEALTH_WAIT_SECS=900 \
+      PIPESHUB_UNRELATED_TOKEN=secret bash ./install.sh --yes >/dev/null 2>&1)
+    log="$(cat "$work/sudo.log" 2>/dev/null)"
+    check "sudo re-exec keeps PIPESHUB_COMPOSE_OVERRIDES" "$log" "kept PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml"
+    check "sudo re-exec keeps a value with a space" "$log" "kept PIPESHUB_PROJECT=my proj"
+    check "sudo re-exec keeps a setting without the PIPESHUB_ prefix" "$log" "kept HEALTH_WAIT_SECS=900"
+    check "sudo re-exec keeps the installer's own arguments" "$log" $'/install.sh\narg --yes'
+    check_exact "sudo re-exec puts no value on sudo's command line" "$(printf '%s\n' "$log" | grep '^arg ' | grep -c '=')" "0"
+    check_exact "sudo re-exec keeps no variable the installer does not read" "$(printf '%s\n' "$log" | grep -c UNRELATED)" "0"
+    # With none of them set the call stays plain sudo, which needs no permission to keep variables.
+    (cd "$work" && env -i PATH="$work/bin:$PATH" HOME="$HOME" SUDO_LOG="$work/sudo.log" bash ./install.sh --yes >/dev/null 2>&1)
+    check_exact "sudo re-exec with no setting is plain sudo" "$(grep -c '^kept ' "$work/sudo.log" 2>/dev/null)" "0"
+    check "sudo re-exec with no setting still runs the installer" "$(cat "$work/sudo.log" 2>/dev/null)" "/install.sh"
+  fi
+)
+# Every variable the installer reads before it first sets it (so a value from the caller's environment counts) is in the list it keeps
+# across sudo. Not inputs: bash's own variables, internal flags read inside functions defined before they are set, and the PostgreSQL
+# passwords (set with printf -v from .env or generated, never read from the environment).
+_read="$(awk '
+  { a=""; rest=$0
+    if (match($0, /^[[:space:]]*(export |local |readonly )?[A-Z][A-Z0-9_]*=/)) { a=substr($0, RSTART, RLENGTH); sub(/^[[:space:]]*(export |local |readonly )?/, "", a); sub(/=$/, "", a); rest=substr($0, RSTART+RLENGTH) }
+    s=rest; while (match(s, /\$\{?[A-Z][A-Z0-9_]*/)) { n=substr(s, RSTART, RLENGTH); gsub(/[${]/, "", n); if (!(n in set)) print n; s=substr(s, RSTART+RLENGTH) }
+    if (a != "") set[a]=1 }' "$INNER_INSTALLER" | grep -vE '^(BASH_[A-Z_]+|EUID|SECONDS|USER|IS_MACOS|IS_WINDOWS|TOTAL_RAM_MB|PG_[A-Z]+_PASSWORD)$' | sort -u)"
+_kept="$(awk '/^    _keep=""/{g=1} g&&/; do$/{print; exit} g{print}' "$INNER_INSTALLER" | grep -oE '\b[A-Z][A-Z0-9_]*\b' | sort -u)"
+check_exact "the sudo re-exec list covers every setting the installer reads" "$(comm -23 <(printf '%s\n' "$_read") <(printf '%s\n' "$_kept"))" ""
+check "the guard finds settings without the PIPESHUB_ prefix" "$_read" "HEALTH_WAIT_SECS"
 
 # --uninstall keeps the PostgreSQL volume unless --delete-postgres is given, also with --yes (checked with a recording docker).
 (
