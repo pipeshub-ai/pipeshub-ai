@@ -28,6 +28,7 @@ GROUP = "records_consumer_group"
 LANE = "record-events.0"
 OTHER_LANE = "record-events.1"
 CLAIM_MS = 20
+STOPPED_MS = 200
 BUFFER = 8
 HEADROOM = BUFFER // 4
 
@@ -47,7 +48,8 @@ async def consumer(provider: FakeRedisConnectionProvider) -> IndexingRedisStream
     consumer = IndexingRedisStreamsConsumer(
         getLogger("test_reclaim_while_reading"),
         RedisStreamsConfig(
-            topics=[LANE, OTHER_LANE], group_id=GROUP, client_id="live", claim_min_idle_ms=CLAIM_MS
+            topics=[LANE, OTHER_LANE], group_id=GROUP, client_id="live", claim_min_idle_ms=CLAIM_MS,
+            stopped_consumer_after_ms=STOPPED_MS,
         ),
         fair_scheduler_config=FairSchedulerConfig(
             enabled=True,
@@ -264,3 +266,26 @@ class TestOwnRecoveryBesideAnEmptyCrashedConsumer:
         assert consumer._scheduler.pending_count == 1
         names = {c["name"] for c in await consumer.redis.xinfo_consumers(LANE, GROUP)}
         assert "crashed" in names
+
+
+class TestTrimmedEntriesOfAStoppedConsumer:
+    async def test_a_claim_returned_without_a_body_is_acknowledged_not_kept(self, consumer) -> None:
+        """Before Redis 7.0, XCLAIM returns a trimmed entry with no body and
+        leaves it pending under the claiming consumer. Kept, it would stay at
+        the lane's head under a live owner and hold the sweep back."""
+        await _left_by_a_stopped_consumer(consumer, 2)
+        listed = await _owned(consumer, "replaced")
+        trimmed, kept = listed[0]["message_id"], listed[1]["message_id"]
+        real_xclaim = consumer.redis.xclaim
+
+        async def pre_7_xclaim(*args, **kwargs):  # noqa: ANN202
+            reply = await real_xclaim(*args, **kwargs)
+            return [(m, None if m == trimmed else f) for m, f in reply]
+
+        consumer.redis.xclaim = pre_7_xclaim
+
+        await _look(consumer)
+
+        mine = [e["message_id"] for e in await _owned(consumer, consumer.consumer_name)]
+        assert mine == [kept]
+        assert consumer._scheduler.pending_count == 1

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -70,6 +71,7 @@ def _consumer(host, port, base, group, *, claim_min_idle_ms=_CLAIM_MS) -> Indexi
         batch_size=10,
         block_ms=500,
         claim_min_idle_ms=claim_min_idle_ms,
+        stopped_consumer_after_ms=claim_min_idle_ms * 10,
     )
     # A small buffer, so it is full most of the time while the trickle runs.
     fair = FairSchedulerConfig(
@@ -353,7 +355,7 @@ class TestUnderMemoryPressure:
         governing = asyncio.create_task(governor.run())
         config = RedisStreamsConfig(
             host=host, port=port, client_id=f"{group}-client", group_id=group, topics=topics,
-            batch_size=1, block_ms=500, claim_min_idle_ms=_CLAIM_MS,
+            batch_size=1, block_ms=500, claim_min_idle_ms=_CLAIM_MS, stopped_consumer_after_ms=_CLAIM_MS * 10,
         )
         fair = FairSchedulerConfig(
             enabled=True, key_fields=("orgId", "connectorId"),
@@ -391,7 +393,7 @@ class TestIdleDrainPastHeldEntries:
         lane = f"{sixteen_lanes}.7"
         config = RedisStreamsConfig(
             host=host, port=port, client_id=f"{group}-client", group_id=group, topics=topics,
-            batch_size=1, block_ms=500, claim_min_idle_ms=_CLAIM_MS,
+            batch_size=1, block_ms=500, claim_min_idle_ms=_CLAIM_MS, stopped_consumer_after_ms=_CLAIM_MS * 10,
         )
         fair = FairSchedulerConfig(
             enabled=True, key_fields=("orgId", "connectorId"),
@@ -452,7 +454,7 @@ class TestNewEventsBesideAStoppedBacklog:
 
         config = RedisStreamsConfig(
             host=host, port=port, client_id=f"{group}-client", group_id=group, topics=topics,
-            batch_size=10, block_ms=500, claim_min_idle_ms=_CLAIM_MS,
+            batch_size=10, block_ms=500, claim_min_idle_ms=_CLAIM_MS, stopped_consumer_after_ms=_CLAIM_MS * 10,
         )
         fair = FairSchedulerConfig(
             enabled=True, key_fields=("orgId", "connectorId"),
@@ -528,3 +530,83 @@ class TestALiveConsumersLongRecord:
 
         assert starts == ["first"]
         assert delivered and max(delivered) == 1, delivered
+
+
+class TestALiveConsumerWhoseLoopPauses:
+    async def test_its_held_entries_still_hold_the_lane_after_a_pause(
+        self, redis_available, redis_client, base_stream, unique_suffix
+    ) -> None:
+        """Its event loop blocks for several claim windows (a slow first import
+        of a large module did, on a CI runner). Nothing it holds is refreshed
+        meanwhile, yet it is alive: its entries must still count."""
+        host, port = redis_available
+        group = f"it-pause-{unique_suffix}"
+        topics = RedisLaneRouter(_LANES).lane_topics(base_stream)
+        await _create_groups(redis_client, topics, group)
+        connector = _connector_on_lane(1, "held")
+        lane = f"{base_stream}.1"
+        for i in range(4):
+            await redis_client.xadd(lane, _event(connector, f"held-{i}"))
+        config = RedisStreamsConfig(
+            host=host, port=port, client_id=f"{group}-client", group_id=group, topics=topics,
+            batch_size=10, block_ms=500, claim_min_idle_ms=_CLAIM_MS,
+        )
+        consumer = IndexingRedisStreamsConsumer(
+            logging.getLogger("it-pause"), config, fair_scheduler_config=FairSchedulerConfig(
+                enabled=True, key_fields=("orgId", "connectorId"), max_buffered_messages=20,
+                max_per_entity_messages=20,
+            ),
+        )
+        # A threading.Event: handlers run on the consumer's worker loop.
+        gate = threading.Event()
+
+        async def hold(parsed_message: StreamMessage) -> AsyncIterator[PipelineEvent]:
+            yield PipelineEvent(event=IndexingEvent.START_PARSING, data=PipelineEventData(tier=ParseTier.LIGHT))
+            await asyncio.to_thread(gate.wait, DRAIN_TIMEOUT_SECONDS)
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
+
+        await consumer.start(hold)
+        try:
+            await _until(
+                lambda: _pending_at_least(redis_client, lane, group, 4), "the entries to be read"
+            )
+            time.sleep(_CLAIM_MS * 10 / 1000 + 1)  # the whole main loop, the consumer's included
+            backlog = await consumer._read_lane_backlog(base_stream)
+        finally:
+            gate.set()
+            await consumer.stop()
+
+        assert backlog.stale == {}
+        assert backlog.oldest_waiting_for({"connectorId": connector}) is not None
+
+
+async def _pending_at_least(client: Redis, stream: str, group: str, count: int) -> bool:
+    return int((await client.xpending(stream, group))["pending"]) >= count
+
+
+class TestATrimmedEntryOfAStoppedConsumer:
+    async def test_it_does_not_stay_pending_under_the_live_consumer(
+        self, redis_available, redis_client, base_stream, unique_suffix
+    ) -> None:
+        host, port = redis_available
+        group = f"it-trimmed-{unique_suffix}"
+        topics = RedisLaneRouter(_LANES).lane_topics(base_stream)
+        await _create_groups(redis_client, topics, group)
+        lane = f"{base_stream}.0"
+        await _leave_pending(redis_client, lane, group, _connector_on_lane(0, "old"), per_consumer=2)
+        first = (await redis_client.xpending_range(lane, group, min="-", max="+", count=1))[0]["message_id"]
+        await redis_client.xdel(lane, first)
+        await asyncio.sleep(_CLAIM_MS * 10 / 1000 + 0.5)
+
+        done: list[str] = []
+        consumer = _consumer(host, port, base_stream, group)
+        await consumer.start(_handler(done, seconds=0.0))
+        try:
+            await _until(lambda: _done(done, [f"old-{lane}-{i}" for i in range(1, 6)]), "the rest")
+            await _until(lambda: _nothing_pending(redis_client, lane, group), "an empty pending list")
+        finally:
+            await consumer.stop()
+
+
+async def _nothing_pending(client: Redis, stream: str, group: str) -> bool:
+    return int((await client.xpending(stream, group))["pending"]) == 0

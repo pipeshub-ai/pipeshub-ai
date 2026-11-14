@@ -156,6 +156,24 @@ async def _now_ms(redis) -> int:
     return int(seconds) * 1000 + int(microseconds) // 1000
 
 
+class _ReportsSilent:
+    """The client, except that ``name`` is reported as not having touched the
+    group for an hour (its entries keep their real, fresh idle time)."""
+
+    def __init__(self, redis, name: str) -> None:
+        self._redis = redis
+        self._name = name
+
+    def __getattr__(self, attr: str):  # noqa: ANN204
+        return getattr(self._redis, attr)
+
+    async def xinfo_consumers(self, stream: str, group: str) -> list[dict]:
+        return [
+            {**c, "idle": 3_600_000} if c["name"] == self._name else c
+            for c in await self._redis.xinfo_consumers(stream, group)
+        ]
+
+
 class TestPendingOfAStoppedConsumer:
     """A consumer that stopped leaves its pending entries behind until a live one
     reclaims them. They must not hold back the stranded-record sweep for ever."""
@@ -215,20 +233,47 @@ class TestPendingOfAStoppedConsumer:
         assert detail.oldest_live_ms == detail.oldest_ms == {STREAM: 1000.0}
         assert detail.stale == {}
 
-    async def test_entries_older_than_the_cap_do_not_count(self, redis) -> None:
+    async def test_entries_older_than_the_cap_do_not_count_for_a_silent_owner(self, redis) -> None:
         now = await _now_ms(redis)
         hour = 3_600_000
         await _add(redis, now - 30 * hour, now - 2 * hour)
-        await _deliver_to(redis, "live", 2)
+        await _deliver_to(redis, "quiet", 2)
 
         detail = await read_stream_backlog_detail(
-            redis, GROUP, [STREAM], PendingBounds(max_age_ms=24 * hour)
+            _ReportsSilent(redis, "quiet"), GROUP, [STREAM],
+            PendingBounds(stale_owner_after_ms=60_000, max_age_ms=24 * hour),
         )
 
         assert detail.oldest_ms == {STREAM: float(now - 30 * hour)}
         assert detail.oldest_live_ms == {STREAM: float(now - 2 * hour)}
         assert detail.stale[STREAM].too_old
         assert detail.stale[STREAM].owners == {}
+
+    async def test_the_cap_never_discounts_an_owner_that_is_active(self, redis) -> None:
+        now = await _now_ms(redis)
+        hour = 3_600_000
+        await _add(redis, now - 30 * hour)
+        await _deliver_to(redis, "live", 1)
+
+        detail = await read_stream_backlog_detail(
+            redis, GROUP, [STREAM], PendingBounds(stale_owner_after_ms=60_000, max_age_ms=24 * hour)
+        )
+
+        assert detail.oldest_live_ms == {STREAM: float(now - 30 * hour)}
+        assert detail.stale == {}
+
+    async def test_a_silent_owner_that_keeps_its_entries_fresh_is_not_stopped(self, redis) -> None:
+        """Its loop paused (a slow import, say) but its entries were refreshed:
+        the broker shows it alive, whatever the entries' age."""
+        await _add(redis, 1000, 2000)
+        await _deliver_to(redis, "paused", 2)
+
+        detail = await read_stream_backlog_detail(
+            _ReportsSilent(redis, "paused"), GROUP, [STREAM], PendingBounds(stale_owner_after_ms=60_000)
+        )
+
+        assert detail.oldest_live_ms == {STREAM: 1000.0}
+        assert detail.stale == {}
 
     async def test_without_bounds_the_reading_is_unchanged(self, redis) -> None:
         await _add(redis, 1000, 2000)
@@ -469,7 +514,10 @@ class TestIndexingConsumerLaneBacklog:
         topics = RedisLaneRouter(LANES).lane_topics(TOPIC)
         consumer = IndexingRedisStreamsConsumer(
             MagicMock(),
-            RedisStreamsConfig(topics=topics, group_id=GROUP, client_id="indexing-1", claim_min_idle_ms=10),
+            RedisStreamsConfig(
+                topics=topics, group_id=GROUP, client_id="indexing-1", claim_min_idle_ms=10,
+                stopped_consumer_after_ms=100,
+            ),
             provider=provider,
         )
         consumer.redis = provider.create_client()

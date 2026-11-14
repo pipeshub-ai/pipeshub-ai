@@ -26,9 +26,10 @@ __all__ = [
 class PendingBounds:
     """When a pending entry stops counting as work the group is still doing.
 
-    ``stale_owner_after_ms``: its consumer has not touched the group for this
-    long (it stopped; a live one polls every few seconds). ``max_age_ms``: it
-    was published this long ago. Either may be None for no bound.
+    ``stale_owner_after_ms``: its consumer, and the entry itself, have been
+    idle this long (it stopped; a live one refreshes what it holds).
+    ``max_age_ms``: it was published this long ago and its consumer is silent
+    (see ``_live_pending_head``). Either may be None for no bound.
     """
 
     stale_owner_after_ms: int | None = None
@@ -96,6 +97,16 @@ async def _redis_now_ms(redis: "RedisClient") -> float:
     return int(seconds) * 1000 + int(microseconds) / 1000
 
 
+async def _first_pending(
+    redis: "RedisClient", stream: str, group: str, consumer: str, start: str = "-"
+) -> dict | None:
+    """``consumer``'s oldest pending entry on ``stream`` from ``start``, if any."""
+    first = await redis.xpending_range(  # type: ignore[union-attr]
+        stream, group, min=start, max="+", count=1, consumername=consumer
+    )
+    return first[0] if first else None
+
+
 async def _live_pending_head(
     redis: "RedisClient",
     stream: str,
@@ -106,35 +117,46 @@ async def _live_pending_head(
 ) -> tuple[float | None, StalePending | None]:
     """The oldest pending entry the bounds still count, and what they discounted.
 
-    Costs one ``XINFO CONSUMERS``; a further ``XPENDING`` per live owner only
-    when something is discounted, to find where the counted entries begin.
+    A consumer is stopped only if Redis reports both it and its oldest entry
+    idle past ``stale_owner_after_ms``: a live one refreshes what it holds and
+    is working on (``XCLAIM JUSTID``), so a pause of its own (its loop busy, its
+    reads held back) never makes its entries look abandoned. ``max_age_ms``
+    applies only to the entries of a consumer silent that long.
+
+    Costs one ``XINFO CONSUMERS``; one ``XPENDING`` per owner only when some
+    owner is silent.
     """
     head_ms = _entry_ms(_field(summary, "min"))
     owners = _owners(summary)
+    bound = bounds.stale_owner_after_ms
     idle_by_name = {
         _text(_field(info, "name")): int(_field(info, "idle") or 0)
         for info in await redis.xinfo_consumers(stream, group)  # type: ignore[union-attr]
     }
-    stopped = {
-        name: (count, idle_by_name.get(name, 0))
-        for name, count in owners.items()
-        if bounds.stale_owner_after_ms and idle_by_name.get(name, 0) > bounds.stale_owner_after_ms
-    }
-    floor_ms = now_ms - bounds.max_age_ms if bounds.max_age_ms else None
-    too_old = floor_ms is not None and head_ms < floor_ms
-    if not stopped and not too_old:
+    silent = {name for name in owners if bound and idle_by_name.get(name, 0) > bound}
+    if not silent:
         return head_ms, None
 
-    start = f"{int(floor_ms)}-0" if too_old else "-"
+    floor_ms = now_ms - bounds.max_age_ms if bounds.max_age_ms else None
+    stopped: dict[str, tuple[int, int]] = {}
+    too_old = False
     heads: list[float] = []
     for name in owners:
-        if name in stopped:
+        first = await _first_pending(redis, stream, group, name)
+        if first is None:
             continue
-        first = await redis.xpending_range(  # type: ignore[union-attr]
-            stream, group, min=start, max="+", count=1, consumername=name
-        )
-        if first:
-            heads.append(_entry_ms(_field(first[0], "message_id")))
+        if name in silent:
+            if int(_field(first, "time_since_delivered") or 0) > bound:
+                stopped[name] = (owners[name], idle_by_name.get(name, 0))
+                continue
+            if floor_ms is not None and _entry_ms(_field(first, "message_id")) < floor_ms:
+                too_old = True
+                first = await _first_pending(redis, stream, group, name, f"{int(floor_ms)}-0")
+                if first is None:
+                    continue
+        heads.append(_entry_ms(_field(first, "message_id")))
+    if not stopped and not too_old:
+        return head_ms, None
     return min(heads, default=None), StalePending(stopped, head_ms, too_old)
 
 

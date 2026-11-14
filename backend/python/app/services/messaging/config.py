@@ -842,6 +842,14 @@ class RedisStreamsConfig(RedisConfig):
         default=30000,
         description="Min idle time in ms before XAUTOCLAIM can steal a pending message",
     )
+    stopped_consumer_after_ms: int | None = Field(
+        default=None,
+        description=(
+            "How long a consumer and its pending entries may go untouched before it counts as "
+            "stopped (its entries are reclaimed and no longer hold back the stranded-record "
+            "sweep). Default: 10 x claim_min_idle_ms, at least 60s"
+        ),
+    )
     client_id: str = "pipeshub"
     group_id: str = "default_group"
     topics: list[str] = Field(default_factory=list)

@@ -168,6 +168,7 @@ return 0
 # A consumer silent for this many claim windows has stopped: a live one polls
 # every few seconds and refreshes what it holds every third of a window.
 _STOPPED_CONSUMER_CLAIM_WINDOWS = 10
+_STOPPED_CONSUMER_MIN_MS = 60_000
 # A held entry whose ownership was last confirmed this fraction of the
 # idle-claim window ago has missed a refresh (they run every third of it),
 # so a peer may be about to claim it (see __release_entries_at_risk).
@@ -788,9 +789,16 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         )
 
     def stopped_consumer_after_ms(self) -> int:
-        """How long a consumer may go without touching the group before it
-        counts as stopped."""
-        return self.config.claim_min_idle_ms * _STOPPED_CONSUMER_CLAIM_WINDOWS
+        """How long a consumer, and what it holds, may go untouched before it
+        counts as stopped. Never under a minute: a live consumer's own loop can
+        pause for seconds (a slow import, a long synchronous step) without
+        refreshing anything."""
+        if self.config.stopped_consumer_after_ms is not None:
+            return self.config.stopped_consumer_after_ms
+        return max(
+            self.config.claim_min_idle_ms * _STOPPED_CONSUMER_CLAIM_WINDOWS,
+            _STOPPED_CONSUMER_MIN_MS,
+        )
 
     def __pending_bounds(self) -> PendingBounds:
         max_age_seconds = messaging_env.stranded_record_pending_max_age_seconds
@@ -1782,8 +1790,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
     async def __reclaim_from(self, topic: str, owner: str, limit: int) -> int:
         """Claim up to ``limit`` of ``owner``'s pending entries on ``topic`` and
-        hand each on. Stops at the first entry the claim refuses (no longer
-        idle past the claim time: the owner is back)."""
+        hand each on. The claim itself refuses an entry idle for less than
+        ``stopped_consumer_after_ms`` (its owner refreshed it, so it is alive),
+        and this stops there."""
         taken = 0
         while taken < limit and self.running:
             want = min(limit - taken, _RECLAIM_PAGE)
@@ -1798,17 +1807,22 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     topic,
                     self.config.group_id,
                     self.consumer_name,
-                    min_idle_time=self.config.claim_min_idle_ms,
+                    min_idle_time=self.stopped_consumer_after_ms(),
                     message_ids=ids,
                 )
             except Exception as e:
                 self.logger.warning("Could not reclaim %s's entries on %s: %s", owner, topic, e)
                 return taken
-            for message_id, fields in claimed or []:
-                if fields is None:
-                    continue
-                await self.__recover_entry(topic, _text(message_id), fields, owned=False)
-            taken += len(claimed or [])
+            bodies = [(_text(m), f) for m, f in claimed or [] if f is not None]
+            # Before Redis 7.0 XCLAIM returns a trimmed or deleted entry without
+            # its body and keeps it pending, now under this consumer: acked here,
+            # or it would sit at the head of the lane, held by a live consumer.
+            gone = [_text(m) for m, f in claimed or [] if f is None]
+            if gone:
+                await self.redis.xack(topic, self.config.group_id, *gone)  # type: ignore[union-attr]
+            for message_id, fields in bodies:
+                await self.__recover_entry(topic, message_id, fields, owned=False)
+            taken += len(bodies)
             if len(claimed or []) < len(ids):
                 return taken
         return taken
