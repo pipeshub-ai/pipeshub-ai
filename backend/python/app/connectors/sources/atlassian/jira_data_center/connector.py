@@ -1676,10 +1676,11 @@ class JiraDataCenterConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
 
         while True:
+            # GET /rest/api/2/user/list documents only cursor and maxResults (11.2.1 and 10.3.27); rows carry
+            # their own `active`, filtered below.
             response = await datasource.get_user_list_v2(
                 cursor=cursor,
                 maxResults=USER_LIST_PAGE_SIZE,
-                includeInactive=False,
             )
 
             if response.status in (
@@ -4762,7 +4763,10 @@ class JiraDataCenterConnector(BaseConnector):
     async def _withdraw_unlisted_app_users(self, jira_users: list[AppUser]) -> None:
         """Take the connector and their own grants from stored users the user list shows deactivated, or a complete
         active-user list no longer shows (removed), unless another listed account has their email. Absence means
-        nothing on a list cut short, refused or read through the search fallback; a deactivated row always does."""
+        nothing on a list cut short; a deactivated row does. A list refused, or read through the search fallback (a
+        release without /user/list), withdraws nobody."""
+        if self._user_bulk_incomplete or self._user_bulk_refused:
+            return
         complete = self._directory_read_complete()
         kept_emails = {u.email.lower() for u in jira_users if u.email}
         gone = [
