@@ -95,3 +95,16 @@ def test_a_records_row_is_refused_by_the_columns_the_writer_would_refuse(over: d
     from app.services.graph_db.postgres.kg.writers import record_refusals
     base = {**row(1), "rule": "OPEN", "model": "RECORD_LEVEL", "origin": "CONNECTOR"}
     assert record_refusals({**base, **over}) == refused
+
+
+def test_the_projectors_copy_of_the_grants_writers_checks_is_the_manifests() -> None:
+    """The projector leaves out a grant whose type ``w_grants_set`` refuses; the role, which the writer takes whole, it never checks. A check it misses fails a whole unit again."""
+    from pathlib import Path
+
+    import yaml
+
+    from app.services.graph_db.postgres.kg.writers import GRANT_TYPE_LENGTH
+    manifest = Path(__file__).resolve().parents[5] / "db" / "versions" / "kg" / "vetted" / "manifest.yaml"
+    fn = next(f for f in yaml.safe_load(manifest.read_text(encoding="utf-8"))["functions"] if f["name"] == "kg.w_grants_set")
+    checked = {a["name"]: tuple(a["item_length"]) for a in fn["args"] if "item_length" in a or "item_enum" in a}
+    assert checked == {"p_gtypes": GRANT_TYPE_LENGTH}
