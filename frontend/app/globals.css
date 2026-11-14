@@ -986,33 +986,6 @@ li > blockquote {
   to   { opacity: 1; }
 }
 
-/* ========================
-   Landscape Block Overlay
-   Shown on small screens in landscape to prompt users to rotate to portrait.
-   Pure CSS — no JS or React state required.
-   ======================== */
-
-/* Height and pointer, not width: large phones (up to ~932px wide) are caught, and keyboards or narrow desktop windows are not. */
-@media screen and (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
-  .landscape-block-overlay {
-    display: flex !important;
-  }
-}
-
-.landscape-block-overlay {
-  display: none;
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  background-color: var(--color-background);
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-4);
-  padding: var(--space-6);
-  text-align: center;
-}
-
 @keyframes chatWidgetExpandIn {
   from {
     opacity: 0;

@@ -6,6 +6,7 @@ import type { Conversation } from '@/chat/types';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { apiClient } from '@/lib/api/axios-instance';
 import { clearSessionCache } from '@/lib/api/session-cache';
 import { useSidebarConversations } from '../use-sidebar-conversations';
 
@@ -93,6 +94,7 @@ describe('useSidebarConversations', () => {
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -352,9 +354,12 @@ describe('useSidebarConversations', () => {
 
   it('still refreshes after a write once the org was switched on this screen', async () => {
     await mount();
+    const getFlags = vi.spyOn(apiClient, 'get').mockResolvedValueOnce({ data: { featureFlags: {} } });
     answerOwned(chat('b', 'B'));
     act(() => clearSessionCache({ refetch: true }));
     await settle();
+    expect(getFlags).toHaveBeenCalledWith('/api/v1/configurationManager/platform/feature-flags/effective', { suppressErrorToast: true });
+    expect(useFeatureFlagsStore.getState().flags).toEqual({});
     expect(ownedTitles()).toEqual(['B']);
 
     answerOwned(chat('c', 'C'), chat('b', 'B'));
