@@ -85,7 +85,7 @@ def test_the_changed_lists_change_only_by_the_new_types() -> None:
     new = ["msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx"]
     assert now["ExtensionTypes"] == [*pinned["ExtensionTypes"], *new]
     assert {k: v for k, v in now["MimeTypes"].items() if k not in pinned["MimeTypes"]}.keys() == {
-        "MSG", "ODT", "RTF", "XLSM", "DOCM", "DOTX", "POTX",
+        "MSG", "ODT", "RTF", "XLSM", "DOCM", "DOTX", "POTX", "LOG", "CFG",
     }
     assert {k: now["MimeTypes"][k] for k in pinned["MimeTypes"]} == pinned["MimeTypes"]
     assert now["EXCLUDABLE_FILE_EXTENSIONS"] == [e for e in pinned["EXCLUDABLE_FILE_EXTENSIONS"] if e != "log"]

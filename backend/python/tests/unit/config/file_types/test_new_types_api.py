@@ -18,8 +18,8 @@ from app.utils.chat_helpers import create_block_from_metadata, get_enhanced_meta
 @pytest.mark.parametrize(
     ("path", "mime"),
     [
-        ("Shared/app.cfg", "text/plain"),
-        ("Shared/server.LOG", "text/plain"),
+        ("Shared/app.cfg", "text/x-cfg"),
+        ("Shared/server.LOG", "text/x-log"),
         ("Shared/mail.msg", "application/vnd.ms-outlook"),
         ("Shared/notes.odt", "application/vnd.oasis.opendocument.text"),
         ("Shared/letter.rtf", "application/rtf"),
