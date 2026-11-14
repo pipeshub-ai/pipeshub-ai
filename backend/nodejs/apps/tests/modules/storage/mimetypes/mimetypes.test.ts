@@ -15,11 +15,17 @@ import {
 
 // Extensions the registry has added to the upload table since the snapshot in the fixture.
 const ADDED_SINCE_MAIN: Record<string, string> = {
-  cfg: 'text/plain',
+  cfg: 'text/x-cfg',
   docm: 'application/vnd.ms-word.document.macroEnabled.12',
   dotx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
   potx: 'application/vnd.openxmlformats-officedocument.presentationml.template',
   xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12',
+}
+
+// Extensions stored under another mime since the fixture: a new .log upload is read as capped
+// plain text, so it is no longer stored as text/plain (a record already stored so keeps it).
+const CHANGED_SINCE_MAIN: Record<string, string> = {
+  log: 'text/x-log',
 }
 
 // Same bytes as Python's json.dumps(sort_keys=True, separators=(',', ':')).
@@ -44,8 +50,15 @@ describe('storage mimetypes', () => {
 
   it('keeps every extension it stored before, with the same mime', () => {
     for (const [ext, mime] of Object.entries(main)) {
-      expect(extensionToMimeType[ext], ext).to.equal(mime)
+      expect(extensionToMimeType[ext], ext).to.equal(CHANGED_SINCE_MAIN[ext] ?? mime)
     }
+    expect(Object.keys(CHANGED_SINCE_MAIN).every((ext) => ext in main)).to.equal(true)
+  })
+
+  it('still accepts a browser-sent text/plain upload, and stores a .log under its own mime', () => {
+    expect(Object.values(extensionToMimeType)).to.include('text/plain')
+    expect(getMimeType('log')).to.equal('text/x-log')
+    expect(getMimeType('cfg')).to.equal('text/x-cfg')
   })
 
   it('adds only the extensions the registry has added', () => {

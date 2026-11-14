@@ -40,22 +40,23 @@ _NEW_MIMES = (
     "application/vnd.openxmlformats-officedocument.presentationml.template",
 )
 _TEMPLATE_MIMES = _NEW_MIMES[-2:]
+_TEXT_MIMES = ("text/x-log", "text/x-cfg")
 # What each list gains: the new types (D1, D7), the code grammars (D5), the xlsm hint (D8).
 _ADDED: dict[str, object] = {
-    "gate_mimes": _NEW_MIMES,
+    "gate_mimes": (*_NEW_MIMES, *_TEXT_MIMES),
     "gate_extensions": (*_NEW, *_GRAMMARS),
     "_MIME_TO_FORMAT": {
         "application/vnd.ms-outlook": "msg", "application/vnd.oasis.opendocument.text": "odt",
         **dict.fromkeys(_RTF, "rtf"), "application/vnd.ms-excel.sheet.macroEnabled.12": "xlsx",
         "application/vnd.ms-word.document.macroEnabled.12": "docm",
-        _TEMPLATE_MIMES[0]: "dotx", _TEMPLATE_MIMES[1]: "potx",
+        _TEMPLATE_MIMES[0]: "dotx", _TEMPLATE_MIMES[1]: "potx", "text/x-log": "log", "text/x-cfg": "cfg",
     },
     "_EXT_TO_FORMAT": {**{k: k for k in _NEW}, "xlsm": "xlsx"},
     "mime_to_extension": {
         "application/vnd.ms-outlook": "msg", "application/vnd.oasis.opendocument.text": "odt",
         **dict.fromkeys(_RTF, "rtf"), "application/vnd.ms-excel.sheet.macroEnabled.12": "xlsm",
         "application/vnd.ms-word.document.macroEnabled.12": "docm",
-        _TEMPLATE_MIMES[0]: "dotx", _TEMPLATE_MIMES[1]: "potx",
+        _TEMPLATE_MIMES[0]: "dotx", _TEMPLATE_MIMES[1]: "potx", "text/x-log": "log", "text/x-cfg": "cfg",
     },
     "libreoffice_probe_inputs": ("odt", "rtf"),
 }
@@ -120,7 +121,7 @@ def test_the_tier_lists_are_reproduced_by_the_fall_through() -> None:
     main_by_mime = {
         **dict.fromkeys(_MAIN["HEAVY_MIME_TYPES"], "heavy"), **dict.fromkeys(_MAIN["LIGHT_MIME_TYPES"], "light"),
     }
-    new_mimes = {m.lower() for m in _NEW_MIMES}
+    new_mimes = {m.lower() for m in (*_NEW_MIMES, *_TEXT_MIMES)}
     for mime, ft in file_types._TIER_BY_MIME.items():
         expected = ft.mime_tier if mime in new_mimes else _main_value_for_spelling(main_by_mime, mime)
         assert ft.mime_tier == expected, mime
@@ -131,7 +132,7 @@ def test_the_kind_lists_are_reproduced_by_the_fall_through() -> None:
     by_ext = {e: ft.kind for e, ft in file_types._BY_EXTENSION.items() if ft.kind}
     new = {e: by_ext[e] for e in _NEW if e != "xlsm"}
     assert dict(sorted(by_ext.items())) == dict(sorted({**_MAIN["kind_by_extension"], **new}.items()))
-    new_mimes = {m.lower() for m in _NEW_MIMES}
+    new_mimes = {m.lower() for m in (*_NEW_MIMES, *_TEXT_MIMES)}
     for mime, ft in file_types._KIND_BY_MIME.items():
         expected = ft.mime_kind if mime in new_mimes else _main_value_for_spelling(_MAIN["kind_by_mime"], mime)
         assert ft.mime_kind == expected, mime
@@ -141,7 +142,8 @@ def test_the_kind_lists_are_reproduced_by_the_fall_through() -> None:
 def test_the_node_table_is_main_s_without_the_upper_case_duplicates() -> None:
     main = {k: v for k, v in _MAIN["node_extension_to_mime"].items() if k == k.lower()}
     added = {
-        "cfg": "text/plain", "docm": "application/vnd.ms-word.document.macroEnabled.12",
+        # A new .log upload is stored under its own mime (rows stored as text/plain keep it).
+        "log": "text/x-log", "cfg": "text/x-cfg", "docm": "application/vnd.ms-word.document.macroEnabled.12",
         "dotx": _TEMPLATE_MIMES[0], "potx": _TEMPLATE_MIMES[1],
         "xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
     }

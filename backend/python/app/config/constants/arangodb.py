@@ -477,6 +477,8 @@ class MimeTypes(Enum):
     DOCM = "application/vnd.ms-word.document.macroEnabled.12"
     DOTX = "application/vnd.openxmlformats-officedocument.wordprocessingml.template"
     POTX = "application/vnd.openxmlformats-officedocument.presentationml.template"
+    LOG = "text/x-log"
+    CFG = "text/x-cfg"
 
     @classmethod
     def _missing_(cls, value: object) -> "MimeTypes | None":
