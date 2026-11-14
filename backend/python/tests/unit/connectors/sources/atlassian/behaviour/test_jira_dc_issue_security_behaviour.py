@@ -977,3 +977,40 @@ class TestProductAccessRegained:
         await sync(connector, jql_search, recent=[])
         assert ("USER", "carol@example.com") in readers(db, "2")
         assert "2" in {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}
+
+    async def test_a_project_a_key_filter_left_out_reads_its_levels_again_when_it_is_next_synced(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """Carol is linked by a sync whose project-key filter leaves ENG out. ENG's leveled issues are read again
+        when a later sync includes it, and only then; the saved accounts stay until every project has had them."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="carol-key", user={"key": "carol-key", "name": "carol"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="alice"))
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key", "carol-key")
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert ("USER", "carol@example.com") not in readers(db, "2")
+
+        product_group(*LICENSED)
+        connector.config_service.config["filters"] = {
+            "sync": {"values": {"project_keys": {"operator": "not_in", "type": "list", "value": ["ENG"]}}}}
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") not in readers(db, "2"), "ENG was not synced"
+
+        connector.config_service.config["filters"] = {}
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
+
+        batches_before = len(db.record_batches)
+        await sync(connector, jql_search, recent=[])
+        assert "2" not in {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}, (
+            "read again once"
+        )

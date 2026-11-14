@@ -521,6 +521,8 @@ class JiraDataCenterConnector(BaseConnector):
         self._dc_name_to_source_id: dict[str, str] = {}
         self._stored_app_users: list[AppUser] = []  # read by _fetch_users
         self._newly_listed_user_keys: set[str] = set()
+        # The newly listed accounts the project being synced has not been handed yet (``people_handed``).
+        self._accounts_to_hand: set[str] = set()
         self._own_key: str | None = None  # the account the connector authenticates as
         # Keys of the active members of the application roles' groups (Jira product access);
         # None when they could not all be read.
@@ -1051,8 +1053,9 @@ class JiraDataCenterConnector(BaseConnector):
             # Sync issues for all projects
             last_sync_time = await self._get_issues_sync_checkpoint()
             sync_stats = await self._sync_all_project_issues(projects, jira_users, last_sync_time)
-            if self._newly_listed_user_keys and not sync_stats.get("failed_project_keys"):
-                # Every project with a level map now carries the retry marker, saved before its walk.
+            if self._newly_listed_user_keys and not sync_stats.get("failed_project_keys") and not allowed_keys:
+                # Every project with a level map now carries the retry marker, saved before its walk. A project-key
+                # filter leaves projects out, which take the accounts when next synced (``people_handed``).
                 await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": "[]"})
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
@@ -1237,6 +1240,7 @@ class JiraDataCenterConnector(BaseConnector):
         given_up_issues: dict[str, str] | None = None,
         security_levels: str | None = None,
         child_parents: str | None = None,
+        people_handed: str | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -1249,6 +1253,7 @@ class JiraDataCenterConnector(BaseConnector):
             given_up_issues: Issue id -> updated value when it was given up on, for issues skipped until they change
             security_levels: JSON map of level id -> digest of its holders (``"*"`` marks a read to repeat)
             child_parents: JSON map of parent issue id -> epic key whose children are still to be read again
+            people_handed: JSON list of the newly listed accounts this project's walk has had
         """
         sync_point_key = f"project_{project_key}"
 
@@ -1265,7 +1270,9 @@ class JiraDataCenterConnector(BaseConnector):
             if stored or existing.get(field):
                 sync_point_data[field] = json.dumps(stored, sort_keys=True)
         # Kept as JSON text: a sync point holds primitives only.
-        for field, text in (("security_levels", security_levels), ("child_parents", child_parents)):
+        for field, text in (
+            ("security_levels", security_levels), ("child_parents", child_parents), ("people_handed", people_handed),
+        ):
             stored_text = text if text is not None else existing.get(field)
             if stored_text is not None:
                 sync_point_data[field] = stored_text
@@ -3494,7 +3501,12 @@ class JiraDataCenterConnector(BaseConnector):
             stored_levels = None  # synced before level tracking existed
         if not isinstance(stored_levels, dict):
             stored_levels = None
-        if self._newly_listed_user_keys and stored_levels and "*" not in stored_levels and not is_new_project:
+        try:
+            handed = set(json.loads((project_sync_data or {}).get("people_handed") or "[]"))
+        except (TypeError, ValueError):
+            handed = set()
+        self._accounts_to_hand = self._newly_listed_user_keys - handed
+        if self._accounts_to_hand and stored_levels and "*" not in stored_levels and not is_new_project:
             # An issue's level grants name only listed accounts, and a withdrawn one lost them: an account
             # listed again (or for the first time) gets them back when the leveled issues are read again.
             # Saved first, so a walk that fails repeats it.
@@ -3622,6 +3634,10 @@ class JiraDataCenterConnector(BaseConnector):
         levels_to_save = levels_after_walk(levels_to_save, self._issue_build_failures)
         if is_new_project or levels_to_save != stored_levels:
             await self._record_security_levels(project_key, levels_to_save, force=security.defer_checkpoint)
+        if self._accounts_to_hand:
+            # After the levels: a walk that fails before here hands the accounts again next time.
+            await self._update_project_sync_checkpoint(
+                project_key, people_handed=json.dumps(sorted(self._newly_listed_user_keys)))
 
         if total_issues_processed == 0:
             self.logger.info(f"ℹ️ No new/updated issues for project {project_key}")
