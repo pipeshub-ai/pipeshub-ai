@@ -13,7 +13,7 @@ import logging
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
-from app.core.org_context import current_or_system, current_org_id
+from app.core.org_context import current_org_id, peek
 from app.services.graph_db.postgres.kg import net
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.telemetry.backend import METRICS_BACKEND
@@ -235,7 +235,8 @@ async def answer(provider: Any, what: str, transaction: str | None, fn: Callable
     the answers is read again by both in one snapshot off the caller's path (:func:`net.maybe_compare`): a difference (``shape`` of kg's answer against the walk's) takes the
     connector back to the walk."""
     snapshot = bool(transaction) and bool(getattr(provider._txns.get(transaction), "snapshot", False))
-    if (transaction and not snapshot) or current_or_system().kind == "system" or not kg_read.enabled():
+    ctx = peek()
+    if (transaction and not snapshot) or ctx is None or ctx.kind == "system" or not kg_read.enabled():
         HIERARCHY.inc(what, "off")
         return None
     apps: list[str] = []

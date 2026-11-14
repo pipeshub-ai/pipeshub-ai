@@ -490,7 +490,7 @@ class LookupsMixin(PgBase):
                 got = await kg_hier.answer(self, kg[0], transaction, lambda tx: kg[1](tx, off, lim), walk=lambda tx: walk(tx, off, lim))
                 if got is not None:
                     return got
-            return await self._q(lambda tx: walk(tx, off, lim), transaction)
+            return [r["id"] for r in await self._lrows(sql, *args, off, lim, transaction=transaction)]
         if not user_key:
             return await ids_at(offset if limit is not None else 0, limit)
         ids = await ids_at(0, None)
@@ -533,17 +533,19 @@ class LookupsMixin(PgBase):
             if depth < -1:
                 raise ValueError(f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}")
             bound = 100 if depth == -1 else depth
-            async def walk_nest(tx: Tx) -> list[str]:
-                return sorted(r["id"] for r in await tx.fetch("""/* pipeshub:graph.record_group_nested */ WITH RECURSIVE nest(id, d) AS (
+            nest_sql = """/* pipeshub:graph.record_group_nested */ WITH RECURSIVE nest(id, d) AS (
                   SELECT g.id, 0 FROM graph.nodes g WHERE g.org_id = $1 AND g.coll = 'recordGroups' AND g.id = $2 AND g.doc->>'orgId' = $3
                   UNION SELECT c.id, nest.d + 1 FROM nest JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.to_coll = 'recordGroups' AND e.to_id = nest.id
                     AND e.from_coll = 'recordGroups' JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'recordGroups' AND c.id = e.from_id
                     AND (c.doc->>'orgId' = $3 OR c.doc->>'orgId' IS NULL) WHERE nest.d < $4)
-                SELECT DISTINCT id FROM nest""", org, record_group_id, org_id, bound))
+                SELECT DISTINCT id FROM nest"""
+
+            async def walk_nest(tx: Tx) -> list[str]:
+                return sorted(r["id"] for r in await tx.fetch(nest_sql, org, record_group_id, org_id, bound))
             nested = await kg_hier.answer(self, "by_group_nest", transaction, lambda tx: kg_hier.nested_groups(tx, org, record_group_id, connector_id, org_id, bound),
                                           walk=walk_nest, shape=lambda got: sorted(i for _, i in got))
             sk_of = {i: sk for sk, i in nested or []}
-            groups = [i for _, i in nested] if nested is not None else await self._q(walk_nest, transaction)
+            groups = [i for _, i in nested] if nested is not None else [r["id"] for r in await self._lrows(nest_sql, org, record_group_id, org_id, bound, transaction=transaction)]
             if groups and user_key:
                 allowed = await self._permitted(user_key, org_id, groups, transaction)
                 groups = [g for g in groups if g in allowed]
