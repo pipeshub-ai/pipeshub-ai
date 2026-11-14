@@ -1032,7 +1032,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
             next_frontier: List[Record] = []
             for record in [*(r for r, _ in backfills), *kept]:
                 parent_ext_id = record.parent_external_record_id
-                if not parent_ext_id or not record.parent_record_type:
+                # Not parent_record_type: the store does not keep it, so a stub read back from it has none.
+                if not parent_ext_id:
                     continue  # boundary: drive root
                 if parent_ext_id in visited:
                     continue

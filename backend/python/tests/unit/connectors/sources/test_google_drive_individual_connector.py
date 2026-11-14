@@ -2935,9 +2935,10 @@ class TestSweepPlaceholderRecords:
         stub read back by external id is a plain Record, as every graph store returns it: never written, since no
         store writes a plain Record as a file."""
         connector._get_fresh_datasource = AsyncMock()
-        connector.data_entities_processor.get_placeholder_records = AsyncMock(
-            return_value=[_make_folder_stub("B", parent="A")]
-        )
+        # As the store returns stubs: plain records that keep the parent id, not its type.
+        stub_b = _make_folder_stub("B", parent="A")
+        stub_b = Record.model_validate(stub_b.model_dump(include=set(Record.model_fields)) | {"parent_record_type": None})
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub_b])
         resp = MagicMock()
         resp.status = 403
         resp.reason = "Forbidden"

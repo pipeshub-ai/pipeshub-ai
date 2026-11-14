@@ -5166,7 +5166,7 @@ class TestSweepPlaceholderRecords:
             record_id="rec-b", external_record_id="B", external_record_group_id="my-drive", parent_external_record_id="A",
         )
         stub_b.is_placeholder = True
-        stub_b.parent_record_type = RecordType.FILE
+        stub_b.parent_record_type = None  # as the store returns a stub: it keeps the parent id, not its type
         stub_a = _make_existing_record(record_id="rec-a", external_record_id="A", parent_external_record_id=None)
         stub_a.is_placeholder = True
         stub_a.parent_record_type = None
