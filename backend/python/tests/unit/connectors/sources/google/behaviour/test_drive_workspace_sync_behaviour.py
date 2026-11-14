@@ -3106,6 +3106,22 @@ async def test_a_limited_item_whose_permission_list_comes_back_empty_stops_inher
     assert (carol, "USER", "READ") not in ws.grants("f"), "the folder's share no longer reaches it"
 
 
+async def test_a_limited_shared_drive_item_answered_with_an_empty_list_keeps_its_own_audience_share(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1", perms=[discoverable("anyone")])
+    ws.world.add_item("f", "x.txt", parent="dir", perms=[discoverable("anyone")])
+    ws.world.files["f"].perm_access = "all"
+    await ws.sync()
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f")
+
+    ws.world._mutate("f", lambda: ws.world._bump("f", inheritedPermissionsDisabled=True))
+    ws.world.files["f"].perm_access = None
+    await ws.sync()
+
+    assert "f" in ws.records.stopped_inheriting
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f"), "its own share, though the folder has the same"
+
+
 async def test_an_unreadable_item_that_is_not_limited_keeps_inheriting(ws: Workspace) -> None:
     ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[discoverable("anyone")])
     await ws.sync()

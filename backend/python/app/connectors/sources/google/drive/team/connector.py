@@ -4246,9 +4246,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if is_fallback_permissions:
                     permissions_changed = False
                     if limited_access:
-                        # Its own metadata says it inherits nothing, whatever the list it could not read held.
+                        # Its own metadata says it inherits nothing, whatever the list held. Its stored grants stay:
+                        # on a shared drive item they are its own (what it inherits is not stored on it), and a writer
+                        # may have just written them.
                         file_record.inherit_permissions = False
-                        await self._stop_inheriting_of_unreadable_limited_item(metadata)
+                        if existing_record is not None:
+                            await self.data_entities_processor.stop_inheriting_permissions(
+                                existing_record.id, self.connector_id
+                            )
                     else:
                         file_record.inherit_permissions = await self.data_entities_processor.inheritance_when_unreadable(
                             CollectionNames.RECORDS.value, existing_record.id if existing_record else None
