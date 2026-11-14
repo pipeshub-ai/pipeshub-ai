@@ -17,6 +17,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from app.core.org_context import for_org
+from app.core.org_jobs import for_each_org
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.build_state import BuildStateStore, PendingBuild, is_due
 from app.telemetry.modules import code_graph_metrics
@@ -78,7 +79,12 @@ async def reconcile_once(
     build holds the repo's lock, on this replica or another, so it is skipped too.
     """
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
-    owed = await BuildStateStore(graph_provider, log).all(owed_only=True)
+    store = BuildStateStore(graph_provider, log)
+    owed: list[PendingBuild] = []
+
+    async def read_org(org_id: str) -> None:
+        owed.extend(await store.all(org_id, owed_only=True))
+    await for_each_org(graph_provider, "code_edge_reconcile", read_org, log)
     due = [b for b in owed if is_due(b.state, now_ms)]
     started = await _start_due(event_service, log, due, limit)
     code_graph_metrics.record_reconcile_sweep(len(due), len(owed) - len(due), started)
@@ -128,17 +134,21 @@ async def request_due_full_rebuilds(
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
     store = BuildStateStore(graph_provider, log)
     requested = 0
-    for build in await store.all():
-        state = build.state
-        if state.pending or state.last_build is None:
-            continue
-        if state.last_full_build is not None and \
-                now_ms - state.last_full_build < interval_s * 1000:
-            continue
-        await store.request_full(build.org_id, build.connector_id, build.record_group_id)
-        await store.mark_requested(build.org_id, build.connector_id, build.record_group_id,
-                                   now_ms)
-        requested += 1
+
+    async def request_org(org_id: str) -> None:
+        nonlocal requested
+        for build in await store.all(org_id):
+            state = build.state
+            if state.pending or state.last_build is None:
+                continue
+            if state.last_full_build is not None and \
+                    now_ms - state.last_full_build < interval_s * 1000:
+                continue
+            await store.request_full(build.org_id, build.connector_id, build.record_group_id)
+            await store.mark_requested(build.org_id, build.connector_id, build.record_group_id,
+                                       now_ms)
+            requested += 1
+    await for_each_org(graph_provider, "code_edge_full_rebuild", request_org, log)
     if requested:
         log.info("Requested scheduled full code edge rebuilds for %d repo(s)", requested)
     return requested

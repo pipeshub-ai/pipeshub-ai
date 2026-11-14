@@ -293,14 +293,14 @@ class BuildStateStore:
     async def read_or_empty(self, org_id: str, record_group_id: str) -> BuildState:
         return await self.read(org_id, record_group_id) or BuildState(None, False, None)
 
-    async def all(self, *, owed_only: bool = False) -> list[PendingBuild]:
-        """Every repo's state across all orgs; with ``owed_only``, those still marked pending.
+    async def all(self, org_id: str | None = None, *, owed_only: bool = False) -> list[PendingBuild]:
+        """Every repo's state, of ``org_id`` or of every org; with ``owed_only``, those still marked pending.
 
         The mark is written before the request is published and cleared only
         when a build settles, so a build that died with its process, or whose
         request was dead-lettered, is still visible here afterwards.
         """
-        filters: dict[str, Any] = {"syncDataPointType": SYNC_POINT_TYPE}
+        filters: dict[str, Any] = {"syncDataPointType": SYNC_POINT_TYPE, **({"orgId": org_id} if org_id is not None else {})}
         if owed_only:
             filters["edgeBuildPending"] = True
         rows = await self._graph.get_nodes_by_filters(

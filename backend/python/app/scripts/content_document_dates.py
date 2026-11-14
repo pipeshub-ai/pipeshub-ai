@@ -216,6 +216,7 @@ async def _plan(
 async def _main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     from app.containers.indexing import IndexingAppContainer
+    from app.core.org_context import for_org
     from app.modules.transformers.blob_storage import BlobStorage
 
     container = IndexingAppContainer.init("content_document_dates")
@@ -228,11 +229,13 @@ async def _main(argv: list[str]) -> int:
         return EXIT_FAILED
     try:
         blob_storage = BlobStorage(logger, container.config_service(), graph_provider)
-        tally = await backfill_content_dates(
-            graph_provider, blob_storage, org_id=args.org, apply=args.apply, revert=args.revert,
-            replace=content_dates_replace(), after_key=args.after_key, limit=args.limit,
-            concurrency=args.concurrency,
-        )
+        # The org this run acts for: the graph runs every statement under one org (PostgreSQL refuses an unbound one).
+        with for_org(args.org, job="content_document_dates"):
+            tally = await backfill_content_dates(
+                graph_provider, blob_storage, org_id=args.org, apply=args.apply, revert=args.revert,
+                replace=content_dates_replace(), after_key=args.after_key, limit=args.limit,
+                concurrency=args.concurrency,
+            )
         sys.stdout.write(json.dumps({"done": True, "applied": args.apply, **asdict(tally)}) + "\n")
         return 0
     except Exception as exc:

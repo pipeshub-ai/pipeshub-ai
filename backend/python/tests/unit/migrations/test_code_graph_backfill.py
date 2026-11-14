@@ -23,6 +23,7 @@ def _backfill_on(monkeypatch) -> None:
 def _graph(records: list[dict], blocks: dict[str, tuple[int, int]]) -> MagicMock:
     """``blocks``: group -> (all blocks, blocks at the current version)."""
     graph = MagicMock()
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": "org"}])
     graph.get_documents_paginated = AsyncMock(return_value=records)
 
     async def count(collection, filters) -> int:
@@ -43,10 +44,10 @@ async def test_a_repo_without_blocks_or_with_old_blocks_is_stale() -> None:
         [_record("r1", "never"), _record("r2", "old"), _record("r3", "mixed"), _record("r4", "ok")],
         {"old": (10, 0), "mixed": (10, 4), "ok": (10, 10)},
     )
-    stale = await find_stale_repos(graph)
+    stale = await find_stale_repos(graph, "org")
     assert [s.record_group_id for s in stale] == ["mixed", "never", "old"]
     query = graph.get_documents_paginated.await_args.kwargs
-    assert query["filters"] == {"recordType": "CODE_FILE", "indexingStatus": "COMPLETED"}
+    assert query["filters"] == {"orgId": "org", "recordType": "CODE_FILE", "indexingStatus": "COMPLETED"}
 
 
 async def test_each_stale_repo_is_asked_to_reindex_once_per_version() -> None:
@@ -75,6 +76,7 @@ async def test_each_stale_repo_is_asked_to_reindex_once_per_version() -> None:
 def _blocks_at(parser_version: str) -> MagicMock:
     """One repo whose blocks all carry ``parser_version``; counts honour the filter."""
     graph = MagicMock()
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": "org"}])
     graph.get_documents_paginated = AsyncMock(return_value=[_record("r1", "repo")])
 
     async def count(collection, filters) -> int:
@@ -87,13 +89,13 @@ def _blocks_at(parser_version: str) -> MagicMock:
 
 async def test_an_edge_rules_bump_reindexes_nothing(monkeypatch) -> None:
     monkeypatch.setattr(version, "EDGE_RULES_VERSION", "2099.01.01")
-    assert await find_stale_repos(_blocks_at(PARSER_VERSION)) == []
+    assert await find_stale_repos(_blocks_at(PARSER_VERSION), "org") == []
 
 
 async def test_a_parser_bump_marks_the_repo_stale(monkeypatch) -> None:
     graph = _blocks_at(PARSER_VERSION)
     monkeypatch.setattr(code_graph_backfill, "PARSER_VERSION", "2099.01.01")
-    assert [s.record_group_id for s in await find_stale_repos(graph)] == ["repo"]
+    assert [s.record_group_id for s in await find_stale_repos(graph, "org")] == ["repo"]
 
 
 async def test_without_the_flag_nothing_is_reindexed(monkeypatch) -> None:
@@ -117,3 +119,43 @@ async def test_the_kill_switch_skips_it_even_with_the_flag(monkeypatch) -> None:
     kafka.publish_event = AsyncMock()
     assert await run_code_graph_backfill(MagicMock(), graph, kafka, MagicMock(), pause_seconds=0) == 0
     kafka.publish_event.assert_not_awaited()
+
+
+async def test_each_org_is_read_and_asked_under_that_org() -> None:
+    from app.core import org_context
+    seen: list[tuple[str, str]] = []
+    graph = MagicMock()
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": "o1"}, {"_key": "o2"}])
+
+    async def page(**kwargs) -> list[dict]:
+        org = kwargs["filters"]["orgId"]
+        assert org == org_context.current_org_id()
+        return [{**_record(f"r-{org}", f"g-{org}"), "orgId": org}]
+    graph.get_documents_paginated = AsyncMock(side_effect=page)
+    graph.count_nodes_by_filters = AsyncMock(return_value=0)
+    kafka = MagicMock()
+
+    async def publish(topic, event) -> None:
+        seen.append((event["payload"]["recordGroupId"], org_context.current_org_id()))
+    kafka.publish_event = AsyncMock(side_effect=publish)
+    config = MagicMock()
+    config.get_config = AsyncMock(return_value=None)
+    config.set_config = AsyncMock(return_value=True)
+
+    assert await run_code_graph_backfill(config, graph, kafka, MagicMock(), pause_seconds=0) == 2
+    assert seen == [("g-o1", "o1"), ("g-o2", "o2")]
+    config.set_config.assert_awaited_once()
+
+
+async def test_a_failed_org_leaves_the_flag_unset() -> None:
+    graph = _graph([_record("r1", "never")], {})
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": "org"}, {"_key": "org-2"}])
+    graph.get_documents_paginated = AsyncMock(side_effect=[[_record("r1", "never")], RuntimeError("down")])
+    kafka = MagicMock()
+    kafka.publish_event = AsyncMock()
+    config = MagicMock()
+    config.get_config = AsyncMock(return_value=None)
+    config.set_config = AsyncMock(return_value=True)
+
+    assert await run_code_graph_backfill(config, graph, kafka, MagicMock(), pause_seconds=0) == 1
+    config.set_config.assert_not_awaited()
