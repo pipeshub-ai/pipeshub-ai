@@ -155,6 +155,29 @@ async def seed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) 
         yield s
 
 
+class _OwnOrg:
+    """The test's store as the migration sees it, listing only the test's own connectors.
+
+    The migration walks every connector in the store; test workers sharing one store would
+    otherwise move each other's records. Every other call goes to the real provider.
+    """
+
+    def __init__(self, s: _Seed) -> None:
+        self._seed = s
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+        return getattr(self._seed.graph, name)
+
+    async def get_documents_paginated(self, collection: str, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+        if collection != APPS:
+            return await self._seed.graph.get_documents_paginated(collection, *args, **kwargs)
+        if kwargs.get("after_key"):
+            return []  # the first page held every connector of the org
+        return [a for a in await self._seed.graph.get_documents_paginated(
+            collection, limit=1000, sort_field="_key", raise_on_error=True,
+        ) or [] if a.get("orgId") == self._seed.org]
+
+
 class _Config:
     def __init__(self, values: dict[str, Any]) -> None:
         self.values = values
@@ -213,7 +236,7 @@ def _manual(connector_id: str) -> dict[str, Any]:
 
 async def _run(s: _Seed, config: _Config, kafka: _Kafka | None = None) -> _Kafka:
     kafka = kafka or _Kafka()
-    await run_file_type_requeue(config, s.graph, kafka, logger, lock=_Lock(), pause_seconds=0)
+    await run_file_type_requeue(config, _OwnOrg(s), kafka, logger, lock=_Lock(), pause_seconds=0)
     return kafka
 
 
@@ -242,7 +265,7 @@ async def test_two_runs_send_each_readable_record_once_and_move_nothing_else(see
     for key in set(s.keys) - moved:
         doc = await s.doc(key)
         assert doc["indexingStatus"] == FTNS and doc.get("reason") == before[key].get("reason"), key
-    assert await count_still_selected(s.graph) == 0
+    assert await count_still_selected(_OwnOrg(s)) == 0
 
     second = await _run(s, config)
     config.values.pop(FLAG_KEY)
