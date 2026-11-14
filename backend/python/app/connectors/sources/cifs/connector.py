@@ -172,7 +172,7 @@ if TYPE_CHECKING:
             "https://docs.pipeshub.com/connectors/cifs/cifs",
             "pipeshub",
         ))
-        .add_filter_field(CommonFields.folder_paths_filter("share"))
+        .add_filter_field(CommonFields.folder_paths_filter("share", path_style="windows"))
         .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files by creation date. Uses last-write time when the server omits created time."))
