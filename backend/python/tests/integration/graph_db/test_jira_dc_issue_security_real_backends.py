@@ -622,8 +622,9 @@ async def test_a_reader_who_loses_jira_product_access_reads_nothing(world: dict[
     await _sync_project(world)
     by_key = await _ticket_ids(world)
     connector = world["connector"]
-    connector._fetch_application_roles_to_groups_mapping = AsyncMock(
-        return_value={"jira-software": [{"name": "jira-software-users", "groupId": "jira-software-users"}]})
+    # The roles go through the connector's own read, which notes that they were read in full.
+    roles = MagicMock(status=200, json=MagicMock(return_value=[{"key": "jira-software", "groups": ["jira-software-users"]}]))
+    connector._get_fresh_datasource = AsyncMock(return_value=MagicMock(get_all_application_roles_v2=AsyncMock(return_value=roles)))
     connector._fetch_group_members = AsyncMock(return_value=[PEOPLE[n] for n in PEOPLE if n != "carol"])
     connector._stored_app_users = await world["processor"].get_all_app_users(world["connector_id"])
 
