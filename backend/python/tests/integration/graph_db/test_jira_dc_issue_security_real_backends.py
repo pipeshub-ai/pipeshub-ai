@@ -690,11 +690,22 @@ async def test_unread_holders_keep_the_reporter_of_a_stored_issue_in_a_full_sync
     assert not await _mismatches(world, _browse_readers(), by_key)
 
 
-async def test_a_level_cleared_while_the_holders_are_unread_takes_the_issue_from_its_old_grants(
+async def test_while_the_holders_are_unread_a_null_level_keeps_the_reporter_and_a_cleared_one_drops_its_holders(
     world: dict[str, Any],
 ) -> None:
+    """The issue search always returns ``security``: null on an issue without a level. Such an issue keeps its
+    reporter's grant while the holders are unread; one stored with a level loses that level's holders."""
     by_key = await _sync_browse_project(world, [{"type": "reporter"}])
-    world["connector"]._issue_security[PROJECT_ID].browse_holders = None
-    cleared = BROWSE_ISSUES["PROJ-21"][0]
-    await _write(world, [{**cleared, "fields": {**cleared["fields"], "updated": "2024-06-17T10:00:00.000+0000", "security": None}}])
-    assert not await _mismatches(world, {**_browse_readers(), "PROJ-21": PROJECT_READERS}, by_key)
+    leveled = {**_issue("25", "PROJ-25", "Task", level="10103"), "fields": {
+        **_issue("25", "PROJ-25", "Task", level="10103")["fields"], "updated": "2024-06-16T10:00:00.000+0000"}}
+    world["connector"]._issue_security[PROJECT_ID] = _context(browse_holders=[{"type": "reporter"}])
+    await _write(world, [leveled])
+    by_key = await _ticket_ids(world)
+    assert not await _mismatches(world, {**_browse_readers(), "PROJ-25": set()}, by_key), "dave is in the level, not the project"
+
+    world["connector"]._issue_security[PROJECT_ID] = _context(browse_holders=None)
+    later = "2024-06-17T10:00:00.000+0000"
+    for label in ("PROJ-21", "PROJ-25"):
+        issue = BROWSE_ISSUES[label][0] if label == "PROJ-21" else leveled
+        await _write(world, [{**issue, "fields": {**issue["fields"], "updated": later, "security": None}}])
+    assert not await _mismatches(world, {**_browse_readers(), "PROJ-25": PROJECT_READERS}, by_key)
