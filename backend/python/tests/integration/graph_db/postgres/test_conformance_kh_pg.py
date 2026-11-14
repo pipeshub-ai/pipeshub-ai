@@ -312,7 +312,7 @@ async def test_a_flatten_below_a_node_or_with_a_depth_lists_what_browsing_down_r
     does not place, one below their group). The same from kg and from the walk."""
     worlds = [*KH_WORLDS, *dict.fromkeys(s.final_world() for s in load_all())][:40]
     bad: list[str] = []
-    asked = 0
+    asked = opened = 0
     for start in range(0, len(worlds), CHUNK):
         chunk = worlds[start:start + CHUNK]
         await kh_layer.preload(chunk)
@@ -328,21 +328,26 @@ async def test_a_flatten_below_a_node_or_with_a_depth_lists_what_browsing_down_r
                                 want = await _browsed_down(kh_layer, world, viewer, n.id, ptype, depth)
                                 got = await _flat_pages(kh_layer, world, viewer, n.id, ptype, depth)
                                 asked += 1
+                                opened += got is not None
                                 want_rows = None if want is None else {i for i, stub in want.items() if not stub}
                                 if (got is None) != (want is None) or (got is not None and set(got) != want_rows):
                                     bad.append(f"{start + w_i} {viewer} below {n.id} depth {depth}: flatten {None if got is None else sorted(got)} browse {want_rows and sorted(want_rows)}")
                         whole = {r["id"] for r in (await listing(kh_layer, world, viewer)).rows}
                         for app in (n for n in world.nodes if n.kind == "app"):
+                            opens = await browse_pages(kh_layer, world, viewer, app.id, "app", BIG_PAGE) is not None      # the flatten opens exactly the Apps a browse opens
                             for depth in (1, 2):
                                 got = await _flat_pages(kh_layer, world, viewer, app.id, "app", depth)
                                 want_rows = {i for i in whole if world.node(i).connector == app.id} & _within(world, app.id, depth)
                                 asked += 1
-                                if got is not None and set(got) != want_rows:
-                                    bad.append(f"{start + w_i} {viewer} app {app.id} depth {depth}: flatten {sorted(got)} want {sorted(want_rows)}")
+                                opened += got is not None
+                                if (got is not None) != opens or (got is not None and set(got) != want_rows):
+                                    bad.append(f"{start + w_i} {viewer} app {app.id} depth {depth}: flatten {None if got is None else sorted(got)} want {sorted(want_rows) if opens else None}")
                 except KnowledgeHubListingNotReady:
                     kh_layer.not_ready += 1
         await kh_layer.release(chunk)
+    print(f"{kh_layer.name}: {asked} flattens asked, {opened} opened their start")
     assert asked and not bad, f"{kh_layer.name}\n" + "\n".join(bad[:30])
+    assert opened * 2 >= asked, f"{kh_layer.name}: only {opened} of {asked} flattens opened their start: the comparison proves little"
 
 
 async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(kh_layer) -> None:
