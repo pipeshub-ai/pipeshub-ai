@@ -172,7 +172,18 @@ async def _stop_process(process: asyncio.subprocess.Process) -> None:
         pass
     _signal(process, signal.SIGKILL, group=group)
     with contextlib.suppress(asyncio.TimeoutError):
-        await asyncio.wait_for(process.wait(), timeout=_STOP_GRACE_SECONDS)
+        await asyncio.wait_for(_exited(process, group=group), timeout=_STOP_GRACE_SECONDS)
+
+
+async def _exited(process: asyncio.subprocess.Process, *, group: bool) -> None:
+    await process.wait()
+    # The launcher can be gone while a worker it started, holding none of its pipes, is still exiting.
+    while group:
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return
+        await asyncio.sleep(0.05)
 
 
 async def _run_subprocess(*args: str) -> tuple[int, bytes]:

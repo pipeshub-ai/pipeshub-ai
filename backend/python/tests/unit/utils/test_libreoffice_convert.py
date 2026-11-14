@@ -275,6 +275,29 @@ async def test_stop_process_kills_a_child_that_outlives_its_launcher(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_stop_process_waits_for_a_group_member_that_outlives_its_launcher(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # The launcher has exited and the worker holds none of its pipes: only the group still shows the worker.
+    monkeypatch.setattr(libreoffice_convert, "_STOP_GRACE_SECONDS", 2.0)
+    pid_file = tmp_path / "worker.pid"
+    worker_script = f"trap '' TERM; echo \\$\\$ > {shlex.quote(str(pid_file))}; exec sleep 60"
+    launcher = await asyncio.create_subprocess_exec(
+        "/bin/sh", "-c", f'sh -c "{worker_script}" </dev/null >/dev/null 2>&1 &',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    await _read_pid(pid_file)
+    await asyncio.wait_for(launcher.wait(), timeout=5)
+
+    await libreoffice_convert.stop_process(launcher)
+
+    with pytest.raises(ProcessLookupError):
+        os.killpg(launcher.pid, 0)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "pid",
     [MagicMock(), 0, 1, "own group"],
