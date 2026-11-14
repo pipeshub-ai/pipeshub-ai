@@ -86,7 +86,7 @@ class NextcloudUserAppEdgesMigrationService:
             self.logger.error(f"❌ Nextcloud user-app edges migration failed: {e}", exc_info=True)
             return {"success": False, "removed": removed, "error": str(e)}
         if failed:
-            self.logger.error(f"❌ Nextcloud user-app edges migration failed for {len(failed)} org(s); it runs again next startup")
+            self.logger.error(f"Nextcloud user-app edges migration failed for {len(failed)} org(s); it runs again next startup")
             return {"success": False, "removed": removed, "failed_orgs": failed}
 
         if removed:

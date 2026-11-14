@@ -19,12 +19,25 @@ from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.core import org_context
 from app.core.org_context import OrgContext, bind
 from app.migrations.code_graph_backfill import run_code_graph_backfill
-from app.migrations.nextcloud_user_app_edges_migration import run_nextcloud_user_app_edges_migration
-from app.migrations.s3_created_date_filter_migration import run_s3_created_date_filter_migration
-from app.migrations.web_browser_identity_migration import run_web_browser_identity_backfill
+from app.migrations.nextcloud_user_app_edges_migration import (
+    run_nextcloud_user_app_edges_migration,
+)
+from app.migrations.s3_created_date_filter_migration import (
+    run_s3_created_date_filter_migration,
+)
+from app.migrations.web_browser_identity_migration import (
+    run_web_browser_identity_backfill,
+)
 from app.modules.code_graph import enabled as code_graph_switch
-from app.modules.code_graph.build_state import SYNC_POINT_TYPE, BuildStateStore, sync_point_key_for
-from app.modules.code_graph.edge_build_reconciler import reconcile_once, request_due_full_rebuilds
+from app.modules.code_graph.build_state import (
+    SYNC_POINT_TYPE,
+    BuildStateStore,
+    sync_point_key_for,
+)
+from app.modules.code_graph.edge_build_reconciler import (
+    reconcile_once,
+    request_due_full_rebuilds,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Coroutine

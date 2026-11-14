@@ -76,14 +76,14 @@ async def find_stale_repos(graph_provider: IGraphDBProvider, org_id: str) -> lis
         after = page[-1].get("_key")
 
     stale: list[StaleRepo] = []
-    for group, (org_id, connector_id, connector_name) in sorted(groups.items()):
-        scope = {"orgId": org_id, "recordGroupId": group}
+    for group, (group_org, connector_id, connector_name) in sorted(groups.items()):
+        scope = {"orgId": group_org, "recordGroupId": group}
         blocks = await graph_provider.count_nodes_by_filters(CollectionNames.BLOCKS.value, scope)
         current = await graph_provider.count_nodes_by_filters(
             CollectionNames.BLOCKS.value, {**scope, "parserVersion": PARSER_VERSION},
         )
         if blocks == 0 or current < blocks:
-            stale.append(StaleRepo(org_id, connector_id, connector_name, group, blocks, current))
+            stale.append(StaleRepo(group_org, connector_id, connector_name, group, blocks, current))
     return stale
 
 
