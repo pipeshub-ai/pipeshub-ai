@@ -84,7 +84,7 @@ jobs:
       # The one allowed skip is the strict expected failure that reports matrix cells without a scenario, by its exact name.
       - name: Check the oracle run for skips
         run: |
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 1376 \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 1377 \
             --allow test_coverage_gaps_are_reported
 
       - name: Run the viewer-scope service tests (no services)
@@ -112,14 +112,13 @@ jobs:
         shard: [1, 2, 3, 4, 5, 6, 7]
         include:
           # The graph-permissions suite ran in no workflow before; it includes the tests that a connector list never shows another
-          # organization's connectors. Its three slowest files run here, about half of it.
+          # organization's connectors. Two of its slowest files run here, about half of it.
           - shard: 1
             suite: tests.integration.graph_permissions
             tests: >-
               tests/integration/graph_permissions/test_kh_name_search_first.py
-              tests/integration/graph_permissions/test_provider_v3_arrow_matches_expansion.py
               tests/integration/graph_permissions/test_provider_v3_shapes.py
-            cases: 149
+            cases: 73
             pytest_args: --timeout=300
           # Its three skips are tests of one store only.
           - shard: 2
@@ -127,9 +126,8 @@ jobs:
             tests: >-
               tests/integration/graph_permissions
               --ignore=tests/integration/graph_permissions/test_kh_name_search_first.py
-              --ignore=tests/integration/graph_permissions/test_provider_v3_arrow_matches_expansion.py
               --ignore=tests/integration/graph_permissions/test_provider_v3_shapes.py
-            cases: 693
+            cases: 769
             pytest_args: --timeout=300
             allow: >-
               test_hierarchy_backfill::test_an_edge_from_a_removed_document_is_no_parent[neo4j]
