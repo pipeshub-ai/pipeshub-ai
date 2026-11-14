@@ -6,7 +6,7 @@ operational knowledge about real-world GitHub REST/Search API limits. Do not
 change them without reading those comments first.
 """
 
-from app.config.constants.arangodb import ExtensionTypes
+from app.config import file_types
 
 # ---------------------------------------------------------------------------
 # Rate limiting
@@ -114,9 +114,7 @@ PR_DIFF_TEXT_MAX_BYTES = 4 * 1024 * 1024
 # single record cannot stall the stream indefinitely.
 ATTACHMENT_MAX_SIZE_BYTES = 25 * 1024 * 1024
 
-PREVIEW_RENDERABLE_EXTENSIONS: frozenset[str] = frozenset(
-    ext.value for ext in ExtensionTypes
-)
+PREVIEW_RENDERABLE_EXTENSIONS: frozenset[str] = file_types.preview_extensions()
 
 # ---------------------------------------------------------------------------
 # Email resolution
