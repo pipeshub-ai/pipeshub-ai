@@ -176,7 +176,7 @@ class TestDelegateMethods:
         tx.get_users.return_value = sentinel
         result = await proc.get_all_active_users()
         assert result is sentinel
-        tx.get_users.assert_awaited_once_with("org-1", active=True)
+        tx.get_users.assert_awaited_once_with("org-1", active=True, raise_on_error=False)
 
     @pytest.mark.asyncio
     async def test_get_user_by_user_id_found(self):

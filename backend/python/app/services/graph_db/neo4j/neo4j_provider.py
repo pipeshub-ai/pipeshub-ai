@@ -6650,8 +6650,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         *,
         active: bool = True,
+        raise_on_error: bool = False,
     ) -> list[dict]:
-        """Get all users in an organization"""
+        """Get all users in an organization. ``raise_on_error`` raises a failed query instead of returning ``[]``."""
         try:
             query = """
             MATCH (u:User)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(o:Organization {id: $org_id})
@@ -6673,6 +6674,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get users failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_app_user_by_email(

@@ -8540,6 +8540,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         *,
         active: bool = True,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Fetch all active users from the database who belong to the organization.
@@ -8547,6 +8548,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Args:
             org_id (str): Organization ID
             active (bool): Filter for active users only if True
+            raise_on_error (bool): Raise a failed query instead of returning ``[]``
 
         Returns:
             List[Dict]: List of user documents with their details
@@ -8574,6 +8576,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch users: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_app_user_by_email(

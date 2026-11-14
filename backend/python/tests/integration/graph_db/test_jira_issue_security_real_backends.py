@@ -595,3 +595,63 @@ async def test_a_reindex_does_not_grant_a_withdrawn_reporter_whose_email_is_in_t
 
     await _reindex(world, _edited("plain task", "2024-06-18T10:00:00.000+0000", reporter=dave), context=context)
     assert not await _mismatches(world, readers, by_key)
+
+
+async def _org_member(world: dict[str, Any], name: str) -> str:
+    """A PipesHub user of the org with no Jira account; returns its user id."""
+    graph, run, org_id = world["graph"], world["run"], world["org_id"]
+    now = get_epoch_timestamp_in_ms()
+    key, user_id = f"{run}-{name}", f"user-{run}-{name}"
+    world["user_keys"].append(key)
+    assert await graph.batch_upsert_nodes(
+        [{"id": key, "userId": user_id, "orgId": org_id, "email": _email(name, run), "fullName": name,
+          "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.USERS.value)
+    assert await graph.batch_create_edges(
+        [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": org_id,
+          "to_collection": CollectionNames.ORGS.value, "entityType": "ORGANIZATION",
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.BELONGS_TO.value)
+    return user_id
+
+
+async def test_a_public_project_is_read_by_the_whole_org_and_no_longer_once_it_is_private(world: dict[str, Any]) -> None:
+    """Browse held by `anyone` (Jira's anonymous access): erin, a PipesHub user with no Jira account, and dave, who
+    cannot browse the project, read its issues with no level; a leveled one stays with its level. frank has no
+    Jira account but a grant left on dave's leveled issue: opening the gate to the org removes it first. When the
+    project is private again, the org's All team stops passing the gate and erin reads nothing."""
+    await _sync_project(world)
+    graph, run, org_id, connector = world["graph"], world["run"], world["org_id"], world["connector"]
+    erin_id = await _org_member(world, "erin")
+    frank_id = await _org_member(world, "frank")
+    by_key = await _ticket_ids(world)
+    now = get_epoch_timestamp_in_ms()
+    assert await graph.batch_create_edges(
+        [{"from_id": f"{run}-frank", "from_collection": CollectionNames.USERS.value, "to_id": by_key["PROJ-9"],
+          "to_collection": CollectionNames.RECORDS.value, "type": "USER", "role": "READER",
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.PERMISSION.value)
+    for key in world["user_keys"]:  # the platform puts every user in the org's All team
+        await graph.add_user_to_all_team(org_id, key)
+
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    project = RecordGroup(
+        id=str(uuid.uuid4()), org_id=org_id, external_group_id=PROJECT_ID, connector_id=world["connector_id"],
+        connector_name=Connectors.JIRA, name="Project", short_name=PROJECT_KEY, group_type=RecordGroupType.PROJECT)
+    browse = [Permission(entity_type=EntityType.USER, email=_email(n, run), type=PermissionType.READ)
+              for n in sorted(PROJECT_READERS)]
+    anyone = Permission(entity_type=EntityType.ORG, external_id="anyone_authenticated", type=PermissionType.READ)
+    unleveled = {by_key[key] for key, who in readers.items() if who == PROJECT_READERS}
+
+    async def reads(user_id: str) -> set[str]:
+        return set(await graph.filter_accessible_record_ids(list(by_key.values()), user_id, org_id))
+
+    # dave can now browse the project, so he also reads the issue in his own level.
+    public = {key: who | {"dave"} if who == PROJECT_READERS else who for key, who in readers.items()} | {"PROJ-9": {"dave"}}
+    await world["processor"].on_new_record_groups([(project, [*browse, anyone])])
+    await connector._admit_everyone_to_public_projects([(project, [*browse, anyone])], written_in_full=True)
+    assert not await _mismatches(world, public, by_key)
+    assert await reads(erin_id) == unleveled
+    assert await reads(frank_id) == unleveled  # not PROJ-9: his stale grant went before the gate opened
+
+    await world["processor"].on_new_record_groups([(project, browse)])
+    await connector._admit_everyone_to_public_projects([(project, browse)], written_in_full=True)
+    assert not await _mismatches(world, readers, by_key)
+    assert await reads(erin_id) == set()

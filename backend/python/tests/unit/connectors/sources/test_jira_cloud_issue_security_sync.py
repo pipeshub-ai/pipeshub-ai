@@ -1904,6 +1904,46 @@ class TestIssueGrantsNameListedAccountsOnly:
         assert order == [("note", ["acc-2", "acc-9"]), ("link",)]
 
 
+class TestAnonymousBrowseReachesEveryone:
+    """Browse held by `anyone` is open to people with no Jira account or licence; the ORG grant reaches them only
+    through the gate, which the org's All team passes while a project is public."""
+
+    PUBLIC = [(MagicMock(), [Permission(entity_type=EntityType.ORG, external_id="anyone_authenticated",
+                                        type=PermissionType.READ)])]
+    PRIVATE = [(MagicMock(), [Permission(entity_type=EntityType.GROUP, external_id="g-1", type=PermissionType.READ)])]
+
+    @staticmethod
+    def _gated(scope: str = "team") -> JiraConnector:
+        c = _connector()
+        c.scope = scope
+        c.data_entities_processor.open_app_to_org_team = AsyncMock()
+        c.data_entities_processor.withdraw_team_app_edge = AsyncMock()
+        return c
+
+    @pytest.mark.asyncio
+    async def test_a_public_project_opens_the_gate_to_the_org(self) -> None:
+        c = self._gated()
+        await c._admit_everyone_to_public_projects(self.PRIVATE + self.PUBLIC, written_in_full=False)
+        c.data_entities_processor.open_app_to_org_team.assert_awaited_once_with("conn-sec")
+        c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_gate_closes_only_when_every_project_was_written_and_none_is_public(self) -> None:
+        c = self._gated()
+        await c._admit_everyone_to_public_projects(self.PRIVATE, written_in_full=False)
+        c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()  # a kept project may still be public
+        await c._admit_everyone_to_public_projects(self.PRIVATE, written_in_full=True)
+        c.data_entities_processor.withdraw_team_app_edge.assert_awaited_once_with("conn-sec")
+        c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_personal_connector_never_opens_the_gate(self) -> None:
+        c = self._gated("personal")
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
+        c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
+
+
 class TestSweepAncestorReads:
     """A stub whose ancestor could not be read (not "Jira has no such issue") is not swept: the sweep says so, and
     an account listed again stays owed until a sweep reads it."""
