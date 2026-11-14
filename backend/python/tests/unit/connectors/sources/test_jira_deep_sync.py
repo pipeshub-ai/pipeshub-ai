@@ -218,6 +218,40 @@ class TestRunSync:
             connector._sync_all_project_issues.assert_awaited_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("swept", [True, False], ids=["sweep_ran", "sweep_skipped"])
+    async def test_newly_listed_accounts_are_cleared_only_after_the_stub_sweep_ran(self, swept: bool) -> None:
+        """A sweep skipped because the synced users could not be read leaves the re-read projects' stubs without the
+        accounts' grants: the accounts stay saved, so the next sync reads their issues again and sweeps."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        user = _app_user()
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[user])
+        order: list[str] = []
+        with patch(
+            "app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
+            new_callable=AsyncMock,
+        ) as mock_filters:
+            from app.connectors.core.registry.filters import FilterCollection
+            mock_filters.return_value = (FilterCollection(), FilterCollection())
+            connector._fetch_users = AsyncMock(return_value=[user])
+            connector._note_newly_listed = AsyncMock(return_value=["acc-1"])
+            connector._sync_user_groups = AsyncMock(return_value={"g1": [user]})
+            connector._fetch_projects = AsyncMock(return_value=([(_project_rg(), [])], [{"key": "PROJ", "lead": None}]))
+            connector._sync_project_roles = AsyncMock()
+            connector._sync_project_lead_roles = AsyncMock()
+            connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+            connector._sync_all_project_issues = AsyncMock(return_value={
+                "total_synced": 0, "new_count": 0, "updated_count": 0, "leveled_reread_project_ids": {"p-1"}})
+            connector._update_issues_sync_checkpoint = AsyncMock()
+            connector._handle_issue_deletions = AsyncMock()
+            connector._sweep_placeholder_records = AsyncMock(side_effect=lambda **_kw: order.append("sweep") or swept)
+            connector.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda key, _v: order.append(key))
+
+            await connector.run_sync()
+
+        assert [k for k in order if k in ("sweep", "people_reread")] == (["sweep", "people_reread"] if swept else ["sweep"])
+
+    @pytest.mark.asyncio
     async def test_run_sync_propagates_exception(self):
         connector = _make_connector()
         connector.data_source = MagicMock()

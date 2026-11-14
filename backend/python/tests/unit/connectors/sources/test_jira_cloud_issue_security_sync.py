@@ -1835,18 +1835,52 @@ class TestIssueGrantsNameListedAccountsOnly:
         assert await c._note_people_to_reread(set()) == ["acc-0", "acc-1"]  # an earlier sync failed before handing them on
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("failed", "skipped", "cleared"), [
-        ([], [], True), (["PROJ"], [], False), ([], ["OPS"], False)], ids=["all_handed_on", "a_project_failed", "a_project_not_built"])
+    @pytest.mark.parametrize(("failed", "skipped", "unresolved", "swept", "cleared"), [
+        ([], [], set(), True, True), (["PROJ"], [], set(), True, False), ([], ["OPS"], set(), True, False),
+        ([], [], {"OPS"}, True, False), ([], [], set(), False, False)],
+        ids=["all_handed_on", "a_project_failed", "a_project_not_built", "a_selected_key_not_looked_up", "stub_sweep_skipped"])
     async def test_the_saved_accounts_are_cleared_only_once_every_project_took_them(
-        self, failed: list, skipped: list, cleared: bool,
+        self, failed: list, skipped: list, unresolved: set, swept: bool, cleared: bool,
     ) -> None:
+        """A selected project the search missed and whose former key could not be looked up (a 503) was not read:
+        it still owes its re-read. So do the stubs of a project read again while the sweep was skipped."""
         c = _connector()
         c.issues_sync_point = MagicMock()
         c.issues_sync_point.update_sync_point = AsyncMock()
         c._newly_listed_account_ids = ["acc-1"]
         c._skipped_project_keys = skipped
-        await c._people_to_reread_handed_on({"failed_project_keys": failed})
+        c._unresolved_selected_keys = unresolved
+        await c._people_to_reread_handed_on({"failed_project_keys": failed}, swept=swept)
         assert c.issues_sync_point.update_sync_point.await_count == (1 if cleared else 0)
+
+    @pytest.mark.asyncio
+    async def test_a_project_that_read_the_accounts_issues_again_has_its_stubs_re_secured(self) -> None:
+        """Its stubs (ancestors backfilled earlier) may name the account too; the sweep only revisits a
+        backfilled stub in a project reported as read again."""
+        c = _connector()
+        c._newly_listed_account_ids = ["acc-1"]
+        c._reread_issues_naming = AsyncMock()
+        _, _, _, result = await TestMemberChangeRereadsOnlyTheAffectedLevels._sync(
+            self, stored_levels=_present().level_fingerprints(), connector=c)
+        c._reread_issues_naming.assert_awaited_once()
+        assert result["leveled_reread"] is True
+
+    @pytest.mark.asyncio
+    async def test_on_a_list_not_read_in_full_a_linked_level_holder_named_by_account_id_alone_keeps_the_grant(self) -> None:
+        """mia (acc-9) is linked but missing from a list cut short, and the level names her by account id with no
+        email. Read in full, she is gone from Jira and gets nothing; nor does she when the short list showed her
+        deactivated."""
+        for complete, shown_deactivated in ((True, False), (False, False), (False, True)):
+            c = _connector()
+            c._stored_app_users = _users()
+            c._listed_account_ids = {"acc-1", "acc-2"}
+            c._seen_account_ids = {"acc-1", "acc-2"} | ({"acc-9"} if shown_deactivated else set())
+            c._user_read_unfinished = not complete
+            c._issue_security[PROJECT_ID] = _present(members={"10102": [
+                {"type": "user", "parameter": "acc-9", "user": {"accountId": "acc-9"}}]})
+            c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+            records, _ = await c._build_issue_records([_issue({"id": "10102"})], PROJECT_ID, _users()[:2])
+            assert {p.email for p in records[0][1]} == (set() if complete or shown_deactivated else {"mia@x.com"})
 
     @pytest.mark.asyncio
     async def test_linking_users_between_syncs_saves_their_re_read_first(self) -> None:

@@ -316,6 +316,29 @@ class TestWithdrawnAccounts:
                                          {"alice-key": _user("alice-key", "alice@example.com")})
         assert [g.email for g in grants] == ["alice@example.com"]
 
+    @pytest.mark.parametrize(("complete", "shown"), [(True, False), (False, False), (False, True)],
+                             ids=["read_in_full", "not_read_in_full", "shown_deactivated_by_a_short_list"])
+    async def test_a_linked_level_holder_the_list_missed_keeps_its_grant_and_an_unnamed_one_marks_a_re_read(
+        self, complete: bool, shown: bool,
+    ) -> None:
+        """bob is linked but missing from a list cut short, and the level names him by key alone (no email); zed is
+        named by a username no listed or linked account has. bob keeps his grant; zed's issues are read again."""
+        c = _connector()
+        c._listed_user_keys = {"alice-key"}
+        c._stored_app_users = [_user("alice-key", "alice@example.com"), _user("bob-key", "bob@example.com")]
+        c._user_read_unfinished = not complete
+        c._seen_user_keys = {"alice-key"} | ({"bob-key"} if shown else set())
+        c._issue_security["10"] = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [{"type": "user", "parameter": "bob-key", "user": {"key": "bob-key"}},
+                                    {"type": "user", "parameter": "zed", "user": {"name": "zed"}}]})
+        built = await c._build_issue_records([_issue("2", "P-2", level="1")], "10",
+                                             [_user("alice-key", "alice@example.com")])
+        grants = {p.email for r, perms in built if isinstance(r, TicketRecord) for p in perms}
+        # Read in full, bob is gone from Jira (deactivated or removed) and is granted nothing.
+        assert grants == (set() if complete or shown else {"bob@example.com"})
+        assert c._holders_unresolved is (not complete)
+
     async def test_newly_listed_accounts_are_saved_before_they_are_linked(self) -> None:
         c = _connector()
         store: dict = {}
@@ -332,7 +355,7 @@ class TestWithdrawnAccounts:
         c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=ConnectionError("graph unavailable"))
         c._fetch_ancestor_level = AsyncMock()
-        assert await c._sweep_placeholder_records({"10"}, set()) == 0
+        assert await c._sweep_placeholder_records({"10"}, set()) is None, "a skip, not a sweep with nothing to do"
         c._fetch_ancestor_level.assert_not_awaited()
 
     async def test_linking_users_between_syncs_saves_their_re_read_first(self) -> None:
