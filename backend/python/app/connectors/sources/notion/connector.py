@@ -2978,7 +2978,7 @@ class NotionConnector(BaseConnector):
 
     # ==================== Fetching Methods ======================
 
-    def _hide_child_titles(self, blocks: List[Block], block_groups: List[BlockGroup]) -> None:
+    def _hide_child_titles(self, blocks: list[Block], block_groups: list[BlockGroup]) -> None:
         """Drop the names of the pages and databases a record links to or holds.
 
         Each has readers of its own, so a reader of this record may be one Notion hides the child

@@ -9,6 +9,15 @@ import pytest
 from app.connectors.sources.notion import personal_tokens
 from app.connectors.sources.notion.connector import NotionConnector, _TokenRejected
 from app.connectors.sources.notion_personal.connector import NotionPersonalConnector
+from app.models.blocks import (
+    Block,
+    BlockSubType,
+    BlockType,
+    ChildRecord,
+    ChildType,
+    DataFormat,
+    TableRowMetadata,
+)
 from app.models.entities import Record, RecordType, User
 from app.models.permission import EntityType
 from tests.unit.connectors.sources.test_notion_connector import (
@@ -323,8 +332,6 @@ async def test_pages_carry_their_own_access_on_the_team_connector() -> None:
 
 
 def test_a_page_shows_no_title_of_a_page_or_database_it_links_to_or_holds() -> None:
-    from app.models.blocks import Block, BlockSubType, BlockType, ChildRecord, ChildType, DataFormat, TableRowMetadata
-
     child = Block(type=BlockType.TEXT, sub_type=BlockSubType.CHILD_RECORD, format=DataFormat.TXT, data="Layoffs 2027",
                   source_name="Layoffs 2027", source_id="p-secret",
                   table_row_metadata=TableRowMetadata(children_records=[
