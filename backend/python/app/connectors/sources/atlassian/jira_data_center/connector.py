@@ -3698,7 +3698,7 @@ class JiraDataCenterConnector(BaseConnector):
             await self._reread_stored_issues(
                 project_key, project_id, jira_users, stats, changed_levels, every_issue=reread == "project"
             )
-        if reread != "project" and not is_new_project and security.browse_holders and self._newly_listed_user_keys:
+        if reread != "project" and not is_new_project and security.browse_holders and self._accounts_to_hand:
             await self._reread_issues_naming(project_key, project_id, jira_users, stats, security.browse_holders)
         if self._reread_whole_project:
             # Jira refused the JQL naming children, here or in the pass above. Every stored issue is read
@@ -3848,8 +3848,9 @@ class JiraDataCenterConnector(BaseConnector):
     ) -> None:
         """Rebuild the stored issues whose per-issue Browse holders may name a newly linked account. Its grant
         there is resolved through the linked accounts, so it arrives only when the issue is read again, and
-        nothing on the issue changed. A server that refuses the JQL has every stored issue read instead."""
-        names = sorted(n for n, key in self._dc_name_to_source_id.items() if key in self._newly_listed_user_keys)
+        nothing on the issue changed. A server that refuses the JQL has every stored issue read instead; an issue
+        that fails to build leaves the holders marked unread, so the next sync reads every stored issue."""
+        names = sorted(n for n, key in self._dc_name_to_source_id.items() if key in self._accounts_to_hand)
         jql_fields: set[str] = set()
         for h in holders:
             field = str(h.get("parameter") or h.get("value") or "")
@@ -3859,6 +3860,7 @@ class JiraDataCenterConnector(BaseConnector):
                 jql_fields.add(f"cf[{field.removeprefix('customfield_')}]")
         if not names or not jql_fields:
             return
+        failures_before = self._issue_build_failures
         try:
             for i in range(0, len(names), HOLDER_REREAD_CHUNK):
                 quoted = ", ".join(json.dumps(n) for n in names[i:i + HOLDER_REREAD_CHUNK])
@@ -3873,6 +3875,9 @@ class JiraDataCenterConnector(BaseConnector):
                 raise
             self.logger.warning(f"Jira refused the JQL naming newly linked accounts in {project_key}; reading every stored issue")
             self._reread_whole_project = True
+        if self._issue_build_failures > failures_before:
+            # The accounts are handed to this project anyway; the marker is kept while issues fail to build.
+            await self._update_project_sync_checkpoint(project_key, browse_holders="?")
 
     async def _fetch_issues_batched(
         self,

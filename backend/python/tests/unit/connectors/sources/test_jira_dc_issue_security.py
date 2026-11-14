@@ -299,7 +299,7 @@ class TestIssuesNamingNewAccounts:
 
         connector = _connector()
         connector._dc_name_to_source_id = {"carol": "carol-key", "bob": "bob-key"}
-        connector._newly_listed_user_keys = {"carol-key"}
+        connector._accounts_to_hand = {"carol-key"}
         clauses: list[str] = []
 
         async def search(*_: object, extra_jql: str, **__: object) -> AsyncIterator[tuple[list, bool, None]]:

@@ -2885,6 +2885,44 @@ class TestBrowseHolders:
         assert any(f'{field} in ("carol")' in jql for jql in search.jql)
         assert CAROL in grants(db, "1001")
 
+    async def test_an_issue_that_fails_to_build_in_that_read_is_read_again_by_the_next_sync(
+        self, jira, db, store, search,
+    ) -> None:
+        mine = story("1001", "ENG-1", reporter={"key": "carol-key", "name": "carol"})
+        stub_site(jira, search)
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key",)
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        scheme_with(jira, REPORTER)
+        search.add("ENG", 0, [mine])
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert CAROL not in grants(db, "1001")
+
+        db.cached_app_users = list(db.app_users)
+        product_group(*LICENSED)
+        extract, calls = connector._extract_issue_data, []
+
+        def fails_in_the_re_read(*args: object, **kwargs: object) -> dict[str, object]:
+            calls.append(1)
+            if len(calls) == 2:  # the first call is the incremental pass, which skips the unchanged issue
+                raise RuntimeError("could not build the issue")
+            return extract(*args, **kwargs)
+
+        connector._extract_issue_data = fails_in_the_re_read
+        await connector.run_sync()
+        assert len(calls) >= 2 and CAROL not in grants(db, "1001")
+
+        connector._extract_issue_data = extract
+        await connector.run_sync()
+        assert CAROL in grants(db, "1001")
+
     async def test_a_reindex_reads_the_holders_and_applies_them(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         scheme_with(jira, REPORTER)
