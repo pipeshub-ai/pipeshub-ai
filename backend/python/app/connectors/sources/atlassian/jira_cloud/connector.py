@@ -5018,6 +5018,21 @@ class JiraConnector(BaseConnector):
                 self._parent_level_failures.discard(parent_id)
             self._remember_parent_levels(found, security)
 
+    @staticmethod
+    def _kept_placement(issue_data: dict[str, Any], stored: Record | None, parent_external_id: str | None) -> str | None:
+        """Where an issue whose parent could not be read is filed: where the last read filed it. A sub-task the
+        last read filed off its parent stays off it, its own grants written for that place; one with nothing
+        stored stays under it, since the parent edge may carry a level its payload lacks."""
+        unread = issue_data["parent_unread"]
+        if not unread or stored is None:
+            return parent_external_id
+        stored_parent = getattr(stored, "parent_external_record_id", None)
+        if stored_parent == unread:
+            return unread
+        if issue_data["is_subtask"] and not stored_parent:
+            return None
+        return parent_external_id
+
     def _files_under_parent(
         self, fields: dict[str, Any], parent_id: str, security: IssueSecurityContext | None,
         *, is_subtask: bool = False,
@@ -5307,10 +5322,9 @@ class JiraConnector(BaseConnector):
             return records, delete_ids, True
 
         if issue_data["parent_unread"]:
-            # Kept where the last sync filed it until its epic is read again.
+            # Kept where the last sync filed it until its parent is read again.
             self._parents_to_retry.add(issue_data["parent_unread"])
-            if existing_record is not None and existing_record.parent_external_record_id == issue_data["parent_unread"]:
-                parent_external_id = issue_data["parent_unread"]
+            parent_external_id = self._kept_placement(issue_data, existing_record, parent_external_id)
 
         # Record group is always the project. The parent ticket link follows Jira's parent
         # field where _extract_issue_data files the issue under its parent.
@@ -7197,8 +7211,7 @@ class JiraConnector(BaseConnector):
             issue_data = self._extract_issue_data(issue, user_by_account_id, security=security)
 
             parent_external_id = issue_data.get("parent_external_id")
-            if issue_data["parent_unread"] and getattr(record, "parent_external_record_id", None) == issue_data["parent_unread"]:
-                parent_external_id = issue_data["parent_unread"]
+            parent_external_id = self._kept_placement(issue_data, record, parent_external_id)
             parent_key = str((fields.get("parent") or {}).get("key") or "")
             if (
                 parent_external_id and not getattr(record, "parent_external_record_id", None)

@@ -378,14 +378,16 @@ async def test_a_story_stored_under_its_project_moves_under_its_epic_when_read_a
     assert by_key["PROJ-10"] in await _listed_under(world, "bob", by_key["PROJ-6"])
 
 
-async def _reindex(world: dict[str, Any], issue: dict, *, context: IssueSecurityContext | None = None) -> None:
+async def _reindex(world: dict[str, Any], issue: dict, *, context: IssueSecurityContext | None = None,
+                   parent_read_fails: bool = False) -> None:
     """Re-index the stored copy of ``issue`` against the source's current state of it. With
     ``context``, the project's security and Browse holders are read as a fresh process reads them."""
     connector = world["connector"]
     ds = MagicMock()
     ds.get_issue = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value=issue)))
     parents = [i for i, _ in ISSUES.values() if i["id"] == (issue["fields"]["parent"] or {}).get("id")]
-    ds.bulk_fetch_issues = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value={"issues": parents})))
+    ds.bulk_fetch_issues = AsyncMock(return_value=MagicMock(
+        status=503 if parent_read_fails else 200, json=MagicMock(return_value={"issues": parents}), text=MagicMock(return_value="")))
     grants = [{"permission": "BROWSE_PROJECTS", "holder": h} for h in (context.browse_holders or [])] if context else []
     ds.get_assigned_permission_scheme = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value={"id": 7})))
     ds.get_permission_scheme_grants = AsyncMock(
@@ -512,6 +514,32 @@ async def test_a_reindex_in_a_fresh_process_keeps_the_sub_task_with_its_reporter
                    context=fresh)
     assert not await _mismatches(world, expected, by_key)
     assert by_key["PROJ-12"] not in await _listed_under(world, "bob", by_key["PROJ-10"])
+
+
+async def test_a_reindex_that_cannot_read_the_parent_keeps_the_sub_task_where_the_sync_filed_it(world: dict[str, Any]) -> None:
+    """The sync files dave's sub-task off its parent and grants him it. A reindex whose read of the parent fails
+    keeps it there, with dave's grant written for that place, and so does the next sync, to which the issue is
+    unchanged."""
+    await _sync_project(world)
+    connector = world["connector"]
+    connector._issue_security[PROJECT_ID].browse_holders = [{"type": "reporter"}]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    label = "sub-task of the unleveled story under the unleveled epic"
+    parent, _ = ISSUES["unleveled story under the unleveled epic"]
+    sub = _edited(label, "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})
+    await _write(world, [parent, sub], again=True)
+    expected = {**readers, "PROJ-12": PROJECT_READERS | {"dave"}}
+    assert not await _mismatches(world, expected, by_key)
+
+    connector._parent_levels.clear()
+    later = _edited(label, "2024-06-17T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})
+    await _reindex(world, later, context=connector._issue_security[PROJECT_ID], parent_read_fails=True)
+    assert not await _mismatches(world, expected, by_key)
+    assert by_key["PROJ-12"] not in await _listed_under(world, "bob", by_key["PROJ-10"])
+
+    await _write(world, [later])  # the next incremental sync: unchanged, nothing to write
+    assert not await _mismatches(world, expected, by_key)
 
 
 async def test_an_unread_scheme_keeps_the_reporter_of_a_stored_issue_and_the_story_where_it_was_filed(
