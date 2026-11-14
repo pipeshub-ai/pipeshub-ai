@@ -92,7 +92,7 @@ jobs:
           - shard: 3
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
             graph_k: not [not_current-adversarial] and not [current-adversarial]
-            graph_cases: 17
+            graph_cases: 19
           # test_kg_read.py stays in shard 5, behind most of the files that run before it in the whole folder: its plan gate
           # depends on the statistics they leave.
           - shard: 4
@@ -105,7 +105,7 @@ jobs:
               tests/integration/graph_db/postgres/test_kh_listing_flat.py
               tests/integration/graph_db/postgres/test_robustness.py
               tests/integration/graph_db/postgres/test_role_batch.py
-            graph_cases: 255
+            graph_cases: 257
           - shard: 5
             graph_tests: >-
               tests/integration/graph_db/postgres
@@ -118,7 +118,7 @@ jobs:
               --ignore=tests/integration/graph_db/postgres/test_kh_listing_flat.py
               --ignore=tests/integration/graph_db/postgres/test_robustness.py
               --ignore=tests/integration/graph_db/postgres/test_role_batch.py
-            graph_cases: 1483
+            graph_cases: 1484
     services:
       redis:
         image: redis:7.4-bookworm
