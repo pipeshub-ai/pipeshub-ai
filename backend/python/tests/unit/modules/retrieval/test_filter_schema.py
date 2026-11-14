@@ -1,7 +1,4 @@
-from pathlib import Path
-
 import pytest
-import yaml
 from pydantic import ValidationError
 
 import app.edition_config  # noqa: F401  (loads the route modules in an order that avoids their import cycle)
@@ -13,11 +10,7 @@ from app.modules.retrieval.filter_schema import (
     SERVER_SET_REQUEST_FILTER_KEYS,
     validate_request_filters,
 )
-
-SPEC = (
-    Path(__file__).resolve().parents[4].parent
-    / "nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml"
-)
+from tests.support.openapi_spec import SPEC, openapi_spec
 
 
 def test_known_keys_pass_unchanged() -> None:
@@ -50,7 +43,7 @@ def test_request_models_refuse_unknown_filter(model) -> None:
 def test_keys_match_openapi_filters_schema() -> None:
     if not SPEC.exists():
         pytest.skip("OpenAPI spec not in this checkout")
-    spec = yaml.safe_load(SPEC.read_text())
+    spec = openapi_spec()
     documented = set(spec["components"]["schemas"]["Filters"]["properties"]) - {"where"}
     assert documented == set(PUBLIC_REQUEST_FILTER_KEYS)
     assert set(PUBLIC_REQUEST_FILTER_KEYS) <= set(ALLOWED_REQUEST_FILTER_KEYS)
