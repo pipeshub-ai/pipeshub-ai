@@ -62,11 +62,58 @@ concurrency:
 jobs:
   python:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # shard 1 is one test case of ~22-26 min serial (the not-current adversarial worlds), which no split can shorten
+    timeout-minutes: ${{ matrix.shard == 1 && 60 || 45 }}
     strategy:
       fail-fast: false
       matrix:
         pg: ['17', '18']
+        # The graph suite took ~46 min in one job (over 60 on PostgreSQL 18), so it is split by measured time. graph_tests
+        # are the pytest paths; graph_k splits one file by -k into sets that together hold each of its tests once; graph_cases
+        # is the shard's case count. Shard 5 runs the folder minus what the others name, so a new test file runs there.
+        # scripts/test_pg_runtime_shards.py checks that every case runs exactly once and that the counts add up.
+        shard: [1, 2, 3, 4, 5]
+        include:
+          # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own
+          - shard: 1
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: '[not_current-adversarial]'
+            graph_cases: 1
+          # also runs tests/integration/db and tests/integration/pg_runtime
+          - shard: 2
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: not [not_current-adversarial] and [current-adversarial]
+            graph_cases: 1
+          - shard: 3
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: not [not_current-adversarial] and not [current-adversarial]
+            graph_cases: 13
+          # test_kg_read.py stays in shard 5, behind most of the files that run before it in the whole folder: its plan gate
+          # depends on the statistics they leave.
+          - shard: 4
+            graph_tests: >-
+              tests/integration/graph_db/postgres/test_accessible_scope_differential.py
+              tests/integration/graph_db/postgres/test_conformance.py
+              tests/integration/graph_db/postgres/test_kg_service.py
+              tests/integration/graph_db/postgres/test_kg_stamps.py
+              tests/integration/graph_db/postgres/test_kh_browse.py
+              tests/integration/graph_db/postgres/test_kh_listing_flat.py
+              tests/integration/graph_db/postgres/test_robustness.py
+              tests/integration/graph_db/postgres/test_role_batch.py
+            graph_cases: 254
+          - shard: 5
+            graph_tests: >-
+              tests/integration/graph_db/postgres
+              --ignore=tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+              --ignore=tests/integration/graph_db/postgres/test_accessible_scope_differential.py
+              --ignore=tests/integration/graph_db/postgres/test_conformance.py
+              --ignore=tests/integration/graph_db/postgres/test_kg_service.py
+              --ignore=tests/integration/graph_db/postgres/test_kg_stamps.py
+              --ignore=tests/integration/graph_db/postgres/test_kh_browse.py
+              --ignore=tests/integration/graph_db/postgres/test_kh_listing_flat.py
+              --ignore=tests/integration/graph_db/postgres/test_robustness.py
+              --ignore=tests/integration/graph_db/postgres/test_role_batch.py
+            graph_cases: 1463
     services:
       redis:
         image: redis:7.4-bookworm
@@ -111,6 +158,7 @@ jobs:
           uv pip install --system -e ".[dev]"
 
       - name: Python database runtime (tests/integration/db)
+        if: ${{ matrix.shard == 2 }}
         working-directory: backend/python
         env:
           KERNEL_TEST_PG_BINS: ${{ env.PG_BIN }}
@@ -120,6 +168,7 @@ jobs:
         run: python -m pytest tests/integration/db -m integration --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/py-db-junit.xml"
 
       - name: Python runtime stores (tests/integration/pg_runtime)
+        if: ${{ matrix.shard == 2 }}
         working-directory: backend/python
         run: |
           # the package does not always create "main" (the runner image already has PostgreSQL 16 configured), and the cluster that
@@ -129,12 +178,16 @@ jobs:
           export REDIS_RUNTIME_TEST_URL=127.0.0.1:6379
           python -m pytest tests/integration/pg_runtime -m "not chaos" --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/py-runtime-junit.xml"
 
-      - name: PostgreSQL graph provider (tests/integration/graph_db/postgres)
+      - name: PostgreSQL graph provider (tests/integration/graph_db/postgres, shard ${{ matrix.shard }})
         working-directory: backend/python
+        env:
+          GRAPH_TESTS: ${{ matrix.graph_tests }}
+          GRAPH_K: ${{ matrix.graph_k }}
         run: |
           PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
           eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
-          python -m pytest tests/integration/graph_db/postgres -m integration --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/py-graph-junit.xml"
+          read -ra paths <<< "$GRAPH_TESTS"
+          python -m pytest "${paths[@]}" ${GRAPH_K:+-k "$GRAPH_K"} -m integration --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/py-graph-junit.xml"
 
       - name: PostgreSQL clusters (on failure)
         if: ${{ failure() }}
@@ -145,8 +198,11 @@ jobs:
 
       - name: No unexpected skips
         if: ${{ always() }}
-        # exactly the graph suite's cases ran (1732), none failed: a suite that registered nothing is not a pass
-        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml" "$RUNNER_TEMP/py-graph-junit.xml" --expect-suite 'tests.integration.graph_db.postgres=1732'
+        # exactly this shard's graph cases ran, none failed: a suite that registered nothing is not a pass
+        run: |
+          reports=("$RUNNER_TEMP/py-graph-junit.xml")
+          if [ "${{ matrix.shard }}" = 2 ]; then reports+=("$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml"); fi
+          python3 scripts/assert_no_skips.py "${reports[@]}" --expect-suite "tests.integration.graph_db.postgres=${{ matrix.graph_cases }}"
 
   node:
     runs-on: ubuntu-latest
