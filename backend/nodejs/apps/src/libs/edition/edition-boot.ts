@@ -25,7 +25,7 @@ export interface EditionContainers {
 export interface EditionBoot {
   /** Extra broker topics created with the required ones. */
   topics: TopicDefinition[];
-  /** Added to the built-in lists when STRICT_MODE turns the CSP on. */
+  /** Added to the built-in Content Security Policy source lists. */
   cspSources: EditionCspSources;
   initialize(
     configurationManagerConfig: ConfigurationManagerConfig,
