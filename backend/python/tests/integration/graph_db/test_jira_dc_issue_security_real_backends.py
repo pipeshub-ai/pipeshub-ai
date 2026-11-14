@@ -633,3 +633,80 @@ async def test_a_reader_who_loses_jira_product_access_reads_nothing(world: dict[
     assert sorted(u.full_name for u in kept) == ["alice", "bob", "dave"]
     expected = {key: who - {"carol"} for key, who in _readers().items()}
     assert not await _mismatches(world, expected, by_key)
+
+
+def _unleveled(issue_id: str, key: str, kind: str, *, reporter: str, **links: str) -> dict:
+    """An issue of a project with no issue security scheme: Jira returns no ``security`` field."""
+    issue = _issue(issue_id, key, kind, reporter=reporter, **links)
+    issue["fields"].pop("security")
+    return issue
+
+
+# Browse Projects granted to the reporter as well: dave, outside the project, reads what he reported.
+BROWSE_ISSUES: dict[str, tuple[dict, set[str]]] = {
+    "PROJ-21": (_unleveled("21", "PROJ-21", "Task", reporter="dave"), {"dave"} | PROJECT_READERS),
+    "PROJ-22": (_unleveled("22", "PROJ-22", "Epic", reporter="bob"), PROJECT_READERS),
+    "PROJ-23": (_unleveled("23", "PROJ-23", "Story", reporter="dave", epic="22"), {"dave"} | PROJECT_READERS),
+    # A sub-task too, though its parent is not dave's: Jira lets a sub-task's reporter read it alone.
+    "PROJ-24": (_unleveled("24", "PROJ-24", "Sub-task", reporter="dave", parent="22"), {"dave"} | PROJECT_READERS),
+}
+
+
+async def _sync_browse_project(world: dict[str, Any], holders: list[dict] | None) -> dict[str, str]:
+    await _open_project(world, IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=holders))
+    for issue, _ in BROWSE_ISSUES.values():
+        await _write(world, [issue])
+    return await _ticket_ids(world)
+
+
+def _browse_readers() -> dict[str, set[str]]:
+    return {key: set(who) for key, (_, who) in BROWSE_ISSUES.items()}
+
+
+async def test_a_reporter_outside_the_project_reads_only_their_own_issues_until_the_holder_goes(
+    world: dict[str, Any],
+) -> None:
+    by_key = await _sync_browse_project(world, [{"type": "reporter"}])
+    assert not await _mismatches(world, _browse_readers(), by_key)
+    # Neither the story nor the sub-task is filed under the epic dave cannot read.
+    assert not {by_key["PROJ-23"], by_key["PROJ-24"]} & await _listed_under(world, "bob", by_key["PROJ-22"])
+
+    world["connector"]._issue_security[PROJECT_ID].browse_holders = []
+    await _write(world, [issue for issue, _ in BROWSE_ISSUES.values()], again=True)
+    assert not await _mismatches(world, dict.fromkeys(by_key, PROJECT_READERS), by_key)
+    assert {by_key["PROJ-23"], by_key["PROJ-24"]} <= await _listed_under(world, "bob", by_key["PROJ-22"])
+
+
+async def test_unread_holders_keep_the_reporter_of_a_stored_issue_in_a_full_sync_too(world: dict[str, Any]) -> None:
+    by_key = await _sync_browse_project(world, [{"type": "reporter"}])
+    connector, processor = world["connector"], world["processor"]
+    connector._issue_security[PROJECT_ID].browse_holders = None
+    run = processor.begin_full_sync_run(world["connector_id"])
+    try:
+        changed = BROWSE_ISSUES["PROJ-21"][0]
+        changed = {**changed, "fields": {**changed["fields"], "updated": "2024-06-17T10:00:00.000+0000"}}
+        await _write(world, [changed, BROWSE_ISSUES["PROJ-23"][0]], again=True)
+    finally:
+        processor.end_full_sync_run(world["connector_id"], run)
+    assert not await _mismatches(world, _browse_readers(), by_key)
+
+
+async def test_while_the_holders_are_unread_a_null_level_keeps_the_reporter_and_a_cleared_one_drops_its_holders(
+    world: dict[str, Any],
+) -> None:
+    """The issue search always returns ``security``: null on an issue without a level. Such an issue keeps its
+    reporter's grant while the holders are unread; one stored with a level loses that level's holders."""
+    by_key = await _sync_browse_project(world, [{"type": "reporter"}])
+    leveled = {**_issue("25", "PROJ-25", "Task", level="10103"), "fields": {
+        **_issue("25", "PROJ-25", "Task", level="10103")["fields"], "updated": "2024-06-16T10:00:00.000+0000"}}
+    world["connector"]._issue_security[PROJECT_ID] = _context(browse_holders=[{"type": "reporter"}])
+    await _write(world, [leveled])
+    by_key = await _ticket_ids(world)
+    assert not await _mismatches(world, {**_browse_readers(), "PROJ-25": set()}, by_key), "dave is in the level, not the project"
+
+    world["connector"]._issue_security[PROJECT_ID] = _context(browse_holders=None)
+    later = "2024-06-17T10:00:00.000+0000"
+    for label in ("PROJ-21", "PROJ-25"):
+        issue = BROWSE_ISSUES[label][0] if label == "PROJ-21" else leveled
+        await _write(world, [{**issue, "fields": {**issue["fields"], "updated": later, "security": None}}])
+    assert not await _mismatches(world, {**_browse_readers(), "PROJ-25": PROJECT_READERS}, by_key)
