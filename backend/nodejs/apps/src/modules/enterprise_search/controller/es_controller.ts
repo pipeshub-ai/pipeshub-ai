@@ -98,7 +98,6 @@ import {
   conversationTitleFromQuery,
   extractModelInfo,
   formatPreviousConversations,
-  StageTimer,
   getPaginationParams,
   olderMessagesWindow,
   sortMessages,
@@ -141,6 +140,7 @@ import {
   resolveProtocol,
 } from '../utils/agui';
 import { emitTurnStarted } from '../utils/compare-turn';
+import { ChatStreamRun, logBadFrame } from '../utils/chat-stream-run';
 import { notifyChatShared } from '../utils/share-notification';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -436,7 +436,6 @@ const redactPageFor = async <M extends ViewerMessage>(
 export const startAIStream = async (
   options: AICommandOptions,
   operation: string,
-  logContext: Record<string, unknown> = {},
   signal?: AbortSignal,
 ): Promise<Readable | undefined> => {
   const aiServiceCommand = new AIServiceCommand(options);
@@ -445,7 +444,7 @@ export const startAIStream = async (
   } catch (error: unknown) {
     // The caller's own cap abandoned the open (see `attachUpstreamAbort`): it already finalized the run.
     if (signal?.aborted) {
-      logger.info('AI service stream open abandoned', logContext);
+      logger.debug('AI service stream open abandoned');
       return undefined;
     }
     // The call line and the error middleware log it; handleBackendError only maps it.
@@ -770,7 +769,7 @@ export const streamChat =
     if (await refuseIfDraining(res)) return;
     const requestId = req.context?.requestId;
     const startTime = Date.now();
-    const timer = new StageTimer();
+    const run = new ChatStreamRun(req, res);
     const userId = req.user?.userId;
     const orgId = req.user?.orgId;
 
@@ -851,12 +850,9 @@ export const streamChat =
       }
 
       const newConversationId = savedConversation._id || '';
+      run.bind({ conversationId: savedConversation._id });
 
-      logger.debug('Initial conversation created', {
-        requestId,
-        conversationId: savedConversation._id,
-        userId,
-      });
+      logger.debug('Initial conversation created');
 
       // Send initial connection event with conversationId + title and flush.
       // Title mirrors the persisted row (initial slice of query); avoids an extra
@@ -893,11 +889,7 @@ export const streamChat =
         })) as Array<{ _id?: string }>;
         return firstRow?._id;
       });
-      timer.mark('conversation_created');
 
-      const { agentMode } = parseChatMode(
-        (req.body as { chatMode?: string }).chatMode,
-      );
       // A new conversation has no stored history; history is never taken from the client (CE-19).
       const aiRequest = buildAiChatRequest({ kind: 'assistant' }, req.body, {
         conversationId: newConversationId,
@@ -923,7 +915,6 @@ export const streamChat =
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
       let buffer = '';
-      let firstAiChunkSeen = false;
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
       /** Guards `onAbandon` against also running after the normal
@@ -931,10 +922,10 @@ export const streamChat =
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
+      const upstreamAbort = attachUpstreamAbort(res, () => {
         if (streamSettled || !savedConversation) return;
         if (completeData || upstreamAiErrorEventForwarded) {
-          runGuarded(finalizeRun, { requestId });
+          runGuarded(finalizeRun);
           return;
         }
         streamSettled = true;
@@ -943,20 +934,14 @@ export const streamChat =
           contentAccumulator.getText(),
           null,
           { parts: contentAccumulator.getParts() },
-        ).catch((err: any) => {
-          logger.error('Failed to save partial conversation on disconnect', {
-            requestId,
-            error: err?.message,
-          });
-        });
+        ).then(
+          () => run.end({ kind: 'abandoned' }),
+          (error: unknown) => run.end({ kind: 'failed', error }),
+        );
       });
-      const stream = await startAIStream(
-        aiCommandOptions,
-        'Chat Stream',
-        { requestId },
-        upstreamAbort.signal,
+      const stream = await run.open(() =>
+        startAIStream(aiCommandOptions, 'Chat Stream', upstreamAbort.signal),
       );
-      timer.mark('ai_stream_open');
 
       if (!stream) {
         if (upstreamAbort.isAborted()) return;
@@ -967,11 +952,7 @@ export const streamChat =
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
-        if (!firstAiChunkSeen) {
-          firstAiChunkSeen = true;
-          timer.mark('ai_first_byte');
-          timer.emit('chat stream (node)', { requestId, agentMode });
-        }
+        run.observe(chunk);
         const chunkStr = chunk.toString();
         buffer += chunkStr;
 
@@ -1010,23 +991,14 @@ export const streamChat =
                 const parsed = JSON.parse(dataLine);
                 if (parsed.result) {
                   completeData = parsed.result;
-                  logger.debug('Captured RUN_FINISHED result from AI backend', {
-                    requestId,
-                    conversationId: savedConversation?._id,
-                    answer: completeData?.answer,
-                    citationsCount: completeData?.citations?.length || 0,
-                  });
+                  run.sawResult(completeData);
                   // DO NOT forward the root RUN_FINISHED — Node re-emits its
                   // own enriched RUN_FINISHED after saving, same as `complete`.
                 } else {
                   filteredChunk += event + '\n\n';
                 }
-              } catch (parseError: any) {
-                logger.error('Failed to parse RUN_FINISHED event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
+              } catch {
+                logBadFrame('RUN_FINISHED', dataLine);
                 filteredChunk += event + '\n\n';
               }
             } else if (
@@ -1057,6 +1029,7 @@ export const streamChat =
                     errorData.message) ||
                   CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
+                run.sawRunError(errorData?.code);
                 if (savedConversation) {
                   void markConversationFailed(
                     savedConversation,
@@ -1069,23 +1042,13 @@ export const streamChat =
                   ).catch((markErr: any) => {
                     logger.error(
                       'Failed to mark conversation from AI RUN_ERROR SSE',
-                      {
-                        requestId,
-                        error: markErr?.message,
-                      },
+                      { error: markErr },
                     );
                   });
                 }
                 filteredChunk += event + '\n\n';
-              } catch (parseError: any) {
-                logger.error(
-                  'Failed to parse RUN_ERROR event data from AI stream',
-                  {
-                    requestId,
-                    parseError: parseError.message,
-                    dataLine,
-                  },
-                );
+              } catch {
+                logBadFrame('RUN_ERROR', dataLine);
                 filteredChunk += event + '\n\n';
               }
             } else if (!agui && eventType === 'complete' && dataLine) {
@@ -1222,19 +1185,12 @@ export const streamChat =
                   ).catch((saveErr: any) => {
                     logger.error(
                       'Failed to persist ask_user_question tool_call message',
-                      {
-                        requestId,
-                        conversationId: savedConversation?._id,
-                        error: saveErr?.message,
-                      },
+                      { error: saveErr },
                     );
                   });
                 }
-              } catch (parseErr: any) {
-                logger.warn('Failed to parse CUSTOM event data', {
-                  requestId,
-                  error: parseErr?.message,
-                });
+              } catch {
+                logBadFrame('CUSTOM', dataLine);
               }
               filteredChunk += event + '\n\n';
             } else if (
@@ -1296,7 +1252,6 @@ export const streamChat =
 
       const finalizeRun = async (): Promise<void> => {
         streamSettled = true;
-        logger.debug('Stream ended successfully', { requestId });
         try {
           // Save the complete conversation data to database
           if (completeData && savedConversation) {
@@ -1327,15 +1282,6 @@ export const streamChat =
                   })
                 : `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
             );
-
-            logger.debug(
-              'Conversation completed and saved, sent custom complete event',
-              {
-                requestId,
-                conversationId: savedConversation._id,
-                duration: Date.now() - startTime,
-              },
-            );
           } else if (!upstreamAiErrorEventForwarded) {
             // Mark as failed if no complete data received (and AI did not already send error SSE)
             if (savedConversation) {
@@ -1359,12 +1305,9 @@ export const streamChat =
                   })}\n\n`,
             );
           }
+          run.end({ kind: 'answered' });
         } catch (dbError: any) {
-          logger.error('Failed to save complete conversation', {
-            requestId,
-            conversationId: savedConversation?._id,
-            error: dbError.message,
-          });
+          run.end({ kind: 'failed', error: dbError });
 
           if (savedConversation) {
             // Awaited but contained: a second failed write must not keep the stream open.
@@ -1377,10 +1320,7 @@ export const streamChat =
             ).catch((markErr: unknown) => {
               logger.error(
                 'Failed to mark conversation as failed after save error',
-                {
-                  requestId,
-                  error: markErr instanceof Error ? markErr.message : markErr,
-                },
+                { error: markErr },
               );
             });
           }
@@ -1401,18 +1341,13 @@ export const streamChat =
         res.end();
       };
       stream.on('end', () => {
-        runGuarded(finalizeRun, { requestId });
+        runGuarded(finalizeRun);
       });
 
       stream.on('error', async (error: Error) => {
-        if (upstreamAbort.isAborted()) {
-          logger.debug('Stream abandoned after the detached-run cap', {
-            requestId,
-          });
-          return;
-        }
+        if (upstreamAbort.isAborted()) return;
         streamSettled = true;
-        logger.error('Stream error', { requestId, error: error.message });
+        run.end({ kind: 'failed', error, fromStream: true });
         try {
           // Mark conversation as failed
           if (savedConversation) {
@@ -1426,9 +1361,7 @@ export const streamChat =
           }
         } catch (dbError: any) {
           logger.error('Failed to mark conversation as failed', {
-            requestId,
-            conversationId: savedConversation?._id,
-            error: dbError.message,
+            error: dbError,
           });
         }
 
@@ -1457,8 +1390,7 @@ export const streamChat =
         }
       } catch (dbError: any) {
         logger.error('Failed to mark conversation as failed in catch block', {
-          requestId,
-          error: dbError.message,
+          error: dbError,
         });
       }
 
@@ -1467,12 +1399,7 @@ export const streamChat =
           'Content-Type': 'text/event-stream; charset=utf-8',
         });
       }
-      const level = logLevelFor(error);
-      logger[level]('Error in streamChat', {
-        requestId,
-        error: error.message,
-        ...(level === 'error' ? { stack: error.stack } : {}),
-      });
+      run.end({ kind: 'failed', error });
       const errorEvent = isAGUI(protocol)
         ? frameAGUI(AGUIEventType.RUN_ERROR, {
             message: userFacingChatError(error),
@@ -1552,6 +1479,7 @@ export const addMessageStream =
     if (await refuseIfDraining(res)) return;
     const requestId = req.context?.requestId;
     const startTime = Date.now();
+    const run = new ChatStreamRun(req, res);
     const userId = req.user?.userId;
     const orgId = req.user?.orgId;
     const { conversationId } = req.params;
@@ -1683,6 +1611,7 @@ export const addMessageStream =
         throw new NotFoundError('Conversation not found');
       }
       const confirmedConversation = existingConversation as ChatSessionDto;
+      run.bind({ conversationId: confirmedConversation._id });
       await emitTurnStarted(res, req.body, confirmedConversation._id, () =>
         Promise.resolve(addedQuestionId),
       );
@@ -1745,10 +1674,10 @@ export const addMessageStream =
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
+      const upstreamAbort = attachUpstreamAbort(res, () => {
         if (streamSettled || !existingConversation) return;
         if (completeData || upstreamAiErrorEventForwarded) {
-          runGuarded(finalizeRun, { requestId });
+          runGuarded(finalizeRun);
           return;
         }
         streamSettled = true;
@@ -1759,18 +1688,17 @@ export const addMessageStream =
           {
             parts: contentAccumulator.getParts(),
           },
-        ).catch((err: any) => {
-          logger.error('Failed to save partial conversation on disconnect', {
-            requestId,
-            error: err?.message,
-          });
-        });
+        ).then(
+          () => run.end({ kind: 'abandoned' }),
+          (error: unknown) => run.end({ kind: 'failed', error }),
+        );
       });
-      const stream = await startAIStream(
-        aiCommandOptions,
-        'Add Message Stream',
-        { requestId },
-        upstreamAbort.signal,
+      const stream = await run.open(() =>
+        startAIStream(
+          aiCommandOptions,
+          'Add Message Stream',
+          upstreamAbort.signal,
+        ),
       );
 
       if (!stream) {
@@ -1782,6 +1710,7 @@ export const addMessageStream =
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
+        run.observe(chunk);
         const chunkStr = chunk.toString();
         buffer += chunkStr;
 
@@ -1819,23 +1748,14 @@ export const addMessageStream =
                 const parsed = JSON.parse(dataLine);
                 if (parsed.result) {
                   completeData = parsed.result;
-                  logger.debug('Captured RUN_FINISHED result from AI backend', {
-                    requestId,
-                    conversationId: existingConversation?._id,
-                    answer: completeData?.answer,
-                    citationsCount: completeData?.citations?.length || 0,
-                  });
+                  run.sawResult(completeData);
                   // DO NOT forward the root RUN_FINISHED — Node re-emits its
                   // own enriched RUN_FINISHED after saving, same as `complete`.
                 } else {
                   filteredChunk += event + '\n\n';
                 }
-              } catch (parseError: any) {
-                logger.error('Failed to parse RUN_FINISHED event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
+              } catch {
+                logBadFrame('RUN_FINISHED', dataLine);
                 filteredChunk += event + '\n\n';
               }
             } else if (
@@ -1861,6 +1781,7 @@ export const addMessageStream =
                 const errorMessage =
                   errorData.message || CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
+                run.sawRunError(errorData?.code);
                 if (existingConversation) {
                   void markConversationFailed(
                     existingConversation,
@@ -1873,20 +1794,13 @@ export const addMessageStream =
                   ).catch((markErr: any) => {
                     logger.error(
                       'Failed to mark conversation from AI RUN_ERROR SSE',
-                      {
-                        requestId,
-                        error: markErr?.message,
-                      },
+                      { error: markErr },
                     );
                   });
                 }
                 filteredChunk += event + '\n\n';
-              } catch (parseError: any) {
-                logger.error('Failed to parse RUN_ERROR event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
+              } catch {
+                logBadFrame('RUN_ERROR', dataLine);
                 filteredChunk += event + '\n\n';
               }
             } else if (!agui && eventType === 'complete' && dataLine) {
@@ -2009,19 +1923,12 @@ export const addMessageStream =
                   ).catch((saveErr: any) => {
                     logger.error(
                       'Failed to persist ask_user_question tool_call message',
-                      {
-                        requestId,
-                        conversationId: existingConversation?._id,
-                        error: saveErr?.message,
-                      },
+                      { error: saveErr },
                     );
                   });
                 }
-              } catch (parseErr: any) {
-                logger.warn('Failed to parse CUSTOM event data', {
-                  requestId,
-                  error: parseErr?.message,
-                });
+              } catch {
+                logBadFrame('CUSTOM', dataLine);
               }
               filteredChunk += event + '\n\n';
             } else if (
@@ -2083,7 +1990,6 @@ export const addMessageStream =
       });
 
       const finalizeRun = async (): Promise<void> => {
-        logger.debug('Stream ended successfully', { requestId });
         streamSettled = true;
         try {
           // Save the AI response to the existing conversation
@@ -2137,15 +2043,6 @@ export const addMessageStream =
                     })
                   : `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
               );
-
-              logger.debug(
-                'Message added and conversation updated, sent custom complete event',
-                {
-                  requestId,
-                  conversationId: existingConversation._id,
-                  duration: Date.now() - startTime,
-                },
-              );
             } catch (error: any) {
               // Update conversation status for general errors
               if (existingConversation) {
@@ -2189,12 +2086,9 @@ export const addMessageStream =
                   })}\n\n`,
             );
           }
+          run.end({ kind: 'answered' });
         } catch (dbError: any) {
-          logger.error('Failed to save AI response to conversation', {
-            requestId,
-            conversationId: existingConversation?._id,
-            error: dbError.message,
-          });
+          run.end({ kind: 'failed', error: dbError });
 
           // Send error event
           res.write(
@@ -2212,18 +2106,13 @@ export const addMessageStream =
         res.end();
       };
       stream.on('end', () => {
-        runGuarded(finalizeRun, { requestId });
+        runGuarded(finalizeRun);
       });
 
       stream.on('error', async (error: Error) => {
-        if (upstreamAbort.isAborted()) {
-          logger.debug('Stream abandoned after the detached-run cap', {
-            requestId,
-          });
-          return;
-        }
+        if (upstreamAbort.isAborted()) return;
         streamSettled = true;
-        logger.error('Stream error', { requestId, error: error.message });
+        run.end({ kind: 'failed', error, fromStream: true });
         try {
           if (existingConversation) {
             await markConversationFailed(
@@ -2236,9 +2125,7 @@ export const addMessageStream =
           }
         } catch (dbError: any) {
           logger.error('Failed to mark conversation as failed', {
-            requestId,
-            conversationId: existingConversation?._id,
-            error: dbError.message,
+            error: dbError,
           });
         }
 
@@ -2254,11 +2141,7 @@ export const addMessageStream =
         res.end();
       });
     } catch (error: any) {
-      logger[logLevelFor(error)]('Error in addMessageStream', {
-        requestId,
-        conversationId,
-        error: error.message,
-      });
+      run.end({ kind: 'failed', error });
 
       try {
         // Mark conversation as failed if it exists
@@ -2275,9 +2158,7 @@ export const addMessageStream =
         }
       } catch (dbError: any) {
         logger.error('Failed to mark conversation as failed in catch block', {
-          requestId,
-          conversationId,
-          error: dbError.message,
+          error: dbError,
         });
       }
 
@@ -3548,6 +3429,7 @@ async function regenerateAnswersInternal(
 ): Promise<void> {
   const requestId = req.context?.requestId;
   const startTime = Date.now();
+  const run = new ChatStreamRun(req, res);
   // The stream outlives the request, so its listeners write outside any transaction.
   const session: Tx | null = null;
   const { conversationId, messageId, agentKey } = req.params;
@@ -3717,6 +3599,7 @@ async function regenerateAnswersInternal(
     if (!validationResult) {
       throw new NotFoundError('Conversation or message not found');
     }
+    run.bind({ conversationId: validationResult.conversation._id, agentKey });
     const userQuery = validationResult.userQuery;
     // Only an edit carries these two; their types are not trusted until read.
     const editBody = req.body as { query?: unknown; attachments?: unknown };
@@ -3991,10 +3874,10 @@ async function regenerateAnswersInternal(
     let streamSettled = false;
     const contentAccumulator = new StreamedContentAccumulator();
 
-    const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
+    const upstreamAbort = attachUpstreamAbort(res, () => {
       if (streamSettled || !existingConversation) return;
       if (completeData || upstreamAiErrorEventForwarded) {
-        runGuarded(finalizeRun, { requestId });
+        runGuarded(finalizeRun);
         return;
       }
       streamSettled = true;
@@ -4004,8 +3887,7 @@ async function regenerateAnswersInternal(
       void (partialText ? saveEditedQuestion() : Promise.resolve())
         .catch((err: unknown) => {
           logger.error('Failed to save the edited question on disconnect', {
-            requestId,
-            error: err instanceof Error ? err.message : String(err),
+            error: err,
           });
         })
         .then(() =>
@@ -4017,19 +3899,18 @@ async function regenerateAnswersInternal(
         .then(async () => {
           await dropReplacedTurn();
         })
-        .catch((err: unknown) => {
-          logger.error('Failed to save partial conversation on disconnect', {
-            requestId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        })
+        .then(
+          () => run.end({ kind: 'abandoned' }),
+          (error: unknown) => run.end({ kind: 'failed', error }),
+        )
         .finally(() => releaseRun(reservation));
     });
-    const stream = await startAIStream(
-      aiCommandOptions,
-      'Regenerate Answers Stream',
-      { requestId },
-      upstreamAbort.signal,
+    const stream = await run.open(() =>
+      startAIStream(
+        aiCommandOptions,
+        'Regenerate Answers Stream',
+        upstreamAbort.signal,
+      ),
     );
 
     if (!stream) {
@@ -4041,6 +3922,7 @@ async function regenerateAnswersInternal(
 
     // Process SSE events, capture complete event, and forward non-complete events
     stream.on('data', (chunk: Buffer) => {
+      run.observe(chunk);
       buffer = handleRegenerationStreamData(
         chunk,
         buffer,
@@ -4051,17 +3933,13 @@ async function regenerateAnswersInternal(
         res,
         (data: IAIResponse) => {
           completeData = data;
-          logger.debug('Captured complete event data from AI backend', {
-            requestId,
-            conversationId: existingConversation?._id,
-            answer: completeData?.answer,
-            citationsCount: completeData?.citations?.length || 0,
-          });
+          run.sawResult(completeData);
         },
         protocol,
         contentAccumulator,
-        () => {
+        (code: unknown) => {
           upstreamAiErrorEventForwarded = true;
+          run.sawRunError(code);
         },
         (payload: unknown) => {
           askUserQuestionPayload = payload;
@@ -4071,7 +3949,6 @@ async function regenerateAnswersInternal(
 
     const finalizeRun = async (): Promise<void> => {
       streamSettled = true;
-      logger.debug('Stream ended successfully', { requestId });
       try {
         // Save the AI response to the conversation, replacing the existing message
         // A failed save is handled once, by the catch below: one error frame, one saved reason.
@@ -4138,16 +4015,6 @@ async function regenerateAnswersInternal(
             protocol,
             searchDegradedMeta(completeData),
           );
-
-          logger.debug(
-            'Answer regenerated and conversation updated, sent custom complete event',
-            {
-              requestId,
-              conversationId: existingConversation._id,
-              messageId,
-              duration: Date.now() - startTime,
-            },
-          );
         } else if (!upstreamAiErrorEventForwarded) {
           // Mark as failed if no complete data received
           if (existingConversation && messageId) {
@@ -4201,12 +4068,9 @@ async function regenerateAnswersInternal(
             );
           }
         }
+        run.end({ kind: 'answered' });
       } catch (dbError: any) {
-        logger.error('Failed to save regenerated AI response to conversation', {
-          requestId,
-          conversationId: existingConversation?._id,
-          error: dbError.message,
-        });
+        run.end({ kind: 'failed', error: dbError });
         await restoreOriginalQuestion();
 
         const errorMessage =
@@ -4260,10 +4124,7 @@ async function regenerateAnswersInternal(
           } catch (replaceError: any) {
             logger.error(
               'Failed to replace message with error in dbError catch',
-              {
-                requestId,
-                error: replaceError.message,
-              },
+              { error: replaceError },
             );
             await sendSSEErrorEvent(
               res,
@@ -4288,21 +4149,13 @@ async function regenerateAnswersInternal(
       res.end();
     };
     stream.on('end', () => {
-      runGuarded(finalizeRun, { requestId });
+      runGuarded(finalizeRun);
     });
 
     stream.on('error', async (error: Error) => {
-      if (upstreamAbort.isAborted()) {
-        logger.debug('Stream abandoned after the detached-run cap', {
-          requestId,
-        });
-        return;
-      }
+      if (upstreamAbort.isAborted()) return;
       streamSettled = true;
-      logger.error('Stream error in regenerateAnswers', {
-        requestId,
-        error: error.message,
-      });
+      run.end({ kind: 'failed', error, fromStream: true });
       try {
         await handleRegenerationError(
           res,
@@ -4318,9 +4171,7 @@ async function regenerateAnswersInternal(
         );
       } catch (dbError: any) {
         logger.error('Failed to replace message with error', {
-          requestId,
-          conversationId: existingConversation?._id,
-          error: dbError.message,
+          error: dbError,
         });
         await sendSSEErrorEvent(
           res,
@@ -4334,14 +4185,7 @@ async function regenerateAnswersInternal(
       res.end();
     });
   } catch (error: any) {
-    const level = logLevelFor(error);
-    logger[level]('Error in regenerateAnswers', {
-      requestId,
-      conversationId,
-      messageId,
-      error: error.message,
-      ...(level === 'error' ? { stack: error.stack } : {}),
-    });
+    run.end({ kind: 'failed', error });
 
     if (!res.headersSent) {
       res.writeHead(500, {
@@ -4364,9 +4208,7 @@ async function regenerateAnswersInternal(
       );
     } catch (dbError: any) {
       logger.error('Failed to mark conversation as failed in catch block', {
-        requestId,
-        conversationId,
-        error: dbError.message,
+        error: dbError,
       });
       await sendSSEErrorEvent(
         res,
@@ -6574,6 +6416,7 @@ export const streamAgentConversation =
     if (await refuseIfDraining(res)) return;
     const requestId = req.context?.requestId;
     const startTime = Date.now();
+    const run = new ChatStreamRun(req, res);
     let userId: string | undefined;
     let orgId: string | undefined;
     if ('user' in req) {
@@ -6673,13 +6516,9 @@ export const streamAgentConversation =
       }
 
       const newAgentConversationId = savedConversation._id || '';
+      run.bind({ conversationId: savedConversation._id, agentKey });
 
-      logger.debug('Initial conversation created', {
-        requestId,
-        conversationId: savedConversation._id,
-        userId,
-        agentKey,
-      });
+      logger.debug('Initial conversation created');
 
       // Send initial connection event with conversationId + title and flush.
       // Title mirrors the persisted agent-conversation row; avoids a heavy fetch
@@ -6746,10 +6585,10 @@ export const streamAgentConversation =
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
+      const upstreamAbort = attachUpstreamAbort(res, () => {
         if (streamSettled || !savedConversation) return;
         if (completeData || upstreamAiErrorEventForwarded) {
-          runGuarded(finalizeRun, { requestId });
+          runGuarded(finalizeRun);
           return;
         }
         streamSettled = true;
@@ -6758,18 +6597,17 @@ export const streamAgentConversation =
           contentAccumulator.getText(),
           null,
           { parts: contentAccumulator.getParts() },
-        ).catch((err: any) => {
-          logger.error('Failed to save partial conversation on disconnect', {
-            requestId,
-            error: err?.message,
-          });
-        });
+        ).then(
+          () => run.end({ kind: 'abandoned' }),
+          (error: unknown) => run.end({ kind: 'failed', error }),
+        );
       });
-      const stream = await startAIStream(
-        aiCommandOptions,
-        'Agent Chat Stream',
-        { requestId, agentKey },
-        upstreamAbort.signal,
+      const stream = await run.open(() =>
+        startAIStream(
+          aiCommandOptions,
+          'Agent Chat Stream',
+          upstreamAbort.signal,
+        ),
       );
 
       if (!stream) {
@@ -6781,6 +6619,7 @@ export const streamAgentConversation =
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
+        run.observe(chunk);
         const chunkStr = chunk.toString();
         buffer += chunkStr;
 
@@ -6819,24 +6658,14 @@ export const streamAgentConversation =
                 const parsed = JSON.parse(dataLine);
                 if (parsed.result) {
                   completeData = parsed.result;
-                  logger.debug('Captured RUN_FINISHED result from AI backend', {
-                    requestId,
-                    conversationId: savedConversation?._id,
-                    answer: completeData?.answer,
-                    citationsCount: completeData?.citations?.length || 0,
-                    agentKey,
-                  });
+                  run.sawResult(completeData);
                   // DO NOT forward the root RUN_FINISHED — Node re-emits its
                   // own enriched RUN_FINISHED after saving, same as `complete`.
                 } else {
                   filteredChunk += event + '\n\n';
                 }
-              } catch (parseError: any) {
-                logger.error('Failed to parse RUN_FINISHED event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
+              } catch {
+                logBadFrame('RUN_FINISHED', dataLine);
                 filteredChunk += event + '\n\n';
               }
             } else if (
@@ -6867,6 +6696,7 @@ export const streamAgentConversation =
                     errorData.message) ||
                   CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
+                run.sawRunError(errorData?.code);
                 if (savedConversation) {
                   void markAgentConversationFailed(
                     savedConversation,
@@ -6879,23 +6709,13 @@ export const streamAgentConversation =
                   ).catch((markErr: any) => {
                     logger.error(
                       'Failed to mark agent conversation from AI RUN_ERROR SSE',
-                      {
-                        requestId,
-                        error: markErr?.message,
-                      },
+                      { error: markErr },
                     );
                   });
                 }
                 filteredChunk += event + '\n\n';
-              } catch (parseError: any) {
-                logger.error(
-                  'Failed to parse RUN_ERROR event data from AI stream',
-                  {
-                    requestId,
-                    parseError: parseError.message,
-                    dataLine,
-                  },
-                );
+              } catch {
+                logBadFrame('RUN_ERROR', dataLine);
                 filteredChunk += event + '\n\n';
               }
             } else if (
@@ -6930,19 +6750,12 @@ export const streamAgentConversation =
                   ).catch((saveErr: any) => {
                     logger.error(
                       'Failed to persist ask_user_question tool_call message',
-                      {
-                        requestId,
-                        conversationId: savedConversation?._id,
-                        error: saveErr?.message,
-                      },
+                      { error: saveErr },
                     );
                   });
                 }
-              } catch (parseErr: any) {
-                logger.warn('Failed to parse CUSTOM event data', {
-                  requestId,
-                  error: parseErr?.message,
-                });
+              } catch {
+                logBadFrame('CUSTOM', dataLine);
               }
               filteredChunk += event + '\n\n';
             } else if (!agui && eventType === 'complete' && dataLine) {
@@ -7109,7 +6922,6 @@ export const streamAgentConversation =
 
       const finalizeRun = async (): Promise<void> => {
         streamSettled = true;
-        logger.debug('Stream ended successfully', { requestId });
         try {
           // Save the complete conversation data to database
           if (completeData && savedConversation) {
@@ -7140,16 +6952,6 @@ export const streamAgentConversation =
                   })
                 : `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
             );
-
-            logger.debug(
-              'Conversation completed and saved, sent custom complete event',
-              {
-                requestId,
-                conversationId: savedConversation._id,
-                duration: Date.now() - startTime,
-                agentKey,
-              },
-            );
           } else if (!upstreamAiErrorEventForwarded) {
             // Mark as failed if no complete data received (and AI did not already send error SSE)
             if (savedConversation) {
@@ -7173,13 +6975,9 @@ export const streamAgentConversation =
                   })}\n\n`,
             );
           }
+          run.end({ kind: 'answered' });
         } catch (dbError: any) {
-          logger.error('Failed to save complete conversation', {
-            requestId,
-            conversationId: savedConversation?._id,
-            agentKey,
-            error: dbError.message,
-          });
+          run.end({ kind: 'failed', error: dbError });
 
           if (savedConversation) {
             // Awaited but contained: a second failed write must not keep the stream open.
@@ -7192,10 +6990,7 @@ export const streamAgentConversation =
             ).catch((markErr: unknown) => {
               logger.error(
                 'Failed to mark agent conversation as failed after save error',
-                {
-                  requestId,
-                  error: markErr instanceof Error ? markErr.message : markErr,
-                },
+                { error: markErr },
               );
             });
           }
@@ -7216,18 +7011,13 @@ export const streamAgentConversation =
         res.end();
       };
       stream.on('end', () => {
-        runGuarded(finalizeRun, { requestId });
+        runGuarded(finalizeRun);
       });
 
       stream.on('error', async (error: Error) => {
-        if (upstreamAbort.isAborted()) {
-          logger.debug('Stream abandoned after the detached-run cap', {
-            requestId,
-          });
-          return;
-        }
+        if (upstreamAbort.isAborted()) return;
         streamSettled = true;
-        logger.error('Stream error', { requestId, error: error.message });
+        run.end({ kind: 'failed', error, fromStream: true });
         try {
           // Mark conversation as failed
           if (savedConversation) {
@@ -7239,10 +7029,7 @@ export const streamAgentConversation =
           }
         } catch (dbError: any) {
           logger.error('Failed to mark conversation as failed', {
-            requestId,
-            conversationId: savedConversation?._id,
-            agentKey,
-            error: dbError.message,
+            error: dbError,
           });
         }
 
@@ -7258,10 +7045,7 @@ export const streamAgentConversation =
         res.end();
       });
     } catch (error: any) {
-      logger[logLevelFor(error)]('Error in streamChat', {
-        requestId,
-        error: error.message,
-      });
+      run.end({ kind: 'failed', error });
 
       try {
         // Mark conversation as failed if it was created
@@ -7274,8 +7058,7 @@ export const streamAgentConversation =
         }
       } catch (dbError: any) {
         logger.error('Failed to mark conversation as failed in catch block', {
-          requestId,
-          error: dbError.message,
+          error: dbError,
         });
       }
 
@@ -7323,6 +7106,7 @@ export const addMessageStreamToAgentConversation =
     if (await refuseIfDraining(res)) return;
     const requestId = req.context?.requestId;
     const startTime = Date.now();
+    const run = new ChatStreamRun(req, res);
     let userId: string | undefined;
     let orgId: string | undefined;
     if ('user' in req) {
@@ -7472,6 +7256,7 @@ export const addMessageStreamToAgentConversation =
         throw new NotFoundError('Conversation not found');
       }
       const confirmedConversation = existingConversation as ChatSessionDto;
+      run.bind({ conversationId: confirmedConversation._id, agentKey });
 
       // Format previous conversations for context (excluding the user message we just added)
       const accessMemo = newReadable();
@@ -7535,10 +7320,10 @@ export const addMessageStreamToAgentConversation =
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
+      const upstreamAbort = attachUpstreamAbort(res, () => {
         if (streamSettled || !existingConversation) return;
         if (completeData || upstreamAiErrorEventForwarded) {
-          runGuarded(finalizeRun, { requestId });
+          runGuarded(finalizeRun);
           return;
         }
         streamSettled = true;
@@ -7549,18 +7334,17 @@ export const addMessageStreamToAgentConversation =
           {
             parts: contentAccumulator.getParts(),
           },
-        ).catch((err: any) => {
-          logger.error('Failed to save partial conversation on disconnect', {
-            requestId,
-            error: err?.message,
-          });
-        });
+        ).then(
+          () => run.end({ kind: 'abandoned' }),
+          (error: unknown) => run.end({ kind: 'failed', error }),
+        );
       });
-      const stream = await startAIStream(
-        aiCommandOptions,
-        'Add Message Agent Stream',
-        { requestId, agentKey },
-        upstreamAbort.signal,
+      const stream = await run.open(() =>
+        startAIStream(
+          aiCommandOptions,
+          'Add Message Agent Stream',
+          upstreamAbort.signal,
+        ),
       );
 
       if (!stream) {
@@ -7572,6 +7356,7 @@ export const addMessageStreamToAgentConversation =
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
+        run.observe(chunk);
         const chunkStr = chunk.toString();
         buffer += chunkStr;
 
@@ -7609,23 +7394,14 @@ export const addMessageStreamToAgentConversation =
                 const parsed = JSON.parse(dataLine);
                 if (parsed.result) {
                   completeData = parsed.result;
-                  logger.debug('Captured RUN_FINISHED result from AI backend', {
-                    requestId,
-                    conversationId: existingConversation?._id,
-                    answer: completeData?.answer,
-                    citationsCount: completeData?.citations?.length || 0,
-                  });
+                  run.sawResult(completeData);
                   // DO NOT forward the root RUN_FINISHED — Node re-emits its
                   // own enriched RUN_FINISHED after saving, same as `complete`.
                 } else {
                   filteredChunk += event + '\n\n';
                 }
-              } catch (parseError: any) {
-                logger.error('Failed to parse RUN_FINISHED event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
+              } catch {
+                logBadFrame('RUN_FINISHED', dataLine);
                 filteredChunk += event + '\n\n';
               }
             } else if (
@@ -7651,6 +7427,7 @@ export const addMessageStreamToAgentConversation =
                 const errorMessage =
                   errorData.message || CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
+                run.sawRunError(errorData?.code);
                 if (existingConversation) {
                   void markAgentConversationFailed(
                     existingConversation,
@@ -7663,20 +7440,13 @@ export const addMessageStreamToAgentConversation =
                   ).catch((markErr: any) => {
                     logger.error(
                       'Failed to mark agent conversation from AI RUN_ERROR SSE',
-                      {
-                        requestId,
-                        error: markErr?.message,
-                      },
+                      { error: markErr },
                     );
                   });
                 }
                 filteredChunk += event + '\n\n';
-              } catch (parseError: any) {
-                logger.error('Failed to parse RUN_ERROR event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
+              } catch {
+                logBadFrame('RUN_ERROR', dataLine);
                 filteredChunk += event + '\n\n';
               }
             } else if (
@@ -7711,19 +7481,12 @@ export const addMessageStreamToAgentConversation =
                   ).catch((saveErr: any) => {
                     logger.error(
                       'Failed to persist ask_user_question tool_call message',
-                      {
-                        requestId,
-                        conversationId: existingConversation?._id,
-                        error: saveErr?.message,
-                      },
+                      { error: saveErr },
                     );
                   });
                 }
-              } catch (parseErr: any) {
-                logger.warn('Failed to parse CUSTOM event data', {
-                  requestId,
-                  error: parseErr?.message,
-                });
+              } catch {
+                logBadFrame('CUSTOM', dataLine);
               }
               filteredChunk += event + '\n\n';
             } else if (!agui && eventType === 'complete' && dataLine) {
@@ -7872,7 +7635,6 @@ export const addMessageStreamToAgentConversation =
       });
 
       const finalizeRun = async (): Promise<void> => {
-        logger.debug('Stream ended successfully', { requestId });
         streamSettled = true;
         try {
           // Save the AI response to the existing conversation
@@ -7926,15 +7688,6 @@ export const addMessageStreamToAgentConversation =
                     })
                   : `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
               );
-
-              logger.debug(
-                'Message added and conversation updated, sent custom complete event',
-                {
-                  requestId,
-                  conversationId: existingConversation._id,
-                  duration: Date.now() - startTime,
-                },
-              );
             } catch (error: any) {
               if (existingConversation) {
                 await markAgentConversationFailed(
@@ -7977,12 +7730,9 @@ export const addMessageStreamToAgentConversation =
                   })}\n\n`,
             );
           }
+          run.end({ kind: 'answered' });
         } catch (dbError: any) {
-          logger.error('Failed to save AI response to conversation', {
-            requestId,
-            conversationId: existingConversation?._id,
-            error: dbError.message,
-          });
+          run.end({ kind: 'failed', error: dbError });
 
           // Send error event
           res.write(
@@ -8000,18 +7750,13 @@ export const addMessageStreamToAgentConversation =
         res.end();
       };
       stream.on('end', () => {
-        runGuarded(finalizeRun, { requestId });
+        runGuarded(finalizeRun);
       });
 
       stream.on('error', async (error: Error) => {
-        if (upstreamAbort.isAborted()) {
-          logger.debug('Stream abandoned after the detached-run cap', {
-            requestId,
-          });
-          return;
-        }
+        if (upstreamAbort.isAborted()) return;
         streamSettled = true;
-        logger.error('Stream error', { requestId, error: error.message });
+        run.end({ kind: 'failed', error, fromStream: true });
         try {
           if (existingConversation) {
             // Awaited so the catch below actually observes a rejection.
@@ -8023,10 +7768,7 @@ export const addMessageStreamToAgentConversation =
           }
         } catch (dbError: any) {
           logger.error('Failed to mark conversation as failed', {
-            requestId,
-            conversationId: existingConversation?._id,
-            agentKey,
-            error: dbError.message,
+            error: dbError,
           });
         }
 
@@ -8042,12 +7784,7 @@ export const addMessageStreamToAgentConversation =
         res.end();
       });
     } catch (error: any) {
-      logger[logLevelFor(error)]('Error in addMessageStream', {
-        requestId,
-        conversationId,
-        agentKey,
-        error: error.message,
-      });
+      run.end({ kind: 'failed', error });
 
       try {
         if (existingConversation) {
@@ -8063,10 +7800,7 @@ export const addMessageStreamToAgentConversation =
         }
       } catch (dbError: any) {
         logger.error('Failed to mark conversation as failed in catch block', {
-          requestId,
-          conversationId,
-          agentKey,
-          error: dbError.message,
+          error: dbError,
         });
       }
 

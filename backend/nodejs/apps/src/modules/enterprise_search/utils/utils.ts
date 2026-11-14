@@ -53,6 +53,7 @@ import {
   SSEProtocol,
 } from './agui';
 import { StreamedContentAccumulator } from './stream-lifecycle';
+import { logBadFrame } from './chat-stream-run';
 import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
@@ -1799,7 +1800,6 @@ const failConversation = async (
     logger.error(`Failed to save ${noun} error state`, {
       conversationId: conversation._id,
       agentKey: conversation.agentKey,
-      failReason,
     });
   }
 };
@@ -1824,7 +1824,6 @@ export const markConversationFailed = async (
     );
     logger.debug('Conversation marked as failed', {
       conversationId: conversation._id,
-      failReason,
     });
   } catch (error: any) {
     logger.error('Error marking conversation as failed', {
@@ -1958,14 +1957,12 @@ export const replaceMessageWithError = async (
       logger.error('Failed to replace message with error', {
         conversationId: conversation._id,
         messageId,
-        errorMessage,
       });
     }
 
     logger.debug('Message replaced with error', {
       conversationId: conversation._id,
       messageId,
-      errorMessage,
     });
   } catch (error: any) {
     logger.error('Error replacing message with error', {
@@ -2030,7 +2027,6 @@ export const markAgentConversationFailed = async (
     logger.debug('Agent conversation marked as failed', {
       conversationId: conversation._id,
       agentKey: conversation.agentKey,
-      failReason,
     });
   } catch (error: any) {
     logger.error('Failed to mark agent conversation as failed', {
@@ -2243,7 +2239,7 @@ export const handleRegenerationStreamData = (
   onCompleteData: (data: IAIResponse) => void,
   protocol?: SSEProtocol,
   accumulator?: StreamedContentAccumulator,
-  onUpstreamError?: () => void,
+  onUpstreamError?: (code: unknown) => void,
   onAskUserQuestion?: (payload: unknown) => void,
 ): string => {
   const chunkStr = chunk.toString();
@@ -2277,12 +2273,8 @@ export const handleRegenerationStreamData = (
         try {
           const parsed = JSON.parse(dataLine);
           onCompleteData(parsed.result ?? parsed);
-        } catch (parseError: any) {
-          logger.error('Failed to parse RUN_FINISHED event data', {
-            requestId,
-            parseError: parseError.message,
-            dataLine,
-          });
+        } catch {
+          logBadFrame('RUN_FINISHED', dataLine);
           filteredChunk += event + '\n\n';
         }
       } else if (
@@ -2301,7 +2293,7 @@ export const handleRegenerationStreamData = (
       } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
         try {
           const errorData = JSON.parse(dataLine);
-          onUpstreamError?.();
+          onUpstreamError?.(errorData?.code);
           if (existingConversation && messageId) {
             const errorMessage =
               errorData.message || CHAT_ERROR_MESSAGES.failed;
@@ -2312,20 +2304,13 @@ export const handleRegenerationStreamData = (
               session,
               'streaming_error',
               errorData.stack,
-            ).catch((err) => {
-              logger.error('Failed to replace message with error', {
-                requestId,
-                error: err.message,
-              });
+            ).catch((error: unknown) => {
+              logger.error('Failed to replace message with error', { error });
             });
           }
           filteredChunk += event + '\n\n';
-        } catch (parseError: any) {
-          logger.error('Failed to parse RUN_ERROR event data', {
-            requestId,
-            parseError: parseError.message,
-            dataLine,
-          });
+        } catch {
+          logBadFrame('RUN_ERROR', dataLine);
           filteredChunk += event + '\n\n';
         }
       } else if (
@@ -2340,11 +2325,8 @@ export const handleRegenerationStreamData = (
             const payload = eventData.value.toolData ?? eventData.value;
             onAskUserQuestion?.(payload);
           }
-        } catch (parseErr: any) {
-          logger.warn('Failed to parse CUSTOM event data during regenerate', {
-            requestId,
-            error: parseErr?.message,
-          });
+        } catch {
+          logBadFrame('CUSTOM', dataLine);
         }
         filteredChunk += event + '\n\n';
       } else if (!agui && eventType === 'complete' && dataLine) {
@@ -2372,7 +2354,7 @@ export const handleRegenerationStreamData = (
         }
         filteredChunk += event + '\n\n';
       } else if (!agui && eventType === 'error' && dataLine) {
-        onUpstreamError?.();
+        onUpstreamError?.('streaming_error');
         try {
           const errorData = JSON.parse(dataLine);
           if (existingConversation && messageId) {
@@ -2649,38 +2631,3 @@ export const handleRegenerationError = async (
     );
   }
 };
-
-/**
- * Monotonic stage timings for one streaming chat request, emitted as a single
- * log line. Pairs with the Python `StageTimer` so the Node and Python halves of
- * a request can be read side by side.
- */
-export class StageTimer {
-  private readonly t0 = process.hrtime.bigint();
-  private last = this.t0;
-  private readonly marks: Array<[string, number]> = [];
-  private emitted = false;
-
-  mark(stage: string): void {
-    const now = process.hrtime.bigint();
-    this.marks.push([stage, Number(now - this.last) / 1e6]);
-    this.last = now;
-  }
-
-  get totalMs(): number {
-    return Number(process.hrtime.bigint() - this.t0) / 1e6;
-  }
-
-  /** Safe to call more than once; only the first call logs. */
-  emit(label: string, extra: Record<string, unknown> = {}): void {
-    if (this.emitted) return;
-    this.emitted = true;
-    const stages = this.marks
-      .map(([n, ms]) => `${n}=${ms.toFixed(0)}ms`)
-      .join(' ');
-    logger.info(
-      `⏱ ${label} total=${this.totalMs.toFixed(0)}ms | ${stages}`,
-      extra,
-    );
-  }
-}
