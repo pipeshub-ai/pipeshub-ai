@@ -3643,16 +3643,21 @@ class GoogleDriveTeamConnector(BaseConnector):
             admitted |= {e.lower() for e in people}
         return admitted
 
-    @staticmethod
-    def _audience_admits(managed: tuple | None, email: str) -> bool:
-        """Whether a domain or everyone share on the list admits the person."""
+    def _audience_admits(self, managed: tuple | None, email: str) -> bool:
+        """Whether a domain or everyone share on the list admits the person. A domain share also admits the people
+        of the other verified domains Google has shown it reaches, who are in its group (`_audience_members`). Raises
+        when that group's people are not known this run: who it admits is unknown, so nothing may go."""
         for p in (managed[0] if managed is not None else ()):
             group = p.external_id if p.entity_type == EntityType.GROUP else None
             if group == ALL_MEMBERS_GROUP_ID:
                 return True
-            if group and group.startswith(DOMAIN_MEMBERS_GROUP_PREFIX) and (
-                group[len(DOMAIN_MEMBERS_GROUP_PREFIX):].lower() == _email_domain(email)
-            ):
+            if not group or not group.startswith(DOMAIN_MEMBERS_GROUP_PREFIX):
+                continue
+            if group[len(DOMAIN_MEMBERS_GROUP_PREFIX):].lower() == _email_domain(email):
+                return True
+            if group not in self._audience_members:
+                raise RuntimeError(f"The people of audience group {group} are not known this run")
+            if email in self._audience_members[group]:
                 return True
         return False
 

@@ -3534,6 +3534,24 @@ async def test_google_answers_that_a_share_with_a_domain_reaches_the_other_domai
     assert reach(ws) is True and reach_domains(ws) == ["example.com", "labs.example.org"]
 
 
+async def test_a_member_a_domain_share_reaches_from_another_domain_keeps_their_grant_below_a_folder_turning_limited(
+    ws: Workspace,
+) -> None:
+    two_domains(ws, reach_all=True)
+    ws.records.active_users = [*ws.records.active_users, User(id="u-labs", email=LABS, is_active=True)]
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", LABS: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("g", "g.txt", parent="dir", perms=[discoverable("domain", domain="example.com")])
+    await settle(ws)
+    assert reach(ws) is True and LABS in domain_members(ws, "example.com")
+    _old_style_grant(ws, "g", LABS)
+
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+
+    assert LABS in ws.records.perm_emails("g"), "the share with example.com reaches him, so his grant is not a stand-in"
+
+
 async def test_google_answers_that_a_share_with_a_domain_reaches_its_own_people_only(ws: Workspace) -> None:
     two_domains(ws, reach_all=False)
     await settle(ws)
