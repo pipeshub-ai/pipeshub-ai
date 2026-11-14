@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from logging import getLogger
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,7 +20,11 @@ from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_ke
 from app.services.messaging.lanes.hash_router import RedisLaneRouter, stable_lane
 from app.services.messaging.lanes.interface import DEFAULT_LANE_KEY, LaneConfig
 from app.services.messaging.lanes.producer import LaneAwareProducer
-from app.services.messaging.redis_streams.backlog import read_stream_backlog
+from app.services.messaging.redis_streams.backlog import (
+    PendingBounds,
+    read_stream_backlog,
+    read_stream_backlog_detail,
+)
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
@@ -139,6 +144,158 @@ class TestReadStreamBacklog:
 
         assert await read_stream_backlog(Counting(), GROUP, [STREAM]) == {STREAM: 1000.0}
         assert sorted(calls) == ["xinfo_groups", "xpending", "xrange"]
+
+
+async def _deliver_to(redis, consumer: str, count: int, stream: str = STREAM) -> list[str]:
+    batches = await redis.xreadgroup(GROUP, consumer, {stream: ">"}, count=count)
+    return [entry_id for _stream, entries in batches for entry_id, _fields in entries]
+
+
+async def _now_ms(redis) -> int:
+    seconds, microseconds = await redis.time()
+    return int(seconds) * 1000 + int(microseconds) // 1000
+
+
+class _ReportsSilent:
+    """The client, except that ``name`` is reported as not having touched the
+    group for an hour (its entries keep their real, fresh idle time)."""
+
+    def __init__(self, redis, name: str) -> None:
+        self._redis = redis
+        self._name = name
+
+    def __getattr__(self, attr: str):  # noqa: ANN204
+        return getattr(self._redis, attr)
+
+    async def xinfo_consumers(self, stream: str, group: str) -> list[dict]:
+        return [
+            {**c, "idle": 3_600_000} if c["name"] == self._name else c
+            for c in await self._redis.xinfo_consumers(stream, group)
+        ]
+
+
+class TestPendingOfAStoppedConsumer:
+    """A consumer that stopped leaves its pending entries behind until a live one
+    reclaims them. They must not hold back the stranded-record sweep for ever."""
+
+    async def test_a_stopped_owners_entries_do_not_count_as_live_work(self, redis) -> None:
+        await _add(redis, 1000, 2000, 3000)
+        await _deliver_to(redis, "stopped", 2)
+        await asyncio.sleep(0.2)
+        await _deliver_to(redis, "live", 1)
+
+        detail = await read_stream_backlog_detail(
+            redis, GROUP, [STREAM], PendingBounds(stale_owner_after_ms=100)
+        )
+
+        assert detail.oldest_ms == {STREAM: 1000.0}
+        assert detail.oldest_live_ms == {STREAM: 3000.0}
+        assert detail.oldest_pending_ms == {STREAM: 1000.0}
+        stale = detail.stale[STREAM]
+        assert set(stale.owners) == {"stopped"}
+        assert stale.owners["stopped"][0] == 2
+        assert stale.owners["stopped"][1] >= 100
+        assert stale.oldest_ms == 1000.0
+
+    async def test_undelivered_work_still_counts_behind_a_stopped_owner(self, redis) -> None:
+        await _add(redis, 1000, 2000, 3000)
+        await _deliver_to(redis, "stopped", 1)
+        await asyncio.sleep(0.2)
+
+        detail = await read_stream_backlog_detail(
+            redis, GROUP, [STREAM], PendingBounds(stale_owner_after_ms=100)
+        )
+
+        assert detail.oldest_live_ms == {STREAM: 2000.0}
+
+    async def test_only_a_stopped_owner_leaves_the_lane_with_nothing_live(self, redis) -> None:
+        await _add(redis, 1000, 2000)
+        await _deliver_to(redis, "stopped", 2)
+        await asyncio.sleep(0.2)
+
+        detail = await read_stream_backlog_detail(
+            redis, GROUP, [STREAM], PendingBounds(stale_owner_after_ms=100)
+        )
+
+        assert detail.oldest_ms == {STREAM: 1000.0}
+        assert detail.oldest_live_ms == {}
+
+    async def test_a_live_owner_keeps_its_entries_counted(self, redis) -> None:
+        """A consumer working through its buffer touches the group every few
+        seconds: its pending entries are real work, as before."""
+        await _add(redis, 1000, 2000)
+        await _deliver_to(redis, "live", 2)
+
+        detail = await read_stream_backlog_detail(
+            redis, GROUP, [STREAM], PendingBounds(stale_owner_after_ms=60_000)
+        )
+
+        assert detail.oldest_live_ms == detail.oldest_ms == {STREAM: 1000.0}
+        assert detail.stale == {}
+
+    async def test_entries_older_than_the_cap_do_not_count_for_a_silent_owner(self, redis) -> None:
+        now = await _now_ms(redis)
+        hour = 3_600_000
+        await _add(redis, now - 30 * hour, now - 2 * hour)
+        await _deliver_to(redis, "quiet", 2)
+
+        detail = await read_stream_backlog_detail(
+            _ReportsSilent(redis, "quiet"), GROUP, [STREAM],
+            PendingBounds(stale_owner_after_ms=60_000, max_age_ms=24 * hour),
+        )
+
+        assert detail.oldest_ms == {STREAM: float(now - 30 * hour)}
+        assert detail.oldest_live_ms == {STREAM: float(now - 2 * hour)}
+        assert detail.stale[STREAM].too_old
+        assert detail.stale[STREAM].owners == {}
+
+    async def test_the_cap_never_discounts_an_owner_that_is_active(self, redis) -> None:
+        now = await _now_ms(redis)
+        hour = 3_600_000
+        await _add(redis, now - 30 * hour)
+        await _deliver_to(redis, "live", 1)
+
+        detail = await read_stream_backlog_detail(
+            redis, GROUP, [STREAM], PendingBounds(stale_owner_after_ms=60_000, max_age_ms=24 * hour)
+        )
+
+        assert detail.oldest_live_ms == {STREAM: float(now - 30 * hour)}
+        assert detail.stale == {}
+
+    async def test_a_silent_owner_that_keeps_its_entries_fresh_is_not_stopped(self, redis) -> None:
+        """Its loop paused (a slow import, say) but its entries were refreshed:
+        the broker shows it alive, whatever the entries' age."""
+        await _add(redis, 1000, 2000)
+        await _deliver_to(redis, "paused", 2)
+
+        detail = await read_stream_backlog_detail(
+            _ReportsSilent(redis, "paused"), GROUP, [STREAM], PendingBounds(stale_owner_after_ms=60_000)
+        )
+
+        assert detail.oldest_live_ms == {STREAM: 1000.0}
+        assert detail.stale == {}
+
+    async def test_without_bounds_the_reading_is_unchanged(self, redis) -> None:
+        await _add(redis, 1000, 2000)
+        await _deliver_to(redis, "stopped", 1)
+        await asyncio.sleep(0.2)
+
+        detail = await read_stream_backlog_detail(redis, GROUP, [STREAM])
+
+        assert detail.oldest_live_ms == detail.oldest_ms == {STREAM: 1000.0}
+        assert detail.pending == {STREAM: 1}
+        assert detail.stale == {}
+
+
+class TestLaneBacklogLiveWork:
+    def test_the_sweep_waits_only_for_live_work_when_the_broker_tells_it_apart(self) -> None:
+        backlog = LaneBacklog(TOPIC, {"a": 50.0}, oldest_live_ms={"a": 300.0})
+        assert backlog.oldest_waiting_for({}) == 300.0
+        assert LaneBacklog(TOPIC, {"a": 50.0}, oldest_live_ms={}).oldest_waiting_for({}) is None
+
+    def test_a_broker_without_owners_keeps_every_waiting_event(self) -> None:
+        """Kafka reports no pending owners: its committed offset decides, as before."""
+        assert LaneBacklog(TOPIC, {"a": 50.0}).oldest_waiting_for({}) == 50.0
 
 
 class TestLanesAnEventCouldBeOn:
@@ -350,6 +507,37 @@ class TestIndexingConsumerLaneBacklog:
         backlog = await consumer.lane_backlog(TOPIC)
 
         assert backlog.oldest_waiting_ms == {}
+
+    async def test_a_stopped_consumers_pending_does_not_hold_the_lane_and_is_logged_once(
+        self, provider: FakeRedisConnectionProvider
+    ) -> None:
+        topics = RedisLaneRouter(LANES).lane_topics(TOPIC)
+        consumer = IndexingRedisStreamsConsumer(
+            MagicMock(),
+            RedisStreamsConfig(
+                topics=topics, group_id=GROUP, client_id="indexing-1", claim_min_idle_ms=10,
+                stopped_consumer_after_ms=100,
+            ),
+            provider=provider,
+        )
+        consumer.redis = provider.create_client()
+        for topic in topics:
+            await consumer.redis.xgroup_create(topic, GROUP, id="0", mkstream=True)
+        lane = f"{TOPIC}.{stable_lane(BUSY, LANES)}"
+        await _publish(provider, BUSY, "rec-1")
+        await _deliver_to(consumer.redis, "replaced-process", 1, stream=lane)
+        await asyncio.sleep(consumer.stopped_consumer_after_ms() / 1000 + 0.1)
+
+        first = await consumer.lane_backlog(TOPIC)
+        second = await consumer.lane_backlog(TOPIC)
+
+        assert first.oldest_waiting_for({"connectorId": BUSY}) is None
+        assert lane in first.oldest_waiting_ms
+        assert set(first.stale[lane].owners) == {"replaced-process"}
+        assert set(second.stale) == {lane}
+        lines = [c for c in consumer.logger.warning.call_args_list if "no longer hold back" in c.args[0]]
+        assert len(lines) == 1
+        assert lane in lines[0].args and "replaced-process" in lines[0].args[-1]
 
     async def test_a_consumer_that_is_not_connected_cannot_answer(
         self, consumer: IndexingRedisStreamsConsumer

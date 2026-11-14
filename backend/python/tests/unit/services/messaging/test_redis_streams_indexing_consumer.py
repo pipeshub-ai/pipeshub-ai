@@ -400,11 +400,20 @@ class TestStartStopWorkerThread:
 
 class TestConsumerMetadataCleanup:
     @pytest.mark.asyncio
-    async def test_deletes_only_empty_idle_consumers(self, consumer):
+    async def test_deletes_only_empty_stopped_consumers_in_one_checked_step(self, consumer):
+        """Removal of another consumer is one script that checks and deletes, so
+        one that reads in between keeps its entries; only one silent for many
+        claim windows counts as stopped."""
         consumer.redis = AsyncMock()
+        consumer.redis.eval.return_value = 1
         consumer.redis.xinfo_consumers.return_value = [
             {
                 "name": "old-empty",
+                "pending": 0,
+                "idle": consumer.stopped_consumer_after_ms() + 1,
+            },
+            {
+                "name": "recently-quiet",
                 "pending": 0,
                 "idle": consumer.config.claim_min_idle_ms,
             },
@@ -422,10 +431,10 @@ class TestConsumerMetadataCleanup:
 
         await consumer._cleanup_empty_consumers("topic-a")
 
-        consumer.redis.xgroup_delconsumer.assert_awaited_once_with(
-            "topic-a",
-            consumer.config.group_id,
-            "old-empty",
+        consumer.redis.xgroup_delconsumer.assert_not_awaited()
+        consumer.redis.eval.assert_awaited_once()
+        assert consumer.redis.eval.await_args.args[1:5] == (
+            1, "topic-a", consumer.config.group_id, "old-empty"
         )
 
 
