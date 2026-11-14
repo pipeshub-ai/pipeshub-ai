@@ -1580,7 +1580,8 @@ class JiraDataCenterConnector(BaseConnector):
         self._dc_name_to_source_id = {}
         self._user_read_unfinished = False
 
-        cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        # A failed read raises: read as no links, it would link no one while product access is unknown.
+        cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
         self._stored_app_users = cached_app_users
         pipeshub_users = await self.data_entities_processor.get_all_active_users()
 
@@ -2771,9 +2772,14 @@ class JiraDataCenterConnector(BaseConnector):
                     break
 
                 for member in batch_members:
-                    user_key = member.get("accountId") or member.get("key") or member.get("name")
-                    if user_key:
-                        member_keys.append(user_key)
+                    user_key = member.get("accountId") or member.get("key") or member.get("name") \
+                        if isinstance(member, dict) else None
+                    if not user_key:
+                        # A member we cannot name: skipping it would read the list as complete without them.
+                        self.logger.warning("Group %s answered a member without a key or name", group_name)
+                        self._note_unread(None)
+                        return None
+                    member_keys.append(user_key)
 
                 if is_last is True:
                     break
