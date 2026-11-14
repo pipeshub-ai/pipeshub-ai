@@ -551,26 +551,65 @@ async def test_a_search_answering_403_drops_the_token() -> None:
     assert entry["status"] == personal_tokens.FAILED and "Notion API access" in entry["reason"]
 
 
+NOW = 10 * 24 * 60 * 60 * 1000
+DAY = 24 * 60 * 60 * 1000
+
+
+@pytest.fixture
+def _now(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.connectors.sources.notion.connector.get_epoch_timestamp_in_ms", lambda: NOW)
+
+
 @pytest.mark.asyncio
-async def test_kept_grants_are_rechecked_oldest_first_and_all_of_them_in_a_full_sync() -> None:
+async def test_kept_grants_are_rechecked_oldest_first_and_all_of_them_in_a_full_sync(_now: None) -> None:
     conn = _connector(_datasource(_bot(), _search("p1", "p2", "p3"), opens={"p1", "p2"}))
     conn._RECONFIRM_PER_SYNC = 1
     await _link(conn)
     path = personal_tokens.confirmed_path(conn.connector_id, "u-alice")
     # p3 was confirmed earliest and has been revoked since; search still lists it.
-    conn.config_service.values[path] = {"p3": 1, "p2": 2, "p1": 3}
+    conn.config_service.values[path] = {"p3": NOW - 3, "p2": NOW - 2, "p1": NOW - 1}
     await conn._load_personal_access()
     assert set(conn._readers) == {"p1", "p2"}, "the oldest kept grant is checked first"
 
-    conn.config_service.values[path] = {"p1": 1, "p2": 2, "p3": 3}
+    conn.config_service.values[path] = {"p1": NOW - 3, "p2": NOW - 2, "p3": NOW - 1}
     conn._readers = {}
     await conn._load_personal_access()
-    assert "p3" in conn._readers, "shortcut: a kept grant not re-checked this sync stays until its turn"
+    assert "p3" in conn._readers, "a grant confirmed within the TTL is served until its re-check"
 
     conn._readers = {}
     conn.data_entities_processor.full_sync_running = MagicMock(return_value=True)
     await conn._load_personal_access()
     assert set(conn._readers) == {"p1", "p2"}, "a full sync re-checks every kept grant"
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_page_search_still_lists_is_withheld_once_its_confirmation_expires(_now: None) -> None:
+    ds = _datasource(_bot(), _search("p1", "p3"), opens={"p1"})
+    conn = _connector(ds)
+    conn._RECONFIRM_PER_SYNC = 0
+    await _link(conn)
+    path = personal_tokens.confirmed_path(conn.connector_id, "u-alice")
+    ttl = conn._CONFIRMED_TTL_MS
+    assert ttl == DAY
+    conn.config_service.values[path] = {"p1": NOW - ttl, "p3": NOW - ttl - 1}
+    await conn._load_personal_access()
+    assert conn._readers == {"p1": {ALICE}}, "p3 was revoked and its confirmation is past the TTL"
+    ds.retrieve_page.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_grants_the_budget_cannot_recheck_expire_to_withheld_and_are_rechecked_next(_now: None) -> None:
+    conn = _connector(_datasource(_bot(), _search("p1", "p2", "p3")))
+    conn._RECONFIRM_PER_SYNC = 1
+    await _link(conn)
+    path = personal_tokens.confirmed_path(conn.connector_id, "u-alice")
+    expired = NOW - conn._CONFIRMED_TTL_MS - 1
+    conn.config_service.values[path] = {"p1": expired - 2, "p2": expired - 1, "p3": expired}
+    await conn._load_personal_access()
+    assert set(conn._readers) == {"p1"}, "only the re-confirmed grant is served; the rest wait, withheld"
+    conn._readers = {}
+    await conn._load_personal_access()
+    assert set(conn._readers) == {"p1", "p2"}
 
 
 @pytest.mark.asyncio
@@ -586,15 +625,15 @@ async def test_new_pages_beyond_the_per_sync_budget_wait_for_a_later_sync() -> N
 
 
 @pytest.mark.asyncio
-async def test_a_grant_search_no_longer_lists_is_dropped_without_a_check() -> None:
+async def test_a_grant_search_no_longer_lists_is_dropped_without_a_check(_now: None) -> None:
     ds = _datasource(_bot(), _search("p1"))
     conn = _connector(ds)
     await _link(conn)
     path = personal_tokens.confirmed_path(conn.connector_id, "u-alice")
-    conn.config_service.values[path] = {"p1": 5, "gone": 5}
+    conn.config_service.values[path] = {"p1": NOW - 5, "gone": NOW - 5}
     conn._RECONFIRM_PER_SYNC = 0
     await conn._load_personal_access()
-    assert set(conn._readers) == {"p1"} and conn.config_service.values[path] == {"p1": 5}
+    assert set(conn._readers) == {"p1"} and conn.config_service.values[path] == {"p1": NOW - 5}
     ds.retrieve_page.assert_not_awaited()
 
 

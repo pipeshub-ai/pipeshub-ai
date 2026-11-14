@@ -521,6 +521,9 @@ class NotionConnector(BaseConnector):
     # Pages and data sources each token confirms per sync: new ones, and kept ones re-checked.
     _CONFIRM_NEW_PER_SYNC = 2000
     _RECONFIRM_PER_SYNC = 200
+    # A grant is served only this long after its token last confirmed it; past that it is withheld
+    # until re-confirmed. Bounds how long a revocation search still lists can keep reaching a person.
+    _CONFIRMED_TTL_MS = 24 * 60 * 60 * 1000
 
     def __init__(
         self,
@@ -1190,10 +1193,13 @@ class NotionConnector(BaseConnector):
         so a page whose access was revoked can stay listed. A page or data source counts only once
         retrieving it with this token succeeded (a 404 or 403 is no access:
         developers.notion.com/reference/status-codes). Each sync confirms new ones (up to
-        ``_CONFIRM_NEW_PER_SYNC``) and re-confirms the longest-unchecked kept ones (up to
-        ``_RECONFIRM_PER_SYNC``; all of them in a full sync); anything else listed is withheld.
-        shortcut: a grant revoked while search still lists it stays until its re-check comes round
-        (a full sync, or ``_RECONFIRM_PER_SYNC`` per sync); shorten the cycle if that window matters.
+        ``_CONFIRM_NEW_PER_SYNC``) and re-confirms the longest-unchecked kept ones, closest to expiry
+        first (up to ``_RECONFIRM_PER_SYNC``; all of them in a full sync). Only a grant confirmed
+        within ``_CONFIRMED_TTL_MS`` is served: one the budget did not reach in time is withheld until
+        re-confirmed, so a slow re-check under-shares and never keeps a revoked grant past the TTL.
+        Notion sends no webhook event for a sharing or permission change, and a webhook subscription
+        belongs to a connection, not to a person's token
+        (developers.notion.com/reference/webhooks-events-delivery, /reference/webhooks).
         """
         client = NotionTokenConfig(token=token, resilience=self._token_resilience).create_client()
         try:
@@ -1214,7 +1220,7 @@ class NotionConnector(BaseConnector):
                     confirmed.pop(object_id, None)
             if not await self.config_service.set_config(path, confirmed, keep_in_cache=False):
                 raise RuntimeError("the configuration store did not keep the confirmed pages")
-            return set(confirmed)
+            return {i for i, at in confirmed.items() if now - at <= self._CONFIRMED_TTL_MS}
         finally:
             await client.close()
 
