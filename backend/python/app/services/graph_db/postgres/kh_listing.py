@@ -278,7 +278,7 @@ class KhListingMixin(PgBase):
         for _ in range(depth):
             if not frontier:
                 break
-            rows = await self._kq(lambda tx, f=frontier: tx.fetch(kgl.children_of_sql(""), org, f, SCOPE_MAX + 1, hidden), transaction)
+            rows = await self._kq(lambda tx, f=frontier: tx.fetch(kgl.children_of_sql("", total=True), org, f, SCOPE_MAX + 1, hidden, SCOPE_MAX + 1), transaction)      # at most SCOPE_MAX + 1 rows in all, whatever the frontier
             fresh = {r["sk"]: r["id"] for r in rows if r["sk"] not in seen and r["app_sk"] == app_sk}
             seen |= set(fresh)
             if len(rows) > SCOPE_MAX or len(seen) > SCOPE_MAX:
