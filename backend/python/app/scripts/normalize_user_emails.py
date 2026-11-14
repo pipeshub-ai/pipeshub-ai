@@ -375,7 +375,8 @@ async def run_normalization(
         # Check for unnormalized users outside the enumerated organization passes
         # (e.g. blank orgId or orphaned orgId without an organization document).
         try:
-            unscoped_remaining = await fetch_unnormalized_users(graph, None, limit=1)
+            with org_context.system("normalize_user_emails.unscoped_check"):
+                unscoped_remaining = await fetch_unnormalized_users(graph, None, limit=1)
             if unscoped_remaining:
                 logger.warning(
                     "Unnormalized users with blank or unknown orgId remain in the database; skipping completion flag."

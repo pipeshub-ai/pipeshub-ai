@@ -11061,11 +11061,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     org_id = None
             connector_id = users[0].connector_id
             app = await self.get_document(connector_id, CollectionNames.APPS.value)
-            if app and not org_id:
-                app_org = app.get("orgId") or app.get("org_id")
-                if isinstance(app_org, str) and app_org.strip():
-                    org_id = app_org.strip()
-
             if not org_id:
                 orgs = await self.get_all_orgs()
                 if not orgs:
@@ -11109,7 +11104,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     )
                     if not user_record:
                         self.logger.warning(
-                            "Failed to retrieve created user record for user %s (%s)", user.id, user.email
+                            "Failed to retrieve created user record for user %s", user.id
                         )
                         continue
 

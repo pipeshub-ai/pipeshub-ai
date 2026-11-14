@@ -10530,11 +10530,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Get or create app
             app = await self.get_document(connector_id, CollectionNames.APPS.value, transaction)
-            if not org_id and app:
-                app_org = app.get("orgId") or app.get("org_id")
-                if isinstance(app_org, str) and app_org.strip():
-                    org_id = app_org.strip()
-
             if not org_id:
                 orgs = await self.get_all_orgs(transaction=transaction)
                 if not orgs:
@@ -10596,7 +10591,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     )
                     if not user_record:
                         self.logger.warning(
-                            "Failed to retrieve created user record for user %s (%s)", user.id, user.email
+                            "Failed to retrieve created user record for user %s", user.id
                         )
                         continue
 

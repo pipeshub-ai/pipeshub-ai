@@ -433,7 +433,7 @@ class TestUserAdded:
         assert result is True
 
         graph_provider.get_user_by_email.assert_awaited_once_with(
-            "Alice@Test.COM", raise_on_error=True
+            "Alice@Test.COM", raise_on_error=True, org_id="org-1"
         )
 
 
@@ -721,7 +721,9 @@ class TestUserDeleted:
         result = await svc.process_event("userDeleted", payload)
 
         assert result is True
-        graph_provider.get_user_by_email.assert_awaited_once_with("alice@example.com", org_id="org-1")
+        graph_provider.get_user_by_email.assert_awaited_once_with(
+            "alice@example.com", org_id="org-1", raise_on_error=True
+        )
         user_data = graph_provider.batch_upsert_nodes.call_args[0][0][0]
         assert user_data["id"] == "user-org1-key"
         assert user_data["isActive"] is False
@@ -1107,13 +1109,13 @@ class _KbGraph:
         self.lookup_fails = lookup_fails
         self.user_lookup_fails = user_lookup_fails
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> SimpleNamespace | None:
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False, org_id: str | None = None, **_: object) -> SimpleNamespace | None:
         if self.user_lookup_fails:  # As both providers do: raise only when asked, else answer "nobody".
             if raise_on_error:
                 raise RuntimeError("LockAcquisitionTimeout")
             return None
         found = next((u for u in self.users.values() if u.get("email") == email), None)
-        return SimpleNamespace(id=found["id"]) if found else None
+        return SimpleNamespace(id=found["id"], org_id=found.get("orgId")) if found else None
 
     async def get_document(self, key: str, collection: str, **_: object) -> dict | None:
         return {"_key": key, "accountType": "enterprise"}
