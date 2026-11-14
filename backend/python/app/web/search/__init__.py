@@ -19,6 +19,7 @@ from app.web.search.firecrawl import FirecrawlSearch
 from app.web.search.keenable import KeenableSearch
 from app.web.search.searxng import SearxngSearch
 from app.web.search.serper import SerperSearch
+from app.web.search.specstream import SpecStreamSearch
 from app.web.search.tavily import TavilySearch
 
 
@@ -45,6 +46,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
         ProviderSpec("searxng", SearxngSearch.name, SearxngSearch),
         ProviderSpec("firecrawl", FirecrawlSearch.name, FirecrawlSearch),
         ProviderSpec("keenable", KeenableSearch.name, KeenableSearch),
+        ProviderSpec("specstream", SpecStreamSearch.name, SpecStreamSearch),
     )
 }
 

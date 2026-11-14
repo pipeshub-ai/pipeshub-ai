@@ -27,6 +27,7 @@ ANSWERS: dict[str, object] = {
     "exa": {"results": [{"title": "One", "url": "https://a.example/1", "highlights": ["first"]}]},
     "brave": {"web": {"results": [{"title": "One", "url": "https://a.example/1", "description": "first"}]}},
     "searxng": {"results": [{"title": "One", "url": "https://a.example/1", "content": "first"}]},
+    "specstream": {"sources": [{"title": "One", "url": "https://a.example/1", "snippet": "first"}]},
     "keenable": {"results": [{"title": "One", "url": "https://a.example/1", "description": "first"}]},
     "firecrawl": {"success": True, "data": {"web": [{"title": "One", "url": "https://a.example/1", "description": "first"}]}},
 }

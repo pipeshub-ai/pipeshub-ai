@@ -28,6 +28,7 @@ from app.web.search.brave import BraveSearch
 from app.web.search.firecrawl import FirecrawlSearch
 from app.web.search.keenable import KeenableSearch
 from app.web.search.searxng import SearxngSearch
+from app.web.search.specstream import SpecStreamSearch
 
 Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -124,6 +125,34 @@ class TestBrave:
         http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(401)))
         with pytest.raises(AuthFailed):
             await BraveSearch({"apiKey": "k"}, http).search("q", deadline())
+
+
+class TestSpecStream:
+    async def test_sends_the_bearer_key_and_reads_the_sources(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"request_id": "r1", "status": 200, "error": None, "data": {"sources": [
+                {"url": "https://a.example/", "title": "A", "snippet": "s", "published": "2026-11-01"},
+                {"url": "https://b.example/", "title": "B"},
+            ]}})
+
+        results = await SpecStreamSearch({"apiKey": "k"}, httpx.AsyncClient(transport=httpx.MockTransport(handler))).search("q", deadline())
+        assert [(r.url, r.snippet, r.published) for r in results] == [
+            ("https://a.example/", "s", "2026-11-01"), ("https://b.example/", "", None),
+        ]
+        assert str(seen[0].url) == "https://api.specstream.ai/v1/web-search?q=q"
+        assert seen[0].headers["Authorization"] == "Bearer k"
+
+    async def test_a_null_data_raises_the_error_message(self) -> None:
+        handler = lambda request: httpx.Response(200, json={"data": None, "error": {"message": "Query is empty."}})
+        with pytest.raises(UpstreamError, match="Query is empty."):
+            await SpecStreamSearch({"apiKey": "k"}, httpx.AsyncClient(transport=httpx.MockTransport(handler))).search("q", deadline())
+
+    async def test_without_a_key_it_is_not_configured(self) -> None:
+        with pytest.raises(NotConfigured):
+            await SpecStreamSearch({}, httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200)))).search("q", deadline())
 
 
 class TestKeenable:
