@@ -443,8 +443,9 @@ class PgVectorService(IVectorDBService):
 
     async def group_clock_skew(self, org_id: str, *, min_ahead_seconds: float = 30.0) -> tuple[int, float]:
         """``(rows, seconds)``: how many of the org's group rows were computed more than ``min_ahead_seconds`` after the database's clock, and by how
-        much the furthest is. A rewrite writes at the database's time and a group row is replaced only by a later one, so a row ahead of the clock
-        refuses every rewrite of its virtual record until the clock passes it.
+        much the furthest is: rows a writer timed with its own clock, which was ahead (a write that names no time takes the database's). A row more
+        than 30 s ahead orders against nothing: the next write of its group, a rewrite included, replaces it (`writes.write_groups`). A row less far
+        ahead refuses an earlier writer, a rewrite included, until the clock passes it, which takes at most 30 s.
 
         shortcut: reads the org's group rows without an index on ``computed_at``; it is an operator command, so run it when asked, not per request."""
         db, _ = self._assert_connected()

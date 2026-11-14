@@ -331,8 +331,8 @@ async def write_groups(tx: Tx, org: str, collection_id: int, groups: dict[str, d
                        *, allow_empty: bool) -> int:
     """Membership and scope fields of groups, behind the compare-and-set fence: a row is replaced only by a writer with a later
     ``computed_at`` (None: the database's clock now, never a host's), so of two concurrent writers the one that read the graph later wins whatever
-    the order they commit in. A group
-    row that does not exist yet is created. Only the keys a group carries are replaced (a caller that supplies ``connectorIds`` alone
+    the order they commit in, while the stored time is at most 30 s ahead of the database's clock. A row further ahead was timed by a clock that was
+    wrong and orders against nothing: any writer replaces it. A group row that does not exist yet is created. Only the keys a group carries are replaced (a caller that supplies ``connectorIds`` alone
     leaves the rest as it is, as a payload merge does on the other providers). ``allow_empty=False`` (indexing) never replaces arrays
     with empty ones: an upsert that carries no membership must not erase what the membership sync wrote. The rows of ``group_members``
     (kinds 1-3 membership, 4 path, 5 override scope) are made to match the arrays that result."""
