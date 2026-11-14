@@ -405,7 +405,7 @@ class TestUserAdded:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_padded_email_is_trimmed_for_lookup(self):
+    async def test_padded_email_is_trimmed_for_lookup(self) -> None:
         """Surrounding whitespace in email is stripped before querying get_user_by_email."""
         existing_user = MagicMock()
         existing_user.id = "existing-key"
