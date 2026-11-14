@@ -244,6 +244,8 @@ _MIME_ROLES: dict[str, frozenset[MimeRole]] = {
     "application/rtf": _ALL,
     "text/rtf": _ALL,
     "application/x-rtf": _ALL,
+    "text/x-log": _ALL,
+    "text/x-cfg": _ALL,
     "application/vnd.ms-powerpoint.presentation.macroEnabled.12": _OOXML,
 }
 
@@ -499,12 +501,16 @@ FILE_TYPES: tuple[FileType, ...] = (
     _new(key="xlsm", format="xlsx", extensions=("xlsm",), mimes=(_XLSM,), tier="heavy",
          mime_tier="heavy", kind="excel_load", mime_kind="excel_load", route=Route.XLSX,
          ooxml_container=True, blocks_like="xlsx"),
-    _new(key="log", format="log", extensions=("log",), alias_mime="text/plain", mime_indexable=False,
-         wins_over_text_plain=False,
-         tier="light", kind="text", route=Route.PLAIN_TEXT, prep=Prep.CAPPED_TEXT, blocks_like="txt"),
-    _new(key="cfg", format="cfg", extensions=("cfg",), alias_mime="text/plain", mime_indexable=False,
-         wins_over_text_plain=False,
-         tier="light", kind="text", route=Route.PLAIN_TEXT, prep=Prep.CAPPED_TEXT, blocks_like="txt"),
+    # Stored as text/x-log, which nothing read before, so a new file takes the capped text route; a row
+    # stored as text/plain keeps the text path it had (wins_over_text_plain=False).
+    _new(key="log", format="log", extensions=("log",), mimes=("text/x-log",), wins_over_text_plain=False,
+         tier="light", mime_tier="light", kind="text", mime_kind="text", route=Route.PLAIN_TEXT,
+         prep=Prep.CAPPED_TEXT, blocks_like="txt"),
+    # Stored as text/x-cfg, which nothing read before, so a new file takes the capped text route; a row
+    # stored as text/plain keeps the text path it had (wins_over_text_plain=False).
+    _new(key="cfg", format="cfg", extensions=("cfg",), mimes=("text/x-cfg",), wins_over_text_plain=False,
+         tier="light", mime_tier="light", kind="text", mime_kind="text", route=Route.PLAIN_TEXT,
+         prep=Prep.CAPPED_TEXT, blocks_like="txt"),
     _new(key="docm", format="docm", extensions=("docm",), mimes=(_DOCM,), tier="heavy",
          mime_tier="heavy", kind="docling_docx", mime_kind="docling_docx", route=Route.DOCX,
          prep=Prep.OOXML_WORD, ooxml_container=True, blocks_like="docx"),
@@ -967,7 +973,7 @@ def blocks_like(extension: str | None) -> str | None:
 _LEGACY_ORDER: Final = (
     Route.PDF, Route.EPUB, Route.DOCX, Route.DOC, Route.XLSX, Route.XLS, Route.CSV, Route.TSV,
     Route.HTML, Route.PPTX, Route.PPT, Route.MD, Route.MDX, Route.TXT, Route.SQL_TABLE,
-    Route.SQL_VIEW, Route.JSON, Route.YAML, Route.IMAGE, Route.MSG, Route.LIBREOFFICE_DOCX,
+    Route.SQL_VIEW, Route.JSON, Route.YAML, Route.IMAGE, Route.MSG, Route.LIBREOFFICE_DOCX, Route.PLAIN_TEXT,
 )
 _GOOGLE_ROUTES: Final = frozenset({Route.GOOGLE_SLIDES, Route.GOOGLE_DOCS, Route.GOOGLE_SHEETS})
 
@@ -1154,6 +1160,23 @@ def disabled_keys(config: object) -> frozenset[str]:
         return frozenset()
     keys = {ft.key for ft in FILE_TYPES}
     return frozenset(v.lower() for v in values if isinstance(v, str) and v.lower() in keys)
+
+
+def keeps_stored_mime(stored_mime: str | None, new_mime: str | None, name: str | None) -> bool:
+    """Whether a re-synced file keeps the mime its row was stored under instead of *new_mime*.
+
+    A .log/.cfg stored as text/plain before it had a mime of its own is read as text, as it always
+    was; moving it to its own mime would re-index it onto another reader.
+    """
+    ft = _BY_MIME.get(normalize_mime(new_mime)) if isinstance(new_mime, str) else None
+    extension = name.rsplit(".", 1)[-1] if isinstance(name, str) and "." in name else None
+    return (
+        stored_mime == "text/plain"
+        and ft is not None
+        and ft.ext_wins
+        and not ft.wins_over_text_plain
+        and _ext_type(extension) is ft
+    )
 
 
 def canonical_mime_for_new_extension(extension: str | None) -> str | None:

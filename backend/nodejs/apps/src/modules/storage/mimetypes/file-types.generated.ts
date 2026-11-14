@@ -21,7 +21,7 @@ export const UPLOAD_EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
   c: 'text/x-c',
   cab: 'application/vnd.ms-cab-compressed',
   cc: 'text/x-c++',
-  cfg: 'text/plain',
+  cfg: 'text/x-cfg',
   cjs: 'application/javascript',
   cpio: 'application/x-cpio',
   cpp: 'text/x-c++',
@@ -90,7 +90,7 @@ export const UPLOAD_EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
   kmz: 'application/vnd.google-earth.kmz',
   kt: 'text/x-kotlin',
   kts: 'text/x-kotlin',
-  log: 'text/plain',
+  log: 'text/x-log',
   lz: 'application/lzip',
   m4a: 'audio/x-m4a',
   md: 'text/markdown',
@@ -236,4 +236,4 @@ export const INDEXABLE_EXTENSIONS: readonly string[] = [
 ];
 
 export const CONTENT_SHA256 =
-  '4ece6f24544d1cdd2f66c3de49fefcd4ea84b999cf28b89cd33f1c49c9f5fc28';
+  '675325848705ee4b353cd31a50e7e37bbd5ef2348d8c4ecd5a3dab587291f14e';

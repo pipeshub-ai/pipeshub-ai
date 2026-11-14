@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, Optional
 
+from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AccessRule,
@@ -2773,6 +2774,8 @@ class DataSourceEntitiesProcessor:
                 record.record_name, existing_record.id,
             )
             return _not_stored(record, SkipReason.OWNED_ELSEWHERE)
+        if existing_record is not None:
+            self._keep_the_stored_text_mime(record, existing_record)
         if record.is_placeholder:
             # Stubs are never published, so a stub left at the model's QUEUED
             # default (connector placeholder sweeps) would stay QUEUED forever.
@@ -3513,6 +3516,15 @@ class DataSourceEntitiesProcessor:
         )
 
     @staticmethod
+    def _keep_the_stored_text_mime(new_record: Record, old_record: Record) -> None:
+        """A .log/.cfg stored as text/plain keeps that mime, and the text reader it had (D-16)."""
+        stored = getattr(old_record, "mime_type", None)
+        if file_types.keeps_stored_mime(
+            stored, getattr(new_record, "mime_type", None), getattr(new_record, "record_name", None)
+        ):
+            new_record.mime_type = stored
+
+    @staticmethod
     def _file_type_changed(new_record: Record, old_record: Record) -> bool:
         """A rename to another file type (.txt to .md) needs a new parse of the same bytes."""
         if (
@@ -3784,6 +3796,7 @@ class DataSourceEntitiesProcessor:
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
                     )
+                    self._keep_the_stored_text_mime(new_record, old_record)
                     needs_reindex = self._content_changed(
                         new_record, old_record
                     ) or self._code_path_changed(new_record, old_record)

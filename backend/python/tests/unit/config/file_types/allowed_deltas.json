@@ -4315,6 +4315,7 @@
   "MimeTypes": {
     "BIN": "application/octet-stream",
     "BLOCKS": "application/blocks",
+    "CFG": "text/x-cfg",
     "CPP": "text/x-c++",
     "CSHARP": "text/x-csharp",
     "CSV": "text/csv",
@@ -4344,6 +4345,7 @@
     "JPG": "image/jpg",
     "JSON": "application/json",
     "KOTLIN": "text/x-kotlin",
+    "LOG": "text/x-log",
     "MARKDOWN": "text/markdown",
     "MDX": "text/mdx",
     "MSG": "application/vnd.ms-outlook",

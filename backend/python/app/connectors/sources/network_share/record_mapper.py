@@ -80,16 +80,20 @@ def external_record_id(share: str, nfc_path: str) -> str:
 def mime_for(rel_path: str, *, is_directory: bool) -> str:
     if is_directory:
         return MimeTypes.FOLDER.value
+    base = rel_path.rsplit("/", 1)[-1]
+    extension = base.rpartition(".")[2] if "." in base else None
+    # A type indexed since the registry's second version is stored under its own mime, which the
+    # host's table may not know (.cfg) or may spell as another type's (text/plain for .log).
+    own = file_types.canonical_mime_for_new_extension(extension)
+    if own is not None:
+        return own
     guessed, _ = mimetypes.guess_type(rel_path)
     if guessed:
         try:
             return MimeTypes(guessed).value
         except ValueError:
             pass
-    # The host's mime table may not know a newer indexable type (.cfg, .docm on some systems) or
-    # may spell it another way (text/rtf); it is stored under its own mime all the same.
-    extension = rel_path.rsplit("/", 1)[-1].rpartition(".")[2] if "." in rel_path.rsplit("/", 1)[-1] else None
-    return file_types.canonical_mime_for_new_extension(extension) or MimeTypes.BIN.value
+    return MimeTypes.BIN.value
 
 
 @dataclass(frozen=True)
