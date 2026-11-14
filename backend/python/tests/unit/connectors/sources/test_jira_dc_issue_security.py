@@ -372,6 +372,23 @@ class TestWithdrawnAccounts:
         assert not [r for r, _ in built if isinstance(r, TicketRecord)], "the issue waits for a sync that can save it"
         assert c._issue_build_failures == 1
 
+    async def test_a_failed_read_of_the_linked_accounts_fails_the_user_read(self) -> None:
+        """The linked accounts stand in for those a short user list missed; read as none after a failure, a level
+        holder the list left out would lose the grant it has in Jira. The read fails instead."""
+        c = _connector()
+        c.data_source = MagicMock()
+
+        async def get_all_app_users(connector_id: str, *, raise_on_error: bool = False) -> list:
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
+            return []  # what every store answers for a failed read without the flag
+
+        c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=get_all_app_users)
+        c.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        c._fetch_all_jira_users_bulk = AsyncMock(return_value=[{"key": "alice-key", "emailAddress": "a@x.com"}])
+        with pytest.raises(ConnectionError):
+            await c._fetch_users()
+
     async def test_newly_listed_accounts_are_saved_before_they_are_linked(self) -> None:
         c = _connector()
         store: dict = {}
