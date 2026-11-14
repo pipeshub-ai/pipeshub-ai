@@ -177,11 +177,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libmariadb-dev
 
-      # odt and rtf are converted by LibreOffice Writer; the tests that convert real files run in
-      # the modules shard and must not skip there (checked below).
-      - name: Install LibreOffice Writer
+      # Real-file conversions run in the modules shard and must not skip there (checked below). The
+      # same LibreOffice components as the application image: Writer (doc, odt, rtf), Calc (xls), Impress (ppt).
+      - name: Install LibreOffice
         if: ${{ matrix.shard == 'modules' }}
-        run: sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui
+        run: sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui
 
       - name: Install uv
         run: pip install uv

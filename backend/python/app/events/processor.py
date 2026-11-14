@@ -1814,7 +1814,7 @@ class Processor:
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing plain text document: {str(e)}")
+            self.logger.error(f"Error processing plain text document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,

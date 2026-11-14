@@ -2100,7 +2100,7 @@ class RecordEventHandler(BaseEventService):
                 if record_name and "." in record_name:
                     code_file_extension = record_name.rsplit(".", 1)[-1].lower()
 
-            self.logger.debug("🚀 mime_type: %s, extension: %s", mime_type, extension)
+            self.logger.debug("mime_type: %s, extension: %s", mime_type, extension)
 
             # Folder / tree-node records are skeleton graph entries with no
             # streamable content (created by tree-aware connectors like
