@@ -15,8 +15,9 @@ it does not inherit from, or deleted. Same definition as `HierarchyView.scope_no
 
 from __future__ import annotations
 
+from collections import ChainMap
 from collections.abc import Iterable, Mapping  # noqa: TC003
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from .rules import (
@@ -130,12 +131,18 @@ class ScopeProjector:
         node = nodes.get(rid)
         if node is None or node.kind != "record" or node.deleted or node.placeholder:
             return Projection(rid, ScopeFields.legacy(), skipped=True)
+        rule = Rule.CONTAINER if app.opens else rule_for(app.connector_type)
+        chains: frozenset[str] = frozenset()
+        seeds: frozenset[str] = frozenset()
+        if rule is Rule.INTERSECTION:  # the other rules read the hierarchy as it is (their paths are not "the record and its restrictions")
+            nodes, chains = self._without_dead_routes(nodes, node)
+            node = nodes[rid]
+            nodes, seeds = self._through_plain_steps(nodes, node)
         path = self._ancestors(nodes, rid)
         if app_id not in path and not (app.opens and not node.groups) and not any(nodes[i].group_level for i in path):
             # the graph check walks up to the app; a record that never reaches it is read only by a direct grant or a
             # declared group, which no path field can express
             return Projection(rid, ScopeFields.legacy(), refused=True, reason=f"{app.connector_type!r}: the path does not reach the app")
-        rule = Rule.CONTAINER if app.opens else rule_for(app.connector_type)
         equals = self._equals_group(nodes, rid, path, app, app_id)
         try:
             if equals and not app.opens and not nodes[rid].groups:
@@ -145,12 +152,91 @@ class ScopeProjector:
             if equals:
                 assert_may_stamp(Rule.CONTAINER, app.connector_type, equals_record_group=True)
                 return Projection(rid, ScopeFields.container())
-            fields = self._exception(app, app_id, nodes, node, rule, path)
+            fields = self._exception(app, app_id, nodes, node, rule, path, seeds, chains)
             if not all(plain_id(i) for i in (*fields.path_ids, *fields.acl_scope)):
                 raise RuleNotAllowed(f"{app.connector_type!r}: an id on the path has a comma or whitespace, which a store may not hold exactly")
             return Projection(rid, fields)
         except RuleNotAllowed as exc:
             return Projection(rid, ScopeFields.legacy(), refused=True, reason=str(exc))
+
+    @staticmethod
+    def _plain_step(n: StampNode) -> bool:
+        """A node the walk passes whenever it passes its one parent: alive, STRICT, no grant of its own, inherits its only parent."""
+        return (n.kind == "record" and n.rule == "STRICT" and not n.deleted and not n.placeholder and not n.granted
+                and len(n.parents) == 1 and n.parents[0] in n.inherits)
+
+    @classmethod
+    def _dominated(cls, nodes: Mapping[str, StampNode], p: str, by: str) -> bool:
+        """Every route through `p` runs through `by` (a plain step each way), so a record that also hangs under `by` is admitted
+        through `by` whenever it would be through `p`, and `p` adds no restriction `by` does not."""
+        for _ in range(MAX_DEPTH):
+            n = nodes.get(p)
+            if n is None or not cls._plain_step(n):
+                return False
+            if n.parents[0] == by:
+                return True
+            p = n.parents[0]
+        return False
+
+    @classmethod
+    def _without_dead_routes(cls, nodes: Mapping[str, StampNode], node: StampNode) -> tuple[Mapping[str, StampNode], frozenset[str]]:
+        """The parents of a record that its stamp's path can leave out, because they change nobody's verdict:
+
+        * a STRICT or RESTRICTED record passes a hop to a parent it does not inherit from only by a grant of its own, which the
+          stamp's own-id arm (`aclScope`) admits whoever the graph admits; for everyone else that route is dead. With one parent
+          it inherits, the path is that route alone (a Jira issue under its security level, beside its project or epic).
+        * a parent every route of which runs through another parent it also inherits from (a plain step each way) adds nothing.
+        """
+        parents = node.parents
+        if any(p not in nodes for p in parents) or node.rule not in ("STRICT", "RESTRICTED"):
+            return nodes, frozenset()
+        inherited = tuple(p for p in parents if p in node.inherits)
+        if len(inherited) < len(parents) and len(inherited) >= 1:
+            parents = inherited
+        extra: set[str] = set()
+        if len(parents) > 1:
+            kept = []
+            for p in parents:
+                by = next((q for q in parents if q != p and cls._dominated(nodes, p, q)), None)
+                if by is None:
+                    kept.append(p)
+                else:
+                    extra |= cls._plain_chain(nodes, p, by)
+            parents = tuple(kept)
+        if parents == node.parents or not parents:
+            return nodes, frozenset()
+        return ChainMap({node.id: replace(node, parents=parents)}, nodes), frozenset(extra)  # type: ignore[arg-type]
+
+    @classmethod
+    def _plain_chain(cls, nodes: Mapping[str, StampNode], p: str, by: str) -> set[str]:
+        """The plain steps from `p` up to (not including) `by`: they stay in the stamp's path, so a change to one of them hides what
+        hangs below it while its subtree is rewritten, though they add no restriction (they are no scope)."""
+        out: set[str] = set()
+        for _ in range(MAX_DEPTH):
+            if p == by or p not in nodes:
+                break
+            out.add(p)
+            p = nodes[p].parents[0]
+        return out
+
+    @classmethod
+    def _through_plain_steps(cls, nodes: Mapping[str, StampNode], node: StampNode) -> tuple[Mapping[str, StampNode], frozenset[str]]:
+        """A record that is a plain step (see `_plain_step`) is read exactly by whoever reads the first ancestor that is not.
+        When that ancestor is a record with a grant of its own beside the route it inherits (a Jira issue open to its reporter
+        and to its security level, which an attachment hangs under), its dead routes are left off the path and it is added to
+        the record's `aclScope`: whoever the graph admits to it through its own grant is admitted to the record by its id."""
+        cur = node
+        for _ in range(MAX_DEPTH):
+            if not cls._plain_step(cur):
+                break
+            nxt = nodes.get(cur.parents[0])
+            if nxt is None or nxt.kind != "record":
+                return nodes, frozenset()
+            cur = nxt
+        if cur.id == node.id or not cur.granted:
+            return nodes, frozenset()
+        reduced, _ = cls._without_dead_routes(nodes, cur)
+        return (reduced, frozenset({cur.id})) if reduced is not nodes else (nodes, frozenset())
 
     def _ancestors(self, nodes: Mapping[str, StampNode], rid: str) -> dict[str, int]:
         """The record and every hierarchy ancestor, with its distance (the nearest, for a node reached twice)."""
@@ -241,11 +327,16 @@ class ScopeProjector:
         return True
 
     def _exception(self, app: StampApp, app_id: str, nodes: Mapping[str, StampNode], node: StampNode, rule: Rule,
-                   path: Mapping[str, int]) -> ScopeFields:
+                   path: Mapping[str, int], seeds: frozenset[str] = frozenset(), chains: frozenset[str] = frozenset()) -> ScopeFields:
         facts = _facts(app, app_id, nodes, path)
+        if rule is Rule.INTERSECTION and node.rule == "RESTRICTED":
+            # The record passes every hop only by a grant of its own, and it is on its own path: the viewers its grant opens are
+            # admitted by its own id, and for everyone else it is a restricted scope they cannot read, which hides it. What else
+            # sits on the path (a node with several parents) cannot change either.
+            facts["multi_parent_on_path"] = False
         assert_may_stamp(rule, app.connector_type, **facts)
         if rule is Rule.INTERSECTION:
-            return ScopeFields(Stamp.INTERSECTION, tuple(sorted(path)), (node.id,))
+            return ScopeFields(Stamp.INTERSECTION, tuple(sorted({*path, *chains})), (node.id, *sorted(seeds)))
         if rule is Rule.UNION:
             chain = self._inherit_chain(nodes, node.id)
             # a seed on the chain admits everything below it (R10) even where a node above the seed is restricted: the seeds go in
