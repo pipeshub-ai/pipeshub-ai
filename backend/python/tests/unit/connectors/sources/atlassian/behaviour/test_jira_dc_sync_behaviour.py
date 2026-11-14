@@ -2606,12 +2606,20 @@ class TestBrowseHolders:
         await self.sync(jira, db, store, search, [story("1001", "ENG-1", reporter=gone)], REPORTER)
         assert grants(db, "1001") == []
 
-    async def test_a_sub_task_gets_no_grant_and_follows_its_parent(self, jira, db, store, search) -> None:
+    async def test_a_sub_task_hangs_off_its_project_with_its_holders_grant_and_follows_its_parent_without_one(
+        self, jira, db, store, search
+    ) -> None:
+        """Jira lets the reporter of a sub-task read it without its parent; a grant on a record filed under the
+        parent would reach the parent's readers too, so it is filed under the project instead."""
         parent, child = story("1001", "ENG-1"), issue("1002", "ENG-2", ts(2), parent="1001")
         await self.sync(jira, db, store, search, [parent, child], REPORTER)
-        assert grants(db, "1001") == [CAROL]
-        assert grants(db, "1002") == [] and db.records["1002"].access_rule.value == "STRICT"
-        assert db.records["1002"].parent_external_record_id == "1001"
+        assert grants(db, "1001") == [CAROL] and grants(db, "1002") == [CAROL]
+        assert db.records["1002"].parent_external_record_id is None and db.records["1002"].access_rule.value == "OPEN"
+
+        other_db, other_store = JiraRecordsDb(), FakeCheckpointStore()
+        await self.sync(jira, other_db, other_store, search, [parent, child])
+        assert grants(other_db, "1002") == [] and other_db.records["1002"].access_rule.value == "STRICT"
+        assert other_db.records["1002"].parent_external_record_id == "1001"
 
     async def test_a_story_leaves_its_epic_while_a_holder_names_its_reporter_and_returns_when_it_goes(
         self, jira, db, store, search

@@ -4803,9 +4803,9 @@ class JiraDataCenterConnector(BaseConnector):
 
     async def _files_under_parent(
         self, fields: dict[str, Any], parent_id: str, security: IssueSecurityContext | None,
-        *, stored_parent: str | None = None,
+        *, stored_parent: str | None = None, is_subtask: bool = False,
     ) -> bool:
-        """Whether a story (any issue but a sub-task) is filed under its parent issue.
+        """Whether an issue is filed under its parent issue.
 
         A record inherits the record it is filed under, so a story under its epic needs the
         epic's readers too. Jira does not copy an epic's level onto its stories, so the story
@@ -4815,9 +4815,18 @@ class JiraDataCenterConnector(BaseConnector):
         and keeps filing as before; a parent in another project is read, since it may have one.
         A story whose reporter or assignee may read it through a Browse holder, without the epic,
         is not filed under it; while the holders are unread it stays where it was (``stored_parent``).
+        A sub-task carries its parent's level, so it leaves its parent only where such a holder may read
+        it alone, and only when neither it nor its parent has a level; while the holders are unread it stays.
         """
         if security is None or not security.enforce:
             return True
+        if is_subtask:
+            if not security.browse_holders or read_security_level(fields)[1] is not None:
+                return True
+            if security.knowledge != SchemeKnowledge.PRESENT:
+                return security.knowledge != SchemeKnowledge.NONE  # no scheme: no level on it or its parent
+            parent = await self._parent_level(parent_id)
+            return parent is not None and parent[1] is not None
         if security.browse_holders is None:
             return stored_parent == parent_id
         if security.browse_holders:
@@ -4971,12 +4980,13 @@ class JiraDataCenterConnector(BaseConnector):
                 parent_record_type = None
 
                 security = self._issue_security.get(project_id)
-                # A record inherits the record it is filed under; a sub-task always follows its parent.
+                # A record inherits the record it is filed under.
                 if (
-                    parent_external_id and not issue_data["is_subtask"]
+                    parent_external_id
                     and not await self._files_under_parent(
                         fields, parent_external_id, security,
                         stored_parent=existing_record.parent_external_record_id if existing_record else None,
+                        is_subtask=issue_data["is_subtask"],
                     )
                 ):
                     parent_external_id = None
@@ -6611,11 +6621,12 @@ class JiraDataCenterConnector(BaseConnector):
                 )
                 if security_by_project is not None:
                     security_by_project[project_ref] = security
-            if parent_external_id and not issue_data["is_subtask"]:
+            if parent_external_id:
                 # The parent's level may have changed since the last sync read it.
                 self._parent_levels.pop(str(parent_external_id), None)
                 if not await self._files_under_parent(
                     fields, str(parent_external_id), security, stored_parent=record.parent_external_record_id,
+                    is_subtask=issue_data["is_subtask"],
                 ):
                     parent_external_id = None
 
