@@ -1886,7 +1886,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     # nextPageToken must be asked for: a partial response leaves out every field it does not
                     # name, and without it only the first page of a long list was ever read.
                     "fields": "nextPageToken, permissions(id, displayName, type, role, domain, emailAddress, "
-                              "deleted, allowFileDiscovery, permissionDetails)"
+                              "deleted, allowFileDiscovery, permissionDetails, view)"
                 }
 
                 # Only use domain admin access for shared drives
@@ -1923,6 +1923,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                     try:
                         # Skip deleted permissions for files, but include them for drives
                         if perm_data.get("deleted", False):
+                            continue
+                        # A limited folder lists the people its limit cut out with view "metadata": they see its
+                        # name, not its content ("the item is visible only to the metadata view because it has
+                        # limited access", https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions;
+                        # https://developers.google.com/workspace/drive/api/guides/limited-expansive-access).
+                        if perm_data.get("view") == "metadata":
                             continue
 
                         role = perm_data.get("role", "reader")

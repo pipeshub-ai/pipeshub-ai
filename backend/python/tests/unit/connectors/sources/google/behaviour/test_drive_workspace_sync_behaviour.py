@@ -3290,6 +3290,23 @@ async def test_a_reader_whose_membership_a_member_group_hides_gets_no_grant_of_t
     assert ws.records.records["f"].inherit_permissions and ws.records.records["dir"].inherit_permissions
 
 
+async def test_a_person_a_my_drive_limited_folder_lists_for_its_metadata_only_gets_no_grant(ws: Workspace) -> None:
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    # Google lists a person the limit cut out with view "metadata" and role reader
+    # (https://developers.google.com/workspace/drive/api/guides/limited-expansive-access).
+    ws.world.folder("locked", "Locked", parent="root-alice", owner=ALICE, perms=[
+        {"type": "user", "role": "reader", "emailAddress": carol},
+        {"type": "user", "role": "reader", "emailAddress": BOB, "view": "metadata"},
+    ]).meta["inheritedPermissionsDisabled"] = True
+    await ws.sync()
+
+    assert carol in ws.records.perm_emails("locked")
+    assert BOB not in ws.records.perm_emails("locked"), "he sees its name, not its content"
+    fields = [r.query.get("fields", "") for r in ws.http.requests if r.path == "/drive/v3/files/locked/permissions"]
+    assert fields and all("view" in f for f in fields), "the read asks for each entry's view"
+
+
 async def test_a_member_group_that_holds_a_whole_domain_leaves_its_people_unknown(ws: Workspace) -> None:
     ws.world.add_group("everyone@example.com", ["customer:C0123"])
     ws.world.add_drive("sd-1", "Team", {"everyone@example.com": "reader"})  # no Manager: the reader's own read decides
