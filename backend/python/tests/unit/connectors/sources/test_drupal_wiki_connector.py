@@ -41,6 +41,8 @@ from app.connectors.sources.drupal_wiki.connector import (
     DrupalWikiAuthError,
     DrupalWikiConnector,
     DrupalWikiSyncError,
+    PageListing,
+    _grants_digest,
     _utc_date,
     graphql_refused_action_item,
 )
@@ -1082,7 +1084,7 @@ class TestHelpers:
             response([{"id": 100, "fileName": "100.pdf", "lastModified": 1001}]),
         ])
 
-        records = await connector._build_page_records(page_payload(733), {})
+        records = await connector._build_page_records(page_payload(733), {}, PageListing())
 
         assert len(records) == 102  # the page itself plus 101 attachments
         assert connector.data_source.list_attachments.await_args_list[1].kwargs["page"] == 1
@@ -1274,7 +1276,9 @@ class TestOrderingAndIsolation:
     async def test_unreadable_checkpoint_falls_back_to_a_full_window(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
-        connector.record_sync_point.read_sync_point = AsyncMock(side_effect=RuntimeError("db down"))
+        connector.record_sync_point.read_sync_point = AsyncMock(
+            side_effect=lambda key: (_ for _ in ()).throw(RuntimeError("db down")) if key.startswith("WEBPAGE/") else {}
+        )
         processor.get_records_in_record_group = AsyncMock(return_value=[stored_record(1)])
         connector.data_source.list_pages = AsyncMock(return_value=response(spring_page([page_payload(1)])))
         connector.data_source.list_attachments = AsyncMock(return_value=response([]))
@@ -2874,7 +2878,9 @@ class TestSharedPages:
     async def test_a_change_in_who_reads_one_of_its_spaces_is_written(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
-        self.wiki(connector, processor, {12: [self.PAGE], 13: [self.PAGE]})
+        # Page 2 is the newest, which each run writes again; page 1 is not.
+        newest = page_payload(2, space_id=12, last_modified=6000)
+        self.wiki(connector, processor, {12: [self.PAGE, newest], 13: [self.PAGE]})
         await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}})
         processor.on_updated_record_permissions.reset_mock()
         connector._space_readers = {12: [*self.HOME, read_permission("new@example.com")], 13: self.OTHER}
@@ -2915,7 +2921,7 @@ class TestSharedPages:
         assert json.loads(checkpoints["shares/space/all"]["pages"]) == {"1": {"home": 12, "spaces": [13], "grants": ""}}
 
     @pytest.mark.asyncio
-    async def test_a_share_waits_until_every_page_of_the_home_space_is_strict(
+    async def test_a_share_waits_until_every_home_space_page_has_access_rule_strict(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
         # A space with no checkpoint has not had all its pages written STRICT yet; a
@@ -2927,18 +2933,52 @@ class TestSharedPages:
 
         assert self.rewrites(processor) == [("page:1", "STRICT", True, [])]
 
+    @staticmethod
+    def page_writes(processor: MagicMock, external_id: str) -> list[tuple[str, bool, list, bool]]:
+        return [
+            (r.access_rule.value, r.inherit_permissions, p, r.rewrite_permissions)
+            for c in processor.on_new_records.await_args_list for r, p in c.args[0] if r.external_record_id == external_id
+        ]
+
     @pytest.mark.asyncio
-    async def test_a_page_its_home_pass_wrote_is_shared_again(
+    async def test_a_shared_page_its_home_pass_writes_again_stays_shared(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
-        # The home pass writes it plain; the share pass must not skip it as unchanged.
+        # Edited after it was shared: the home pass writes it before the share pass runs,
+        # and must not write it plain, or nothing would put the other space's readers back.
+        both = self.HOME + self.OTHER
         changed = page_payload(1, space_id=12, last_modified=9000)
-        self.wiki(connector, processor, {12: [changed], 13: [changed]}, shares={"1": {"home": 12, "spaces": [13], "grants": "shared:x"}})
-        connector._shared_page_permissions = MagicMock(return_value=self.HOME)
-        with patch("app.connectors.sources.drupal_wiki.connector._grants_digest", return_value="shared:x"):
-            await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}})
+        self.wiki(connector, processor, {12: [changed], 13: [changed]},
+                  shares={"1": {"home": 12, "spaces": [13], "grants": _grants_digest(both)}})
 
-        assert [r[0] for r in self.rewrites(processor)] == ["page:1"]
+        await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}})
+
+        assert self.page_writes(processor, "page:1") == [("OPEN", False, both, True)]
+        processor.on_updated_record_permissions.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_shared_page_the_removal_pass_writes_again_stays_shared(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # The listing of its home space skipped it; the page written again after the
+        # share pass keeps the other space's readers.
+        self.wiki(connector, processor, {12: [], 13: [self.PAGE]})
+        connector.data_source.get_page = AsyncMock(return_value=response(self.PAGE))
+
+        await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}})
+
+        assert self.page_writes(processor, "page:1") == [("OPEN", False, self.HOME + self.OTHER, True)]
+        processor.delete_record_by_external_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_plain_page_is_written_strict_with_its_grants_replaced(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        self.wiki(connector, processor, {12: [page_payload(2, last_modified=9000)], 13: []})
+
+        await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}})
+
+        assert self.page_writes(processor, "page:2") == [("STRICT", True, [], True)]
 
     @pytest.mark.asyncio
     async def test_a_reindexed_shared_page_still_inherits_nothing(
@@ -2963,9 +3003,12 @@ class TestSharedPages:
             side_effect=lambda key: (_ for _ in ()).throw(RuntimeError("db down")) if key.startswith("shares/") else {}
         )
 
-        await connector._sync_pages({12: {"id": 12}})
+        # Read as "nothing shared", a shared page would be written plain and an unshared
+        # one keep its readers: no page is written (run_sync reports the pages phase).
+        with pytest.raises(RuntimeError, match="db down"):
+            await connector._sync_pages({12: {"id": 12}})
 
-        assert any("shared pages" in failure for failure in connector._failures)
+        processor.on_new_records.assert_not_awaited()
         assert not any(c.args[0].startswith("shares/") for c in connector.record_sync_point.update_sync_point.await_args_list)
 
 

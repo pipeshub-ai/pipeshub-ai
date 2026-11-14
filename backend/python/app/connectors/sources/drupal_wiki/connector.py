@@ -249,12 +249,15 @@ class PageListing:
     home: dict[int, set[int]] = field(default_factory=dict)
     # space -> ids of the pages stored under it when its listing began
     stored: dict[int, set[int]] = field(default_factory=dict)
-    # pages written this run
+    # pages written this run, and the grants digest each page record was written with
     written: set[int] = field(default_factory=set)
+    written_as: dict[int, str] = field(default_factory=dict)
     # page -> spaces that list it as shared into them
     shared: dict[int, set[int]] = field(default_factory=dict)
     # spaces each of whose pages has been written ``STRICT`` (it has a checkpoint)
     settled: set[int] = field(default_factory=set)
+    # what each shared page was written with on the runs before: page id -> home, spaces, grants
+    shares_before: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 TREE_UNREADABLE = SpaceProblem(
@@ -1252,7 +1255,12 @@ class DrupalWikiConnector(BaseConnector):
         A single shared cursor would move on without it and its existing pages, being
         older than that cursor, would never be written again.
         """
-        listing = PageListing()
+        # A failed read fails the pass: read as "nothing shared", a shared page would be
+        # written plain and an unshared one keep its readers. JSON text: Neo4j stores no
+        # nested maps.
+        listing = PageListing(shares_before=json.loads(
+            (await self.record_sync_point.read_sync_point(self._shares_sync_point_key())).get("pages") or "{}"
+        ))
         for space_id in spaces:
             try:
                 await self._sync_space_pages(
@@ -1292,6 +1300,9 @@ class DrupalWikiConnector(BaseConnector):
         modified_after = _as_int(checkpoint.get("last_modified"))
         failures_before = len(self._failures)
         stored = await self._stored_page_ids(space_id)
+        if modified_after is not None:
+            # Every page was written STRICT by the clean pass that set the checkpoint.
+            listing.settled.add(space_id)
         home: set[int] = set()
         batch: list[tuple[Record, list[Permission]]] = []
         synced = 0
@@ -1315,7 +1326,7 @@ class DrupalWikiConnector(BaseConnector):
             ):
                 continue
             try:
-                records = await self._build_page_records(page, parents)
+                records = await self._build_page_records(page, parents, listing)
             except (DrupalWikiSyncError, DrupalWikiAuthError):
                 raise
             except Exception as e:
@@ -1348,8 +1359,6 @@ class DrupalWikiConnector(BaseConnector):
 
         # A page whose attachments could not be listed is incomplete, so the checkpoint
         # must not move past it.
-        if modified_after is not None:
-            listing.settled.add(space_id)
         if len(self._failures) != failures_before or newest_seen is None:
             return
         listing.settled.add(space_id)
@@ -1411,48 +1420,36 @@ class DrupalWikiConnector(BaseConnector):
         return generate_record_sync_point_key("shares", "space", "all")
 
     async def _sync_shares(self, listing: PageListing) -> None:
-        """Write each shared page with the readers of its home space and of every space it
-        is shared into as its own grants; write a page no longer shared as a plain one.
+        """Rewrite each page whose share or whose spaces' readers changed since it was last
+        written, and remember what every shared page was written with.
 
         The wiki tells only by listing a space, so what each shared page was written with
-        is kept from run to run, and a page is written again only when that changed: a
-        share, or the readers of one of its spaces. A space this run did not list in full
-        keeps the shares it had. Readers that cannot all be read this run, or a home space
-        whose pages are not all ``STRICT`` yet, leave the page plain until a run that can:
-        its sub-pages must not reach the extra readers.
+        is kept from run to run; a page is written again only when ``_page_access`` now
+        decides otherwise. A page the home pass wrote this run is compared with what it
+        was written with then, which may be short of spaces listed after its own.
         """
-        key = self._shares_sync_point_key()
-        # A failed read raises: read as "nothing shared", every page unshared since would
-        # keep its readers. Kept as JSON text: Neo4j stores no nested maps.
-        before: dict[str, dict[str, Any]] = json.loads(
-            (await self.record_sync_point.read_sync_point(key)).get("pages") or "{}"
-        )
+        before = listing.shares_before
         now: dict[str, dict[str, Any]] = {}
         for page_id in sorted({int(p) for p in before} | set(listing.shared)):
             had = before.get(str(page_id)) or {}
-            want = {
-                space for space in (_as_int(s) for s in had.get("spaces") or []) if space not in listing.home
-            } | listing.shared.get(page_id, set())
             try:
-                # A page the home pass wrote this run went back to plain, and may have moved.
-                rewritten = page_id in listing.written
                 record = None
-                home = None if rewritten else _as_int(had.get("home"))
+                # A page written this run may have moved.
+                home = None if page_id in listing.written else _as_int(had.get("home"))
                 if home is None:
                     record = await self._stored_page(page_id)
                     if record is None:
                         continue  # not written yet, or removed; decided when it is
                     home = _as_int(record.external_record_group_id)
-                want.discard(home)
-                permissions = self._shared_page_permissions(home, want, listing)
+                shares, permissions = self._page_access(page_id, home, listing)
                 written = _grants_digest(permissions)
-                if written != (None if rewritten else had.get("grants")):
+                if written != listing.written_as.get(page_id, had.get("grants")):
                     record = record or await self._stored_page(page_id)
                     if record is None:
                         continue
-                    record.access_rule = AccessRule.STRICT if permissions is None else AccessRule.OPEN
-                    record.inherit_permissions = permissions is None
-                    await self.data_entities_processor.on_updated_record_permissions(record, permissions or [])
+                    await self.data_entities_processor.on_updated_record_permissions(
+                        record, self._apply_page_access(record, permissions)
+                    )
             except DrupalWikiAuthError:
                 raise
             except Exception as e:
@@ -1462,9 +1459,38 @@ class DrupalWikiConnector(BaseConnector):
                 if had:
                     now[str(page_id)] = had
                 continue
-            if want:
-                now[str(page_id)] = {"home": home, "spaces": sorted(want), "grants": written}
-        await self.record_sync_point.update_sync_point(key, {"pages": json.dumps(now, sort_keys=True)})
+            if shares:
+                now[str(page_id)] = {"home": home, "spaces": sorted(shares), "grants": written}
+        await self.record_sync_point.update_sync_point(
+            self._shares_sync_point_key(), {"pages": json.dumps(now, sort_keys=True)}
+        )
+
+    def _page_access(
+        self, page_id: int, home: int | None, listing: PageListing
+    ) -> tuple[set[int], list[Permission] | None]:
+        """The spaces a page is shared into, as far as this run knows them, and the grants
+        it carries of its own: None for a plain page.
+
+        Every page write takes its access from here, so a later write never undoes a
+        share. A space this run did not list (yet, or in full) keeps the shares the page
+        had into it.
+        """
+        had = listing.shares_before.get(str(page_id)) or {}
+        shares = {
+            space for space in (_as_int(s) for s in had.get("spaces") or [])
+            if space is not None and space not in listing.home
+        } | listing.shared.get(page_id, set())
+        shares.discard(home)
+        return shares, self._shared_page_permissions(home, shares, listing)
+
+    @staticmethod
+    def _apply_page_access(record: Record, permissions: list[Permission] | None) -> list[Permission]:
+        """Set a page record's rule and inheritance for the grants ``_page_access`` decided,
+        and return the grants to write, which replace the stored ones."""
+        record.access_rule = AccessRule.STRICT if permissions is None else AccessRule.OPEN
+        record.inherit_permissions = permissions is None
+        record.rewrite_permissions = True
+        return permissions or []
 
     async def _stored_page(self, page_id: int) -> Record | None:
         return await self.data_entities_processor.get_record_by_external_id(
@@ -1522,7 +1548,7 @@ class DrupalWikiConnector(BaseConnector):
                     if page is not None and _as_int(page.get("homeSpace")) == space_id:
                         # Still there: the listing skipped it.
                         await self.data_entities_processor.on_new_records(
-                            await self._build_page_records(page, None)
+                            await self._build_page_records(page, None, listing)
                         )
                         continue
                     await self.data_entities_processor.delete_record_by_external_id(
@@ -1540,8 +1566,10 @@ class DrupalWikiConnector(BaseConnector):
         self,
         page: dict[str, Any],
         parents: dict[int, int] | None,
+        listing: PageListing,
     ) -> list[tuple[Record, list[Permission]]]:
-        """Build the page record plus its attachments."""
+        """Build the page record, with the access ``_page_access`` decides, plus its
+        attachments."""
         page_id = _as_int(page.get("id"))
         pages_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGES.value)
         attachments_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS.value)
@@ -1589,7 +1617,9 @@ class DrupalWikiConnector(BaseConnector):
             record.parent_external_record_id = stored.parent_external_record_id
             record.parent_record_type = RecordType.WEBPAGE
 
-        records: list[tuple[Record, list[Permission]]] = [(record, [])]
+        _, permissions = self._page_access(page_id, _as_int(page.get("homeSpace")), listing)
+        listing.written_as[page_id] = _grants_digest(permissions)
+        records: list[tuple[Record, list[Permission]]] = [(record, self._apply_page_access(record, permissions))]
         # Search annotates a dependent hit with its parent, so an attachment has to
         # name the page's *stored* node id -- the id it was built with is discarded
         # when the processor matches an existing page.
@@ -1640,7 +1670,7 @@ class DrupalWikiConnector(BaseConnector):
             source_updated_at=_epoch_millis(last_modified),
             inherit_permissions=True,
             # A shared page's own grants open it outside its space; STRICT keeps them from
-            # opening its sub-pages too.
+            # opening its sub-pages too. _apply_page_access sets the access of a written page.
             access_rule=AccessRule.STRICT,
             parent_external_record_id=(
                 page_external_id(parent_page_id) if parent_page_id is not None else None

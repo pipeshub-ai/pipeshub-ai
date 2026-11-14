@@ -61,6 +61,9 @@ class FakeWiki:
         OPEN_PAGE: {"space": OPEN_SPACE, "parent": None, "modified": 1000},
     })
     shares: dict[int, set[int]] = field(default_factory=dict)
+    # pages the next listing of their home space leaves out, as an offset listing does when
+    # another page is deleted between two of its windows
+    skipped_once: set[int] = field(default_factory=set)
 
     def readable(self) -> dict[str, set[str]]:
         enabled = {u["email"] for u in self.users.values() if u["status"] == "ENABLED"}
@@ -94,7 +97,9 @@ class FakeWiki:
 
     async def list_pages(self, space_id: int, **_: object) -> _Response:
         ids = [p for p, page in self.pages.items() if page["space"] == space_id or space_id in self.shares.get(p, set())]
-        return _Response({"content": [self._excerpt(p) for p in sorted(ids)], "last": True})
+        skipped = {p for p in self.skipped_once if self.pages[p]["space"] == space_id}
+        self.skipped_once -= skipped
+        return _Response({"content": [self._excerpt(p) for p in sorted(set(ids) - skipped)], "last": True})
 
     async def list_attachments(self, **_: object) -> _Response:
         return _Response([])
@@ -213,6 +218,12 @@ async def a_shared_page_reaches_the_other_spaces_readers_and_its_sub_page_does_n
     await world.sync()
     await world.check("private page shared into the open space")
     assert f"page:{SUB_PAGE}" not in (await world.observed())[BOB], "the share must not reach the sub-page"
+    world.wiki.pages[PRIVATE_PAGE]["modified"] = 2000
+    await world.sync()
+    await world.check("shared page edited, so its own space's pass writes it again")
+    world.wiki.skipped_once.add(PRIVATE_PAGE)
+    await world.sync()
+    await world.check("shared page skipped by its space's listing, so the removal pass writes it again")
     world.wiki.members[PRIVATE_SPACE] = [ALICE, CAROL]
     await world.sync()
     await world.check("carol joins the private space")
