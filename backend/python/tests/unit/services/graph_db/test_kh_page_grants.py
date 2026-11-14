@@ -53,34 +53,53 @@ async def test_neo4j_takes_the_other_connectors_grants_the_caller_holds_without_
 
 
 @pytest.mark.asyncio
-async def test_neo4j_reads_at_most_the_bound_of_cross_connector_grants_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Past the bound the rest are left out: a node reached only through one of them is not listed (never one the viewer may not read)."""
+async def test_neo4j_tests_the_grants_of_a_viewer_past_the_bound_on_each_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past the bound no grant is dropped: the request tests the viewer's holders on each node instead (`_kh_cross_by_probe`), the user's
+    own on any other connector and a source account's on its own. The read asks for one id past the bound, in id order."""
     provider = Neo4jProvider.__new__(Neo4jProvider)
     provider.logger = MagicMock(spec=logging.Logger)
     monkeypatch.setattr(Neo4jProvider, "_KH_CROSS_MAX", 2)
-    cross = await provider._kh_v3_cross("user-1", ORG, [APP, OTHER], APP, None, {OTHER: ["x", "y", "z"]})
-    assert cross == ["x", "y"]
+    provider.client = MagicMock()
+    provider.client.execute_query = AsyncMock(side_effect=[
+        [{"user": "user-1", "badges": ["role-1"], "orgs": ["org-node"], "linked": [[OTHER, "source-1"], [OTHER, "source-role"]]}],
+        [{"ids": ["x", "y", "z"]}]])
+    cross = await provider._kh_v3_cross("user-1", ORG, [APP, OTHER], APP, "txn")
+    assert cross == {"probe": [OTHER], "common": ["user-1", "org-node", "role-1"], "scoped": {OTHER: ["source-1", "source-role"]}}
+    read = provider.client.execute_query.await_args_list[1]
+    assert "ORDER BY id LIMIT $limit" in read.args[0] and read.kwargs["parameters"]["limit"] == 3
     provider.logger.warning.assert_called_once()
+
+    # The caller's own grants past the bound: the holders are read, never the grants.
+    provider.client.execute_query = AsyncMock(side_effect=[[{"user": "user-1", "badges": [], "orgs": [], "linked": []}]])
+    held = await provider._kh_v3_cross("user-1", ORG, [APP, OTHER], APP, "txn", {OTHER: ["z", "x", "y"]})
+    assert held == {"probe": [OTHER], "common": ["user-1"], "scoped": {}}
+    assert provider.client.execute_query.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_neo4j_keeps_the_same_cross_connector_grants_past_the_bound_on_every_read(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Past the bound every read keeps the same ids, however they arrive: else a node would show in one listing and not the next.
-    The read keeps the lowest ids in the database too, so the two paths agree."""
+async def test_neo4j_cuts_the_grants_it_holds_past_the_bound_the_same_way_on_every_read_when_no_user_is_known(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no user to read holders for, the lowest ids are kept, however they arrive, and the cut is logged."""
     provider = Neo4jProvider.__new__(Neo4jProvider)
     provider.logger = MagicMock(spec=logging.Logger)
     monkeypatch.setattr(Neo4jProvider, "_KH_CROSS_MAX", 2)
-    first = await provider._kh_v3_cross("user-1", ORG, [APP, OTHER], APP, None, {OTHER: ["z", "x", "y"]})
-    again = await provider._kh_v3_cross("user-1", ORG, [APP, OTHER], APP, None, {OTHER: ["y", "z", "x"]})
+    first = await provider._kh_v3_cross(None, ORG, [APP, OTHER], APP, None, {OTHER: ["z", "x", "y"]})
+    again = await provider._kh_v3_cross(None, ORG, [APP, OTHER], APP, None, {OTHER: ["y", "z", "x"]})
     assert first == again == ["x", "y"]
+    assert provider.logger.warning.call_count == 2
 
+
+@pytest.mark.asyncio
+async def test_neo4j_runs_a_statement_past_the_bound_in_the_per_node_form() -> None:
+    provider = Neo4jProvider.__new__(Neo4jProvider)
     provider.client = MagicMock()
-    provider.client.execute_query = AsyncMock(side_effect=[
-        [{"user": "user-1", "badges": [], "orgs": [], "linked": []}], [{"ids": ["x", "y", "z"]}]])
-    read = await provider._kh_v3_cross("user-1", ORG, [APP, OTHER], APP, "txn")
-    statement = provider.client.execute_query.await_args_list[1].args[0]
-    assert "ORDER BY id LIMIT $limit" in statement
-    assert read == ["x", "y"]
+    provider.client.execute_query = AsyncMock(return_value=[])
+    cross = {"probe": [OTHER], "common": ["user-1"], "scoped": {}}
+    await provider._kh_query("MATCH (ca) WHERE ca.id IN $grantedIds RETURN ca", {"grantedIds": ["g"], "kh_cross": cross})
+    sent = provider.client.execute_query.await_args
+    assert "$kh_cross" not in sent.args[0] and "(ca)<-[kh_xp_ca:PERMISSION]-(kh_xg_ca)" in sent.args[0]
+    assert sent.kwargs["parameters"]["kh_x"] == cross and "kh_cross" not in sent.kwargs["parameters"]
 
 
 @pytest.mark.asyncio
