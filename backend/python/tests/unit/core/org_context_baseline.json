@@ -169,6 +169,7 @@
   "app/indexing_main.py": 4,
   "app/migrations/all_team_migration.py": 1,
   "app/migrations/code_graph_backfill.py": 2,
+  "app/migrations/file_type_requeue/migration.py": 3,
   "app/migrations/kb_apps_migration.py": 1,
   "app/migrations/s3_created_date_filter_migration.py": 1,
   "app/migrations/web_browser_identity_migration.py": 1,
