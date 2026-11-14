@@ -294,11 +294,11 @@ async def _browsed_down(layer: KhPgLayer, world, viewer: str, node: str, parent_
 
 
 def _within(world, app: str, depth: int) -> set[str]:
-    """The nodes within ``depth`` hierarchy hops of the App (live, of the world's org), and the records no hierarchy edge places that belong to it or to a group fewer hops down."""
-    live = {n.id: n for n in world.nodes if not n.deleted and n.org is None}
+    """The nodes within ``depth`` hierarchy hops of the App (through any node, a deleted one too, as Neo4j walks), and the records no hierarchy edge places that belong to it or to
+    a group fewer hops down."""
     levels = [{app}]
     for _ in range(depth):
-        levels.append({c for p in levels[-1] for c in _hier_children(world, p) if c in live} - set().union(*levels))
+        levels.append({c for p in levels[-1] for c in _hier_children(world, p)} - set().union(*levels))
     near = set().union(*levels[1:])
     shorter = {app, *(i for i in set().union(*levels[:-1]) if world.node(i).kind == "group")}
     placed = {n.id for n in world.nodes if any(p.rel in HIERARCHY and any(m.id == p.id for m in world.nodes) for p in n.parents)}

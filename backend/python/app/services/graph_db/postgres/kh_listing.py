@@ -290,12 +290,13 @@ class KhListingMixin(PgBase):
 
     async def _kh_flat_within(self, org: str, app_id: str, app_sk: int, depth: int, transaction: str | None) -> list[int]:
         """The rows within ``depth`` hierarchy hops of the connector, and the records the hierarchy does not place that belong to it or to a group less than ``depth`` hops down
-        (Neo4j's and ArangoDB's bound on the flatten of a connector: a placed record counts by its hops, an unplaced one as one below its group)."""
+        (Neo4j's and ArangoDB's bound on the flatten of a connector: a placed record counts by its hops, an unplaced one as one below its group). The hops pass through any node,
+        a deleted one too, as Neo4j's walk does (ArangoDB's stops at a deleted one)."""
         levels: list[list[int]] = [[app_sk]]
         seen = {app_sk}
         groups: list[int] = []
         for k in range(depth):
-            rows = await self._kq(lambda tx, f=levels[-1]: tx.fetch(kgl.children_of_sql(""), org, f, SCOPE_MAX + 1, []), transaction)
+            rows = await self._kq(lambda tx, f=levels[-1]: tx.fetch(kgl.HIER_CHILDREN, org, f, SCOPE_MAX + 1), transaction)
             fresh = [r for r in rows if r["sk"] not in seen]
             seen |= {r["sk"] for r in fresh}
             if len(rows) > SCOPE_MAX or len(seen) > SCOPE_MAX:

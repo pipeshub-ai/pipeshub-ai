@@ -325,3 +325,10 @@ UNPLACED = """/* pipeshub:kg.listing_unplaced */ SELECT r.sk FROM (
       WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.to_id = $3 AND e.to_coll = 'apps' AND e.from_coll = 'records') c
   JOIN kg.records r ON r.org_id = $1 AND r.sk = c.sk
   WHERE r.kind = 3 AND r.parent_sk IS NULL AND NOT EXISTS (SELECT 1 FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = r.sk AND l.kind = 1) LIMIT $4"""
+# The hierarchy children of each of the sks $2 (by the primary parent and by a hierarchy link): groups and records whatever their state (deleted, another organisation's, a
+# placeholder), as the structure is walked when a flatten's depth is bounded; $3 rows at most.
+HIER_CHILDREN = """/* pipeshub:kg.listing_hier_children */ SELECT c.sk, c.kind FROM unnest($2::bigint[]) AS p(sk) CROSS JOIN LATERAL (
+    SELECT c.sk, c.kind FROM kg.records c WHERE c.org_id = $1 AND c.parent_sk = p.sk AND c.kind IN (2, 3) OFFSET 0) c
+  UNION ALL SELECT c.sk, c.kind FROM unnest($2::bigint[]) AS p(sk) CROSS JOIN LATERAL (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = p.sk AND l.kind = 1 OFFSET 0) l
+    JOIN kg.records c ON c.org_id = $1 AND c.sk = l.child_sk AND c.kind IN (2, 3)
+  LIMIT $3"""
