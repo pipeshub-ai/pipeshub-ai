@@ -601,33 +601,53 @@ check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=
   fi
 )
 
-# When docker needs root the installer runs itself again through sudo, which resets the environment: the PIPESHUB_* settings must be
-# handed over on the command line, or a fresh install falls back to the default stores. A recording sudo keeps only its arguments.
+# When docker needs root the installer runs itself again through sudo, which resets the environment: every setting the installer
+# reads must be named in --preserve-env, or a fresh install falls back to the default stores. The recording sudo acts like one with
+# env_reset: it sees only the variables --preserve-env names, and logs those and its other arguments.
 (
   work="$TMP_ROOT/sudo-reexec"; mkdir -p "$work/bin"
   cp "$INNER_INSTALLER" "$work/install.sh"
   printf '#!/usr/bin/env bash\n[ "$1" = info ] && exit 1\nexit 0\n' >"$work/bin/docker"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >"$SUDO_LOG"\n' >"$work/bin/sudo"
+  cat >"$work/bin/sudo" <<'STUB'
+#!/usr/bin/env bash
+: >"$SUDO_LOG"
+if [[ "$1" == --preserve-env=* ]]; then
+  IFS=, read -r -a names <<<"${1#--preserve-env=}"; shift
+  for n in "${names[@]}"; do printf 'kept %s=%s\n' "$n" "${!n-}" >>"$SUDO_LOG"; done
+fi
+printf 'arg %s\n' "$@" >>"$SUDO_LOG"
+STUB
   chmod +x "$work/bin/docker" "$work/bin/sudo"
   if [[ $EUID -eq 0 || ! -S /var/run/docker.sock ]]; then
-    pass "sudo re-exec keeps the PIPESHUB_* settings (skipped: running as root or no docker socket)"
+    pass "sudo re-exec keeps the installer's settings (skipped: running as root or no docker socket)"
   else
-    (cd "$work" && PATH="$work/bin:$PATH" SUDO_LOG="$work/sudo.log" PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml \
-      PIPESHUB_PROJECT='my proj' PIPESHUB_UNRELATED_TOKEN=secret bash ./install.sh --yes >/dev/null 2>&1)
-    args="$(cat "$work/sudo.log" 2>/dev/null)"
-    check "sudo re-exec passes PIPESHUB_COMPOSE_OVERRIDES" "$args" "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml"
-    check "sudo re-exec passes a value with a space as one argument" "$args" $'\nPIPESHUB_PROJECT=my proj\n'
-    check "sudo re-exec keeps the installer's own arguments" "$args" $'/install.sh\n--yes'
-    check_exact "sudo re-exec passes no variable the installer does not read" "$(printf '%s\n' "$args" | grep -c UNRELATED)" "0"
-    # With no PIPESHUB_* setting at all the empty list must not trip set -u.
-    (cd "$work" && env -u PIPESHUB_COMPOSE_OVERRIDES PATH="$work/bin:$PATH" SUDO_LOG="$work/sudo.log" bash ./install.sh --yes >/dev/null 2>&1)
-    check_exact "sudo re-exec with no PIPESHUB_* setting" "$(cat "$work/sudo.log" 2>/dev/null | head -1)" "env"
+    (cd "$work" && env -i PATH="$work/bin:$PATH" HOME="$HOME" SUDO_LOG="$work/sudo.log" \
+      PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml PIPESHUB_PROJECT='my proj' HEALTH_WAIT_SECS=900 \
+      PIPESHUB_UNRELATED_TOKEN=secret bash ./install.sh --yes >/dev/null 2>&1)
+    log="$(cat "$work/sudo.log" 2>/dev/null)"
+    check "sudo re-exec keeps PIPESHUB_COMPOSE_OVERRIDES" "$log" "kept PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml"
+    check "sudo re-exec keeps a value with a space" "$log" "kept PIPESHUB_PROJECT=my proj"
+    check "sudo re-exec keeps a setting without the PIPESHUB_ prefix" "$log" "kept HEALTH_WAIT_SECS=900"
+    check "sudo re-exec keeps the installer's own arguments" "$log" $'/install.sh\narg --yes'
+    check_exact "sudo re-exec puts no value on sudo's command line" "$(printf '%s\n' "$log" | grep '^arg ' | grep -c '=')" "0"
+    check_exact "sudo re-exec keeps no variable the installer does not read" "$(printf '%s\n' "$log" | grep -c UNRELATED)" "0"
+    # With none of them set the call stays plain sudo, which needs no permission to keep variables.
+    (cd "$work" && env -i PATH="$work/bin:$PATH" HOME="$HOME" SUDO_LOG="$work/sudo.log" bash ./install.sh --yes >/dev/null 2>&1)
+    check_exact "sudo re-exec with no setting is plain sudo" "$(grep -c '^kept ' "$work/sudo.log" 2>/dev/null)" "0"
+    check "sudo re-exec with no setting still runs the installer" "$(cat "$work/sudo.log" 2>/dev/null)" "/install.sh"
   fi
 )
-# Every PIPESHUB_* variable the installer reads is in the list it hands to sudo.
-_read="$(grep -oE '\$\{?PIPESHUB_[A-Z_]+' "$INNER_INSTALLER" | tr -d '${' | sort -u)"
-_kept="$(awk '/_sudo_env=\(\)/{g=1} g&&/; do$/{print; exit} g{print}' "$INNER_INSTALLER" | grep -oE 'PIPESHUB_[A-Z_]+' | sort -u)"
-check_exact "the sudo re-exec list covers every PIPESHUB_* the installer reads" "$(comm -23 <(printf '%s\n' "$_read") <(printf '%s\n' "$_kept"))" ""
+# Every variable the installer reads before it first sets it (so a value from the caller's environment counts) is in the list it keeps
+# across sudo. Not inputs: bash's own variables, internal flags read inside functions defined before they are set, and the PostgreSQL
+# passwords (set with printf -v from .env or generated, never read from the environment).
+_read="$(awk '
+  { a=""; rest=$0
+    if (match($0, /^[[:space:]]*(export |local |readonly )?[A-Z][A-Z0-9_]*=/)) { a=substr($0, RSTART, RLENGTH); sub(/^[[:space:]]*(export |local |readonly )?/, "", a); sub(/=$/, "", a); rest=substr($0, RSTART+RLENGTH) }
+    s=rest; while (match(s, /\$\{?[A-Z][A-Z0-9_]*/)) { n=substr(s, RSTART, RLENGTH); gsub(/[${]/, "", n); if (!(n in set)) print n; s=substr(s, RSTART+RLENGTH) }
+    if (a != "") set[a]=1 }' "$INNER_INSTALLER" | grep -vE '^(BASH_[A-Z_]+|EUID|SECONDS|USER|IS_MACOS|IS_WINDOWS|TOTAL_RAM_MB|PG_[A-Z]+_PASSWORD)$' | sort -u)"
+_kept="$(awk '/^    _keep=""/{g=1} g&&/; do$/{print; exit} g{print}' "$INNER_INSTALLER" | grep -oE '\b[A-Z][A-Z0-9_]*\b' | sort -u)"
+check_exact "the sudo re-exec list covers every setting the installer reads" "$(comm -23 <(printf '%s\n' "$_read") <(printf '%s\n' "$_kept"))" ""
+check "the guard finds settings without the PIPESHUB_ prefix" "$_read" "HEALTH_WAIT_SECS"
 
 # --uninstall keeps the PostgreSQL volume unless --delete-postgres is given, also with --yes (checked with a recording docker).
 (

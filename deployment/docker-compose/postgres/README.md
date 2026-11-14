@@ -14,9 +14,10 @@ Secrets: the passwords come from the container environment. They are not in the 
 
 ## Document store on PostgreSQL (`docker-compose.postgres-docstore.yml`)
 
-For a **new** install, the Node API can keep its documents (users, organisations, conversations and the rest) in PostgreSQL instead of MongoDB (`DOC_STORE=postgres`). Run from a repository checkout (the migration job's image is built from `backend/db/Dockerfile`). The simplest way is the installer: `PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml ./install.sh`, which sets both profiles and generates the passwords. By hand, put the `PG_*_PASSWORD` values in `.env` and activate **both** profiles `postgres` and `postgres-migrate` (the override depends on services of both):
+For a **new** install, the Node API can keep its documents (users, organisations, conversations and the rest) in PostgreSQL instead of MongoDB (`DOC_STORE=postgres`). Run from a repository checkout (the migration job's image is built from `backend/db/Dockerfile`). The simplest way is the installer, from `deployment/docker-compose`: `PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml ./install.sh`, which sets both profiles and generates the passwords. By hand, put the `PG_*_PASSWORD` values in `.env` and activate **both** profiles `postgres` and `postgres-migrate` (the override depends on services of both):
 
 ```bash
+cd deployment/docker-compose     # where .env and the compose files are
 COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate \
   docker compose -f docker-compose.yml -f docker-compose.postgres-docstore.yml -p pipeshub-ai up -d --build
 ```
