@@ -816,6 +816,50 @@ class TestProductAccess:
 
         assert db.withdrawn_users == []
 
+    @pytest.mark.parametrize(
+        "pages",
+        [
+            pytest.param([{"errorMessages": []}], id="first page with no values"),
+            pytest.param(["not a page"], id="first page not an object"),
+            pytest.param([{"values": [{"key": "alice-key"}], "isLast": False}, {"values": None, "isLast": True}],
+                         id="later page with no list of values"),
+        ],
+    )
+    async def test_a_product_group_page_that_is_not_a_page_keeps_every_account(
+        self, jira, db, store, search, pages
+    ) -> None:
+        """Read as the end of the members, it would make the members read so far everyone with product access."""
+        stub_site(jira, search)
+
+        def members(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            if q["groupname"] == "jira-software-users":
+                return json_response(pages[int(q.get("startAt", "0")) and 1])
+            return json_response({"values": [{"key": "alice-key"}], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {
+            "alice@example.com", "bob@example.com", "carol@example.com", "dave@example.com",
+        }
+        assert db.withdrawn_users == []
+
+    async def test_an_empty_product_group_gives_no_account_product_access(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_members(jira, ())
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.app_users == [] and [u.email for u in db.withdrawn_users] == ["bob@example.com"]
+
     @pytest.mark.parametrize("unread", ["roles", "product group"])
     async def test_product_access_that_cannot_be_read_keeps_every_account(self, jira, db, store, search, unread) -> None:
         stub_site(jira, search)
@@ -1232,6 +1276,8 @@ class TestDirectoryEdgeCases:
         assert await connector._fetch_group_members("g", "g") == ["a", "b"]
 
         jira.on("GET", f"{API}/group/member", json_response("odd"))
+        assert await connector._fetch_group_members("g", "g") is None, "a body that is not a page leaves the members unknown"
+        jira.on("GET", f"{API}/group/member", json_response({"values": [], "isLast": True}))
         assert await connector._fetch_group_members("g", "g") == []
         assert await connector._fetch_group_members("g", "") == []
 
