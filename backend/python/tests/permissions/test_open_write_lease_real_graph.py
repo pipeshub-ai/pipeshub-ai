@@ -185,3 +185,35 @@ async def test_a_compare_and_set_is_refused_once_the_stores_clock_is_past_the_ca
     assert await backend.provider.update_node_fields_if_match(conn, CollectionNames.APPS.value, {OPEN_WRITES_KEY: "{}"},
                                                               {OPEN_WRITES_KEY: app.get(OPEN_WRITES_KEY)}, clock_at_most=now + 60)
     assert (await app_of(backend, conn))[OPEN_WRITES_KEY] == "{}"
+
+
+async def test_a_write_that_waits_for_a_lock_past_its_bound_is_refused_on_arangodb(arango_provider, arango_settings) -> None:
+    """ArangoDB folds `DATE_NOW()` into a constant when it compiles a statement, before the statement waits for a collection lock: a write that
+    waited for another transaction's exclusive lock past its bound would apply on a clock read before the wait. The clock is read after the write
+    holds the document's lock instead, so it is refused."""
+    from tests.integration.graph_permissions.write_path_support import (
+        _ArangoBackend,
+        _seed_app,
+        _suffix,
+    )
+
+    store = _ArangoBackend(arango_provider, arango_settings)
+    conn = f"conn-{_suffix()}"
+    await _seed_app(store, conn)
+    app = await app_of(store, conn)
+    http = arango_provider.http_client
+    holder = await http.begin_transaction([], [], exclusive=[CollectionNames.APPS.value])
+    try:
+        now = await arango_provider.store_time()
+        write = asyncio.ensure_future(arango_provider.update_node_fields_if_match(
+            conn, CollectionNames.APPS.value, {OPEN_WRITES_KEY: "late"}, {OPEN_WRITES_KEY: app.get(OPEN_WRITES_KEY)}, clock_at_most=now + 0.3))
+        await asyncio.sleep(0.8)                                               # the write waits for the collection past its bound
+    finally:
+        await http.abort_transaction(holder)
+    assert not await write
+    assert (await app_of(store, conn)).get(OPEN_WRITES_KEY) == app.get(OPEN_WRITES_KEY)
+    assert await arango_provider.update_node_fields_if_match(conn, CollectionNames.APPS.value, {OPEN_WRITES_KEY: "{}"},
+                                                             {OPEN_WRITES_KEY: app.get(OPEN_WRITES_KEY)}, clock_at_most=await arango_provider.store_time() + 60)
+    with pytest.raises(ValueError, match="transaction of its own"):
+        await arango_provider.update_node_fields_if_match(conn, CollectionNames.APPS.value, {OPEN_WRITES_KEY: "{}"}, {OPEN_WRITES_KEY: "{}"},
+                                                          transaction="t", clock_at_most=0)
