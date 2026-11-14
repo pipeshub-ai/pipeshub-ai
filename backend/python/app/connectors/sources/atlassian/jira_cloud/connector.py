@@ -84,6 +84,7 @@ from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.core.adf_markdown import adf_to_markdown
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    HOLDER_USER_FIELD,
     UNREADABLE_REASONS,
     IssueSecurityContext,
     SchemeKnowledge,
@@ -563,6 +564,9 @@ class JiraConnector(BaseConnector):
         # Cleared when run_sync ends, so a _fetch_projects call outside it reads the mapping itself.
         self._stored_app_users: list[AppUser] = []
         self._deactivated_account_ids: set[str] = set()
+        self._shown_inactive_ids: set[str] = set()
+        # A placeholder sweep's read of an ancestor failed (not "Jira has no such issue"), this sweep.
+        self._ancestor_read_failed = False
         self._newly_listed_account_ids: list[str] = []
         self._listed_account_ids: set[str] = set()
         # Every account the user list showed, active or not.
@@ -989,10 +993,12 @@ class JiraConnector(BaseConnector):
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
-            if self._directory_read_complete():
-                await self._withdraw_ineligible_app_users(
-                    jira_users, unlicensed_ids | self._deactivated_account_ids
-                )
+            # An account missing from the list is gone only after a complete read; one it shows deactivated or
+            # without product access is ineligible whatever the read.
+            await self._withdraw_ineligible_app_users(
+                jira_users, unlicensed_ids | (
+                    self._deactivated_account_ids if self._directory_read_complete() else self._shown_inactive_ids)
+            )
             # Saving a group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
             groups_members_map = await self._sync_user_groups(jira_users)
@@ -1170,7 +1176,8 @@ class JiraConnector(BaseConnector):
 
         Reconciliation is keyed by external id and idempotent, so an interrupted sweep is
         completed by the next sync's sweep. Returns False when it was skipped because the
-        synced users could not be read, True otherwise (nothing to do included).
+        synced users could not be read, or an ancestor could not be read; True otherwise
+        (nothing to do included).
         """
         if not synced_project_ids:
             return True
@@ -1208,6 +1215,7 @@ class JiraConnector(BaseConnector):
         }
 
         depth = 0
+        self._ancestor_read_failed = False
         while frontier:
             depth += 1
             self.logger.info(f"🧹 Placeholder sweep: backfilling {len(frontier)} ancestor stub(s)")
@@ -1263,7 +1271,7 @@ class JiraConnector(BaseConnector):
                 )
                 break
             frontier = next_frontier
-        return True
+        return not self._ancestor_read_failed
 
     async def _bulk_fetch_ancestor_level(
         self, frontier: list[Record]
@@ -1294,14 +1302,17 @@ class JiraConnector(BaseConnector):
                 )
             except Exception as e:
                 self.logger.warning(f"Placeholder sweep: {ctx} failed: {e}")
+                self._ancestor_read_failed = True
                 return {}
 
             if response.status != HttpStatusCode.OK.value:
                 self.logger.warning(f"Placeholder sweep: {ctx} returned HTTP {response.status}")
+                self._ancestor_read_failed = True
                 return {}
 
             payload = self._safe_json_parse(response, "placeholder ancestor bulk fetch")
             if not payload:
+                self._ancestor_read_failed = True
                 return {}
             return {
                 issue["id"]: issue
@@ -2310,11 +2321,13 @@ class JiraConnector(BaseConnector):
         }
         self._listed_account_ids = listed_active
         self._seen_account_ids = {u["accountId"] for u in raw_jira_users if u.get("accountId")}
-        # Deactivated, or gone from the directory: neither can sign in. Only acted on after a complete read.
-        self._deactivated_account_ids = {
+        self._shown_inactive_ids = {
             u["accountId"] for u in raw_jira_users
             if u.get("accountType") == "atlassian" and not u.get("active", True) and u.get("accountId")
-        } | {u.source_user_id for u in cached_app_users if u.source_user_id and u.source_user_id not in listed_active}
+        }
+        # Deactivated, or gone from the directory: neither can sign in. Absence is acted on only after a complete read.
+        self._deactivated_account_ids = self._shown_inactive_ids | {
+            u.source_user_id for u in cached_app_users if u.source_user_id and u.source_user_id not in listed_active}
 
         all_active_account_ids: set[str] = set()
         visible_email_map: dict[str, str] = {}  # email.lower() -> accountId
@@ -4730,7 +4743,10 @@ class JiraConnector(BaseConnector):
         """Rebuild the stored issues that name these accounts where an issue's own grants come from:
         reporter, assignee, a user field a holder reads, or a level that names them."""
         ids = [a for a in account_ids if JIRA_ACCOUNT_ID.fullmatch(a)]
-        fields = ["reporter", "assignee", *(f"cf[{f.removeprefix('customfield_')}]" for f in security.custom_field_ids)]
+        # A group field holds group names: an account id in its clause would make Jira refuse the whole query.
+        user_fields = custom_field_ids_from_members(
+            {**security.members_by_level, "browse": security.browse_holders or []}, kinds=(HOLDER_USER_FIELD,))
+        fields = ["reporter", "assignee", *(f"cf[{f.removeprefix('customfield_')}]" for f in user_fields)]
         for start in range(0, len(ids), PEOPLE_REREAD_CHUNK):
             chunk = ids[start:start + PEOPLE_REREAD_CHUNK]
             quoted = ", ".join(f'"{a}"' for a in chunk)

@@ -29,7 +29,7 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     JiraConnector,
     _ParentLevel,
 )
-from app.models.entities import AppUser, TicketRecord
+from app.models.entities import AppUser, RecordType, TicketRecord
 from app.models.permission import EntityType, Permission, PermissionType
 
 PROJECT_ID = "p-1"
@@ -1784,10 +1784,13 @@ class TestIssueGrantsNameListedAccountsOnly:
         c = _connector()
         saved, naming = self._pass(c)
         c._newly_listed_account_ids = ["acc-1", 'bad"id']
-        ctx = self._ctx(levels={"10102": [{"type": "user", "parameter": "acc-1"}], "10103": [{"type": "group", "value": "g"}]})
-        ctx.custom_field_ids = ["customfield_10040"]
+        ctx = self._ctx(levels={"10102": [{"type": "user", "parameter": "acc-1"}], "10103": [{"type": "group", "value": "g"}],
+                                "10104": [{"type": "groupCustomField", "parameter": "customfield_10050"}]},
+                        holders=[{"type": "reporter"}, {"type": "userCustomField", "parameter": "customfield_10040"}])
+        ctx.custom_field_ids = ["customfield_10040", "customfield_10050"]
         await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, ctx, {"people_reread": '["acc-0"]'}, covered=False)
         assert saved == ['["acc-0", "acc-1", "bad\\"id"]', "[]"]  # saved before the pass, cleared after it
+        # Not cf[10050]: a group field holds group names, and an account id there makes Jira refuse the whole query.
         assert naming == ['reporter in ("acc-0", "acc-1") OR assignee in ("acc-0", "acc-1") '
                           'OR cf[10040] in ("acc-0", "acc-1") OR level in (10102)']
 
@@ -1939,3 +1942,20 @@ class TestAnonymousBrowseReachesEveryone:
         await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
         c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
         c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
+
+
+class TestSweepAncestorReads:
+    """A stub whose ancestor could not be read (not "Jira has no such issue") is not swept: the sweep says so, and
+    an account listed again stays owed until a sweep reads it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("status", "swept"), [(200, True), (503, False)], ids=["read", "unavailable"])
+    async def test_a_failed_ancestor_read_reports_the_sweep_incomplete(self, status: int, swept: bool) -> None:
+        c = _connector()
+        stub = MagicMock(record_type=RecordType.TICKET, external_record_group_id=PROJECT_ID, external_record_id="77",
+                         external_revision_id="1", parent_external_record_id=None)
+        c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        response = MagicMock(status=status, json=MagicMock(return_value={"issues": []}))
+        c._call_with_retry = AsyncMock(return_value=response)
+        assert await c._sweep_placeholder_records({PROJECT_ID}, {PROJECT_ID}) is swept

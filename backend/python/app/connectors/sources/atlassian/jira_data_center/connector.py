@@ -546,8 +546,10 @@ class JiraDataCenterConnector(BaseConnector):
         self._app_roles_mapping: dict[str, list[dict[str, Any]]] = {}
         # Issues of the project being synced that failed to build, this run.
         self._issue_build_failures: int = 0
-        # A level's user holder went ungranted while the user list was not read in full, this project.
+        # A level's user holder went ungranted while the user list was cut short, this project (the marker is saved).
         self._holders_unresolved: bool = False
+        # A placeholder sweep's read of an ancestor failed (not "Jira has no such issue"), this sweep.
+        self._ancestor_read_failed = False
         # Issue id -> (project id, level id) of a parent issue read this sync; None when it is gone
         # or hidden from the account.
         self._parent_levels: dict[str, tuple[str, str | None] | None] = {}
@@ -3540,11 +3542,10 @@ class JiraDataCenterConnector(BaseConnector):
             if not self._issue_build_failures:
                 await self._update_project_sync_checkpoint(project_key, child_parents="{}")
         levels_to_save = levels_after_walk(levels_to_save, self._issue_build_failures)
+        if self._holders_unresolved:
+            levels_to_save = pre_walk_marker(levels_to_save)  # the marker saved during the walk stays
         if is_new_project or levels_to_save != stored_levels:
             await self._record_security_levels(project_key, levels_to_save, force=security.defer_checkpoint)
-        if self._holders_unresolved:
-            # Their issues were written without that holder's grant: read the leveled issues again next sync.
-            await self._mark_levels_to_retry(project_key)
 
         if total_issues_processed == 0:
             self.logger.info(f"ℹ️ No new/updated issues for project {project_key}")
@@ -3561,21 +3562,24 @@ class JiraDataCenterConnector(BaseConnector):
         }
 
     async def _mark_levels_to_retry(self, project_key: str) -> None:
+        """``_save_levels_retry``, logging a failure instead of raising it."""
+        try:
+            await self._save_levels_retry(project_key)
+        except Exception as e:
+            # Never let this cost the close: the holders then wait for the issue's next change at source.
+            self.logger.warning("Could not save the retry marker for project %s: %s", project_key, e)
+
+    async def _save_levels_retry(self, project_key: str) -> None:
         """Save the retry marker in the project's level map, if it is not there."""
         if not project_key:
             return
         try:
-            try:
-                stored = json.loads((await self._get_project_sync_checkpoint(project_key) or {}).get("security_levels"))
-            except (TypeError, ValueError):
-                stored = None
-            marker = pre_walk_marker(stored if isinstance(stored, dict) else None)
-            if marker != stored:
-                await self._update_project_sync_checkpoint(
-                    project_key, security_levels=json.dumps(marker, sort_keys=True))
-        except Exception as e:
-            # Never let this cost the close: the holders then wait for the issue's next change at source.
-            self.logger.warning("Could not save the retry marker for project %s: %s", project_key, e)
+            stored = json.loads((await self._get_project_sync_checkpoint(project_key) or {}).get("security_levels"))
+        except (TypeError, ValueError):
+            stored = None
+        marker = pre_walk_marker(stored if isinstance(stored, dict) else None)
+        if marker != stored:
+            await self._update_project_sync_checkpoint(project_key, security_levels=json.dumps(marker, sort_keys=True))
 
     async def _record_security_levels(
         self, project_key: str, levels: dict[str, str], *, force: bool = False,
@@ -4244,7 +4248,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         Returns:
             Total number of placeholder stubs refreshed from source (all BFS depths); None when the
-            sweep was skipped because the synced users could not be read.
+            sweep was skipped because the synced users could not be read, or an ancestor could not be read.
         """
         if not synced_project_ids:
             return 0
@@ -4282,6 +4286,7 @@ class JiraDataCenterConnector(BaseConnector):
         level_users = self._users_with_usernames(user_by_account_id)
         total_backfilled = 0
         depth = 0
+        self._ancestor_read_failed = False
         while frontier:
             depth += 1
             self.logger.info("Placeholder sweep: backfilling %s ancestor stub(s)", len(frontier))
@@ -4330,7 +4335,7 @@ class JiraDataCenterConnector(BaseConnector):
             "Placeholder sweep: backfilled %s ancestor stub(s) total",
             total_backfilled,
         )
-        return total_backfilled
+        return None if self._ancestor_read_failed else total_backfilled
 
     async def _fetch_ancestor_level(
         self, frontier: list[Record]
@@ -4446,11 +4451,15 @@ class JiraDataCenterConnector(BaseConnector):
                 try:
                     response = await self._get_issue_with_retry(issue_id, fields)
                     if response.status != HttpStatusCode.OK.value:
+                        # Not found or hidden is an answer; any other status is a read that may pass next time.
+                        if response.status not in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.FORBIDDEN.value):
+                            self._ancestor_read_failed = True
                         return
                     issue = self._safe_json_parse(response, f"placeholder ancestor {issue_id}")
                     if isinstance(issue, dict) and issue.get("id"):
                         results[str(issue["id"])] = issue
                 except Exception as e:
+                    self._ancestor_read_failed = True
                     self.logger.debug(
                         "Placeholder sweep: get_issue_with_retry failed for %s: %s", issue_id, e
                     )
@@ -4747,15 +4756,15 @@ class JiraDataCenterConnector(BaseConnector):
         return pending
 
     async def _withdraw_unlisted_app_users(self, jira_users: list[AppUser]) -> None:
-        """Take the connector and their own grants from stored users the complete active-user list no
-        longer shows (deactivated or removed), unless another listed account has their email. A list
-        cut short, refused or read through the search fallback is not complete."""
-        if not self._directory_read_complete():
-            return
+        """Take the connector and their own grants from stored users the user list shows deactivated, or a complete
+        active-user list no longer shows (removed), unless another listed account has their email. Absence means
+        nothing on a list cut short, refused or read through the search fallback; a deactivated row always does."""
+        complete = self._directory_read_complete()
         kept_emails = {u.email.lower() for u in jira_users if u.email}
         gone = [
             u for u in self._stored_app_users
             if u.source_user_id and u.source_user_id not in self._listed_user_keys
+            and (complete or u.source_user_id in self._seen_user_keys)
             and (u.email or "").lower() not in kept_emails
         ]
         if gone:
@@ -4981,11 +4990,12 @@ class JiraDataCenterConnector(BaseConnector):
                     self.logger.debug(f"🔗 Issue {issue_key} has {len(related_external_records)} linked issues")
 
                 if security is not None:
+                    issue_project_key = (fields.get("project") or {}).get("key") or str(issue_key).rsplit("-", 1)[0]
                     permissions, skipped_holders = apply_issue_access(
                         issue_record,
                         fields,
                         is_subtask=issue_data["is_subtask"],
-                        project_key=(fields.get("project") or {}).get("key") or str(issue_key).rsplit("-", 1)[0],
+                        project_key=issue_project_key,
                         context=security,
                         user_by_account_id=level_users,
                         app_roles_mapping=self._app_roles_mapping,
@@ -5000,7 +5010,12 @@ class JiraDataCenterConnector(BaseConnector):
                         # The level could not be read for now. An issue Jira changed, or a child that follows its
                         # parent, may have a different level, so it must not keep the old level's holders.
                         issue_record.rewrite_permissions = True
-                    if HOLDER_USER in skipped_holders and not self._directory_read_complete():
+                    if HOLDER_USER in skipped_holders and self._user_read_unfinished and not self._holders_unresolved:
+                        # A list cut short may have left out the holder's account: the next sync, reading it in
+                        # full, reads the leveled issues again. Saved before this issue is written without the
+                        # holder's grant (a failed save holds the issue). A list that is never complete (the search
+                        # fallback, a refusal) would repeat the walk every sync without naming the holder.
+                        await self._save_levels_retry(issue_project_key)
                         self._holders_unresolved = True
                     if skipped_holders and (logged := (project_id, read_security_level(fields)[1], ",".join(skipped_holders))) \
                             not in self._skipped_holders_logged:
