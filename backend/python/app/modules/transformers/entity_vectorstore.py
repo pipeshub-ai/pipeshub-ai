@@ -317,7 +317,6 @@ class EntityVectorStore:
     ) -> None:
         self.logger = logger
         self.config_service = config_service
-        self._entity_witness: dict[str, tuple[str, bool]] = {}
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
         # Only the indexing service sets this: it runs the rebuild that
@@ -1205,18 +1204,21 @@ class EntityVectorStore:
 
             # The weights that made each vector, as the server said; checked against the index before the write.
             witnessed = {
-                self._point_id(e.org_id, e.entity_type.value, e.entity_id): self._entity_witness.pop(
-                    self._point_id(e.org_id, e.entity_type.value, e.entity_id), None,
-                )
+                self._point_id(e.org_id, e.entity_type.value, e.entity_id): vectors[
+                    self._point_id(e.org_id, e.entity_type.value, e.entity_id)
+                ][2]
                 for e, _, _ in pending
             }
+            # One org per batch (see upsert_entities_batch). An index with no pin is derived from its points before
+            # an int8 claim, so points written before the pins existed (fp32) are found and not mixed with.
+            batch_org = named[0].org_id
             for precision, fallback in {w for w in witnessed.values() if w is not None}:
-                await self._guard().verify_batch(collection, None, precision, fallback=fallback, intent="int8-w", derive=False)
+                await self._guard().verify_batch(collection, batch_org, precision, fallback=fallback, intent="int8-w")
 
             points = []
             for entity, connector_ids, record_group_ids in pending:
                 point_id = self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
-                dense, sparse = vectors[point_id]
+                dense, sparse, _ = vectors[point_id]
                 tag = {POINT_PRECISION: witnessed[point_id][0]} if witnessed.get(point_id) else {}
                 points.append(VectorPoint(
                     id=point_id,
@@ -1236,7 +1238,7 @@ class EntityVectorStore:
 
     async def _embed_changed(
         self, entities: list[EntityRecord], states: dict[str, dict[str, Any]], fingerprint: str,
-    ) -> dict[str, tuple[list[float], Any]]:
+    ) -> dict[str, tuple[list[float], Any, tuple[str, bool] | None]]:
         """Vectors, by point id, for the entities whose stored content does
         not already match (per ``states``)."""
         changed = [
@@ -1247,15 +1249,19 @@ class EntityVectorStore:
         ]
         return await self._embed_entities(changed) if changed else {}
 
-    async def _embed_entities(self, entities: list[EntityRecord]) -> dict[str, tuple[list[float], Any]]:
+    async def _embed_entities(
+        self, entities: list[EntityRecord],
+    ) -> dict[str, tuple[list[float], Any, tuple[str, bool] | None]]:
+        """Vectors by point id, each with the precision the server said made it (None for a provider that does not say).
+
+        The witness travels with its vector: this runs before the entity locks, so concurrent batches of the same
+        entity must not hand their witnesses to each other through the store.
+        """
         texts = [e.embedding_text for e in entities]
         dense, witnessed = await self._embed_witnessed(texts)
         sparse = await self._embed_sparse(texts)
-        if witnessed is not None:
-            for e in entities:
-                self._entity_witness[self._point_id(e.org_id, e.entity_type.value, e.entity_id)] = witnessed
         return {
-            self._point_id(e.org_id, e.entity_type.value, e.entity_id): (d, sp)
+            self._point_id(e.org_id, e.entity_type.value, e.entity_id): (d, sp, witnessed)
             for e, d, sp in zip(entities, dense, sparse)
         }
 

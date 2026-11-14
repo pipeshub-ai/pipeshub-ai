@@ -3284,7 +3284,29 @@ class TestProcessedTwinAttachOrdering:
         with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
             await ep._check_duplicate_by_md5(b"x", _copy())
 
-        assert seen == {"status": ProgressStatus.COMPLETED.value}
+        # Before the status: a redelivery is acknowledged for a COMPLETED record, so the sync must be able to run again.
+        assert seen["status"] != ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_a_flip_in_the_entity_sync_leaves_the_record_not_completed_and_its_redelivery_syncs_again(self) -> None:
+        from app.services.messaging.precision_flip import PrecisionFlip
+
+        ep, _, _, gp = _make_event_processor()
+        steps, fields_of, _ = _record_attach(ep, gp, [[_twin()], [_twin()]])
+        ep.sink_orchestrator = MagicMock()
+        ep.sink_orchestrator.sync_entities_for_duplicate = AsyncMock(side_effect=[PrecisionFlip("index holds fp32"), True])
+        doc = _copy()
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
+            with pytest.raises(PrecisionFlip):
+                await ep._check_duplicate_by_md5(b"x", doc)
+            assert ("status", "r1") not in steps
+            assert doc["indexingStatus"] != ProgressStatus.COMPLETED.value
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        assert ep.sink_orchestrator.sync_entities_for_duplicate.await_count == 2
+        assert steps[-1] == ("status", "r1")
 
     @pytest.mark.asyncio
     async def test_a_redelivery_after_a_failed_sync_attaches(self):

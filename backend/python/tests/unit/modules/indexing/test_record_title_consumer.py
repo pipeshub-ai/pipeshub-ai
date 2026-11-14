@@ -428,6 +428,34 @@ class TestFailures:
         await _feed(writer)  # the next flush writes them
         assert sorted(e.entity_id for e in store.written()) == ["r1", "r2"]
 
+    async def test_a_flip_at_shutdown_puts_the_accepted_events_back_on_the_topic_without_an_attempt(self, monkeypatch) -> None:
+        from app.services.messaging.precision_flip import PrecisionFlip
+
+        monkeypatch.setattr("app.modules.indexing.record_title_consumer.asyncio.sleep", AsyncMock())
+        graph, store = FakeGraph(), FakeStore()
+        graph.records = {"r1": _record()}
+        store.upsert_errors = [PrecisionFlip("the entity index holds int8-w")]
+        requeue = AsyncMock(return_value=True)
+        writer = _writer(graph, store, requeue=requeue)
+        await writer.handle(_msg("r1"))
+        await writer.aclose()
+        requeue.assert_awaited_once()
+        (messages,) = requeue.await_args.args
+        assert [m["payload"]["recordId"] for m in messages] == ["r1"]
+        assert all(m["payload"].get("attempt", 0) == 0 for m in messages)  # no attempt counted
+        assert writer._pending == {}
+
+    async def test_a_shutdown_that_cannot_requeue_says_so(self, monkeypatch) -> None:
+        from app.services.messaging.precision_flip import PrecisionFlip
+
+        monkeypatch.setattr("app.modules.indexing.record_title_consumer.asyncio.sleep", AsyncMock())
+        graph, store = FakeGraph(), FakeStore()
+        graph.records = {"r1": _record()}
+        store.upsert_errors = [PrecisionFlip("held")]
+        writer = _writer(graph, store, requeue=AsyncMock(side_effect=RuntimeError("broker gone")))
+        await writer.handle(_msg("r1"))
+        await writer.aclose()  # does not raise
+
     async def test_an_unreadable_graph_is_retried_not_taken_for_missing(self) -> None:
         graph, store = FakeGraph(), FakeStore()
         graph.records = {"r1": _record()}
