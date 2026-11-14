@@ -129,11 +129,11 @@ async def notion_reader(
     pipeshub_client: PipeshubClient,
     users_client: UsersClient,
 ) -> AsyncGenerator[SecondUser, None]:
-    """A PipesHub account with a workspace member's email, to open records as.
+    """A PipesHub account with a workspace member's email, which the user sync links to the app.
 
-    A Notion record is open only to the workspace's members, and the org admin the suite runs
-    as is not one in the simulator's workspace. An account that already exists may be a real
-    login, so its credentials are put back afterwards.
+    Notion does not say who may open a page, so this member must open no Notion record
+    (TC-ACCESS-001). An account that already exists may be a real login, so its credentials
+    are put back afterwards.
     """
     email = next(
         (
