@@ -60,7 +60,9 @@ export type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
 
 /** Extra columns an edition overlay can add after "Updated" (desktop only). */
 export interface KbListExtraColumns {
+  /** The column's header cell itself (a TableHeaderCell): it is not wrapped in another column header. */
   header: ReactNode;
+  /** A row's content for the column, placed inside the row's cell. */
   cell: (item: TableItem) => ReactNode;
 }
 
@@ -1056,7 +1058,7 @@ export function KbListView({
         )}
         {!isMobile && resizeHandle('updated')}
 
-        {!belowDesktop && extraColumns ? <Box role="columnheader" style={{ display: 'contents' }}>{extraColumns.header}</Box> : null}
+        {!belowDesktop && extraColumns ? extraColumns.header : null}
 
         {/* Actions */}
         <Box role="columnheader" style={{ width: actionsWidth(isMobile, !!onGoToParent), flexShrink: 0 }}>
