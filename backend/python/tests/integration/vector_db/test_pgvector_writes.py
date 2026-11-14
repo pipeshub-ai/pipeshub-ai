@@ -191,6 +191,23 @@ async def test_a_host_clock_ahead_of_the_database_writes_no_group_row_ahead_of_i
     assert [tuple(r) for r in await sql(store, "SELECT member_id FROM retrieval.group_members WHERE org_id = $1 AND group_key = 'r1'", A)] == [("c3",)]
 
 
+async def test_a_sync_that_commits_between_two_batches_of_one_upsert_keeps_its_newer_membership(store, monkeypatch) -> None:
+    """The arrays an upsert carries were read before the call: every batch writes at the time the call started, so a membership sync committed
+    after the first batch is not replaced by the second."""
+    monkeypatch.setattr(writes, "UPSERT_BATCH", 1)
+    real, batches = store._space_for_write, []
+
+    async def between(*a, **k) -> object:
+        batches.append(1)
+        if len(batches) == 2:          # after the first batch committed, before the second
+            await store.set_payload("records", {"connectorIds": ["synced"]}, flt(A, virtualRecordId="r1"))
+        return await real(*a, **k)
+    monkeypatch.setattr(store, "_space_for_write", between)
+    await store.upsert_points("records", [point(A, "p1", conn=["stale"]), point(A, "p2", conn=["stale"])])
+    assert len(batches) == 2
+    assert [tuple(r) for r in await sql(store, "SELECT kind, member_id FROM retrieval.group_members WHERE org_id = $1 AND group_key = 'r1'", A)] == [(1, "synced")]
+
+
 async def test_a_shared_vrid_is_deleted_for_one_org_only(store) -> None:
     await store.upsert_points("records", [point(A, "p1", "shared"), point(A, "p2", "shared", terms=(5,))])
     await store.upsert_points("records", [point(B, "p1", "shared")])

@@ -674,10 +674,11 @@ class PgVectorService(IVectorDBService):
     async def upsert_points(
         self, collection_name: str, points: list[VectorPoint], *, computed_at: datetime | None = None
     ) -> None:
-        """``computed_at``: when the membership arrays the points carry were read from the graph (default: the database's clock now). A group's arrays are
-        replaced only by a writer with a later time, so an index run that read its arrays before the membership sync wrote newer ones
-        passes the time it read them and loses to the sync; without it the call time is used, which is right for a run that reads the
-        graph and writes at once and makes the last writer win otherwise."""
+        """``computed_at``: when the membership arrays the points carry were read from the graph (default: the database's clock when the call starts,
+        never a host's). A group's arrays are replaced only by a writer with a later time, so an index run that read its arrays before the membership
+        sync wrote newer ones passes the time it read them and loses to the sync; without it the call time is used, which is right for a run that
+        reads the graph and writes at once and makes the last writer win otherwise. Every batch of the call writes at that one time: a sync that
+        commits between two batches keeps its newer arrays."""
         if not points:
             return
         db, catalog = self._assert_connected()
@@ -685,6 +686,9 @@ class PgVectorService(IVectorDBService):
         if len(orgs) != 1:
             raise OrgMismatch("a batch of points must belong to one organisation")
         coll = await catalog.require_collection(collection_name)
+        if computed_at is None:
+            with org_scope(next(iter(orgs))):
+                computed_at = await self.fence_time()
         for start in range(0, len(points), writes.UPSERT_BATCH):
             batch = writes.prepare(points[start:start + writes.UPSERT_BATCH])
             if len(set(batch.dims)) != 1:
