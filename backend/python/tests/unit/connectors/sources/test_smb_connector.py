@@ -1298,6 +1298,22 @@ class TestSmbFolderPatterns:
         await smb_connector.run_sync()
         assert [c.args[0] for c in mock_processor.on_record_deleted.await_args_list] == ["inner"]
 
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_denied_folder_above_a_saved_folder_removes_nothing_under_it(
+        self, mock_filters, smb_connector, mock_processor
+    ):
+        mock_filters.return_value = _folder_filters("dept/secret/keep", "*/archive")
+        smb_connector.data_source = _ds(
+            tree=_share_tree("dept/secret/keep/a.txt", "c/archive/z.txt", share=SHARE),
+            denied_dirs={(SHARE, "dept/secret")},
+        )
+        smb_connector.configured_share = SHARE
+        stored = _file_record(ext_id=f"{SHARE}/dept/secret/keep/a.txt", revision="old", record_id="kept")
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[stored])
+        with pytest.raises(ShareWalkIncompleteError):
+            await smb_connector.run_sync()
+        mock_processor.on_record_deleted.assert_not_awaited()
+
 
 class TestNarrowingAFolderPattern:
     async def test_what_a_narrower_pattern_leaves_out_is_removed_and_the_way_to_it_kept(self):

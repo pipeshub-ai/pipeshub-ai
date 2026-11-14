@@ -143,6 +143,30 @@ class ShareWalker:
         chosen_folders = {directory for directory, pattern in roots if directory and pattern is None}
         pattern_starts = {directory: pattern for directory, pattern in roots if pattern is not None}
 
+        def keep_saved_under(server_path: str) -> None:
+            """Keep what is stored under each saved folder at or below a folder that could
+            not be read, as a walk starting at that saved folder would on its own failure.
+
+            Both spellings are kept: the saved value's own, which a walk starting there
+            writes, and the one this walk gives it when a pattern's walk starts above it.
+            """
+            failed = scope.rules.normalise(identity_rel_path(server_path))
+            for form in scope.spellings:
+                normal = scope.rules.normalise(form)
+                if normal not in outer_literals or not (
+                    not failed or normal == failed or normal.startswith(f"{failed}/")
+                ):
+                    continue
+                mark_unread(form)
+                spelled = ""
+                for part in form.split("/"):
+                    spelled = scope.spelled_child(spelled, part)
+                mark_unread(spelled)
+
+        def mark_failed(server_path: str) -> None:
+            mark_unread(server_path)
+            keep_saved_under(server_path)
+
         def mark_unread(server_path: str) -> None:
             nonlocal complete
             complete = False
@@ -232,7 +256,7 @@ class ShareWalker:
                 except NetworkShareAuthError:
                     raise
                 except Exception:
-                    mark_unread(folder.server_path)
+                    mark_failed(folder.server_path)
                     self.logger.exception(
                         "Error writing the folder %s/%s", share, folder.server_path
                     )
@@ -391,17 +415,17 @@ class ShareWalker:
                         pattern_starts[directory_path],
                     )
                     return
-                mark_unread(directory_path)
+                mark_failed(directory_path)
                 self.logger.error(
                     "Failed to list %s/%s: not found", share, directory_path
                 )
                 return
             except AccessDeniedError as exc:
-                # Where the walk starts, or at a folder named in the filter, a denial is
-                # more likely the account's session or the connector's settings than a
-                # folder it lost.
-                if start or scope.rules.normalise(identity_rel_path(directory_path)) in outer_literals:
-                    mark_unread(directory_path)
+                # Where the walk starts, or at or above a folder named in the filter, a
+                # denial is more likely the account's session or the connector's settings
+                # than a folder it lost.
+                if start or leads_to_literal(identity_rel_path(directory_path)):
+                    mark_failed(directory_path)
                     self.logger.error(
                         "Failed to list %s/%s: %s", share, directory_path, exc
                     )
@@ -413,7 +437,7 @@ class ShareWalker:
                 )
                 return
             except (DirectoryListingError, OSError, ConnectionError) as exc:
-                mark_unread(directory_path)
+                mark_failed(directory_path)
                 self.logger.error(
                     "Failed to list %s/%s: %s", share, directory_path, exc
                 )
@@ -460,7 +484,7 @@ class ShareWalker:
                     # same way, and none of them is a folder that went away.
                     raise
                 except Exception:
-                    mark_unread(join_rel_path(directory_path, entry.name) or directory_path)
+                    mark_failed(join_rel_path(directory_path, entry.name) or directory_path)
                     self.logger.exception(
                         "Error processing %s in %s/%s",
                         entry.name,
@@ -486,7 +510,7 @@ class ShareWalker:
                 except NetworkShareAuthError:
                     raise
                 except Exception as exc:
-                    mark_unread(directory_path)
+                    mark_failed(directory_path)
                     self.logger.error(
                         "Failed to stat %s/%s before walking a selected folder: %s",
                         share,

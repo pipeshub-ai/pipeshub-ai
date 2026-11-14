@@ -1035,3 +1035,23 @@ class TestShareWalkerPatterns:
         assert result.unread == {f"{SHARE}/secret"}
         assert not result.complete
         assert f"{SHARE}/c/archive/z.txt" in _ids(upserts)
+
+    async def test_a_denied_folder_above_a_saved_folder_keeps_what_was_stored_under_it(self):
+        ds = FakeNetworkShareDataSource(
+            tree=_share_tree("dept/secret/keep/a.txt", "c/archive/z.txt"), denied_dirs={(SHARE, "dept/secret")}
+        )
+        result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("dept/secret/keep", "*/archive")))
+        assert not result.complete
+        assert f"{SHARE}/dept/secret/keep" in result.unread
+        assert f"{SHARE}/c/archive/z.txt" in _ids(upserts)
+
+    async def test_a_folder_above_a_saved_folder_that_fails_to_list_keeps_it_in_either_spelling(self):
+        # The saved folders spell `a` two ways; what an earlier walk stored under either is kept.
+        ds = InsensitiveShare(
+            tree=_share_tree("a/x/f.txt", "a/y/g.txt", "c/archive/z.txt"), fail_dirs={(SHARE, "a")}
+        )
+        result, _upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("A/x", "a/y", "*/archive")))
+        assert not result.complete
+        # Main walked each saved folder from its own spelling; this walk spells `a` as `A`.
+        for kept in (f"{SHARE}/A/x/f.txt", f"{SHARE}/a/y/g.txt", f"{SHARE}/A/y/g.txt"):
+            assert any(kept.startswith(f"{u}/") for u in result.unread), (kept, result.unread)
