@@ -1376,6 +1376,28 @@ class TestFetchUsersPhases:
             await connector._fetch_users()
 
     @pytest.mark.asyncio
+    async def test_a_failed_read_of_the_pipeshub_users_fails_the_user_read(self) -> None:
+        """The PipesHub users are the emails a hidden-email account is looked up by; read as none after a failure,
+        those accounts would go unresolved as if no one could match them. The read fails instead."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        async def get_all_active_users(*, raise_on_error: bool = False) -> list:
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
+            return []
+
+        connector.data_entities_processor.get_all_active_users = AsyncMock(side_effect=get_all_active_users)
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, [
+            {"accountId": "u2", "accountType": "atlassian", "active": True}]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        with pytest.raises(ConnectionError):
+            await connector._fetch_users()
+
+    @pytest.mark.asyncio
     async def test_reverse_lookup_skipped_when_all_resolved(self):
         """Phase 5 not triggered when all users have visible email."""
         connector = _make_connector()

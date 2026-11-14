@@ -969,8 +969,9 @@ class JiraConnector(BaseConnector):
                 self.logger
             )
 
-            # 3. Require active PipesHub users (ACL targets)//
-            users = await self.data_entities_processor.get_all_active_users()
+            # 3. Require active PipesHub users (ACL targets). A failed read raises: read as none, the sync would stop
+            # as if the org had no users, and nobody would be told.
+            users = await self.data_entities_processor.get_all_active_users(raise_on_error=True)
             if not users:
                 self.logger.info("ℹ️ No users found")
                 return
@@ -2303,7 +2304,8 @@ class JiraConnector(BaseConnector):
         pipeshub_users = (
             active_pipeshub_users
             if active_pipeshub_users is not None
-            else await self.data_entities_processor.get_all_active_users()
+            # A failed read raises, not "no one to look hidden-email accounts up by".
+            else await self.data_entities_processor.get_all_active_users(raise_on_error=True)
         )
 
         cached_account_id_to_email: dict[str, str] = {

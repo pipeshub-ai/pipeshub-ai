@@ -253,6 +253,30 @@ class TestRunSync:
         assert [k for k in order if k in ("sweep", "people_reread")] == (["sweep", "people_reread"] if swept else ["sweep"])
 
     @pytest.mark.asyncio
+    async def test_a_failed_read_of_the_pipeshub_users_fails_the_sync_loudly(self) -> None:
+        """Every store answers a failed user read with no users unless asked to raise: read that way, the sync
+        stopped as if the org had no users, and nobody was told."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        async def get_all_active_users(*, raise_on_error: bool = False) -> list:
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
+            return []
+
+        connector.data_entities_processor.get_all_active_users = AsyncMock(side_effect=get_all_active_users)
+        connector.notify = AsyncMock()
+        with patch(
+            "app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
+            new_callable=AsyncMock,
+        ) as mock_filters:
+            from app.connectors.core.registry.filters import FilterCollection
+            mock_filters.return_value = (FilterCollection(), FilterCollection())
+            with pytest.raises(ConnectionError):
+                await connector.run_sync()
+        connector.notify.assert_awaited()
+
+    @pytest.mark.asyncio
     async def test_run_sync_propagates_exception(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
