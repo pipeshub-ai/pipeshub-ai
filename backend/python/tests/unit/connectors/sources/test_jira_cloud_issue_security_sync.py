@@ -25,7 +25,6 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
 from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
 from app.connectors.sources.atlassian.jira_cloud.connector import (
     ISSUE_PLACEMENT,
-    ISSUE_PLACEMENT_STORIES_ONLY,
     ISSUE_SEARCH_FIELDS,
     JiraConnector,
     _ParentLevel,
@@ -762,27 +761,15 @@ class TestIssuePlacementPass:
         assert result["leveled_reread"] is True
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("holders", "reread", "saved"), [
-        ([{"type": "reporter"}], True, True),  # its sub-tasks may now leave their parents
-        ([], False, True),                     # nothing the previous rule filed differently
-        (None, False, False),                  # unknown until the holders are read again
-    ], ids=["holders", "no_holders", "holders_unread"])
-    async def test_a_project_filed_before_sub_tasks_could_leave_their_parent(
-        self, holders: list | None, reread: bool, saved: bool,
-    ) -> None:
+    async def test_a_project_with_per_issue_holders_is_not_reread_for_its_sub_tasks(self) -> None:
+        """A sub-task stays under its parent whatever the holders, so per-issue Browse holders file no issue
+        differently from the current marker's rule: nothing is read again for them."""
         c = _connector()
-        if holders is not None:
-            c._browse_issue_holders["PROJ"] = holders
-        stored = _present().level_fingerprints()
-        # The holders read last time (or none); unread now, they keep the project where it was.
-        browse = IssueSecurityContext(
-            knowledge=SchemeKnowledge.NONE, browse_holders=holders or [{"type": "reporter"}]).browse_fingerprint() if holders != [] else ""
-        c, _, calls, _ = await self._sync(
-            stored_levels=stored, placement=ISSUE_PLACEMENT_STORIES_ONLY, connector=c, stored_browse=browse)
-        assert (calls[1:] == [{"resume": None, "is_new_project": True, "level_ids": None, "leveled_only": False,
-                               "stored_only": True}]) is reread
-        assert any(call.args[1].get("issue_placement") == ISSUE_PLACEMENT
-                   for call in c.issues_sync_point.update_sync_point.await_args_list) is saved
+        c._browse_issue_holders["PROJ"] = [{"type": "reporter"}]
+        browse = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=[{"type": "reporter"}]).browse_fingerprint()
+        _, _, calls, _ = await self._sync(
+            stored_levels=_present().level_fingerprints(), connector=c, stored_browse=browse)
+        assert len(calls) == 1
 
     @pytest.mark.asyncio
     async def test_a_project_with_the_marker_is_not_reread(self) -> None:
@@ -1368,24 +1355,13 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert perms == []
 
     @pytest.mark.asyncio
-    async def test_a_sub_task_leaves_its_parent_and_is_granted_to_its_own_reporter_and_assignee(self) -> None:
-        sub = _issue(None, key="PROJ-2", issue_id="1002")
-        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
-        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
-        c = _connector()
-        c._parent_levels["1001"] = _ParentLevel(project_id=PROJECT_ID, level_id=None)
-        record, perms, _ = await _build(c, sub, self._none(self.HOLDERS))
-        assert {p.email for p in perms} == {"rep@x.com", "asg@x.com"}
-        assert record.parent_external_record_id is None and record.access_rule == AccessRule.OPEN
-
-        record, perms, _ = await _build(c, sub, self._none([]))
-        assert perms == [] and record.parent_external_record_id == "1001" and record.access_rule == AccessRule.STRICT
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("parent", [_ParentLevel(project_id=PROJECT_ID, level_id="10101"), None],
-                             ids=["leveled_parent", "parent_unread"])
-    async def test_a_sub_task_stays_under_a_parent_that_may_carry_a_level(self, parent: _ParentLevel | None) -> None:
-        """A sub-task payload without its parent's level is held to the parent's readers by the parent edge."""
+    @pytest.mark.parametrize("parent", [_ParentLevel(project_id=PROJECT_ID, level_id=None),
+                                        _ParentLevel(project_id=PROJECT_ID, level_id="10101"), None],
+                             ids=["unleveled_parent", "leveled_parent", "parent_unread"])
+    async def test_a_sub_task_stays_under_its_parent_and_gets_no_grant_of_its_own(self, parent: _ParentLevel | None) -> None:
+        """"Sub-tasks also inherit the security level of their parent issue"; that a sub-task's own reporter or
+        assignee (a per-issue Browse holder) reads it without reading its parent is not documented. Fail closed: it
+        stays under its parent, so its own holders read it only with the parent, and its parent is not read for it."""
         sub = _issue(None, key="PROJ-2", issue_id="1002")
         sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
         sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
@@ -1395,32 +1371,18 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         c._parent_levels["1001"] = parent
         record, perms, _ = await _build(c, sub, self._none(self.HOLDERS))
         assert perms == [] and record.parent_external_record_id == "1001" and record.access_rule == AccessRule.STRICT
-        # A parent that could not be read is read again, so the sub-task moves once it is.
-        assert ("1001" in c._parents_to_retry) is (parent is None)
+        assert "1001" not in c._parents_to_retry
 
     @pytest.mark.asyncio
-    async def test_a_reindex_with_nothing_cached_reads_the_parent_and_files_the_sub_task_off_it(self) -> None:
-        """Between syncs the connector holds no context: the reindex's own one decides whether the parent's
-        level is kept, or the parent stays unknown and the sub-task under it."""
+    async def test_a_reindex_does_not_read_a_sub_tasks_parent_to_place_it(self) -> None:
         sub = _issue(None, key="PROJ-2", issue_id="1002")
         sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
         sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
-        parent = _issue(None, key="PROJ-1", issue_id="1001")
         c = _connector()
-        c._get_fresh_datasource = AsyncMock(return_value=_bulk_fetch(_resp(200, {"issues": [parent]})))
-        assert c._issue_security == {}
+        c._get_fresh_datasource = AsyncMock()
         await c._learn_parent_levels([sub], refresh=True, security=self._none(self.HOLDERS))
-        assert c._parent_levels["1001"] == _ParentLevel(project_id=PROJECT_ID, level_id=None)
-        assert c._files_under_parent(sub["fields"], "1001", self._none(self.HOLDERS), is_subtask=True) is False
-
-    def test_a_sub_task_stays_under_its_parent_while_the_holders_are_unread(self) -> None:
-        c = _connector()
-        c._parent_levels["500"] = _ParentLevel(project_id=PROJECT_ID, level_id=None)
-        assert c._files_under_parent({}, "500", self._none(None), is_subtask=True) is True
-        assert c._files_under_parent({}, "500", self._none([]), is_subtask=True) is True
-        assert c._files_under_parent({}, "500", self._none(self.HOLDERS), is_subtask=True) is False
-        c._parent_level_failures.add("500")
-        assert c._files_under_parent({}, "500", self._none(self.HOLDERS), is_subtask=True) is None
+        c._get_fresh_datasource.assert_not_awaited()
+        assert "1001" not in c._parent_levels
 
     def test_a_story_is_not_filed_under_an_epic_its_reporter_may_not_read(self) -> None:
         c = _connector()
