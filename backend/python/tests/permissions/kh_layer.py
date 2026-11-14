@@ -19,8 +19,9 @@ holds them to the oracle:
   left out but one past the cap on the children a browse asks the check about, reported as a `gap`; a node the oracle admits whose browse fails
   is a `browse_gap`), and each row's expand arrow against opening that row: it is on exactly when the browse of the row lists something, and a stub is
   listed exactly where opening it lists something; and the sidebar of each node (its rows with children) holds every group and folder it lists
-  and a record exactly where opening the record lists something. At most `MAX_OPENS` browses a viewer: the rows and the stubs left out that are
-  not opened past it are counted apart (`truncated`, reported).
+  and a record exactly where opening the record lists something, each once, with a total that counts each once. A node the oracle admits that
+  no browse lists is reported (`unlisted`). At most `MAX_OPENS` browses a viewer: the rows and the stubs left out that are
+  not opened past it are counted apart (`truncated`, reported), and the whole-tree test is then not made.
 """
 
 from __future__ import annotations
@@ -65,7 +66,7 @@ SKIPPED: Any = object()  # a browse the layer did not run: past its budget of op
 class KhFinding:
     scenario: str
     viewer: str
-    kind: str  # over | under | gap | browse_gap | browse_extra | total | counts | facet | browse | arrow | stub | sidebar | truncated
+    kind: str  # over | under | gap | browse_gap | browse_extra | total | counts | facet | browse | arrow | stub | sidebar | truncated | unlisted
     detail: str
 
 
@@ -386,6 +387,7 @@ async def _browse(
         return len(ahead) >= IGraphDBProvider._KH_UNDECIDED_MAX
 
     opened: dict[str, dict[str, Any] | None] = {}
+    capped_out: set[str] = set()  # left out under a node only for the cap on the children its browse asks about (reported)
     skipped: dict[str, set[str]] = {"rows": set(), "stubs": set()}
 
     async def open_(node: str, parent_type: str, *, kind: str = "rows") -> dict[str, Any] | None:
@@ -421,7 +423,10 @@ async def _browse(
         # A readable child the browse leaves out is an under-admit. The one exemption is a folder that hides its children (a display flag).
         for missing in sorted(n.id for n in children(node) if n.id in seen and n.id not in got):
             if not hidden_by_navigation(world, world.node(missing)):
-                add("gap" if capped(node, missing, got) else "browse_gap", f"{node}: the browse leaves out {missing}, which the viewer may open")
+                cut = capped(node, missing, got)
+                if cut:
+                    capped_out.add(missing)
+                add("gap" if cut else "browse_gap", f"{node}: the browse leaves out {missing}, which the viewer may open")
         # A stub is no content the oracle judges: it is listed exactly where opening it lists something.
         for stub in sorted(n.id for n in children(node) if n.placeholder and n.id not in got):
             below = await open_(stub, "recordGroup" if world.node(stub).kind == "group" else "record", kind="stubs")
@@ -434,9 +439,15 @@ async def _browse(
 
     async def sidebar(node: str, parent_type: str, rows: dict[str, Any], lists: dict[str, bool]) -> None:
         """The sidebar (the rows with children) of ``node``: every group and folder the browse lists, and a record exactly where opening it lists
-        something."""
-        result = await browse_pages(layer, world, viewer, node, parent_type, BIG_PAGE, only_containers=True)
-        got = {ns.local(item.id) for item in (result[0] if result else [])}
+        something; one row per node over every page, and a total that counts each once."""
+        result = await browse_pages(layer, world, viewer, node, parent_type, PAGE if zlib.crc32(node.encode()) % SAMPLE_EVERY == 0 else BIG_PAGE,
+                                    only_containers=True)
+        items, totals, counted = result or ([], [0], [0])
+        ids = [ns.local(item.id) for item in items]
+        got = set(ids)
+        if len(ids) != len(got) or set(totals) != {len(got)} or set(counted) != {len(got)}:
+            add("sidebar", f"{node}: the sidebar's totalItems per page {sorted(set(totals))}, counts.total {sorted(set(counted))}, rows {len(ids)}"
+                           f" ({len(got)} distinct)")
         want = {row for row, item in rows.items() if type_of(item) != "record" or lists[row]}
         for missing in sorted(want - got):
             add("sidebar", f"{node}: the sidebar leaves out {missing}, and opening it lists something")
@@ -474,4 +485,13 @@ async def _browse(
     if skipped["rows"] or skipped["stubs"]:
         add("truncated", f"opened {len(opened)} nodes (the cap); {len(skipped['rows'])} listed rows and {len(skipped['stubs'])} stubs left out"
                          " not opened")
+    else:
+        # The whole tree was opened: a node the viewer may open that no browse lists is out of reach of the browse (`unlisted`, reported).
+        # shortcut: reported, not failed, until the shapes it finds list somewhere: a member of an App that opens everything with no hierarchy
+        # parent; a node reached only through a node or stub of another App, or of another organization, that the check refuses; a node
+        # reached only through a stub no browse lists. Fail it once those are fixed.
+        listed = {i for node in expanded if opened.get(node) for i in opened[node]}
+        for lost in sorted(set(seen) - listed - capped_out):
+            if not declared_gap(world, lost):
+                add("unlisted", f"{lost}: no browse lists it, and the viewer may open it")
     return found

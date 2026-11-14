@@ -78,8 +78,8 @@ logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 # `gap` is reported, never failed: the shapes the oracle cannot decide (an upload, which has its own surface, and a node under a group that hides its
 # children), and a row a browse lists that the oracle refuses only for its hop cap (`refused_by_cap`). A readable node the flatten listing or a browse
 # leaves out is `under` or `browse_gap` and fails, however deep it lies. `truncated` counts the rows a viewer's whole-tree browse did not open
-# past `MAX_OPENS`.
-GAPS = {"gap", "truncated"}
+# past `MAX_OPENS`; `unlisted`, a node the viewer may open that no browse of the whole tree lists (the shapes `kh_layer._browse` names).
+GAPS = {"gap", "truncated", "unlisted"}
 
 
 def _describe(found: list[KhFinding]) -> str:

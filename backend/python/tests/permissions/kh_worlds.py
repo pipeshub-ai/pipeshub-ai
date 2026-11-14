@@ -320,7 +320,7 @@ gates: [[u, A]]
 """))
 
 # STUBTOP: a placeholder group whose only content is a chain-top: a granted record that belongs to it and hangs from nothing. Opening the group lists the record, so the folder above
-# lists the group, with an arrow. (Not in KH_WORLDS: Neo4j's folder leaves the group out and ArangoDB lists the record under the App instead.)
+# lists the group, with an arrow. (ArangoDB keeps no placeholder group: there r hangs from nothing and is listed under the App.)
 STUBTOP = world_from_data(yaml.safe_load("""
 principals: [{id: u}]
 nodes:
@@ -834,4 +834,4 @@ KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BE
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
              SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ, OPENGRANT, OPENGRANTTEAM, SIDESEED,
              STUBSEED, NESTSTUB, CAPSTUB, HIDESEED, FLATSIDE, REACHSTUB,
-             SCOPEDSIDE, XHOP, XLINK, DECLHIDE, XBADGE, XLINKBADGE, UNPLACED]
+             SCOPEDSIDE, XHOP, XLINK, DECLHIDE, XBADGE, XLINKBADGE, UNPLACED, STUBTOP]

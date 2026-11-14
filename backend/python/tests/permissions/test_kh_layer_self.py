@@ -71,6 +71,11 @@ async def test_a_right_store_gives_no_finding(monkeypatch) -> None:
     ({"f": ([_item("r1"), _item("r2"), _item("r1")], [3], [3])}, "browse", "f: lists r1 more than once"),
     ({"f": ([_item("r1"), _item("r2")], [3], [2])}, "browse", "f: totalItems per page [3], counts.total [2], rows 2"),
     ({("f", "sidebar"): ([_item("r1")], [1], [1])}, "sidebar", "f: the sidebar lists r1, and opening it lists nothing"),
+    ({("f", "sidebar"): ([], [1], [0])}, "sidebar", "f: the sidebar's totalItems per page [1], counts.total [0], rows 0 (0 distinct)"),
+    ({"f": ([_item("r1", arrow=True), _item("r2")], [2], [2]), "r1": ([_item("s", stub=True)], [1], [1]),
+      ("f", "sidebar"): ([_item("r1", arrow=True), _item("r1", arrow=True)], [2], [2])},
+     "sidebar", "f: the sidebar's totalItems per page [2], counts.total [2], rows 2 (1 distinct)"),
+    ({"f": ([_item("r1")], [1], [1])}, "unlisted", "r2: no browse lists it, and the viewer may open it"),
 ])
 async def test_each_wrong_answer_raises_its_class(monkeypatch, wrong: dict, kind: str, detail: str) -> None:
     answers = {"A": ([_item("f", "recordGroup", arrow=True)], [1], [1]), "f": ([_item("r1"), _item("r2")], [2], [2]), **wrong}

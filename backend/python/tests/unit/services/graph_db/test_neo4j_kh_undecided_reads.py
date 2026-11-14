@@ -90,7 +90,7 @@ async def test_a_row_kept_for_its_frontier_stays_only_where_the_check_admits_a_c
     is asked about the frontier once, and the page is read again only when it refuses one, with that row asked and not kept."""
     provider = _provider(_payload([], ["s1", "s2"]), _payload([], ["s1"]), admits={"c3"})
     frontiers = {"s1": ["c1"], "s2": ["c2", "c3"]}
-    provider._kh_v3_frontiers = AsyncMock(side_effect=lambda ids, *_a, **_k: {i: frontiers[i] for i in ids})
+    provider._kh_v3_frontiers = AsyncMock(side_effect=lambda ids, *_a, **_k: ({i: frontiers[i] for i in ids}, set()))
     await _browse(provider, "g1")
     first, second = provider._kh_query.await_args_list
     assert set(provider.check_access.await_args_list[0].kwargs["node_ids"]) == {"c1", "c2", "c3"}
@@ -98,6 +98,20 @@ async def test_a_row_kept_for_its_frontier_stays_only_where_the_check_admits_a_c
     assert second.kwargs["parameters"]["kh_asked"] == ["s1", "s2"] and second.kwargs["parameters"]["kh_kept"] == ["s2"]
 
     provider = _provider(_payload([], ["s2"]), admits={"c3"})
-    provider._kh_v3_frontiers = AsyncMock(return_value={"s2": ["c3"]})
+    provider._kh_v3_frontiers = AsyncMock(return_value=({"s2": ["c3"]}, set()))
     await _browse(provider, "g1")
     assert provider._kh_query.await_count == 1      # every row kept: the page stands
+
+
+async def test_a_stub_whose_walk_meets_a_group_that_lists_a_chain_top_is_kept() -> None:
+    """A placeholder group whose only content is a chain-top (a granted record that belongs to it and hangs from nothing) has no child for the
+    check: it is kept where the chain-top walk places something under a placeholder group on its frontier's walk, and dropped where it places
+    nothing."""
+    provider = _provider(_payload([], ["s1", "s2"]), _payload([], ["s1"]), admits=set())
+    provider._kh_v3_frontiers = AsyncMock(return_value=({"s1": [], "s2": []}, {"s1"}))
+    await _browse(provider, "g1")
+    _, second = provider._kh_query.await_args_list
+    assert second.kwargs["parameters"]["kh_asked"] == ["s1", "s2"] and second.kwargs["parameters"]["kh_kept"] == ["s1"]
+    # the page statement keeps a stub that holds a granted record until it is asked, and the frontier statement names such groups apart
+    assert f"OR {provider._kh_held_stub('n', state=True)}))" in second.args[0]
+    assert "kh_fy:RecordGroup" in provider._kh_v3_frontier("node", "true", state=True, grant_once=False, held=True)
