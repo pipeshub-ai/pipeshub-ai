@@ -21,6 +21,7 @@ from app.connectors.api.connector_resolvers import resolve_config_service
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.sources.notion import personal_tokens
 from app.core.org_context import current_org_id
+from app.utils.user_lookup import get_user_or_503
 
 notion_tokens_router = APIRouter(tags=["Connectors"])
 
@@ -32,17 +33,29 @@ class _LinkBody(BaseModel):
 
 
 async def _caller_and_config(request: Request, connector_id: str) -> tuple[str, Any]:
-    """The caller's user id and the config service, for a Notion team connector they may read."""
+    """The caller's user id and the config service, for a Notion team connector of their org.
+
+    Not the registry's read gate, which opens a team connector to admins and its creator only:
+    any active member of the org may link their own token, since it can only show them pages
+    their own Notion account opens.
+    """
     not_found = HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Not found")
     user_id, org_id = (request.state.user or {}).get("userId"), current_org_id()
     if not user_id or not org_id:
         raise not_found
-    instance = await request.app.state.connector_registry.get_connector_instance(
-        connector_id=connector_id, user_id=user_id, org_id=org_id, is_admin=is_request_admin(request),
-    )
+    registry = request.app.state.connector_registry
+    document = await registry._get_connector_instance_from_db(connector_id)
     # The registry names the type "Notion"; the enum spells it in capitals.
-    kind = str((instance or {}).get("type") or "").upper()
-    if kind != Connectors.NOTION.value or instance.get("scope") != ConnectorScope.TEAM.value:
+    kind = str((document or {}).get("type") or "").upper()
+    if (
+        kind != Connectors.NOTION.value
+        or document.get("scope") != ConnectorScope.TEAM.value
+        or not await registry.belongs_to_org(document, org_id)
+    ):
+        raise not_found
+    # The token names the user and their org together; a deactivated account keeps neither.
+    user = await get_user_or_503(request.app.state.graph_provider, user_id)
+    if not user or user.get("isActive") is False:
         raise not_found
     return user_id, resolve_config_service(request.app.container, org_id)
 
@@ -71,7 +84,8 @@ async def link_personal_token(connector_id: str, body: _LinkBody, request: Reque
 @notion_tokens_router.delete(_PATH, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def unlink_personal_token(connector_id: str, request: Request) -> dict[str, Any]:
     user_id, config = await _caller_and_config(request, connector_id)
-    await personal_tokens.unlink_token(config, connector_id, user_id)
+    if not await personal_tokens.unlink_token(config, connector_id, user_id):
+        raise HTTPException(status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail="The token could not be removed. Try again.")
     return personal_tokens.public_view(None)
 
 

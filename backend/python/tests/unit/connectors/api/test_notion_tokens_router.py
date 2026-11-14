@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
 
 from app.connectors.api import notion_tokens_router as mod
+from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.sources.notion import personal_tokens
 from app.core import org_context
 from tests.unit.connectors.sources.test_notion_personal_access import _Config
@@ -32,10 +33,12 @@ def config() -> _Config:
 
 @pytest.fixture
 def instance() -> dict[str, Any]:
-    return {"type": "Notion", "scope": "team"}
+    # Created by someone else: the registry's read gate would refuse a member here.
+    return {"_key": "conn-1", "type": "Notion", "scope": "team", "orgId": "org-1", "createdBy": "admin"}
 
 
-def _client(config: _Config, instance: dict[str, Any] | None, user: dict[str, str]) -> TestClient:
+def _client(config: _Config, instance: dict[str, Any] | None, user: dict[str, str],
+            person: dict[str, Any] | None = None) -> TestClient:
     app = FastAPI()
 
     @app.middleware("http")
@@ -43,7 +46,13 @@ def _client(config: _Config, instance: dict[str, Any] | None, user: dict[str, st
         request.state.user = {"orgId": "org-1", **user}
         return await call_next(request)
 
-    app.state.connector_registry = MagicMock(get_connector_instance=AsyncMock(return_value=instance))
+    registry = ConnectorRegistry.__new__(ConnectorRegistry)
+    registry.logger = MagicMock()
+    registry._get_connector_instance_from_db = AsyncMock(return_value=instance)
+    registry._org_id_from_edge = AsyncMock(return_value=None)
+    app.state.connector_registry = registry
+    app.state.graph_provider = MagicMock(get_user_by_user_id=AsyncMock(
+        return_value=person if person is not None else {"userId": user.get("userId"), "orgId": "org-1", "isActive": True}))
     app.container = MagicMock(config_service=lambda: config)
     app.include_router(mod.notion_tokens_router)
     return TestClient(app, raise_server_exceptions=False)
@@ -68,8 +77,13 @@ def test_a_malformed_token_is_refused(config: _Config, instance: dict, body: dic
     assert r.status_code in (400, 422) and not config.values
 
 
-@pytest.mark.parametrize("found", [None, {"type": "Notion", "scope": "personal"}, {"type": "Jira", "scope": "team"}])
-def test_anything_but_a_readable_notion_team_connector_is_not_found(config: _Config, found: dict | None) -> None:
+@pytest.mark.parametrize("found", [
+    None,
+    {"type": "Notion", "scope": "personal", "orgId": "org-1"},
+    {"type": "Jira", "scope": "team", "orgId": "org-1"},
+    {"type": "Notion", "scope": "team", "orgId": "org-2"},
+])
+def test_anything_but_a_notion_team_connector_of_the_callers_org_is_not_found(config: _Config, found: dict | None) -> None:
     client = _client(config, found, {"userId": "u1", "role": "admin"})
     for r in (client.get(URL), client.put(URL, json={"token": SECRET}), client.delete(URL), client.get(ADMIN_URL)):
         assert r.status_code == 404
@@ -86,3 +100,19 @@ def test_an_admin_sees_who_linked_a_token_and_its_state_but_no_token(config: _Co
 
 def test_a_member_cannot_list_who_linked_a_token(config: _Config, instance: dict) -> None:
     assert _client(config, instance, {"userId": "u1", "role": "member"}).get(ADMIN_URL).status_code == 404
+
+
+@pytest.mark.parametrize("person", [
+    {"userId": "u1", "orgId": "org-1", "isActive": False},
+    {},
+])
+def test_only_an_active_member_of_the_org_may_link(config: _Config, instance: dict, person: dict) -> None:
+    client = _client(config, instance, {"userId": "u1", "role": "member"}, person=person)
+    assert client.put(URL, json={"token": SECRET}).status_code == 404 and not config.values
+
+
+def test_a_remove_the_store_did_not_do_is_reported(config: _Config, instance: dict) -> None:
+    client = _client(config, instance, {"userId": "u1"})
+    client.put(URL, json={"token": SECRET})
+    config.delete_config = AsyncMock(return_value=False)  # the store kept it
+    assert client.delete(URL).status_code == 503

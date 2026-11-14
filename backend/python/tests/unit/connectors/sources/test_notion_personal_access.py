@@ -20,9 +20,13 @@ WS = "ws-1"
 ALICE = "alice@example.com"
 
 
-def _bot(email: str = ALICE, workspace: str = WS) -> MagicMock:
+ALICE_ID = "notion-alice"
+
+
+def _bot(owner_id: str = ALICE_ID, workspace: str = WS) -> MagicMock:
+    """The token's bot user; its owner shown by id only, as Notion does without an email capability."""
     return _make_api_response(data={"object": "user", "type": "bot", "bot": {
-        "workspace_id": workspace, "owner": {"type": "user", "user": {"type": "person", "person": {"email": email}}}}})
+        "workspace_id": workspace, "owner": {"type": "user", "user": {"object": "user", "id": owner_id}}}})
 
 
 def _search(*ids: str, trashed: tuple[str, ...] = ()) -> MagicMock:
@@ -56,8 +60,9 @@ def _connector(token_datasource: MagicMock | None = None) -> NotionConnector:
     conn.workspace_id = WS
     conn.config_service = _Config()
     conn.notify = AsyncMock()
+    conn._member_ids = {ALICE_ID: ALICE, "notion-bob": "bob@example.com"}
     conn.data_entities_processor.get_user_by_user_id = AsyncMock(
-        side_effect=lambda uid: User(email=ALICE, user_id=uid, org_id="org-1", is_active=True) if uid == "u-alice" else None
+        side_effect=lambda uid, **_: User(email=ALICE, user_id=uid, org_id="org-1", is_active=True) if uid == "u-alice" else None
     )
     conn.data_entities_processor.on_updated_record_permissions = AsyncMock()
     if token_datasource is not None:
@@ -89,8 +94,7 @@ async def test_a_linked_token_grants_exactly_what_its_search_lists() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("bot", "reason"), [
-    (_bot(email="bob@example.com"), "not yours"),
-    (_bot(email=""), "not yours"),
+    (_bot(owner_id="notion-bob"), "not yours"),
     (_bot(workspace="ws-other"), "another Notion workspace"),
     (_make_api_response(success=False, status=401), "no longer accepts"),
 ])
@@ -125,19 +129,61 @@ async def test_a_search_that_does_not_finish_grants_that_user_nothing_this_sync_
 
 
 @pytest.mark.asyncio
-async def test_a_token_of_a_user_of_another_org_or_an_inactive_one_is_not_read() -> None:
+@pytest.mark.parametrize("user", [
+    User(email=ALICE, user_id="u-gone", org_id="org-2", is_active=True),
+    User(email=ALICE, user_id="u-gone", org_id="org-1", is_active=False),
+    None,
+])
+async def test_the_token_of_a_user_who_left_the_org_or_was_deactivated_is_deleted_unread(user: User | None) -> None:
     ds = _datasource(_bot(), _search("p1"))
     conn = _connector(ds)
-    await _link(conn, "u-elsewhere")
-    conn.data_entities_processor.get_user_by_user_id = AsyncMock(
-        return_value=User(email=ALICE, user_id="u-elsewhere", org_id="org-2", is_active=True))
+    await _link(conn, "u-gone")
+    conn.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=user)
     await conn._load_personal_access()
-    assert conn._readers == {}
-    conn.data_entities_processor.get_user_by_user_id = AsyncMock(
-        return_value=User(email=ALICE, user_id="u-elsewhere", org_id="org-1", is_active=False))
-    await conn._load_personal_access()
-    assert conn._readers == {}
+    assert conn._readers == {} and not conn.config_service.values
     ds.retrieve_bot_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_user_lookup_that_fails_keeps_the_token_and_grants_nothing() -> None:
+    conn = _connector(_datasource(_bot(), _search("p1")))
+    await _link(conn)
+    conn.data_entities_processor.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("store down"))
+    await conn._load_personal_access()
+    assert conn._readers == {} and conn._sync_incomplete is True
+    assert conn.config_service.values[personal_tokens.token_path(conn.connector_id, "u-alice")]["status"] == personal_tokens.LINKED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["no workspace known", "owner not listed"])
+async def test_what_this_sync_does_not_know_keeps_the_token_and_grants_nothing(change: str) -> None:
+    conn = _connector(_datasource(_bot(), _search("p1")))
+    if change == "no workspace known":
+        conn.workspace_id = None  # /users/me of the connector's own token failed this run
+    else:
+        conn._member_ids = {}  # the owner is no member /v1/users listed: removed, or the listing fell short
+    await _link(conn)
+    await conn._load_personal_access()
+    assert conn._readers == {} and conn._sync_incomplete is True
+    assert conn.config_service.values[personal_tokens.token_path(conn.connector_id, "u-alice")]["status"] == personal_tokens.LINKED
+    conn.notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_token_relinked_while_the_sync_checked_the_old_one_is_kept() -> None:
+    conn = _connector(_datasource(_bot(owner_id="notion-bob"), _search("p1")))
+    await _link(conn, token="ntn_pat_old")
+    real = conn._visible_with_token
+
+    async def relink_then_check(token: str, email: str) -> set[str]:
+        await _link(conn, token="ntn_pat_new")
+        return await real(token, email)
+
+    conn._visible_with_token = relink_then_check
+    await conn._load_personal_access()
+    entry = conn.config_service.values[personal_tokens.token_path(conn.connector_id, "u-alice")]
+    assert entry["status"] == personal_tokens.LINKED and entry["token"] == "ntn_pat_new"
+    conn.notify.assert_not_awaited()
 
 
 def test_rejection_reasons_never_carry_the_token() -> None:
@@ -149,7 +195,7 @@ def test_rejection_reasons_never_carry_the_token() -> None:
 def _record(ext: str, record_type: RecordType = RecordType.WEBPAGE, parent: str | None = None,
             parent_type: RecordType | None = None) -> Record:
     rec = MagicMock(spec=Record)
-    rec.external_record_id, rec.record_type = ext, record_type
+    rec.id, rec.external_record_id, rec.record_type = f"rid-{ext}", ext, record_type
     # A record read back from the store does not keep its parent's type.
     rec.parent_external_record_id, rec.parent_record_type = parent, None
     rec.inherit_permissions = True
@@ -192,6 +238,7 @@ async def test_a_published_page_goes_to_every_listed_member_and_only_once_the_li
 @pytest.mark.asyncio
 async def test_a_data_source_goes_only_to_readers_of_every_row_it_holds() -> None:
     conn = _connector()
+    conn._listed_rows = {}
     conn._readers = {"ds": {ALICE, "bob@example.com"}, "row1": {ALICE, "bob@example.com"}, "row2": {ALICE}}
     got = await _applied(
         conn, _record("ds", RecordType.DATASOURCE),
@@ -199,6 +246,47 @@ async def test_a_data_source_goes_only_to_readers_of_every_row_it_holds() -> Non
         _record("row2", parent="ds", parent_type=RecordType.DATASOURCE),
     )
     assert got["ds"] == [ALICE] and got["row2"] == [ALICE] and got["row1"] == [ALICE, "bob@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_a_data_source_also_needs_every_row_the_listing_put_under_it_and_a_listing() -> None:
+    """Its table indexes every row Notion returns, stored as a record or not."""
+    conn = _connector()
+    conn._readers = {"ds": {ALICE, "bob@example.com"}, "row1": {ALICE, "bob@example.com"}, "row2": {ALICE}}
+    records = (_record("ds", RecordType.DATASOURCE), _record("row1", parent="ds"))
+    assert (await _applied(conn, *records))["ds"] == [], "no full page listing this sync: nobody"
+    conn._listed_rows = {"ds": {"row1", "row2"}}  # row2 is not stored: a walk cut short, or a new row
+    conn.data_entities_processor.on_updated_record_permissions.reset_mock()
+    conn._access_written = None
+    assert (await _applied(conn, *records))["ds"] == [ALICE]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_write_does_not_stop_the_others_and_fails_the_run() -> None:
+    conn = _connector()
+    conn._readers = {"a": {ALICE}, "b": {ALICE}, "c": {ALICE}}
+    writes = conn.data_entities_processor.on_updated_record_permissions
+    writes.side_effect = [None, RuntimeError("conflict"), None]
+    got = await _applied(conn, _record("a"), _record("b"), _record("c"))
+    assert set(got) == {"a", "b", "c"} and conn._access_write_failures == 1 and conn._sync_incomplete is True
+    assert conn._access_written is None, "a sync with a failed write must write again next time"
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_sync_writes_nothing_but_a_full_sync_always_writes() -> None:
+    conn = _connector()
+    conn._readers = {"a": {ALICE}}
+    conn.data_entities_processor.full_sync_running = MagicMock(return_value=False)
+    writes = conn.data_entities_processor.on_updated_record_permissions
+    await _applied(conn, _record("a"))
+    await _applied(conn, _record("a"))
+    assert writes.await_count == 1
+    conn._readers = {"a": set()}
+    await _applied(conn, _record("a"))
+    assert writes.await_count == 2, "a changed reader is written"
+    conn.data_entities_processor.full_sync_running = MagicMock(return_value=True)
+    await _applied(conn, _record("a"))
+    assert writes.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -217,6 +305,13 @@ async def test_access_is_rewritten_even_when_the_page_walk_fails() -> None:
     conn._apply_page_access.assert_awaited_once()
     assert NotionPersonalConnector._PER_PAGE_ACCESS is False
 
+    conn._load_personal_access = AsyncMock(side_effect=RuntimeError("store down"))
+    conn._apply_page_access.reset_mock()
+    with patch("app.connectors.sources.notion.connector.load_connector_filters", AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+            pytest.raises(RuntimeError, match="store down"):
+        await conn._run_sync_once()
+    conn._apply_page_access.assert_awaited_once()
+
 
 @pytest.mark.asyncio
 async def test_pages_carry_their_own_access_on_the_team_connector() -> None:
@@ -225,3 +320,18 @@ async def test_pages_carry_their_own_access_on_the_team_connector() -> None:
         "id": "p1", "parent": {"type": "page_id", "page_id": "p0"}, "properties": {},
     }, "page")
     assert record.inherit_permissions is False
+
+
+def test_a_page_shows_no_title_of_a_page_or_database_it_links_to_or_holds() -> None:
+    from app.models.blocks import Block, BlockSubType, BlockType, ChildRecord, ChildType, DataFormat, TableRowMetadata
+
+    child = Block(type=BlockType.TEXT, sub_type=BlockSubType.CHILD_RECORD, format=DataFormat.TXT, data="Layoffs 2027",
+                  source_name="Layoffs 2027", source_id="p-secret",
+                  table_row_metadata=TableRowMetadata(children_records=[
+                      ChildRecord(child_type=ChildType.RECORD, child_id="r1", child_name="Layoffs 2027")]))
+    text = Block(type=BlockType.TEXT, format=DataFormat.TXT, data="Quarterly plan")
+    conn = _connector()
+    conn._hide_child_titles([child, text], [])
+    assert (child.data, child.source_name, child.source_id) == ("", None, "p-secret")
+    assert child.table_row_metadata.children_records[0].child_name is None
+    assert text.data == "Quarterly plan"

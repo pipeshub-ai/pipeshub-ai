@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.config.configuration_service import delete_config_confirmed
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -36,19 +37,36 @@ async def link_token(config_service: ConfigurationService, connector_id: str, us
     now = get_epoch_timestamp_in_ms()
     if not await config_service.set_config(
         token_path(connector_id, user_id), {"token": token, "status": LINKED, "linkedAt": now, "updatedAt": now},
+        keep_in_cache=False,
     ):
         raise RuntimeError("the configuration store did not save the token")
 
 
-async def unlink_token(config_service: ConfigurationService, connector_id: str, user_id: str) -> None:
-    await config_service.delete_config(token_path(connector_id, user_id))
+async def unlink_token(config_service: ConfigurationService, connector_id: str, user_id: str) -> bool:
+    """True once the entry is gone; False when the store kept it."""
+    return await delete_config_confirmed(config_service, token_path(connector_id, user_id))
 
 
-async def mark_failed(config_service: ConfigurationService, connector_id: str, user_id: str, reason: str) -> None:
-    """Drop the secret and keep why, so the user and admins see it until a new token is linked."""
-    await config_service.set_config(token_path(connector_id, user_id), {
-        "status": FAILED, "reason": reason, "updatedAt": get_epoch_timestamp_in_ms(),
-    })
+async def unlink_all(config_service: ConfigurationService, connector_id: str) -> bool:
+    """Drop every user's token for a connector that is going away; True once none is left."""
+    gone = [await delete_config_confirmed(config_service, key)
+            for key in await config_service.list_keys_in_directory(tokens_dir(connector_id))]
+    return all(gone)
+
+
+async def mark_failed(config_service: ConfigurationService, connector_id: str, user_id: str, reason: str, token: str) -> bool:
+    """Drop the secret and keep why, so the user and admins see it until a new token is linked.
+
+    Only when ``token`` is still the one stored: a token the user linked since it was read is theirs
+    to keep. True when this marked it.
+    """
+    path = token_path(connector_id, user_id)
+    current = await config_service.get_config(path, use_cache=False, keep_in_cache=False, raise_on_error=True)
+    if not isinstance(current, dict) or current.get("token") != token:
+        return False
+    return await config_service.set_config(
+        path, {"status": FAILED, "reason": reason, "updatedAt": get_epoch_timestamp_in_ms()}, keep_in_cache=False,
+    )
 
 
 async def entries(config_service: ConfigurationService, connector_id: str) -> dict[str, dict[str, Any]]:
@@ -59,7 +77,7 @@ async def entries(config_service: ConfigurationService, connector_id: str) -> di
         user_id = key[len(prefix):] if key.startswith(prefix) else ""
         if not user_id or "/" in user_id:
             continue
-        value = await config_service.get_config(key, use_cache=False)
+        value = await config_service.get_config(key, use_cache=False, keep_in_cache=False, raise_on_error=True)
         if isinstance(value, dict):
             out[user_id] = value
     return out
@@ -69,4 +87,4 @@ def public_view(entry: dict[str, Any] | None) -> dict[str, Any]:
     """What a user or an admin may see of an entry: never the token."""
     if not entry:
         return {"status": "NOT_LINKED"}
-    return {k: entry.get(k) for k in ("status", "reason", "linkedAt", "updatedAt", "checkedAt") if entry.get(k) is not None}
+    return {k: entry.get(k) for k in ("status", "reason", "linkedAt", "updatedAt") if entry.get(k) is not None}
