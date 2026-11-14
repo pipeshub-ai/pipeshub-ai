@@ -2052,7 +2052,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         )
 
     async def _permissions_as_owner(
-        self, file_id: str, metadata: dict, user_email: str | None, limited_access: bool
+        self, file_id: str, metadata: dict, user_email: str | None, *, limited_access: bool
     ) -> tuple[list[Permission], bool, list[str]] | None:
         """A My Drive item's list read as its owner, for a reader who got an empty one: the owner can always read
         its sharing ("Can access detailed file permissions", owner: Yes,
@@ -4347,7 +4347,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 except _EmptyPermissionList:
                     if item_drive_id:
                         raise
-                    read = await self._permissions_as_owner(file_id, metadata, user_email, limited_access)
+                    read = await self._permissions_as_owner(file_id, metadata, user_email, limited_access=limited_access)
                     list_read = read is not None
                     if read is None:
                         read = await self._proven_grants_after_held_runs(file_id, metadata, user_email)
