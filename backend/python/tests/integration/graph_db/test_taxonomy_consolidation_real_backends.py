@@ -414,6 +414,35 @@ async def test_edges_linked_to_a_merged_node_are_found_and_swept(backend) -> Non
     assert await consolidator.stray_nodes(TOPICS, org) == []
 
 
+@pytest.mark.neo4j_only  # the race is between two Cypher writers; ArangoDB moves an edge with one UPDATE
+async def test_a_move_racing_a_classification_leaves_one_edge_on_the_target(backend) -> None:
+    """Classification links a record to the winner in a transaction still open
+    when a merge moves that record's edge from the loser to the same winner.
+    The move waits for the record, then sees the committed edge and keeps it."""
+    provider, db, run = backend
+    org = f"org-{run}"
+    win, lose, rec = f"win-{run}", f"lose-{run}", f"r1-{run}"
+    await db.topic(win, "Bug bash", org, created=1)
+    await db.topic(lose, "Bug-bash", org, created=2)
+    await db.link(rec, org, lose)
+
+    classify = await provider.begin_transaction([], [EDGES], explicit=True)
+    try:
+        await provider.batch_create_edges(
+            [{"_from": f"{CollectionNames.RECORDS.value}/{rec}", "_to": f"{TOPICS}/{win}", "createdAtTimestamp": 2}],
+            EDGES, transaction=classify,
+        )
+        move = asyncio.create_task(provider.move_taxonomy_edges(TOPICS, lose, win, org, set_merged_from=lose))
+        await asyncio.sleep(2)  # the move is now past its read or waiting on the record
+        await provider.commit_transaction(classify)
+    except BaseException:
+        await provider.rollback_transaction(classify)
+        raise
+    await move
+
+    assert [t for t, _, _ in await db.edges(rec)] == [win]
+
+
 async def test_strays_on_a_chain_sweep_to_its_end_and_each_undo_restores_them(backend) -> None:
     provider, db, run = backend
     org = f"org-{run}"
