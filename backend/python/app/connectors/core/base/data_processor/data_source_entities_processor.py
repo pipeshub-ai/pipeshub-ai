@@ -2809,6 +2809,15 @@ class DataSourceEntitiesProcessor:
                     "Not storing %s (%s): %s", record.record_name, record.external_record_id, skip_reason
                 )
                 return _not_stored(record, SkipReason.NOT_CONTENT)
+        if existing_record is None:
+            # One rule for every connector: a client's stamp or a guessed text/plain must not put a
+            # new .log/.cfg on the old text path. A row stored under this id keeps its mime.
+            own_mime = file_types.stored_mime_for_new_file(record.mime_type, record.record_name)
+            stored_mime = (
+                same_id.get("mimeType") if isinstance(same_id, dict) else getattr(same_id, "mime_type", None)
+            )
+            if not file_types.keeps_stored_mime(stored_mime, own_mime, record.record_name):
+                record.mime_type = own_mime
         restored_from_trash = reindex_restored = False
         if existing_record is not None and not is_live_record(existing_record):
             # A user's delete holds until the purge even though the source still

@@ -1162,6 +1162,25 @@ def disabled_keys(config: object) -> frozenset[str]:
     return frozenset(v.lower() for v in values if isinstance(v, str) and v.lower() in keys)
 
 
+_UNNAMED_MIMES: Final = frozenset({"", "text/plain", "application/octet-stream", "unknown", "application/unknown"})
+
+
+def stored_mime_for_new_file(mime_type: str | None, name: str | None) -> str | None:
+    """The mime a connector stores for a file it saves for the first time.
+
+    A .log/.cfg sent as text/plain, octet-stream or nothing (a desktop stamp, a guess_type answer)
+    gets its own mime, which the old text path never read, so it is read as capped text. Any
+    other file keeps what its connector sent.
+    """
+    extension = name.rsplit(".", 1)[-1] if isinstance(name, str) and "." in name else None
+    ft = _ext_type(extension)
+    if ft is None or not ft.ext_wins or ft.wins_over_text_plain or ft.canonical_mime is None:
+        return mime_type
+    if mime_type is None or (isinstance(mime_type, str) and normalize_mime(mime_type) in _UNNAMED_MIMES):
+        return ft.canonical_mime
+    return mime_type
+
+
 def keeps_stored_mime(stored_mime: str | None, new_mime: str | None, name: str | None) -> bool:
     """Whether a re-synced file keeps the mime its row was stored under instead of *new_mime*.
 
