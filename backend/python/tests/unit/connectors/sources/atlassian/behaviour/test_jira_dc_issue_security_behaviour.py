@@ -21,6 +21,7 @@ from atlassian_behaviour_fakes import (
 from test_jira_dc_sync_behaviour import (
     API,
     EPIC_FIELD,
+    LICENSED,
     IssueSearch,
     JiraRecordsDb,
     attachment,
@@ -946,3 +947,33 @@ class TestReindex:
 
         written = {r.external_record_id: r for batch in db.record_batches for r in batch}["2"]
         assert hidden_from_project(written) and readers(db, "2") == set()
+
+
+class TestProductAccessRegained:
+    async def test_an_account_that_gains_product_access_gets_its_level_grants_without_the_issue_changing(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """A level's user holder resolves only through the linked accounts, so the leveled issues are read again
+        for an account newly linked, though none changed."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="carol-key", user={"key": "carol-key", "name": "carol"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="alice"))
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key", "carol-key")
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert ("USER", "carol@example.com") not in readers(db, "2")
+
+        db.cached_app_users = list(db.app_users)
+        product_group(*LICENSED)
+        batches_before = len(db.record_batches)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
+        assert "2" in {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}

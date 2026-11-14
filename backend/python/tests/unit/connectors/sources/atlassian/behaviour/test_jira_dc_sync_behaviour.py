@@ -62,8 +62,16 @@ class JiraRecordsDb(FakeRecordsDb):
     async def get_all_active_users(self) -> list[Any]:
         return self.platform_users
 
-    async def get_all_app_users(self, connector_id: str) -> list[AppUser]:
-        return self.cached_app_users
+    async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[AppUser]:
+        """The links an earlier sync left (``cached_app_users``) and those this one wrote, less the withdrawn."""
+        gone = {u.source_user_id for u in self.withdrawn_users}
+        linked = {u.source_user_id: u for u in [*self.cached_app_users, *self.app_users] if u.source_user_id not in gone}
+        return list(linked.values())
+
+    async def on_new_app_users(self, users: list[Any]) -> None:
+        await super().on_new_app_users(users)
+        listed = {u.source_user_id for u in users}
+        self.withdrawn_users = [u for u in self.withdrawn_users if u.source_user_id not in listed]
 
     async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
         for role, members in roles:
@@ -580,6 +588,9 @@ class TestAccessControlSafety:
     async def test_application_roles_forbidden_grants_only_the_configuring_user(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         jira.on("GET", f"{API}/applicationrole", json_response({}, status=403))
+        # Product access is unknown, so only accounts linked before stay linked: bob, whom the scheme names.
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
         connector, notes = await make_connector(db, store)
 
         await connector.run_sync()
@@ -828,7 +839,7 @@ class TestProductAccess:
                          id="later page with no list of values"),
         ],
     )
-    async def test_a_product_group_page_that_is_not_a_page_keeps_every_account(
+    async def test_a_product_group_page_that_is_not_a_page_links_no_one_new(
         self, jira, db, store, search, pages
     ) -> None:
         """Read as the end of the members, it would make the members read so far everyone with product access."""
@@ -847,9 +858,7 @@ class TestProductAccess:
 
         await connector.run_sync()
 
-        assert {u.email for u in db.app_users} == {
-            "alice@example.com", "bob@example.com", "carol@example.com", "dave@example.com",
-        }
+        assert {u.email for u in db.app_users} == {"bob@example.com"}, "the stored link stays; no one new is linked"
         assert db.withdrawn_users == []
 
     async def test_an_empty_product_group_gives_no_account_product_access(self, jira, db, store, search) -> None:
@@ -863,22 +872,43 @@ class TestProductAccess:
 
         assert db.app_users == [] and [u.email for u in db.withdrawn_users] == ["bob@example.com"]
 
-    @pytest.mark.parametrize("unread", ["roles", "product group"])
-    async def test_product_access_that_cannot_be_read_keeps_every_account(self, jira, db, store, search, unread) -> None:
+    @pytest.mark.parametrize("unread", ["roles busy", "roles refused", "roles not found", "product group",
+                                        "a role without a group list"])
+    async def test_product_access_that_cannot_be_read_links_no_one_new(self, jira, db, store, search, unread) -> None:
+        """Unknown is not no access, so the stored links stay, but neither is it access: an account not linked
+        (one withdrawn earlier included) is linked only by a read that shows it has product access. The
+        connector's own account can use Jira, so it is linked."""
         stub_site(jira, search)
         self._stub_members(jira, ("alice-key",), product_status=503 if unread == "product group" else 200)
-        if unread == "roles":
-            jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        roles = {"roles busy": json_response({"errorMessages": ["busy"]}, status=503),
+                 "roles refused": json_response({}, status=403), "roles not found": json_response({}, status=404),
+                 "a role without a group list": json_response([{"key": "jira-software", "name": "Jira Software"}])}
+        if unread in roles:
+            jira.on("GET", f"{API}/applicationrole", roles[unread])
+        jira.on("GET", f"{API}/myself", {"key": "carol-key", "name": "carol", "emailAddress": "carol@example.com"})
         db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
                                        email="bob@example.com", full_name="Bob")]
         connector, _ = await make_connector(db, store)
 
         await connector.run_sync()
 
-        assert {u.email for u in db.app_users} == {
-            "alice@example.com", "bob@example.com", "carol@example.com", "dave@example.com",
-        }, "unknown is not no access"
+        assert {u.email for u in db.app_users} == {"bob@example.com", "carol@example.com"}
         assert db.withdrawn_users == []
+        assert {m.email for m in db.groups_saved["devs"]} <= {"bob@example.com", "carol@example.com"}
+
+    async def test_roles_read_in_full_with_no_groups_give_no_account_product_access(self, jira, db, store, search) -> None:
+        """Only an administrator can read the roles, so the answer is the whole picture: access comes only through
+        a role's groups, and no role has one."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response([{"key": "jira-software", "groups": []},
+                                                                 {"key": "jira-core", "groups": []}]))
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.app_users == [] and [u.email for u in db.withdrawn_users] == ["bob@example.com"]
 
 
 class TestUserDirectoryFallbacks:

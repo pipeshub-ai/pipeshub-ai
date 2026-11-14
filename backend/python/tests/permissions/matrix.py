@@ -100,7 +100,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("atlassian/confluence_datacenter_personal", "container", CONTAINER, "atlassian/confluence_datacenter_personal/connector.py:133"),
     Connector("atlassian/jira_cloud", "jira", INTERSECTION, "atlassian/jira_cloud/connector.py:5302",
               "project OPEN + Browse grants; an issue inherits where it is filed, a top-level one also has its Browse reporter or assignee as grants; a leveled one keeps a copy of the holders"),
-    Connector("atlassian/jira_data_center", "jira", INTERSECTION, "atlassian/jira_data_center/connector.py:5060",
+    Connector("atlassian/jira_data_center", "jira", INTERSECTION, "atlassian/jira_data_center/connector.py:5104",
               "same writer shape as Cloud: project OPEN + Browse grants; an issue inherits where it is filed, a top-level one also has its Browse reporter or assignee as grants; a leveled one keeps a copy of the holders"),
     Connector("atlassian/jira_cloud_personal", "container", CONTAINER, "atlassian/jira_cloud_personal/connector.py:97"),
     Connector("atlassian/jira_data_center_personal", "container", CONTAINER, "atlassian/jira_data_center_personal/connector.py:66"),
