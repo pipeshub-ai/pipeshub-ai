@@ -136,7 +136,6 @@ from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
 from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
 from app.services.messaging.precision_check import active_verdict
 from app.services.messaging.precision_flip import PrecisionFlip, precision_flip_in
-from app.services.vector_db.collection_pin import CollectionPinStore
 from app.services.vector_db.membership import mark_scope_stale
 from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,

@@ -81,7 +81,7 @@ class _World:
         return dict(must or {})
 
     @staticmethod
-    def _matches(point, expression) -> bool:  # noqa: ANN001
+    def _matches(point, expression) -> bool:
         for key, wanted in expression.items():
             value = point.get(key.removeprefix("metadata."))
             if value not in (wanted if isinstance(wanted, list) else [wanted]):
@@ -114,7 +114,7 @@ class _Lock:
 
 
 @pytest.fixture
-def world(monkeypatch):  # noqa: ANN001, ANN201
+def world(monkeypatch):
     config = ConfigurationService(log, InMemoryKeyValueStore(log))
     vdb = _World()
     pins = CollectionPinStore(config, log)
@@ -168,7 +168,7 @@ class _NullLock:
         return False
 
 
-async def _seed_int8_index(w) -> None:  # noqa: ANN001
+async def _seed_int8_index(w) -> None:
     """An index written at int8: records, entities and the entity stamp, each with its pin."""
     w.vdb.add(RECORDS, INT8, n=3, virtualRecordId="v1")
     w.vdb.add(ENTITIES, INT8, n=2, entityType="record", entityId="r1")
@@ -180,7 +180,7 @@ async def _seed_int8_index(w) -> None:  # noqa: ANN001
     await w.pins.claim(ENTITIES, INT8)
 
 
-def _handler(w, monkeypatch, *, entity_store=True):  # noqa: ANN001, ANN202
+def _handler(w, monkeypatch, *, entity_store=True):
     phases: list[str] = []
 
     async def mark(_config, phase, **_k):  # noqa: ANN202
@@ -205,7 +205,7 @@ def _entity() -> EntityRecord:
     return EntityRecord.for_record("r1", "Q3 plan", ORG, "c1", "g1")
 
 
-async def _entity_write(w) -> None:  # noqa: ANN001
+async def _entity_write(w) -> None:
     await w.store._upsert_batch(ENTITIES, [_entity()], SimpleNamespace(written=0, unchanged=0, membership_only=0), set(), merge_membership=False)
 
 
