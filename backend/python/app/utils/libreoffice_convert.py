@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.core.org_context import spawn_in_request
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.llm_gateway.limiter import CrossLoopSemaphore
 from app.services.parsing.interface import (
@@ -146,7 +147,7 @@ async def stop_process(process: asyncio.subprocess.Process) -> None:
     it ends, so it is waited out (bounded by two grace periods) and the
     cancellation is raised afterwards.
     """
-    stop = asyncio.ensure_future(_stop_process(process))
+    stop = spawn_in_request(_stop_process(process), name="libreoffice-stop")
     cancelled: asyncio.CancelledError | None = None
     while True:
         try:
