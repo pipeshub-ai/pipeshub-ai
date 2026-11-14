@@ -51191,7 +51191,14 @@ paths:
         bound to a service account (`serviceAccountUserId`). A conversion
         may turn on `shareWithOrg` in the same request without `can_share`.
         Resending `isServiceAccount: true` for an agent that is already a
-        service-account agent needs no extra permission.
+        service-account agent needs no extra permission. Changing the
+        `knowledge` of a service-account agent that has no
+        `serviceAccountUserId` is also limited to its owner or an
+        administrator, because it searches with its creator's access. What
+        counts is what the agent can search: resending the same sources with
+        the same record-group and record limits, in any order or spelling, is
+        not a change, while adding or removing a source or changing its
+        limits, including narrowing one, is.
 
         **Success response**
 
@@ -51238,8 +51245,10 @@ paths:
             organization) but is not its owner, so may not edit it. Also returned
             when an editor without `can_share` turns on `shareWithOrg`, when an
             editor who is neither the owner nor an administrator converts a
-            regular agent by setting `isServiceAccount: true`, and when someone
-            other than an administrator changes `serviceAccountUserId`.
+            regular agent by setting `isServiceAccount: true` or changes the
+            `knowledge` of a service-account agent with no
+            `serviceAccountUserId`, and when someone other than an
+            administrator changes `serviceAccountUserId`.
           content:
             application/json:
               schema:
@@ -51277,7 +51286,8 @@ paths:
         '503':
           description: |
             The change needs the caller's organization role (converting a
-            regular agent by setting `isServiceAccount: true` as a non-owner, or
+            regular agent by setting `isServiceAccount: true` or changing an
+            unbound service-account agent's `knowledge` as a non-owner, or
             changing `serviceAccountUserId`) and the role could not be confirmed just
             now. Nothing was saved; retry.
           content:

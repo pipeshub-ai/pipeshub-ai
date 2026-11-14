@@ -62,6 +62,7 @@ from app.modules.agents.knowledge_scope import (
     project_files_knowledge,
     read_source_limit,
     resolve_agent_filters,
+    source_reach,
 )
 from app.modules.agents.qna.router import (
     RouteDecision,  # noqa: F401 - re-exported for backward-compat imports (see below)
@@ -3505,6 +3506,25 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         # A conversion shares the agent as a matter of course and is checked above.
         if final_shared and not agent.get("shareWithOrg") and not converting and not perm.get("can_share", False):
             raise PermissionDeniedError("share this agent with the organisation")
+        # An unbound service agent searches as its creator, so its sources are
+        # searched with the owner's access: changing what it reaches is the
+        # owner's or an administrator's call, like converting it.
+        if (
+            "knowledge" in body
+            and agent.get("isServiceAccount")
+            and not agent.get("serviceAccountUserId")
+            and perm.get("user_role") != "OWNER"
+            and source_reach(_parse_knowledge_sources(body.get("knowledge", [])).values())
+            != source_reach(agent.get("knowledge") or [])
+        ):
+            await _only_an_administrator_may_bind(
+                request,
+                services["config_service"],
+                detail=(
+                    "Only the agent's owner or an administrator can change the knowledge "
+                    "of a service agent that searches as its creator."
+                ),
+            )
 
         if "serviceAccountUserId" in body:
             body["serviceAccountUserId"] = await _checked_service_account_binding(
