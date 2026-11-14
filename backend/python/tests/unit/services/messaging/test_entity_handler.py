@@ -621,6 +621,28 @@ class TestUserDeleted:
         user_data = call_args[0][0][0]
         assert user_data["isActive"] is False
         assert user_data["id"] == "user-key-1"
+        assert user_data["email"] == "alice@test.com"
+
+    @pytest.mark.asyncio
+    async def test_user_deleted_normalizes_email(self) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.get_entity_id_by_email = AsyncMock(
+            return_value="user-key-1"
+        )
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+
+        payload = {
+            "orgId": "org-1",
+            "email": "  Alice@Test.COM  \t",
+        }
+        result = await svc.process_event("userDeleted", payload)
+        assert result is True
+
+        call_args = graph_provider.batch_upsert_nodes.call_args
+        user_data = call_args[0][0][0]
+        assert user_data["email"] == "alice@test.com"
 
     @pytest.mark.asyncio
     async def test_user_not_found_returns_false(self):

@@ -2186,6 +2186,33 @@ class TestBulkGetEntityIdsByEmail:
         )
         assert result == {}
 
+    async def test_prefers_active_user_over_inactive_stub_regardless_of_order(self, connected_provider) -> None:
+        # Case 1: Inactive stub comes first in query results
+        connected_provider.http_client.execute_aql.side_effect = [
+            [
+                {"email": "user@example.com", "id": "u_stub", "isActive": False},
+                {"email": "User@Example.com", "id": "u_active", "isActive": True},
+            ],
+            [],
+            [],
+        ]
+        result1 = await connected_provider.bulk_get_entity_ids_by_email(["User@Example.com"])
+        assert result1["User@Example.com"][0] == "u_active"
+        assert result1["user@example.com"][0] == "u_active"
+
+        # Case 2: Active user comes first in query results
+        connected_provider.http_client.execute_aql.side_effect = [
+            [
+                {"email": "User@Example.com", "id": "u_active", "isActive": True},
+                {"email": "user@example.com", "id": "u_stub", "isActive": False},
+            ],
+            [],
+            [],
+        ]
+        result2 = await connected_provider.bulk_get_entity_ids_by_email(["user@example.com"])
+        assert result2["user@example.com"][0] == "u_active"
+        assert result2["User@Example.com"][0] == "u_active"
+
 
 # ===================================================================
 # store_permission

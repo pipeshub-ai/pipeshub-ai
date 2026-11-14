@@ -589,7 +589,7 @@ class EntityEventService(BaseEventService):
             user_data = {
                 "id": existing_user_id,
                 "orgId": org_id,
-                "email": payload["email"],
+                "email": payload["email"].strip().lower() if payload.get("email") else "",
                 "isActive": False,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }

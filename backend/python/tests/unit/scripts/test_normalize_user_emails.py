@@ -237,3 +237,120 @@ async def test_all_orgs_enumerates_inactive_and_external_and_deduplicates() -> N
     # Verify fetch was called for exactly org_1, org_2, org_3 (deduplicated)
     called_orgs = [call.args[0] for call in graph.fetch_unnormalized_users.await_args_list]
     assert called_orgs == ["org_1", "org_2", "org_3"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_unnormalized_users_postgres_tab_padded() -> None:
+    class FakePostgresProvider:
+        provider_type = "postgres"
+
+        def __init__(self) -> None:
+            self.executed_query = None
+            self.executed_params = None
+
+        async def _id_rows(self, query: str, params: list, txn: object = None) -> list[dict]:
+            self.executed_query = query
+            self.executed_params = params
+            return [
+                {
+                    "id": "u1",
+                    "email": "\talice@acme.com\t",
+                    "new_email": "alice@acme.com",
+                }
+            ]
+
+    p = FakePostgresProvider()
+    res = await fetch_unnormalized_users(p, "org_1", 50)
+    assert len(res) == 1
+    assert res[0]["id"] == "u1"
+    assert res[0]["email"] == "\talice@acme.com\t"
+    assert res[0]["newEmail"] == "alice@acme.com"
+    assert "btrim(doc->>'email', E' \\t\\r\\n')" in p.executed_query
+
+
+@pytest.mark.asyncio
+async def test_postgres_regression_tab_padded_email_normalized() -> None:
+    # Verify migration selects and normalizes already-lowercase email surrounded by tabs
+    graph = MagicMock()
+    candidates = [
+        {"id": "u1", "orgId": "o1", "email": "\talice@acme.com\t", "newEmail": "alice@acme.com"},
+    ]
+    graph.fetch_unnormalized_users = AsyncMock(side_effect=[candidates, []])
+    graph.batch_upsert_nodes = AsyncMock(return_value=True)
+
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(graph, org_id="o1", apply=True, logger=logger, out=out, batch_size=10)
+    assert code == EXIT_SUCCESS
+    assert graph.batch_upsert_nodes.await_count == 1
+    updated = graph.batch_upsert_nodes.await_args.args[0]
+    assert updated[0]["id"] == "u1"
+    assert updated[0]["email"] == "alice@acme.com"
+
+
+@pytest.mark.asyncio
+async def test_normalization_flag_set_on_all_orgs_apply_success() -> None:
+    from app.services.graph_db.interface.graph_db_provider import (
+        USER_EMAIL_NORMALIZATION_FLAG,
+    )
+
+    graph = MagicMock()
+    graph.get_all_orgs = AsyncMock(side_effect=[[{"id": "org_1"}], []])
+    graph.fetch_unnormalized_users = AsyncMock(return_value=[])
+
+    config_service = MagicMock()
+    config_service.set_config = AsyncMock(return_value=True)
+
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(
+        graph,
+        all_orgs=True,
+        apply=True,
+        logger=logger,
+        out=out,
+        config_service=config_service,
+    )
+    assert code == EXIT_SUCCESS
+    config_service.set_config.assert_awaited_once_with(
+        USER_EMAIL_NORMALIZATION_FLAG, {"done": True}
+    )
+
+
+@pytest.mark.asyncio
+async def test_normalization_flag_not_set_on_dry_run_or_single_org() -> None:
+
+    graph = MagicMock()
+    graph.get_all_orgs = AsyncMock(side_effect=[[{"id": "org_1"}], []])
+    graph.fetch_unnormalized_users = AsyncMock(return_value=[])
+
+    config_service = MagicMock()
+    config_service.set_config = AsyncMock(return_value=True)
+    logger = logging.getLogger("test")
+
+    # Dry-run on all_orgs: must not set flag
+    out1 = io.StringIO()
+    await run_normalization(
+        graph,
+        all_orgs=True,
+        apply=False,
+        logger=logger,
+        out=out1,
+        config_service=config_service,
+    )
+    config_service.set_config.assert_not_called()
+
+    # Apply on single org: must not set flag
+    out2 = io.StringIO()
+    await run_normalization(
+        graph,
+        org_id="org_1",
+        apply=True,
+        logger=logger,
+        out=out2,
+        config_service=config_service,
+    )
+    config_service.set_config.assert_not_called()
+

@@ -11044,11 +11044,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not users:
                 return
 
-            # Get org_id
-            orgs = await self.get_all_orgs()
-            if not orgs:
-                raise Exception("No organizations found in the database")
-            org_id = orgs[0]["_key"]
+            # Get org_id from AppUser, ambient org_context, or fallback to get_all_orgs
+            first_user = users[0]
+            raw_org = getattr(first_user, "org_id", None) or getattr(first_user, "orgId", None)
+            org_id = raw_org if isinstance(raw_org, str) and raw_org.strip() else None
+            if not org_id:
+                try:
+                    from app.core.org_context import current_org_id
+                    ambient = current_org_id()
+                    org_id = ambient if isinstance(ambient, str) and ambient.strip() else None
+                except Exception:
+                    org_id = None
+            if not org_id:
+                orgs = await self.get_all_orgs()
+                if not orgs:
+                    raise Exception("No organizations found in the database")
+                org_id = orgs[0]["_key"]
             connector_id = users[0].connector_id
 
             app = await self.get_document(connector_id, CollectionNames.APPS.value)
@@ -11058,28 +11069,31 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             app_id = app["_id"]
 
             for user in users:
+                user_org = getattr(user, "org_id", None) or getattr(user, "orgId", None)
+                target_org_id = user_org if isinstance(user_org, str) and user_org.strip() else org_id
+
                 # Check if user exists within connector's organization
-                user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
+                user_record = await self.get_user_by_email(user.email, transaction, org_id=target_org_id)
 
                 if not user_record:
                     # Create new user
                     await self.batch_upsert_nodes(
-                        [{**user.to_arango_base_user(), "orgId": org_id, "isActive": False}],
+                        [{**user.to_arango_base_user(), "orgId": target_org_id, "isActive": False}],
                         collection=CollectionNames.USERS.value,
                         transaction=transaction
                     )
 
-                    user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
+                    user_record = await self.get_user_by_email(user.email, transaction, org_id=target_org_id)
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.
                     try:
                         await self.migrate_person_to_user(
-                            user.email, user.id, org_id, transaction=transaction
+                            user.email, user.id, target_org_id, transaction=transaction
                         )
                     except Exception as migrate_err:
                         self.logger.error(
-                            "Person adoption failed for user %s in org %s: %s", user.id, org_id, migrate_err
+                            "Person adoption failed for user %s in org %s: %s", user.id, target_org_id, migrate_err
                         )
 
                     # A guest is saved so grants to them resolve, but org membership
@@ -11087,7 +11101,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     if not user.is_guest:
                         user_org_relation = {
                             "_from": f"{CollectionNames.USERS.value}/{user.id}",
-                            "_to": f"{CollectionNames.ORGS.value}/{org_id}",
+                            "_to": f"{CollectionNames.ORGS.value}/{target_org_id}",
                             "createdAtTimestamp": user.created_at,
                             "updatedAtTimestamp": user.updated_at,
                             "entityType": "ORGANIZATION",
@@ -11108,7 +11122,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         await self.delete_edge(
                             user_record.id,
                             CollectionNames.USERS.value,
-                            org_id,
+                            target_org_id,
                             CollectionNames.ORGS.value,
                             CollectionNames.BELONGS_TO.value,
                             transaction=transaction,
@@ -11605,7 +11619,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             user_query = f"""
             FOR doc IN {CollectionNames.USERS.value}
                 FILTER doc.email IN @emails
-                RETURN {{email: doc.email, id: doc._key}}
+                RETURN {{email: doc.email, id: doc._key, isActive: doc.isActive}}
             """
             try:
                 users = await self.http_client.execute_aql(
@@ -11613,15 +11627,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     bind_vars={"emails": user_query_emails},
                     txn_id=transaction
                 )
-                for user in users:
-                    u_email = user["email"]
+                # Group returned users by normalized email and prefer active user over inactive stub
+                by_norm: dict[str, list[dict]] = {}
+                for user in users or []:
+                    u_email = user.get("email")
+                    if u_email:
+                        by_norm.setdefault(u_email.strip().lower(), []).append(user)
+
+                for norm, u_list in by_norm.items():
+                    best_user = max(u_list, key=lambda u: bool(u.get("isActive", True)))
                     val = (
-                        user["id"],
+                        best_user["id"],
                         CollectionNames.USERS.value,
                         "USER"
                     )
-                    result_map[u_email] = val
-                    norm = (u_email or "").strip().lower()
+                    for u in u_list:
+                        result_map[u["email"]] = val
                     for orig in norm_to_orig.get(norm, []):
                         result_map[orig] = val
                 self.logger.debug(f"✅ Found {len(users)} users")

@@ -482,6 +482,28 @@ class TestGraphTransactionStore:
         ]
 
     @pytest.mark.asyncio
+    async def test_get_users_by_emails_whitespace_padded_returns_and_memoizes(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        ann = MagicMock(id="u1")
+        mock_graph_provider.get_users_by_emails = AsyncMock(return_value={"ann@x.io": ann})
+
+        # Whitespace-padded input returns matched user
+        res1 = await tx_store.get_users_by_emails([" \tAnn@x.io \n"], org_id="org-1")
+        assert res1 == {"ann@x.io": ann}
+        assert mock_graph_provider.get_users_by_emails.await_count == 1
+        assert mock_graph_provider.get_users_by_emails.await_args == call(
+            ["ann@x.io"], transaction="txn-123", raise_on_error=False, org_id="org-1"
+        )
+
+        # Subsequent call with different whitespace padding hits memo cache
+        res2 = await tx_store.get_users_by_emails(["  ann@x.io  "], org_id="org-1")
+        assert res2 == {"ann@x.io": ann}
+        # Provider should NOT be called again
+        assert mock_graph_provider.get_users_by_emails.await_count == 1
+
+
+    @pytest.mark.asyncio
     async def test_get_user_by_email_in_an_org_is_scoped_and_memoised_per_org(
         self, tx_store, mock_graph_provider
     ) -> None:

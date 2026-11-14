@@ -22,11 +22,15 @@ from typing import TYPE_CHECKING, TextIO
 
 from app.config.constants.arangodb import CollectionNames
 from app.core import org_context
+from app.services.graph_db.interface.graph_db_provider import (
+    USER_EMAIL_NORMALIZATION_FLAG,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from logging import Logger
 
+    from app.config.configuration_service import ConfigurationService
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 DEFAULT_BATCH_SIZE = 200
@@ -111,14 +115,14 @@ async def fetch_unnormalized_users(
         ]
 
     if provider == "postgres" or isinstance(graph, IdentityMixin) or hasattr(graph, "_id_rows"):
-        query = """
+        query = r"""
         /* pipeshub:graph.unnormalized_user_emails */
-        SELECT id, org_id, doc->>'email' AS email, lower(trim(doc->>'email')) AS new_email
+        SELECT id, org_id, doc->>'email' AS email, lower(btrim(doc->>'email', E' \t\r\n')) AS new_email
         FROM graph.nodes
         WHERE coll = 'users'
         AND ($1::text IS NULL OR org_id = $1)
         AND doc->>'email' IS NOT NULL AND doc->>'email' <> ''
-        AND doc->>'email' <> lower(trim(doc->>'email'))
+        AND doc->>'email' <> lower(btrim(doc->>'email', E' \t\r\n'))
         ORDER BY id ASC
         LIMIT $2 OFFSET $3
         """
@@ -243,6 +247,7 @@ async def run_normalization(
     logger: Logger,
     out: TextIO,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    config_service: ConfigurationService | None = None,
 ) -> int:
     """Entrypoint to normalize user emails across one or all organizations."""
     if batch_size <= 0:
@@ -321,6 +326,17 @@ async def run_normalization(
         + "\n"
     )
 
+    if all_orgs and apply and total_stats["total_failed_batches"] == 0:
+        cs = config_service or getattr(graph, "config_service", None)
+        if cs:
+            try:
+                await cs.set_config(USER_EMAIL_NORMALIZATION_FLAG, {"done": True})
+            except Exception:
+                logger.exception(
+                    "Failed to record normalization completion flag %s",
+                    USER_EMAIL_NORMALIZATION_FLAG,
+                )
+
     return EXIT_PARTIAL if total_stats["total_failed_batches"] else EXIT_SUCCESS
 
 
@@ -331,6 +347,7 @@ async def normalize_all_orgs(
     logger: Logger,
     out: TextIO,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    config_service: ConfigurationService | None = None,
 ) -> int:
     """Normalize user emails across all organizations."""
     return await run_normalization(
@@ -340,6 +357,7 @@ async def normalize_all_orgs(
         logger=logger,
         out=out,
         batch_size=batch_size,
+        config_service=config_service,
     )
 
 
@@ -385,6 +403,7 @@ async def _main(argv: list[str]) -> int:
     container = IndexingAppContainer.init("normalize_user_emails")
     logger = container.logger()
     graph = await container.graph_provider()
+    config_service = container.config_service()
 
     try:
         return await run_normalization(
@@ -395,6 +414,7 @@ async def _main(argv: list[str]) -> int:
             logger=logger,
             out=sys.stdout,
             batch_size=args.batch_size,
+            config_service=config_service,
         )
     finally:
         await graph.disconnect()

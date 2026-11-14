@@ -10502,11 +10502,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not users:
                 return
 
-            # Get org_id
-            orgs = await self.get_all_orgs(transaction=transaction)
-            if not orgs:
-                raise Exception("No organizations found in the database")
-            org_id = orgs[0].get("id") or orgs[0].get("_key")
+            # Get org_id from AppUser, ambient org_context, or fallback to get_all_orgs
+            first_user = users[0]
+            raw_org = getattr(first_user, "org_id", None) or getattr(first_user, "orgId", None)
+            org_id = raw_org if isinstance(raw_org, str) and raw_org.strip() else None
+            if not org_id:
+                try:
+                    from app.core.org_context import current_org_id
+                    ambient = current_org_id()
+                    org_id = ambient if isinstance(ambient, str) and ambient.strip() else None
+                except Exception:
+                    org_id = None
+            if not org_id:
+                orgs = await self.get_all_orgs(transaction=transaction)
+                if not orgs:
+                    raise Exception("No organizations found in the database")
+                org_id = orgs[0].get("id") or orgs[0].get("_key")
             connector_id = users[0].connector_id
 
             # Get or create app
@@ -10531,14 +10542,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
 
             for user in users:
+                user_org = getattr(user, "org_id", None) or getattr(user, "orgId", None)
+                target_org_id = user_org if isinstance(user_org, str) and user_org.strip() else org_id
+
                 # Check if user exists within connector's organization
-                user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
+                user_record = await self.get_user_by_email(user.email, transaction, org_id=target_org_id)
 
                 if not user_record:
                     # Create new user
                     user_data = user.to_arango_base_user()
                     user_data["id"] = user.id
-                    user_data["orgId"] = org_id
+                    user_data["orgId"] = target_org_id
                     user_data["isActive"] = False
 
                     await self.batch_upsert_nodes(
@@ -10547,17 +10561,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         transaction=transaction
                     )
 
-                    user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
+                    user_record = await self.get_user_by_email(user.email, transaction, org_id=target_org_id)
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.
                     try:
                         await self.migrate_person_to_user(
-                            user.email, user.id, org_id, transaction=transaction
+                            user.email, user.id, target_org_id, transaction=transaction
                         )
                     except Exception as migrate_err:
                         self.logger.error(
-                            "Person adoption failed for user %s in org %s: %s", user.id, org_id, migrate_err
+                            "Person adoption failed for user %s in org %s: %s", user.id, target_org_id, migrate_err
                         )
 
                     # A guest is saved so grants to them resolve, but org membership
@@ -10566,7 +10580,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         user_org_edge = {
                             "from_id": user.id,
                             "from_collection": CollectionNames.USERS.value,
-                            "to_id": org_id,
+                            "to_id": target_org_id,
                             "to_collection": CollectionNames.ORGS.value,
                             "createdAtTimestamp": user.created_at,
                             "updatedAtTimestamp": user.updated_at,
@@ -10588,7 +10602,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         await self.delete_edge(
                             user_record.id,
                             CollectionNames.USERS.value,
-                            org_id,
+                            target_org_id,
                             CollectionNames.ORGS.value,
                             CollectionNames.BELONGS_TO.value,
                             transaction=transaction,
@@ -11048,7 +11062,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (n)
             WHERE (n:User OR n:Group OR n:Person)
             AND n.email IN $emails
-            RETURN n.email AS email, n.id AS id, labels(n) AS labels
+            RETURN n.email AS email, n.id AS id, labels(n) AS labels, coalesce(n.isActive, true) AS isActive
             """
 
             results = await self.client.execute_query(
@@ -11057,12 +11071,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
 
-            result_map = {}
+            # Group entities by normalized email and prefer active User over inactive stub, then User over Group/Person
+            by_norm: dict[str, list[dict]] = {}
             for r in results or []:
-                email = r["email"]
-                entity_id = r["id"]
-                labels = r["labels"]
+                email = r.get("email")
+                if email:
+                    by_norm.setdefault(email.strip().lower(), []).append(r)
 
+            result_map = {}
+            for norm, r_list in by_norm.items():
+                def _priority(r: dict) -> tuple[int, bool]:
+                    lbls = r.get("labels", [])
+                    is_user = Neo4jLabel.USERS.value in lbls
+                    is_group = Neo4jLabel.GROUPS.value in lbls
+                    is_person = Neo4jLabel.PEOPLE.value in lbls
+                    type_score = 3 if is_user else (2 if is_group else (1 if is_person else 0))
+                    active = bool(r.get("isActive", True))
+                    return (type_score, active)
+
+                best_r = max(r_list, key=_priority)
+                labels = best_r.get("labels", [])
                 collection_name = ""
                 permission_type = ""
 
@@ -11077,9 +11105,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     permission_type = "USER"
 
                 if collection_name:
-                    val = (entity_id, collection_name, permission_type)
-                    result_map[email] = val
-                    norm = (email or "").strip().lower()
+                    val = (best_r["id"], collection_name, permission_type)
+                    for r in r_list:
+                        result_map[r["email"]] = val
                     for orig in norm_to_orig.get(norm, []):
                         result_map[orig] = val
 
@@ -11091,18 +11119,33 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 MATCH (n)
                 WHERE (n:User OR n:Group OR n:Person)
                 AND toLower(trim(n.email)) IN $emails
-                RETURN n.email AS email, n.id AS id, labels(n) AS labels
+                RETURN n.email AS email, n.id AS id, labels(n) AS labels, coalesce(n.isActive, true) AS isActive
                 """
                 fallback_results = await self.client.execute_query(
                     fallback_query,
                     parameters={"emails": unmatched_norm},
                     txn_id=transaction
                 )
+                fb_by_norm: dict[str, list[dict]] = {}
                 for r in fallback_results or []:
-                    email = r["email"]
-                    entity_id = r["id"]
-                    labels = r["labels"]
+                    email = r.get("email")
+                    if email:
+                        fb_by_norm.setdefault(email.strip().lower(), []).append(r)
 
+                for norm, r_list in fb_by_norm.items():
+                    if any(orig in result_map for orig in norm_to_orig.get(norm, [])):
+                        continue
+                    def _fb_priority(r: dict) -> tuple[int, bool]:
+                        lbls = r.get("labels", [])
+                        is_user = Neo4jLabel.USERS.value in lbls
+                        is_group = Neo4jLabel.GROUPS.value in lbls
+                        is_person = Neo4jLabel.PEOPLE.value in lbls
+                        type_score = 3 if is_user else (2 if is_group else (1 if is_person else 0))
+                        active = bool(r.get("isActive", True))
+                        return (type_score, active)
+
+                    best_r = max(r_list, key=_fb_priority)
+                    labels = best_r.get("labels", [])
                     collection_name = ""
                     permission_type = ""
 
@@ -11117,9 +11160,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         permission_type = "USER"
 
                     if collection_name:
-                        val = (entity_id, collection_name, permission_type)
-                        result_map[email] = val
-                        norm = (email or "").strip().lower()
+                        val = (best_r["id"], collection_name, permission_type)
+                        for r in r_list:
+                            result_map[r["email"]] = val
                         for orig in norm_to_orig.get(norm, []):
                             result_map[orig] = val
 
