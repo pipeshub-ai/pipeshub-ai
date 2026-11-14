@@ -16,7 +16,7 @@ from app.services.graph_db.postgres.kg.project import Stats, decode, project
 
 from .pg_support import new_org
 from .test_kg_derivation import FOCUS, ctx, edge, held, load_world, prov
-from .test_kg_read import flip
+from .test_kg_read import _ask, _decide, flip
 
 pytestmark = pytest.mark.integration
 
@@ -248,6 +248,68 @@ async def test_a_refused_record_that_stays_takes_only_its_own_connector_off_the_
     assert (f1[1], f1[4], f1[10]) == ("app1", "Moved", None)
     assert await _modes(p, org) == {"app1": "legacy", "app2": "enforce", "app3": "enforce"}
     assert not (await bf.backfill(pg_db, org, "app1", page=2)).flipped
+
+
+async def _granted(p, db, org: str, gtype: str, role: str) -> None:
+    """Three connectors served, u1 linked to app2 and app3 but granted neither record; then, in one change that the drain projects in one unit, u1 is granted app2's x2 with
+    ``gtype`` and ``role``, and app3's x3 as a reader."""
+    await load_world(p, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": a, "name": a, "type": "DRIVE", "orgId": org} for a in ("app2", "app3")], "apps")
+        await p.batch_upsert_nodes([{"_key": f"x{n}", "recordName": f"X{n}", "connectorId": f"app{n}", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for n in (2, 3)], "records")
+        await p.batch_create_edges([edge("u1", "users", "app2", "apps"), edge("u1", "users", "app3", "apps")], "userAppRelation")
+    assert await flip(db, org) == (3, 3)
+    assert "x2" not in await _ask(p, org, "u1", ["x2"], await _access(p, org), "0")
+    with ctx(org):
+        await p.batch_create_edges([edge("u1", "users", "x2", "records", type=gtype, role=role), edge("u1", "users", "x3", "records", type="USER", role="READER")], "permission")
+    await drain_org(db, org)
+    assert await _log_rows(p, org) == 0                                                       # the drain went through to the end of the log
+    assert (await held(p, org))["grants"][("u1", "x3", "USER")] == ("READER", "app3", True)    # and the other connector's grant of the same unit is written
+
+
+async def _access(p, org: str) -> dict:
+    with ctx(org):
+        return await p.get_knowledge_hub_access_v3("u1", org)
+
+
+async def _log_rows(p, org: str) -> int:
+    async def go(tx) -> int:
+        return await tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org)
+    with ctx(org):
+        return await p._q(go, None)
+
+
+WIDE = "".join(chr(0x4E00 + i) for i in range(100))      # 100 characters, 300 bytes
+
+
+@pytest.mark.parametrize("role", ["R" * 64, "R" * 65, WIDE, "\U00020000" * 100_000], ids=["64", "65", "100-multibyte", "100000-astral"])
+async def test_a_grant_with_a_role_of_any_length_is_copied_whole(pg_db, role) -> None:
+    """The role is no key (kg_0012): a grant with a long custom role is written whole, its connector stays served, and the drain goes on."""
+    p, org = prov(pg_db), new_org()
+    await _granted(p, pg_db, org, "USER", role)
+    assert (await held(p, org))["grants"][("u1", "x2", "USER")] == (role, "app2", True)
+    assert await _modes(p, org) == {"app1": "enforce", "app2": "enforce", "app3": "enforce"}
+
+
+@pytest.mark.parametrize("gtype", ["", "T" * 65, WIDE], ids=["empty", "65", "100-multibyte"])
+async def test_a_grant_whose_type_the_writer_refuses_takes_only_its_connector_to_the_walk(pg_db, caplog, gtype) -> None:
+    """The type is part of the grant's key and keeps its bound. A grant whose type is refused is left out and logged, the rest of the unit and of the drain is written, and
+    the connector of the node it is on goes off the readers: the access check answers x2 with the walk, which sees the grant. A copy of that connector is not served while the
+    type stays (the verify finds the grant missing), and is once the type is fixed."""
+    p, org = prov(pg_db), new_org()
+    with caplog.at_level(logging.ERROR, logger="app.services.graph_db.postgres.kg.project"):
+        await _granted(p, pg_db, org, gtype, "READER")
+    assert any(f"refuses the type ({len(gtype)} characters)" in r.getMessage() for r in caplog.records)
+    assert not any(k[:2] == ("u1", "x2") for k in (await held(p, org))["grants"])
+    assert await _modes(p, org) == {"app1": "enforce", "app2": "legacy", "app3": "enforce"}
+    access = await _access(p, org)
+    assert "x2" in (await _decide(pg_db, org, ["x2", "x3"], access)).walk
+    assert {"x2", "x3"} <= set(await _ask(p, org, "u1", ["x2", "x3"], access, None))
+    assert not (await bf.backfill(pg_db, org, "app2", page=2)).flipped
+    with ctx(org):
+        await p.batch_create_edges([edge("u1", "users", "x2", "records", type="USER", role="READER")], "permission")
+    await drain_org(pg_db, org)
+    assert (await bf.backfill(pg_db, org, "app2", page=2)).flipped
 
 
 async def test_the_other_organisation_is_not_touched(pg_db) -> None:
