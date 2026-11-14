@@ -153,6 +153,17 @@ _RECLAIM_HEADROOM_DIVISOR = 4
 # Checked and removed in one step: a consumer that reads between a separate
 # check and XGROUP DELCONSUMER would have those entries dropped from the
 # pending list, and nothing would deliver them again. 1 when removed.
+# Reasserts ownership of an entry only if it is still pending under this
+# consumer: a peer's claim between the read-only scan that found it and this
+# would otherwise be taken back. JUSTID, so no delivery is counted. 1 if done.
+_REASSERT_OWN_SCRIPT = """
+local entry = redis.call('XPENDING', KEYS[1], ARGV[1], ARGV[3], ARGV[3], 1)[1]
+if not entry or entry[2] ~= ARGV[2] then
+    return 0
+end
+redis.call('XCLAIM', KEYS[1], ARGV[1], ARGV[2], 0, ARGV[3], 'JUSTID')
+return 1
+"""
 _REMOVE_STOPPED_CONSUMER_SCRIPT = """
 for _, consumer in ipairs(redis.call('XINFO', 'CONSUMERS', KEYS[1], ARGV[1])) do
     local info = {}
@@ -366,6 +377,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # Entries recovery failed to hand on, left pending under this consumer
         # (see __remember_unhanded); insertion-ordered, oldest first.
         self._unhanded: dict[tuple[str, str], None] = {}
+        # Of those, ids whose entry is gone: they need only an XACK, no room.
+        self._unacked_gone: dict[tuple[str, str], None] = {}
         self._last_unhanded_retry = 0.0
         # Per lane, the stopped owners last logged as no longer holding back
         # the stranded-record sweep, so the line is written once per change.
@@ -1309,8 +1322,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     topic, message_id, stable_message_id, parsed_message
                 ):
                     return False
-                if owned:
-                    await self.__reclaim_for_dispatch(topic, message_id)
+                if owned and not await self.__reclaim_for_dispatch(topic, message_id):
+                    return False
                 self.logger.info(
                     "Recovering %spending message: stream=%s, id=%s",
                     prefix,
@@ -1331,61 +1344,68 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.__remember_unhanded(topic, message_id)
             return False
 
-    def __remember_unhanded(self, topic: str, message_id: str) -> None:
+    def __remember_unhanded(self, topic: str, message_id: str, *, gone: bool = False) -> None:
         """Keep an entry that recovery may have left pending under this consumer
         without holding it, for ``__retry_unhanded``. Beside another live
         consumer nothing else would take it back while traffic flows: read-time
         own-pending recovery runs only when this consumer is alone, peers take
         only from stopped consumers, and the idle drain needs quiet lanes."""
-        self._unhanded.pop((topic, message_id), None)
-        if len(self._unhanded) >= _UNHANDED_LIMIT:
+        key = (topic, message_id)
+        self._unhanded.pop(key, None)
+        self._unacked_gone.pop(key, None)
+        if len(self._unhanded) + len(self._unacked_gone) >= _UNHANDED_LIMIT:
             # Unreachable for claimed entries: every claim is bounded by
             # __retry_room. An own entry found by a pending-list scan is not
             # remembered past the bound, but nothing is evicted either, and the
             # next scan finds it again.
             self.logger.warning(
                 "Not remembering pending entry %s on %s for a retry: %d already are",
-                message_id, topic, len(self._unhanded),
+                message_id, topic, len(self._unhanded) + len(self._unacked_gone),
             )
             return
-        self._unhanded[(topic, message_id)] = None
+        (self._unacked_gone if gone else self._unhanded)[key] = None
 
     def __retry_room(self) -> int:
         """Claims recovery may still make. Each claimed entry that is not handed
         on is remembered for a retry, so no path claims past the list's room
         and none is ever forgotten while pending under this consumer."""
-        return max(0, _UNHANDED_LIMIT - len(self._unhanded))
+        return max(0, _UNHANDED_LIMIT - len(self._unhanded) - len(self._unacked_gone))
 
     async def __retry_unhanded_when_due(self) -> None:
         """At most once a second, and before any full-buffer or backpressure
         return: an entry left without a body needs no room to be acknowledged."""
         now = time.monotonic()
-        if self._unhanded and now - self._last_unhanded_retry >= _RECOVERY_INTERVAL_SECONDS:
+        if (self._unhanded or self._unacked_gone) and now - self._last_unhanded_retry >= _RECOVERY_INTERVAL_SECONDS:
             self._last_unhanded_retry = now
             await self.__retry_unhanded()
 
     async def __retry_unhanded(self) -> None:
-        """Offer remembered entries again, oldest first.
+        """Retry what recovery left pending under this consumer, in two parts
+        so neither waits behind the other.
 
-        Each is first confirmed pending under this consumer (else it was
-        acknowledged or taken, and is forgotten) and its payload re-read with
-        XRANGE; ``__recover_entry(owned=True)`` reasserts ownership with
-        ``XCLAIM JUSTID``, so no delivery is counted. An entry trimmed from the
-        stream meanwhile is acknowledged.
+        Ids whose entry is gone need only an XACK: all of them, every pass,
+        whatever the buffer. Entries with a body are offered again in turn, up
+        to ``_RECOVERY_BATCH`` a pass from the front of the list; one with no
+        room yet goes to the back, so the pass always moves on. Each is first
+        confirmed pending under this consumer (else it was acknowledged or
+        taken, and is forgotten); ``__recover_entry(owned=True)`` reasserts
+        ownership with ``XCLAIM JUSTID``, so no delivery is counted.
         """
+        for topic, message_id in list(self._unacked_gone):
+            if not self.running:
+                return
+            try:
+                if await self.__pending_here(topic, message_id):
+                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore[union-attr]
+                del self._unacked_gone[(topic, message_id)]
+            except Exception as e:
+                self.logger.warning("Could not acknowledge trimmed entry %s on %s: %s", message_id, topic, e)
         for topic, message_id in list(self._unhanded)[:_RECOVERY_BATCH]:
             if not self.running:
                 return
             key = (topic, message_id)
             try:
-                if self.__already_held(message_id, topic):
-                    del self._unhanded[key]
-                    continue
-                mine = await self.redis.xpending_range(  # type: ignore[union-attr]
-                    topic, self.config.group_id, min=message_id, max=message_id,
-                    count=1, consumername=self.consumer_name,
-                )
-                if not mine:
+                if self.__already_held(message_id, topic) or not await self.__pending_here(topic, message_id):
                     del self._unhanded[key]
                     continue
                 found = await self.redis.xrange(topic, min=message_id, max=message_id, count=1)  # type: ignore[union-attr]
@@ -1393,13 +1413,20 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore[union-attr]
                     del self._unhanded[key]
                     continue
+                del self._unhanded[key]
                 if self._scheduler is not None and not self.__buffer_has_room():
-                    # Kept for a pass with room; one with no body needs none.
+                    self._unhanded[key] = None
                     continue
-                self._unhanded.pop(key, None)
                 await self.__recover_entry(topic, message_id, found[0][1], owned=True)
             except Exception as e:
                 self.logger.warning("Could not retry pending entry %s on %s: %s", message_id, topic, e)
+
+    async def __pending_here(self, topic: str, message_id: str) -> bool:
+        mine = await self.redis.xpending_range(  # type: ignore[union-attr]
+            topic, self.config.group_id, min=message_id, max=message_id,
+            count=1, consumername=self.consumer_name,
+        )
+        return bool(mine)
 
     async def __autoclaim(
         self, topic: str, start_id: str, count: int
@@ -1662,13 +1689,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Whether no other consumer is listed in this consumer's group on
         any of its lanes (``XINFO CONSUMERS``).
 
-        Read-phase recovery runs only then. With other consumers -- live
-        replicas, or a crashed or replaced process still listed with pending
-        entries -- the group behaves as before this existed: taking entries
-        back and making room safely next to another consumer needs an atomic
-        ownership check, which is a separate design. A replaced process's
-        entries come back as they always have, through the startup and idle
-        drains, after which it is removed from the group.
+        Read-phase recovery makes room for an entry, by giving up a held one,
+        only then. A replaced process's entries come back through the read-time
+        reclaim and the drains, after which it is removed from the group.
         """
         for topic in topics:
             try:
@@ -1711,8 +1734,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
           entry from the lane it holds most from (``__release_for_room``).
           A full buffer of one connector can no longer lock the others out.
 
-        It never claims another consumer's entries, and it runs only while
-        this consumer is the only one in its group (``__only_consumer``).
+        It never claims another consumer's entries: each is reasserted with a
+        check-and-claim script that refuses one a peer took meanwhile. With
+        other consumers in the group it serves only while there is room; the
+        displacing branch runs only while this consumer is alone
+        (``__only_consumer``).
         An XPENDING summary per lane decides where to look; it is cheap and
         changes nothing.
         """
@@ -1727,8 +1753,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         topics = list(self.config.topics)
         if not topics:
             return
-        if not await self.__only_consumer(topics):
-            return
+        # Beside other consumers too: then this is the only path that brings
+        # back an entry this consumer owns but does not hold while traffic
+        # flows (the retry list is bounded). Only with room, though: making
+        # room by giving up a held entry is kept to a consumer on its own.
+        alone = await self.__only_consumer(topics)
         start = self._recovery_lane_offset % len(topics)
         self._recovery_lane_offset += 1
         topics = topics[start:] + topics[:start]
@@ -1752,13 +1781,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         if room > 0:
             lanes = [t for t in topics if t in unheld]
             limit = min(_RECOVERY_BATCH, room)
-        else:
+        elif alone:
             lanes = [
                 t
                 for t in topics
                 if t in unheld and held_by_stream.get(t, 0) + in_flight.get(t, 0) == 0
             ]
             limit = _RECOVERY_BATCH
+        else:
+            return
         if not lanes:
             return
 
@@ -1929,17 +1960,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """
         for message_id in candidates:
             try:
-                mine = await self.redis.xpending_range(  # type: ignore[union-attr]
-                    topic, self.config.group_id, min=message_id, max=message_id,
-                    count=1, consumername=self.consumer_name,
-                )
-                if mine:
+                if await self.__pending_here(topic, message_id):
                     await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore[union-attr]
             except Exception as e:
                 self.logger.warning(
                     "Could not acknowledge trimmed entry %s on %s: %s", message_id, topic, e
                 )
-                self.__remember_unhanded(topic, message_id)
+                self.__remember_unhanded(topic, message_id, gone=True)
 
     async def __remove_if_stopped(self, topic: str, name: str) -> None:
         """Remove a stopped consumer that holds nothing, checked and removed in
@@ -2113,33 +2140,31 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             cursor = f"({last_id}"
         return found
 
-    async def __reclaim_for_dispatch(self, topic: str, message_id: str) -> None:
-        """Reassert ownership of a PEL entry before dispatching it.
+    async def __reclaim_for_dispatch(self, topic: str, message_id: str) -> bool:
+        """Reassert ownership of a PEL entry before dispatching it; False if it
+        is no longer this consumer's (acknowledged, or claimed by a peer).
 
-        Phase 2 discovers entries with read-only XPENDING + XRANGE, so the
-        entry's idle timer is never reset by the scan itself. A peer's
-        XAUTOCLAIM (min_idle_time = ``claim_min_idle_ms``) can therefore steal
-        the entry between the scan and the dispatch. ``XCLAIM JUSTID`` with
-        ``min_idle_time=0`` resets the idle timer without inflating
-        ``times_delivered``, closing the window for the next
-        ``claim_min_idle_ms`` milliseconds.
+        Own-pending recovery discovers entries with read-only XPENDING + XRANGE,
+        so the entry's idle timer is never reset by the scan itself, and a
+        peer's XAUTOCLAIM can take it between the scan and the dispatch. The
+        check and the ``XCLAIM JUSTID`` (idle reset, no delivery counted) run
+        in one script (``_REASSERT_OWN_SCRIPT``), so a peer's claim is never
+        taken back -- which is what lets this recovery run beside other
+        consumers.
         """
         if self.redis is None:
-            return
+            return False
         try:
-            await self.redis.xclaim(  # type: ignore
-                topic,
-                self.config.group_id,
-                self.consumer_name,
-                min_idle_time=0,
-                message_ids=[message_id],
-                justid=True,
+            done = await self.redis.eval(  # type: ignore[union-attr]
+                _REASSERT_OWN_SCRIPT, 1, topic, self.config.group_id, self.consumer_name, message_id
             )
         except Exception as e:
             self.logger.debug(
                 "Could not reclaim %s on %s before dispatch: %s",
                 message_id, topic, e,
             )
+            return False
+        return int(done or 0) == 1
 
     async def __refresh_held_ownership(self) -> None:
         """Reset the idle timer on entries this consumer is holding.

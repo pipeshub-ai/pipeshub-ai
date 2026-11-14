@@ -370,7 +370,7 @@ class TestATrimmedEntryWhoseAcknowledgementFailed:
         consumer.redis.xack = flaky_xack
 
         await _look(consumer)
-        assert (LANE, trimmed) in consumer._unhanded
+        assert (LANE, trimmed) in consumer._unacked_gone
         await consumer.redis.xdel(LANE, trimmed)
         await _fill_with_new_events(consumer, BUFFER - consumer._scheduler.pending_count)
         consumer._last_unhanded_retry = 0.0
@@ -379,12 +379,13 @@ class TestATrimmedEntryWhoseAcknowledgementFailed:
 
         mine = [e["message_id"] for e in await _owned(consumer, consumer.consumer_name)]
         assert trimmed not in mine
-        assert (LANE, trimmed) not in consumer._unhanded
+        assert (LANE, trimmed) not in consumer._unacked_gone
 
 
 async def _untracked_under(consumer) -> set[str]:
     """Ids pending under this consumer that it neither holds nor remembers."""
-    tracked = {m for _t, m in consumer._unhanded} | {m for _s, m in consumer._held_entries}
+    remembered = {**consumer._unhanded, **consumer._unacked_gone}
+    tracked = {m for _t, m in remembered} | {m for _s, m in consumer._held_entries}
     return {e["message_id"] for e in await _owned(consumer, consumer.consumer_name)} - tracked
 
 
@@ -435,5 +436,56 @@ class TestTheRetryListNeverLosesAnEntry:
         await _look(consumer)
 
         consumer.redis.xpending_range = real_pending
-        assert len(consumer._unhanded) == 2
+        assert len(consumer._unhanded) + len(consumer._unacked_gone) == 2
         assert await _untracked_under(consumer) == set()
+
+
+class TestRetryOrder:
+    async def _remember_with_bodies(self, consumer, count: int) -> list[str]:
+        """Entries with a body, pending here, held by no one, and remembered;
+        beside a live peer, so read-time own-pending recovery stays off and
+        only the retry can bring them back."""
+        await consumer.redis.xreadgroup(GROUP, "live-peer", {LANE: ">"}, count=1)
+        for i in range(count):
+            await consumer.redis.xadd(LANE, _fields(f"waiting-{i}", f"conn-{i}"))
+        read = await consumer.redis.xreadgroup(GROUP, consumer.consumer_name, {LANE: ">"}, count=count)
+        ids = [message_id for _s, entries in read for message_id, _f in entries]
+        for message_id in ids:
+            consumer._IndexingRedisStreamsConsumer__remember_unhanded(LANE, message_id)
+        return ids
+
+    async def test_a_bodiless_id_is_acknowledged_behind_entries_waiting_for_room(self, consumer) -> None:
+        await self._remember_with_bodies(consumer, 10)
+        await consumer.redis.xadd(LANE, _fields("trimmed"))
+        read = await consumer.redis.xreadgroup(GROUP, consumer.consumer_name, {LANE: ">"})
+        trimmed = read[0][1][0][0]
+        await consumer.redis.xdel(LANE, trimmed)
+        consumer._IndexingRedisStreamsConsumer__remember_unhanded(LANE, trimmed, gone=True)
+        await _fill_with_new_events(consumer, BUFFER)
+        consumer._last_unhanded_retry = 0.0
+
+        await _read_pass(consumer)
+
+        mine = {e["message_id"] for e in await _owned(consumer, consumer.consumer_name)}
+        assert trimmed not in mine
+        assert len(consumer._unhanded) == 10
+        assert consumer._unacked_gone == {}
+
+    async def test_with_room_for_one_every_entry_is_offered_over_successive_passes(self, consumer) -> None:
+        ids = await self._remember_with_bodies(consumer, 12)
+        await _fill_with_new_events(consumer, BUFFER - 1)
+        offered: list[str] = []
+
+        for _ in range(24):
+            if len(set(offered)) == len(ids):
+                break
+            await consumer.redis.xreadgroup(GROUP, "live-peer", {LANE: ">"}, count=1)
+            consumer._last_unhanded_retry = 0.0
+            await _read_pass(consumer)
+            for stream, message_id in _empty_the_buffer(consumer):
+                if stream == LANE:
+                    offered.append(message_id)
+                    await consumer.redis.xack(LANE, GROUP, message_id)
+            await _fill_with_new_events(consumer, BUFFER - 1 - consumer._scheduler.pending_count)
+
+        assert sorted(offered) == sorted(ids)  # each once, none left behind

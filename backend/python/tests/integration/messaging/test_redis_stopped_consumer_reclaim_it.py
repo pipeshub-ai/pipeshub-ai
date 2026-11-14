@@ -769,3 +769,73 @@ class TestTheIdleDrainOnEveryRedisVersion:
             await _until(lambda: _nothing_pending(redis_client, lane, group), "an empty pending list", timeout=30)
         finally:
             await consumer.stop()
+
+
+class TestOwnEntriesBesideALivePeer:
+    async def test_one_left_untracked_with_the_retry_list_full_comes_back_once_the_error_clears(
+        self, redis_available, redis_client, base_stream, unique_suffix, monkeypatch
+    ) -> None:
+        """The retry list is full, another consumer is live, events keep
+        arriving, and the check before buffering this consumer's own unheld
+        entries fails for a while. Nothing remembers them, yet they must come
+        back: read-time own-pending recovery runs beside the peer, from the
+        pending list itself."""
+        from app.services.messaging.redis_streams import indexing_consumer as module
+
+        monkeypatch.setattr(module, "_UNHANDED_LIMIT", 1)
+        host, port = redis_available
+        group = f"it-own-{unique_suffix}"
+        topics = RedisLaneRouter(_LANES).lane_topics(base_stream)
+        await _create_groups(redis_client, topics, group)
+        lane = f"{base_stream}.0"
+        connector = _connector_on_lane(0, "own")
+        records = [f"own-{i}" for i in range(4)]
+        for record in records:
+            await redis_client.xadd(lane, _event(connector, record))
+
+        # A production-like claim window, so no drain claim brings them back.
+        config = RedisStreamsConfig(
+            host=host, port=port, client_id=f"{group}-client", group_id=group, topics=topics,
+            batch_size=10, block_ms=2000, claim_min_idle_ms=60_000,
+        )
+        fair = FairSchedulerConfig(
+            enabled=True, key_fields=("orgId", "connectorId"), max_buffered_messages=40,
+            max_per_entity_messages=40,
+        )
+        done: list[str] = []
+        owner = IndexingRedisStreamsConsumer(logging.getLogger("it-own"), config.model_copy(), fair_scheduler_config=fair)
+        peer = IndexingRedisStreamsConsumer(logging.getLogger("it-own-peer"), config.model_copy(), fair_scheduler_config=fair)
+        # Read by the owner, and never handed on: pending under it, unheld.
+        await redis_client.xreadgroup(group, owner.consumer_name, {lane: ">"})
+        owner._unhanded = {(lane, "0-1"): None}
+        broken = {"on": True}
+        real_check = owner._should_dead_letter
+
+        async def check(topic, message_id, *args, **kwargs):  # noqa: ANN202
+            if broken["on"] and topic == lane:
+                raise ConnectionError("retry store unreachable")
+            return await real_check(topic, message_id, *args, **kwargs)
+
+        owner._should_dead_letter = check
+        await peer.start(_handler(done, seconds=0.0))
+        await owner.start(_handler(done, seconds=0.0))
+        stop = asyncio.Event()
+
+        async def keep_arriving() -> None:
+            n = 0
+            while not stop.is_set():
+                await redis_client.xadd(f"{base_stream}.1", _event("fresh", f"new-{n}"))
+                n += 1
+                await asyncio.sleep(0.3)
+
+        trickle = asyncio.create_task(keep_arriving())
+        try:
+            await asyncio.sleep(3)
+            assert not set(records) & set(done)
+            broken["on"] = False
+            await _until(lambda: _done(done, records), "the owner's own entries", timeout=20)
+        finally:
+            stop.set()
+            await trickle
+            await owner.stop()
+            await peer.stop()
