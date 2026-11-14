@@ -26,6 +26,7 @@ from google_behaviour_fakes import (
 )
 from googleapiclient.errors import HttpError
 
+from app.connectors.core.base.connector.connector_service import IncompleteSyncError
 from app.connectors.sources.google.common.connector_google_exceptions import (
     DriveSyncIncomplete,
     GoogleDriveError,
@@ -1346,6 +1347,67 @@ async def test_a_selected_folders_parent_shared_later_is_linked_on_the_next_sync
     parent = ws.records.records.get("bob-parent")
     assert parent is not None and not parent.is_placeholder and parent.record_name == "Bob's projects"
     assert ws.records.records["pick"].parent_external_record_id == "bob-parent"
+
+
+async def test_a_full_sync_that_cannot_read_a_selected_folders_parent_keeps_it_and_the_path(ws: Workspace) -> None:
+    ws.world.folder("bob-parent", "Bob's projects", parent="root-bob", owner=BOB)
+    ws.world.folder("pick", "Picked", parent="bob-parent", owner=BOB)
+    ws.world.add_item("deep", "deep.txt", parent="pick", owner=BOB)
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await ws.sync()
+    assert not ws.records.records["bob-parent"].is_placeholder, "the sweep made the parent a real record"
+
+    # A full sync from no sync points: the listing leaves the parent out (it is outside the filter), and the
+    # sweep cannot read it again.
+    ws.sync_points.sync_points.clear()
+    ws.http.fail("GET", "/drive/v3/files/bob-parent", 500, "backendError")
+    await ws.sync()
+
+    assert "bob-parent" in ws.records.records, "kept as stored, not removed as gone"
+    assert ws.records.records["pick"].parent_external_record_id == "bob-parent"
+    assert {"Picked", "deep.txt"} <= ws.names()
+
+
+async def test_a_selected_folders_parent_one_member_cannot_read_is_written_again_by_one_who_can(ws: Workspace) -> None:
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "organizer"})
+    ws.world.folder("team-parent", "Projects", parent="sd-1")
+    ws.world.folder("pick", "Picked", parent="team-parent")
+    ws.world.add_item("deep", "deep.txt", parent="pick")
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await ws.sync()
+    assert not ws.records.records["team-parent"].is_placeholder
+
+    ws.world.files["team-parent"].perms.append(reader(carol))
+    # A full sync from no sync points; Alice's sweep (the first) cannot read the parent, Bob's can.
+    ws.sync_points.sync_points.clear()
+    ws.http.fail("GET", "/drive/v3/files/team-parent", 404, "notFound", when=lambda r: r.identity == ALICE)
+    await ws.sync()
+
+    assert (carol, "USER", "READ") in ws.grants("team-parent"), "written again by the member who can read it"
+    assert ws.records.records["pick"].parent_external_record_id == "team-parent"
+
+
+async def test_an_ancestor_above_one_already_written_is_still_read_by_a_member_who_can(ws: Workspace) -> None:
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "organizer"})
+    ws.world.folder("top", "Top", parent="sd-1")
+    ws.world.folder("middle", "Middle", parent="top")
+    ws.world.folder("pick", "Picked", parent="middle")
+    ws.world.add_item("deep", "deep.txt", parent="pick")
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await ws.sync()
+    assert not ws.records.records["top"].is_placeholder
+
+    ws.world.files["top"].perms.append(reader(carol))
+    # Alice's sweep writes Middle but cannot read Top; Bob's starts below Middle, which is already seen.
+    ws.sync_points.sync_points.clear()
+    ws.http.fail("GET", "/drive/v3/files/top", 404, "notFound", when=lambda r: r.identity == ALICE)
+    await ws.sync()
+
+    assert (carol, "USER", "READ") in ws.grants("top"), "Bob's sweep reads Top again"
 
 
 async def test_a_selected_shortcut_syncs_the_folder_it_points_to(ws: Workspace) -> None:
@@ -4406,6 +4468,67 @@ async def test_a_runner_full_sync_keeps_an_audience_file_no_listing_shows_linked
     unlinked = await _runner_full_sync(ws, delete_sync_points=True)
     assert ws.records.records["g1"].id not in unlinked
     assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+
+
+async def _runner_full_sync_with_failures(ws: Workspace) -> set[str]:
+    """A full sync the runner starts from no sync points, ended as the runner ends it: a run that returns, or fails
+    with IncompleteSyncError, has what it did not see unlinked when its coverage is complete; any other failure
+    unlinks nothing. Returns the records it unlinked."""
+    ws.sync_points.sync_points.clear()
+    ws.records.begin_full_sync_run(CONNECTOR_ID)
+    connector = await ws.connector_()
+    try:
+        await connector.run_sync()
+        ws.incomplete = False
+    except IncompleteSyncError:
+        ws.incomplete = True
+    except DriveSyncIncomplete:
+        ws.incomplete = True
+        ws.records.full_sync_seen = None
+        return set()
+    if not connector.full_sync_coverage().complete:
+        ws.records.full_sync_seen = None
+        return set()
+    return ws.records.unlink_missed_by_full_sync()
+
+
+async def test_a_full_sync_with_one_unreadable_item_still_unlinks_what_is_gone(ws: Workspace) -> None:
+    ws.world.add_item("a1", "good.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    ws.world.add_item("a2", "bad.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    ws.world.add_item("a3", "gone.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    await ws.sync()
+    assert (BOB, "USER", "READ") in ws.grants("a3")
+    ws.world.delete("a3")
+    ws.world.files["a2"].meta["modifiedTime"] = "garbage"
+
+    unlinked = await _runner_full_sync_with_failures(ws)
+
+    assert ws.incomplete, "the item it could not read is reported and read again"
+    assert ws.records.records["a3"].id in unlinked, "a file no listing shows any more loses its grants"
+    assert ws.grants("a3") == set()
+    assert ws.records.records["a2"].id not in unlinked, "the unreadable item keeps its stored grants"
+    assert (BOB, "USER", "READ") in ws.grants("a2")
+
+
+async def test_a_full_sync_whose_failed_item_cannot_be_looked_up_unlinks_nothing(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws.world.add_item("a2", "bad.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    ws.world.add_item("a3", "gone.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    await ws.sync()
+    ws.world.delete("a3")
+    ws.world.files["a2"].meta["modifiedTime"] = "garbage"
+    lookup = ws.records.get_record_by_external_id
+
+    async def a2_lookup_fails(connector_id: str, external_record_id: str, **kwargs: object) -> object:
+        if external_record_id == "a2" and kwargs.get("raise_on_error"):
+            raise RuntimeError("database unavailable")
+        return await lookup(connector_id, external_record_id, **kwargs)
+
+    monkeypatch.setattr(ws.records, "get_record_by_external_id", a2_lookup_fails)
+
+    assert await _runner_full_sync_with_failures(ws) == set()
+    assert (BOB, "USER", "READ") in ws.grants("a3"), "which records to keep is unknown, so nothing is unlinked"
 
 
 async def test_a_runner_full_sync_keeps_a_file_on_an_undecided_list_linked(ws: Workspace) -> None:

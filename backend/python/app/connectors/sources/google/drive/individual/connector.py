@@ -63,7 +63,6 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.google.common.apps import GoogleDriveApp
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.google.common.connector_google_exceptions import (
-    DriveSyncIncomplete,
     GoogleDriveError,
 )
 from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS, hold_again, released
@@ -96,6 +95,8 @@ from app.connectors.sources.google.drive.utils.drive_filters import (
 from app.connectors.sources.google.drive.utils.drive_full_sync_reconciler import (
     FullSyncLedger,
     delete_shared_drive_records,
+    incomplete_run_error,
+    keep_failed_items_linked,
     reconcile_unseen_records,
 )
 from app.connectors.sources.google.drive.utils.drive_mime import (
@@ -135,6 +136,7 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     is_retryable_403,
     is_unrecognised_403,
     pass_folder_filter,
+    settle_ancestor_level,
     adopt_shortcut_seed_target,
     probe_can_list_children,
     seeds_with_new_parent,
@@ -630,7 +632,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
         except Exception as ex:
             self.logger.error(f"Error processing Google Drive file {metadata.get('id', 'unknown')}: {ex}", exc_info=True)
-            self._sync_ledger.fail_item()
+            self._sync_ledger.fail_item(metadata.get("id"))
             return None
 
     async def _content_changed(self, existing: Record, metadata: dict, source: GoogleDriveDataSource) -> bool:
@@ -1017,43 +1019,29 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 record.is_placeholder = False
                 backfills.append((record, permissions))
 
-            for stub in frontier:
-                if stub.external_record_id in metadata_by_id or not stub.is_placeholder:
-                    continue
-                # Source fetch failed (inaccessible/deleted). Re-submit the persisted
-                # stub anyway so its structural edges — record group (BELONGS_TO) and
-                # parent (PARENT_CHILD) — which a full sync deletes are still restored.
-                # Keeps it a stub; access fails closed (inherits the record group's perms).
-                stub.is_placeholder = True
-                backfills.append((stub, []))
-
             if backfills:
                 # Creates/updates the ancestors and, via _handle_parent_record, materializes
                 # the next level's parent stubs so we can pick them up below.
                 await self.data_entities_processor.on_new_records(backfills)
 
-            next_frontier: List[Record] = []
-            for record, _permissions in backfills:
-                parent_ext_id = record.parent_external_record_id
-                if not parent_ext_id or not record.parent_record_type:
-                    continue  # boundary: drive root
-                if parent_ext_id in visited:
-                    continue
-                visited.add(parent_ext_id)
-                parent_record = await self.data_entities_processor.get_record_by_external_id(
-                    self.connector_id, parent_ext_id
-                )
-                if parent_record is None:
-                    continue  # stub should exist after on_new_records; skip defensively
-                if not needs_backfill(parent_record):
-                    continue  # boundary: parent already synced this run — nothing to backfill
-                next_frontier.append(parent_record)
+            next_frontier = await settle_ancestor_level(
+                self.data_entities_processor, self.connector_id, frontier,
+                [record for record, _ in backfills], visited, needs_backfill, self._sync_ledger.keep_ancestor,
+            )
 
             total += len(frontier)
             if total > PLACEHOLDER_SWEEP_SAFETY_MAX:
                 self.logger.error(
                     f"Placeholder sweep exceeded safety bound ({PLACEHOLDER_SWEEP_SAFETY_MAX}); aborting"
                 )
+                # Touched but not read: kept as stored. The ancestors above them were not even reached, so the run
+                # is incomplete: neither a full sync's unlink nor its cleanup may take what it did not see for gone.
+                self.data_entities_processor.note_kept_records(
+                    self.connector_id, [record.id for record in next_frontier if record.id]
+                )
+                for record in next_frontier:
+                    self._sync_ledger.keep_ancestor(record.external_record_id)
+                self._sync_ledger.note_incomplete()
                 break
             frontier = next_frontier
 
@@ -1243,8 +1231,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
             hold = hold_again(stored_point) if self._sync_ledger.item_failures > failures_before else None
             if walk.incomplete or hold is not None:
                 # Files a partial listing left out are not changes, so the changes feed
-                # would never return them; only another full listing can. A failed item too.
-                self._sync_ledger.note_incomplete()
+                # would never return them; only another full listing can. A failed item too;
+                # the ledger already names it.
+                if walk.incomplete:
+                    self._sync_ledger.note_incomplete()
                 if holds.changes() or hold:
                     await self.drive_delta_sync_point.update_sync_point(
                         sync_point_key, {**holds.changes(), **(hold or {})}
@@ -2138,7 +2128,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
         stored_point = await self.drive_delta_sync_point.read_sync_point(sync_key)
         hold = hold_again(stored_point) if self._sync_ledger.item_failures > failures_before else None
         if walk.incomplete or hold is not None:
-            self._sync_ledger.note_incomplete()
+            if walk.incomplete:  # a failed item is already in the ledger by id
+                self._sync_ledger.note_incomplete()
             if hold:
                 await self.drive_delta_sync_point.update_sync_point(sync_key, hold)
             self.logger.warning(
@@ -2282,6 +2273,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
                                 sync_point=self.drive_delta_sync_point, logger=self.logger)
         try:
             await self._run_sync_steps()
+            await keep_failed_items_linked(
+                self.data_entities_processor, self.connector_id, self._sync_ledger, self.logger
+            )
         except Exception as e:
             report.note_failure(e)
             report.note_unreadable_folders(sorted(self._blocked_folder_ids | self._unseen_folder_ids))
@@ -2291,13 +2285,12 @@ class GoogleDriveIndividualConnector(BaseConnector):
         complete = not self._sync_ledger.has_gaps
         await report.finish(complete=complete)
         if not complete:
-            raise DriveSyncIncomplete(
-                "Part of Google Drive could not be read in this run; it is read again on the next run"
-            )
+            raise incomplete_run_error(self._sync_ledger)
 
     def full_sync_coverage(self) -> FullSyncCoverage:
-        """A run that left part of Drive unread must not have the links of what it did not see removed."""
-        return FullSyncCoverage(complete=not self._sync_ledger.has_gaps)
+        """A run that left part of Drive unread must not have the links of what it did not see removed. Items it
+        failed to read are kept as stored instead (keep_failed_items_linked)."""
+        return FullSyncCoverage(complete=self._sync_ledger.unlink_safe)
 
     async def _run_sync_steps(self) -> None:
 
@@ -2379,6 +2372,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             # Files under a folder this user cannot list fail the folder filter
             # without being seen, so cleanup would read them as deleted.
             self._sync_ledger.note_incomplete()
+        self._sync_ledger.see_kept_ancestors()
         await reconcile_unseen_records(
             self.data_entities_processor,
             self.connector_id,
