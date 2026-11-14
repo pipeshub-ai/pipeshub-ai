@@ -3640,6 +3640,7 @@
         "titleFor": "你的 Notion 访问：{{connector}}",
         "intro": "Notion 不会说明谁可以打开某个页面，因此 PipesHub 会向你显示你自己的 Notion 个人访问令牌可以打开的页面。",
         "guide": "如何创建个人访问令牌",
+        "limits": "Notion 访客和受限成员无法创建令牌，工作区管理员可以限制谁能创建，并且令牌会过期（除非你选择了其他期限，否则为一年后）。",
         "loadError": "无法加载你的 Notion 访问。",
         "tokenLabel": "Notion 个人访问令牌",
         "link": "关联",

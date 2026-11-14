@@ -3640,6 +3640,7 @@
         "titleFor": "내 Notion 접근: {{connector}}",
         "intro": "Notion은 누가 페이지를 열 수 있는지 알려 주지 않으므로, PipesHub는 내 Notion 개인 액세스 토큰으로 열 수 있는 페이지를 보여 줍니다.",
         "guide": "개인 액세스 토큰 만드는 방법",
+        "limits": "Notion 게스트와 제한된 멤버는 만들 수 없고, 워크스페이스 관리자가 만들 수 있는 사람을 제한할 수 있으며, 토큰은 만료됩니다(다른 기간을 고르지 않았다면 1년 후).",
         "loadError": "Notion 접근 정보를 불러오지 못했습니다.",
         "tokenLabel": "Notion 개인 액세스 토큰",
         "link": "연결",

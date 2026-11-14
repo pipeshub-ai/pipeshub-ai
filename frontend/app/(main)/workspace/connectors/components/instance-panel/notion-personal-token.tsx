@@ -84,6 +84,8 @@ export function NotionPersonalToken({ connectorId, connectorName }: { connectorI
             {k('intro')}{' '}
             <Link href={GUIDE_URL} target="_blank" rel="noopener noreferrer">{k('guide')}</Link>
           </Text>
+          {/* developers.notion.com/guides/connections-and-tokens/personal-access-tokens */}
+          <Text size="2" style={{ color: 'var(--gray-11)' }}>{k('limits')}</Text>
 
           {own.isLoading ? (
             <Text size="2" role="status" style={{ color: 'var(--gray-11)' }}>{t('workspace.connectors.access.loading')}</Text>

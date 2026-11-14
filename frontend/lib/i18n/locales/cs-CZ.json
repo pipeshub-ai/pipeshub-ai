@@ -3764,6 +3764,7 @@
         "titleFor": "Váš přístup k Notion: {{connector}}",
         "intro": "Notion neuvádí, kdo smí stránku otevřít, proto vám PipesHub ukazuje stránky, které otevře váš vlastní osobní přístupový token Notion.",
         "guide": "Jak vytvořit osobní přístupový token",
+        "limits": "Hosté a omezení členové v Notionu si ho vytvořit nemohou, správci pracovního prostoru mohou omezit, kdo smí, a token vyprší (po roce, pokud nezvolíte jinou dobu).",
         "loadError": "Váš přístup k Notion se nepodařilo načíst.",
         "tokenLabel": "Osobní přístupový token Notion",
         "link": "Propojit",

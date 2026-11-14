@@ -3640,6 +3640,7 @@
         "titleFor": "你的 Notion 存取：{{connector}}",
         "intro": "Notion 不會說明誰可以開啟某個頁面，因此 PipesHub 會向你顯示你自己的 Notion 個人存取權杖可以開啟的頁面。",
         "guide": "如何建立個人存取權杖",
+        "limits": "Notion 訪客和受限成員無法建立權杖，工作區管理員可以限制誰能建立，而且權杖會過期（除非你選擇了其他期限，否則為一年後）。",
         "loadError": "無法載入你的 Notion 存取。",
         "tokenLabel": "Notion 個人存取權杖",
         "link": "連結",

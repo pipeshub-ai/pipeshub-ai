@@ -32,6 +32,11 @@ def token_path(connector_id: str, user_id: str) -> str:
     return f"{tokens_dir(connector_id)}{user_id}"
 
 
+def confirmed_path(connector_id: str, user_id: str) -> str:
+    """The pages and data sources the user's token was last confirmed to open (id -> when)."""
+    return f"{token_path(connector_id, user_id)}/confirmed"
+
+
 def content_state_path(connector_id: str) -> str:
     """Whether the connector's content was indexed again without other pages' titles. In the
     configuration store, not a sync point: a full sync forgets its sync points."""
@@ -49,8 +54,9 @@ async def link_token(config_service: ConfigurationService, connector_id: str, us
 
 
 async def unlink_token(config_service: ConfigurationService, connector_id: str, user_id: str) -> bool:
-    """True once the entry is gone; False when the store kept it."""
-    return await delete_config_confirmed(config_service, token_path(connector_id, user_id))
+    """True once the entry and what its token confirmed are gone; False when the store kept either."""
+    confirmed = await delete_config_confirmed(config_service, confirmed_path(connector_id, user_id))
+    return await delete_config_confirmed(config_service, token_path(connector_id, user_id)) and confirmed
 
 
 async def unlink_all(config_service: ConfigurationService, connector_id: str) -> bool:
@@ -71,6 +77,7 @@ async def mark_failed(config_service: ConfigurationService, connector_id: str, u
     current = await config_service.get_config(path, use_cache=False, keep_in_cache=False, raise_on_error=True)
     if not isinstance(current, dict) or current.get("token") != token:
         return False
+    await delete_config_confirmed(config_service, confirmed_path(connector_id, user_id))
     return await config_service.set_config(
         path, {"status": FAILED, "reason": reason, "updatedAt": get_epoch_timestamp_in_ms()}, keep_in_cache=False,
     )

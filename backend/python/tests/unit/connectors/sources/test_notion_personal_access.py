@@ -1,5 +1,5 @@
-"""Notion team connector: who may open each page, from the personal access tokens users link and from
-pages published to the web; never from workspace membership alone."""
+"""Notion team connector: who may open each page, from the personal access tokens users link, confirmed
+page by page with each person's own token; never from workspace membership or publishing alone."""
 
 import contextlib
 from collections.abc import AsyncIterator
@@ -82,18 +82,47 @@ def _connector(token_datasource: MagicMock | None = None) -> NotionConnector:
         side_effect=lambda uid, **_: User(email=ALICE, user_id=uid, org_id="org-1", is_active=True) if uid == "u-alice" else None
     )
     conn.data_entities_processor.on_updated_record_permissions = AsyncMock()
+    conn.data_entities_processor.full_sync_running = MagicMock(return_value=False)
     # Content already indexed without other pages' titles: the one-time reindex is done.
     conn.config_service.values[personal_tokens.content_state_path(conn.connector_id)] = {"done": True}
     if token_datasource is not None:
-        conn._visible_with_token = lambda token, email: conn._visible_with_client(token_datasource, email)
+        _TOKEN_DS.append(token_datasource)
     return conn
 
 
-def _datasource(bot: MagicMock, pages: MagicMock, sources: MagicMock | None = None) -> MagicMock:
+# The datasource a personal access token's client gets, as each test sets it.
+_TOKEN_DS: list[MagicMock] = []
+
+
+@pytest.fixture(autouse=True)
+def _token_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.connectors.sources.notion.connector as module
+
+    _TOKEN_DS.clear()
+    real = module.NotionDataSource
+    monkeypatch.setattr(module, "NotionTokenConfig", lambda **_: MagicMock(create_client=lambda: MagicMock(close=AsyncMock())))
+    monkeypatch.setattr(module, "NotionDataSource", lambda client: _TOKEN_DS[-1] if _TOKEN_DS else real(client))
+
+
+def _object(object_id: str) -> MagicMock:
+    return _make_api_response(data={"object": "page", "id": object_id})
+
+
+def _datasource(bot: MagicMock, pages: MagicMock, sources: MagicMock | None = None,
+                opens: set[str] | None = None) -> MagicMock:
+    """A token's view: what its search lists, and (``opens``, default everything) what retrieving opens."""
     ds = MagicMock()
     ds.retrieve_bot_user = AsyncMock(return_value=bot)
     ds.search = AsyncMock(side_effect=lambda request_body: {
         "page": pages, "data_source": sources or _search()}[request_body["filter"]["value"]])
+
+    def retrieve(object_id: str, **_: object) -> MagicMock:
+        if opens is None or object_id in opens:
+            return _object(object_id)
+        return _make_api_response(success=False, status=404)
+
+    ds.retrieve_page = AsyncMock(side_effect=retrieve)
+    ds.retrieve_data_source_by_id = AsyncMock(side_effect=retrieve)
     return ds
 
 
@@ -104,7 +133,7 @@ async def _link(conn: NotionConnector, user_id: str = "u-alice", token: str = "n
 # ---- what a token proves ----------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_a_linked_token_grants_exactly_what_its_search_lists() -> None:
+async def test_a_linked_token_grants_what_its_search_lists_and_retrieving_confirms() -> None:
     conn = _connector(_datasource(_bot(), _search("p1", "p2", trashed=("p2",)), _search("ds1")))
     await _link(conn)
     await conn._load_personal_access()
@@ -116,6 +145,7 @@ async def test_a_linked_token_grants_exactly_what_its_search_lists() -> None:
     (_bot(owner_id="notion-bob"), "not yours"),
     (_bot(workspace="ws-other"), "another Notion workspace"),
     (_make_api_response(success=False, status=401), "no longer accepts"),
+    (_make_api_response(success=False, status=403), "Notion API access"),
 ])
 async def test_a_token_that_is_not_the_users_own_or_is_refused_grants_nothing_and_is_dropped(bot: MagicMock, reason: str) -> None:
     conn = _connector(_datasource(bot, _search("p1")))
@@ -192,13 +222,13 @@ async def test_what_this_sync_does_not_know_keeps_the_token_and_grants_nothing(c
 async def test_a_token_relinked_while_the_sync_checked_the_old_one_is_kept() -> None:
     conn = _connector(_datasource(_bot(owner_id="notion-bob"), _search("p1")))
     await _link(conn, token="ntn_pat_old")
-    real = conn._visible_with_token
+    real = conn._confirmed_with_token
 
-    async def relink_then_check(token: str, email: str) -> set[str]:
+    async def relink_then_check(token: str, email: str, user_id: str) -> set[str]:
         await _link(conn, token="ntn_pat_new")
-        return await real(token, email)
+        return await real(token, email, user_id)
 
-    conn._visible_with_token = relink_then_check
+    conn._confirmed_with_token = relink_then_check
     await conn._load_personal_access()
     entry = conn.config_service.values[personal_tokens.token_path(conn.connector_id, "u-alice")]
     assert entry["status"] == personal_tokens.LINKED and entry["token"] == "ntn_pat_new"
@@ -242,16 +272,6 @@ async def test_a_subpage_the_token_does_not_list_gets_no_reader_from_its_parent(
     conn._readers = {"parent": {ALICE}}
     got = await _applied(conn, _record("parent"), _record("child", parent="parent", parent_type=RecordType.WEBPAGE))
     assert got == {"parent": [ALICE], "child": []}
-
-
-@pytest.mark.asyncio
-async def test_a_published_page_goes_to_every_listed_member_and_only_once_the_listing_is_read() -> None:
-    conn = _connector()
-    conn._member_emails = {ALICE, "bob@example.com"}
-    assert await _applied(conn, _record("pub")) == {"pub": []}, "no listing read this sync: nothing is proven"
-    conn._published = {"pub"}
-    conn.data_entities_processor.on_updated_record_permissions.reset_mock()
-    assert await _applied(conn, _record("pub"), _record("other")) == {"pub": [ALICE, "bob@example.com"], "other": []}
 
 
 @pytest.mark.asyncio
@@ -454,7 +474,7 @@ async def test_a_record_indexed_before_is_granted_only_once_its_new_index_is_con
     async def sync() -> dict[str, list[str]]:
         conn.data_entities_processor.get_records_by_record_type = AsyncMock(
             side_effect=lambda _c, t: list(records) if t == RecordType.WEBPAGE else [])
-        conn._withheld = None  # as each sync starts
+        conn._withheld, conn._access_written = None, None  # as each sync starts; every grant written
         with patch("app.connectors.sources.notion.connector.get_epoch_timestamp_in_ms", return_value=clock["now"]):
             await conn._reindex_without_linked_content()
         conn.data_entities_processor.on_updated_record_permissions.reset_mock()
@@ -508,3 +528,101 @@ async def test_until_the_reindex_step_has_run_nobody_is_granted() -> None:
     conn._readers = {"a": {ALICE}}
     conn._withheld = None
     assert await _applied(conn, _record("a")) == {"a": []}
+
+
+
+# ---- search proposes, retrieving decides ---------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_page_search_still_lists_but_the_token_cannot_open_is_not_granted() -> None:
+    """Notion's search index lags a revocation; retrieving the page with the person's token does not."""
+    conn = _connector(_datasource(_bot(), _search("p1", "p2"), _search("ds1"), opens={"p1"}))
+    await _link(conn)
+    await conn._load_personal_access()
+    assert conn._readers == {"p1": {ALICE}}
+
+
+@pytest.mark.asyncio
+async def test_a_search_answering_403_drops_the_token() -> None:
+    conn = _connector(_datasource(_bot(), _make_api_response(success=False, status=403)))
+    await _link(conn)
+    await conn._load_personal_access()
+    entry = conn.config_service.values[personal_tokens.token_path(conn.connector_id, "u-alice")]
+    assert entry["status"] == personal_tokens.FAILED and "Notion API access" in entry["reason"]
+
+
+@pytest.mark.asyncio
+async def test_kept_grants_are_rechecked_oldest_first_and_all_of_them_in_a_full_sync() -> None:
+    conn = _connector(_datasource(_bot(), _search("p1", "p2", "p3"), opens={"p1", "p2"}))
+    conn._RECONFIRM_PER_SYNC = 1
+    await _link(conn)
+    path = personal_tokens.confirmed_path(conn.connector_id, "u-alice")
+    # p3 was confirmed earliest and has been revoked since; search still lists it.
+    conn.config_service.values[path] = {"p3": 1, "p2": 2, "p1": 3}
+    await conn._load_personal_access()
+    assert set(conn._readers) == {"p1", "p2"}, "the oldest kept grant is checked first"
+
+    conn.config_service.values[path] = {"p1": 1, "p2": 2, "p3": 3}
+    conn._readers = {}
+    await conn._load_personal_access()
+    assert "p3" in conn._readers, "shortcut: a kept grant not re-checked this sync stays until its turn"
+
+    conn._readers = {}
+    conn.data_entities_processor.full_sync_running = MagicMock(return_value=True)
+    await conn._load_personal_access()
+    assert set(conn._readers) == {"p1", "p2"}, "a full sync re-checks every kept grant"
+
+
+@pytest.mark.asyncio
+async def test_new_pages_beyond_the_per_sync_budget_wait_for_a_later_sync() -> None:
+    conn = _connector(_datasource(_bot(), _search("p1", "p2", "p3")))
+    conn._CONFIRM_NEW_PER_SYNC = 2
+    await _link(conn)
+    await conn._load_personal_access()
+    assert len(conn._readers) == 2
+    conn._readers = {}
+    await conn._load_personal_access()
+    assert set(conn._readers) == {"p1", "p2", "p3"}
+
+
+@pytest.mark.asyncio
+async def test_a_grant_search_no_longer_lists_is_dropped_without_a_check() -> None:
+    ds = _datasource(_bot(), _search("p1"))
+    conn = _connector(ds)
+    await _link(conn)
+    path = personal_tokens.confirmed_path(conn.connector_id, "u-alice")
+    conn.config_service.values[path] = {"p1": 5, "gone": 5}
+    conn._RECONFIRM_PER_SYNC = 0
+    await conn._load_personal_access()
+    assert set(conn._readers) == {"p1"} and conn.config_service.values[path] == {"p1": 5}
+    ds.retrieve_page.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_removing_or_dropping_a_token_forgets_what_it_confirmed() -> None:
+    conn = _connector()
+    await _link(conn)
+    path = personal_tokens.confirmed_path(conn.connector_id, "u-alice")
+    conn.config_service.values[path] = {"p1": 1}
+    assert await personal_tokens.mark_failed(conn.config_service, conn.connector_id, "u-alice", "x", "ntn_pat_secret")
+    assert path not in conn.config_service.values
+    conn.config_service.values[path] = {"p1": 1}
+    assert await personal_tokens.unlink_token(conn.config_service, conn.connector_id, "u-alice")
+    assert path not in conn.config_service.values
+    assert personal_tokens.token_path(conn.connector_id, "u-alice") not in conn.config_service.values
+
+
+@pytest.mark.asyncio
+async def test_only_a_member_with_a_verified_email_can_own_a_linked_token() -> None:
+    conn = _make_connector()
+    people = [
+        {"id": "n1", "type": "person", "name": "A", "person": {"email": "a@example.com", "email_verified": True}},
+        {"id": "n2", "type": "person", "name": "B", "person": {"email": "b@example.com", "email_verified": False}},
+        {"id": "n3", "type": "person", "name": "C", "person": {"email": "c@example.com"}},
+    ]
+    ds = MagicMock()
+    ds.list_users = AsyncMock(return_value=_make_api_response(data={"results": people, "has_more": False, "next_cursor": None}))
+    conn._get_fresh_datasource = AsyncMock(return_value=ds)
+    conn._remove_departed_workspace_users = AsyncMock()
+    await conn._sync_users()
+    assert conn._member_ids == {"n1": "a@example.com"}

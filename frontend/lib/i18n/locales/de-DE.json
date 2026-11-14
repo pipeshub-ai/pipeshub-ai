@@ -3500,6 +3500,7 @@
         "titleFor": "Ihr Notion-Zugriff: {{connector}}",
         "intro": "Notion gibt nicht an, wer eine Seite öffnen darf. Deshalb zeigt PipesHub Ihnen die Seiten, die Ihr eigenes persönliches Notion-Zugriffstoken öffnen kann.",
         "guide": "So erstellen Sie ein persönliches Zugriffstoken",
+        "limits": "Gäste und eingeschränkte Mitglieder in Notion können keins erstellen, Workspace-Admins können festlegen, wer es darf, und ein Token läuft ab (nach einem Jahr, wenn du keine andere Dauer gewählt hast).",
         "loadError": "Ihr Notion-Zugriff konnte nicht geladen werden.",
         "tokenLabel": "Persönliches Notion-Zugriffstoken",
         "link": "Verknüpfen",

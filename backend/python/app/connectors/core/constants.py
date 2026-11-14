@@ -157,8 +157,9 @@ CONNECTOR_EMAIL_IDENTITY_INFO = (
 CONNECTOR_NOTION_TEAM_ACCESS_INFO = (
     "Important: Notion's integration API does not say who may open a page, so each person "
     "searches only the synced pages their own Notion personal access token can open: link "
-    "yours under \"Your Notion access\" on this connector. Without one you see only pages "
-    "published to the web. Use the Notion Personal connector to search the pages you share "
+    "yours under \"Your Notion access\" on this connector. Without one you see no Notion "
+    "pages. Notion guests and restricted members cannot create a token, admins can limit who "
+    "may, and a token expires. Use the Notion Personal connector to search the pages you share "
     "with it."
 )
 

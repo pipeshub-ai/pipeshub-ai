@@ -3535,6 +3535,7 @@
         "titleFor": "Tu acceso a Notion: {{connector}}",
         "intro": "Notion no indica quién puede abrir una página, así que PipesHub te muestra las páginas que puede abrir tu propio token de acceso personal de Notion.",
         "guide": "Cómo crear un token de acceso personal",
+        "limits": "Los invitados y los miembros restringidos de Notion no pueden crear uno, los administradores del espacio de trabajo pueden limitar quién puede hacerlo y el token caduca (al cabo de un año, salvo que elijas otro plazo).",
         "loadError": "No se pudo cargar tu acceso a Notion.",
         "tokenLabel": "Token de acceso personal de Notion",
         "link": "Vincular",

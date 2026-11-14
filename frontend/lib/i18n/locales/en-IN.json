@@ -3491,6 +3491,7 @@
         "titleFor": "Your Notion access: {{connector}}",
         "intro": "Notion does not say who may open a page, so PipesHub shows you the pages your own Notion personal access token can open.",
         "guide": "How to create a personal access token",
+        "limits": "Notion guests and restricted members can't create one, workspace admins can limit who may, and a token expires (after a year unless you chose another time).",
         "loadError": "We could not load your Notion access.",
         "tokenLabel": "Notion personal access token",
         "link": "Link",

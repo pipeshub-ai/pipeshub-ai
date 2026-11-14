@@ -359,6 +359,11 @@ class _DatabaseUnavailable(RuntimeError):
     """Notion could not answer for a database right now (429, 5xx, unusable payload)."""
 
 
+# A 403 restricted_resource: "The token lacks permission" (developers.notion.com/reference/status-codes),
+# as a token created without Notion API access is on every call: it will not work again.
+_TOKEN_CANNOT_READ = "The token cannot read Notion content: create one with Notion API access"
+
+
 class _TokenRejected(Exception):
     """A linked personal access token that will not work again: refused by Notion, or not the
     linking user's own token in this workspace. ``reason`` is shown to the user; it never holds
@@ -509,6 +514,13 @@ class NotionConnector(BaseConnector):
     # Pages and data sources carry their own readers: a grant on a page must not reach a subpage
     # Notion restricts. The personal connector instead lets everything inherit its one audience.
     _PER_PAGE_ACCESS = True
+    # Personal access token reads: one limiter for all of them, at the per-connection rate Notion
+    # documents for plans below Business ("180 requests per minute",
+    # developers.notion.com/reference/request-limits); the workspace limit is shared with the sync.
+    _TOKEN_REQUESTS_PER_SECOND = 3
+    # Pages and data sources each token confirms per sync: new ones, and kept ones re-checked.
+    _CONFIRM_NEW_PER_SYNC = 2000
+    _RECONFIRM_PER_SYNC = 200
 
     def __init__(
         self,
@@ -573,11 +585,12 @@ class NotionConnector(BaseConnector):
         # revision uses them instead of one comments call per block again.
         self._sync_comments: dict[str, tuple[str | None, dict[str, list[tuple[dict[str, Any], str]]]]] = {}
         # Who may open what this sync: page or data source id -> emails of PipesHub users whose
-        # linked personal access token lists it; the members /v1/users listed; and the ids whose
-        # own public_url is set (None until the reconcile listing reads them all).
+        # own linked personal access token confirmed it. Publishing grants nothing: Notion does not
+        # document whether web visitors see comments, or whether public_url clears when an admin
+        # turns publishing off (developers.notion.com/reference/page,
+        # notion.com/help/public-pages-and-web-publishing).
         self._readers: dict[str, set[str]] = {}
-        self._member_emails: set[str] = set()
-        self._published: set[str] | None = None
+        self._token_resilience: ResiliencePolicy | None = None
         # Notion user id -> email of each member /v1/users listed this sync: who owns a token.
         self._member_ids: dict[str, str] = {}
         # data source id -> the rows the integration's full page listing put under it this sync
@@ -873,7 +886,7 @@ class NotionConnector(BaseConnector):
             self.logger.info(f"🚀 Starting Notion sync for org: {org_id}")
             self._sync_incomplete = False
             self._failed_pages = set()
-            self._readers, self._published, self._listed_rows, self._withheld = {}, None, None, None
+            self._readers, self._listed_rows, self._withheld = {}, None, None
 
             datasource = await self._get_fresh_datasource()
             await self._assert_required_capabilities(datasource)
@@ -997,6 +1010,8 @@ class NotionConnector(BaseConnector):
                     continue
                 if personal and response and response.status_code == HTTPStatus.UNAUTHORIZED:
                     raise _TokenRejected("Notion no longer accepts the token")
+                if personal and response and response.status_code == HTTPStatus.FORBIDDEN:
+                    raise _TokenRejected(_TOKEN_CANNOT_READ)
                 self.logger.warning(
                     "Notion %s listing failed: %s", object_type, response.error if response else "No response"
                 )
@@ -1046,10 +1061,6 @@ class NotionConnector(BaseConnector):
                 obj_id: obj for obj_id, obj in listed.items()
                 if not (obj.get("archived") or obj.get("in_trash"))
             }
-            if object_type == "data_source":
-                self._published = {obj_id for obj_id, obj in live.items() if obj.get("public_url")}
-            elif self._published is not None:
-                self._published |= {obj_id for obj_id, obj in live.items() if obj.get("public_url")}
             if object_type == "page":
                 listed_rows: dict[str, set[str]] = defaultdict(set)
                 for obj_id, obj in live.items():
@@ -1116,20 +1127,28 @@ class NotionConnector(BaseConnector):
     async def _load_personal_access(self) -> None:
         """Fill ``_readers`` from every personal access token linked to this connector.
 
-        A user whose token cannot be read through this run gets nothing this run: their earlier
-        grants could cover a page they lost since. A token Notion refuses, or one that is not the
-        user's own, is dropped and the user is told.
+        Tokens are read one at a time through one limiter: Notion's request limit is per workspace,
+        "shared across all of the workspace's connections"
+        (developers.notion.com/reference/request-limits), the connector's own calls included.
+        A user whose token cannot be read through this run gets nothing this run. A token Notion
+        refuses, or one that is not the user's own, is dropped and the user is told.
         """
         linked = await personal_tokens.entries(self.config_service, self.connector_id)
-        outcomes = await gather_with_concurrency(_COMMENT_FETCH_CONCURRENCY, *[
-            self._read_personal_access(user_id, entry) for user_id, entry in linked.items()
-            if entry.get("status") == personal_tokens.LINKED and entry.get("token")
-        ], return_exceptions=True)
-        for outcome in outcomes:
-            if isinstance(outcome, BaseException):
+        if not linked:
+            return
+        self._token_resilience = ResiliencePolicy(
+            rate_limit=self._TOKEN_REQUESTS_PER_SECOND, max_retries=3, base_delay=1.0, max_delay=60.0,
+            name=f"{self.connector_name}-personal", logger=self.logger,
+        )
+        for user_id, entry in linked.items():
+            if entry.get("status") != personal_tokens.LINKED or not entry.get("token"):
+                continue
+            try:
+                await self._read_personal_access(user_id, entry)
+            except Exception as e:
                 self._sync_incomplete = True
                 self.logger.warning("Reading a linked Notion token failed (%s); that user gets nothing this sync",
-                                    type(outcome).__name__)
+                                    type(e).__name__)
 
     async def _read_personal_access(self, user_id: str, entry: dict[str, Any]) -> None:
         user = await self.data_entities_processor.get_user_by_user_id(user_id, raise_on_error=True)
@@ -1139,7 +1158,7 @@ class NotionConnector(BaseConnector):
             return
         token = entry["token"]
         try:
-            seen = await self._visible_with_token(token, user.email)
+            readable = await self._confirmed_with_token(token, user.email, user_id)
         except _TokenRejected as rejected:
             if not await personal_tokens.mark_failed(self.config_service, self.connector_id, user_id, rejected.reason, token):
                 return  # replaced by a new token while this sync ran
@@ -1160,26 +1179,67 @@ class NotionConnector(BaseConnector):
             )
             return
         email = user.email.lower()
-        for object_id in seen:
+        for object_id in readable:
             self._readers.setdefault(object_id, set()).add(email)
 
-    async def _visible_with_token(self, token: str, email: str) -> set[str]:
-        """The ids of the pages and data sources Notion lists to ``token``, which must be ``email``'s own
-        token in this connector's workspace."""
-        # Its own limiter: Notion rate-limits each token apart from the connector's.
-        resilience = ResiliencePolicy.from_config(
-            self.connector_metadata.get("resilienceConfig"), name=f"{self.connector_name}-personal", logger=self.logger,
-        )
-        client = NotionTokenConfig(token=token, resilience=resilience).create_client()
+    async def _confirmed_with_token(self, token: str, email: str, user_id: str) -> set[str]:
+        """What ``user_id`` may open now, by their own token, which must be ``email``'s own in this workspace.
+
+        Search only proposes: Notion's index "takes time to reflect changes" and "can't provide a
+        complete inventory" (developers.notion.com/reference/search-optimizations-and-limitations),
+        so a page whose access was revoked can stay listed. A page or data source counts only once
+        retrieving it with this token succeeded (a 404 or 403 is no access:
+        developers.notion.com/reference/status-codes). Each sync confirms new ones (up to
+        ``_CONFIRM_NEW_PER_SYNC``) and re-confirms the longest-unchecked kept ones (up to
+        ``_RECONFIRM_PER_SYNC``; all of them in a full sync); anything else listed is withheld.
+        shortcut: a grant revoked while search still lists it stays until its re-check comes round
+        (a full sync, or ``_RECONFIRM_PER_SYNC`` per sync); shorten the cycle if that window matters.
+        """
+        client = NotionTokenConfig(token=token, resilience=self._token_resilience).create_client()
         try:
-            return await self._visible_with_client(NotionDataSource(NotionClient(client)), email)
+            datasource = NotionDataSource(NotionClient(client))
+            listed = await self._listed_with_client(datasource, email)
+            path = personal_tokens.confirmed_path(self.connector_id, user_id)
+            stored = await self.config_service.get_config(path, use_cache=False, keep_in_cache=False, raise_on_error=True)
+            confirmed = {i: t for i, t in (stored or {}).items() if i in listed}
+            new = [i for i in listed if i not in confirmed][: self._CONFIRM_NEW_PER_SYNC]
+            kept = sorted(confirmed, key=confirmed.__getitem__)
+            if not self.data_entities_processor.full_sync_running(self.connector_id):
+                kept = kept[: self._RECONFIRM_PER_SYNC]
+            now = get_epoch_timestamp_in_ms()
+            for object_id in (*new, *kept):
+                if await self._opens(datasource, object_id, listed[object_id]):
+                    confirmed[object_id] = now
+                else:
+                    confirmed.pop(object_id, None)
+            if not await self.config_service.set_config(path, confirmed, keep_in_cache=False):
+                raise RuntimeError("the configuration store did not keep the confirmed pages")
+            return set(confirmed)
         finally:
             await client.close()
 
-    async def _visible_with_client(self, datasource: NotionDataSource, email: str) -> set[str]:
-        response = await datasource.retrieve_bot_user()
-        if response is not None and response.status_code == HTTPStatus.UNAUTHORIZED:
+    async def _opens(self, datasource: NotionDataSource, object_id: str, object_type: str) -> bool:
+        """Whether the token's person may open the page or data source now; False unless Notion says so."""
+        if object_type == "data_source":
+            response = await datasource.retrieve_data_source_by_id(object_id)
+        else:
+            response = await datasource.retrieve_page(object_id)
+        status = getattr(response, "status_code", None)
+        if status == HTTPStatus.UNAUTHORIZED:
             raise _TokenRejected("Notion no longer accepts the token")
+        if not response or not response.success or not response.data:
+            return False
+        body = response.data.json() or {}
+        return not (body.get("in_trash") or body.get("archived"))
+
+    async def _listed_with_client(self, datasource: NotionDataSource, email: str) -> dict[str, str]:
+        """page or data source id -> its object type, for everything the token's search lists."""
+        response = await datasource.retrieve_bot_user()
+        status = getattr(response, "status_code", None)
+        if status == HTTPStatus.UNAUTHORIZED:
+            raise _TokenRejected("Notion no longer accepts the token")
+        if status == HTTPStatus.FORBIDDEN:
+            raise _TokenRejected(_TOKEN_CANNOT_READ)
         if not response or not response.success or not response.data:
             raise RuntimeError("Notion did not say whose token this is")
         bot = response.data.json() or {}
@@ -1189,21 +1249,22 @@ class NotionConnector(BaseConnector):
             raise RuntimeError("this sync does not know its Notion workspace")
         if details.get("workspace_id") != self.workspace_id:
             raise _TokenRejected("The token belongs to another Notion workspace")
-        # By the owner's id among the members /v1/users listed: /users/me shows the owner's email only
-        # with an email capability, and a creator who is no longer a member must not keep their reach.
+        # By the owner's id among the members /v1/users listed with a verified email: /users/me shows
+        # the owner's email only with an email capability (developers.notion.com/reference/get-self),
+        # and a creator who is no longer a member must not keep their reach.
         owner_email = self._member_ids.get(owner.get("id") or "")
         if not owner_email:
-            raise RuntimeError("the token's owner is not among the members this sync listed")
+            raise RuntimeError("the token's owner is not among the members this sync listed with a verified email")
         if owner_email != email.lower():
             # A token lent by someone else would show their pages to this user.
             raise _TokenRejected("The token is not yours: it belongs to another Notion member")
-        seen: set[str] = set()
+        listed: dict[str, str] = {}
         for object_type in ("data_source", "page"):
-            listed = await self._list_visible_objects(object_type, datasource)
-            if listed is None:
+            found = await self._list_visible_objects(object_type, datasource)
+            if found is None:
                 raise RuntimeError("the search did not reach its end")
-            seen |= {i for i, obj in listed.items() if not (obj.get("archived") or obj.get("in_trash"))}
-        return seen
+            listed.update({i: object_type for i, obj in found.items() if not (obj.get("archived") or obj.get("in_trash"))})
+        return listed
 
     async def _apply_page_access_logged(self) -> None:
         try:
@@ -1266,10 +1327,7 @@ class NotionConnector(BaseConnector):
             raise RuntimeError("the configuration store did not keep the reindex state")
 
     def _readers_of(self, object_id: str) -> set[str]:
-        readers = set(self._readers.get(object_id, ()))
-        if self._published is not None and object_id in self._published:
-            readers |= self._member_emails
-        return readers
+        return set(self._readers.get(object_id, ()))
 
     async def _apply_page_access(self) -> None:
         """Give every stored page and data source exactly the readers this sync proved.
@@ -2588,9 +2646,13 @@ class NotionConnector(BaseConnector):
                         workspace_emails.extend(
                             app_user.email for app_user in app_users if app_user.email
                         )
+                        # Only a verified email maps a Notion member to a PipesHub user
+                        # (person.email_verified, developers.notion.com/reference/user).
                         member_ids.update({
-                            app_user.source_user_id: app_user.email.lower()
-                            for app_user in app_users if app_user.email and app_user.source_user_id
+                            user_id: _user_email(details[user_id]).lower()
+                            for user_id in person_user_ids
+                            if _user_email(details.get(user_id))
+                            and ((details[user_id].get("person") or {}).get("email_verified") is True)
                         })
                         self.logger.info(f"✅ Synced {len(app_users)} users in this batch")
 
@@ -2613,7 +2675,6 @@ class NotionConnector(BaseConnector):
                     "then sync again."
                 )
             self._bot_ids_complete = listing_complete
-            self._member_emails = {email.lower() for email in workspace_emails}
             self._member_ids = member_ids
             if user_details_complete:
                 await self._remove_departed_workspace_users(workspace_emails, members_without_email)

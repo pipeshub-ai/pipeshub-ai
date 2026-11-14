@@ -42,6 +42,7 @@ describe('NotionPersonalToken: a member', () => {
     await screen.findByText('Not linked. Link your token to see the Notion pages you can open.');
     expect(screen.getByRole('heading', { name: 'Your Notion access' })).toBeTruthy();
     expect(screen.getByText(/Notion does not say who may open a page/)).toBeTruthy();
+    expect(screen.getByText(/guests and restricted members can't create one, workspace admins can limit who may, and a token expires/)).toBeTruthy();
     expect(screen.getByRole('link', { name: 'How to create a personal access token' }).getAttribute('href')).toBe(
       'https://developers.notion.com/guides/connections-and-tokens/personal-access-tokens'
     );
