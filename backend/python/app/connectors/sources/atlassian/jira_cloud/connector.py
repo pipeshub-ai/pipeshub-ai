@@ -2322,6 +2322,9 @@ class JiraConnector(BaseConnector):
         }
         self._listed_account_ids = listed_active
         self._seen_account_ids = {u["accountId"] for u in raw_jira_users if u.get("accountId")}
+        # GET /rest/api/3/users/search: "Returns a list of all users, including active users, inactive users and
+        # previously deleted users that have an Atlassian account"; User.active: "Whether the user is active."
+        # (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-users/)
         self._shown_inactive_ids = {
             u["accountId"] for u in raw_jira_users
             if u.get("accountType") == "atlassian" and not u.get("active", True) and u.get("accountId")
