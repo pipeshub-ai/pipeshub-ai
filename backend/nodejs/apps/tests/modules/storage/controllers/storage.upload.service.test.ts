@@ -1,4 +1,5 @@
 import 'reflect-metadata'
+import http from 'http'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import mongoose from 'mongoose'
@@ -717,6 +718,23 @@ describe('UploadDocumentService', () => {
       expect(placeholderDoc.save.calledOnce).to.be.true
       expect(res.status.calledWith(HTTP_STATUS.PERMANENT_REDIRECT)).to.be.true
       expect(res.setHeader.calledWith('x-document-id', 'doc-8')).to.be.true
+    })
+
+    it('should send a document name above U+00FF as a valid header the KB reader decodes', async () => {
+      const placeholderDoc: any = {
+        _id: 'doc-u', documentName: '报告 10.00\u202fAM 50%', documentPath: '507f1f77bcf86cd799439011/PipesHub/Finance',
+        isVersionedFile: false, save: sinon.stub().resolves(),
+      }
+      mockAdapter.generatePresignedUrlForDirectUpload.resolves({
+        statusCode: 200, data: { url: 'https://bucket.s3.amazonaws.com/presigned?x=1' },
+      })
+      const { service, req, res } = directUpload(placeholderDoc)
+
+      await service.uploadDocument(req, res, sinon.stub())
+
+      const sent = res.setHeader.getCalls().find((c: any) => c.args[0] === 'x-document-name').args[1]
+      expect(() => http.validateHeaderValue('x-document-name', sent)).to.not.throw()
+      expect(decodeURIComponent(sent)).to.equal(placeholderDoc.documentName)
     })
 
     it('should answer not found when the placeholder is removed before the direct upload starts', async () => {
