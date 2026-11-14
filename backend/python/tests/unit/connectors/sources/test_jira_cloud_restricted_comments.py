@@ -213,14 +213,17 @@ async def test_a_comment_record_names_the_id_its_issue_was_written_under() -> No
     assert calls == [[("built-9", None)], [("c-1", "stored-9")]]
 
 
-async def test_deleting_an_issue_deletes_its_comment_records() -> None:
+async def test_deleting_an_issue_deletes_its_comment_records_and_their_files() -> None:
     connector = _connector()
-    connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[_stored_comment("11", "rec-11", 1)])
+    below = {("100", "COMMENT"): [_stored_comment("11", "rec-11", 1)], ("comment_11", "FILE"): [MagicMock(id="file-in-11")]}
+    connector.data_entities_processor.get_records_by_parent = AsyncMock(
+        side_effect=lambda _connector, parent, record_type: below.get((parent, record_type), []))
     connector.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={
-        "deleted_records": ["ticket-1", "rec-11", "file-1"]})
+        "deleted_records": ["ticket-1", "rec-11", "file-in-11", "file-1"]})
     issue = MagicMock(id="ticket-1", external_record_id="100")
     assert await connector._delete_issue_record(issue, "PROJ-1") == 1
-    assert connector.data_entities_processor.on_records_deleted_cascade.await_args.args[0] == ["ticket-1", "rec-11"]
+    assert connector.data_entities_processor.on_records_deleted_cascade.await_args.args[0] == [
+        "ticket-1", "rec-11", "file-in-11"]
 
 
 def _response(status: int, body: dict[str, Any]) -> MagicMock:

@@ -1999,6 +1999,11 @@ def commented(num: int, updated: str, comments: list[dict[str, Any]], *, total: 
     return ticket
 
 
+def under(db: CloudRecordsDb, external_id: str) -> str | None:
+    """The external id of the record a stored record is filed under."""
+    return db.records[external_id].parent_external_record_id
+
+
 def jira_has_comments(api: AtlassianApiStub, num: int, comments: list[dict[str, Any]]) -> None:
     """The comment listing of an issue, and its rendered description."""
     api.on("GET", f"{JIRA}/issue/{num}/comment", {"comments": comments, "total": len(comments)})
@@ -2041,7 +2046,10 @@ class TestRestrictedComments:
         assert "ROOT CAUSE" not in served, "a comment for Administrators only is served to every reader of the issue"
         assert "INTERNAL" not in served, "an internal note is served to every reader of the issue"
 
-    async def test_a_file_attached_in_a_restricted_comment_gets_no_record(self, api, db, checkpoints, search) -> None:
+    async def test_a_file_attached_in_a_restricted_comment_is_filed_under_that_comment(
+        self, api, db, checkpoints, search
+    ) -> None:
+        """Jira shows it only to those who can read the comment (JRACLOUD-80445)."""
         comments = [comment("c1", "see the figures", file=SALARIES, **ADMINS_ONLY)]
         search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", comments)]})
         jira_has_comments(api, 1, comments)
@@ -2049,9 +2057,9 @@ class TestRestrictedComments:
 
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
 
-        assert "1" in tickets(db)
-        assert "attachment_901" not in db.records, "readable by fewer people than the issue"
-        assert "attachment_902" in db.records, "a file attached to the issue itself stays"
+        assert "1" in tickets(db) and "comment_c1" in db.records
+        assert under(db, "attachment_901") == "comment_c1", "readable by those who read the comment, not the whole issue"
+        assert under(db, "attachment_902") == "1", "a file attached to the issue itself stays on the issue"
 
     async def test_an_issue_without_restricted_comments_costs_no_extra_request(self, api, db, checkpoints, search) -> None:
         search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [comment("c1", "figures", file=SALARIES)])]})
@@ -2075,7 +2083,9 @@ class TestRestrictedComments:
 
         assert "attachment_901" in db.records
 
-    async def test_a_file_stored_before_its_comment_was_restricted_is_removed(self, api, db, checkpoints, search) -> None:
+    async def test_a_file_stored_before_its_comment_was_restricted_moves_under_that_comment(
+        self, api, db, checkpoints, search
+    ) -> None:
         restricted = [comment("c1", "figures", file=SALARIES, **ADMINS_ONLY)]
         search.add("ENG", None, [
             {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [comment("c1", "figures", file=SALARIES)])]},
@@ -2084,11 +2094,13 @@ class TestRestrictedComments:
         jira_has_comments(api, 1, restricted)
         connector, _ = await ready_connector(db, checkpoints)
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
-        assert "attachment_901" in db.records
+        stored_id = db.records["attachment_901"].id
+        assert under(db, "attachment_901") == "1"
 
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
 
-        assert "attachment_901" not in db.records and "attachment_902" in db.records
+        assert under(db, "attachment_901") == "comment_c1" and db.records["attachment_901"].id == stored_id
+        assert under(db, "attachment_902") == "1"
 
     async def test_a_restricted_comment_the_search_did_not_embed_is_still_read(self, api, db, checkpoints, search) -> None:
         restricted = comment("c1", "figures", file=SALARIES, **ADMINS_ONLY)
@@ -2101,7 +2113,7 @@ class TestRestrictedComments:
 
         (listing_call,) = api.calls("GET", f"{JIRA}/issue/1/comment")
         assert AtlassianApiStub.query(listing_call)["expand"] == "renderedBody"
-        assert "attachment_901" not in db.records and "attachment_902" in db.records
+        assert under(db, "attachment_901") == "comment_c1" and under(db, "attachment_902") == "1"
 
     async def test_comments_that_cannot_be_read_leave_the_attachments_as_they_are(self, api, db, checkpoints, search) -> None:
         search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [comment("c2", "thanks")], total=2)]})

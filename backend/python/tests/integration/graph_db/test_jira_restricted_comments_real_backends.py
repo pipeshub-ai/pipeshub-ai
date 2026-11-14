@@ -15,6 +15,8 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.models.entities import AppRole, AppUserGroup
+from app.modules.retrieval.retrieval_service import RetrievalService
+from app.utils.chat_helpers import accessible_node_ids
 from tests.integration.graph_db import (
     test_jira_issue_security_real_backends as project_world,
 )
@@ -153,3 +155,63 @@ async def test_deleting_an_issue_deletes_its_comment_records(world: dict[str, An
     await world["connector"]._delete_issue_record(stored, "PROJ-1")
     assert not await _comment_ids(world)
 
+
+
+async def test_a_file_shown_only_in_a_restricted_comment_is_read_by_the_readers_of_that_comment(
+    world: dict[str, Any],
+) -> None:
+    """Jira shows a file attached in a restricted comment only to those who can read the comment."""
+    await _comment_world(world)
+    shown = {**_comment("501", group=ADMINS_GROUP),
+             "renderedBody": '<p><a href="https://site.example/rest/api/3/attachment/content/777">figures.txt</a></p>'}
+    issue = _edited("plain task", "2024-06-16T10:00:00.000+0000",
+                    comment={"comments": [shown], "total": 1},
+                    attachment=[{"id": "777", "filename": "figures.txt", "mimeType": "text/plain", "size": 5,
+                                 "created": "2024-06-15T10:00:00.000+0000"}])
+    issue["renderedFields"] = {"description": "", "comment": {"comments": [{"id": "501", "body": shown["renderedBody"]}]}}
+    built, _ = await world["connector"]._build_issue_records([issue], PROJECT_ID, _users(world))
+    await world["connector"]._process_new_records(built, PROJECT_KEY, {"new_count": 0, "updated_count": 0})
+
+    stored = await world["processor"].get_record_by_external_id(
+        connector_id=world["connector_id"], external_record_id="attachment_777")
+    assert stored is not None and stored.parent_external_record_id == "comment_501"
+    for name in PEOPLE:
+        allowed = name == "alice"  # reads the issue and is in the group; bob and carol read only the issue
+        checked = await world["graph"].filter_accessible_record_ids([stored.id], world["user_ids"][name], world["org_id"])
+        assert bool(checked) == allowed, f"{name} {'cannot' if allowed else 'can'} read the file"
+
+
+async def test_search_and_chat_retrieval_hand_a_restricted_comment_only_to_its_group(world: dict[str, Any]) -> None:
+    """Every search and chat path ends in one of these checks. The enumerated map they start from
+    gives a RESTRICTED record to every reader of its issue, so each check must take it away again
+    from bob and carol, who read the issue but are not in the group."""
+    await _comment_world(world)
+    await _write_comments(world, "plain task", "2024-06-16T10:00:00.000+0000", [_comment("501", group=ADMINS_GROUP)])
+    record_id = (await _comment_ids(world))["comment_501"]  # indexed as vr-<record id>
+    vrid, graph, org_id = f"vr-{record_id}", world["graph"], world["org_id"]
+    retrieval = RetrievalService.__new__(RetrievalService)
+    retrieval.graph_provider = graph
+
+    problems: list[str] = []
+    for name in PEOPLE:
+        user_id, allowed = world["user_ids"][name], name == "alice"
+        user = await graph.get_user_by_user_id(user_id)
+        user_key = user.get("id") or user.get("_key")
+        enumerated = await graph.get_accessible_virtual_record_ids(user_id, org_id, raise_on_error=True)
+        hits = [{"metadata": {"virtualRecordId": vrid}}]
+        seen = {
+            # search_with_filters, record-id path and narrow-access fallback (retrieval_service.py _keep_permitted_hits)
+            "search hit": vrid in await retrieval._keep_permitted_hits(hits, enumerated, user_key, org_id),
+            # search_with_filters, container path; search_lexical with scopes
+            "container search hit": vrid in (await graph.check_access(
+                user_key, org_id, virtual_record_ids={vrid}, indexed_only=True)).records_by_vrid,
+            # search_lexical containers path, grep and pattern-match merge
+            "keyword hit": vrid in await graph.filter_accessible_virtual_record_ids([vrid], user_id, org_id),
+            # chat's fetch_full_record and GET /records/{id}/read
+            "fetched record": record_id in await accessible_node_ids(graph, {record_id}, user_id, org_id),
+            # chat's graph context enrichment (children, attachments, parents of hits)
+            "related record": record_id in await graph.filter_accessible_record_ids([record_id], user_id, org_id),
+        }
+        problems += [f"{name} {'cannot' if allowed else 'can'} get the comment as a {how}"
+                     for how, got in seen.items() if got != allowed]
+    assert not problems, "\n  ".join(problems)

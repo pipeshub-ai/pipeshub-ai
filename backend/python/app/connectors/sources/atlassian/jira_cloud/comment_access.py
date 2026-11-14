@@ -65,13 +65,14 @@ def public_comments(comments: Iterable[Any]) -> list[dict[str, Any]]:
     return [c for c in comments if isinstance(c, dict) and not is_restricted_comment(c)]
 
 
-def attachment_ids_only_in_restricted_comments(
+def attachments_only_in_restricted_comments(
     attachments: Iterable[Any],
     description_refs: Refs,
     comments: Iterable[Any],
     comment_refs: Callable[[dict[str, Any]], Refs],
-) -> set[str]:
-    """Ids of attachments shown by a restricted comment and nowhere public.
+) -> dict[str, set[str]]:
+    """Attachments shown by a restricted comment and nowhere public, each with the ids of the
+    restricted comments that show it. Jira shows such a file only to those who can read the comment.
 
     An attachment the description or a public comment also shows, or one that is shown
     nowhere (attached to the issue itself), stays public.
@@ -79,7 +80,7 @@ def attachment_ids_only_in_restricted_comments(
     comments = [c for c in comments if isinstance(c, dict)]
     restricted = [c for c in comments if is_restricted_comment(c)]
     if not restricted:
-        return set()
+        return {}
 
     attachments = [a for a in attachments if isinstance(a, dict) and a.get("id") is not None]
 
@@ -94,7 +95,9 @@ def attachment_ids_only_in_restricted_comments(
             if str(a["id"]) in ids or (a.get("filename") or "").strip().lower() in names
         }
 
-    hidden = shown_by(comment_refs(c) for c in restricted)
-    if not hidden:
-        return set()
-    return hidden - shown_by([description_refs, *(comment_refs(c) for c in public_comments(comments))])
+    public = shown_by([description_refs, *(comment_refs(c) for c in public_comments(comments))])
+    hidden: dict[str, set[str]] = {}
+    for comment in restricted:
+        for attachment_id in shown_by([comment_refs(comment)]) - public:
+            hidden.setdefault(attachment_id, set()).add(str(comment.get("id")))
+    return hidden

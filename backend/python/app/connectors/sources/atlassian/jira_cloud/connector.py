@@ -125,7 +125,7 @@ from app.connectors.sources.atlassian.core.read_outcome import (
 )
 from app.connectors.sources.atlassian.jira_cloud.comment_access import (
     COMMENT_RECORD_PREFIX,
-    attachment_ids_only_in_restricted_comments,
+    attachments_only_in_restricted_comments,
     is_restricted_comment,
     public_comments,
     restricted_comment_grants,
@@ -2146,7 +2146,8 @@ class JiraConnector(BaseConnector):
         return True
 
     async def _delete_issue_record(self, issue_record: Record, issue_ref: str) -> int:
-        """Delete a stored issue with its attachments and comment records; returns how many attachments went with it.
+        """Delete a stored issue with its attachments, its comment records and their files; returns
+        how many attachments went with it.
 
         Uses ``on_records_deleted_cascade(cascade_children=False)`` so only ATTACHMENT edges are
         traversed — the issue's FILE records are deleted together with it, but
@@ -2154,14 +2155,19 @@ class JiraConnector(BaseConnector):
         touched. Their PARENT_CHILD edges are swept by the edge cleanup, so the
         child tickets simply lose their parent link and remain otherwise intact.
         """
-        comment_ids = [r.id for r in await self._stored_comment_records(issue_record.external_record_id)]
+        below_comments: list[str] = []
+        for comment in await self._stored_comment_records(issue_record.external_record_id):
+            files = await self.data_entities_processor.get_records_by_parent(
+                self.connector_id, comment.external_record_id, RecordType.FILE.value,
+            )
+            below_comments += [comment.id, *(f.id for f in files)]
         result = await self.data_entities_processor.on_records_deleted_cascade(
-            [issue_record.id, *comment_ids], self.connector_id, cascade_children=False,
+            [issue_record.id, *below_comments], self.connector_id, cascade_children=False,
         )
 
         # successfully_deleted counts only root IDs; deleted_records includes attachments.
         total_deleted = len(result.get("deleted_records") or [])
-        attachment_count = max(total_deleted - 1 - len(comment_ids), 0)
+        attachment_count = max(total_deleted - 1 - len(below_comments), 0)
         self.logger.debug(
             f"🗑️ Deleted issue {issue_ref} and {attachment_count} attachment(s) "
             f"(total: {total_deleted})"
@@ -4783,19 +4789,20 @@ class JiraConnector(BaseConnector):
         )
         # Files and comments are written after every issue, in batches of their own: they name their
         # issue's id, which writing the issue may change (to that of a stub another record left for it).
+        # A file in a restricted comment is written after that comment.
         dependent = (FileRecord, CommentRecord)
-        issues = {r.external_record_id: r for r, _, _ in sorted_records if not isinstance(r, dependent)}
-        tickets = [x for x in sorted_records if not isinstance(x[0], dependent)]
-        dependents = [x for x in sorted_records if isinstance(x[0], dependent)]
-
+        parents = {r.external_record_id: r for r, _, _ in sorted_records if not isinstance(r, FileRecord)}
         batch_size = BATCH_PROCESSING_SIZE
-        batches = [tickets[i:i + batch_size] for i in range(0, len(tickets), batch_size)]
-        batches += [dependents[i:i + batch_size] for i in range(0, len(dependents), batch_size)]
+        batches: list[list[tuple[Record, list[Permission], bool]]] = []
+        for kind in (lambda r: not isinstance(r, dependent), lambda r: isinstance(r, CommentRecord),
+                     lambda r: isinstance(r, FileRecord)):
+            group = [x for x in sorted_records if kind(x[0])]
+            batches += [group[i:i + batch_size] for i in range(0, len(group), batch_size)]
 
         for batch_number, batch in enumerate(batches, 1):
             for record, _, _ in batch:
-                if isinstance(record, dependent) and record.parent_external_record_id in issues:
-                    record.parent_node_id = issues[record.parent_external_record_id].id
+                if isinstance(record, dependent) and record.parent_external_record_id in parents:
+                    record.parent_node_id = parents[record.parent_external_record_id].id
 
             # Single pass so the parent-before-child sort above survives into the batch
             # handed to on_new_records.
@@ -5381,8 +5388,9 @@ class JiraConnector(BaseConnector):
             self._subtask_ids.add(str(issue_id))
         rendered_fields = issue.get("renderedFields") if isinstance(issue.get("renderedFields"), dict) else None
 
-        # A file attached in a restricted comment is readable by fewer people than the issue,
-        # so it gets no record of its own, and one stored before the comment was restricted goes.
+        # A file attached in a restricted comment is shown only to those who can read the comment:
+        # it is filed under that comment's record. One that several restricted comments show gets
+        # no record, and one stored before goes.
         try:
             fields = await self._with_every_comment(issue_id, fields)
             hidden_attachment_ids = await self._attachment_ids_hidden_by_comments(issue_id, fields, rendered_fields)
@@ -5399,21 +5407,30 @@ class JiraConnector(BaseConnector):
             return records, delete_ids, False
         # Not returned: the stored comment records stay. A personal connector's one reader is the
         # account the comments were read as, so it has no restricted comment to write.
+        comment_records: dict[str, Record] = {}
         if self._enforces_issue_security and isinstance(fields.get("comment"), dict):
-            comment_records, stale_ids = await self._restricted_comment_records(
+            built_comments, stale_ids = await self._restricted_comment_records(
                 issue_record, fields["comment"].get("comments") or [], project_key, issue_key,
                 stored=existing_record is not None,
             )
-            records.extend(comment_records)
+            records.extend(built_comments)
             delete_ids.extend(stale_ids)
+            comment_records = {r.external_record_id: r for r, _, _ in built_comments}
+        # Attachment id -> the record of the one restricted comment that shows it.
+        owner_of = {
+            attachment_id: comment_records[f"{COMMENT_RECORD_PREFIX}{next(iter(shown_in))}"]
+            for attachment_id, shown_in in hidden_attachment_ids.items()
+            if len(shown_in) == 1 and f"{COMMENT_RECORD_PREFIX}{next(iter(shown_in))}" in comment_records
+        }
         if hidden_attachment_ids:
-            for attachment_id in sorted(hidden_attachment_ids):
+            for attachment_id in sorted(set(hidden_attachment_ids) - set(owner_of)):
                 stored_attachment = await self._find_attachment_record_by_id(attachment_id)
                 if stored_attachment:
                     delete_ids.append(stored_attachment.id)
             fields = {**fields, "attachment": [
                 a for a in fields.get("attachment") or []
                 if not (isinstance(a, dict) and str(a.get("id")) in hidden_attachment_ids)
+                or str(a.get("id")) in owner_of
             ]}
 
         # Fetch attachments and create FileRecords
@@ -5428,6 +5445,12 @@ class JiraConnector(BaseConnector):
                 parent_node_id=issue_record.id,
                 rendered_fields=rendered_fields,
             )
+            for attachment_record, _, _ in attachment_records if owner_of else []:
+                owner = owner_of.get(attachment_record.external_record_id.removeprefix("attachment_"))
+                if owner is not None:
+                    attachment_record.parent_external_record_id = owner.external_record_id
+                    attachment_record.parent_record_type = RecordType.COMMENT
+                    attachment_record.parent_node_id = owner.id
             if attachment_records:
                 records.extend(attachment_records)
         except Exception as e:
@@ -5616,8 +5639,8 @@ class JiraConnector(BaseConnector):
 
     async def _attachment_ids_hidden_by_comments(
         self, issue_id: str, issue_fields: dict[str, Any], rendered_fields: dict[str, Any] | None = None,
-    ) -> set[str]:
-        """Ids of the issue's attachments that only a restricted comment shows.
+    ) -> dict[str, set[str]]:
+        """The issue's attachments that only a restricted comment shows, each with the ids of those comments.
 
         ``rendered_fields`` is the issue's ``renderedFields`` when the caller already has
         it (GET issue). A search result has neither it nor every comment (Jira embeds the
@@ -5627,14 +5650,14 @@ class JiraConnector(BaseConnector):
         """
         attachments = issue_fields.get("attachment") or []
         if not attachments:
-            return set()
+            return {}
         comment_field = issue_fields.get("comment")
         comment_field = comment_field if isinstance(comment_field, dict) else {}
         comments = [c for c in comment_field.get("comments") or [] if isinstance(c, dict)]
         total = comment_field.get("total")
         all_embedded = not isinstance(total, int) or isinstance(total, bool) or total <= len(comments)
         if all_embedded and len(public_comments(comments)) == len(comments):
-            return set()
+            return {}
 
         if all_embedded and rendered_fields is not None:
             rendered = (rendered_fields.get("comment") or {}).get("comments") or []
@@ -5643,12 +5666,12 @@ class JiraConnector(BaseConnector):
         elif not all_embedded or not all("renderedBody" in c for c in comments):  # not already read in full
             comments = await self._read_issue_comments(issue_id)
             if len(public_comments(comments)) == len(comments):
-                return set()
+                return {}
         rendered_description = (
             rendered_fields.get("description") if rendered_fields is not None
             else await self._rendered_description(issue_id)
         )
-        return attachment_ids_only_in_restricted_comments(
+        return attachments_only_in_restricted_comments(
             attachments,
             self._shown_attachments(issue_fields.get("description"), rendered_description),
             comments,
