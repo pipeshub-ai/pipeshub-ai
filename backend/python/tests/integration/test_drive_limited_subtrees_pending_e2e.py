@@ -23,7 +23,11 @@ import pytest
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
 from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
-from tests.integration.real_graph import backend_unavailable, connect_arango, connect_neo4j
+from tests.integration.real_graph import (
+    backend_unavailable,
+    connect_arango,
+    connect_neo4j,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
