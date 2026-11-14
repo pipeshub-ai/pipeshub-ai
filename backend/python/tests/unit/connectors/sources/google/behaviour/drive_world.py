@@ -484,6 +484,7 @@ class DriveWorld:
         r("GET", f"{ADMIN_API}/users/([^/]+)", self._admin_user)
         r("GET", f"{ADMIN_API}/groups", self._admin_groups)
         r("GET", f"{ADMIN_API}/groups/([^/]+)/members", self._admin_members)
+        r("GET", f"{ADMIN_API}/groups/([^/]+)", self._admin_group)
         r("GET", f"{ADMIN_API}/customer/([^/]+)/domains", self._admin_domains)
 
     def _caller(self, req: ApiRequest) -> str:
@@ -785,6 +786,12 @@ class DriveWorld:
                 "domainAliases": [{"domainAliasName": a, "verified": True} for a in aliases],
             })
         return {"domains": domains}
+
+    def _admin_group(self, req: ApiRequest) -> object:
+        if denied := self._admin_guard(req):
+            return denied
+        group = self.groups.get(req.path.split("/groups/")[1].split("/")[0])
+        return google_error(404, "notFound") if group is None else {"id": group["id"], "email": group["email"], "name": group["name"]}
 
     def _admin_members(self, req: ApiRequest) -> object:
         if denied := self._admin_guard(req):

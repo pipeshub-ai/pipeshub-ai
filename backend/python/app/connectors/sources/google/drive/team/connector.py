@@ -1606,8 +1606,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Delete the stored groups a complete listing no longer has, once the directory confirms each is gone.
 
         A deleted Workspace group keeps its members in PipesHub otherwise, and with them every grant made to
-        the group. The directory answering "not found" for that exact group is the confirmation; any other
-        answer keeps the group for the next run.
+        the group. The directory documents no error answers for members.list
+        (https://developers.google.com/workspace/admin/directory/reference/rest/v1/members/list), so its "not
+        found" is confirmed with groups.get for that exact group; any other answer keeps the group for the next run.
         """
         stored = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
         for group in stored:
@@ -1619,6 +1620,15 @@ class GoogleDriveTeamConnector(BaseConnector):
             except HttpError as e:
                 if e.resp.status != HttpStatusCode.NOT_FOUND.value:
                     self.logger.warning(f"Could not confirm that group {group_id} was deleted; keeping it: {e}")
+                    continue
+                try:
+                    await self.admin_data_source.groups_get(groupKey=group_id)
+                except HttpError as again:
+                    if again.resp.status != HttpStatusCode.NOT_FOUND.value:
+                        self.logger.warning(f"Could not confirm that group {group_id} was deleted; keeping it: {again}")
+                        continue
+                else:
+                    self.logger.warning(f"Group {group_id} is missing from the listing but still exists; keeping it")
                     continue
             else:
                 self.logger.warning(f"Group {group_id} is missing from the listing but still exists; keeping it")

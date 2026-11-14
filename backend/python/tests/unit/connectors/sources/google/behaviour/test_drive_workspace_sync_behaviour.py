@@ -3516,6 +3516,43 @@ async def test_an_unreadable_item_that_is_not_limited_keeps_inheriting(ws: Works
     assert "f" not in ws.records.stopped_inheriting
 
 
+def _listed_without(ws: Workspace, group_email: str) -> None:
+    """The directory's group listing leaves this group out, as a cut listing would; the group still exists."""
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern.endswith("/groups$"))
+
+    def listing(req: ApiRequest) -> object:
+        page = real(req)
+        if isinstance(page, dict):
+            page = {**page, "groups": [g for g in page.get("groups", []) if g["email"] != group_email]}
+        return page
+
+    ws.http.route("GET", r"/admin/directory/v1/groups", listing)
+
+
+async def test_a_group_whose_member_listing_answers_not_found_is_kept_while_the_directory_still_has_it(
+    ws: Workspace,
+) -> None:
+    ws.world.add_group("eng@example.com", [BOB])
+    await ws.sync()
+    assert "eng@example.com" in ws.records.user_groups
+
+    _listed_without(ws, "eng@example.com")
+    ws.world.unlistable_groups["eng@example.com"] = 404
+    await ws.sync()
+
+    assert "eng@example.com" not in ws.records.deleted_groups, "groups.get still finds it: not deleted"
+
+
+async def test_a_group_the_directory_no_longer_has_is_deleted(ws: Workspace) -> None:
+    ws.world.add_group("eng@example.com", [BOB])
+    await ws.sync()
+
+    del ws.world.groups["eng@example.com"]
+    await ws.sync()
+
+    assert "eng@example.com" in ws.records.deleted_groups
+
+
 LABS = "zed@labs.example.org"
 XIA = "xia@labs.example.org"
 YAN = "yan@labs.example.org"
