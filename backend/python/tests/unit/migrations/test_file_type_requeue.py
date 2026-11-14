@@ -46,6 +46,7 @@ class FakeGraph:
         self.pages = 0
         self.before_transition = None
         self.now = get_epoch_timestamp_in_ms()
+        self.reads_fail = False
 
     async def get_documents_paginated(self, collection: str, limit: int, sort_field: str, after_key: str | None,
                                       raise_on_error: bool) -> list[dict[str, Any]]:
@@ -79,7 +80,11 @@ class FakeGraph:
                 self.records[i].queued_at = self.now
         return won
 
-    async def get_records_by_record_ids(self, ids: list[str], org_id: str) -> list[dict[str, Any]]:
+    async def get_records_by_record_ids(self, ids: list[str], org_id: str, *, raise_on_error: bool = False) -> list[dict[str, Any]]:
+        if self.reads_fail:
+            if raise_on_error:
+                raise ConnectionError("graph down")
+            return []
         return [{"_key": r.id, "indexingStatus": r.indexing_status, "reason": r.reason, "isDeleted": r.is_deleted,
                  "queuedAtTimestamp": r.queued_at}
                 for i in ids if (r := self.records.get(i)) is not None and r.org_id == org_id and not r.is_deleted]
@@ -94,9 +99,12 @@ class FakeConfig:
         self.fail = fail or set()
         self.saved: list[tuple[str, Any]] = []
 
-    async def get_config(self, key: str, use_cache: bool = True) -> Any:  # noqa: ANN401
+    async def get_config(self, key: str, use_cache: bool = True, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
         if key in self.fail:
-            raise ConnectionError("config store down")
+            # As ConfigurationService: a failed read answers the default unless asked to raise.
+            if raise_on_error:
+                raise ConnectionError("config store down")
+            return None
         return self.values.get(key)
 
     async def set_config(self, key: str, value: Any) -> bool:  # noqa: ANN401
@@ -627,3 +635,30 @@ async def test_the_flag_is_saved_before_the_lease_is_released() -> None:
     _, _, second = await _run(graph, config=config, lock=lock)
 
     assert seen[0] is True and second.events == []
+
+
+async def test_a_failed_read_of_what_still_waits_keeps_the_entry_for_the_next_start() -> None:
+    graph = FakeGraph([KB], [_upload("u1")])
+    _, config, _ = await _run(graph, kafka=FakeKafka(ack=False))
+
+    graph.reads_fail = True
+    failed, config, nothing = await _run(graph, config=config)
+    assert nothing.events == [] and not failed.complete and len(config.outbox()) == 1
+
+    graph.reads_fail = False
+    _, config, again = await _run(graph, config=config)
+    assert again.ids() == ["u1"]
+
+
+async def test_a_failed_read_of_an_outbox_entry_keeps_it() -> None:
+    graph = FakeGraph([KB], [_upload("u1")])
+    _, config, _ = await _run(graph, kafka=FakeKafka(ack=False))
+    (key,) = config.outbox()
+    config.fail.add(key)
+
+    _, config, nothing = await _run(graph, config=config)
+    assert nothing.events == [] and key in config.values
+
+    config.fail.discard(key)
+    _, config, again = await _run(graph, config=config)
+    assert again.ids() == ["u1"]

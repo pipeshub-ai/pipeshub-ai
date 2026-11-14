@@ -26896,6 +26896,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_ids: list[str],
         org_id: str,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their _key (record IDs).
@@ -26936,6 +26938,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"Failed to fetch records by record IDs: {e}\n{traceback.format_exc()}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_virtual_record_holders(

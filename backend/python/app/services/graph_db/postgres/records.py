@@ -181,7 +181,8 @@ class RecordsMixin(PgBase):
             self.logger.error("Failed to check record existence: %s", e)
             return set()
 
-    async def get_records_by_record_ids(self, record_ids: list[str], org_id: str, visibility: RecordVisibility = RecordVisibility.LIVE) -> list[dict[str, Any]]:
+    async def get_records_by_record_ids(self, record_ids: list[str], org_id: str, visibility: RecordVisibility = RecordVisibility.LIVE, *,
+                                        raise_on_error: bool = False) -> list[dict[str, Any]]:
         org = current_org_id()
         if not record_ids:
             return []
@@ -193,6 +194,8 @@ class RecordsMixin(PgBase):
             return [_rec(r["doc"]) for r in rows]
         except Exception as e:
             self.logger.error("Failed to fetch records by record IDs: %s", e)
+            if raise_on_error:
+                raise
             return []
 
     async def get_typed_records_batch(self, record_ids: list[str], *, raise_on_error: bool = False) -> dict[str, Record]:

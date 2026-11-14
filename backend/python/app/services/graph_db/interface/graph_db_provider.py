@@ -5250,9 +5250,14 @@ class IGraphDBProvider(ABC):
         record_ids: list[str],
         org_id: str,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their record IDs (_key in Arango / id in Neo4j).
+
+        A failed query answers an empty list, or raises with ``raise_on_error``: a caller that
+        acts on "none of these records is there" must not read a failure as that answer.
 
         This is used after Qdrant search to fetch the specific permission-verified records
         using the recordIds from the accessible virtual ID map, preventing cross-connector

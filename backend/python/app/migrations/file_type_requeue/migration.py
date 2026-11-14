@@ -38,10 +38,7 @@ from uuid import uuid4
 
 from app.config import file_types
 from app.config.constants.arangodb import CollectionNames, ProgressStatus, RecordTypes
-from app.connectors.core.registry.filters import (
-    IndexingFilterKey,
-    load_connector_filters,
-)
+from app.connectors.core.registry.filters import FilterCollection, IndexingFilterKey
 from app.connectors.services.reindex_events import build_reindex_event
 from app.core.org_context import for_org, system
 from app.migrations.file_type_requeue import gate_v1
@@ -149,7 +146,7 @@ def _network_share(connector_type: str) -> bool:
 
 async def _disabled_types(config_service: ConfigurationService) -> frozenset[str]:
     """The types turned off, read as the indexer reads them. Raises when the setting cannot be read."""
-    config = await config_service.get_config(file_types.FILE_TYPES_CONFIG_KEY, use_cache=False)
+    config = await config_service.get_config(file_types.FILE_TYPES_CONFIG_KEY, use_cache=False, raise_on_error=True)
     if config is None:
         config = file_types.disabled_from_env(os.environ.get("FILE_TYPES_DISABLED"))
     return file_types.disabled_keys(config)
@@ -184,9 +181,18 @@ async def _list_apps(graph_provider: IGraphDBProvider) -> list[dict[str, Any]]:
 async def _parks_everything(config_service: ConfigurationService, connector_type: str, connector_id: str,
                             logger: Logger) -> tuple[bool, bool]:
     """(manual, files off) for the connector. Raises when its settings cannot be read, so an unknown
-    setting never reads as "index automatically"."""
-    await config_service.get_config(f"/services/connectors/{connector_id}/config")
-    _, indexing = await load_connector_filters(config_service, connector_type, connector_id, logger)
+    setting never reads as "index automatically". The settings are parsed as load_connector_filters
+    parses them, from the one read that raised or succeeded (that function answers a failed read
+    with no filters)."""
+    config = await config_service.get_config(
+        f"/services/connectors/{connector_id}/config", use_cache=False, raise_on_error=True,
+    )
+    values = (
+        ((config.get("filters") or {}).get("indexing") or {}).get("values") or {}
+        if isinstance(config, dict) and config.get("enabled", True)
+        else {}
+    )
+    indexing = FilterCollection.from_dict(values, logger) if values else FilterCollection()
     manual = indexing.is_enabled(IndexingFilterKey.ENABLE_MANUAL_SYNC, default=False)
     files_off = not indexing.is_enabled(IndexingFilterKey.FILES, default=True)
     return manual, files_off
@@ -381,7 +387,9 @@ async def _drain_outbox(
     drained = True
     for key in keys:
         try:
-            entry = await config_service.get_config(key, use_cache=False)
+            entry = await config_service.get_config(key, use_cache=False, raise_on_error=True)
+            if entry is None:
+                continue  # gone since it was listed
             org_id = entry.get("orgId") if isinstance(entry, dict) else None
             connector_id = entry.get("connectorId") if isinstance(entry, dict) else None
             connector_type = entry.get("connectorType") if isinstance(entry, dict) else None
@@ -392,7 +400,8 @@ async def _drain_outbox(
                 continue
             parked = entry.get("parked") is True
             with for_org(org_id, job=_JOB):
-                docs = await graph_provider.get_records_by_record_ids(ids, org_id)
+                # Raises on a failed read: an empty answer would drop the only record of what still waits.
+                docs = await graph_provider.get_records_by_record_ids(ids, org_id, raise_on_error=True)
             waiting = [d for d in docs or [] if _waiting(d, parked=parked)]
             waiting_ids = [str(d.get("_key") or d.get("id")) for d in waiting]
             if not waiting_ids:
@@ -489,7 +498,7 @@ async def run_file_type_requeue(
         logger.warning("File-type re-queue skipped: the disabled file types could not be read", exc_info=True)
         return result
     try:
-        flag = await config_service.get_config(FLAG_KEY, use_cache=False)
+        flag = await config_service.get_config(FLAG_KEY, use_cache=False, raise_on_error=True)
     except Exception:
         flag = None
     try:

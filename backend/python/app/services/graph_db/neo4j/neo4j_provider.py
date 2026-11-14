@@ -9434,6 +9434,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_ids: list[str],
         org_id: str,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their record IDs (node id property).
@@ -9483,6 +9485,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch records by record IDs: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
+            if raise_on_error:
+                raise
             return []
 
     # ==================== Permission Operations ====================
