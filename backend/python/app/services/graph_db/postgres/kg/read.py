@@ -212,7 +212,7 @@ async def accessible_rows(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaita
     """``access.accessible_rows`` with kg answering for the nodes it may. ``run`` opens a read unit (one snapshot, the kg planner profile); ``walk(ids, vrids, access)`` is the walk.
     With ``db``, a share of the answers kg gave is repeated by the walk off this call's path (:mod:`net`), and a difference takes the connector back to the walk; the samples
     read by ``sample_run`` (default ``run``), which must outlive the call."""
-    if access.get("probe"):                                            # the walk refuses a grant probe; kg does not guess
+    if access.get("probe"):                                            # grants tested from the node: the walk reads them (access.probe_grants)
         return await walk(ids, vrids, access)
     try:
         d, shaped = await run(lambda tx: _read(tx, org, ids, access))
