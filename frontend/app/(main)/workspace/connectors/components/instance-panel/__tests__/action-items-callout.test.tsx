@@ -56,6 +56,25 @@ describe('ActionItemsCallout', () => {
     expect(screen.getByText(/only for 30 days after it was confirmed.*confirmed on 2026-10-02\./)).toBeTruthy();
   });
 
+  it('words folder patterns that matched nothing in the reader\'s language, for one or several', () => {
+    const several: ConnectorActionItem = {
+      code: 'folder_filter_unmatched',
+      severity: 'warning',
+      title: 't',
+      message: 'm',
+      action: null,
+      params: { count: '2', values: '"**/drafts", "custmer/*/quotes"', context: 'several_exclude' },
+    };
+    renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [several] })} />);
+
+    expect(screen.getByText('2 folder patterns matched nothing')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'No folder this connector syncs matches "**/drafts", "custmer/*/quotes", so they exclude nothing. Check the spelling in the Folders filter.'
+      )
+    ).toBeTruthy();
+  });
+
   it('opens the Authenticate tab for an item done there', () => {
     const open = vi.fn();
     renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [SWITCH] })} onOpenAuthentication={open} />);

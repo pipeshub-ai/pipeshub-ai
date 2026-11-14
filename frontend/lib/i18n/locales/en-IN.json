@@ -2733,6 +2733,11 @@
           "samlSso": "SAML SSO",
           "oauth": "OAuth"
         }
+      },
+      "enterpriseSso": {
+        "title": "SAML single sign-on and OpenID Connect",
+        "description": "Sign people in through Okta, OneLogin or any other SAML 2.0 or OpenID Connect identity provider.",
+        "contactSales": "To purchase, email {{email}}"
       }
     },
     "connectors": {
@@ -3187,7 +3192,28 @@
         "loadingOptions": "Loading options…",
         "noResults": "No results found",
         "optionsLoadFailed": "We couldn't load the options for this filter. Close this list and open it again to retry.",
-        "loadingMore": "Loading more…"
+        "loadingMore": "Loading more…",
+        "folderPaths": {
+          "help": "Paths start at the top level. * matches any characters within one folder name, ** matches any number of folders, ? matches one character. Everything inside a matching folder is included. A pattern that matches nothing is flagged on the connector card.",
+          "examples": {
+            "oneLevel": "customer/*/quotes: the quotes folder of every customer",
+            "anyDepth": "**/quotes: every folder named quotes, at any depth (reads every folder)",
+            "exclude": "archive with Exclude: everything except the archive folder"
+          },
+          "caseInsensitive": "Names match whatever their case. \\ and / both separate folders.",
+          "caseSensitive": "Names are case-sensitive. Write \\* or \\? to match those characters in a name.",
+          "notFiles": "Patterns pick folders, not files. To pick file types, use File Extensions.",
+          "errors": {
+            "climbsOut": "Folder \"{{value}}\" must be a path from the top of the store, without \"..\".",
+            "emptySegment": "Folder \"{{value}}\" has an empty folder name between two slashes. Remove the extra \"/\".",
+            "excludesEverything": "Excluding \"{{value}}\" leaves nothing to sync. Remove it, or switch to Include.",
+            "tooLong": "Folder \"{{value}}\" is longer than 1024 characters.",
+            "uncPath": "Folder \"{{value}}\" looks like a network path. Start at the top of the share, without \\\\server\\share.",
+            "doubleStarInName": "In folder \"{{value}}\", \"**\" must be a whole folder name, as in reports/**/2026. Use \"*\" for part of a name.",
+            "tooManyDoubleStars": "Folder \"{{value}}\" uses \"**\" more than 4 times. Use fewer.",
+            "tooManyStars": "A folder name in \"{{value}}\" has more than 16 \"*\". Use fewer."
+          }
+        }
       },
       "syncStrategies": {
         "SCHEDULED": "Scheduled",
@@ -3339,6 +3365,16 @@
             "title": "Drupal Wiki refuses member and page structure queries",
             "message": "Private spaces sync only with the access confirmed on an earlier sync, and only for {{days}} days after it was confirmed. Private spaces never synced, or confirmed longer ago, are skipped, and the page hierarchy is not available. Open spaces are not affected. A full sync, including one started by changing the filters, ends this for private spaces until Drupal Wiki lists their members again.",
             "message_dated": "Private spaces sync only with the access confirmed on an earlier sync, and only for {{days}} days after it was confirmed. Private spaces never synced, or confirmed longer ago, are skipped, and the page hierarchy is not available. Open spaces are not affected. A full sync, including one started by changing the filters, ends this for private spaces until Drupal Wiki lists their members again. The oldest access in use was confirmed on {{confirmedOn}}."
+          },
+          "folder_filter_unmatched": {
+            "title": "Folder pattern matched nothing",
+            "message": "No folder this connector syncs matches {{values}}, so nothing is synced for it. Check the spelling in the Folders filter.",
+            "title_several": "{{count}} folder patterns matched nothing",
+            "message_several": "No folder this connector syncs matches {{values}}, so nothing is synced for them. Check the spelling in the Folders filter.",
+            "title_exclude": "Folder pattern matched nothing",
+            "message_exclude": "No folder this connector syncs matches {{values}}, so it excludes nothing. Check the spelling in the Folders filter.",
+            "title_several_exclude": "{{count}} folder patterns matched nothing",
+            "message_several_exclude": "No folder this connector syncs matches {{values}}, so they exclude nothing. Check the spelling in the Folders filter."
           }
         }
       },
