@@ -2,7 +2,9 @@ import * as path from 'path';
 
 const MIME_BY_EXT = new Map<string, string>(Object.entries({
   txt: 'text/plain',
-  log: 'text/plain',
+  // Their own types, not text/plain: the server reads these as capped plain text.
+  log: 'text/x-log',
+  cfg: 'text/x-cfg',
   md: 'text/markdown',
   mdx: 'text/mdx',
   json: 'application/json',
