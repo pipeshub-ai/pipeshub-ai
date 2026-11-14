@@ -64,7 +64,8 @@ export function folderPathProblems(
   const body = (windows ? text.replace(/\\/g, '/') : text).replace(/^\/+|\/+$/g, '');
   const names = body.split('/');
   if (body.includes('//')) problems.push('empty_segment');
-  if (exclude && names.every((name) => name === '' || name === '**')) problems.push('excludes_everything');
+  // `**` names the top only where the connector reads wildcards; otherwise it is a folder.
+  if (exclude && names.every((name) => name === '' || (wildcards && name === '**'))) problems.push('excludes_everything');
   if (value.length > MAX_LENGTH) problems.push('too_long');
   if (windows && text.startsWith('\\\\') && names.filter(Boolean).length >= 2) problems.push('unc_path');
   if (wildcards) {
