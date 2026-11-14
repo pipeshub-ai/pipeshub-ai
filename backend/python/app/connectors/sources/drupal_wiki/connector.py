@@ -28,6 +28,27 @@ Sync model (see the design page for the full rationale):
   keeps each private space synced under the access stored on an earlier run; a
   private space with nothing stored is skipped, and the admin is told on the
   connector card and after every run
+
+What the vendor documents, and what it leaves open (read 2026-11-14):
+
+* REST spec (https://help.drupal-wiki.com/api/spec, 1.0.0): ``GET /page`` ``space`` is
+  "Filter for pages that are either located in the specified space or shared to it";
+  ``lastModified`` is "The unix timestamp when the page was last updated (or created)",
+  and nothing says whether a share, an unshare or a move updates it, so every space is
+  listed in full; ``GET /page/{id}`` documents 200 and 404 only, so any refusal of a
+  page is read as the page being gone (fail closed); ``UserDTO.status`` is ``ENABLED``
+  or ``DISABLED``.
+* https://help.drupal-wiki.com/node/605: "Der Endpunkt /api/rest/scope/api/page/{id}
+  löscht die Seite endgültig! Sie wird nicht im Papierkorb landen!"
+* https://help.drupal-wiki.com/node/363: "'Offen' bedeutet, dass alle angemeldeten
+  Nutzer des Wikis grundsätzlich Lesezugriff auf den Space haben."
+* https://help.drupal-wiki.com/node/248: blocked users "können sich nicht mehr im Wiki
+  anmelden".
+* https://help.drupal-wiki.com/node/461 (Dokumente teilen, an optional extension):
+  sharing leaves the home space unchanged, and members of the target spaces may see the
+  shared content; only rights in the home space edit, delete or move it. The page says
+  nothing about sub-pages, so a share is taken to reach the shared page and its
+  attachments only (fail closed).
 """
 
 import asyncio
