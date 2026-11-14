@@ -157,7 +157,7 @@ jobs:
             suite: tests.permissions
             tests: tests/permissions/test_conformance_kh.py
             k: not [adversarial-1of2] and not [adversarial-2of2] and not golden_worlds
-            cases: 22
+            cases: 23
             pytest_args: -p no:logging --timeout=3000
           - shard: 7
             suite: tests.permissions

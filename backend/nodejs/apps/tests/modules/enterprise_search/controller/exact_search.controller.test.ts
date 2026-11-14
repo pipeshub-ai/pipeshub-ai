@@ -5,6 +5,7 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import yaml from 'js-yaml'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
+import { ValidationMiddleware } from '../../../../src/libs/middlewares/validation.middleware'
 import {
   entityNeighbors,
   grepRecords,
@@ -100,6 +101,28 @@ describe('entity search controller', () => {
     const { error } = await run(grepRecords(appConfig), { pattern: 'x' })
     expect(error.statusCode).to.equal(501)
     expect(error.message).to.contain('local file storage')
+  })
+
+  it('refuses person and organization with 400 before the AI service is called, and forwards named_entity, as the routes chain them', async () => {
+    // the validator then the controller, in the order es.routes.ts mounts them; the extraction flag is read only by the AI service
+    const route = async (schema: any, handler: any, body: any) => {
+      const req: any = { body, query: {}, params: {}, headers: {}, path: '/', method: 'POST' }
+      let error: any
+      await ValidationMiddleware.validate(schema)(req, {} as any, (e?: any) => { error = e })
+      return error ?? (await run(handler, req.body)).error
+    }
+    answer(200, { status: 'success', results: [], records: [] })
+    for (const kind of ['person', 'organization']) {
+      expect((await route(enterpriseSearchEntitiesSchema, searchEntities(appConfig), { query: 'x', entityTypes: [kind] }))?.statusCode, kind).to.equal(400)
+      expect((await route(enterpriseSearchEntityNeighborsSchema, entityNeighbors(appConfig), { entityId: 'e', entityType: kind }))?.statusCode, kind).to.equal(400)
+    }
+    expect(bodies).to.deep.equal([])
+    expect(await route(enterpriseSearchEntitiesSchema, searchEntities(appConfig), { query: 'x', entityTypes: ['named_entity'] })).to.equal(undefined)
+    expect(await route(enterpriseSearchEntityNeighborsSchema, entityNeighbors(appConfig), { entityId: 'e', entityType: 'named_entity' })).to.equal(undefined)
+    expect(bodies.map((b) => JSON.parse(b))).to.deep.equal([
+      { query: 'x', entityTypes: ['named_entity'] },
+      { entityId: 'e', entityType: 'named_entity' },
+    ])
   })
 
   it('reports an unreachable AI service as 503 and a slow one as 504, not as a 500', async () => {
