@@ -127,14 +127,15 @@ SELECT (SELECT coalesce(bool_or(cand.app_sk IS DISTINCT FROM $8 OR cand.path IS 
   array(SELECT c.id FROM (SELECT DISTINCT sk FROM reach) q JOIN cand c ON c.sk = q.sk ORDER BY c.id OFFSET $9 LIMIT $10) AS ids"""
 
 # Each asked record ($2) and its record ancestors by every hierarchy parent, $3 levels up: (asked id, ancestor sk, levels up). A level under a parent is read from these.
+# Each node on the way up is read, and its edges held to kg (``unheld``), once: asked siblings share their ancestors.
 UP = f"""/* pipeshub:kg.hier_up */ WITH RECURSIVE up(node, sk, k) AS (
     SELECT r.id, r.sk, 0 FROM unnest($2::text[]) q(id) CROSS JOIN LATERAL {_id("3", "q.id")} r
     UNION SELECT up.node, p.sk, up.k + 1 FROM up CROSS JOIN LATERAL (
       SELECT c.parent_sk AS sk FROM {_sk("up.sk")} c UNION ALL SELECT l.parent_sk FROM {_links_up("up.sk", 1)} l) x
       CROSS JOIN LATERAL {_sk("x.sk")} p
-    WHERE up.k < $3 AND p.coll = 3)
-SELECT up.node, up.sk, up.k, r.app_sk, r.path IS NULL AS no_path, {_unheld("r.id")} AS unheld
-FROM up CROSS JOIN LATERAL {_sk("up.sk")} r"""
+    WHERE up.k < $3 AND p.coll = 3),
+  a AS MATERIALIZED (SELECT r.sk, r.app_sk, r.path IS NULL AS no_path, {_unheld("r.id")} AS unheld FROM (SELECT DISTINCT sk FROM up) q CROSS JOIN LATERAL {_sk("q.sk")} r)
+SELECT up.node, up.sk, up.k, a.app_sk, a.no_path, a.unheld FROM up JOIN a ON a.sk = up.sk"""
 # The members among the sks $2 of the group $3 (its group, or a group link).
 GROUP_MEMBERS = f"""/* pipeshub:kg.hier_group_members */ SELECT c.sk FROM unnest($2::bigint[]) q(sk) CROSS JOIN LATERAL {_sk("q.sk")} c
     WHERE c.group_sk = $3 OR EXISTS (SELECT 1 FROM {_links_up("c.sk", 2)} l WHERE l.parent_sk = $3)"""

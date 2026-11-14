@@ -402,6 +402,30 @@ async def test_every_statement_is_answered_by_index_searches(pg_provider, pg_db)
             assert not bad, f"{state} {name}: {bad}"
 
 
+async def test_the_levels_of_many_siblings_hold_each_ancestor_to_kg_once(pg_provider, pg_db) -> None:
+    """1,000 asked siblings under a share a and f above them: the levels read gives a row per sibling and ancestor (3,000) and checks the edges of each node on the way
+    up once (1,000 siblings, a, f), not once per row."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _admin("""INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, parent_sk, path, leaf)
+        SELECT $1, 71000000 + g, 3, 'sib-' || g, 3, a.app_sk, a.sk, a.path || int8send(a.sk), true FROM generate_series(1, 1000) g,
+          (SELECT sk, app_sk, path FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'a') a""", org)
+    ids = [f"sib-{g}" for g in range(1, 1001)]
+
+    async def go(tx) -> dict[str, Any]:
+        await tx.fetchval(kg_hier.PROFILE)
+        ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + kg_hier.UP, org, ids, 3)
+        return (json.loads(ran) if isinstance(ran, str) else ran)[0]["Plan"]
+    with ctx(org):
+        plan = await pg_db.run(go, custom_plan=True)
+    loops = [n.get("Actual Loops", 0) for n in _nodes(plan) if str(n.get("Relation Name", "")).startswith("edges")]
+    assert plan["Actual Rows"] == 3000, plan["Actual Rows"]
+    assert loops and max(loops) <= 1002, loops                                                  # one probe of each edge kind per node on the way up
+
+
+def _nodes(node: dict[str, Any]) -> list[dict[str, Any]]:
+    return [node, *(n for c in node.get("Plans", []) for n in _nodes(c))]
+
 def _scans(node: dict[str, Any]) -> list[str]:
     """What in a plan reads a table by more than its key: a sequential or bitmap scan, or an index scan whose condition bounds nothing but the organisation (and the collection)."""
     rel, kind = node.get("Relation Name"), node["Node Type"]
