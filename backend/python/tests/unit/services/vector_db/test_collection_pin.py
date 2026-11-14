@@ -316,7 +316,12 @@ class TestRelease:
         await _verify(guard, INT8, collection="c")
         await pins.claim("gone", FP32, "o9")
         assert len(await pins.keys()) == 2
-        assert await pins.release_all() == 2
+        await pins.release_collection("c")
+
+        async def nothing_exists(_name):  # noqa: ANN202
+            return False
+
+        assert await pins.release_orphans(nothing_exists) == ["gone"]
         assert await pins.keys() == []
         await _verify(guard, FP32, collection="c")  # a new index may take the other precision
 
@@ -391,3 +396,156 @@ class TestRegistryDrop:
         assert order == ["vectors"]
         assert list(await pins.keys()) == [pins.key("other")]
         assert original is not None
+
+
+class TestCurrentPinIsTheStanding:
+    @pytest.mark.asyncio
+    async def test_restore_returns_the_pin_that_stands_and_the_batch_is_judged_against_it(self) -> None:
+        # An int8 derivation was read; before it is restored an fp32 pin appears (another writer, a replacement).
+        db = _FakeDb()
+        db.add(INT8, n=2)
+        guard, pins, _ = _guard(db)
+        derived = await guard.standing("c", "o1", fresh=True)
+        assert (derived.precision, derived.source) == (INT8, "derived")
+        await pins.claim("c", FP32)
+        assert (await guard.restore("c", "o1", INT8)).precision == FP32
+        restored = await guard._restored("c", "o1", derived)
+        assert (restored.precision, restored.source) == (FP32, "pin")
+
+    @pytest.mark.asyncio
+    async def test_verify_batch_refuses_an_int8_batch_when_the_pin_became_fp32_after_the_derivation(self) -> None:
+        db = _FakeDb()
+        db.add(INT8, n=2)
+        guard, pins, _ = _guard(db)
+        original = guard.derive
+
+        async def derive_then_pin_moves(collection, org):  # noqa: ANN202
+            standing = await original(collection, org)
+            await pins.claim(collection, FP32)  # lands between the derivation and the restore
+            return standing
+
+        guard.derive = derive_then_pin_moves
+        with pytest.raises(PrecisionFlip):
+            await _verify(guard, INT8)
+
+
+class TestStalePinWithWritersUnderIt:
+    @pytest.mark.asyncio
+    async def test_a_stale_pin_is_put_back_when_a_writer_wrote_under_it_meanwhile(self) -> None:
+        now = [1000.0]
+        db = _FakeDb()
+        guard, pins, _ = _guard(db, clock=lambda: now[0])
+        await pins.claim("c", INT8)
+        now[0] += 3600
+        # another writer found the old pin and wrote int8 points under it; the replacer did not see them
+        db.add(INT8, n=3)
+        assert await guard.replace_stale_for_writer("c", None, now[0]) is False
+        assert (await pins.get("c", fresh=True)).precision == INT8
+
+    @pytest.mark.asyncio
+    async def test_a_stale_pin_is_replaced_when_nothing_was_written_under_it(self) -> None:
+        now = [1000.0]
+        guard, pins, _ = _guard(clock=lambda: now[0])
+        await pins.claim("c", INT8)
+        now[0] += 3600
+        assert await pins.replace_stale("c", FP32, now[0], holds_old=lambda old: guard.count_of("c", "o1", old)) is True
+        assert (await pins.get("c", fresh=True)).precision == FP32
+
+    @pytest.mark.asyncio
+    async def test_a_count_that_cannot_be_read_keeps_the_old_pin(self) -> None:
+        now = [1000.0]
+        _, pins, _ = _guard(clock=lambda: now[0])
+        await pins.claim("c", INT8)
+        now[0] += 3600
+
+        async def unreadable(_precision):  # noqa: ANN202
+            raise ConnectionError("down")
+
+        assert await pins.replace_stale("c", FP32, now[0], holds_old=unreadable) is False
+        assert (await pins.get("c", fresh=True)).precision == INT8
+
+
+class TestStalePinOverAnEmptyIndex:
+    @pytest.mark.asyncio
+    async def test_an_old_pin_over_an_empty_index_does_not_refuse_the_batch_that_replaces_it(self) -> None:
+        now = [1000.0]
+        guard, pins, _ = _guard(_FakeDb(), clock=lambda: now[0])
+        await pins.claim("c", INT8)  # left by a crash between a drop and the pin's removal
+        now[0] += 3600
+        await _verify(guard, FP32)
+        assert (await pins.get("c", fresh=True)).precision == FP32
+
+    @pytest.mark.asyncio
+    async def test_a_young_pin_over_an_empty_index_is_a_writer_about_to_write_and_refuses(self) -> None:
+        now = [1000.0]
+        guard, pins, _ = _guard(_FakeDb(), clock=lambda: now[0])
+        await pins.claim("c", INT8)
+        now[0] += 5
+        with pytest.raises(PrecisionFlip):
+            await _verify(guard, FP32)
+
+    @pytest.mark.asyncio
+    async def test_an_old_pin_over_an_index_that_holds_points_still_refuses(self) -> None:
+        now = [1000.0]
+        db = _FakeDb()
+        guard, pins, _ = _guard(db, clock=lambda: now[0])
+        await pins.claim("c", INT8)
+        db.add(INT8)
+        now[0] += 3600
+        with pytest.raises(PrecisionFlip):
+            await _verify(guard, FP32)
+        assert (await pins.get("c", fresh=True)).precision == INT8
+
+    @pytest.mark.asyncio
+    async def test_a_fallback_batch_never_replaces_a_pin(self) -> None:
+        now = [1000.0]
+        guard, pins, _ = _guard(_FakeDb(), clock=lambda: now[0])
+        await pins.claim("c", INT8)
+        now[0] += 3600
+        with pytest.raises(PrecisionFlip):
+            await _verify(guard, FP32, fallback=True)
+        assert (await pins.get("c", fresh=True)).precision == INT8
+
+
+class TestConfirmAfterTheWrite:
+    @pytest.mark.asyncio
+    async def test_a_pin_of_the_other_precision_after_the_write_is_a_flip(self) -> None:
+        guard, pins, _ = _guard()
+        await pins.claim("c", FP32)
+        with pytest.raises(PrecisionFlip):
+            await guard.confirm_after_write("c", "o1", INT8)
+
+    @pytest.mark.asyncio
+    async def test_a_released_pin_is_restored_from_the_points_written(self) -> None:
+        db = _FakeDb()
+        db.add(INT8)
+        guard, pins, _ = _guard(db)
+        await guard.confirm_after_write("c", "o1", INT8)
+        assert (await pins.get("c", fresh=True)).precision == INT8
+
+
+class TestOrphans:
+    @pytest.mark.asyncio
+    async def test_only_the_pins_of_collections_that_are_gone_are_released(self) -> None:
+        _, pins, _ = _guard()
+        await pins.claim("live", INT8)
+        await pins.claim("gone", FP32, "o9")
+        await pins.claim("gone", INT8, "o8")
+
+        async def exists(name):  # noqa: ANN202
+            return name == "live"
+
+        assert await pins.release_orphans(exists) == ["gone"]
+        assert await pins.keys() == [pins.key("live")]
+
+    @pytest.mark.asyncio
+    async def test_a_collection_that_cannot_be_asked_about_keeps_its_pin(self) -> None:
+        _, pins, _ = _guard()
+        await pins.claim("c", INT8)
+
+        async def unreadable(_name):  # noqa: ANN202
+            raise ConnectionError("down")
+
+        with pytest.raises(ConnectionError):
+            await pins.release_orphans(unreadable)
+        assert len(await pins.keys()) == 1

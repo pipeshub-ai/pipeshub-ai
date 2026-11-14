@@ -83,3 +83,23 @@ async def test_a_provider_that_does_not_say_adds_no_tag_and_is_not_checked() -> 
         (point,), store = await _upsert(embedder, None)
         assert "embedPrecision" not in point.payload["metadata"]
         store.verified.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_resume_key_does_not_change_when_a_batch_has_been_witnessed() -> None:
+    """The key is fixed for an attempt and its retries: a batch's precision is known only after the first one."""
+    store = _make_vectorstore()
+    before = store._embed_key()
+    store.dense_embeddings = _Bundled()
+    store.graph_provider.get_document = AsyncMock(return_value={"_key": "r1"})
+
+    async def embed(texts, record_id, witness_out=None):  # noqa: ANN202
+        witness_out.append(("int8-w", False))
+        return [[0.1, 0.2]]
+
+    store._embed_documents_with_retry = embed
+    store._compute_sparse_embeddings = AsyncMock(return_value=[None])
+    store._guard = MagicMock()
+    store._guard.verify_batch = AsyncMock()
+    await store._embed_and_upsert_documents([Document(page_content="alpha", metadata=_meta())], "r1", "records")
+    assert store._embed_key() == before  # a retry of the same attempt is still resuming it

@@ -42,7 +42,7 @@ def _message(event: str):  # noqa: ANN202
 
 
 @pytest.mark.asyncio
-async def test_the_cleanup_releases_every_pin_and_refreshes_the_verdict_before_it_reports_ready(monkeypatch) -> None:
+async def test_the_cleanup_releases_the_pins_of_what_it_dropped_and_refreshes_the_verdict_before_it_reports_ready(monkeypatch) -> None:
     config = ConfigurationService(log, InMemoryKeyValueStore(log))
     pins = CollectionPinStore(config, log)
     db = _FakeDb()
@@ -74,7 +74,14 @@ async def test_the_cleanup_releases_every_pin_and_refreshes_the_verdict_before_i
 
     async def rebuild(_size):  # noqa: ANN202
         db.points.clear()
+        await pins.release_collection("records")  # the drop of a collection releases its pin, as the registry's does
         return ["records"]
+
+    async def exists(_name):  # noqa: ANN202
+        return False  # no collection is left under any pin that remains
+
+    async def release_orphan_pins():  # noqa: ANN202
+        return await pins.release_orphans(exists)
 
     vector_store = SimpleNamespace(get_embedding_model_instance=AsyncMock(), embedding_size=4)
     handler = object.__new__(RecordEventHandler)
@@ -82,7 +89,7 @@ async def test_the_cleanup_releases_every_pin_and_refreshes_the_verdict_before_i
     handler.logger = log
     handler.event_processor = SimpleNamespace(
         sink_orchestrator=SimpleNamespace(vector_store=vector_store),
-        processor=SimpleNamespace(indexing_pipeline=SimpleNamespace(collection_registry=SimpleNamespace(recreate_records_collections=rebuild))),
+        processor=SimpleNamespace(indexing_pipeline=SimpleNamespace(collection_registry=SimpleNamespace(recreate_records_collections=rebuild, release_orphan_pins=release_orphan_pins))),
     )
     events = [e async for e in handler._delete_vector_collection()]
     assert events

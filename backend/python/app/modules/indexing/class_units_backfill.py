@@ -56,6 +56,11 @@ LEADER_KEY = "class_units_backfill:leader"
 _PAGE = 500
 _PAUSE_SECONDS = 1.0
 _STARTUP_GRACE_SECONDS = 60.0
+# A pass that stops for the embedding precision starts again after this long, from the last cursor written, and
+# keeps its lease meanwhile; it gives up (the next start continues) after waiting this long in all.
+_PRECISION_RETRY_SECONDS = 300.0
+_PRECISION_GIVE_UP_SECONDS = 6 * 3600.0
+_LEASE_RENEW_SECONDS = 30.0
 _CODE_RECORDS = {"recordType": RecordTypes.CODE_FILE.value, "indexingStatus": ProgressStatus.COMPLETED.value}
 _RECORD_FIELDS = ["_key", "orgId", "virtualRecordId", "connectorId", "connectorName", "recordName",
                   "externalRecordId", "recordType", "indexingStatus"]
@@ -97,19 +102,63 @@ async def backfill_class_units(
     page_size: int = _PAGE,
     pause_seconds: float = _PAUSE_SECONDS,
     keep_lease: Callable[[], Awaitable[bool]] | None = None,
+    precision_retry_seconds: float = _PRECISION_RETRY_SECONDS,
+    precision_give_up_seconds: float = _PRECISION_GIVE_UP_SECONDS,
 ) -> BackfillCounts | None:
     """Run (or resume) this version's backfill over ``org_ids``; None when it is switched off or already done.
+
+    A pass that stops because the index holds another weight precision than the embedding server serves waits
+    ``precision_retry_seconds`` (renewing its lease) and runs again from the last cursor written, for at most
+    ``precision_give_up_seconds`` in all; it never marks the migration done while a record was left out.
 
     Each org's records are paged under that org (a store that keeps every row under an org reads none under a
     system scope). The flag's cursor is ``(org, after)``: orgs before ``org`` are done. ``keep_lease`` is
     renewed before every record and before every cursor write, and a lost lease stops the run unwritten."""
+    waited = 0.0
+    while True:
+        counts, paused = await _backfill_pass(
+            graph_provider=graph_provider, vector_store=vector_store, blob_store=blob_store,
+            config_service=config_service, logger=logger, org_ids=org_ids, page_size=page_size,
+            pause_seconds=pause_seconds, keep_lease=keep_lease,
+        )
+        if not paused or counts is None:
+            return counts
+        if waited >= precision_give_up_seconds:
+            logger.warning("Class units backfill gave up waiting for the embedding precision; the next start continues")
+            return counts
+        logger.info("Class units backfill paused: the embedding precision and the index disagree; "
+                    "trying again in %.0fs", precision_retry_seconds)
+        remaining = precision_retry_seconds
+        while remaining > 0:
+            step = min(_LEASE_RENEW_SECONDS, remaining)
+            await asyncio.sleep(step)
+            remaining -= step
+            waited += step
+            if keep_lease is not None and not await keep_lease():
+                logger.warning("Class units backfill stopped: its leader lease was lost")
+                return counts
+
+
+async def _backfill_pass(
+    *,
+    graph_provider: IGraphDBProvider,
+    vector_store: VectorStore,
+    blob_store: Any,  # noqa: ANN401
+    config_service: ConfigurationService,
+    logger: Logger,
+    org_ids: list[str],
+    page_size: int,
+    pause_seconds: float,
+    keep_lease: Callable[[], Awaitable[bool]] | None,
+) -> tuple[BackfillCounts | None, bool]:
+    """One pass from the flag's cursor: its counts (None when off or done) and whether it stopped for the precision."""
     if not _switched_on(logger):
-        return None
+        return None, False
     flag_key = f"{FLAG_PREFIX}{EMBED_UNITS_VERSION}"
     flag = await config_service.get_config(flag_key, use_cache=False)
     flag = flag if isinstance(flag, dict) else {}
     if flag.get("done") is True:
-        return None
+        return None, False
     resume_org, after = flag.get("org"), flag.get("after")
     counts = BackfillCounts(**{k: int(flag.get(k) or 0) for k in BackfillCounts.__dataclass_fields__})
     if resume_org:
@@ -149,14 +198,13 @@ async def backfill_class_units(
         await held()
     except _LeaseLost:
         logger.warning("Class units backfill stopped: its leader lease was lost")
-        return counts
+        return counts, False
     except _WaitingForPrecision:
-        logger.info("Class units backfill paused: the embedding precision and the index disagree; the next pass continues")
-        return counts
+        return counts, True
     await config_service.set_config(flag_key, {"done": True, **asdict(counts)})
     logger.info("Class units backfill for %s done: %d record(s) gained %d unit(s), %d failed",
                 EMBED_UNITS_VERSION, counts.embedded, counts.units, counts.failed)
-    return counts
+    return counts, False
 
 
 class _WaitingForPrecision(Exception):

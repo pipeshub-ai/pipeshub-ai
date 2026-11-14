@@ -183,28 +183,40 @@ class PrecisionGuard:
         try:
             standing = await self.standing(collection, org)
             if standing.source == "derived" and standing.precision:
-                try:
-                    await self.restore(collection, org, standing.precision)
-                except Exception:
-                    self._logger.warning("could not restore the precision pin of '%s'", collection, exc_info=True)
+                standing = await self._restored(collection, org, standing)
             return standing
         except PrecisionDerivationTimeout:
             self._logger.warning("The precision of '%s' could not be derived in time; the read-time check does not use it", collection)
             return Standing(None, "unknown")
 
-    async def restore(self, collection: str, org: str | None, precision: str) -> None:
+    async def restore(self, collection: str, org: str | None, precision: str) -> Pin | None:
         """Write a pin derived from tags, from facts read now: never from cached ones.
 
         The pin key is read again and the tag is counted again immediately before the write; the pin is created
         only if it is still absent and the count is non-zero, so a pin released by a drop cannot be brought back
-        by a cache that has not seen the drop.
+        by a cache that has not seen the drop. Returns the pin that stands afterwards (a pin found there, or the
+        one written), or None when there is none.
         """
         org = self.scope(org)
-        if await self._pins.get(collection, org, fresh=True) is not None:
-            return
+        current = await self._pins.get(collection, org, fresh=True)
+        if current is not None:
+            return current
         if await self._count(collection, org, precision) == 0:
-            return
-        await self._pins.claim(collection, precision, org, derived=True)
+            return None
+        return await self._pins.claim(collection, precision, org, derived=True)
+
+    async def _restored(self, collection: str, org: str | None, standing: Standing) -> Standing:
+        """The standing after a derived one is restored as a pin: the pin as it stands now, not the derivation.
+
+        A pin written or replaced since the derivation was read (another writer's, a replacement of a stale one)
+        is what the next write must be judged against.
+        """
+        try:
+            current = await self.restore(collection, org, standing.precision or "")
+        except Exception:
+            self._logger.warning("could not restore the precision pin of '%s'", collection, exc_info=True)
+            return standing
+        return Standing(current.precision, "pin") if current is not None else standing
 
     async def release_stale_derived(self, collection: str, org: str | None) -> bool:
         """Delete a derived pin whose collection has no points left (exact count after the index is searchable)."""
@@ -217,6 +229,58 @@ class PrecisionGuard:
             return False
         await self._pins.release(collection, org)
         return True
+
+    async def confirm_after_write(self, collection: str, org: str | None, precision: str) -> None:
+        """Raise ``PrecisionFlip`` when, once a batch is written, the index's pin is not the batch's precision.
+
+        The check in front of the write cannot see a pin released and claimed again between it and the write. A pin
+        released and not claimed again is restored from the points (the batch's own), which also names a pin that
+        another precision's writer claimed in the meantime. The caller removes what it wrote.
+        """
+        org = self.scope(org)
+        current = await self._pins.get(collection, org, fresh=True)
+        if current is None:
+            current = await self.restore(collection, org, precision)
+        if current is not None and current.precision != precision:
+            raise PrecisionFlip(
+                f"collection '{collection}' holds {current.precision} vectors and a batch of {precision} was written to it; "
+                f"set {setting_for(current.precision)} and restart the embedding server, {CLEANUP_HINT}",
+            )
+
+    async def count_of(self, collection: str, org: str | None, precision: str) -> int:
+        """How many points carry this precision's tag in the index."""
+        return await self._count(collection, self.scope(org), precision)
+
+    async def replace_stale_for_writer(self, collection: str, model: str | None, observed_at: float, org: str | None = None) -> bool:
+        """``CollectionPinStore.replace_stale_for_writer``, with the points under the old pin counted after the replacement."""
+        org = self.scope(org)
+
+        async def holds_old(precision: str) -> int:
+            return await self._count(collection, org, precision)
+
+        return await self._pins.replace_stale_for_writer(collection, model, observed_at, org, holds_old=holds_old)
+
+    async def _replaced_if_empty(self, collection: str, org: str | None, precision: str, standing: Standing) -> Standing:
+        """A pin of the other precision over an index that holds no point is a leftover: replace it, as a creator would.
+
+        The replacement of an empty store's space happens inside the write, after this check, so without this step
+        the check would refuse the batch that is to clear the leftover, on every retry. The pin is replaced only
+        under the rules of ``replace_stale`` (older than the skew, and no point of its precision once replaced).
+        An index with any point keeps its pin, and the batch is refused.
+        """
+        try:
+            if (await self.derive(collection, org)).precision is not None:
+                return standing
+            if not await self._pins.replace_stale(
+                collection, precision, self._pins.now(), org,
+                holds_old=lambda old: self._count(collection, org, old),
+            ):
+                return standing
+            current = await self._pins.get(collection, org, fresh=True)
+        except Exception:  # unreadable facts are not an empty index: the pin stands and the batch is refused
+            self._logger.warning("could not check whether '%s' is empty under a stale pin", collection, exc_info=True)
+            return standing
+        return Standing(current.precision, "pin") if current is not None else standing
 
     # -- the check -------------------------------------------------------------------------------------------
 
@@ -251,10 +315,9 @@ class PrecisionGuard:
                 raise PrecisionUnreadable(f"could not claim the precision of '{collection}': {type(exc).__name__}") from exc
             standing = Standing(pin.precision, "pin")
         elif standing.source == "derived":
-            try:
-                await self.restore(collection, org, standing.precision)
-            except Exception:
-                self._logger.warning("could not restore the precision pin of '%s'", collection, exc_info=True)
+            standing = await self._restored(collection, org, standing)
+        if standing.source == "pin" and standing.precision != precision and not fallback:
+            standing = await self._replaced_if_empty(collection, org, precision, standing)
         if standing.precision != precision:
             raise PrecisionFlip(
                 f"collection '{collection}' holds {standing.precision} vectors and the embedding server now produces {precision}; "

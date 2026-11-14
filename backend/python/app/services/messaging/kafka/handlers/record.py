@@ -1660,15 +1660,19 @@ class RecordEventHandler(BaseEventService):
             await vector_store.require_matching_precision_before_delete(None, org_id, build_model=True)
 
     async def _forget_precision_state(self) -> None:
-        """After the drop: release every pin left under the pin directory (orphans too) and recompute the verdict now.
+        """After the drop: release the pins of collections that are gone (orphans) and recompute the verdict now.
+
+        The pin of every collection the cleanup dropped was released with its vectors. A pin over a collection that
+        still exists stays: it describes vectors that are still there.
 
         Without the recompute, a process would keep handing events back for up to a poll period after the
         indexes it was waiting on are gone.
         """
         try:
-            await CollectionPinStore(self.config_service, self.logger).release_all()
+            registry = self.event_processor.processor.indexing_pipeline.collection_registry
+            await registry.release_orphan_pins()
         except Exception:
-            self.logger.error("Could not release every weight-precision pin after the cleanup", exc_info=True)
+            self.logger.error("Could not release the weight-precision pins of collections that are gone", exc_info=True)
             raise
         verdict = active_verdict()
         if verdict is not None:
@@ -1681,12 +1685,12 @@ class RecordEventHandler(BaseEventService):
         # included — rather than let the job time out with no explanation.
         try:
             await self._recreate_managed_collections()
+            await self._forget_precision_state()
         except Exception:
             await mark_cleanup_phase(
                 self.config_service, PHASE_FAILED, logger=self.logger
             )
             raise
-        await self._forget_precision_state()
         await mark_cleanup_phase(self.config_service, PHASE_READY, logger=self.logger)
         yield PipelineEvent(
             event=IndexingEvent.PARSING_COMPLETE,
@@ -1698,11 +1702,13 @@ class RecordEventHandler(BaseEventService):
         )
 
     async def _recreate_managed_collections(self) -> list[str]:
-        """Drop and rebuild every records collection the registry manages.
+        """Drop and rebuild every records collection the registry manages, and reset the entity index.
 
-        The entity index is not one of them: it is a projection of the graph
-        that ``EntityVectorStore`` keeps on the current model by itself, and
-        nothing here would fill it again.
+        The entity index is not a records collection: it is a projection of the graph that
+        ``EntityVectorStore`` keeps on the current model by itself. It holds embedding vectors of the
+        weight precision it was written with, so it is dropped and created empty here, with its pin, and the
+        entity index rebuild (which reads the new collection as one it has not filled) projects the graph
+        into it again, as it does after a model change.
 
         The embedding dimension is re-derived from the *live* model rather
         than the manifest, because this event fires precisely when the model
@@ -1730,6 +1736,9 @@ class RecordEventHandler(BaseEventService):
         # are rebuilt but every later resolution still uses the outgoing
         # strategy's names until the service restarts.
         reset_strategy_cache()
+        entity_store = self._entity_vector_store()
+        if entity_store is not None:
+            await entity_store.reset_collection()
         self.logger.info(
             "♻️ Recreated %d records collection(s) at dimension %s: %s",
             len(recreated),

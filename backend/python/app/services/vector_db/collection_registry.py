@@ -42,6 +42,7 @@ from app.services.vector_db.const.const import (
 )
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import CollectionConfig
+from app.services.vector_db.precision_guard import PrecisionGuard
 from app.services.vector_db.strategy import (
     CollectionStrategy,
     DeleteAction,
@@ -325,7 +326,7 @@ class CollectionRegistry:
 
         # A pin left over by a crash between a drop and the pin's removal; one claimed after the
         # collection came to exist is the writer's and stays.
-        await self._pins().replace_stale_for_writer(name, ctx.embedding_model, absent_at)
+        await self._guard().replace_stale_for_writer(name, ctx.embedding_model, absent_at)
         # Manifest first, for the same reason as the branch above.
         await self._record_in_manifest(name, ctx, embedding_size)
         self._existence.mark(name, dimension=embedding_size)
@@ -591,6 +592,9 @@ class CollectionRegistry:
         # The pin lives in the same configuration store as the manifest, and the registry has no other use for it.
         return CollectionPinStore(self._manifest_store.config_service, self._logger)
 
+    def _guard(self) -> PrecisionGuard:
+        return PrecisionGuard(self._pins(), self._vector_db_service, self._logger)
+
     async def replace_stale_org_pin(self, org: str, model: str | None, observed_at: float) -> list[str]:
         """After a store with one space per org replaced an org's empty space: replace that org's stale pins.
 
@@ -598,10 +602,14 @@ class CollectionRegistry:
         """
         replaced: list[str] = []
         for entry in await self.list_managed_collections():
-            did = await self._pins().replace_stale_for_writer(entry.name, entry.embedding_model or model, observed_at, org)
+            did = await self._guard().replace_stale_for_writer(entry.name, entry.embedding_model or model, observed_at, org)
             if did:
                 replaced.append(entry.name)
         return replaced
+
+    async def release_orphan_pins(self) -> list[str]:
+        """Release the pins of collections that no longer exist; a pin over a collection that is there stays."""
+        return await self._pins().release_orphans(self._vector_db_service.collection_exists)
 
     async def delete_collection(self, name: str) -> None:
         """Idempotent drop: a missing collection is treated as success."""
@@ -670,7 +678,7 @@ class CollectionRegistry:
                 config=self._collection_config_factory(records_dimension),
             )
             await self._ensure_payload_indexes(entry.name)
-            await self._pins().replace_stale_for_writer(entry.name, entry.embedding_model, absent_at)
+            await self._guard().replace_stale_for_writer(entry.name, entry.embedding_model, absent_at)
             await self._manifest_store.record(
                 ManagedCollection(
                     name=entry.name,

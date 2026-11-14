@@ -18,7 +18,7 @@ from app.config.configuration_service import delete_config_confirmed
 from app.utils.precision_witness import get_precision_witness
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
 PIN_DIRECTORY = "/services/vectordb/embedding_pin"
 FP32 = "fp32"
@@ -93,21 +93,33 @@ class CollectionPinStore:
             if key == prefix or key.startswith(prefix + "/"):
                 await delete_config_confirmed(self._config, key)
 
-    async def release_all(self) -> int:
-        """Remove every key under the pin directory, managed or not (orphans included)."""
-        keys = await self.keys()
-        for key in keys:
-            await delete_config_confirmed(self._config, key)
-        return len(keys)
+    async def release_orphans(self, exists: Callable[[str], Awaitable[bool]]) -> list[str]:
+        """Remove the pins of collections that are gone; a pin over a collection that still exists stays.
+
+        ``exists`` is asked once per collection named under the directory. A collection that cannot be asked about
+        raises, and its pin is left alone: an unreadable collection is not a missing one.
+        """
+        names = {key[len(PIN_DIRECTORY) + 1:].split("/", 1)[0] for key in await self.keys() if key.startswith(PIN_DIRECTORY + "/")}
+        released: list[str] = []
+        for name in sorted(names):
+            if not await exists(name):
+                await self.release_collection(name)
+                released.append(name)
+        return released
 
     async def replace_stale(
         self, collection: str, precision: str, observed_empty_at: float, org: str | None = None,
-        skew: float = STALE_PIN_SKEW_SECONDS,
+        skew: float = STALE_PIN_SKEW_SECONDS, holds_old: Callable[[str], Awaitable[int]] | None = None,
     ) -> bool:
         """Replace a pin left over by a crash, only if it predates *observed_empty_at* by more than *skew*.
 
         A writer that claimed after the collection came to exist has ``pinned_at`` at or after the
         moment the replacer saw it empty, so it is never replaced.
+
+        A writer that found the old pin and wrote under it does not touch the pin, so the timestamp alone cannot
+        see it. ``holds_old`` counts the points that carry the old pin's precision, and is asked once the
+        new pin is in place: any such point puts the old pin back and nothing is replaced (a count that
+        cannot be read does the same). Writers that read the pin after the replacement see the new one.
         """
         standing = await self.get(collection, org, fresh=True)
         if standing is None or standing.precision == precision:
@@ -116,13 +128,27 @@ class CollectionPinStore:
             return False
         await self._config.update_config(self.key(collection, org), Pin(precision, int(self._clock() * 1000)).to_value())
         after = await self.get(collection, org, fresh=True)
-        return after is not None and after.precision == precision
+        if after is None or after.precision != precision:
+            return False
+        if holds_old is not None:
+            try:
+                kept = await holds_old(standing.precision)
+            except Exception:
+                kept = 1
+                self._logger.warning("could not count the points under the old precision pin of '%s'", collection, exc_info=True)
+            if kept:
+                await self._config.update_config(self.key(collection, org), standing.to_value())
+                return False
+        return True
 
     def now(self) -> float:
         """The wall-clock second a creator observes "absent or empty" at (the pin store's own clock)."""
         return self._clock()
 
-    async def replace_stale_for_writer(self, collection: str, model: str | None, observed_at: float, org: str | None = None) -> bool:
+    async def replace_stale_for_writer(
+        self, collection: str, model: str | None, observed_at: float, org: str | None = None,
+        holds_old: Callable[[str], Awaitable[int]] | None = None,
+    ) -> bool:
         """The creator-site form of :meth:`replace_stale`: the writer's precision is what this process last saw the model serve.
 
         Nothing is replaced without a witness, or under a fallback (a pin is never claimed from a fallback), and a
@@ -132,7 +158,7 @@ class CollectionPinStore:
         if witness is None or witness.fallback:
             return False
         try:
-            return await self.replace_stale(collection, witness.precision, observed_at, org)
+            return await self.replace_stale(collection, witness.precision, observed_at, org, holds_old=holds_old)
         except Exception:
             self._logger.warning("could not check for a stale precision pin of '%s'", collection, exc_info=True)
             return False

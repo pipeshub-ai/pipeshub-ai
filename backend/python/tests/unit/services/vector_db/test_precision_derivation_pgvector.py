@@ -219,3 +219,28 @@ async def test_a_derivation_timeout_leaves_the_verdict_at_match_and_the_write_gu
     guard = PrecisionGuard(CollectionPinStore(config, log), _service(runtime), log)
     with pytest.raises(PrecisionUnreadable):
         await guard.verify_batch("records", ORG, INT8, fallback=False, intent=INT8)
+
+
+@pytest.mark.asyncio
+async def test_a_stale_pin_over_an_empty_org_space_does_not_block_the_write_that_replaces_it() -> None:
+    from app.services.messaging.precision_flip import PrecisionFlip
+
+    now = [1000.0]
+    runtime = _Runtime(points=0)
+    config = ConfigurationService(log, InMemoryKeyValueStore(log))
+    pins = CollectionPinStore(config, log, clock=lambda: now[0])
+    guard = PrecisionGuard(pins, _service(runtime), log)
+    await pins.claim("records", INT8, ORG)  # left by a crash: the org's space was emptied, the pin was not removed
+    now[0] += 3600
+    await guard.verify_batch("records", ORG, FP32, fallback=False, intent=INT8)
+    assert (await pins.get("records", ORG, fresh=True)).precision == FP32
+    assert all(call["org"] == ORG for call in runtime.calls)  # every count ran bound to the org
+
+    # the same pin over a space that holds int8 points keeps refusing the other precision
+    await pins.release("records", ORG)
+    await pins.claim("records", INT8, ORG)
+    now[0] += 3600
+    runtime.tagged = {INT8: 3}
+    with pytest.raises(PrecisionFlip):
+        await guard.verify_batch("records", ORG, FP32, fallback=False, intent=INT8)
+    assert (await pins.get("records", ORG, fresh=True)).precision == INT8

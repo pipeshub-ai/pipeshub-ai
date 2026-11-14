@@ -2836,7 +2836,6 @@ class VectorStore(Transformer):
         batch_precision: str | None = None
         if witnessed:
             batch_precision, batch_fallback = witnessed[-1]
-            self._last_precision = batch_precision
             await self._precision_guard().verify_batch(
                 collection_name, _bound_org(), batch_precision,
                 fallback=batch_fallback, intent=INT8_INTENT,
@@ -2964,8 +2963,10 @@ class VectorStore(Transformer):
             _point_policy(),
             str(_rows_per_point()),
             str(_max_row_points_per_table()),
-            # The weights of the last batch; absent for every provider that does not name them, so keys do not change there.
-            *((self._last_precision,) if getattr(self, "_last_precision", None) else ()),
+            # The weights are not part of it, and must not be: the key is fixed for the whole attempt and every retry of
+            # it, and what a batch comes back with is known only after the first one. One precision per index is held by
+            # the pin, checked in front of every write, and points of another one are removed at the end of a record,
+            # so no point a resume would keep can be of a precision other than the index's.
         )
         return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:16]
 

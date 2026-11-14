@@ -771,6 +771,15 @@ class EntityVectorStore:
                 "The indexing service recreates it.",
                 details={"collection": name},
             )
+        await self._under_recreate_lock(
+            name,
+            lambda: self._drop_and_create_under_lock(
+                name, mismatch, leader=leader, holds_entities=holds_entities, config_hash=config_hash,
+            ),
+        )
+
+    async def _under_recreate_lock(self, name: str, action: Callable[[], Awaitable[None]]) -> None:
+        """Run ``action`` holding the lock that makes one replica at a time drop and create the collection."""
         redis = await redis_from_config_service(self.config_service)
         try:
             lock = RebuildJobLock(redis, key=_recreate_lock_key(name), ttl_seconds=_RECREATE_LOCK_SECONDS)
@@ -780,9 +789,7 @@ class EntityVectorStore:
                     details={"collection": name},
                 )
             try:
-                await self._drop_and_create_under_lock(
-                    name, mismatch, leader=leader, holds_entities=holds_entities, config_hash=config_hash,
-                )
+                await action()
             finally:
                 try:
                     await lock.release()
@@ -791,6 +798,31 @@ class EntityVectorStore:
         finally:
             with contextlib.suppress(Exception):
                 await redis.aclose()
+
+    async def reset_collection(self) -> bool:
+        """Drop the collection and create it empty, with no pin; the entity index rebuild refills it from the graph.
+
+        For the cleanup that drops every index holding embedding vectors: the entity index holds them too, so it
+        goes with the records collections and its pin goes with it (the vectors first, the pin after, as for any
+        drop). The new collection carries no stamp, so the rebuild reads it as a new collection and projects the
+        graph into it again, as it does after a model change. False when this store has no one collection to reset.
+        """
+        name = self._shared_collection
+        if name is None:
+            return False
+        await self._ensure_initialized(recreate=True)
+
+        async def drop_and_create() -> None:
+            info = await self.vector_db_service.get_collection_info(name)
+            if info.exists:
+                await self.vector_db_service.delete_collection(name)
+            await CollectionPinStore(self.config_service, self.logger).release_collection(name)
+            await self._create_collection(name)
+            self._ready_collections.discard(name)
+
+        await self._under_recreate_lock(name, drop_and_create)
+        self.logger.info("Entity collection '%s' reset; the entity index rebuild refills it", name)
+        return True
 
     def _mismatch_report_due(self, name: str) -> bool:
         now = time.monotonic()
@@ -832,8 +864,8 @@ class EntityVectorStore:
         await self._create_collection(name)
 
     async def _create_collection(self, name: str) -> None:
-        pins = CollectionPinStore(self.config_service, self.logger)
-        absent_at = pins.now()
+        guard = self._guard()
+        absent_at = CollectionPinStore(self.config_service, self.logger).now()
         try:
             await self.vector_db_service.create_collection(
                 collection_name=name,
@@ -850,7 +882,7 @@ class EntityVectorStore:
         else:
             self.logger.info("Created entity vector collection '%s'", name)
         # A pin left by a crash between the drop and the pin's removal; one claimed after the creation stays.
-        await pins.replace_stale_for_writer(name, getattr(self._dense_embeddings, "model", None), absent_at)
+        await guard.replace_stale_for_writer(name, getattr(self._dense_embeddings, "model", None), absent_at)
         await self._ensure_payload_indexes(name)
 
     async def _ensure_payload_indexes(self, name: str) -> None:
@@ -1242,8 +1274,28 @@ class EntityVectorStore:
                 ))
             await self._raise_if_config_moved(config_hash)
             await self.vector_db_service.upsert_points(collection_name=collection, points=points)
+            await self._confirm_precision_after_write(collection, batch_org, witnessed, [e for e, _, _ in pending])
             outcome.written += len(points)
             settled.update(point.id for point in points)
+
+    async def _confirm_precision_after_write(
+        self, collection: str, org: str, witnessed: dict[str, tuple[str, bool] | None], written: list[EntityRecord],
+    ) -> None:
+        """The pin is read again after the write: a cleanup that released it, or a writer of the other precision that
+        claimed it, between the check and the write would otherwise leave these points beside the other precision.
+
+        A pin of another precision than the batch's removes the points just written and hands the batch back.
+        """
+        for precision in {w[0] for w in witnessed.values() if w is not None}:
+            try:
+                await self._guard().confirm_after_write(collection, org, precision)
+            except PrecisionFlip:
+                by_type: dict[str, list[str]] = {}
+                for entity in written:
+                    by_type.setdefault(entity.entity_type.value, []).append(entity.entity_id)
+                for entity_type, ids in by_type.items():
+                    await self.delete_entities(org, entity_type, ids)
+                raise
 
     async def _embed_changed(
         self, entities: list[EntityRecord], states: dict[str, dict[str, Any]], fingerprint: str,

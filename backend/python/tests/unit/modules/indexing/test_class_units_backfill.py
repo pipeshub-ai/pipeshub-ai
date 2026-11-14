@@ -434,7 +434,56 @@ async def test_a_precision_flip_stops_the_pass_without_counting_failures_or_sett
     config, blobs = Config(), Blobs({"vr-a": WITH_CLASSES, "vr-b": WITH_CLASSES})
     vs = _store(have_units=set())
     vs.index_class_units = AsyncMock(side_effect=PrecisionFlip("the index holds int8-w"))
-    counts = await _run(graph, vs, blobs, config)
+    counts = await _run(graph, vs, blobs, config, precision_give_up_seconds=0)
     assert counts.failed == 0
     assert vs.index_class_units.await_count == 1  # the pass stopped at the first flip, it did not go on to record b
     assert FLAG not in config.values  # the next pass starts again from the last finished page
+
+
+async def test_a_precision_pause_schedules_another_pass_that_finishes_the_migration() -> None:
+    from app.services.messaging.precision_flip import PrecisionFlip
+
+    graph = Graph({"a": (WITH_CLASSES, "COMPLETED"), "b": (WITH_CLASSES, "COMPLETED")})
+    config, blobs = Config(), Blobs({"vr-a": WITH_CLASSES, "vr-b": WITH_CLASSES})
+    vs = _store(have_units=set())
+    vs.index_class_units = AsyncMock(side_effect=[PrecisionFlip("the index holds int8-w"), 3, 4])
+    renewed: list[bool] = []
+
+    async def lease() -> bool:
+        renewed.append(True)
+        return True
+
+    counts = await _run(graph, vs, blobs, config, keep_lease=lease, precision_retry_seconds=0)
+    assert vs.index_class_units.await_count == 3  # record a again after the pause, then b
+    assert (counts.embedded, counts.units, counts.failed) == (2, 7, 0)
+    assert config.values[FLAG]["done"] is True  # finished only because the second pass ran
+    assert renewed  # the lease was held through both passes
+
+
+async def test_a_pause_that_never_clears_gives_up_and_leaves_the_flag_open() -> None:
+    from app.services.messaging.precision_flip import PrecisionFlip
+
+    graph = Graph({"a": (WITH_CLASSES, "COMPLETED")})
+    config, blobs = Config(), Blobs({"vr-a": WITH_CLASSES})
+    vs = _store(have_units=set())
+    vs.index_class_units = AsyncMock(side_effect=PrecisionFlip("the index holds int8-w"))
+    await _run(graph, vs, blobs, config, precision_retry_seconds=0.2, precision_give_up_seconds=0.4)
+    assert vs.index_class_units.await_count == 3  # every 0.2 s until 0.4 s of waiting were spent
+    assert FLAG not in config.values
+
+
+async def test_a_lease_lost_while_waiting_for_the_precision_stops_the_run() -> None:
+    from app.services.messaging.precision_flip import PrecisionFlip
+
+    graph = Graph({"a": (WITH_CLASSES, "COMPLETED")})
+    config, blobs = Config(), Blobs({"vr-a": WITH_CLASSES})
+    vs = _store(have_units=set())
+    vs.index_class_units = AsyncMock(side_effect=PrecisionFlip("the index holds int8-w"))
+    calls = [True, True, False]
+
+    async def lease() -> bool:
+        return calls.pop(0) if calls else False
+
+    await _run(graph, vs, blobs, config, keep_lease=lease, precision_retry_seconds=0.01)
+    assert vs.index_class_units.await_count == 1
+    assert FLAG not in config.values

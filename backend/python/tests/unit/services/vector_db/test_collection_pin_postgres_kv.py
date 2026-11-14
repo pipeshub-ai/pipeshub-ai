@@ -120,10 +120,16 @@ async def test_release_removes_nested_per_org_pins_and_orphans_by_listing_the_di
     await pins.claim("c", INT8)
     await pins.claim("c", INT8, "o1")
     await pins.claim("gone", FP32)
+    await pins.claim("gone", INT8, "o9")
+    await pins.claim("live", FP32)
     await pins.release_collection("c")
-    assert list(await pins.keys()) == [pins.key("gone")]
-    assert await pins.release_all() == 1
-    assert await pins.keys() == []
+    assert sorted(await pins.keys()) == sorted([pins.key("gone"), pins.key("gone", "o9"), pins.key("live")])
+
+    async def exists(name):  # noqa: ANN202
+        return name == "live"
+
+    assert await pins.release_orphans(exists) == ["gone"]  # the collection's pin and its org's, found by listing the directory
+    assert await pins.keys() == [pins.key("live")]
 
 
 @pytest.mark.asyncio

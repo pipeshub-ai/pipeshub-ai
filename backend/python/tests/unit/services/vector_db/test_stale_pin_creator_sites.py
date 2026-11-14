@@ -44,6 +44,17 @@ class _Vdb:
     def __init__(self) -> None:
         self.dims: dict[str, int] = {}
         self.on_create = None
+        self.tagged: dict[str, int] = {}  # points by precision tag, as the counts that follow a replacement see them
+        self.per_org = False
+
+    def get_capabilities(self):  # noqa: ANN202
+        return SimpleNamespace(spaces_per_org=self.per_org, supports_sparse_vectors=False)
+
+    async def filter_collection(self, must=None, **_k):  # noqa: ANN202
+        return dict(must or {})
+
+    async def count_points(self, collection, expression):  # noqa: ANN202
+        return sum(self.tagged.get(tag, 0) for tag in expression.get("embedPrecision", []))
 
     async def get_collection_info(self, name):  # noqa: ANN202
         return VectorCollectionInfo(name=name, exists=name in self.dims, dense_dimension=self.dims.get(name))
@@ -96,6 +107,22 @@ async def test_the_create_branch_replaces_a_pin_left_by_a_crash(_witness) -> Non
     _witness.record(MODEL, FP32)
     await registry.ensure_collection(_ctx(), 4)
     assert (await pins.get(name, fresh=True)).precision == FP32
+
+
+@pytest.mark.asyncio
+async def test_the_create_branch_keeps_a_pin_that_a_writer_wrote_under_while_the_collection_was_created(_witness) -> None:
+    """A writer found the old pin and stored int8 points under it before the replacement: the old pin stays."""
+    registry, vdb, _, pins = _registry()
+    name = registry.resolve_write_collection(_ctx())
+    await _stale(pins, name, INT8, age_seconds=3600)
+    _witness.record(MODEL, FP32)
+
+    async def writer_stores_under_the_old_pin() -> None:
+        vdb.tagged[INT8] = 2
+
+    vdb.on_create = writer_stores_under_the_old_pin
+    await registry.ensure_collection(_ctx(), 4)
+    assert (await pins.get(name, fresh=True)).precision == INT8
 
 
 @pytest.mark.asyncio
@@ -188,7 +215,7 @@ async def test_an_entity_collection_create_replaces_a_stale_pin(_witness) -> Non
     store._embedding_size = 4
     store._capabilities = SimpleNamespace(supports_sparse_vectors=False)
     store._dense_embeddings = SimpleNamespace(model=MODEL)
-    store.vector_db_service = AsyncMock()
+    store.vector_db_service = _Vdb()
     store._ensure_payload_indexes = AsyncMock()
     await _stale(pins, "entities", INT8, age_seconds=3600)
     _witness.record(MODEL, FP32)
@@ -217,6 +244,7 @@ class _Catalog:
 @pytest.mark.parametrize("replaced", [True, False])
 async def test_a_stale_org_pin_is_replaced_only_by_the_replace_empty_space_event(_witness, replaced) -> None:
     registry, vdb, config, pins = _registry()
+    vdb.per_org = True
     name = registry.resolve_write_collection(_ctx())
     vdb.dims[name] = 4
     await registry._manifest_store.record(ManagedCollection(

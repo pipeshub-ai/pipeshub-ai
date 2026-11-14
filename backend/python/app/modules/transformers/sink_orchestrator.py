@@ -349,17 +349,21 @@ class SinkOrchestrator(Transformer):
             self.logger.debug(f"✅ Vector store indexing succeeded for record {record_id}")
             # Per-record indexing success counter (powers the Ingestion dashboard).
             record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
+            # The record's own entity points are written before it is marked indexed: a write that is handed
+            # back because the index holds another weight precision (``PrecisionFlip``) must leave the record
+            # unfinished, so that the event is run again, and not "already indexed" and acknowledged without them.
+            with stage("entities.identity"):
+                await self._sync_record_identity_entities(ctx)
             self.logger.debug(f"Saving reconciliation metadata for record {record_id}")
             with stage("graph.status"):
                 if not await self._update_indexing_status(ctx):
                     # Deleted while its vectors were written: nothing more is saved for it
                     # (a reconciliation save would bring back a mapping the delete removed),
                     # and the event ends as an expected outcome, without enrichment.
+                    await self._remove_identity_entities(ctx)
                     raise RecordDeletedError(record_id)
             with stage("blob.metadata"):
                 await self._save_reconciliation_metadata(ctx)
-            with stage("entities.identity"):
-                await self._sync_record_identity_entities(ctx)
             # Every write of the run is done, so the delivery may be remembered, with the lastIndexTimestamp
             # its COMPLETED write stored: a run that failed after that write leaves no entry, and its
             # redelivery runs again. A call of its own; a failure only weakens the replay guard.
@@ -367,6 +371,17 @@ class SinkOrchestrator(Transformer):
                 await note_record_completed(record_id, ctx.indexed_at_ms, self.logger)
         # Also reached when the record was already COMPLETED and nothing was re-indexed.
         await self._project_properties(ctx, record_doc)
+
+    async def _remove_identity_entities(self, ctx: TransformContext) -> None:
+        """The record's own entity point, taken out again when the record turned out to be deleted while it was indexed."""
+        if not self.entity_vector_store or not ctx.record.org_id:
+            return
+        from app.models.entities import EntityType
+
+        try:
+            await self.entity_vector_store.delete_entity(ctx.record.org_id, EntityType.RECORD.value, ctx.record.id)
+        except Exception as exc:
+            self.logger.warning("Entity point of deleted record %s not removed (the sweep removes it): %s", ctx.record.id, type(exc).__name__)
 
     async def _project_properties(self, ctx: TransformContext, record_doc: dict[str, Any]) -> None:
         """Write the record's filterable property values onto the record (``RECORD_PROPERTY_PROJECTION``).
@@ -430,7 +445,8 @@ class SinkOrchestrator(Transformer):
         """Write the record's own entity points, its title and its record group
         (a Jira project, a Drive folder), in one batch.
 
-        Runs after the record is searchable, for every connector, since
+        Runs once the record's vectors are written and before it is marked indexed (a handed-back write
+        must leave it retryable), for every connector, since
         ``record_group_id`` is generic. Membership is replaced, not merged:
         a record has exactly one connector and one group (a union kept a
         moved record matching its old group's users), and a group point lists
