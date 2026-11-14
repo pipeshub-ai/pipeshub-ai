@@ -19,6 +19,7 @@ from app.connectors.core.address_policy import public_only_for_scope
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectionCheckResult,
+    replace_action_item,
 )
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
@@ -38,6 +39,9 @@ from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOptionsResponse,
     load_connector_filters,
+)
+from app.connectors.core.registry.folder_filter_action_item import (
+    FOLDER_FILTER_UNMATCHED_CODE,
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.network_share.entities_processor import (
@@ -151,7 +155,7 @@ if TYPE_CHECKING:
             "https://docs.pipeshub.com/connectors/smb/smb",
             "pipeshub",
         ))
-        .add_filter_field(CommonFields.folder_paths_filter("share", path_style="windows"))
+        .add_filter_field(CommonFields.folder_paths_filter("share", path_style="windows", wildcards=True))
         .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files by creation date. Uses last-write time when the server omits created time."))
@@ -417,6 +421,9 @@ class SmbConnector(BaseConnector):
             prune=prune,
         )
         self._last_walk = report
+        if report.complete:
+            # Only a walk that read everything knows a pattern matched nothing.
+            replace_action_item(self, FOLDER_FILTER_UNMATCHED_CODE, report.unmatched_patterns_item())
         if report.unreadable:
             raise ShareWalkIncompleteError(
                 f"Nothing could be listed in {', '.join(report.unreadable)}. "
