@@ -115,10 +115,10 @@ def filtered_out(app_id: str, app_doc: dict, filters: dict[str, Any]) -> bool:
     return bool((filters.get("connector_ids") and app_id not in filters["connector_ids"]) or (filters.get("origins") and origin_of(app_doc) not in filters["origins"]))
 
 
-def where_of(org: str, app_sk: int, app_doc: dict, filters: dict[str, Any], hidden: list[int]) -> tuple[kgl.Params, str]:
-    """The parameters (``$1`` the org, ``$2`` the connector, ``$3`` the window) and the conditions on a row ``r`` of the filters and the hidden rows."""
+def where_of(org: str, app_sk: int, app_doc: dict, filters: dict[str, Any], hidden: list[int], *, browse: bool = False) -> tuple[kgl.Params, str]:
+    """The parameters (``$1`` the org, ``$2`` the connector, ``$3`` the window) and the conditions on a row ``r`` of the filters and the hidden rows (``browse``: a browse's)."""
     base = kgl.Params([org, app_sk, None])
-    where = kgl.filters_sql(filters, base)
+    where = kgl.filters_sql(filters, base, browse=browse)
     if origin_of(app_doc) == "COLLECTION" and (groups := filters.get("record_group_ids")):
         # As the other stores do: the list narrows a collection's record groups only; records and folders pass.
         where += f" AND (r.kind <> 2 OR r.id = ANY({base.add(list(groups))}::text[]))"
@@ -403,10 +403,11 @@ class KhListingMixin(PgBase):
         return False, used
 
     async def _kh_arrows_read(self, tx: Tx, org: str, page: list[Any], hidden: list[int], sets: dict[str, Any] | None, gset: set[str], access: dict[str, Any], *,
-                              tops: bool) -> tuple[set[int], list[Any], set[str], set[int]]:
+                              tops: bool, bound: int | None = None, cut: set[int] | None = None) -> tuple[set[int], list[Any], set[str], set[int]]:
         """The read behind the arrows of a page's rows, in the caller's unit: the rows a statement over the classes finds a child for (a connector kg serves: exact), and for the
         others a sample of their children with the ones the viewer may open (the classes, then the live check for what they do not decide). Last, with ``tops``, the groups that
-        hold a granted record that may be a chain-top listed under them (``kgl.HELD``)."""
+        hold a granted record that may be a chain-top listed under them (``kgl.HELD``). ``bound``: the sample reads at most that many rows in all, the rows in the order asked;
+        the rows whose sample it cut or did not reach go into ``cut`` (their arrow is unknown unless a child read lights it)."""
         asked = [c["sk"] for c in page if not c["hide_children"]]
         lists: set[int] = set()
         if not asked:
@@ -422,16 +423,22 @@ class KhListingMixin(PgBase):
             lists = {r["sk"] for r in found if r["lists"]}
             rest = [r["sk"] for r in found if not r["lists"] and r["undecided"]]
         # the sample: a row's first children (never a pass over all of them), the classes deciding what they can and the live check the rest
-        kids = list(await tx.fetch(kgl.children_of_sql(), org, rest, ARROW_CHILDREN, hidden)) if rest else []
+        if bound is None or not rest:
+            kids = list(await tx.fetch(kgl.children_of_sql(), org, rest, ARROW_CHILDREN, hidden)) if rest else []
+        else:
+            kids = list(await tx.fetch(kgl.children_of_sql(total=True), org, rest, ARROW_CHILDREN, hidden, bound)) if bound > 0 else []
+            if len(kids) >= bound and cut is not None:      # the last row read may be partial, the ones after it unread
+                cut |= set(rest[rest.index(kids[-1]["parent"]) if kids else 0:])
         ok, left = self._kh_class_split(kids, sets, gset)
         for i in range(0, len(left), ADMIT_CHUNK):
             ok |= {r["id"] for r in await access_sql.accessible_rows(tx, org, [r["id"] for r in left[i:i + ADMIT_CHUNK]], [], access)}
         return lists, kids, ok, held
 
     async def _kh_lists(self, read: tuple[set[int], list[Any], set[str], set[int]], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str,
-                        transaction: str | None, tops: Callable[[list[Any]], Awaitable[set[int]]] | None = None, budget: LeadBudget | None = None) -> set[int]:
+                        transaction: str | None, tops: Callable[[list[Any]], Awaitable[set[int]]] | None = None, budget: LeadBudget | None = None, *,
+                        undecided: set[int] | None = None) -> set[int]:
         """The rows of the page whose opening lists something (from :meth:`_kh_arrows_read`): a child the viewer may open, a placeholder only when it leads somewhere
-        (:meth:`_kh_leads`); none for a group that hides its children."""
+        (:meth:`_kh_leads`); none for a group that hides its children. ``undecided`` collects the rows whose answer waits on a placeholder the request's budget left undecided."""
         lists, kids, ok, _ = read
         by_stub: dict[int, set[int]] = {}
         stubs: list[Any] = []
@@ -444,10 +451,13 @@ class KhListingMixin(PgBase):
                 by_stub.setdefault(r["sk"], set()).add(r["parent"])
                 stubs.append(r)
         if by_stub:
-            # shortcut: a placeholder the request's budget leaves undecided lights no arrow; opening the row resumes before it. Upgrade if rows of many wide placeholders are common.
-            led, _ = await self._kh_leads([r for r in stubs if by_stub[r["sk"]] - lists], hidden, admitted_of, org, transaction, tops=tops, budget=budget)
+            # shortcut: a placeholder the request's budget leaves undecided lights no arrow; opening the row resumes before it (a sidebar resumes before the row itself,
+            # ``_kh_browse``). Upgrade if rows of many wide placeholders are common.
+            led, unsure = await self._kh_leads([r for r in stubs if by_stub[r["sk"]] - lists], hidden, admitted_of, org, transaction, tops=tops, budget=budget)
             for sk in led:
                 lists |= by_stub[sk]
+            if undecided is not None:
+                undecided |= {p for sk in unsure for p in by_stub[sk]} - lists
         return lists
 
     async def _kh_flat_viewer(self, sets: dict[str, set[int]] | None, where: str, base: kgl.Params, admit: Any, granted: list[str], transaction: str | None) -> dict[str, Any] | None:  # noqa: ANN401
