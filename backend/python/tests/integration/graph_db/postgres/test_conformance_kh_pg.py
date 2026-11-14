@@ -36,6 +36,7 @@ from tests.permissions.kh_worlds import (
     STUBHELD,
     STUBREACH,
     STUBTOP,
+    UNPLACED,
 )
 from tests.permissions.scenario import load_all
 
@@ -342,3 +343,14 @@ async def test_a_flatten_below_a_node_or_with_a_depth_lists_what_browsing_down_r
                     kh_layer.not_ready += 1
         await kh_layer.release(chunk)
     assert asked and not bad, f"{kh_layer.name}\n" + "\n".join(bad[:30])
+
+
+async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(kh_layer) -> None:
+    """UNPLACED: r1's parent and own group are closed, so the App lists it; r2's own group opens, so it is listed there and not under the App; r3
+    is granted but the check denies it, so it is listed nowhere."""
+    await kh_layer.preload([UNPLACED])
+    with bind(OrgContext((await kh_layer._ns(UNPLACED)).org, None, "job", "job:test", "t")):
+        assert await children_of(kh_layer, UNPLACED, "u", "A", "app") == {"open": True, "r1": False}, kh_layer.name
+        assert await children_of(kh_layer, UNPLACED, "u", "open", "recordGroup") == {"r2": False}, kh_layer.name
+    bad = _bad(await check(kh_layer, UNPLACED, "unplaced"))
+    assert not bad, _describe(bad)
