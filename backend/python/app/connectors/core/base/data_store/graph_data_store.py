@@ -9,6 +9,7 @@ import re
 from collections.abc import Awaitable, Callable, Collection
 from contextlib import asynccontextmanager, suppress
 from logging import Logger
+from time import monotonic
 from typing import Any, AsyncContextManager, Optional, TypeVar
 
 # Import Neo4j exceptions with fallback for compatibility
@@ -45,12 +46,13 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import (
-    CLOSED_KEY,
-    OPENED_KEY,
+    OPEN_WRITE_SECONDS,
     UNSAFE_KEY,
     ScopeGenerationConflict,
-    ScopeGenerationError,
+    close_write,
     new_unsafe_mark,
+    open_write,
+    renew_write,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -353,9 +355,10 @@ class GraphTransactionStore(TransactionStore):
         self._connector_of: dict[tuple[str, str], str | None] = {}
         # nodes this transaction created: no stamp can be stale for them, whatever edges it then gives them
         self.new_nodes: set[tuple[str, str]] = set()
-        # Connectors this transaction counted as opened (before an unclassified write outside a transaction), the ones whose unsafe mark was then
-        # written, and the ones counted as closed: only a connector marked is closed, so a closing step never covers a mark that did not land.
-        self.opened: set[str] = set()
+        # Connectors this transaction opened (before an unclassified write outside a transaction) with the token of their lease, the ones whose unsafe
+        # mark was then written, and the ones closed: only a connector marked is closed, so a closing step never covers a mark that did not land.
+        self.opened: dict[str, str | None] = {}
+        self._renewed_at = 0.0
         self.marked: set[str] = set()
         self.closed: set[str] = set()
 
@@ -369,17 +372,26 @@ class GraphTransactionStore(TransactionStore):
         """Outside an explicit transaction an unclassified write commits as it runs and cannot be undone, and which connector it touches
         is not known: every connector of the organisation is marked unsafe first, and the write is refused (the error propagates) when
         the lookup or a mark fails. In an explicit transaction the rollback undoes it, and the marks are written when the block ends."""
-        if self.explicit or self._org_marked_for_unclassified:
+        if self.explicit:
+            return
+        provider = self.graph_provider._provider
+        if self._org_marked_for_unclassified:
+            # a long block renews its leases before a write, so the sweep never reads it as dead and closes it while it still writes
+            if monotonic() - self._renewed_at > OPEN_WRITE_SECONDS / 2:
+                for connector_id in sorted(self.opened):
+                    self.opened[connector_id] = await renew_write(provider, connector_id, self.opened[connector_id])
+                self._renewed_at = monotonic()
             return
         org_id = org_context.current().org_id
-        apps = await self.graph_provider._provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
+        apps = await provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
         seen = {c for c in self._connector_of.values() if c} | self.structural_connectors
         ids = seen | {str(k) for a in apps if (k := a.get("_key") or a.get("id"))}
+        self._renewed_at = monotonic()
         for connector_id in sorted(ids):
-            # One atomic increment each: concurrent blocks each count, and the connector is not current while opened > closed.
-            if await self.graph_provider._provider.increment_node_field(connector_id, CollectionNames.APPS.value, OPENED_KEY) is None:
-                raise ScopeGenerationError(f"could not open the unclassified write on connector {connector_id}: no such connector")
-            self.opened.add(connector_id)
+            # Counted and leased in one compare-and-set: concurrent blocks each count, the connector is not current while opened > closed, and a
+            # block whose process dies leaves a lease that runs out, after which the sweep marks the connector unsafe and closes it (no roots: the
+            # write's reach is unknown).
+            self.opened[connector_id] = await open_write(provider, connector_id)
         self._org_marked_for_unclassified = True
 
     async def _connector_of_node(self, collection: str, node_id: str) -> str | None:
@@ -1697,18 +1709,16 @@ class GraphDataStore(DataStoreProvider):
         await self._close_opened(tx_store)
 
     async def _close_opened(self, tx_store: "GraphTransactionStore") -> None:
-        """Count the connectors this block opened as closed, those whose unsafe mark has been written. Tried once: an exception proves nothing (a timeout
-        can arrive after the provider applied the increment), and a second increment of an applied one would count a write that is still running as
-        closed. A closing step with an unknown or negative outcome (logged) leaves the connector opened, which is not current: the fail-closed side."""
-        for connector_id in sorted((tx_store.opened & tx_store.marked) - tx_store.closed):
-            try:
-                if await self.graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, CLOSED_KEY) is not None:
-                    tx_store.closed.add(connector_id)
-                    continue
-            except Exception:
-                pass
-            self.logger.error("could not close the unclassified write on connector %s: it stays not current until the next pass is run "
-                              "with --close-open-mark", connector_id)
+        """Close the writes this block opened on the connectors whose unsafe mark has been written (`close_write`: the lease is dropped and the write
+        counted closed in one compare-and-set, idempotent, so it is retried; a write opened without a lease is counted once, since a second increment
+        of an applied one would count a write that is still running as closed). A close that does not land (logged) leaves the connector opened, which
+        is not current, until its lease runs out and the sweep closes it."""
+        for connector_id in sorted((tx_store.opened.keys() & tx_store.marked) - tx_store.closed):
+            if await close_write(self.graph_provider, connector_id, tx_store.opened[connector_id]):
+                tx_store.closed.add(connector_id)
+                continue
+            self.logger.error("could not close the unclassified write on connector %s: it stays not current until its lease runs out (the sweep "
+                              "closes it) or, opened without a lease, until the next pass is run with --close-open-mark", connector_id)
 
     async def _mark_unsafe_after_failed_block(self, tx_store: "GraphTransactionStore") -> None:
         """A block that failed without an explicit transaction left its earlier statements committed: the connectors a structural (or an
