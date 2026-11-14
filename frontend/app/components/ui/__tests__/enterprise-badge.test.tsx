@@ -54,11 +54,11 @@ describe('EnterpriseFeatureNotice', () => {
         <EnterpriseFeatureNotice
           title="SAML"
           description="Sign in through your identity provider."
-          action={<a href="https://docs.pipeshub.com/contact-us">Talk to sales</a>}
+          action={<a href="mailto:sales@pipeshub.com">Talk to sales</a>}
         />
       </Theme>
     );
     const link = screen.getByRole('link', { name: 'Talk to sales' });
-    expect(link.getAttribute('href')).toBe('https://docs.pipeshub.com/contact-us');
+    expect(link.getAttribute('href')).toBe('mailto:sales@pipeshub.com');
   });
 });

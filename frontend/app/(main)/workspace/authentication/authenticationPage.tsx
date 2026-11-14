@@ -36,6 +36,8 @@ import {
 } from './types';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
+const SALES_EMAIL = 'sales@pipeshub.com';
+
 // ============================================================
 // Page
 // ============================================================
@@ -375,9 +377,7 @@ export default function AuthenticationPage() {
                 action={
                   <Text size="1">
                     <a
-                      href="https://docs.pipeshub.com/contact-us"
-                      target="_blank"
-                      rel="noreferrer"
+                      href={`mailto:${SALES_EMAIL}`}
                       className="touch-size"
                       style={{
                         color: 'var(--accent-11)',
@@ -386,7 +386,7 @@ export default function AuthenticationPage() {
                         alignItems: 'center',
                       }}
                     >
-                      {t('workspace.authentication.enterpriseSso.contactSales')}
+                      {t('workspace.authentication.enterpriseSso.contactSales', { email: SALES_EMAIL })}
                     </a>
                   </Text>
                 }
