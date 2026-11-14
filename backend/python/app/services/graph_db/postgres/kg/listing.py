@@ -100,8 +100,15 @@ def after(field_: str, sort_dir: str, direction: str, boundary: dict[str, Any], 
     return branches
 
 
-def filters_sql(filters: dict[str, Any], p: Params) -> str:
-    """The content filters of a listing as conditions on a row ``r``. ``connector_ids`` and ``origins`` are the connector's, decided by the caller."""
+# A browse's sidebar: the groups, the folders and the records with a live hierarchy child, each looked up by the row's own key (the children index, the key of kg.links; OFFSET 0 keeps
+# the planner from joining the test against the organisation's rows). Of those records the browse keeps the ones whose arrow is on (``_kh_browse``): a child is no promise the viewer may open it.
+WITH_CHILDREN = ("(r.kind = 2 OR r.folder OR EXISTS (SELECT 1 FROM kg.records k WHERE k.org_id = r.org_id AND k.parent_sk = r.sk AND k.kind IN (2, 3) AND NOT k.deleted AND NOT k.alien OFFSET 0) "
+                 "OR EXISTS (SELECT 1 FROM kg.links k WHERE k.org_id = r.org_id AND k.parent_sk = r.sk AND k.kind = 1 OFFSET 0))")
+
+
+def filters_sql(filters: dict[str, Any], p: Params, *, browse: bool = False) -> str:
+    """The content filters of a listing as conditions on a row ``r``. ``connector_ids`` and ``origins`` are the connector's, decided by the caller. ``browse``: a browse's, whose
+    sidebar (``only_containers``) also reads the records that have a hierarchy child, for the browse to keep those whose arrow is on (``_kh_browse``)."""
     out: list[str] = []
     if q := filters.get("search_query"):
         name = "r.name_key"
@@ -131,8 +138,8 @@ def filters_sql(filters: dict[str, Any], p: Params) -> str:
             out.append(f"r.size_bytes >= {p.add(int(sz['gte']))}::bigint")
         if sz.get("lte") is not None:
             out.append(f"r.size_bytes <= {p.add(int(sz['lte']))}::bigint")
-    if filters.get("only_containers"):
-        out.append("(r.kind = 2 OR r.folder)")
+    if filters.get("only_containers"):      # a flat listing gives a record no arrow, so its sidebar is the groups and the folders
+        out.append(WITH_CHILDREN if browse else "(r.kind = 2 OR r.folder)")
     return "".join(f" AND {c}" for c in out)
 
 
@@ -291,9 +298,14 @@ def children_of_sql(only: str = "", *, total: bool = False) -> str:
 
 # The granted rows of a connector (``$3``) among ids ``$2`` that a browse may list as chain-tops: live, of the organisation, no placeholder, OPEN (``_kh_v3_chain_top_groups``).
 # The access rule is the graph's: a copied column kg may hold empty for a row it refused (kg.project).
-CHAIN_GRANTED = """/* pipeshub:kg.chain_granted */ SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk FROM kg.records r JOIN kg.node_keys a ON a.org_id = r.org_id AND a.sk = r.app_sk
-    JOIN graph.nodes n ON n.org_id = r.org_id AND n.coll = (CASE r.coll WHEN 2 THEN 'recordGroups' ELSE 'records' END) AND n.id = r.id
-    WHERE r.org_id = $1 AND r.coll = ANY('{2,3}'::smallint[]) AND r.id = ANY($2::text[]) AND a.coll = 1 AND a.id = $3
+# Every lookup is a seek by its unique key, as kg.read's (``k >= q.k ORDER BY k LIMIT 1``, read with sorts off: ``read.SORTS_OFF``): written as a join on ``id = ANY($2)`` the
+# plan followed the statistics, and on the same rows (600 granted ids of 4,000) swung between probing the ids and reading every record or graph node of the organisation.
+CHAIN_GRANTED = """/* pipeshub:kg.chain_granted */ SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk FROM unnest($2::text[]) AS q(id)
+    CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 2 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE s.id = q.id
+        UNION ALL SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 3 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE s.id = q.id) r
+    CROSS JOIN LATERAL (SELECT * FROM (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = (CASE r.coll WHEN 2 THEN 'recordGroups' ELSE 'records' END)
+        AND n.id >= r.id ORDER BY n.id LIMIT 1) s WHERE s.id = r.id OFFSET 0) n
+    WHERE r.app_sk = (SELECT a.sk FROM (SELECT * FROM kg.node_keys k WHERE k.org_id = $1 AND k.coll = 1 AND k.id >= $3 ORDER BY k.id LIMIT 1) a WHERE a.id = $3)
       AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN'"""
 CHAIN_ROWS = """/* pipeshub:kg.chain_rows */ SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk, r.deleted FROM kg.records r
     WHERE r.org_id = $1 AND r.coll = ANY('{2,3}'::smallint[]) AND r.id = ANY($2::text[])"""
@@ -310,3 +322,18 @@ HELD = """/* pipeshub:kg.listing_held */ SELECT DISTINCT g.sk FROM kg.records c
     CROSS JOIN LATERAL (SELECT c.group_sk AS sk UNION ALL SELECT l.parent_sk FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = c.sk AND l.kind = 2) g
     WHERE c.org_id = $1 AND c.coll = 3 AND c.id = ANY($3::text[]) AND NOT c.deleted AND NOT c.placeholder AND NOT c.alien
       AND g.sk = ANY($2::bigint[])"""
+# The records the hierarchy does not place (no hierarchy parent) that belong to one of the groups $2 (sks) or to the App $3 (a belongs-to edge, which kg does not copy): $4 at most.
+UNPLACED = """/* pipeshub:kg.listing_unplaced */ SELECT r.sk FROM (
+    SELECT m.sk FROM unnest($2::bigint[]) g(sk) CROSS JOIN LATERAL (SELECT c.sk FROM kg.records c WHERE c.org_id = $1 AND c.group_sk = g.sk AND c.kind = 3 OFFSET 0) m
+    UNION SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.kind = 2 AND l.parent_sk = ANY($2::bigint[])
+    UNION SELECT k.sk FROM graph.edges e JOIN kg.records k ON k.org_id = e.org_id AND k.coll = 3 AND k.id = e.from_id
+      WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.to_id = $3 AND e.to_coll = 'apps' AND e.from_coll = 'records') c
+  JOIN kg.records r ON r.org_id = $1 AND r.sk = c.sk
+  WHERE r.kind = 3 AND r.parent_sk IS NULL AND NOT EXISTS (SELECT 1 FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = r.sk AND l.kind = 1) LIMIT $4"""
+# The hierarchy children of each of the sks $2 (by the primary parent and by a hierarchy link): groups and records whatever their state (deleted, another organisation's, a
+# placeholder), as the structure is walked when a flatten's depth is bounded; $3 rows at most.
+HIER_CHILDREN = """/* pipeshub:kg.listing_hier_children */ SELECT c.sk, c.kind FROM unnest($2::bigint[]) AS p(sk) CROSS JOIN LATERAL (
+    SELECT c.sk, c.kind FROM kg.records c WHERE c.org_id = $1 AND c.parent_sk = p.sk AND c.kind IN (2, 3) OFFSET 0) c
+  UNION ALL SELECT c.sk, c.kind FROM unnest($2::bigint[]) AS p(sk) CROSS JOIN LATERAL (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = p.sk AND l.kind = 1 OFFSET 0) l
+    JOIN kg.records c ON c.org_id = $1 AND c.sk = l.child_sk AND c.kind IN (2, 3)
+  LIMIT $3"""

@@ -10,11 +10,24 @@ from __future__ import annotations
 import logging
 import warnings
 from collections import Counter
+from functools import partial
+from typing import TYPE_CHECKING
 
 import pytest
 
 from . import gen
-from .kh_layer import KhFinding, browse_pages, check_world, children_of, refused_by_cap
+from .kh_layer import (
+    PARTS,
+    KhFinding,
+    _Config,
+    browse_pages,
+    check_world,
+    check_worlds,
+    children_of,
+    on_every_store,
+    refused_by_cap,
+    world_part,
+)
 from .kh_worlds import (
     APPSIDE,
     CAPSTUB,
@@ -25,6 +38,7 @@ from .kh_worlds import (
     DEEP_CHAIN,
     DEEPOPEN,
     DEEPSEED,
+    DEPTHDEL,
     FLATSIDE,
     FOLDERSTUB,
     HIDESEED,
@@ -43,18 +57,23 @@ from .kh_worlds import (
     STUBQ,
     STUBSEED,
     TWOWAY,
+    UNPLACED,
+    XBADGE,
     XDECL,
     XGRANT,
     XHOP,
     XLINK,
+    XLINKBADGE,
     XSTUB,
 )
 from .runner import OracleLayer
 from .scenario import Scenario, load_all
 
+if TYPE_CHECKING:
+    from .layers import GraphCheckLayer
+
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(0)]  # sized by the scenario set and PERM_GEN_WORLDS
 
-CHUNK = 25
 # The listing's queries make Neo4j warn about every property a sparse world lacks; pytest keeps each record of a test, and the generated worlds
 # run out of memory on them.
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
@@ -80,20 +99,30 @@ def _report(where: str, found: list[KhFinding]) -> None:
         warnings.warn(f"{where}: reported {dict(sorted(counts.items()))}", stacklevel=2)
 
 
+def _assert_each_store(results: list[tuple[GraphCheckLayer, list[KhFinding] | Exception]], report: str, fail: str) -> None:
+    """Each store's findings reported and asserted on their own, ``report`` and ``fail`` naming it (``{store}``). A store that raised fails as
+    itself, and does not hide what the other found: one failure is raised as it is, two as a group."""
+    problems: list[Exception] = []
+    for layer, found in results:
+        if isinstance(found, Exception):
+            found.add_note(f"raised on {layer.name}")
+            problems.append(found)
+            continue
+        _report(report.format(store=layer.name), found)
+        bad = _bad(found)
+        if bad:
+            problems.append(AssertionError(f"{fail.format(store=layer.name)}\n{_describe(bad)}"))
+    if len(problems) > 1:
+        raise ExceptionGroup(f"{len(problems)} stores failed", problems)
+    if problems:
+        raise problems[0]
+
+
 async def test_golden_worlds_count_what_the_viewer_may_read(graph_layers) -> None:
     scenarios: list[Scenario] = load_all()
-    for layer in graph_layers:
-        worlds = [*dict.fromkeys(s.final_world() for s in scenarios), *KH_WORLDS]      # shapes no generator builds: the connector check of every arm, arrows, a multi-page walk
-        found: list[KhFinding] = []
-        for start in range(0, len(worlds), CHUNK):
-            chunk = worlds[start:start + CHUNK]
-            await layer.preload(chunk)
-            for offset, world in enumerate(chunk):
-                found += await check_world(layer, world, f"golden-{start + offset}")
-            await layer.release(chunk)
-        _report(f"{layer.name} golden", found)
-        bad = _bad(found)
-        assert not bad, f"{layer.name}\n{_describe(bad)}"
+    worlds = [*dict.fromkeys(s.final_world() for s in scenarios), *KH_WORLDS]      # shapes no generator builds: the connector check of every arm, arrows, a multi-page walk
+    results = await on_every_store(graph_layers, partial(check_worlds, worlds=worlds, tag="golden"))
+    _assert_each_store(results, "{store} golden", "{store}")
 
 
 async def test_a_stub_on_the_way_to_a_node_the_open_app_reads_is_listed_and_opens(graph_layers) -> None:
@@ -296,6 +325,27 @@ async def test_a_child_below_a_group_that_hides_its_children_is_listed_only_wher
             await layer.release([HIDESEED, DECLHIDE])
 
 
+async def test_a_depth_bound_counts_hops_through_a_deleted_folder(graph_layers) -> None:
+    """DEPTHDEL: the flatten of the App bounded to three hops lists r, which lies three hops down through the deleted folder x, and bounded to two it does not:
+    the same on every store (ArangoDB's walk of the bound stopped at a deleted node, Neo4j's does not)."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+    for layer in graph_layers:
+        await layer.preload([DEPTHDEL])
+        try:
+            ns = await layer._ns(DEPTHDEL)
+            service = KnowledgeHubService(logging.getLogger("kh-depth"), layer._provider, _Config())
+            got = {}
+            for depth in (2, 3):
+                page = await service.get_nodes(user_id=ns.id("u"), org_id=ns.org, parent_id=ns.id("A"), parent_type="app", limit=50, sort_by="name",
+                                               sort_order="asc", flattened=True, depth=depth)
+                got[depth] = {ns.local(i.id) for i in page.items} if page.success else None
+            assert got == {2: {"G"}, 3: {"G", "r"}}, (layer.name, got)
+        finally:
+            await layer.release([DEPTHDEL])
+
+
 async def test_a_flattens_sidebar_keeps_a_record_exactly_where_its_arrow_is_on(graph_layers) -> None:
     """The sidebar of a flatten keeps the rows the flatten shows with children, by the flatten's own arrow: from the App, the stricter rule
     (FLATSIDE: f has no arrow, so the sidebar holds D alone); below a folder, read from the folder's reach (SCOPEDSIDE: R has an arrow, so the
@@ -366,6 +416,48 @@ async def test_a_grant_on_a_node_of_another_app_passes_the_hop(graph_layers) -> 
             await layer.release([XHOP, XLINK])
 
 
+async def test_a_role_grants_on_any_gated_app_and_a_source_accounts_role_only_inside_its_connector(graph_layers) -> None:
+    """A grant to a principal the viewer holds counts on a node of any gated App, whatever the principal's own connector (XBADGE: a role of App
+    R opens c through x of App B, and a of App A). A source account's roles count inside the account's connector only, whatever their own
+    (XLINKBADGE: e opens through y of B, z of A does not)."""
+    oracle = OracleLayer()
+    assert {k for k, v in oracle.explain(XBADGE, "u", ["c", "a"]).items() if v.admitted} == {"c", "a"}
+    assert {k for k, v in oracle.explain(XLINKBADGE, "u", ["e", "z"]).items() if v.admitted} == {"e"}
+    for layer in graph_layers:
+        await layer.preload([XBADGE, XLINKBADGE])
+        try:
+            assert await layer.admitted(XBADGE, "u", ["c", "a"]) == {"c", "a"}, layer.name
+            assert await layer.admitted(XLINKBADGE, "u", ["e", "z"]) == {"e"}, layer.name
+            if layer.name == "neo4j":       # the other connectors' grants a page of A reads in one list (`_kh_v3_cross`)
+                for world, want in ((XBADGE, {"x"}), (XLINKBADGE, {"y"})):
+                    ns = await layer._ns(world)
+                    gate = await layer._provider.get_knowledge_hub_access_context_v2(ns.id("u"), ns.org)
+                    cross = await layer._provider._kh_v3_cross(ns.id("u"), ns.org, gate["gated_app_ids"], ns.id("A"), None)
+                    assert {ns.local(i) for i in cross or []} == want, (layer.name, cross)
+            bad = [f for world in (XBADGE, XLINKBADGE) for f in _bad(await check_world(layer, world, "xbadge"))]
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([XBADGE, XLINKBADGE])
+
+
+async def test_a_viewer_past_the_bound_of_one_list_still_reads_through_every_cross_app_grant(graph_layers, monkeypatch) -> None:
+    """Past the bound of one list of cross-connector grants, Neo4j tests them on each node instead: a node granted only through an id past the
+    bound still opens what hangs below it, and a source account's grant still counts inside its own connector only. Here the bound is 0, so
+    every id is past it."""
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+    monkeypatch.setattr(Neo4jProvider, "_KH_CROSS_MAX", 0)
+    worlds = (XHOP, XLINK, XBADGE, XLINKBADGE)
+    for layer in (layer for layer in graph_layers if layer.name == "neo4j"):
+        await layer.preload(worlds)
+        try:
+            assert await children_of(layer, XHOP, "u", "g", "recordGroup") == {"d": False}, layer.name
+            bad = [f for world in worlds for f in _bad(await check_world(layer, world, "pastbound"))]
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release(worlds)
+
+
 async def test_a_granted_strict_group_below_a_seed_the_app_does_not_reach_is_read_and_listed_nowhere(graph_layers) -> None:
     """OPENGROUP with the strict group granted to the viewer, directly (OPENGRANT) or through a group of users (OPENGRANTTEAM). The oracle denies it: its
     only chain to the App runs through a declaration (R7 skips it), and a strict node is no seed. The access check of each store says the same, and the
@@ -386,18 +478,28 @@ async def test_a_granted_strict_group_below_a_seed_the_app_does_not_reach_is_rea
             await layer.release([OPENGRANT, OPENGRANTTEAM])
 
 
-@pytest.mark.parametrize("kind", sorted(gen.GENERATORS))
-async def test_generated_worlds_count_what_the_viewer_may_read(graph_layers, kind: str) -> None:
+@pytest.mark.parametrize(("kind", "part"), [(kind, part) for kind in sorted(gen.GENERATORS) for part in range(PARTS)],
+                         ids=[f"{kind}-{part + 1}of{PARTS}" for kind in sorted(gen.GENERATORS) for part in range(PARTS)])
+async def test_generated_worlds_count_what_the_viewer_may_read(graph_layers, kind: str, part: int) -> None:
     for seed in gen.seeds():
         worlds = gen.generate(kind, seed, gen.world_count())
-        for layer in graph_layers:
-            found: list[KhFinding] = []
-            for start in range(0, len(worlds), CHUNK):
-                chunk = worlds[start:start + CHUNK]
-                await layer.preload(chunk)
-                for offset, world in enumerate(chunk):
-                    found += await check_world(layer, world, f"{kind}-{seed}-{start + offset}")
-                await layer.release(chunk)
-            _report(f"{layer.name} {kind} seed {seed}", found)
-            bad = _bad(found)
-            assert not bad, f"{layer.name} {kind} seed {seed}\n{_describe(bad)}"
+        mine = world_part(len(worlds), part)
+        results = await on_every_store(
+            graph_layers, partial(check_worlds, worlds=worlds[mine.start:mine.stop], tag=f"{kind}-{seed}", first=mine.start))
+        where = f"{{store}} {kind} seed {seed} worlds {mine.start}-{mine.stop - 1}"
+        _assert_each_store(results, where, where)
+
+
+async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(graph_layers) -> None:
+    """UNPLACED: r1's parent and own group are closed, so the App lists it; r2's own group opens, so it is listed there and not under the App; r3
+    is granted but the check denies it, so it is listed nowhere."""
+    async def run(layer: GraphCheckLayer) -> list[KhFinding]:
+        await layer.preload([UNPLACED])
+        try:
+            assert await children_of(layer, UNPLACED, "u", "A", "app") == {"open": True, "r1": False}
+            assert await children_of(layer, UNPLACED, "u", "open", "recordGroup") == {"r2": False}
+            return await check_world(layer, UNPLACED, "unplaced")
+        finally:
+            await layer.release([UNPLACED])
+
+    _assert_each_store(await on_every_store(graph_layers, run), "{store} unplaced", "{store}")

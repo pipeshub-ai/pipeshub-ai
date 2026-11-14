@@ -469,9 +469,80 @@ async def test_connector_checks_that_miss_together_share_one_read() -> None:
     sizer = dense.Sizer(Db(), T)
     with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
         got = await asyncio.gather(*[sizer.connectors(ORG, 1) for _ in range(8)])
-        assert all(g == frozenset({"c1"}) for g in got) and len(reads_made) == 1
-        await sizer.connectors(ORG, 1)
+        assert got == [None] * 8 and len(reads_made) == 1                             # the arms apply while the one check runs
+        await asyncio.sleep(0.1)
+        assert await sizer.connectors(ORG, 1) == frozenset({"c1"})
         assert len(reads_made) == 1                                                   # and the answer is reused for its ttl
+
+
+class _SlowPoolDb:
+    """A unit of work like the kernel's: it first waits ``wait_s`` for a pooled connection, and a caller's ``timeout_ms`` covers that wait
+    and the statements together (a wait longer than it is a timeout). The checked org has one connector and no unconnected point."""
+
+    def __init__(self, wait_s: float, *, fail: Exception | None = None) -> None:
+        self.wait_s, self.fail, self.runs, self.budgets = wait_s, fail, 0, []
+
+    async def run(self, fn, **opts: object) -> object:
+        import asyncio
+
+        from app.core.db import DbTimeout
+
+        self.runs += 1
+        await asyncio.sleep(self.wait_s)
+        timeout_ms = opts.get("timeout_ms")
+        if timeout_ms is not None and self.wait_s * 1000 >= timeout_ms:
+            raise DbTimeout("the statement ran out of the budget the pool wait used up")
+        if self.fail is not None:
+            raise self.fail
+        budgets = self.budgets
+
+        class Tx:
+            async def fetch(self, sql: str, *a: object) -> list:
+                return [{"member_id": "c1"}]
+
+            async def fetchval(self, sql: str, *a: object) -> object:
+                if "statement_timeout" in sql:
+                    budgets.append(a)
+                    return None
+                return False
+
+        return await fn(Tx())
+
+
+@pytest.mark.asyncio
+async def test_a_search_never_waits_for_the_connector_check_and_a_slow_pool_does_not_make_it_fail() -> None:
+    """Under load the wait for a pooled connection used up the check's whole budget, so it failed and the arms stayed on for
+    ``connector_fail_ttl_s``. The check now runs beside the searches, and its budget is the statements' own."""
+    import asyncio
+
+    from app.core import org_context
+
+    db = _SlowPoolDb(0.3)                                                             # longer than connector_check_ms (150 ms by default)
+    sizer = dense.Sizer(db, dataclasses.replace(T, connector_check_ms=150))
+    with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
+        assert await asyncio.wait_for(sizer.connectors(ORG, 1), 0.05) is None         # the search goes on with the arms
+        await asyncio.sleep(0.4)
+        assert await sizer.connectors(ORG, 1) == frozenset({"c1"})                     # the check finished despite the wait
+        assert db.runs == 1 and db.budgets == [(150,)]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_connector_check_keeps_the_arms_and_only_a_statement_timeout_waits_the_long_back_off() -> None:
+    import asyncio
+
+    from app.core import org_context
+    from app.core.db import DbTimeout, PoolTimeout
+
+    t = dataclasses.replace(T, connector_ttl_s=0.0, connector_fail_ttl_s=300.0)
+    for fail, again in ((PoolTimeout("no pooled connection"), True), (DbTimeout("canceling statement due to statement timeout"), False)):
+        db = _SlowPoolDb(0.0, fail=fail)
+        sizer = dense.Sizer(db, t)
+        with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
+            assert await sizer.connectors(ORG, 1) is None
+            await asyncio.sleep(0.05)
+            assert await sizer.connectors(ORG, 1) is None                              # fails closed: the arms stay on
+            await asyncio.sleep(0.05)
+            assert db.runs == (2 if again else 1), fail                                # a busy pool is asked again soon; a big org is not
 
 
 # ---- the lexical leg -------------------------------------------------------------------------------------------------------------------

@@ -2742,6 +2742,11 @@
           "samlSso": "SAML SSO",
           "oauth": "OAuth"
         }
+      },
+      "enterpriseSso": {
+        "title": "SAML-Single-Sign-on und OpenID Connect",
+        "description": "Melden Sie Personen über Okta, OneLogin oder einen anderen SAML-2.0- oder OpenID-Connect-Identitätsanbieter an.",
+        "contactSales": "Zum Kauf schreiben Sie an {{email}}"
       }
     },
     "connectors": {
@@ -3196,7 +3201,28 @@
         "loadingOptions": "Optionen werden geladen…",
         "noResults": "Keine Ergebnisse gefunden",
         "loadingMore": "Weitere Optionen werden geladen…",
-        "optionsLoadFailed": "Die Optionen für diesen Filter konnten nicht geladen werden. Schließen Sie die Liste und öffnen Sie sie erneut, um es noch einmal zu versuchen."
+        "optionsLoadFailed": "Die Optionen für diesen Filter konnten nicht geladen werden. Schließen Sie die Liste und öffnen Sie sie erneut, um es noch einmal zu versuchen.",
+        "folderPaths": {
+          "help": "Pfade beginnen auf der obersten Ebene. * passt auf beliebige Zeichen innerhalb eines Ordnernamens, ** auf beliebig viele Ordner, ? auf genau ein Zeichen. Alles in einem passenden Ordner wird einbezogen. Ein Muster ohne Treffer wird auf der Connector-Karte gemeldet.",
+          "examples": {
+            "oneLevel": "customer/*/quotes: der Ordner quotes jedes Kunden",
+            "anyDepth": "**/quotes: jeder Ordner namens quotes, in beliebiger Tiefe (liest jeden Ordner)",
+            "exclude": "archive mit Ausschließen: alles außer dem Ordner archive"
+          },
+          "caseInsensitive": "Groß- und Kleinschreibung spielt keine Rolle. \\ und / trennen beide Ordner.",
+          "caseSensitive": "Groß- und Kleinschreibung wird unterschieden. Schreiben Sie \\* oder \\?, um diese Zeichen in einem Namen zu treffen.",
+          "notFiles": "Muster wählen Ordner, keine Dateien. Dateitypen wählen Sie mit „File Extensions“.",
+          "errors": {
+            "climbsOut": "Ordner „{{value}}“ muss ein Pfad ab der obersten Ebene sein, ohne „..“.",
+            "emptySegment": "Ordner „{{value}}“ enthält einen leeren Ordnernamen zwischen zwei Schrägstrichen. Entfernen Sie den zusätzlichen „/“.",
+            "excludesEverything": "Wenn „{{value}}“ ausgeschlossen wird, bleibt nichts zu synchronisieren. Entfernen Sie es oder wechseln Sie zu Einschließen.",
+            "tooLong": "Ordner „{{value}}“ ist länger als 1024 Zeichen.",
+            "uncPath": "Ordner „{{value}}“ sieht wie ein Netzwerkpfad aus. Beginnen Sie auf der obersten Ebene der Freigabe, ohne \\\\server\\share.",
+            "doubleStarInName": "In Ordner „{{value}}“ muss „**“ ein ganzer Ordnername sein, wie in reports/**/2026. Verwenden Sie „*“ für einen Teil eines Namens.",
+            "tooManyDoubleStars": "Ordner „{{value}}“ verwendet „**“ mehr als 4-mal. Verwenden Sie es seltener.",
+            "tooManyStars": "Ein Ordnername in „{{value}}“ enthält mehr als 16 „*“. Verwenden Sie weniger."
+          }
+        }
       },
       "syncStrategies": {
         "SCHEDULED": "Geplant",
@@ -3348,6 +3374,16 @@
             "title": "Drupal Wiki verweigert Abfragen zu Mitgliedern und Seitenstruktur",
             "message": "Private Spaces werden nur mit den bei einer früheren Synchronisierung bestätigten Zugriffsrechten synchronisiert, und nur bis {{days}} Tage nach der Bestätigung. Nie synchronisierte oder länger zurück bestätigte private Spaces werden übersprungen, und die Seitenhierarchie ist nicht verfügbar. Offene Spaces sind nicht betroffen. Eine vollständige Synchronisierung, auch eine durch geänderte Filter ausgelöste, beendet dies für private Spaces, bis Drupal Wiki deren Mitglieder wieder auflistet.",
             "message_dated": "Private Spaces werden nur mit den bei einer früheren Synchronisierung bestätigten Zugriffsrechten synchronisiert, und nur bis {{days}} Tage nach der Bestätigung. Nie synchronisierte oder länger zurück bestätigte private Spaces werden übersprungen, und die Seitenhierarchie ist nicht verfügbar. Offene Spaces sind nicht betroffen. Eine vollständige Synchronisierung, auch eine durch geänderte Filter ausgelöste, beendet dies für private Spaces, bis Drupal Wiki deren Mitglieder wieder auflistet. Die älteste verwendete Zugriffsbestätigung stammt vom {{confirmedOn}}."
+          },
+          "folder_filter_unmatched": {
+            "title": "Ordnermuster ohne Treffer",
+            "message": "Kein Ordner, den dieser Connector synchronisiert, passt zu {{values}}, daher wird dafür nichts synchronisiert. Prüfen Sie die Schreibweise im Filter „Folders“.",
+            "title_several": "{{count}} Ordnermuster ohne Treffer",
+            "message_several": "Kein Ordner, den dieser Connector synchronisiert, passt zu {{values}}, daher wird dafür nichts synchronisiert. Prüfen Sie die Schreibweise im Filter „Folders“.",
+            "title_exclude": "Ordnermuster ohne Treffer",
+            "message_exclude": "Kein Ordner, den dieser Connector synchronisiert, passt zu {{values}}, daher schließt es nichts aus. Prüfen Sie die Schreibweise im Filter „Folders“.",
+            "title_several_exclude": "{{count}} Ordnermuster ohne Treffer",
+            "message_several_exclude": "Kein Ordner, den dieser Connector synchronisiert, passt zu {{values}}, daher schließen sie nichts aus. Prüfen Sie die Schreibweise im Filter „Folders“."
           }
         }
       },

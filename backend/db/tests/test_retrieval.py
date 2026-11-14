@@ -426,6 +426,52 @@ def test_the_membership_path_widens_to_every_point_when_the_best_ones_do_not_pas
     assert search(cluster, name, ORG_A, (5,), arms=(["nobody"], [], [], []), leg=1) == []
 
 
+@pytest.mark.parametrize("points", [7, 8, 9])
+def test_the_lexical_search_goes_over_every_point_exactly_when_the_best_ones_may_not_be_all(rdb, points):
+    """Leg 1 checks the best 8 first. With fewer than 8 candidates they are all of them; with 8 or more there may be more, so the last pass
+    (no bound) runs: only the lowest-scoring point passes, and it is found whatever the count, and nothing is found when none passes."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        sks = [write_terms(c, ORG_A, f"a0000000-0000-0000-0000-0000000000{i:02d}", f"g{i}", {5: 2.0 - i / 100}) for i in range(points)]
+        delta(c, ORG_A, points)
+    with connect_as(cluster, name, "pipeshub_jobs") as c, uow(c, "pipeshub_jobs", ORG_A):
+        c.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, %s, 1, 'only')", (ORG_A, f"g{points - 1}"))
+    assert [r[0] for r in search(cluster, name, ORG_A, (5,), arms=(["only"], [], [], []), leg=1)] == [sks[-1]]
+    assert search(cluster, name, ORG_A, (5,), arms=(["nobody"], [], [], []), leg=1) == []
+    assert [r[0] for r in search(cluster, name, ORG_A, (5,), leg=points)] == sks                      # whole org: best first, in one pass
+
+
+SPARSE = "retrieval.search_sparse(smallint, bigint[], real[], text[], text[], text[], text[], text[], int)"
+
+
+def test_downgrading_the_cheaper_lexical_search_keeps_the_function_and_an_upgrade_replaces_it(rdb):
+    """retrieval_0003 replaces the body of a function retrieval_0001 owns: a downgrade keeps the function and its registry row
+    (retrieval_0001 runs the same generated file), and an upgrade from there replaces it again with nothing left over."""
+    cluster, name = rdb
+    url = cluster.url(name, "pipeshub_migrate")
+
+    def state() -> tuple:
+        with cluster.admin(name) as a:
+            return (a.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'retrieval'::regnamespace AND proname = 'search_sparse'").fetchone()[0],
+                    a.execute(f"SELECT count(*) FROM kernel.function_registry WHERE proc = '{SPARSE}'::regprocedure").fetchone()[0],
+                    a.execute(f"SELECT prosrc LIKE '%%agg AS MATERIALIZED%%' FROM pg_proc WHERE oid = '{SPARSE}'::regprocedure").fetchone()[0],
+                    a.execute("SELECT count(*) FROM kernel.rls_violations").fetchone()[0])
+
+    assert state() == (1, 1, False, 0)
+    r = run_migrate(url, "downgrade", "retrieval_0002", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    assert state() == (1, 1, False, 0)
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    assert state() == (1, 1, False, 0)
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        sk = write_terms(c, ORG_A, "a0000000-0000-0000-0000-000000000001", "g1", {5: 1.0})
+        delta(c, ORG_A, 1)
+    assert [r[0] for r in search(cluster, name, ORG_A, (5,))] == [sk]                  # the query role can still call it
+
+
 def test_a_space_check_is_written_and_read_by_its_own_org_only_and_the_lock_classes_are_registered(rdb):
     cluster, name = rdb
     adopt(cluster, name, ORG_A)

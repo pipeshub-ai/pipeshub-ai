@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { Badge, Flex, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -31,10 +32,12 @@ export interface EnterpriseFeatureNoticeProps {
   title: string;
   /** One line on what it does. */
   description: string;
+  /** Optional next step under the description, such as a contact link. */
+  action?: ReactNode;
 }
 
 /** A section-sized stand-in for an Enterprise Edition feature: what it is, and where it is available. */
-export function EnterpriseFeatureNotice({ title, description }: EnterpriseFeatureNoticeProps) {
+export function EnterpriseFeatureNotice({ title, description, action }: EnterpriseFeatureNoticeProps) {
   return (
     <Flex
       align="start"
@@ -70,6 +73,7 @@ export function EnterpriseFeatureNotice({ title, description }: EnterpriseFeatur
         <Text size="1" style={{ color: 'var(--gray-11)' }}>
           {description}
         </Text>
+        {action}
       </Flex>
     </Flex>
   );

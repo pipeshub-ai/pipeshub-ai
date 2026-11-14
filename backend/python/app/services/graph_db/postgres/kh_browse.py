@@ -23,6 +23,7 @@ from app.exceptions.graph_db_exceptions import (
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase, _doc
 from app.services.graph_db.postgres.kg import listing as kgl
+from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.model import CODE_COLL
 from app.services.graph_db.postgres.kh_listing import (
     ADMIT_CHUNK,
@@ -55,6 +56,9 @@ if TYPE_CHECKING:
 
 BROWSE_MEMORY_MAX = 5_000     # children of one node a browse holds, sorts and cuts in memory; past it only the name and updated sorts are served (by the children indexes), the others are refused
 NO_COUNTS = {"record": 0, "folder": 0, "recordGroup": 0}
+# Children one sidebar request samples for its records' arrows, with BUDGET_S: past it the page ends before the next record undecided and a total is capped. Each listing pass
+# also reads its first row's sample whole (ARROW_CHILDREN at most), so that a request always moves on.
+SIDEBAR_SCAN_MAX = 5_000
 
 
 class KhBrowseMixin(PgBase):
@@ -69,6 +73,7 @@ class KhBrowseMixin(PgBase):
             return refused()
         at_app = start_id == app_id      # the connector itself: kg keeps it as the hierarchy parent of its top nodes, so it is browsed by its own key
         gated = set(gated_app_ids)
+        side = bool(filters.get("only_containers"))      # the sidebar: the rows the browse lists that are groups or folders, or records whose arrow is on
 
         async def resolve(tx: Tx) -> tuple[Any, str] | str:
             """The start and its connector."""
@@ -108,7 +113,7 @@ class KhBrowseMixin(PgBase):
             links = [r["child_sk"] for r in await tx.fetch(kgl.LINKED_CHILDREN, org, key, kgl.LINKS_MAX + 1, hidden)]      # read once: every statement below is handed them
             linked = set(links)
             by_key = [*links, *(sk for sk in tops if sk not in linked)]      # the chain-tops are read by their keys, as the linked children are
-            base, where = where_of(org, app_sk, app_doc, filters, hidden)
+            base, where = where_of(org, app_sk, app_doc, filters, hidden, browse=True)
             where += "" if self._kh_lists_placeholders(flatten=False, filters=filters) else " AND NOT r.placeholder"
             p = kgl.Params(list(base.values))
             p.values[1], p.values[2] = key, BROWSE_MEMORY_MAX + 1
@@ -143,7 +148,7 @@ class KhBrowseMixin(PgBase):
             u = {"start_sk": start["sk"] if start else None, "app_id": aid, "granted": granted, "app_sk": app_sk, "app_doc": app_doc, "hidden": hidden, "served": served,
                  "sets": sets, "filtered": filtered_out(aid, app_doc, filters), "under": under, "where": where, "links": links_param, "p": p, "trail": trail, "rows": rows,
                  "opened": ok, "windowed": windowed, "access": access, "done": None}
-            if not u["filtered"] and rows is not None and not windowed and not any(r["placeholder"] and r["id"] in ok for r in rows):
+            if not u["filtered"] and rows is not None and not windowed and not side and not any(r["placeholder"] and r["id"] in ok for r in rows):
                 # held whole with no placeholder to follow: the page and its rows in this read too
                 listed = [r for r in rows if r["id"] in ok]
                 page = self._kh_order(listed, sort_field, order, after, direction)[:limit + 1]
@@ -167,18 +172,87 @@ class KhBrowseMixin(PgBase):
         admitted_of = self._kh_admitted_of(sets, gset, self._kh_admitter(org, access, transaction, served=served))
         tops = self._kh_tops_under(org, app_id, access, gset, transaction, apply=chain_tops_apply(app_doc))
         lead = LeadBudget()      # the request's placeholder walks: its page, its total and its arrows share one budget
-        walk = (hidden, admitted_of, org, transaction, tops, lead)      # what deciding a placeholder reads (``_kh_listed``)
+        arrows = (hidden, admitted_of, org, transaction, tops, lead)      # what deciding a placeholder and an arrow reads
+        on: dict[int, bool] = {}      # a record's arrow, once decided (never while a placeholder below it is undecided)
+        # The first row a call looks at may not end it (a request must move on). Its undecided placeholders are walked on one more budget, the request's second and last
+        # (so a request's walks read at most twice LEAD_NODES rows); a head still undecided when that runs out is listed (``shown``): the viewer may open it, so listing it
+        # cannot over-share, and leaving it out would hide it. Its arrow is off while undecided, as on any page, and the total is capped.
+        head_lead = LeadBudget(decided=lead.decided)
+        shown: set[int] = set()
+
+        def record(r: Any) -> bool:  # noqa: ANN401
+            return r["kind"] == 3 and not r["folder"]
+
+        def settled(r: Any) -> bool:  # noqa: ANN401
+            return not record(r) or r["sk"] in on or r["sk"] in shown
+
+        scan = {"rows": 0, "t0": time.monotonic()}      # the children the request's sidebar arrows sampled, against SIDEBAR_SCAN_MAX and BUDGET_S
+
+        def spent() -> bool:
+            return scan["rows"] >= SIDEBAR_SCAN_MAX or time.monotonic() - scan["t0"] > BUDGET_S
+
+        async def decide(ask: list[Any], head: int | None, bound: int | None) -> None:
+            """The arrows of the records ``ask``, into ``on`` (or ``shown`` for ``head``), their children sampled ``bound`` rows at most in all (a record the bound cut and
+            no child lights stays undecided; ``head`` is then read whole)."""
+            cut: set[int] = set()
+            read = await self._kq(lambda tx: self._kh_arrows_read(tx, org, ask, hidden, sets, gset, access, tops=chain_tops_apply(app_doc), bound=bound, cut=cut), transaction)
+            scan["rows"] += len(read[1])
+            unsure: set[int] = set()
+            lit = await self._kh_arrows(read, ask, *arrows, undecided=unsure)
+            unsure |= cut - lit
+            on.update((r["sk"], r["sk"] in lit) for r in ask if r["sk"] not in unsure)
+            if head in cut - lit:
+                await decide([r for r in ask if r["sk"] == head], head, None)
+                return
+            one = (read[0], [k for k in read[1] if k["parent"] == head], read[2], read[3])
+            while head in unsure:      # each pass decides one more of its placeholders, until head_lead runs out
+                unsure, known = set(), len(lead.decided)
+                lit = await self._kh_arrows(one, [r for r in ask if r["sk"] == head], *arrows[:5], head_lead, undecided=unsure)
+                if head not in unsure:
+                    on[head] = head in lit
+                elif len(lead.decided) == known:
+                    shown.add(head)
+                    break
+
+        async def keep(rows: list[Any], head: int | None, want: int | None) -> tuple[list[Any], int | None]:
+            """The sidebar's rows (``only_containers``): the groups and the folders, and a record only where its arrow is on, as the page's arrows decide it, in the rows'
+            order, until ``want`` are kept. The records' arrows are read a window at a time, so a page reads about as many as it lists. The rows end, and the sk where they
+            ended is handed back (the caller resumes before it), at a record whose arrow waits on a placeholder the request's budget left undecided, or when the request's
+            sampling (``spent``) runs out; ``head``, the first row the caller looked at, is decided anyway (alone once sampling is spent, and on ``head_lead`` past the
+            placeholder budget, listed when that cannot decide it either), so a request always moves on."""
+            out: list[Any] = []
+            size = max(1, want or 50)
+            for i, r in enumerate(rows):
+                if want is not None and len(out) >= want:
+                    return out, r["sk"]
+                if not settled(r):
+                    if spent() and r["sk"] != head:
+                        return out, r["sk"]
+                    if spent():
+                        await decide([r], head, None)
+                    else:
+                        await decide([x for x in rows[i:] if not settled(x)][:size], head, max(0, SIDEBAR_SCAN_MAX - scan["rows"]))
+                    size = min(WINDOW_MAX, size * 8)
+                    if not settled(r):
+                        return out, r["sk"]
+                if not record(r) or on.get(r["sk"]) or r["sk"] in shown:
+                    out.append(r)
+            return out, None
+        walk = (*arrows, keep if side else None)      # what listing a child reads (``_kh_listed``)
         resume, capped, out, read = None, False, None, None
         if u["done"] is not None:
             page, total, counts, out, read = u["done"]
         elif rows is not None and not u["windowed"]:
             ordered = self._kh_order(rows, sort_field, order, after, direction)
-            listed, n = await self._kh_listed(ordered, *walk, ok=opened)
+            listed, n = await self._kh_listed(ordered, *walk, ok=opened, want=limit + 1)
             page = listed[:limit + 1]
             if len(page) <= limit and n < len(ordered):      # the walks stopped before a placeholder: the page ends there, and the next starts there
                 resume = _edge(ordered[n - 1], sort_field)
-            every, m = await self._kh_listed(self._kh_order(rows, sort_field, order, None, "next"), *walk, ok=opened)
-            total, counts, capped = len(every), self._kh_counts(every), m < len(rows)
+            if include_total or not side:      # a sidebar's total reads every record's arrow: only when it is asked for
+                every, m = await self._kh_listed(self._kh_order(rows, sort_field, order, None, "next"), *walk, ok=opened)
+                total, counts, capped = len(every), self._kh_counts(every), m < len(rows)
+            else:
+                total, counts = 0, dict(NO_COUNTS)
         elif rows is not None:      # held, its rows asked of the check a window at a time in the page's order; the total as for a wide node
             page, resume = await self._kh_held_page(rows, limit, sort_field, order, after, direction, walk)
             total, counts, capped = (await self._kh_browse_total(p, where, links, sets, gset, walk)) if include_total else (0, dict(NO_COUNTS), False)
@@ -187,12 +261,17 @@ class KhBrowseMixin(PgBase):
         else:
             page, resume = await self._kh_browse_wide(p, where, links, limit, sort_field, order, after, direction, walk)
             total, counts, capped = (await self._kh_browse_total(p, where, links, sets, gset, walk)) if include_total else (0, dict(NO_COUNTS), False)
+        capped = capped or bool(shown)      # a record listed with its arrow undecided: the total is no more exact than the arrow
+        # A sidebar's records were settled by ``keep``: their arrows are reused, not sampled again; what the rows still read counts against the request's bound
+        known = {c["sk"]: bool(on.get(c["sk"])) for c in page if side and record(c) and settled(c)}
+        fresh = [c for c in page if c["sk"] not in known]
+        bound, cut = (max(0, SIDEBAR_SCAN_MAX - scan["rows"]) if side else None), set()
         if out is None:      # the rows and their arrows in one read
-            out, read = await self._kh_flat_rows(org, app_id, app_doc, page, sort_field, transaction, also=lambda tx: self._kh_arrows_read(tx, org, page, hidden, sets, gset, access,
-                                                                                                                  tops=chain_tops_apply(app_doc)),
+            out, read = await self._kh_flat_rows(org, app_id, app_doc, page, sort_field, transaction, also=lambda tx: self._kh_arrows_read(tx, org, fresh, hidden, sets, gset, access,
+                                                                                                                  tops=chain_tops_apply(app_doc), bound=bound, cut=cut),
                                                  under=u["under"])
-        lists = await self._kh_lists(read, hidden, admitted_of, org, transaction, tops, lead) if read else set()
-        lists |= await self._kh_held_lists(page, read, lists, tops)
+            scan["rows"] += len(read[1]) if read else 0
+        lists = await self._kh_arrows(read, fresh, *arrows) | {sk for sk, lit in known.items() if lit}
         for row, c in zip(out, page, strict=True):
             row["hasChildren"] = c["sk"] in lists
         payload: dict[str, Any] = {"rows": out, "total": total if include_total else None, "nRecord": counts["record"], "nFolder": counts["folder"], "nGroup": counts["recordGroup"]}
@@ -223,14 +302,29 @@ class KhBrowseMixin(PgBase):
         return counts
 
     async def _kh_listed(self, rows: list[Any], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str, transaction: str | None,
-                         tops: Callable[[list[Any]], Awaitable[set[int]]] | None, budget: LeadBudget, ok: set[str] | None = None) -> tuple[list[Any], int]:
+                         tops: Callable[[list[Any]], Awaitable[set[int]]] | None, budget: LeadBudget,
+                         keep: Callable[[list[Any], int | None, int | None], Awaitable[tuple[list[Any], int | None]]] | None = None, ok: set[str] | None = None,
+                         want: int | None = None) -> tuple[list[Any], int]:
         """Of children in the caller's order, those a browse lists: the ones the viewer may open (``ok`` when already asked), a placeholder only when it leads somewhere
-        (:meth:`_kh_leads`); and how many of ``rows`` are decided, a prefix that ends before the first placeholder the request's budget left undecided (the caller resumes there)."""
+        (:meth:`_kh_leads`), and of those the ones ``keep`` keeps (the sidebar's, ``want`` of them at most); and how many of ``rows`` are decided, a prefix that ends before the
+        first placeholder the request's budget left undecided, or where the sidebar stopped (the caller resumes there)."""
         ok = await admitted_of(rows) if ok is None else ok
         stubs = [r for r in rows if r["placeholder"] and r["id"] in ok]
         led, undecided = await self._kh_leads(stubs, hidden, admitted_of, org, transaction, tops=tops, budget=budget) if stubs else (set(), set())
         n = next((i for i, r in enumerate(rows) if r["sk"] in undecided and r["placeholder"] and r["id"] in ok), len(rows))
-        return [r for r in rows[:n] if r["id"] in ok and (not r["placeholder"] or r["sk"] in led)], n
+        listed = [r for r in rows[:n] if r["id"] in ok and (not r["placeholder"] or r["sk"] in led)]
+        if keep:
+            listed, stop = await keep(listed, rows[0]["sk"] if rows else None, want)
+            if stop is not None:
+                n = next(i for i, r in enumerate(rows) if r["sk"] == stop)
+        return listed, n
+
+    async def _kh_arrows(self, read: tuple | None, rows: list[Any], hidden: list[int], admitted_of: Callable[[list[Any]], Awaitable[set[str]]], org: str, transaction: str | None,
+                         tops: Callable[[list[Any]], Awaitable[set[int]]] | None, budget: LeadBudget, *, undecided: set[int] | None = None) -> set[int]:
+        """Of ``rows``, the sks whose arrow is on (opening the row lists something), from their :meth:`_kh_arrows_read`: the one rule for a page's arrows and its sidebar.
+        ``undecided`` collects the rows left off only because the request's budget left a placeholder below them undecided."""
+        lists = await self._kh_lists(read, hidden, admitted_of, org, transaction, tops, budget, undecided=undecided) if read else set()
+        return lists | await self._kh_held_lists(rows, read, lists, tops)
 
     @staticmethod
     def _kh_order(listed: list[Any], sort_field: str, order: str, after: dict[str, Any] | None, direction: str) -> list[Any]:
@@ -260,7 +354,7 @@ class KhBrowseMixin(PgBase):
         while at < len(ordered) and len(kept) < need:
             got = ordered[at:at + window]
             at += len(got)
-            listed, n = await self._kh_listed(got, *walk)
+            listed, n = await self._kh_listed(got, *walk, want=need - len(kept))
             kept += listed[:need - len(kept)]
             if len(kept) < need and n < len(got):      # the walks stopped before a placeholder: resume there (where the window began, if they decided none of it)
                 return kept, _edge(got[n - 1], sort_field) if n else before
@@ -282,7 +376,7 @@ class KhBrowseMixin(PgBase):
             branches = kgl.after(sort_field, order, direction, boundary, q) if boundary is not None else None
             sql = kgl.page_sql(sort_field, order, direction, where, branches, None, kgl.browse_scopes(links))
             got = list(await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction))
-            listed, n = await self._kh_listed(got, *walk)
+            listed, n = await self._kh_listed(got, *walk, want=need - len(kept))
             kept += listed[:need - len(kept)]
             if len(kept) < need and n < len(got):      # the walks stopped before a placeholder: resume there (where the window began, if they decided none of it)
                 return kept, _edge(got[n - 1], sort_field) if n else boundary
@@ -299,7 +393,7 @@ class KhBrowseMixin(PgBase):
         not decide asked of the check; otherwise (or with too many undecided) the listed ones among the first COUNT_SCAN children, a lower bound when there were more (or when the
         request's budget left a placeholder undecided)."""
         transaction = walk[3]
-        if sets is not None:
+        if sets is not None and walk[6] is None:      # the classes cannot count the sidebar's records: each one's arrow decides it
             u = kgl.Params(list(p.values))
             u.values[2] = UNDECIDED_MAX + 1
             sql = kgl.browse_undecided_sql(where, u.add(sorted(sets["unvouched"])), u.add(sets["app_sk"]), links)
@@ -383,7 +477,9 @@ class KhBrowseMixin(PgBase):
             app = await tx.fetchval("/* pipeshub:kg.chain_app */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = $2", org, app_id)
             if app is None or not chain_tops_apply(_doc(app)):
                 return []
+            was = await tx.fetchval(kg_read.SORTS_OFF)
             rows = await tx.fetch(kgl.CHAIN_GRANTED, org, sorted(set(granted_ids)), app_id)
+            await tx.fetchval(kg_read.SORTS_BACK, was)
             nodes = await _chain_nodes(tx, org, rows)
             by: dict[tuple[str, ...], list[str]] = {}
             for n in nodes.values():
@@ -401,41 +497,17 @@ class KhBrowseMixin(PgBase):
             return [{"id": n["id"], "handle": n["id"], "sk": n["sk"], "parents": n["parents"], "ownGroups": [{"id": g, "deleted": d} for g, d in n["own"]]} for n in nodes.values()]
         return await self._kq(read, transaction) if node_ids else []
 
-    async def _kh_v3_chain_top_facts(self, app_id: str, node_ids: list[str], group_ids: list[str], transaction: str | None) -> dict[str, set[str]]:
+    async def _kh_v3_chain_top_hidden(self, app_id: str, node_ids: list[str], transaction: str | None) -> set[str]:
         org = current_org_id()
 
-        async def read(tx: Tx) -> dict[str, set[str]]:
+        async def read(tx: Tx) -> set[str]:
             app_sk = await tx.fetchval(kgl.APP_KEY, org, app_id)
             if app_sk is None:
-                return {"hidden": set(node_ids), "underApp": set()}
-            hidden: set[int] = set(await tx.fetchval(kgl.HIDDEN, org, app_sk)) if await tx.fetchval(kgl.HAS_HIDER, org, app_sk) else set()
-            nodes = {r["id"]: r["sk"] for r in await tx.fetch(kgl.CHAIN_ROWS, org, sorted({*node_ids, *group_ids}))}
-            # up the hierarchy from the groups (the primary parent and the hierarchy links), as far as the check's walk goes: the groups that reach the App
-            starts = {nodes[g] for g in group_ids if g in nodes}
-            up: dict[int, set[int]] = {}
-            frontier, seen = set(starts), set(starts)
-            for _ in range(access_sql.MAX_HOPS):
-                if not frontier:
-                    break
-                for r in await tx.fetch(kgl.CHAIN_BY_SK, org, sorted(frontier)):
-                    if r["parent_sk"] is not None:
-                        up.setdefault(r["sk"], set()).add(r["parent_sk"])
-                for r in await tx.fetch(LINKS, org, sorted(frontier)):
-                    if r["kind"] == 1:
-                        up.setdefault(r["child_sk"], set()).add(r["parent_sk"])
-                frontier = {p for sk in frontier for p in up.get(sk, ())} - seen - {app_sk}
-                seen |= frontier
-
-            def reaches(sk: int) -> bool:
-                level, met = {sk}, {sk}
-                for _ in range(access_sql.MAX_HOPS):
-                    level = {p for x in level for p in up.get(x, ())} - met
-                    if app_sk in level:
-                        return True
-                    met |= level
-                return False
-            return {"hidden": {i for i, sk in nodes.items() if sk in hidden and i in set(node_ids)},
-                    "underApp": {g for g in group_ids if g in nodes and reaches(nodes[g])}}
+                return set(node_ids)
+            if not await tx.fetchval(kgl.HAS_HIDER, org, app_sk):
+                return set()
+            hidden = set(await tx.fetchval(kgl.HIDDEN, org, app_sk))
+            return {r["id"] for r in await tx.fetch(kgl.CHAIN_ROWS, org, sorted(set(node_ids))) if r["sk"] in hidden}
         return await self._kq(read, transaction)
 
 

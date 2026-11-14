@@ -41,14 +41,18 @@ from app.services.graph_db.postgres.kg.reader import (
     snapshot,
 )
 from app.services.graph_db.postgres.kg.stamp import StampStats, stamp
-from app.services.graph_db.postgres.kg.writers import KgWriter, record_refusals
+from app.services.graph_db.postgres.kg.writers import (
+    GRANT_TYPE_LENGTH,
+    KgWriter,
+    record_refusals,
+)
 from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import Tx
 
 logger = logging.getLogger(__name__)
-REFUSED = METRICS_BACKEND.counter("pipeshub_kg_refused_rows_total", "Nodes with a value the records writer refuses: written without it, and their connector taken off the readers", ["coll"])
+REFUSED = METRICS_BACKEND.counter("pipeshub_kg_refused_rows_total", "Rows with a value a kg writer refuses (a node written without it, a grant left out), and their connector taken off the readers", ["coll"])
 
 
 @dataclass
@@ -237,6 +241,15 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
             REFUSED.inc(k[0])
             logger.error("kg: the records writer refuses the %s column of %s %s; the row is written without it and its connector is taken off the readers", ", ".join(bad), *k)
             row.update(dict.fromkeys(bad))
+    # A grant's type is part of its key, so a grant whose type the writer refuses cannot be stored at all. It is left out (no row of its key can exist to go stale) and the connector of
+    # the node it is on is taken off the readers below: the walk reads the graph and sees it, and a verify finds it missing, so the copy is not served again while the type stays.
+    refused_g_apps: set[int] = set()
+    for g in sorted(g for g in d.grants if not GRANT_TYPE_LENGTH[0] <= len(g[2]) <= GRANT_TYPE_LENGTH[1]):
+        REFUSED.inc("permission")
+        logger.error("kg: the grants writer refuses the type (%d characters) of the grant of principal %s on node %s; it is left out and its connector is taken off the readers",
+                     len(g[2]), g[0], g[1])
+        if (app := d.grants.pop(g)[1]) is not None:
+            refused_g_apps.add(app)
     if d.gone and not org_wide:      # gone since `_held`: its key can already be another connector's, and only the whole org holds that connector off
         raise NeedLocks(set(), wide=True)
     st.focus = len(every)
@@ -260,7 +273,7 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     # projects the deletion, nothing re-derives those rows and the connector would stay verified over them.
     st.orphaned = {a for k, doc in snap.nodes.items() if (org_wide or k in every) and k[0] != "apps" and (a := app_id_of(k, doc)) and ("apps", a) not in snap.nodes}
     refused_under = {d.records[snap.sk[k]]["app_sk"] for k in st.refused} - {None}      # the connectors the refused rows were just written under
-    off = {*gone_apps, *refused_under, *(snap.sk[("apps", a)] for a in st.orphaned if ("apps", a) in snap.sk)}
+    off = {*gone_apps, *refused_under, *refused_g_apps, *(snap.sk[("apps", a)] for a in st.orphaned if ("apps", a) in snap.sk)}
     if off:
         # What was verified for a connector is the state of a node that no longer exists: it is taken off the readers in the same commit, and must be copied and verified again.
         for r in await tx.fetch("""/* pipeshub:kg.gone_app_state */ SELECT app_sk FROM kg.projection_state WHERE org_id = $1 AND app_sk = ANY($2::bigint[])

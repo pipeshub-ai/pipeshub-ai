@@ -675,6 +675,19 @@ grants: [[u, f], [u, q]]
 gates: [[u, A]]
 """))
 
+# DEPTHDEL: a readable record r three hierarchy hops below the App, through a deleted folder x. A flatten from the App bounded to three hops lists r (the
+# bound counts hops through any node, as Neo4j's walk does); bounded to two it does not.
+DEPTHDEL = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: G, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: x, kind: record, connector: A, rule: OPEN, deleted: true, parents: [G], inherits: [G]}
+  - {id: r, kind: record, connector: A, rule: OPEN, parents: [x]}
+grants: [[u, G], [u, r]]
+gates: [[u, A]]
+"""))
+
 # SCOPEDSIDE: FLATSIDE's twin below a folder. R under a granted group G holds a strict child c that inherits from it. A flatten of G reads its rows'
 # arrows from G's reach (the walk reaches G), so R shows an arrow there, and that flatten's sidebar keeps R.
 SCOPEDSIDE = world_from_data(yaml.safe_load("""
@@ -778,8 +791,60 @@ gates: [[u, A], [u, C]]
 links: [[u, s, B]]
 """))
 
+# XBADGE: the viewer holds role r, a role of App R (a group, role or team is a connector's entity). A grant to a principal counts on a node of any
+# gated App, whatever the principal's own connector: r's grant on x (a RESTRICTED record of App B on A's walk) opens c below it, and its grant on a
+# (a RESTRICTED record of A) opens a itself.
+XBADGE = world_from_data(yaml.safe_load("""
+principals: [{id: u}, {id: r, kind: role}]
+nodes:
+  - {id: R, kind: app, app_type: DRIVE}
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: B, kind: app, app_type: DRIVE}
+  - {id: x, kind: record, connector: B, rule: RESTRICTED, parents: [A], inherits: [A]}
+  - {id: c, kind: record, connector: A, rule: STRICT, parents: [x], inherits: [x]}
+  - {id: a, kind: record, connector: A, rule: RESTRICTED, parents: [A], inherits: [A]}
+grants: [[r, x], [r, a]]
+memberships: [[u, r]]
+gates: [[u, A], [u, B]]
+"""))
+
+# XLINKBADGE: the viewer reads App B as the source account s, which holds role r of App R. The source account's grants, its roles' included, count
+# inside B only, whatever the role's own connector: r's grant on y (of B, on A's walk) opens e below it; its grant on z (of A) opens nothing.
+XLINKBADGE = world_from_data(yaml.safe_load("""
+principals: [{id: u}, {id: s}, {id: r, kind: role}]
+nodes:
+  - {id: R, kind: app, app_type: DRIVE}
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: B, kind: app, app_type: DRIVE}
+  - {id: y, kind: record, connector: B, rule: RESTRICTED, parents: [A], inherits: [A]}
+  - {id: e, kind: record, connector: A, rule: STRICT, parents: [y], inherits: [y]}
+  - {id: z, kind: record, connector: A, rule: RESTRICTED, parents: [A], inherits: [A]}
+grants: [[r, y], [r, z]]
+memberships: [[s, r]]
+gates: [[u, A]]
+links: [[u, s, B]]
+"""))
+
+# UNPLACED: three granted records under a folder p the viewer may not open. r1's own group `shut` is closed and hangs from nothing, so no node lists r1
+# but the App: it is listed there. r2's own group `open` is granted (a chain-top of the App itself), so r2 is listed under it and not under the App.
+# r3 is granted but RESTRICTED and inherits nothing: the check denies it, and it is listed nowhere.
+UNPLACED = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: p, kind: record, connector: A, rule: RESTRICTED, parents: [f], inherits: [f], belongs: [f]}
+  - {id: shut, kind: group, connector: A, rule: RESTRICTED}
+  - {id: open, kind: group, connector: A, rule: OPEN}
+  - {id: r1, kind: record, connector: A, rule: OPEN, parents: [p], belongs: [shut]}
+  - {id: r2, kind: record, connector: A, rule: OPEN, parents: [p], belongs: [open]}
+  - {id: r3, kind: record, connector: A, rule: RESTRICTED, parents: [p], belongs: [shut]}
+grants: [[u, r1], [u, r2], [u, r3], [u, open]]
+gates: [[u, A]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
              SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ, OPENGRANT, OPENGRANTTEAM, SIDESEED,
              STUBSEED, NESTSTUB, CAPSTUB, HIDESEED, FLATSIDE, REACHSTUB,
-             SCOPEDSIDE, XHOP, XLINK, DECLHIDE]
+             SCOPEDSIDE, XHOP, XLINK, DECLHIDE, XBADGE, XLINKBADGE, UNPLACED]

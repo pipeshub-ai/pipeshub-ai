@@ -11,8 +11,8 @@ from app.utils.kh_chain_tops import place_chain_tops
 APP = "app-1"
 
 
-def _group(group_id: str, *, deleted: bool = False, under_app: bool = True) -> dict:
-    return {"id": group_id, "deleted": deleted, "underApp": under_app}
+def _group(group_id: str, *, deleted: bool = False) -> dict:
+    return {"id": group_id, "deleted": deleted}
 
 
 def _candidate(node_id: str, parents: tuple[str, ...] = (), own: tuple[dict, ...] = ()) -> dict:
@@ -48,22 +48,24 @@ def test_no_parent_and_no_group_falls_back_to_the_app() -> None:
     assert _placed([_candidate("r")], set()) == {APP: ["r"]}
 
 
-def test_a_deleted_own_group_lists_it_nowhere() -> None:
-    """The App fallback never applies to a deleted group."""
-    assert _placed([_candidate("r", ("p",), (_group("g", deleted=True),))], set()) == {}
+def test_a_deleted_own_group_falls_back_to_the_app() -> None:
+    """A deleted group never opens, so nothing else lists the node: the App does."""
+    assert _placed([_candidate("r", ("p",), (_group("g", deleted=True),))], set()) == {APP: ["r"]}
 
 
-def test_an_own_group_outside_the_app_lists_it_nowhere() -> None:
-    """The group must be structurally under the App."""
-    assert _placed([_candidate("r", ("p",), (_group("g", under_app=False),))], set()) == {}
+def test_an_own_group_outside_the_app_falls_back_to_the_app() -> None:
+    """Its parent and its own group are closed, and the group does not hang from the App: nothing else lists it."""
+    assert _placed([_candidate("r", ("p",), (_group("g"),))], set()) == {APP: ["r"]}
+
+
+def test_an_open_own_group_outside_the_app_lists_it_there_and_not_under_the_app() -> None:
+    assert _placed([_candidate("r", ("p",), (_group("g"),))], {"g"}) == {"g": ["r"]}
 
 
 def test_several_own_groups_list_it_under_each_open_one_or_the_app_once() -> None:
     both = _candidate("r", ("p",), (_group("g1"), _group("g2"), _group("g3")))
     assert _placed([both], {"g1", "g3"}) == {"g1": ["r"], "g3": ["r"]}
     assert _placed([both], set()) == {APP: ["r"]}
-    one_outside = _candidate("r", ("p",), (_group("g1", under_app=False), _group("g2")))
-    assert _placed([one_outside], set()) == {APP: ["r"]}
 
 
 def test_a_group_below_a_gap_lists_under_the_app() -> None:
@@ -89,8 +91,7 @@ def test_a_node_is_never_its_own_group() -> None:
     assert _placed([_candidate("g", ("p",), (_group("g"),))], {"g"}) == {APP: ["g"]}
 
 
-def _provider(candidates: list[dict], admitted: set[str], *, hidden: tuple[str, ...] = (),
-              under_app: tuple[str, ...] | None = None) -> Neo4jProvider:
+def _provider(candidates: list[dict], admitted: set[str], *, hidden: tuple[str, ...] = ()) -> Neo4jProvider:
     provider = Neo4jProvider.__new__(Neo4jProvider)
     provider.logger = MagicMock()
     by_groups: dict[tuple, list[str]] = {}
@@ -100,9 +101,7 @@ def _provider(candidates: list[dict], admitted: set[str], *, hidden: tuple[str, 
         return_value=[{"ownGroups": list(k), "ids": v} for k, v in by_groups.items()])
     provider._kh_v3_chain_top_candidates = AsyncMock(side_effect=lambda _app, ids, _t: [
         c for c in candidates if c["id"] in ids])
-    provider._kh_v3_chain_top_facts = AsyncMock(side_effect=lambda _a, nodes, groups, _t: {
-        "hidden": set(hidden) & set(nodes),
-        "underApp": set(groups) if under_app is None else set(under_app) & set(groups)})
+    provider._kh_v3_chain_top_hidden = AsyncMock(side_effect=lambda _a, nodes, _t: set(hidden) & set(nodes))
     provider.check_access = AsyncMock(side_effect=lambda _u, _o, node_ids=(), **_: AccessCheck(
         node_ids=frozenset(set(node_ids) & admitted)))
     return provider
@@ -148,14 +147,14 @@ async def test_the_walks_run_for_chain_tops_only_and_hidden_ones_drop() -> None:
                          hidden=("r3",))
     placed = await provider._kh_v3_chain_tops(APP, "org", ACCESS, None)
     assert [c["id"] for c in placed[APP]] == ["r2"]
-    assert provider._kh_v3_chain_top_facts.await_args.args[1] == ["r2", "r3"]
+    assert provider._kh_v3_chain_top_hidden.await_args.args[1] == ["r2", "r3"]
 
 
-async def test_an_own_group_outside_the_app_is_learnt_from_the_walk() -> None:
-    provider = _provider([_cand("r2", ("p2",), ("g-out",)), _cand("r3", ("p3",), ("g-in",))], set(),
-                         under_app=("g-in",))
+async def test_a_chain_top_whose_parent_and_own_group_are_closed_is_listed_under_the_app() -> None:
+    """Wherever its own group hangs: nothing else lists it, and the check admits it (an OPEN node granted directly)."""
+    provider = _provider([_cand("r2", ("p2",), ("g-out",)), _cand("r3", ("p3",), ("g-in",))], set())
     placed = await provider._kh_v3_chain_tops(APP, "org", ACCESS, None)
-    assert [c["id"] for c in placed[APP]] == ["r3"]
+    assert [c["id"] for c in placed[APP]] == ["r2", "r3"]
 
 
 async def test_no_grant_in_the_app_asks_nothing() -> None:

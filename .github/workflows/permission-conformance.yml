@@ -5,7 +5,7 @@ name: permission-conformance
 #
 #   oracle     scenarios, round-trip, deltas and coverage matrix; no services, every pull request.
 #   graph      the oracle against the real graph check, and the Knowledge Hub listing and its counts, on Neo4j and ArangoDB (corpus + 50 generated worlds), plus
-#              the graph-permissions integration suite, which ran in no workflow before.
+#              the graph-permissions integration suite, which ran in no workflow before; four shards, each with its own stores.
 #   nightly    600 generated worlds per generator for each standing seed (7, 11, 2026).
 
 on:
@@ -84,7 +84,7 @@ jobs:
       # The one allowed skip is the strict expected failure that reports matrix cells without a scenario, by its exact name.
       - name: Check the oracle run for skips
         run: |
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 1371 \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 1381 \
             --allow test_coverage_gaps_are_reported
 
       - name: Run the viewer-scope service tests (no services)
@@ -95,10 +95,76 @@ jobs:
           python3 scripts/assert_no_skips.py "$RUNNER_TEMP/viewer-scopes-junit.xml" --min-tests 318
 
   graph:
+    # named by the shard alone: by default a check's name lists every matrix value, the include keys too
+    name: graph (shard ${{ matrix.shard }})
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    # On four cores (stores and pytest pinned to them) the graph suite takes 13 minutes and the conformance step 44; with setup, about an hour.
-    timeout-minutes: 90
+    # A hosted runner can be twice as slow as another (one run of the adversarial worlds took 34 minutes, another passed 58), so the shards are
+    # sized to take at most about half of this on the slowest runner seen
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # The graph-permissions suite and the conformance suite are split by measured time; each shard has its own stores. tests are the
+        # pytest paths; k splits one file by -k into sets that together hold each of its tests once; cases is the shard's case count in the
+        # suite; allow names the skips the shard may report. Shards 2 and 7 run their folder minus what the others name, so a new test file
+        # runs there. scripts/test_permission_conformance_shards.py checks that every case runs exactly once and that the counts add up.
+        shard: [1, 2, 3, 4, 5, 6, 7]
+        include:
+          # The graph-permissions suite ran in no workflow before; it includes the tests that a connector list never shows another
+          # organization's connectors. Two of its slowest files run here, about half of it.
+          - shard: 1
+            suite: tests.integration.graph_permissions
+            tests: >-
+              tests/integration/graph_permissions/test_kh_name_search_first.py
+              tests/integration/graph_permissions/test_provider_v3_shapes.py
+            cases: 73
+            pytest_args: --timeout=300
+          # Its three skips are tests of one store only.
+          - shard: 2
+            suite: tests.integration.graph_permissions
+            tests: >-
+              tests/integration/graph_permissions
+              --ignore=tests/integration/graph_permissions/test_kh_name_search_first.py
+              --ignore=tests/integration/graph_permissions/test_provider_v3_shapes.py
+            cases: 769
+            pytest_args: --timeout=300
+            allow: >-
+              test_hierarchy_backfill::test_an_edge_from_a_removed_document_is_no_parent[neo4j]
+              test_redundant_group_edges::test_the_tree_labels_follow_the_edges[arango]
+              test_record_links::test_a_hierarchy_write_does_not_overwrite_a_link_waiting_for_the_migration[neo4j]
+          # test_conformance_kh.py alone takes most of the conformance suite. Each half of the adversarial worlds (`PARTS` in kh_layer.py) and
+          # the golden worlds run on their own; the proptest worlds and the hand worlds share a shard.
+          - shard: 3
+            suite: tests.permissions
+            tests: tests/permissions/test_conformance_kh.py
+            k: '[adversarial-1of2]'
+            cases: 1
+            pytest_args: -p no:logging --timeout=3000
+          - shard: 4
+            suite: tests.permissions
+            tests: tests/permissions/test_conformance_kh.py
+            k: not [adversarial-1of2] and [adversarial-2of2]
+            cases: 1
+            pytest_args: -p no:logging --timeout=3000
+          - shard: 5
+            suite: tests.permissions
+            tests: tests/permissions/test_conformance_kh.py
+            k: not [adversarial-1of2] and not [adversarial-2of2] and golden_worlds
+            cases: 1
+            pytest_args: -p no:logging --timeout=3000
+          - shard: 6
+            suite: tests.permissions
+            tests: tests/permissions/test_conformance_kh.py
+            k: not [adversarial-1of2] and not [adversarial-2of2] and not golden_worlds
+            cases: 23
+            pytest_args: -p no:logging --timeout=3000
+          - shard: 7
+            suite: tests.permissions
+            tests: tests/permissions --ignore=tests/permissions/test_conformance_kh.py
+            cases: 288
+            pytest_args: -p no:logging --timeout=3000
+            allow: test_generation_paths::test_an_edge_another_transaction_removed_and_this_write_put_back_moves_the_generation[arango]
     services:
       neo4j:
         image: neo4j:5.26.0
@@ -108,9 +174,11 @@ jobs:
           NEO4J_AUTH: neo4j/khpermpass
           NEO4J_PLUGINS: '["apoc"]'
           NEO4J_dbms_security_procedures_unrestricted: apoc.*
-          NEO4J_server_memory_heap_initial__size: 512m
-          NEO4J_server_memory_heap_max__size: 768m
-          NEO4J_server_memory_pagecache_size: 128m
+          # The memory the Compose default ships (deployment/docker-compose/docker-compose.yml): the listing's statements are planned
+          # with what a deployment has, and a 768m heap ran out planning them.
+          NEO4J_server_memory_heap_initial__size: 1G
+          NEO4J_server_memory_heap_max__size: 2G
+          NEO4J_server_memory_pagecache_size: 1G
         options: >-
           --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
           --health-interval 5s --health-timeout 5s --health-retries 30 --health-start-period 20s
@@ -147,42 +215,40 @@ jobs:
           uv pip install --system pytest pytest-asyncio pytest-timeout
           uv pip install --system -e ".[dev]"
 
-      # Both suites wipe the stores on setup, so they run one after the other. The graph-permissions suite ran in no
-      # workflow before; it includes the tests that a connector list never shows another organization's connectors.
-      - name: Run the graph-permissions integration suite
-        env:
-          KH_PERM_ARANGO_DB: kh_perm_suite
-        run: |
-          cd backend/python
-          pytest tests/integration/graph_permissions -m integration -v --timeout=300 --junitxml="$RUNNER_TEMP/graph-suite-junit.xml"
-
-      - name: Run the conformance suite against both stores
+      # Every suite wipes the stores on setup; each shard has its own, so one database name serves them all.
+      - name: Run shard ${{ matrix.shard }} against both stores
         env:
           KH_PERM_ARANGO_DB: kh_perm_conformance
           PERM_GEN_WORLDS: '50'
+          TESTS: ${{ matrix.tests }}
+          K: ${{ matrix.k }}
+          PYTEST_ARGS: ${{ matrix.pytest_args }}
         run: |
           cd backend/python
-          # Log capture off: pytest keeps every record a test logs, and the Knowledge Hub layer's whole-tree browse logs enough to run out of
-          # memory with it on (tens of GB); with it off the step peaks near 1.5 GB. The generated-worlds test browses every node of 50 worlds
-          # on both stores (23 minutes for the adversarial set on four cores), hence the per-test timeout.
-          pytest tests/permissions -m integration -v -p no:logging --timeout=3000 --junitxml="$RUNNER_TEMP/graph-conformance-junit.xml"
+          # Log capture off in the conformance shards: pytest keeps every record a test logs, and the Knowledge Hub layer's whole-tree browse
+          # logs enough to run out of memory with it on (tens of GB); with it off a run peaks near 1.5 GB. The generated-worlds test browses
+          # every node of 50 worlds on both stores, hence the per-test timeout.
+          read -ra paths <<< "$TESTS"
+          read -ra args <<< "$PYTEST_ARGS"
+          pytest "${paths[@]}" ${K:+-k "$K"} -m integration -v "${args[@]}" --junitxml="$RUNNER_TEMP/graph-junit.xml"
 
-      # A skipped test here means a store was missing, so a skip fails the job; --min-tests pins the size of each run
-      # (a PR that adds tests raises it; it equals what `pytest --collect-only -m integration` lists). The suite's three skips are tests of one store only. An allow is matched as a substring of the report's `classname::name`, so each one names its module.
-      - name: Check the graph runs for skips
+      # A skipped test here means a store was missing, so a skip fails the job; --expect-suite pins the shard's case count (a PR that adds
+      # tests raises it and the total in the shard script). An allow is matched as a substring of the report's `classname::name`, so each
+      # one names its module.
+      - name: Check the shard for skips
+        env:
+          ALLOW: ${{ matrix.allow }}
         run: |
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-suite-junit.xml" --min-tests 842 \
-            --allow "test_hierarchy_backfill::test_an_edge_from_a_removed_document_is_no_parent[neo4j]" \
-            --allow "test_redundant_group_edges::test_the_tree_labels_follow_the_edges[arango]" \
-            --allow "test_record_links::test_a_hierarchy_write_does_not_overwrite_a_link_waiting_for_the_migration[neo4j]"
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-conformance-junit.xml" --min-tests 308 \
-            --allow "test_generation_paths::test_an_edge_another_transaction_removed_and_this_write_put_back_moves_the_generation[arango]"
+          read -ra allows <<< "$ALLOW"
+          args=()
+          for a in "${allows[@]}"; do args+=(--allow "$a"); done
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-junit.xml" --expect-suite "${{ matrix.suite }}=${{ matrix.cases }}" "${args[@]}"
 
       - name: Upload the regressions the generator filed
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: permission-regressions-graph
+          name: permission-regressions-graph-${{ matrix.shard }}
           path: backend/python/tests/permissions/scenarios/regressions/
           if-no-files-found: ignore
 
@@ -203,9 +269,11 @@ jobs:
           NEO4J_AUTH: neo4j/khpermpass
           NEO4J_PLUGINS: '["apoc"]'
           NEO4J_dbms_security_procedures_unrestricted: apoc.*
-          NEO4J_server_memory_heap_initial__size: 512m
-          NEO4J_server_memory_heap_max__size: 768m
-          NEO4J_server_memory_pagecache_size: 128m
+          # The memory the Compose default ships (deployment/docker-compose/docker-compose.yml): the listing's statements are planned
+          # with what a deployment has, and a 768m heap ran out planning them.
+          NEO4J_server_memory_heap_initial__size: 1G
+          NEO4J_server_memory_heap_max__size: 2G
+          NEO4J_server_memory_pagecache_size: 1G
         options: >-
           --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
           --health-interval 5s --health-timeout 5s --health-retries 30 --health-start-period 20s

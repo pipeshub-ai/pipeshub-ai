@@ -10,13 +10,16 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import time
 from collections import Counter
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
 import pytest
 
+from app.core.db import DbConfig, KernelDB
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import read as kg_read
@@ -40,6 +43,14 @@ def _hex(name: str) -> str:
 
 def _bound(org: str):  # noqa: ANN202
     return bind(OrgContext(org, None, "job", "job:test", "t"))
+
+
+def _replace(monkeypatch: pytest.MonkeyPatch, name: str, old: str, new: str) -> None:
+    """Patch a statement of ``kg_read`` by replacing text in it, and fail when nothing was replaced: a statement that changed would otherwise run unpatched and test nothing."""
+    original = getattr(kg_read, name)
+    patched = original.replace(old, new)
+    assert patched != original, f"kg_read.{name} no longer contains {old!r}"
+    monkeypatch.setattr(kg_read, name, patched)
 
 
 @pytest.fixture(autouse=True)
@@ -356,7 +367,7 @@ async def test_a_literal_kg_cannot_vouch_for_never_admits_and_the_node_takes_the
     assert c.x in d.walk and c.x not in d.admit
     await _same_as_walk(pg_provider, c)
     # without the child check the flag alone admits (what the earlier read did): the check is what stops it
-    monkeypatch.setattr(kg_read, "LITERALS", kg_read.LITERALS.replace("(r.kind <> 3 OR coalesce(", "(true OR coalesce("))
+    _replace(monkeypatch, "LITERALS", "(r.kind <> 3 OR coalesce(", "(true OR coalesce(")
     assert c.x in (await _decide(pg_db, c.org, c.ids, c.access)).admit
 
 
@@ -412,12 +423,15 @@ async def test_a_blocked_or_slow_read_hands_the_call_to_the_walk_at_once(layer, 
     assert got == want
     assert waited < 1.5, f"the read waited {waited:.1f} s on the lock"
     # a read that runs past the statement limit
-    monkeypatch.setattr(kg_read, "PROFILE", kg_read.PROFILE.replace("'2s'", "'100ms'"))
-    monkeypatch.setattr(kg_read, "CLASSES", kg_read.CLASSES.replace("WHERE org_id = $1", "WHERE (SELECT pg_sleep(2)) IS NOT NULL AND org_id = $1"))
+    _replace(monkeypatch, "PROFILE", "'2s'", "'100ms'")
+    _replace(monkeypatch, "CLASSES", "WHERE k.org_id = $1", "WHERE (SELECT pg_sleep(2)) IS NOT NULL AND k.org_id = $1")
+    fell: list[tuple[str, ...]] = []
+    monkeypatch.setattr(kg_read, "FALLBACKS", SimpleNamespace(inc=lambda *labels, value=1.0: fell.append(labels)))
     t0 = time.perf_counter()
     got = await _ask(pg_provider, c.org, c.uid, c.ids, c.access, None)
     assert got == want
     assert time.perf_counter() - t0 < 1.5
+    assert ("error",) in fell, f"the read did not run past its limit, so the walk took nothing over ({fell})"
 
 
 async def test_a_read_never_returns_another_orgs_rows(layer, pg_provider, pg_db) -> None:
@@ -440,29 +454,140 @@ async def test_a_read_never_returns_another_orgs_rows(layer, pg_provider, pg_db)
 
 
 N = 12_000
+# The key column of each index a statement of the reader may use: a probe of one is bounded by the org and that key.
+KEY_OF = {"records_id": "id", "records_pkey": "sk", "records_parent": "parent_sk", "links_pkey": "parent_sk", "node_keys_org_id_sk_key": "sk", "scope_classes_pkey": "id"}
+
+
+def _not_seeks(plan: dict[str, Any], indexes: set[str]) -> list[str]:
+    """What in an ``EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`` plan is not a seek: a scan of a kg table that is not one of ``indexes``, whose index condition does not bound
+    the key column, or that returns more than one row or reads more than a few pages per probe; and an index of ``indexes`` the plan never uses."""
+    found: list[str] = []
+    used: set[str] = set()
+
+    def visit(node: dict[str, Any]) -> None:
+        if node.get("Schema", "kg") == "kg" and node.get("Relation Name") in ("records", "node_keys", "scope_classes", "links"):
+            index, cond, loops = node.get("Index Name"), node.get("Index Cond", ""), node.get("Actual Loops", 0)
+            pages = (node.get("Shared Hit Blocks", 0) + node.get("Shared Read Blocks", 0)) / max(loops, 1)
+            used.add(index)
+            if node["Node Type"] not in ("Index Scan", "Index Only Scan") or index not in indexes:
+                found.append(f"{node['Node Type']} {index or ''} on {node['Relation Name']}")
+            elif "org_id = " not in cond or not re.search(rf"\b{KEY_OF[index]}( = | >= |, )", cond):
+                found.append(f"{index}: the index condition {cond} does not bound {KEY_OF[index]}")
+            elif loops and (node["Actual Rows"] > 1 or pages > 8):
+                found.append(f"{index}: {node['Actual Rows']} rows and {pages:.1f} pages per probe ({loops} probes)")
+        for child in node.get("Plans", []):
+            visit(child)
+
+    visit(plan["Plan"])
+    return found + [f"{i} is not used" for i in sorted(indexes - used)]
 
 
 async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer, pg_provider, pg_db) -> None:
     """EXPLAIN gate: on an org of 12,000 records, as the reader's unit runs the statements (custom plans, bitmap scans off), never analysed and then analysed, each is bounded by its
-    inputs: no sequential or bitmap heap scan, and the index conditions are the org and the key asked. Run on every PostgreSQL version of the suite."""
+    inputs: no sequential or bitmap heap scan, and the index conditions are the org and the key asked. Run as well (EXPLAIN ANALYZE), every scan of a kg table is a seek: the statement's
+    key index, bounded by the key, at most one row and a few pages per probe. Run on every PostgreSQL version of the suite."""
     c = await _case(layer, pg_provider, pg_db, literal_kind=3)
     await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, leaf) SELECT $1, 50000000 + g, 3, 'plans-r' || g, 3, $2, true FROM generate_series(1, $3) g", c.org, c.app_sk, N)
     await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT $1, 50000000 + g, 1, 60000000 + g FROM generate_series(1, $2) g", c.org, N)
     ids = [*c.ids, *(f"plans-r{j}" for j in range(1, N, 240))]
     sks = [c.lit, c.x_sk, *(50000000 + j for j in range(1, N, 240))]
     wants = {
-        "by id": (kg_read.BY_ID, [ids], ("records_id", "Index Cond: ((org_id = ", "id = q.id", "coll = 1")),
-        "classes": (kg_read.CLASSES, [[1, 2, 3]], ("scope_classes_pkey", "Index Cond: ((org_id = ", "id = q.id")),
-        "literals": (kg_read.LITERALS, [sks], ("records_pkey", "Index Cond: ((org_id = ", "sk = q.sk", "records_parent", "links_pkey")),
+        "by id": (kg_read.BY_ID, [ids], ("records_id", "Index Cond: ((org_id = ", "id = q.id", "coll = 1"), {"records_id", "node_keys_org_id_sk_key"}),
+        "classes": (kg_read.CLASSES, [[1, 2, 3]], ("scope_classes_pkey", "Index Cond: ((org_id = ", "id = q.id"), {"scope_classes_pkey"}),
+        "literals": (kg_read.LITERALS, [sks], ("records_pkey", "Index Cond: ((org_id = ", "sk = q.sk", "records_parent", "links_pkey"), {"records_pkey", "records_parent", "links_pkey"}),
     }
     for state in ("fresh", "analysed"):
         if state == "analysed":
             await _admin("ANALYZE kg.records; ANALYZE kg.node_keys; ANALYZE kg.scope_classes; ANALYZE kg.links")
-        for name, (sql, args, must) in wants.items():
-            async def go(tx, sql=sql, args=args) -> str:
+        for name, (sql, args, must, indexes) in wants.items():
+            async def go(tx, sql=sql, args=args) -> tuple[str, dict[str, Any]]:
                 await tx.fetchval(kg_read.PROFILE)
-                return "\n".join(r[0] for r in await tx.fetch("EXPLAIN (COSTS OFF) " + sql, c.org, *args))
+                text = "\n".join(r[0] for r in await tx.fetch("EXPLAIN (COSTS OFF) " + sql, c.org, *args))
+                ran = await tx.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, c.org, *args)
+                return text, (json.loads(ran) if isinstance(ran, str) else ran)[0]
             with _bound(c.org):
-                plan = await pg_db.run(go, custom_plan=True)
+                plan, ran = await pg_db.run(go, custom_plan=True)
             if "Seq Scan" in plan or "Bitmap Heap Scan" in plan or any(t not in plan for t in must):
                 pytest.fail(f"{state} {name}: a scan the ids do not bound, or an index condition missing ({must})\n{plan}")
+            if bad := _not_seeks(ran, indexes):
+                pytest.fail(f"{state} {name}: not a seek per key: {bad}\n{plan}")
+
+
+async def test_a_chunk_of_asked_ids_is_read_without_compiling_the_statement(layer, pg_provider, pg_db) -> None:
+    """The reader's statements are seeks, never worth compiling: under the reader's profile a full chunk of ids (``CHUNK``) is read without JIT, even with ``jit_above_cost``
+    at 0 (whatever the version's cost model makes of the estimate: on PostgreSQL 17 it passes the default threshold at a full chunk, on 18 it does not). Without the profile
+    the same statement is compiled, when the server has JIT at all."""
+    c = await _case(layer, pg_provider, pg_db)
+    await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, leaf) SELECT $1, 80000000 + g, 3, 'jit-r' || g, 3, $2, true FROM generate_series(1, $3) g",
+                 c.org, c.app_sk, kg_read.CHUNK)
+    await _admin("ANALYZE kg.records")
+    ids = [f"jit-r{j}" for j in range(1, kg_read.CHUNK + 1)]
+
+    async def plan(tx, *, profiled: bool) -> tuple[bool, dict[str, Any]]:
+        await tx.fetchval("/* pipeshub:test.jit_always */ SELECT set_config('jit_above_cost', '0', true), set_config('jit_inline_above_cost', '0', true)")
+        if profiled:
+            await tx.fetchval(kg_read.PROFILE)
+        ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + kg_read.BY_ID, c.org, ids)
+        return await tx.fetchval("SELECT pg_jit_available()"), (json.loads(ran) if isinstance(ran, str) else ran)[0]
+    with _bound(c.org):
+        available, bare = await pg_db.run(lambda tx: plan(tx, profiled=False), custom_plan=True)
+        _, read = await pg_db.run(lambda tx: plan(tx, profiled=True), custom_plan=True)
+    assert "JIT" not in read, read["JIT"]
+    assert ("JIT" in bare) == available, bare.get("JIT")      # the forcing works: the profile is what keeps it off
+
+
+async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(monkeypatch) -> None:
+    """PROFILE (sorts and bitmap scans off, short lock and statement limits) is the read's own: after a read that succeeds and one that fails, run as a unit of its own or in a
+    savepoint of a longer transaction, the settings are back in that transaction and in the next one on the same pooled connection."""
+    monkeypatch.setenv("PG_POOL_MAX", "1")                       # one connection: every unit below runs on it
+    db = KernelDB(DbConfig.from_env("connectors"))
+    await db.start()
+    org, access = _hex("read-profile-scope"), {"gated_app_ids": [], "by_connector": {}}
+
+    async def settings(tx) -> dict[str, Any]:
+        return dict(await tx.fetchrow("/* pipeshub:test.read_settings */ SELECT pg_backend_pid() AS pid, current_setting('enable_sort') AS sort, "
+                                      "current_setting('enable_bitmapscan') AS bitmap, current_setting('statement_timeout') AS statement, current_setting('lock_timeout') AS lock, "
+                                      "current_setting('jit') AS jit"))
+
+    async def walk(ids, vrids, acc) -> list:
+        return []
+
+    async def failing(tx, org, ids, access) -> kg_read.Decision:
+        raise RuntimeError("the read failed")
+
+    def unit(fn):  # noqa: ANN202
+        return db.run(fn, isolation="repeatable_read", custom_plan=True)
+
+    async def profiled(tx) -> dict[str, Any]:
+        await tx.fetchval(kg_read.PROFILE)
+        return await settings(tx)
+
+    try:
+        with _bound(org):
+            before = await db.run(settings)
+            assert (await db.run(profiled))["sort"] == "off" and (await db.run(profiled))["jit"] == "off"           # in force while the read runs
+            for broken in (False, True):
+                with monkeypatch.context() as m:
+                    if broken:
+                        m.setattr(kg_read, "decide", failing)          # fails after the profile was set
+                    assert await kg_read.accessible_rows(unit, org, ["no-such-node"], [], access, walk) == []
+                    assert await db.run(settings) == before
+
+                    async def longer(tx) -> dict[str, Any]:
+                        await kg_read.accessible_rows(lambda fn: kg_read.in_savepoint(tx, fn), org, ["no-such-node"], [], access, walk)
+                        return await settings(tx)
+                    assert await db.run(longer) == before
+                    assert await db.run(settings) == before
+
+                    async def listing(tx) -> dict[str, Any]:                 # the knowledge-hub listing: class_verdicts with no PROFILE
+                        await kg_read.class_verdicts(tx, org, {1: [[50000001]]}, set())
+                        return await settings(tx)
+                    if broken:
+                        m.setattr(kg_read, "LITERALS", "/* pipeshub:test.literals_fail */ SELECT 1 / 0 WHERE $1::text IS NOT NULL AND $2::bigint[] IS NOT NULL")
+                        with pytest.raises(asyncpg.DivisionByZeroError):
+                            await db.run(listing)
+                    else:
+                        assert await db.run(listing) == before
+                    assert await db.run(settings) == before
+    finally:
+        await db.close()

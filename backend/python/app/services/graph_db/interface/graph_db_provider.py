@@ -8202,7 +8202,7 @@ class IGraphDBProvider(ABC):
         grants_by_connector: dict[str, list[str]],
         transaction: str | None,
         probe: dict[str, Any] | None = None,
-        cross: dict[str, Any] | None = None,
+        cross: list[str] | None = None,
     ) -> tuple[bool, list[str], list[str]]:
         """What the batch check says about a browse start: whether it admits the
         start, which of its ancestors it admits (the breadcrumb of a start the
@@ -8238,7 +8238,7 @@ class IGraphDBProvider(ABC):
 
     async def _kh_v3_declared_scope(
         self, declared: list[str], app_id: str, granted: list[str], probe: dict[str, Any] | None, transaction: str | None,
-        cross: dict[str, Any] | None = None,
+        cross: list[str] | None = None,
     ) -> list[str]:
         """The scope of these declared groups the check admits, as the check's declared arm reads it: those the viewer is granted or the walk
         from the App reaches (where a group is admitted some other way, below a seed, what hangs under it is not readable through it), and the
@@ -8296,15 +8296,9 @@ class IGraphDBProvider(ABC):
         tops = [c for c in candidates if not set(c["parents"]) & open_parents]
         if not tops:
             return {}
-        # The costly walks run for the chain-tops only.
-        facts = await self._kh_v3_chain_top_facts(
-            app_id, [c["id"] for c in tops], sorted({g["id"] for c in tops for g in c["ownGroups"]}),
-            transaction,
-        )
-        for c in tops:
-            for g in c["ownGroups"]:
-                g["underApp"] = g["id"] in facts["underApp"]
-        tops = [c for c in tops if c["id"] not in facts["hidden"]]
+        # The costly walk runs for the chain-tops only.
+        hidden = await self._kh_v3_chain_top_hidden(app_id, [c["id"] for c in tops], transaction)
+        tops = [c for c in tops if c["id"] not in hidden]
         return place_chain_tops(tops, open_groups | open_parents, app_id)
 
     async def _kh_v3_chain_top_groups(
@@ -8329,15 +8323,10 @@ class IGraphDBProvider(ABC):
         ``parents`` are their hierarchy parents (the App included)."""
         raise NotImplementedError
 
-    async def _kh_v3_chain_top_facts(
-        self,
-        app_id: str,
-        node_ids: list[str],
-        group_ids: list[str],
-        transaction: str | None,
-    ) -> dict[str, set[str]]:
-        """``hidden``: the nodes beneath a group that hides its children;
-        ``underApp``: the groups whose hierarchy reaches ``app_id``."""
+    async def _kh_v3_chain_top_hidden(
+        self, app_id: str, node_ids: list[str], transaction: str | None,
+    ) -> set[str]:
+        """Of these nodes, those beneath a group that hides its children."""
         raise NotImplementedError
 
     async def _kh_v3_start_lineage(
