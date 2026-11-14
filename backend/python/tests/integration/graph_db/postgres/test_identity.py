@@ -421,3 +421,11 @@ async def test_a_link_written_in_an_open_transaction_is_read_inside_it(w: World)
         await w.p.rollback_transaction(txn)
     assert inside == {"m"}
     assert await w.p.get_app_user_links(w.org, APP) == []
+
+
+async def test_get_users_by_emails_with_padded_input_returns_matching_user(w: World) -> None:
+    await member(w, "p", userId="up", email="padded@x.com")
+    res = await w.p.get_users_by_emails(["  padded@x.com  "])
+    assert "padded@x.com" in res
+    assert res["padded@x.com"].id == "p"
+

@@ -636,9 +636,10 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_success(self):
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(
-            return_value="user-key-1"
-        )
+        mock_user = MagicMock()
+        mock_user.id = "user-key-1"
+        mock_user.org_id = "org-1"
+        graph_provider.get_user_by_email = AsyncMock(return_value=mock_user)
         graph_provider.batch_upsert_nodes = AsyncMock()
 
         svc = _make_entity_service(graph_provider=graph_provider)
@@ -659,9 +660,10 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_user_deleted_normalizes_email(self) -> None:
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(
-            return_value="user-key-1"
-        )
+        mock_user = MagicMock()
+        mock_user.id = "user-key-1"
+        mock_user.org_id = "org-1"
+        graph_provider.get_user_by_email = AsyncMock(return_value=mock_user)
         graph_provider.batch_upsert_nodes = AsyncMock()
 
         svc = _make_entity_service(graph_provider=graph_provider)
@@ -680,6 +682,7 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_user_not_found_returns_false(self):
         graph_provider = AsyncMock()
+        graph_provider.get_user_by_email = AsyncMock(return_value=None)
         graph_provider.get_entity_id_by_email = AsyncMock(return_value=None)
 
         svc = _make_entity_service(graph_provider=graph_provider)
@@ -694,7 +697,7 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_db_error_raises(self):
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(
+        graph_provider.get_user_by_email = AsyncMock(
             side_effect=Exception("DB fail")
         )
         svc = _make_entity_service(graph_provider=graph_provider)
@@ -703,6 +706,43 @@ class TestUserDeleted:
             await svc.process_event(
                 "userDeleted", {"orgId": "org-1", "email": "a@b.com"}
             )
+
+    @pytest.mark.asyncio
+    async def test_user_deleted_with_get_user_by_email_scoped(self) -> None:
+        graph_provider = AsyncMock()
+        mock_user = MagicMock()
+        mock_user.id = "user-org1-key"
+        mock_user.org_id = "org-1"
+        graph_provider.get_user_by_email = AsyncMock(return_value=mock_user)
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+        payload = {"orgId": "org-1", "email": "alice@example.com"}
+        result = await svc.process_event("userDeleted", payload)
+
+        assert result is True
+        graph_provider.get_user_by_email.assert_awaited_once_with("alice@example.com", org_id="org-1")
+        user_data = graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert user_data["id"] == "user-org1-key"
+        assert user_data["isActive"] is False
+
+    @pytest.mark.asyncio
+    async def test_user_deleted_does_not_deactivate_user_from_different_org(self) -> None:
+        graph_provider = AsyncMock()
+        mock_user_other_org = MagicMock()
+        mock_user_other_org.id = "user-org2-key"
+        mock_user_other_org.org_id = "org-2"
+        # get_user_by_email returns a user belonging to org-2
+        graph_provider.get_user_by_email = AsyncMock(return_value=mock_user_other_org)
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+        # Event is for org-1
+        payload = {"orgId": "org-1", "email": "alice@example.com"}
+        result = await svc.process_event("userDeleted", payload)
+
+        assert result is False
+        graph_provider.batch_upsert_nodes.assert_not_called()
 
 
 # ===================================================================

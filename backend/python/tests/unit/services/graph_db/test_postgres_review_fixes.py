@@ -193,3 +193,13 @@ async def test_clone_agent_template_does_not_swallow_a_schema_rejection() -> Non
     h.p.get_document = AsyncMock(return_value={"id": "t1", "name": 5})
     with pytest.raises(SchemaValidationError):
         await h.call("clone_agent_template", "t1")
+
+
+async def test_get_users_by_emails_matches_and_normalizes_padded_stored_email() -> None:
+    h = Harness()
+    padded_doc = {"id": "u1", "email": "  Alice@Example.COM  ", "isActive": True}
+    h.p._principals_by_email = AsyncMock(return_value=[])
+    h.p._id_rows = AsyncMock(return_value=[{"id": "u1", "doc": padded_doc}])
+    res = await h.call("get_users_by_emails", ["alice@example.com"])
+    assert "alice@example.com" in res
+    assert res["alice@example.com"].id == "u1"

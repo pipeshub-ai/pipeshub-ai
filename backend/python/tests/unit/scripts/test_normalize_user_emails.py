@@ -533,3 +533,29 @@ async def test_reject_simultaneous_org_and_all_orgs() -> None:
     assert code == EXIT_INVALID
     lines = _lines(out)
     assert lines[0]["error"] == "Cannot specify both --org and --all-orgs."
+
+
+@pytest.mark.asyncio
+async def test_all_orgs_does_not_set_flag_if_unnormalized_users_remain_outside_orgs() -> None:
+    graph = MagicMock()
+    graph.get_all_orgs = AsyncMock(return_value=[{"id": "org_1"}])
+    # fetch_unnormalized_users returns empty for org_1 pass, but returns unnormalized user for unscoped check
+    def mock_fetch(org_id: str | None, limit: int, offset: int = 0) -> list:
+        if org_id == "org_1":
+            return []
+        if org_id is None:
+            # User with blank orgId exists outside enumerated passes
+            return [{"id": "u_blank", "orgId": "", "email": "orphan@example.com", "newEmail": "orphan@example.com"}]
+        return []
+
+    graph.fetch_unnormalized_users = AsyncMock(side_effect=mock_fetch)
+    cs = AsyncMock()
+    cs.set_config = AsyncMock(return_value=True)
+
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(graph, all_orgs=True, apply=True, logger=logger, out=out, config_service=cs)
+    # Should exit with partial and NOT set flag
+    assert code == EXIT_PARTIAL
+    cs.set_config.assert_not_called()

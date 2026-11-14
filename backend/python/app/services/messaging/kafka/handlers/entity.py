@@ -578,19 +578,60 @@ class EntityEventService(BaseEventService):
         """Handle user deletion event"""
         try:
             self.logger.debug("Processing user deleted event for user %s", payload.get("userId"))
-            # Find existing user by email
-            existing_user_id = await self.graph_provider.get_entity_id_by_email(
-                payload["email"]
-            )
+            org_id = payload["orgId"]
+            email = payload.get("email") or ""
+            norm_email = email.strip().lower()
+
+            # Find existing user scoped to the event's organization
+            existing_user_id = None
+            if hasattr(self.graph_provider, "get_user_by_email"):
+                existing_user = await self.graph_provider.get_user_by_email(
+                    norm_email,
+                    org_id=org_id,
+                )
+                if existing_user:
+                    user_org = (
+                        getattr(existing_user, "org_id", None)
+                        or (existing_user.get("orgId") or existing_user.get("org_id") if isinstance(existing_user, dict) else None)
+                    )
+                    if isinstance(user_org, str) and user_org != org_id:
+                        self.logger.warning(
+                            "Found user belongs to organization %s, not event org %s; skipping deletion",
+                            user_org,
+                            org_id,
+                        )
+                        return False
+                    cand_id = getattr(existing_user, "id", None) or (
+                        existing_user.get("id") or existing_user.get("_key") if isinstance(existing_user, dict) else None
+                    )
+                    if isinstance(cand_id, str) and cand_id:
+                        existing_user_id = cand_id
+
+            if not existing_user_id and hasattr(self.graph_provider, "get_entity_id_by_email"):
+                candidate_id = await self.graph_provider.get_entity_id_by_email(email)
+                if candidate_id:
+                    # Validate that the returned user belongs to the event's organization before deactivating
+                    if hasattr(self.graph_provider, "get_document"):
+                        doc = await self.graph_provider.get_document(candidate_id, CollectionNames.USERS.value)
+                        if doc:
+                            user_org = doc.get("orgId") or doc.get("org_id")
+                            if isinstance(user_org, str) and user_org != org_id:
+                                self.logger.warning(
+                                    "Found user belongs to organization %s, not event org %s; skipping deletion",
+                                    user_org,
+                                    org_id,
+                                )
+                                return False
+                    existing_user_id = candidate_id
+
             if not existing_user_id:
-                self.logger.error("No graph user has the deleted user's email (user %s)", payload.get("userId"))
+                self.logger.error("No graph user in org %s has email %s (user %s)", org_id, email, payload.get("userId"))
                 return False
 
-            org_id = payload["orgId"]
             user_data = {
                 "id": existing_user_id,
                 "orgId": org_id,
-                "email": payload["email"].strip().lower() if payload.get("email") else "",
+                "email": norm_email,
                 "isActive": False,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }

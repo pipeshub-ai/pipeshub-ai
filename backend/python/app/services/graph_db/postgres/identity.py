@@ -198,30 +198,49 @@ class IdentityMixin(PgBase):
                                 org_id: str | None = None) -> User | None:
         if not self._mine(org_id):
             return None
-        rows = await self._principals_by_email(["users"], [email], transaction)
-        if rows is not None:
-            d = _doc(rows[0]["doc"]) if rows else None
+        norm_email = email.strip().lower() if email else ""
+        if not norm_email:
+            return None
+        lookup_emails = list(dict.fromkeys([e for e in (email, norm_email) if e]))
+        rows = await self._principals_by_email(["users"], lookup_emails, transaction)
+        if rows:
+            d = _doc(rows[0]["doc"])
         else:
-            d = await self._one("/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = lower($2) LIMIT 1",
-                                current_org_id(), email, transaction=transaction)
+            d = await self._one("/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND (lower(doc->>'email') = lower($2) OR lower(btrim(doc->>'email', E' \\t\\r\\n')) = $3) LIMIT 1",
+                                current_org_id(), email, norm_email, transaction=transaction)
         return User.from_arango_user(_arango(d, "users")) if d else None
 
     @_soft(dict, flag=True)
     async def get_users_by_emails(self, emails: list[str], transaction: str | None = None, *, raise_on_error: bool = False,
                                   org_id: str | None = None) -> dict[str, User]:
         org = current_org_id()
-        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
-        if not wanted or not self._mine(org_id):
+        raw_wanted = list(dict.fromkeys(e.strip().lower() for e in emails if e and e.strip()))
+        if not raw_wanted or not self._mine(org_id):
             return {}
         # lower(doc->>'email') is the expression index nodes_user_email (org_id, lower(doc->>'email')), which the vetted read reaches.
-        rows = await self._principals_by_email(["users"], wanted, transaction)
-        if rows is None:
-            rows = await self._id_rows("/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[])",
-                                       [org, wanted], transaction)
+        vetted_emails = list(dict.fromkeys([*raw_wanted, *[e.lower() for e in emails if e]]))
+        rows = await self._principals_by_email(["users"], vetted_emails, transaction)
+        found_docs = list(rows) if rows is not None else []
+        found_norms = {(_doc(r["doc"]).get("email") or "").strip().lower() for r in found_docs}
+        missing = [w for w in raw_wanted if w not in found_norms]
+
+        if missing or rows is None:
+            fallback_wanted = missing if rows is not None else raw_wanted
+            fb_rows = await self._id_rows(
+                "/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND (lower(doc->>'email') = ANY($2::text[]) OR lower(btrim(doc->>'email', E' \\t\\r\\n')) = ANY($2::text[]))",
+                [org, fallback_wanted], transaction
+            )
+            found_docs.extend(fb_rows or [])
+
         out: dict[str, User] = {}
-        for r in rows:
+        for r in found_docs:
             d = _arango(_doc(r["doc"]), "users")
-            out.setdefault(d["email"].lower(), User.from_arango_user(d))
+            raw_email = d.get("email") or ""
+            norm_key = raw_email.strip().lower()
+            if norm_key:
+                out.setdefault(norm_key, User.from_arango_user(d))
+            if raw_email:
+                out.setdefault(raw_email.lower(), User.from_arango_user(d))
         return out
 
     async def get_all_orgs(self, *, active: bool = True, is_external: bool = False, transaction: str | None = None, raise_on_error: bool = False) -> list[dict]:

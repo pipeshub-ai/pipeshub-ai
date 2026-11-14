@@ -234,7 +234,7 @@ async def normalize_emails_for_org(
             update_nodes = [
                 {
                     "id": c["id"],
-                    "email": (c.get("newEmail") or c.get("email", "")).strip().lower(),
+                    "email": c.get("email", "").strip().lower(),
                     "updatedAtTimestamp": now,
                 }
                 for c in valid_candidates
@@ -372,6 +372,19 @@ async def run_normalization(
     )
 
     if all_orgs and not org_id and apply and total_stats["total_failed_batches"] == 0:
+        # Check for unnormalized users outside the enumerated organization passes
+        # (e.g. blank orgId or orphaned orgId without an organization document).
+        try:
+            unscoped_remaining = await fetch_unnormalized_users(graph, None, limit=1)
+            if unscoped_remaining:
+                logger.warning(
+                    "Unnormalized users with blank or unknown orgId remain in the database; skipping completion flag."
+                )
+                return EXIT_PARTIAL
+        except Exception as exc:
+            logger.warning("Failed to check for unscoped unnormalized users: %s", exc)
+            return EXIT_PARTIAL
+
         cs = config_service or getattr(graph, "config_service", None)
         if cs:
             try:

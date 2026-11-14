@@ -11059,20 +11059,35 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     org_id = ambient if isinstance(ambient, str) and ambient.strip() else None
                 except Exception:
                     org_id = None
+            connector_id = users[0].connector_id
+            app = await self.get_document(connector_id, CollectionNames.APPS.value)
+            if app and not org_id:
+                app_org = app.get("orgId") or app.get("org_id")
+                if isinstance(app_org, str) and app_org.strip():
+                    org_id = app_org.strip()
+
             if not org_id:
                 orgs = await self.get_all_orgs()
                 if not orgs:
                     raise Exception("No organizations found in the database")
-                org_id = orgs[0]["_key"]
-            connector_id = users[0].connector_id
+                if len(orgs) == 1:
+                    org_id = orgs[0]["_key"]
+                else:
+                    raise ValueError(
+                        f"Cannot resolve organization for batch_upsert_app_users (connector: {connector_id})"
+                    )
 
-            app = await self.get_document(connector_id, CollectionNames.APPS.value)
             if not app:
                 raise Exception(f"Failed to get/create app: {connector_id}")
 
             app_id = app["_id"]
 
             for user in users:
+                user_email = (user.email or "").strip().lower()
+                if not user_email:
+                    self.logger.warning("Skipping app user %s with missing or empty email", user.id)
+                    continue
+
                 user_org = getattr(user, "org_id", None) or getattr(user, "orgId", None)
                 target_org_id = user_org if isinstance(user_org, str) and user_org.strip() else org_id
 
@@ -11092,6 +11107,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     user_record = await self.get_user_by_email(
                         user.email, transaction, raise_on_error=True, org_id=target_org_id
                     )
+                    if not user_record:
+                        self.logger.warning(
+                            "Failed to retrieve created user record for user %s (%s)", user.id, user.email
+                        )
+                        continue
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.

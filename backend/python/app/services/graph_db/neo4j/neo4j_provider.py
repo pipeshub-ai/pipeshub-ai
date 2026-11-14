@@ -10518,15 +10518,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     org_id = ambient if isinstance(ambient, str) and ambient.strip() else None
                 except Exception:
                     org_id = None
-            if not org_id:
-                orgs = await self.get_all_orgs(transaction=transaction)
-                if not orgs:
-                    raise Exception("No organizations found in the database")
-                org_id = orgs[0].get("id") or orgs[0].get("_key")
             connector_id = users[0].connector_id
 
             # Get or create app
             app = await self.get_document(connector_id, CollectionNames.APPS.value, transaction)
+            if not org_id and app:
+                app_org = app.get("orgId") or app.get("org_id")
+                if isinstance(app_org, str) and app_org.strip():
+                    org_id = app_org.strip()
+
+            if not org_id:
+                orgs = await self.get_all_orgs(transaction=transaction)
+                if not orgs:
+                    raise Exception("No organizations found in the database")
+                if len(orgs) == 1:
+                    org_id = orgs[0].get("id") or orgs[0].get("_key")
+                else:
+                    raise ValueError(
+                        f"Cannot resolve organization for batch_upsert_app_users (connector: {connector_id})"
+                    )
             if not app:
                 # Create a minimal app node that still satisfies the apps schema
                 now = get_epoch_timestamp_in_ms()
@@ -10547,6 +10557,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
 
             for user in users:
+                user_email = (user.email or "").strip().lower()
+                if not user_email:
+                    self.logger.warning("Skipping app user %s with missing or empty email", user.id)
+                    continue
+
                 user_org = getattr(user, "org_id", None) or getattr(user, "orgId", None)
                 target_org_id = user_org if isinstance(user_org, str) and user_org.strip() else org_id
 
@@ -10571,6 +10586,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     user_record = await self.get_user_by_email(
                         user.email, transaction, raise_on_error=True, org_id=target_org_id
                     )
+                    if not user_record:
+                        self.logger.warning(
+                            "Failed to retrieve created user record for user %s (%s)", user.id, user.email
+                        )
+                        continue
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.
@@ -19078,8 +19098,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # The transfers are written out per relationship type rather than looped:
             # Cypher has no dynamic relationship type without APOC.
             query = f"""
-            MATCH (p:{person_label})
-            WHERE p.orgId = $org_id AND (p.email = $email OR (p.email IS NOT NULL AND toLower(trim(p.email)) = $norm_email))
+            MATCH (p:{person_label} {{email: $email, orgId: $org_id}})
             MATCH (u:{user_label} {{id: $user_key}})
 
             // Undirected on purpose: memberOf points away from the Person while lead and
@@ -19131,8 +19150,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             results = await self.client.execute_query(
                 query,
                 parameters={
-                    "email": email,
-                    "norm_email": email.strip().lower() if email else "",
+                    "email": (email or "").strip().lower(),
                     "user_key": user_key,
                     "org_id": org_id,
                     "split": PersonMigrationMode.SPLIT,
