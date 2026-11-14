@@ -26,6 +26,8 @@ holds them to the oracle:
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import zlib
 from collections import Counter
@@ -311,11 +313,28 @@ async def children_of(
     return {ns.local(i.id): bool(i.hasChildren) for i in page.items} if page.success else None
 
 
+def held_to_rows(totals: list[int], capped: list[bool], rows: int) -> list[int]:
+    """Each page's total, where a page says its total is a lower bound (``capped``) and it is one, read as the rows the walk found, so it is held
+    to them like an exact one; any other total is kept as the page gave it."""
+    return [rows if lower and 0 <= t <= rows else t for t, lower in zip(totals, capped, strict=True)]
+
+
+def cursor_in_the_clear(token: str) -> str:
+    """What a client can read in a cursor (base64url JSON; the signature proves, it does not hide): its fields, with the boundary only when it is
+    not sealed. The text no name or id of a node the viewer may not open belongs in."""
+    payload = token.partition(".")[0]
+    wire = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    boundary = wire.pop("b")
+    return json.dumps(wire) + ("" if isinstance(boundary, dict) and set(boundary) == {"x"} else json.dumps(boundary))
+
+
 async def browse_pages(
     layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str, page_size: int = PAGE, *, only_containers: bool = False,
+    cursors: list[str] | None = None,
 ) -> tuple[list[Any], list[int], list[int]] | None:
     """Every page of opening ``node`` for the viewer, as the product pages it (``page_size`` rows a page): the rows in order, and each page's
-    ``totalItems`` and ``counts.total``; None when the browse does not open it. ``only_containers``: the sidebar's listing."""
+    ``totalItems`` and ``counts.total``; None when the browse does not open it. ``only_containers``: the sidebar's listing. ``cursors`` collects
+    each page's next cursor."""
     from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
         KnowledgeHubService,
     )
@@ -325,7 +344,7 @@ async def browse_pages(
     items: list[Any] = []
     totals: list[int] = []
     counted: list[int] = []
-    cursor, capped = None, False
+    cursor, capped, counted_capped = None, [], []
     for _ in range(MAX_PAGES):
         args = {"user_id": ns.id(viewer), "org_id": ns.org, "parent_id": ns.id(node), "parent_type": parent_type, "limit": page_size,
                 "sort_by": "name", "sort_order": "asc", "include": ["counts"], "only_containers": only_containers}
@@ -337,13 +356,13 @@ async def browse_pages(
         items += page.items
         totals.append(page.pagination.totalItems)
         counted.append(page.counts.total if page.counts else -1)
-        capped = capped or bool(page.pagination.totalCapped)
+        capped.append(bool(page.pagination.totalCapped))
+        counted_capped.append(bool(page.counts and page.counts.capped))
         cursor = page.pagination.nextCursor
+        if cursors is not None and cursor:
+            cursors.append(cursor)
         if not cursor:
-            if capped:      # a total that says it is a lower bound is right when it is one: held to the rows like an exact one
-                totals = [len(items) if 0 <= t <= len(items) else t for t in totals]
-                counted = [len(items) if 0 <= t <= len(items) else t for t in counted]
-            return items, totals, counted
+            return items, held_to_rows(totals, capped, len(items)), held_to_rows(counted, counted_capped, len(items))
     raise AssertionError("browse did not end")
 
 

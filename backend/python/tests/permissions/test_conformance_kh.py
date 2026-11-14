@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
 from . import gen
 from .kh_layer import (
     PARTS,
@@ -22,6 +24,7 @@ from .kh_layer import (
     _Config,
     browse_pages,
     check_world,
+    cursor_in_the_clear,
     check_worlds,
     children_of,
     on_every_store,
@@ -216,6 +219,25 @@ async def test_a_browse_lists_every_child_the_check_admits_however_many_sort_ahe
             assert [ns.local(i.id) for i in items] == [f"j{i:02d}" for i in range(10)] and set(totals) == {10}, layer.name
             bad = _bad(await check_world(layer, WIDE, "wide"))
             assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([WIDE])
+
+
+async def test_a_page_that_ends_where_the_check_was_last_asked_names_no_child_the_viewer_may_not_open(graph_layers, monkeypatch) -> None:
+    """WIDE with no time to ask past the first window: the first page of f ends at the last child asked, k199, which the viewer may not open, and
+    the next page resumes there. The cursor carries that position sealed: a client reading it finds no name or id of a child it may not open,
+    and the pages still list all forty readable children in order."""
+    monkeypatch.setattr(IGraphDBProvider, "_KH_UNDECIDED_BUDGET_S", -1.0)
+    readable = [f"k{i:03d}" for i in (*range(10), *range(200, 230))]
+    denied = [f"k{i:03d}" for i in range(10, 200)]
+    for layer in graph_layers:
+        await layer.preload([WIDE])
+        try:
+            ns, cursors = await layer._ns(WIDE), []
+            items, _, _ = await browse_pages(layer, WIDE, "u", "f", "recordGroup", 50, cursors=cursors)
+            assert [ns.local(i.id) for i in items] == readable, layer.name
+            assert cursors, layer.name
+            assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)], layer.name
         finally:
             await layer.release([WIDE])
 

@@ -8403,7 +8403,8 @@ class IGraphDBProvider(ABC):
         self, payload: dict[str, Any], cut: dict[str, Any] | None, *, limit: int, descending: bool, direction: str,
     ) -> dict[str, Any] | None:
         """Where a browse page ends when the undecided children past ``cut`` were not asked about (`_kh_v3_browse_undecided`): nowhere new when
-        its ``limit + 1`` rows lie up to ``cut``; else its rows past ``cut`` are dropped and the edge returned, where the next page resumes."""
+        its ``limit + 1`` rows lie up to ``cut``; else its rows past ``cut`` are dropped and the edge returned, where the next page resumes. The edge
+        may be a child the viewer may not open: the cursor that carries it seals it (`app.utils.kh_cursor`), so its key and id never reach the client."""
         rows = payload.get("rows") or []
         if cut is None or (len(rows) > limit and not self._kh_v3_past(rows[limit], cut, descending=descending, direction=direction)):
             return None

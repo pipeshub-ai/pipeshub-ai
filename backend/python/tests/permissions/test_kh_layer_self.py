@@ -308,3 +308,11 @@ def test_the_app_places_a_chain_top_by_the_graph_the_store_holds() -> None:
     for reference, shape in ((OracleLayer(), "as written"), (OracleLayer(arango_graph), "arango")):
         assert reference.explain(STORED, "u", ["r"])["r"].admitted
         assert kh_layer.chain_tops(reference, STORED, "u", "A") == UNDER_THE_APP[shape], shape
+
+
+def test_only_a_total_its_page_marks_as_a_lower_bound_is_held_to_the_rows() -> None:
+    """A capped page's total that is a lower bound reads as the rows found; a page not marked capped keeps its total, so one that under-counts
+    still fails the check, and a capped total above the rows (no lower bound) is kept too."""
+    assert kh_layer.held_to_rows([30, 30, 40], [True, False, True], 40) == [40, 30, 40]
+    assert kh_layer.held_to_rows([50, -1], [True, True], 40) == [50, -1]
+    assert kh_layer.held_to_rows([30], [False], 40) == [30]
