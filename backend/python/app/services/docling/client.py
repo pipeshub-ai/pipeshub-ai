@@ -239,7 +239,7 @@ class DoclingClient(BaseServiceClient):
             )
         except ServiceCallError as exc:
             if _docling_unavailable(exc):
-                raise DoclingUnavailableError(f"Docling could not parse {record_name}: {exc}") from exc
+                raise DoclingUnavailableError("Docling could not parse the document") from exc
             self.logger.error(f"❌ Parsing PDF {record_name} failed: {exc}")
             return None
 

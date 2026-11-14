@@ -1538,9 +1538,10 @@ class TestProcessGmailMessage:
         assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
-    async def test_error_propagates(self):
-        """Errors from html processing should propagate."""
-        proc, logger, gp, config = _make_processor()
+    async def test_error_propagates(self, caplog):
+        """Errors from html processing propagate, unlogged: the consumer's index.end writes them once."""
+        proc, _, gp, config = _make_processor()
+        proc.logger = logging.getLogger("test.p6.processor")
 
         async def failing_html(*args, **kwargs):
             raise Exception("html failed")
@@ -1551,7 +1552,7 @@ class TestProcessGmailMessage:
             await _collect(proc.process_gmail_message(
                 "email.html", "rec-1", 1, "gmail", "org-1", b"<html>hi</html>", "vr-1"
             ))
-        logger.error.assert_called_once()
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
     @pytest.mark.asyncio
     async def test_a_deleted_record_propagates_without_an_error_log(self) -> None:

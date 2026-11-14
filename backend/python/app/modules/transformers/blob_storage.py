@@ -1368,7 +1368,7 @@ class BlobStorage(Transformer):
             file_size_bytes = len(json_bytes)
 
             buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
-            self.logger.info("📤 Overriding record buffer for document: %s", document_id)
+            self.logger.debug("Overriding record buffer for document: %s", document_id)
 
             session = get_shared_session()
             form_data = aiohttp.FormData()
@@ -1387,7 +1387,7 @@ class BlobStorage(Transformer):
                         resp.status, f"Failed to update buffer: {resp.status} {error_text[:200]}"
                     )
 
-            self.logger.info("✅ Successfully overrode buffer for document: %s", document_id)
+            self.logger.debug("Overrode buffer for document: %s", document_id)
             return document_id, file_size_bytes
 
         except StorageDocumentNotFoundError:
@@ -1497,9 +1497,9 @@ class BlobStorage(Transformer):
         record_dict = self._clean_empty_values(record_dict)
 
         storage_path = await self._build_hierarchical_storage_path(record, virtual_record_id)
-        self.logger.info(
-            "📄 Built storage path for vrid %s: %s",
-            virtual_record_id, storage_path
+        self.logger.debug(
+            "Built storage path for vrid %s",
+            virtual_record_id,
         )
 
         written: dict[str, Any] = {}
@@ -1997,7 +1997,7 @@ class BlobStorage(Transformer):
             )
         else:
             holders, stored_dict = None, record_dict
-        self.logger.info("📄 Overriding buffer in place for vrid %s (doc_id=%s)", virtual_record_id, d)
+        self.logger.debug("Overriding buffer in place for vrid %s (doc_id=%s)", virtual_record_id, d)
         target = d
         actual_storage_path = storage_path
         replacement_started: float | None = None
@@ -2552,7 +2552,7 @@ class BlobStorage(Transformer):
 
                         await self._upload_to_signed_url(session, signed_url, json_data)
 
-                        self.logger.info("✅ Successfully completed record storage process for document: %s", document_id)
+                        self.logger.debug("Completed record storage for document: %s", document_id)
                         return document_id, file_size_bytes
 
                 except Exception as e:

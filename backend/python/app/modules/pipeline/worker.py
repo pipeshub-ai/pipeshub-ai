@@ -46,12 +46,17 @@ from app.services.messaging.config import (
     compute_retry_backoff_seconds,
 )
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
-from app.utils.indexing_timing import ADMITTED, begin_record, end_record
+from app.utils.error_class import log_failure, quotes_content
+from app.utils.indexing_timing import note
 
 # Called once a stage's headline is final on the records it updated, e.g. to release the
 # records' QUEUED md5 copies, which wait for the enrichment to end. Raising makes the
 # delivery retry; the redelivery finds the state settled and calls it again.
 HeadlineSettled = Callable[[StageJob, Sequence[str], ProgressStatus], Awaitable[None]]
+
+
+# Deliveries that did no work, as the reason on the delivery's index.end (StageOutcome.SKIPPED: the stage did not apply).
+_DID_NOTHING = {"stale": "stale", "unchanged": "unchanged", "duplicate": "duplicate", "skipped": "not_applicable"}
 
 
 class StagePaused(RequeueWithoutAttempt):
@@ -136,21 +141,9 @@ class StageJobHandler:
 
     async def __call__(self, message: StreamMessage) -> AsyncGenerator[PipelineEvent, None]:
         job, stage = self._parse(message)
-        # One timings line per job, like a record's: the stage's steps time themselves.
-        timeline, token = begin_record(job.record_ids[0], f"stage:{job.stage}")
-        timeline.mark(ADMITTED)
-        outcome = "failed"
-        try:
-            await self._handle(job, stage)
-            outcome = "ok"
-        except StagePaused:
-            outcome = "paused"
-            raise
-        except StageRetry:
-            outcome = "retry"
-            raise
-        finally:
-            end_record(timeline, token, outcome=outcome, logger=self._logger)
+        # The delivery's index.end is the job's one line; the stage's steps time themselves on it.
+        note(stage=job.stage, job=job.job_id, record_id=job.record_ids[0])
+        await self._handle(job, stage)
         # The consumer releases the job's permit on INDEXING_COMPLETE; nothing held a parse slot.
         data = PipelineEventData(record_id=job.job_id)
         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=data)
@@ -187,8 +180,8 @@ class StageJobHandler:
                         job.record_ids, headline, ProgressStatus.FAILED, rev=job.rev, reason=why
                     )
                     await self._headline_settled(job, updated, ProgressStatus.FAILED)
-        except Exception:
-            self._logger.exception("Could not mark abandoned stage job %s FAILED", job.job_id)
+        except Exception as e:
+            log_failure(self._logger, "stage.abandon_failed", e, level=logging.WARNING, include_error_text=not quotes_content(e))
 
     def outcomes(self, stage: str) -> dict[str, int]:
         """How this process's deliveries of ``stage`` ended since it started."""
@@ -198,6 +191,11 @@ class StageJobHandler:
         counters = self._outcomes.get(stage)
         if counters is not None:
             counters[outcome] += 1
+        # The delivery's index.end says it too. An error or an abandoned job has its own path (the exception, the sink).
+        if outcome in _DID_NOTHING:
+            note(outcome="skipped", reason=_DID_NOTHING[outcome])
+        elif outcome not in ("error", "abandoned"):
+            note(stage_outcome=outcome)
 
     def _parse(self, message: StreamMessage) -> tuple[StageJob, Stage[Any]]:
         try:
@@ -214,7 +212,7 @@ class StageJobHandler:
         except ConnectorBeingDeleted:
             # Nothing more is written: the delete removes the records and their stage states,
             # and a write here would make its batch lose a write conflict.
-            self._logger.info(
+            self._logger.debug(
                 "Stage job %s belongs to connector %s, which is being deleted; holding it for %.0fs",
                 job.job_id,
                 job.connector_id,
@@ -233,7 +231,7 @@ class StageJobHandler:
             raise ConnectorBeingDeleted(job.connector_id)
         state = await self._state_for(job, io)
         if state is None:
-            self._logger.info(
+            self._logger.debug(
                 "Stage job %s has no state and none of its records is left on its revision; dropping it",
                 job.job_id,
             )
@@ -248,7 +246,7 @@ class StageJobHandler:
             self._count(job.stage, "unchanged")
             return
         if state.status in _SETTLED and not job.force:
-            self._logger.info("Stage job %s is already %s; ignoring this delivery", job.job_id, state.status.value)
+            self._logger.debug("Stage job %s is already %s; ignoring this delivery", job.job_id, state.status.value)
             self._count(job.stage, "duplicate")
             return
         run_attempt = state.attempt + 1
@@ -268,11 +266,13 @@ class StageJobHandler:
         )
         if not claimed:
             raise StageRetry(f"stage job {job.job_id} changed state while it was being claimed")
+        note(stage_attempt=run_attempt)
 
         try:
             async with asyncio.timeout(stage.budget_s):
                 result = await stage.run(job, io)
         except TimeoutError:
+            note(timeout_s=stage.budget_s)
             result = StageResult(outcome=StageOutcome.RETRY, reason=f"ran past its {stage.budget_s:.0f}s budget")
         except ConnectorBeingDeleted:
             raise
@@ -280,7 +280,11 @@ class StageJobHandler:
             # The consumer classifies it (retry or dead-letter); the reason stays for whoever looks next.
             self._count(job.stage, "error")
             if not await self._settle(job, ProgressStatus.QUEUED, attempt=run_attempt, reason=f"{type(exc).__name__}: {exc}"):
-                # Another run owns the job now; this delivery has nothing left to report.
+                # Another run owns the job now; this line is the failure's only trace.
+                log_failure(
+                    self._logger, "stage.run_failed", exc, level=logging.WARNING, reason="superseded",
+                    include_error_text=not quotes_content(exc),
+                )
                 return
             raise
         await self._apply(job, stage, result, fingerprint, attempt=run_attempt)
@@ -386,8 +390,11 @@ class StageJobHandler:
                 )
                 try:
                     await self._headline_settled(job, updated, ProgressStatus.FAILED)
-                except Exception:
-                    self._logger.exception("Stage job %s failed and its follow-up could not run", job.job_id)
+                except Exception as e:
+                    log_failure(
+                        self._logger, "stage.follow_up_failed", e, level=logging.WARNING,
+                        include_error_text=not quotes_content(e),
+                    )
             raise StageFailed(reason, record_id=job.job_id)
 
     async def _finish(self, job: StageJob, stage: Stage[Any], result: StageResult) -> None:
@@ -402,7 +409,7 @@ class StageJobHandler:
                 clear_reason=status is ProgressStatus.COMPLETED,
             )
             if not updated:
-                self._logger.info(
+                self._logger.debug(
                     "Stage job %s finished, but no bound record is still on revision %s; not dispatching successors",
                     job.job_id,
                     job.rev,
@@ -452,7 +459,7 @@ class StageJobHandler:
             )
         ):
             return True
-        self._logger.warning(
+        self._logger.debug(
             "Stage job %s (attempt %d) could not record %s; its state is now %s (attempt %s)",
             job.job_id,
             attempt,
@@ -461,4 +468,6 @@ class StageJobHandler:
             current.attempt if current else "-",
         )
         self._count(job.stage, "duplicate")
+        # Superseded, not a duplicate delivery: another run owns the state (a later note wins over _count's).
+        note(outcome="skipped", reason="superseded", owner_attempt=current.attempt if current else None)
         return False

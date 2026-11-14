@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import io
 import json
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Tuple, cast
 
@@ -87,9 +88,12 @@ from app.services.parsing.interface import ParseError
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
 from app.utils.cpu_offload import offload_if_large
+from app.utils.error_class import log_failure
 from app.utils.image_utils import fit_inline_images, get_extension_from_mimetype
+from app.utils.indexing_timing import note
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.table_enrichment import enhance_tables_with_llm
+from app.utils.logging_fields import log_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR, text_file_too_large
 
@@ -113,7 +117,7 @@ class Processor:
         stage_ingress: "StageIngress | None" = None,
     ) -> None:
         self.logger = logger
-        self.logger.info("🚀 Initializing Processor")
+        self.logger.info("Initializing Processor")
         self.indexing_pipeline = indexing_pipeline
         self.graph_provider = graph_provider
         self.parsers = parsers
@@ -176,7 +180,7 @@ class Processor:
         try:
             lookup = await blob_storage.get_document_id_by_virtual_record_id(virtual_record_id)
             if not lookup or lookup.get("storedRev") != rev:
-                self.logger.info("No stored blocks of this revision for %s; parsing again", virtual_record_id)
+                self.logger.debug("No stored blocks of this revision for %s; parsing again", virtual_record_id)
                 return None
             # The stored record itself, not the configured reader: the checkpoint must be the exact
             # document this revision wrote, and an artifact fallback would weaken that check.
@@ -226,7 +230,7 @@ class Processor:
         """Process image content, yielding phase completion events."""
         try:
             # Initialize image parser
-            self.logger.debug("📸 Processing image content")
+            self.logger.debug("Processing image content")
             if not content:
                 raise Exception("No image data provided")
 
@@ -259,7 +263,7 @@ class Processor:
                     )
                     if not success:
                         self.logger.warning(
-                            "⚠️ Failed to update indexing status for record %s - record may not exist",
+                            "Failed to update indexing status for record %s - record may not exist",
                             record_id,
                         )
                     # Yield both events since we're skipping processing
@@ -299,12 +303,11 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
 
-            self.logger.info("✅ Image processing completed successfully")
+            self.logger.debug("Image processing completed successfully")
             return
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing image: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=record_id,
@@ -326,33 +329,26 @@ class Processor:
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process Gmail message, yielding phase completion events."""
 
-        try:
-            async for event in self.process_html_document(
-                recordName=recordName,
-                recordId=recordId,
-                version=version,
-                source=source,
-                orgId=orgId,
-                html_binary=mail_content,
-                virtual_record_id=virtual_record_id,
-                event_type=event_type,
-                prev_virtual_record_id=prev_virtual_record_id,
-            ):
-                yield event
+        async for event in self.process_html_document(
+            recordName=recordName,
+            recordId=recordId,
+            version=version,
+            source=source,
+            orgId=orgId,
+            html_binary=mail_content,
+            virtual_record_id=virtual_record_id,
+            event_type=event_type,
+            prev_virtual_record_id=prev_virtual_record_id,
+        ):
+            yield event
 
-            self.logger.info("✅ Gmail Message processing completed successfully using HTML processing.")
-
-        except RecordDeletedError:
-            raise  # an expected outcome, logged once by the record handler
-        except Exception as e:
-            self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
-            raise
+        self.logger.debug("Gmail Message processing completed successfully using HTML processing.")
 
     async def process_pdf_with_pdf_plumber(self, recordName, recordId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Process PDF using PdfPlumber+OpenCV processor, yielding phase completion events."""
-        self.logger.info(f"🚀 Starting PDF document processing for record: {recordId}")
+        self.logger.debug(f"Starting PDF document processing for record: {recordId}")
         try:
-            self.logger.debug("📄 Processing PDF binary content using PdfPlumber+OpenCV processor")
+            self.logger.debug("Processing PDF binary content using PdfPlumber+OpenCV processor")
 
             record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
 
@@ -390,12 +386,11 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            self.logger.info(f"✅ PDF processing completed for record: {recordName}, using PdfPlumber+OpenCV processor")
+            self.logger.debug(f"PDF processing completed for record: {recordId}, using PdfPlumber+OpenCV processor")
             return
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing PDF document with PdfPlumber+OpenCV: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
@@ -404,9 +399,9 @@ class Processor:
 
     async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Process PDF with Docling, yielding phase completion events."""
-        self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
+        self.logger.debug(f"Starting PDF document processing for record: {recordId}")
         try:
-            self.logger.debug("📄 Processing PDF binary content using external Docling service")
+            self.logger.debug("Processing PDF binary content using external Docling service")
 
             record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
 
@@ -415,7 +410,7 @@ class Processor:
             # Nothing reads the file again; the caller drops its copy on PARSING_COMPLETE.
             pdf_binary = None
             if doc is None:
-                self.logger.error(f"❌ External Docling service failed to parse {recordName}")
+                log_event(self.logger, "index.parse_fallback", level=logging.WARNING, parser="docling", reason="no_document")
                 yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id=recordId))
                 return
 
@@ -444,24 +439,27 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            self.logger.info(f"✅ PDF processing completed for record: {recordName}, using external Docling service")
+            self.logger.debug(f"PDF processing completed for record: {recordId}, using external Docling service")
             return
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing PDF document with external Docling service: {str(e)}")
+            # Swallowed (the PdfPlumber path runs next), so logged here once; docling's text can quote the file name.
+            log_failure(
+                self.logger, "index.parse_fallback", e, level=logging.WARNING, parser="docling", include_error_text=False,
+            )
             yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id=recordId))
 
     async def process_pdf_document_with_ocr(
         self, recordName, recordId, version, source, orgId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process PDF document with OCR, yielding phase completion events."""
-        self.logger.info(
-            f"🚀 Starting PDF document processing for record: {recordName}"
+        self.logger.debug(
+            f"Starting PDF document processing for record: {recordId}"
         )
 
         try:
-            self.logger.debug("📄 Processing PDF binary content")
+            self.logger.debug("Processing PDF binary content")
             # Get OCR configurations. A store that does not answer is an outage,
             # retried: AISettingsUnavailableError is an IndexingError, which the
             # handler below re-raises as it is. Settings never saved read as none.
@@ -480,16 +478,16 @@ class Processor:
             ocr_configs = ai_models.get("ocr") or []
 
             # Configure OCR handler
-            self.logger.debug("🛠️ Configuring OCR handler")
+            self.logger.debug("Configuring OCR handler")
             handler = None
 
             provider = None
             for config in ocr_configs:
                 provider = config["provider"]
-                self.logger.info(f"🔧 Checking OCR provider: {provider}")
+                self.logger.debug(f"Checking OCR provider: {provider}")
 
                 if provider == OCRProvider.VLM_OCR.value:
-                    self.logger.debug("🤖 Setting up VLM OCR handler")
+                    self.logger.debug("Setting up VLM OCR handler")
                     handler = OCRHandler(
                         self.logger,
                         OCRProvider.VLM_OCR.value,
@@ -499,7 +497,7 @@ class Processor:
 
             if not handler:
                 # Check if multimodal LLM is available
-                self.logger.debug("🔍 Checking for multimodal LLM availability")
+                self.logger.debug("Checking for multimodal LLM availability")
                 has_multimodal_llm = False
 
                 try:
@@ -507,32 +505,32 @@ class Processor:
                     for llm_config in llm_configs:
                         if is_multimodal_llm(llm_config):
                             has_multimodal_llm = True
-                            self.logger.info(f"✅ Found multimodal LLM: {llm_config.get('provider')}")
+                            self.logger.debug(f"Found multimodal LLM: {llm_config.get('provider')}")
                             break
                 except Exception as e:
-                    self.logger.warning(f"⚠️ Error checking for multimodal LLM: {str(e)}")
+                    self.logger.warning(f"Error checking for multimodal LLM: {str(e)}")
 
                 if has_multimodal_llm:
-                    self.logger.debug("🤖 Setting up VLM OCR handler (multimodal LLM detected)")
+                    self.logger.debug("Setting up VLM OCR handler (multimodal LLM detected)")
                     handler = OCRHandler(self.logger, OCRProvider.VLM_OCR.value, config=self.config_service)
                     provider = OCRProvider.VLM_OCR.value
                 else:
-                    self.logger.warning("⚠️ Scanned PDF detected but no OCR provider (Azure DI or multimodal LLM) is configured")
+                    self.logger.warning("Scanned PDF detected but no OCR provider (Azure DI or multimodal LLM) is configured")
                     # Final on the first try: retrying cannot add a model.
                     raise MultimodalModelNotConfiguredError(SCANNED_PDF_NO_OCR_MESSAGE, doc_id=recordId)
 
             # Process document
-            self.logger.info("🔄 Processing document with OCR handler")
+            self.logger.debug("Processing document with OCR handler")
             ocr_result = await handler.process_document(pdf_binary)
             pdf_binary = handler = None
 
-            self.logger.debug("✅ OCR processing completed")
+            self.logger.debug("OCR processing completed")
 
 
 
             if provider == OCRProvider.VLM_OCR.value:
                 pages = ocr_result.get("pages", [])
-                self.logger.info(f"📄 Processing {len(pages)} pages from VLM OCR")
+                self.logger.debug(f"Processing {len(pages)} pages from VLM OCR")
 
                 # Phase 1: Parse all pages with Docling (no LLM calls yet)
                 all_conv_results = []
@@ -543,7 +541,7 @@ class Processor:
                     page_markdown = page.get("markdown", "")
 
                     if not page_markdown.strip():
-                        self.logger.debug(f"⏭️ Skipping empty page {page_number}")
+                        self.logger.debug(f"Skipping empty page {page_number}")
                         continue
 
                     # Parse each page through DoclingProcessor (no LLM calls).
@@ -555,8 +553,8 @@ class Processor:
                     try:
                         conv_res = await processor.parse_document(page_filename, md_bytes)
                         all_conv_results.append((page_number, conv_res))
-                    except Exception as e:
-                        self.logger.error(f"❌ Failed to parse page {page_number}: {str(e)}")
+                    except Exception:
+                        note(page=page_number)
                         raise
 
                 # Signal parsing complete after all pages are parsed
@@ -576,10 +574,8 @@ class Processor:
                             return await processor.create_blocks(
                                 conv_res, page_number=page_number
                             )
-                        except Exception as e:
-                            self.logger.error(
-                                f"❌ Failed to create blocks for page {page_number}: {str(e)}"
-                            )
+                        except Exception:
+                            note(page=page_number)
                             raise
 
                 page_build_tasks = [
@@ -589,9 +585,6 @@ class Processor:
                 try:
                     page_block_results = await asyncio.gather(*page_build_tasks)
                 except Exception:
-                    self.logger.error(
-                        "❌ Cancelling remaining page block builds due to failure"
-                    )
                     for task in page_build_tasks:
                         if not task.done():
                             task.cancel()
@@ -606,8 +599,8 @@ class Processor:
                 ocr_result = pages = all_conv_results = page_build_tasks = page_block_results = page_block_containers = None
                 processor = None
 
-                self.logger.info(
-                    f"📦 Combined {len(combined_block_containers.blocks)} blocks and "
+                self.logger.debug(
+                    f"Combined {len(combined_block_containers.blocks)} blocks and "
                     f"{len(combined_block_containers.block_groups)} block groups from all pages"
                 )
 
@@ -628,7 +621,7 @@ class Processor:
                 # Signal indexing complete
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-                self.logger.info("✅ PDF processing completed successfully using VLM OCR")
+                self.logger.debug("PDF processing completed successfully using VLM OCR")
                 return
             else:
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -701,13 +694,12 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            self.logger.info("✅ PDF processing completed successfully")
+            self.logger.debug("PDF processing completed successfully")
             return
 
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing PDF document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
@@ -718,8 +710,8 @@ class Processor:
         self, recordName, recordId, version, source, orgId, doc_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process DOC document, yielding phase completion events."""
-        self.logger.info(
-            f"🚀 Starting DOC document processing for record: {recordName}"
+        self.logger.debug(
+            f"Starting DOC document processing for record: {recordId}"
         )
         # Convert DOC to DOCX and delegate
         parser = self.parsers[ExtensionTypes.DOC.value]
@@ -742,14 +734,14 @@ class Processor:
             orgId (str): Organization ID
             docx_binary (bytes): Binary content of the DOCX file
         """
-        self.logger.info(
-            f"🚀 Starting DOCX document processing for record: {recordName}"
+        self.logger.debug(
+            f"Starting DOCX document processing for record: {recordId}"
         )
 
         try:
             # Convert binary to string if necessary
             # Initialize DocxParser and parse content
-            self.logger.debug("📄 Processing DOCX content")
+            self.logger.debug("Processing DOCX content")
 
             processor = self.docling_processor
 
@@ -784,12 +776,11 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            self.logger.info("✅ Docx/Doc processing completed successfully using docling")
+            self.logger.debug("Docx/Doc processing completed successfully using docling")
 
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing DOCX document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
@@ -815,69 +806,62 @@ class Processor:
             virtual_record_id (str): Virtual record ID
         """
         self.logger.debug(
-            f"🚀 Starting Blocks Container processing for record: {recordName}"
+            f"Starting Blocks Container processing for record: {recordId}"
         )
 
-        try:
-            # Deserialize blocks_data to BlocksContainer
-            if isinstance(blocks_data, bytes):
-                blocks_data = blocks_data.decode('utf-8')
+        # Deserialize blocks_data to BlocksContainer
+        if isinstance(blocks_data, bytes):
+            blocks_data = blocks_data.decode('utf-8')
 
-            if isinstance(blocks_data, str):
-                blocks_dict = json.loads(blocks_data)
-            elif isinstance(blocks_data, dict):
-                blocks_dict = blocks_data
-            else:
-                raise ValueError(f"Invalid blocks_data type: {type(blocks_data)}")
+        if isinstance(blocks_data, str):
+            blocks_dict = json.loads(blocks_data)
+        elif isinstance(blocks_data, dict):
+            blocks_dict = blocks_data
+        else:
+            raise ValueError(f"Invalid blocks_data type: {type(blocks_data)}")
 
-            # Convert dict to BlocksContainer
-            block_containers = BlocksContainer(**blocks_dict)
+        # Convert dict to BlocksContainer
+        block_containers = BlocksContainer(**blocks_dict)
 
-            # Read before the groups are processed: the record's own push marker
-            # decides whether a remote image may be fetched. A failed read raises,
-            # so it is retried and never indexes the images away.
-            record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value, raise_on_error=True
-            )
+        # Read before the groups are processed: the record's own push marker
+        # decides whether a remote image may be fetched. A failed read raises,
+        # so it is retried and never indexes the images away.
+        record = await self.graph_provider.get_document(
+            recordId, CollectionNames.RECORDS.value, raise_on_error=True
+        )
 
-            if record is None:
-                raise RecordDeletedError(recordId)
+        if record is None:
+            raise RecordDeletedError(recordId)
 
-            push_origin = content_is_push_origin(blocks_dict) or record_is_push_origin(record)
+        push_origin = content_is_push_origin(blocks_dict) or record_is_push_origin(record)
 
-            # Process BlockGroups with requires_processing=True via markdown parser
-            block_containers = await self._process_blockgroups(
-                block_containers, recordName, allow_remote_fetch=not push_origin
-            )
-            if push_origin:
-                assert_images_inline(block_containers)
+        # Process BlockGroups with requires_processing=True via markdown parser
+        block_containers = await self._process_blockgroups(
+            block_containers, recordName, allow_remote_fetch=not push_origin
+        )
+        if push_origin:
+            assert_images_inline(block_containers)
 
-            # Signal parsing complete after blocks are processed
-            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+        # Signal parsing complete after blocks are processed
+        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            # Enhance TABLE BlockGroups with LLM summaries and row descriptions
-            await enhance_tables_with_llm(block_containers, self.config_service, self.logger)
+        # Enhance TABLE BlockGroups with LLM summaries and row descriptions
+        await enhance_tables_with_llm(block_containers, self.config_service, self.logger)
 
-            # Convert to Record entity and attach blocks
-            record = self._convert_record(record)
-            record.block_containers = block_containers
-            record.virtual_record_id = virtual_record_id
+        # Convert to Record entity and attach blocks
+        record = self._convert_record(record)
+        record.block_containers = block_containers
+        record.virtual_record_id = virtual_record_id
 
-            # Apply indexing pipeline
-            ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = self._pipeline()
-            await pipeline.apply(ctx)
+        # Apply indexing pipeline
+        ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+        pipeline = self._pipeline()
+        await pipeline.apply(ctx)
 
-            # Signal indexing complete
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+        # Signal indexing complete
+        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            self.logger.info("✅ Blocks Container processing completed successfully")
-
-        except IndexingError:
-            raise
-        except Exception as e:
-            self.logger.error(f"❌ Error processing Blocks Container: {str(e)}")
-            raise
+        self.logger.debug("Blocks Container processing completed successfully")
 
     def _separate_block_groups_by_index(
         self, block_groups: List[BlockGroup]
@@ -951,7 +935,7 @@ class Processor:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
 
                 self.logger.debug(
-                    f"📷 Extracted {len(images)} images from BlockGroup {block_group_index}, "
+                    f"Extracted {len(images)} images from BlockGroup {block_group_index}, "
                     f"converted {len([u for u in base64_urls if u])} to base64"
                 )
 
@@ -992,7 +976,7 @@ class Processor:
         )
 
         self.logger.debug(
-            f"📄 Processing BlockGroup {block_group.index} ({block_group.name})"
+            f"Processing BlockGroup {block_group.index} ({block_group.name})"
         )
         processed_blocks_container = await md_parser.parse_to_blocks(
             modified_markdown,
@@ -1001,7 +985,7 @@ class Processor:
         )
 
         self.logger.debug(
-            f"✅ Processed BlockGroup {block_group.index}: "
+            f"Processed BlockGroup {block_group.index}: "
             f"collected {len(processed_blocks_container.blocks)} blocks, "
             f"{len(processed_blocks_container.block_groups)} block_groups"
         )
@@ -1050,7 +1034,7 @@ class Processor:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
 
                 self.logger.debug(
-                    f"📷 Extracted {len(images)} images from HTML BlockGroup {block_group.index}, "
+                    f"Extracted {len(images)} images from HTML BlockGroup {block_group.index}, "
                     f"converted {len([u for u in base64_urls if u])} to base64"
                 )
 
@@ -1061,7 +1045,7 @@ class Processor:
         )
 
         self.logger.debug(
-            f"✅ Processed HTML BlockGroup {block_group.index}: "
+            f"Processed HTML BlockGroup {block_group.index}: "
             f"collected {len(processed_blocks_container.blocks)} blocks, "
             f"{len(processed_blocks_container.block_groups)} block_groups"
         )
@@ -1337,7 +1321,7 @@ class Processor:
             return block_containers
 
         self.logger.debug(
-            f"🔄 Processing {len(block_groups_to_process)} BlockGroups"
+            f"Processing {len(block_groups_to_process)} BlockGroups"
         )
 
         # ========== PHASE 1: Process all BlockGroups and collect results ==========
@@ -1363,11 +1347,8 @@ class Processor:
                 # Store results for later merging
                 processing_results[block_group.index] = (new_block_groups, new_blocks)
 
-            except Exception as e:
-                self.logger.error(
-                    f"❌ Error processing BlockGroup {block_group.index}: {e}",
-                    exc_info=True
-                )
+            except Exception:
+                note(page=block_group.index)
                 # Stop processing if any BlockGroup fails
                 raise
 
@@ -1391,7 +1372,7 @@ class Processor:
         )
 
         self.logger.debug(
-            f"✅ Processed {len(processing_results)} BlockGroups. "
+            f"Processed {len(processing_results)} BlockGroups. "
             f"Total blocks: {len(result.blocks)}, "
             f"Total block_groups: {len(result.block_groups)}"
         )
@@ -1402,16 +1383,16 @@ class Processor:
         self, recordName, recordId, version, source, orgId, excel_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process Excel document, yielding phase completion events."""
-        self.logger.info(
-            f"🚀 Starting Excel document processing for record: {recordName}"
+        self.logger.debug(
+            f"Starting Excel document processing for record: {recordId}"
         )
 
         try:
-            self.logger.debug("📊 Processing Excel content")
+            self.logger.debug("Processing Excel content")
             llm, _ = await self._get_llm_for_role("indexing", reasoning_effort="low")
             parser = cast(ExcelParser, self.parsers[ExtensionTypes.XLSX.value])
             if not excel_binary:
-                self.logger.info(f"No Excel binary found for record: {recordName}")
+                self.logger.debug(f"No Excel binary found for record: {recordId}")
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1446,11 +1427,10 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            self.logger.info("✅ Excel processing completed successfully.")
+            self.logger.debug("Excel processing completed successfully.")
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing Excel document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
@@ -1461,8 +1441,8 @@ class Processor:
         self, recordName, recordId, version, source, orgId, xls_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process XLS document, yielding phase completion events."""
-        self.logger.info(
-            f"🚀 Starting XLS document processing for record: {recordName}"
+        self.logger.debug(
+            f"Starting XLS document processing for record: {recordId}"
         )
 
         try:
@@ -1475,12 +1455,11 @@ class Processor:
                 recordName, recordId, version, source, orgId, xlsx_binary, virtual_record_id, event_type, prev_virtual_record_id
             ):
                 yield event
-            self.logger.debug("📑 XLS document processed successfully")
+            self.logger.debug("XLS document processed successfully")
 
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing XLS document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
@@ -1499,13 +1478,13 @@ class Processor:
             virtual_record_id (str): Virtual record ID
             extension (str): File extension type (defaults to CSV if None)
         """
-        self.logger.info(
-            f"🚀 Starting delimited document processing for record: {recordName}"
+        self.logger.debug(
+            f"Starting delimited document processing for record: {recordId}"
         )
 
         try:
             # Initialize parser
-            self.logger.debug("📊 Processing delimited file content")
+            self.logger.debug("Processing delimited file content")
             if extension is None:
                 parser = cast(CSVParser, self.parsers[ExtensionTypes.CSV.value])
             else:
@@ -1524,14 +1503,14 @@ class Processor:
                     all_rows = await offload_if_large(
                         parser.read_raw_rows, io.StringIO(decode_text(file_binary)), sized_arg=file_binary
                     )
-                    self.logger.info(f"✅ Successfully parsed delimited file. Rows: {len(all_rows)}")
+                    self.logger.debug(f"Successfully parsed delimited file. Rows: {len(all_rows)}")
                 except Exception as e:
-                    self.logger.warning(f"Failed to read rows from delimited file {recordName}: {str(e)}")
+                    self.logger.warning(f"Failed to read rows from delimited file {recordId}: {str(e)}")
                     all_rows = None
                 has_rows = bool(all_rows)
 
             if not has_rows:
-                self.logger.info(f"Delimited file could not be read or is empty for record: {recordName}. Setting indexing status to EMPTY.")
+                self.logger.debug(f"Delimited file could not be read or is empty for record: {recordId}. Setting indexing status to EMPTY.")
 
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1539,14 +1518,14 @@ class Processor:
 
                 return
 
-            self.logger.debug("📑 Delimited file result processed")
+            self.logger.debug("Delimited file result processed")
 
             # Detect multiple tables
             if not in_worker:
                 tables = await offload_if_large(
                     parser.find_tables_in_csv, all_rows, sized_arg=file_binary
                 )
-            self.logger.info(f"🔍 Detected {len(tables)} table(s) in delimited file")
+            self.logger.debug(f"Detected {len(tables)} table(s) in delimited file")
 
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value, raise_on_error=True
@@ -1560,7 +1539,7 @@ class Processor:
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Process all tables using unified multi-table logic
-            self.logger.info(f"📊 Processing {len(tables)} table(s)")
+            self.logger.debug(f"Processing {len(tables)} table(s)")
             block_containers = await parser.get_blocks_from_csv_with_multiple_tables(tables, llm)
 
             record.block_containers = block_containers
@@ -1572,12 +1551,11 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            self.logger.info("✅ Delimited file processing completed successfully")
+            self.logger.debug("Delimited file processing completed successfully")
 
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing delimited document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
@@ -1623,7 +1601,7 @@ class Processor:
         )
         if not success:
             self.logger.warning(
-                "⚠️ Failed to update indexing status for record %s - record may not exist",
+                "Failed to update indexing status for record %s - record may not exist",
                 record_id,
             )
             return
@@ -1633,7 +1611,7 @@ class Processor:
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process HTML document, yielding phase completion events."""
         self.logger.debug(
-            f"🚀 Starting HTML document processing for record: {recordName}"
+            f"Starting HTML document processing for record: {recordId}"
         )
 
         try:
@@ -1648,7 +1626,7 @@ class Processor:
             if not html_content:
                 try:
                     await self._mark_record(recordId, ProgressStatus.EMPTY)
-                    self.logger.info("✅ HTML processing completed - empty content.")
+                    self.logger.debug("HTML processing completed - empty content.")
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                     return
@@ -1662,7 +1640,7 @@ class Processor:
                     ) from e
 
             # Use the unified HTML parser interface
-            self.logger.debug("📄 Processing HTML content")
+            self.logger.debug("Processing HTML content")
             html_content = await asyncio.to_thread(fit_inline_images, html_content)
             html_parser = self.parsers[ExtensionTypes.HTML.value]
             html_content = html_parser.clean_html(html_content)
@@ -1685,7 +1663,7 @@ class Processor:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
 
                 self.logger.debug(
-                    f"📷 Extracted {len(images)} images from HTML, "
+                    f"Extracted {len(images)} images from HTML, "
                     f"converted {len([u for u in base64_urls if u])} to base64"
                 )
 
@@ -1717,12 +1695,11 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            self.logger.info("✅ HTML processing completed successfully.")
+            self.logger.debug("HTML processing completed successfully.")
 
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing HTML document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
@@ -1742,7 +1719,7 @@ class Processor:
         prev_virtual_record_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Process an EPUB book as the HTML document its chapters make up."""
-        self.logger.info(f"🚀 Starting EPUB document processing for record: {recordName}")
+        self.logger.debug(f"Starting EPUB document processing for record: {recordId}")
         try:
             book = await asyncio.to_thread(read_epub, epub_binary)
         except ParseError as e:
@@ -1767,8 +1744,8 @@ class Processor:
             orgId (str): Organization ID
             mdx_content (str): Content of the MDX file
         """
-        self.logger.info(
-            f"🚀 Starting MDX document processing for record: {recordName}"
+        self.logger.debug(
+            f"Starting MDX document processing for record: {recordId}"
         )
 
         # Convert MDX to MD using our parser
@@ -1785,8 +1762,8 @@ class Processor:
         self, recordName, recordId, md_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process Markdown document, yielding phase completion events."""
-        self.logger.info(
-            f"🚀 Starting Markdown document processing for record: {recordName}"
+        self.logger.debug(
+            f"Starting Markdown document processing for record: {recordId}"
         )
 
         try:
@@ -1801,7 +1778,7 @@ class Processor:
             if markdown is None or markdown == "":
                 try:
                     await self._mark_record(recordId, ProgressStatus.EMPTY)
-                    self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
+                    self.logger.debug("HTML processing completed successfully using markdown conversion.")
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                     return
@@ -1815,7 +1792,7 @@ class Processor:
                     ) from e
 
             # Initialize Markdown parser
-            self.logger.debug("📄 Processing Markdown content")
+            self.logger.debug("Processing Markdown content")
             markdown = await asyncio.to_thread(fit_inline_images, markdown)
             parser = self.parsers[ExtensionTypes.MD.value]
 
@@ -1873,12 +1850,11 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            self.logger.info("✅ MD processing completed successfully")
+            self.logger.debug("MD processing completed successfully")
             return
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing Markdown document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
@@ -1901,8 +1877,8 @@ class Processor:
         *, org_id: str, virtual_record_id: str | None,
     ) -> AsyncGenerator[PipelineEvent, None]:
         """Mark a repository file as not indexed, with the reason people see."""
-        self.logger.info(
-            f"Not indexing {record_name} ({size_bytes} bytes): {cause}; marking as not supported"
+        self.logger.debug(
+            f"Not indexing {record_id} ({size_bytes} bytes): {cause}; marking as not supported"
         )
         # A store-only run never touched the code graph or what is stored, so it has nothing to take back.
         if not store_only_active():
@@ -2022,7 +1998,7 @@ class Processor:
             )
         except Exception as projection_error:
             self.logger.error(
-                f"❌ Failed to project code blocks to graph for {record_id}: {projection_error}"
+                f"Failed to project code blocks to graph for {record_id}: {projection_error}"
             )
             if propagate_failure:
                 raise
@@ -2039,7 +2015,7 @@ class Processor:
         file that is capped at the code size limit, and generated files are
         skipped (see ``plan_code_file``).
         """
-        self.logger.info(f"🚀 Starting code document processing for record: {recordName}")
+        self.logger.debug(f"Starting code document processing for record: {recordId}")
 
         try:
             if isinstance(code_binary, str):
@@ -2072,7 +2048,7 @@ class Processor:
                 return
 
             if plan.route is CodeFileRoute.DELIMITED:
-                self.logger.info(f"{recordName} is a data file; reading it as {plan.parser.upper()}")
+                self.logger.debug(f"{recordId} is a data file; reading it as {plan.parser.upper()}")
                 async for event in self.process_delimited_document(
                     recordName, recordId, code_binary, virtual_record_id,
                     extension=plan.parser,
@@ -2082,7 +2058,7 @@ class Processor:
                 return
 
             if plan.route is CodeFileRoute.STRUCTURED:
-                self.logger.info(f"{recordName} is a data file; reading it as {plan.parser.upper()}")
+                self.logger.debug(f"{recordId} is a data file; reading it as {plan.parser.upper()}")
                 async for event in self.process_structured_document(
                     recordName, recordId, code_binary, virtual_record_id,
                     extension=plan.parser,
@@ -2092,8 +2068,8 @@ class Processor:
                 return
 
             if plan.route is CodeFileRoute.TEXT:
-                self.logger.info(
-                    f"No code grammar for {recordName}; falling back to text parsing"
+                self.logger.debug(
+                    f"No code grammar for {recordId}; falling back to text parsing"
                 )
                 async for event in self.process_md_document(
                     recordName=recordName,
@@ -2127,8 +2103,8 @@ class Processor:
             if block_containers is None:
                 # Too many definitions for the code graph (or no grammar build):
                 # still searchable, just not as graph nodes.
-                self.logger.info(
-                    f"{recordName} has too many definitions for the code graph; indexing it as text"
+                self.logger.debug(
+                    f"{recordId} has too many definitions for the code graph; indexing it as text"
                 )
                 await self._drop_code_blocks(recordId)
                 async for event in self.process_md_document(
@@ -2177,12 +2153,11 @@ class Processor:
             await pipeline.apply(ctx)
 
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-            self.logger.info("✅ Code processing completed successfully")
+            self.logger.debug("Code processing completed successfully")
             return
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing code document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
@@ -2193,8 +2168,8 @@ class Processor:
         self, recordName, recordId, version, source, orgId, txt_binary, virtual_record_id, recordType, connectorName, origin, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process TXT document, yielding phase completion events."""
-        self.logger.info(
-            f"🚀 Starting TXT document processing for record: {recordName}"
+        self.logger.debug(
+            f"Starting TXT document processing for record: {recordId}"
         )
 
         try:
@@ -2207,12 +2182,11 @@ class Processor:
                 prev_virtual_record_id=prev_virtual_record_id,
             ):
                 yield event
-            self.logger.info("✅ TXT processing completed successfully")
+            self.logger.debug("TXT processing completed successfully")
             return
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing TXT document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
@@ -2232,13 +2206,13 @@ class Processor:
             orgId (str): Organization ID
             pptx_binary (bytes): Binary content of the PPTX file
         """
-        self.logger.info(
-            f"🚀 Starting PPTX document processing for record: {recordName}"
+        self.logger.debug(
+            f"Starting PPTX document processing for record: {recordId}"
         )
 
         try:
             # Initialize PPTX parser
-            self.logger.debug("📄 Processing PPTX content")
+            self.logger.debug("Processing PPTX content")
 
             processor = self.docling_processor
 
@@ -2271,12 +2245,11 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            self.logger.info("✅ PPTX processing completed successfully using docling")
+            self.logger.debug("PPTX processing completed successfully using docling")
             return
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing PPTX document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
@@ -2296,8 +2269,8 @@ class Processor:
             orgId (str): Organization ID
             ppt_binary (bytes): Binary content of the PPT file
         """
-        self.logger.info(
-            f"🚀 Starting PPT document processing for record: {recordName}"
+        self.logger.debug(
+            f"Starting PPT document processing for record: {recordId}"
         )
         parser = self.parsers[ExtensionTypes.PPT.value]
         ppt_result = await parser.convert_ppt_to_pptx_async(ppt_binary)
@@ -2327,7 +2300,7 @@ class Processor:
             record_type (str): Either "SQL_TABLE" or "SQL_VIEW"
             event_type (str): Event type (newRecord, updateRecord, etc.)
         """
-        self.logger.info(f"🚀 Starting {record_type} processing for record: {recordName}")
+        self.logger.debug(f"Starting {record_type} processing for record: {recordId}")
         
         try:
             # Get the appropriate parser based on record type
@@ -2336,14 +2309,14 @@ class Processor:
             elif record_type == "SQL_VIEW":
                 parser = self.parsers.get(ExtensionTypes.SQL_VIEW.value)
             else:
-                self.logger.error(f"❌ Unknown record type: {record_type}")
+                self.logger.error(f"Unknown record type: {record_type}")
                 await self._mark_record(recordId, ProgressStatus.FAILED)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
             
             if not parser:
-                self.logger.error(f"❌ No parser found for {record_type}")
+                self.logger.error(f"No parser found for {record_type}")
                 await self._mark_record(recordId, ProgressStatus.FAILED)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -2360,12 +2333,12 @@ class Processor:
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             if not block_containers.block_groups and not block_containers.blocks:
-                self.logger.info(f"No content to index for {record_type}: {recordName}")
+                self.logger.debug(f"No content to index for {record_type}: {recordId}")
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
             
-            self.logger.info(f"📊 Created {len(block_containers.block_groups)} block group(s) and {len(block_containers.blocks)} block(s) for {record_type}: {recordName}")
+            self.logger.debug(f"Created {len(block_containers.block_groups)} block group(s) and {len(block_containers.blocks)} block(s) for {record_type}: {recordId}")
             
             # Get record from database
             record = await self.graph_provider.get_document(
@@ -2385,12 +2358,11 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
             
-            self.logger.info(f"✅ {record_type} processing completed successfully for: {recordName} ({len(block_containers.block_groups)} block group(s), {len(block_containers.blocks)} block(s))")
+            self.logger.debug(f"{record_type} processing completed successfully for: {recordId} ({len(block_containers.block_groups)} block group(s), {len(block_containers.blocks)} block(s))")
             
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing {record_type} document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
@@ -2408,12 +2380,12 @@ class Processor:
         prev_virtual_record_id: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process a JSON or YAML file using its registered parser."""
-        self.logger.info(f"🚀 Starting {extension.upper()} processing for record: {recordName}")
+        self.logger.debug(f"Starting {extension.upper()} processing for record: {recordId}")
 
         try:
             parser = self.parsers.get(extension)
             if not parser:
-                self.logger.error(f"❌ No parser found for extension: {extension}")
+                self.logger.error(f"No parser found for extension: {extension}")
                 await self._mark_record(recordId, ProgressStatus.FAILED)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -2429,14 +2401,14 @@ class Processor:
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             if not block_containers.block_groups and not block_containers.blocks:
-                self.logger.info(f"No content to index for {extension}: {recordName}")
+                self.logger.debug(f"No content to index for {extension}: {recordId}")
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
 
-            self.logger.info(
-                f"📊 Created {len(block_containers.block_groups)} block group(s) "
-                f"and {len(block_containers.blocks)} block(s) for {extension}: {recordName}"
+            self.logger.debug(
+                f"Created {len(block_containers.block_groups)} block group(s) "
+                f"and {len(block_containers.blocks)} block(s) for {extension}: {recordId}"
             )
 
             record = await self.graph_provider.get_document(
@@ -2454,12 +2426,11 @@ class Processor:
             await pipeline.apply(ctx)
 
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-            self.logger.info(f"✅ {extension.upper()} processing completed for: {recordName}")
+            self.logger.debug(f"{extension.upper()} processing completed for: {recordId}")
 
         except IndexingError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error processing {extension} document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,

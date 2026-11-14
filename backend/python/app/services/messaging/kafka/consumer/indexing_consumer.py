@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import threading
 import time
 import uuid
@@ -53,8 +54,6 @@ from app.services.messaging.distributed_concurrency import DistributedLeaseSet
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
-    format_exception_chain,
-    is_expected_outcome,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import (
@@ -89,6 +88,7 @@ from app.services.resource_governor import ParseTier, Pool
 from app.telemetry.modules import scheduling_metrics as metrics
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
+from app.utils.error_class import log_failure, logged_level, quotes_content
 from app.utils.logging_fields import log_fields
 from app.utils.loop_lag_monitor import LoopLagMonitor, loop_lag_monitor_from_env
 from app.utils.request_context import (
@@ -733,7 +733,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         4. Stop the worker thread
         5. Stop the Kafka consumer
         """
-        self.logger.info("🛑 Stopping Kafka consumer...")
+        self.logger.info("Stopping Kafka consumer...")
         self.running = False
 
         # Cancel the consume loop task
@@ -758,7 +758,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 consumer = self.consumer
                 self.consumer = None
                 await consumer.stop()
-                self.logger.info("✅ Kafka consumer stopped")
+                self.logger.info("Kafka consumer stopped")
             except Exception as e:
                 self.logger.error(f"Error stopping Kafka consumer: {e}")
         self._lane_paused.clear()
@@ -1192,7 +1192,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.error(f"Fatal error in consume_messages: {e}")
         finally:
             active_count = self._get_active_task_count()
-            self.logger.info(f"🛑 Consume loop exited. Active tasks remaining: {active_count}")
+            self.logger.info(f"Consume loop exited. Active tasks remaining: {active_count}")
 
     async def __read_phase(self) -> None:
         """Read a batch and enqueue each message into the DRR scheduler
@@ -2257,9 +2257,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 pass
             except Exception as exc:
                 retry_current = True
-                # %r and the traceback: a bare TimeoutError's message is empty.
-                self.logger.error(
-                    "Task completed with unhandled exception: %r", exc, exc_info=exc
+                # A broker error already written (index.requeue_failed, index.commit_failed) drops to DEBUG here.
+                log_failure(
+                    self.logger, "index.task_failed", exc, include_error_text=not quotes_content(exc),
+                    level=logging.WARNING if logged_level(exc) is not None else None,
                 )
             main_loop = self.main_loop
             if main_loop is not None and main_loop.is_running():
@@ -2417,29 +2418,25 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if not self.producer:
             raise RuntimeError("No producer available for re-queue")
 
-        try:
-            payload = dict(message.payload)
-            payload["_retry_tracking_id"] = stable_message_id
-            backoff_seconds = delay_s if delay_s is not None else _compute_retry_backoff_seconds(retry_count)
-            payload["_retry_not_before"] = time.time() + backoff_seconds
+        payload = dict(message.payload)
+        payload["_retry_tracking_id"] = stable_message_id
+        backoff_seconds = delay_s if delay_s is not None else _compute_retry_backoff_seconds(retry_count)
+        payload["_retry_not_before"] = time.time() + backoff_seconds
 
-            # The handler's context is reset by now, and the send runs on the
-            # main loop under its own: re-bind the message's so the retry
-            # keeps its request id and org.
-            await self._run_on_main_loop(
-                run_in_context(
-                    context_from_envelope(
-                        {"requestId": message.requestId, "orgId": message.orgId}
-                    ),
-                    self._send_in_org(message, topic, message.eventType, payload),
-                )
+        # The handler's context is reset by now, and the send runs on the
+        # main loop under its own: re-bind the message's so the retry
+        # keeps its request id and org.
+        await self._run_on_main_loop(
+            run_in_context(
+                context_from_envelope(
+                    {"requestId": message.requestId, "orgId": message.orgId}
+                ),
+                self._send_in_org(message, topic, message.eventType, payload),
             )
-            self.logger.debug(
-                f"Re-queued {stable_message_id} with {backoff_seconds:.0f}s backoff (attempt {retry_count})"
-            )
-        except Exception as e:
-            self.logger.error(f"Failed to re-queue message to {topic}: {e}")
-            raise
+        )
+        self.logger.debug(
+            f"Re-queued {stable_message_id} with {backoff_seconds:.0f}s backoff (attempt {retry_count})"
+        )
 
     async def __abandon_message(
         self,
@@ -2464,13 +2461,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             reason=reason,
             attempts=attempts,
         )
-        self.logger.warning(
-            "Dead-lettered %s (%s, tracking id %s): %s",
-            message_id,
-            describe_message(parsed_message),
-            tracking_id,
-            reason,
-        )
+        if timing.current_timeline() is None:  # in a record's run, its index.end says it
+            self.logger.warning(
+                "Dead-lettered %s (%s, tracking id %s): %s",
+                message_id,
+                describe_message(parsed_message),
+                tracking_id,
+                reason,
+            )
         await self._clear_retry_tracking(tracking_id)
 
     async def __settle_done(
@@ -2518,8 +2516,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         message_id = f"{message.topic}-{message.partition}-{message.offset}"
         stable_message_id = self._get_stable_message_id(message, parsed_message)
 
+        # Noted on the record's index.end once the commit returns: until then nothing is decided.
+        decision: dict[str, object] = {"disposition": "ack"}
         if success:
-            self.logger.info(f"Message {message_id} processed successfully")
+            self.logger.debug(f"Message {message_id} processed successfully")
             await self._clear_retry_tracking(stable_message_id)
         elif is_terminal_error:
             # Route it through the sink as well — the handler usually wrote
@@ -2533,6 +2533,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 reason="terminal error",
                 attempts=1,
             )
+            decision = {"disposition": "dead_letter", "reason": "terminal"}
         elif self.retry_manager and parsed_message:
             count, should_dead_letter = await self._increment_retry_and_check(stable_message_id)
             if should_dead_letter:
@@ -2546,29 +2547,32 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     ),
                     attempts=count,
                 )
+                decision = {"disposition": "dead_letter", "reason": "attempts_exhausted", "attempt": count}
             else:
                 # RE-QUEUE: Publish back to same topic for retry
                 try:
                     await self._requeue_message(message.topic, parsed_message, stable_message_id, retry_count=count)
-                    self.logger.info(
-                        f"Re-queued {message_id} (tracking ID: {stable_message_id}) for retry (attempt {count}/"
-                        f"{messaging_env.max_delivery_attempts})"
-                    )
                 except Exception as e:
-                    self.logger.error(f"Failed to re-queue {message_id}: {e}")
+                    timing.note(disposition="retry", reason="requeue_failed", attempt=count)
+                    log_failure(self.logger, "index.requeue_failed", e, level=logging.WARNING, include_error_text=False)
                     raise
+                decision = {"disposition": "retry", "attempt": count}
         else:
-            self.logger.warning(
-                f"Message {message_id} failed, no retry manager or unparseable, committing"
-            )
+            decision = {"disposition": "dead_letter", "reason": "no_retry_tracker"}
+            if timing.current_timeline() is None:
+                self.logger.warning(
+                    f"Message {message_id} failed, no retry manager or unparseable, committing"
+                )
 
         # ALWAYS commit - message is either done, dead-lettered, or re-queued
         try:
             await self.__settle_done(message, in_flight)
-            self.logger.info(f"Committed offset for {message_id}")
         except Exception as e:
-            self.logger.error(f"Failed to commit offset for {message_id}: {e}")
+            timing.note(disposition="retry", reason="commit_failed")
+            log_failure(self.logger, "index.commit_failed", e, level=logging.WARNING, include_error_text=False)
             raise
+        self.logger.debug(f"Committed offset for {message_id}")
+        timing.note(**decision)
 
     async def __delay_if_retry_not_ready(
         self, parsed_message: StreamMessage, message_id: str
@@ -2620,7 +2624,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         in_flight: "_InFlightOffset | None" = None,
     ) -> bool:
         """Process a message with its root, org and ids bound for the whole run, so the lines
-        after the handler (commit, re-queue, the timing summary) carry them too."""
+        after the handler (commit, re-queue, index.end) carry them too."""
         message_id = f"{message.topic}-{message.partition}-{message.offset}"
         with log_fields(topic=message.topic, message_id=message_id):
             # Reuses the parse __defer_if_retry_not_ready already did; only a
@@ -2724,7 +2728,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         index_lease_pool = concurrency.admission_lease_pool(self, index_tier)
         success = False
         # Set where an exit is neither a success nor a failure; the
-        # timing summary falls back to success/shutting_down otherwise.
+        # index.end falls back to success/shutting_down otherwise.
         outcome: str | None = None
         timeline, timeline_token = timing.begin_record(
             parsed_message.payload.get("recordId"),
@@ -2742,6 +2746,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 message_id, stable_message_id, parsed_message, reason=reason, attempts=attempts,
             )
             await self.__settle_done(message, in_flight)
+            timing.note(disposition="dead_letter")
             abandoned = True
 
         try:
@@ -2811,6 +2816,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             unfinished = await concurrency.start_attempt(self, record_lock_id)
             attempt_started = True
             if unfinished >= concurrency.MAX_UNFINISHED_ATTEMPTS:
+                timing.note(reason="unfinished_attempts")
                 await give_up(
                     f"{unfinished} earlier attempts never finished; it is likely "
                     "taking the indexing service down",
@@ -2820,6 +2826,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             # Check current retry count to predict if this will be the final attempt on failure
             current_retry_count = await self._get_retry_count(stable_message_id)
+            timing.note(attempt=current_retry_count + 1)
 
             will_be_final_on_failure = (
                 not self.retry_manager
@@ -3000,10 +3007,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                             raise concurrency.lease_guard_error(lease_handle)
                     await handler_task
                 except TimeoutError:
-                    self.logger.error(
-                        f"Record processing timed out after {processing_timeout}s "
-                        f"for {message_id}"
-                    )
+                    timing.note(timeout_s=processing_timeout)
                     await concurrency.requeue_after_productive_cut(
                         self, progress, lease_handle, message_id
                     )
@@ -3033,7 +3037,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 # the offset uncommitted (redelivered on restart) instead of
                 # committing/retrying, matching the indexing/record lease
                 # gates above which already just return on shutdown.
-                self.logger.info(
+                self.logger.debug(
                     f"Consumer stopping, abandoning {message_id} without commit"
                 )
                 await self.__resolve_offset(in_flight, done=False)
@@ -3050,22 +3054,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # is counted, nothing is re-queued and nothing is committed. That is
             # the correct outcome — the offset resolves as redeliver — but it
             # has to be visible, and it has to name the record, because the
-            # handler has already written a status on the way out.
-            self.logger.warning(
-                "Processing of %s (%s) was cancelled; leaving the offset "
-                "uncommitted for redelivery",
-                message_id,
-                describe_message(parsed_message),
-            )
+            # handler has already written a status on the way out: index.end says it.
+            timing.note(reason="cancelled")
             raise
         except concurrency.RequeueWithoutAttempt as e:
             # Queue time, not a failure (a parse-slot wait that ran out, or a stage
             # whose dependency is paused): hand the message back with no attempt
             # counted, so it cannot be dead-lettered for waiting.
             outcome = "requeued"
-            self.logger.warning(
-                "%s handed back without counting an attempt: %s", message_id, e,
-            )
+            timing.note(code=type(e).__name__, pool=getattr(e, "pool", None))
             if parsed_message is not None:
                 if not e.counts_toward_backstop:
                     # A clean run that found a dependency down, not a crash loop: its
@@ -3078,6 +3075,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         self, stable_message_id
                     )
                     if backstop_tripped:
+                        timing.note(reason="backstop")
                         await give_up(
                             f"handed back {cycles} times without being admitted "
                             f"(backstop {messaging_env.redis_max_deliveries})",
@@ -3089,10 +3087,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         topic, parsed_message, stable_message_id, retry_count=0, delay_s=e.delay_s
                     )
                 except Exception as requeue_error:
-                    self.logger.error(
-                        "Failed to re-queue %s after its admission wait: %s. "
-                        "Keeping it for redelivery",
-                        message_id, requeue_error,
+                    # Kept for redelivery below.
+                    timing.note(disposition="retry", reason="requeue_failed")
+                    log_failure(
+                        self.logger, "index.requeue_failed", requeue_error,
+                        level=logging.WARNING, include_error_text=False,
                     )
                     if self._scheduler is None:
                         # The future's callback seeks back here. Returning would
@@ -3105,15 +3104,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             await self.__settle_done(message, in_flight)
             return False
         except Exception as e:
-            if is_expected_outcome(e):
-                # Expected: the handler already logged it once.
-                self.logger.info(f"Item for {message_id} ended as expected: {type(e).__name__}: {e}")
-            else:
-                # Log the full exception chain for debugging
-                exception_chain = format_exception_chain(e)
-                self.logger.error(
-                    f"Error in process_message_wrapper for {message_id}:\n{exception_chain}"
-                )
+            timing.note(exc=e)  # index.end writes it once, after the decision below
             concurrency.report_memory_incident_if_applicable(self, message_id, e)
 
             # Classify the exception to determine if we should retry
@@ -3124,15 +3115,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # (it was already set for transient based on retry count prediction)
             if is_terminal and parsed_message:
                 parsed_message.is_final_failure = True
-
-            if is_terminal:
-                self.logger.warning(
-                    f"Terminal error for {message_id}, committing to skip: {type(e).__name__}"
-                )
-            else:
-                self.logger.warning(
-                    f"Transient error for {message_id}, checking retry count: {type(e).__name__}"
-                )
 
             await self.__commit_if_appropriate(
                 message, parsed_message, success=False,
@@ -3196,7 +3178,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             finally:
                 # After the releases, so slow cleanup counts toward the hold;
                 # in a finally, so a release that raises or is cancelled
-                # still leaves a summary.
+                # still writes index.end.
                 timeline.mark(timing.RELEASED)
                 timing.end_record(
                     timeline,
