@@ -692,6 +692,15 @@ class EntityVectorStore:
                     self._sparse_embedder = embedder
 
     async def _build_dense_embeddings(self, config: dict[str, Any]) -> Any:  # noqa: ANN401
+        configuration = config.get("configuration") or {}
+        if config["provider"] == "ollama" and configuration.get("dimensions") not in (None, "", 0):
+            # The entity index has its own lifecycle and can still be at the
+            # old width after the record collections have been migrated.
+            info = await self.vector_db_service.get_collection_info(self.collection_name)
+            if info.exists and info.dense_dimension is not None:
+                config = {**config, "configuration": {
+                    **configuration, "dimensions": info.dense_dimension,
+                }}
         return get_embedding_model(config["provider"], config)
 
     async def _embedding_dimension(self) -> int:

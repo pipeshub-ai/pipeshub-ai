@@ -23,6 +23,7 @@ uncontroversial collection-level operations.
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from typing import Any
 
 from app.exceptions.indexing_exceptions import VectorStoreError
 from app.services.permissions.mode import scope_fields_enabled
@@ -169,6 +170,35 @@ class CollectionRegistry:
     # ------------------------------------------------------------------
     # Manifest
     # ------------------------------------------------------------------
+
+    async def resolve_embedding_config(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Keep Ollama's previously ignored dimension setting upgrade-safe.
+
+        Indexing and retrieval must request the same width. Existing record
+        collections take precedence until an explicit rebuild changes them;
+        never rewrite the saved setting or recreate collections here.
+        """
+        configuration = config.get("configuration") or {}
+        if config.get("provider") != "ollama" or configuration.get("dimensions") in (None, "", 0):
+            return config
+
+        managed = await self.list_managed_collections(fresh=True, strict=True)
+        dimensions = set()
+        for entry in managed:
+            if entry.collection_type != CollectionType.RECORDS.value:
+                continue
+            dimension = await self._existing_dimension(entry.name)
+            if dimension is not None:
+                dimensions.add(dimension)
+        if not dimensions:
+            return config
+        if len(dimensions) != 1:
+            raise VectorStoreError(
+                "Existing Ollama collections have different dimensions; "
+                "complete an explicit embedding rebuild before continuing."
+            )
+        dimension = dimensions.pop()
+        return {**config, "configuration": {**configuration, "dimensions": dimension}}
 
     async def list_managed_collections(
         self, *, fresh: bool = False, strict: bool = False

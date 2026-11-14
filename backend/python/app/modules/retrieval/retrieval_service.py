@@ -678,6 +678,8 @@ class RetrievalService:
                         embedding_configs[0],
                     )
                     provider = selected_config["provider"]
+                    if provider == "ollama":
+                        selected_config = await self.collection_registry.resolve_embedding_config(selected_config)
                     self.logger.info(f"Using embedding provider: {provider}")
                     dense_embeddings = await asyncio.to_thread(
                         get_embedding_model, provider, selected_config
