@@ -1939,33 +1939,48 @@ class TestIssueGrantsNameListedAccountsOnly:
 
 
 class TestAnonymousBrowseReachesEveryone:
-    """Browse held by `anyone` is open to people with no Jira account or licence; the ORG grant reaches them only
-    through the gate, which the org's All team passes while a project is public."""
+    """Browse held by `anyone` makes a project public only where the site allows anonymous access (not on Free, not
+    switched off in Atlassian Administration, not blocked by a "Prevent anonymous access" policy). The org's All
+    team passes the gate only while every project granting `anyone` answers a search made with no credentials."""
 
-    PUBLIC = [(MagicMock(), [Permission(entity_type=EntityType.ORG, external_id="anyone_authenticated",
-                                        type=PermissionType.READ)])]
-    PRIVATE = [(MagicMock(), [Permission(entity_type=EntityType.GROUP, external_id="g-1", type=PermissionType.READ)])]
+    PUBLIC = [(MagicMock(short_name="PUB"), [Permission(entity_type=EntityType.ORG, external_id="anyone_authenticated",
+                                                        type=PermissionType.READ)])]
+    PRIVATE = [(MagicMock(short_name="PRV"), [Permission(entity_type=EntityType.GROUP, external_id="g-1",
+                                                         type=PermissionType.READ)])]
 
     @staticmethod
-    def _gated(scope: str = "team") -> JiraConnector:
+    def _gated(scope: str = "team", *, readable: bool = True) -> JiraConnector:
         c = _connector()
         c.scope = scope
         c.data_entities_processor.open_app_to_org_team = AsyncMock()
         c.data_entities_processor.withdraw_team_app_edge = AsyncMock()
+        c._read_anonymously = AsyncMock(return_value=readable)
         return c
 
     @pytest.mark.asyncio
-    async def test_a_public_project_opens_the_gate_to_the_org(self) -> None:
+    async def test_a_project_a_signed_out_search_reads_opens_the_gate_to_the_org(self) -> None:
         c = self._gated()
-        await c._admit_everyone_to_public_projects(self.PRIVATE + self.PUBLIC, written_in_full=False)
+        await c._admit_everyone_to_public_projects(self.PRIVATE + self.PUBLIC, written_in_full=True)
+        c._read_anonymously.assert_awaited_once_with("PUB")
         c.data_entities_processor.open_app_to_org_team.assert_awaited_once_with("conn-sec")
         c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_the_gate_closes_only_when_every_project_was_written_and_none_is_public(self) -> None:
+    @pytest.mark.parametrize(("readable", "written_in_full"), [(False, True), (True, False)],
+                             ids=["signed_out_search_reads_nothing", "a_project_kept_as_stored"])
+    async def test_anyone_without_proof_of_public_access_keeps_the_gate_closed(
+        self, readable: bool, written_in_full: bool,
+    ) -> None:
+        """A failed or empty signed-out search (a Free site, anonymous access off, a Guard policy) means the ORG
+        grant reaches only linked accounts; so does a sync that kept a project's access as stored."""
+        c = self._gated(readable=readable)
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=written_in_full)
+        c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
+        c.data_entities_processor.withdraw_team_app_edge.assert_awaited_once_with("conn-sec")
+
+    @pytest.mark.asyncio
+    async def test_no_public_project_closes_the_gate(self) -> None:
         c = self._gated()
-        await c._admit_everyone_to_public_projects(self.PRIVATE, written_in_full=False)
-        c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()  # a kept project may still be public
         await c._admit_everyone_to_public_projects(self.PRIVATE, written_in_full=True)
         c.data_entities_processor.withdraw_team_app_edge.assert_awaited_once_with("conn-sec")
         c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
@@ -1976,6 +1991,32 @@ class TestAnonymousBrowseReachesEveryone:
         await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
         c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
         c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("status", "body", "public"), [
+        (200, {"issues": [{"id": "1"}]}, True), (200, {"issues": []}, False), (401, {}, False),
+        (200, "<html>log in</html>", False)], ids=["issue_returned", "nothing_returned", "refused", "not_json"])
+    async def test_the_signed_out_search_sends_no_credentials_and_reads_public_only_from_an_issue(
+        self, monkeypatch: pytest.MonkeyPatch, status: int, body: object, public: bool,
+    ) -> None:
+        import httpx
+
+        from app.connectors.sources.atlassian.jira_cloud import connector as module
+
+        seen: list[httpx.Request] = []
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(status, json=body) if isinstance(body, dict) else httpx.Response(status, text=body)
+
+        real = httpx.AsyncClient
+        monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(answer), **kw))
+        c = _connector()
+        c.site_url = "https://acme.atlassian.net"
+        assert await c._read_anonymously("PUB") is public
+        assert str(seen[0].url) == "https://acme.atlassian.net/rest/api/3/search/jql"
+        assert "authorization" not in {k.lower() for k in seen[0].headers}
+        assert json.loads(seen[0].content)["jql"] == 'project = "PUB"'
 
 
 class TestSweepAncestorReads:

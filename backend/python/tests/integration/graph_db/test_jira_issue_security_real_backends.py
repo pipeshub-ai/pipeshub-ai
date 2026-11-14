@@ -646,6 +646,7 @@ async def test_a_public_project_is_read_by_the_whole_org_and_no_longer_once_it_i
     # dave can now browse the project, so he also reads the issue in his own level.
     public = {key: who | {"dave"} if who == PROJECT_READERS else who for key, who in readers.items()} | {"PROJ-9": {"dave"}}
     await world["processor"].on_new_record_groups([(project, [*browse, anyone])])
+    connector._read_anonymously = AsyncMock(return_value=True)  # a signed-out search reads the project
     await connector._admit_everyone_to_public_projects([(project, [*browse, anyone])], written_in_full=True)
     assert not await _mismatches(world, public, by_key)
     assert await reads(erin_id) == unleveled

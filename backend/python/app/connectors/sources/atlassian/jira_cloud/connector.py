@@ -279,6 +279,8 @@ ISSUE_PLACEMENT: str = "stories-under-readable-epic"
 # Parents named in one ``parent in (...)`` clause when their children are re-read.
 SUBTASK_REREAD_CHUNK: int = 50
 # Accounts per JQL when re-reading the issues that name newly listed accounts.
+# Seconds to wait for the search made with no credentials that tells whether a project is public.
+ANONYMOUS_READ_TIMEOUT_S: float = 20.0
 PEOPLE_REREAD_CHUNK: int = 20  # kept small: a clause's argument limit is not published
 # The connector's sync point holding newly listed accounts not yet handed to every project.
 PEOPLE_REREAD_KEY: str = "people_reread"
@@ -2833,16 +2835,44 @@ class JiraConnector(BaseConnector):
     async def _admit_everyone_to_public_projects(
         self, projects: list[tuple[RecordGroup, list[Permission]]], *, written_in_full: bool,
     ) -> None:
-        """Browse held by ``anyone`` is Jira's anonymous access: anyone reads those projects, signed in or not,
-        with or without an account or product access. Their ORG grant reaches only users who pass the connector
-        gate, so the org's All team passes it while a synced project is public, and stops once every project's
-        access was written and none is. ``anyone`` is the only ORG grant this connector writes on a project."""
+        """Browse held by ``anyone`` makes a project public only where the site allows it: "Spaces from Free Jira
+        sites can't be opened to the public" (https://support.atlassian.com/jira-cloud-administration/docs/
+        prevent-or-remove-public-access/), anonymous access to the app is switched on in Atlassian Administration
+        (https://support.atlassian.com/user-management/docs/give-users-access-to-products/), and a "Prevent
+        anonymous access" policy can block it ("Users must be logged in to see work items covered by this control",
+        https://support.atlassian.com/security-and-access-policies/docs/prevent-anonymous-access/). So the org's
+        All team passes the connector gate only while every synced project granting ``anyone`` answers a search
+        made with no credentials, and every project's access was written this sync. Otherwise the gate is closed
+        and the ORG grant reaches only linked (licensed) accounts, as before. ``anyone`` is the only ORG grant this
+        connector writes on a project."""
         if self.scope != ConnectorScope.TEAM.value:
             return
-        if any(p.entity_type == EntityType.ORG for _, perms in projects for p in perms or []):
+        public = [group for group, perms in projects if any(p.entity_type == EntityType.ORG for p in perms or [])]
+        if written_in_full and public and all([await self._read_anonymously(group.short_name) for group in public]):
             await self.data_entities_processor.open_app_to_org_team(self.connector_id)
-        elif written_in_full:
+        else:
             await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
+
+    async def _read_anonymously(self, project_key: str | None) -> bool:
+        """Whether a search with no credentials returns an issue of the project. POST /rest/api/3/search/jql: "This
+        operation can be accessed anonymously." Issues are included "where the user has: Browse projects project
+        permission" (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/). Any other
+        answer, or none, reads as not public: a project with no issue has nothing to read anyway."""
+        if not self.site_url or not project_key:
+            return False
+        jql = 'project = "{}"'.format(project_key.replace("\\", "\\\\").replace('"', '\\"'))
+        try:
+            async with httpx.AsyncClient(timeout=ANONYMOUS_READ_TIMEOUT_S) as client:
+                response = await client.post(
+                    f"{self.site_url.rstrip('/')}/rest/api/3/search/jql",
+                    json={"jql": jql, "maxResults": 1, "fields": ["id"]},
+                    headers={"Accept": "application/json"},
+                )
+            issues = response.json().get("issues") if response.status_code == HttpStatusCode.OK.value else None
+        except (httpx.HTTPError, ValueError, AttributeError) as e:
+            self.logger.warning("Could not check whether project %s is public: %s", project_key, e)
+            return False
+        return isinstance(issues, list) and bool(issues)
 
     async def _fallback_permissions_for_forbidden_scheme(
         self,
