@@ -35,7 +35,6 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
 )
-from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
 from app.services.vector_db.rebuild_state import redis_from_config_service
 
@@ -224,50 +223,39 @@ class KafkaUtils:
             )
 
         async def handle_record_message(message: StreamMessage) -> AsyncGenerator[PipelineEvent, None]:
-            try:
-                event_type = message.eventType
-                payload = message.payload
+            # Raises without logging: the consumer's index.end writes the record's failure once.
+            event_type = message.eventType
+            payload = message.payload
 
-                if not event_type:
-                    logger.error("Missing event_type in message")
-                    return
+            if not event_type:
+                logger.error("Missing event_type in message")
+                return
 
-                if not payload:
-                    logger.error("Missing payload in message")
-                    return
+            if not payload:
+                logger.error("Missing payload in message")
+                return
 
-                # Pass retry context to handler so it knows whether to update DB status on failure
-                # Convert payload to dict if it's not already, then add is_final_failure
-                if not isinstance(payload, dict):
-                    payload = dict(payload)
-                else:
-                    payload = payload.copy()  # Don't mutate original
-                payload["is_final_failure"] = message.is_final_failure
+            # Pass retry context to handler so it knows whether to update DB status on failure
+            # A copy (never the original), with is_final_failure added
+            payload = payload.copy() if isinstance(payload, dict) else dict(payload)
+            payload["is_final_failure"] = message.is_final_failure
 
-                logger.debug(f"Processing record event: {event_type}")
-                # Every model call this record makes (describe images, embed, extract)
-                # goes out as the indexing service, not as whoever happens to be
-                # logged in. Bound here because this generator is driven by one worker
-                # task for the whole record; the handler's own coroutines copy it.
-                async with call_scope(
-                    service_principal("indexing", str(payload.get("orgId") or "")),
-                    Workload.INDEXING,
-                    config_service=config_service_of(app_container),
-                    container=app_container,
-                    record_id=_str_or_none(payload.get("recordId")),
-                    connector_id=_str_or_none(payload.get("connectorId")),
-                ):
-                    async with aclosing(record_event_service.process_event(event_type, payload)) as events:
-                        async for event in events:
-                            yield event
-
-            except Exception as e:
-                if is_expected_outcome(e):
-                    # Expected and already logged by the handler, once.
-                    logger.debug(f"Record message ended as expected: {e}")
-                else:
-                    logger.error(f"Error processing record message: {str(e)}", exc_info=True)
-                raise
+            logger.debug(f"Processing record event: {event_type}")
+            # Every model call this record makes (describe images, embed, extract)
+            # goes out as the indexing service, not as whoever happens to be
+            # logged in. Bound here because this generator is driven by one worker
+            # task for the whole record; the handler's own coroutines copy it.
+            async with call_scope(
+                service_principal("indexing", str(payload.get("orgId") or "")),
+                Workload.INDEXING,
+                config_service=config_service_of(app_container),
+                container=app_container,
+                record_id=_str_or_none(payload.get("recordId")),
+                connector_id=_str_or_none(payload.get("connectorId")),
+            ):
+                async with aclosing(record_event_service.process_event(event_type, payload)) as events:
+                    async for event in events:
+                        yield event
 
         return handle_record_message
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -40,7 +41,7 @@ from app.services.messaging.kafka.handlers.record import (
     RecordEventHandler,
 )
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
-from app.utils import user_errors
+from app.utils import indexing_timing, user_errors
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -80,6 +81,16 @@ def _make_handler(logger=None, config_service=None, event_processor=None, produc
         event_processor=event_processor,
         producer=producer,
     )
+
+
+async def _collect_noted(handler, event_type, payload) -> tuple[list, dict]:
+    """The events, and the facts the handler noted for the record's index.end line."""
+    timeline, token = indexing_timing.begin_record(payload.get("recordId"))
+    try:
+        events = await _collect_events(handler, event_type, payload)
+        return events, dict(timeline.facts)
+    finally:
+        indexing_timing.end_record(timeline, token, outcome="ok")
 
 
 async def _collect_events(handler, event_type, payload):
@@ -1785,20 +1796,19 @@ class TestRecordNotFound:
         ]
 
     @pytest.mark.asyncio
-    async def test_record_not_found_is_a_warning_not_an_error(self) -> None:
+    async def test_record_not_found_is_a_skip_not_a_fault(self, caplog) -> None:
         """Deleting a record while its event is queued is normal, so draining
-        it must not show up in error-level alerting."""
-        handler = _make_handler()
+        it must not show up in warning- or error-level alerting: the record's
+        index.end says skipped, reason not_found."""
+        handler = _make_handler(logger=logging.getLogger("test.p6.record_handler"))
         handler.event_processor.graph_provider.get_document = AsyncMock(return_value=None)
 
         payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
-        await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        with caplog.at_level(logging.DEBUG, logger="test.p6.record_handler"):
+            _, noted = await _collect_noted(handler, EventTypes.NEW_RECORD.value, payload)
 
-        handler.logger.error.assert_not_called()
-        assert any(
-            "not found in database" in str(c)
-            for c in handler.logger.warning.call_args_list
-        )
+        assert (noted.get("outcome"), noted.get("reason")) == ("skipped", "not_found")
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
     @pytest.mark.asyncio
     async def test_an_unreadable_graph_is_not_drained_as_a_deletion(self):
@@ -1950,17 +1960,13 @@ class TestAlreadyIndexed:
         handler.event_processor.stage_ingress = ingress
         return handler, ingress
 
-    @staticmethod
-    def _logged_already_done(handler: RecordEventHandler) -> bool:
-        return any("Indexing already done" in str(c.args[0]) for c in handler.logger.info.call_args_list if c.args)
-
     @pytest.mark.asyncio
     async def test_a_record_the_stage_runtime_holds_is_acknowledged(self) -> None:
         handler, ingress = self._queued_for_classification(handoff_lost=False)
         payload = {"recordId": "r1", "virtualRecordId": "vr1", "mimeType": "application/pdf", "extension": "pdf"}
-        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        events, noted = await _collect_noted(handler, EventTypes.NEW_RECORD.value, payload)
         assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
-        assert self._logged_already_done(handler)
+        assert (noted.get("outcome"), noted.get("reason")) == ("skipped", "already_indexed")
         ingress.handoff_lost.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1969,10 +1975,13 @@ class TestAlreadyIndexed:
         payload = {"recordId": "r1", "virtualRecordId": "vr1", "mimeType": "application/pdf", "extension": "pdf"}
         # The full path runs into the bare test doubles further on; what matters is
         # that the delivery is not acknowledged as already indexed.
+        timeline, token = indexing_timing.begin_record("r1")
         with contextlib.suppress(Exception):
             await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        noted = dict(timeline.facts)
+        indexing_timing.end_record(timeline, token, outcome="ok")
         ingress.handoff_lost.assert_awaited_once()
-        assert not self._logged_already_done(handler)
+        assert noted.get("reason") != "already_indexed"
 
     @pytest.mark.asyncio
     async def test_new_record_already_completed(self):
@@ -2529,10 +2538,11 @@ class TestConnectorActiveCheck:
 
         with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
             mock_dl.return_value = b"file content"
-            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+            events, noted = await _collect_noted(handler, EventTypes.NEW_RECORD.value, payload)
 
         # Should proceed past the connector check and yield events from processor
         assert len(events) == 2
+        assert (noted["size_bytes"], noted["extension"], noted["mime_type"]) == (12, "pdf", "application/pdf")
 
     @pytest.mark.asyncio
     async def test_non_connector_origin_skips_connector_check(self):
@@ -2648,9 +2658,10 @@ class TestUnsupportedFileType:
             "mimeType": "application/x-unknown-type",
             "extension": "xyz",
         }
-        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        events, noted = await _collect_noted(handler, EventTypes.NEW_RECORD.value, payload)
 
         assert len(events) == 2
+        assert (noted["outcome"], noted["reason"], noted["extension"]) == ("skipped", "unsupported_type", "xyz")
         updates = gp.update_node.await_args_list[0].args[2]
         assert updates["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
         assert updates["extractionStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value

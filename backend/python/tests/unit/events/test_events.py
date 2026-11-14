@@ -1235,6 +1235,52 @@ class TestOnEventEdgeCases:
         processor.process_pdf_document_with_ocr.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_an_unreachable_docling_is_one_warning_without_the_file_name(self, caplog) -> None:
+        import logging
+
+        from app.services.docling.client import DoclingUnavailableError
+
+        ep, _, processor, gp = _make_event_processor()
+        ep.logger = logging.getLogger("test.p6.events")
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+
+        async def docling_down(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            raise DoclingUnavailableError("Docling could not parse Quarterly-Secret-Plan.pdf: down")
+            yield  # noqa: unreachable
+
+        processor.process_pdf_with_docling = MagicMock(side_effect=docling_down)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(needs_ocr=False), caplog.at_level(logging.DEBUG, logger="test.p6.events"):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+
+        (line,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert (line.getMessage(), line.reason, line.parser) == ("index.parse_fallback", "unavailable", "docling")
+        assert not hasattr(line, "error_message")
+        assert all("Quarterly-Secret-Plan" not in r.getMessage() + str(vars(r)) for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_duplicate_skip_names_its_twin_on_the_end_line(self, caplog) -> None:
+        import logging
+
+        from app.utils import indexing_timing as timing
+
+        ep, _, _, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        timeline, token = timing.begin_record("rec-1")
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+                          return_value=DedupDecision(virtual_record_id="vr-twin", skip_indexing=True)), \
+             patch("app.events.events.notify_record_indexed", AsyncMock()), \
+             caplog.at_level(logging.INFO, logger="test.p6.dup"):
+            await _drain(ep.on_event(_make_event_payload()))
+            timing.end_record(timeline, token, outcome="ok", logger=logging.getLogger("test.p6.dup"))
+
+        (end,) = [r for r in caplog.records if r.getMessage() == "index.end"]
+        assert (end.outcome, end.reason, end.duplicate_of) == ("skipped", "duplicate", "vr-twin")
+
+    @pytest.mark.asyncio
     async def test_docling_lost_after_it_began_indexing_is_not_parsed_twice(self) -> None:
         """Once Docling's parse completed, the record is retried rather than parsed again."""
         from app.services.docling.client import DoclingUnavailableError

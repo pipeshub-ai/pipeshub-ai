@@ -5,7 +5,8 @@ The stream route marks the answers it builds from the source's own status
 reason and logs them without a traceback. Anything else is still an error.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+import logging
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -111,8 +112,9 @@ class TestClassification:
 
 
 class TestHandlerLogging:
-    async def _fail_download(self, error: Exception) -> tuple[MagicMock, dict | None]:
-        logger = MagicMock()
+    async def _fail_download(self, error: Exception) -> tuple[logging.Logger, dict | None]:
+        # A real logger: lines written through log_failure/log_event never reach a mock's .error/.warning.
+        logger = logging.getLogger("test.p6.source_refusal")
         handler = _make_handler(logger=logger)
         gp = handler.event_processor.graph_provider
         record = {"_key": "r1", "virtualRecordId": "vr1", "origin": "CONNECTOR", "recordType": "FILE",
@@ -132,19 +134,17 @@ class TestHandlerLogging:
         return logger, updates
 
     @pytest.mark.asyncio
-    async def test_a_refusal_logs_one_warning_without_a_traceback(self) -> None:
-        logger, updates = await self._fail_download(_refusal())
-        logger.error.assert_not_called()
-        warnings = [c for c in logger.warning.call_args_list if "r1" in str(c.args[0])]
-        assert len(warnings) == 1
-        assert "exc_info" not in warnings[0].kwargs
+    async def test_a_refusal_is_left_to_the_consumers_end_line(self, caplog) -> None:
+        # The handler stores the reason; the consumer's index.end says it once, at INFO (an expected outcome).
+        with caplog.at_level(logging.DEBUG, logger="test.p6.source_refusal"):
+            _, updates = await self._fail_download(_refusal())
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
         assert updates["indexingStatus"] == ProgressStatus.FAILED.value
         assert updates["reason"] == WEB_400
 
     @pytest.mark.asyncio
-    async def test_an_unexpected_failure_still_logs_an_error_with_its_traceback(self) -> None:
+    async def test_an_unexpected_failure_reaches_the_consumer_unlogged(self, caplog) -> None:
         boom = ApiCallError("API call failed with status 422", status_code=422)
-        logger, _ = await self._fail_download(boom)
-        errors = [c for c in logger.error.call_args_list if "Final failure" in str(c.args[0])]
-        assert len(errors) == 1
-        assert errors[0].kwargs["exc_info"] is not None
+        with caplog.at_level(logging.DEBUG, logger="test.p6.source_refusal"):
+            _, updates = await self._fail_download(boom)
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
