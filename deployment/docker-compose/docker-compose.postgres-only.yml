@@ -1,0 +1,115 @@
+# PipesHub on PostgreSQL alone, for a NEW install: documents, graph (DATA_STORE=postgres), vectors (pgvector), configuration (KV),
+# the message queue and the crawl scheduler all live in the one PostgreSQL of the `postgres` profile. No MongoDB, Qdrant, Redis,
+# Neo4j, ArangoDB, etcd or Kafka container starts, whatever COMPOSE_PROFILES says. It does not copy data from an install that
+# already runs those stores; keep such an install on its stores.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.postgres-only.yml -p pipeshub-ai up -d --build
+#
+# Needs Docker Compose v2.24.4 or later (!override, !reset), a repository checkout (the PostgreSQL and migration images are built
+# from ./postgres and backend/db/Dockerfile) and in .env the nine PG_*_PASSWORD values (see env.template) plus COMPOSE_PROFILES
+# without graph-neo4j, for example COMPOSE_PROFILES=sandbox. The postgres, pgbouncer and pipeshub-migrate services start without
+# their profiles. Start order: postgres healthy, pgbouncer healthy, pipeshub-migrate exits 0, then the placement and fold workers
+# and the app; if the migration fails the app never starts (see postgres/README.md).
+services:
+  mongodb:
+    profiles: !override ["postgres-only-unused"]
+  qdrant:
+    profiles: !override ["postgres-only-unused"]
+  redis:
+    profiles: !override ["postgres-only-unused"]
+  neo4j:
+    profiles: !override ["postgres-only-unused"]
+  arango:
+    profiles: !override ["postgres-only-unused"]
+  etcd:
+    profiles: !override ["postgres-only-unused"]
+  zookeeper:
+    profiles: !override ["postgres-only-unused"]
+  kafka-1:
+    profiles: !override ["postgres-only-unused"]
+
+  postgres:
+    profiles: !reset []
+  pgbouncer:
+    profiles: !reset []
+  pipeshub-migrate:
+    profiles: !reset []
+
+  # Creates each org's own vector partition before its first vector write (a write waits for it); see backend/db/README.md.
+  pipeshub-placement:
+    image: ${PIPESHUB_MIGRATE_IMAGE:-pipeshubai/pipeshub-migrate}:${IMAGE_TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../..
+      dockerfile: backend/db/Dockerfile
+    command: ["python", "-m", "db.maintain", "placement", "--watch"]
+    environment:
+      - PG_MIGRATE_URL=postgresql+psycopg://pipeshub_migrate:${PG_MIGRATE_PASSWORD:?PG_MIGRATE_PASSWORD is empty or unset in .env}@postgres:5432/pipeshub
+      - PG_JOBS_URL=postgresql://pipeshub_jobs:${PG_JOBS_PASSWORD:?PG_JOBS_PASSWORD is empty or unset in .env}@postgres:5432/pipeshub
+    depends_on:
+      pipeshub-migrate:
+        condition: service_completed_successfully
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - pipeshub
+
+  # Folds the vector point-count deltas into the per-collection totals.
+  pipeshub-fold:
+    image: ${PIPESHUB_MIGRATE_IMAGE:-pipeshubai/pipeshub-migrate}:${IMAGE_TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../..
+      dockerfile: backend/db/Dockerfile
+    command: ["python", "-m", "db.maintain", "fold", "--watch"]
+    environment:
+      - PG_JOBS_URL=postgresql://pipeshub_jobs:${PG_JOBS_PASSWORD:?PG_JOBS_PASSWORD is empty or unset in .env}@postgres:5432/pipeshub
+    depends_on:
+      pipeshub-migrate:
+        condition: service_completed_successfully
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - pipeshub
+
+  pipeshub-ai:
+    environment:
+      - DOC_STORE=postgres
+      - DATA_STORE=postgres
+      - VECTOR_DB_TYPE=pgvector
+      - KV_STORE_TYPE=postgres
+      - MESSAGE_BROKER=postgres
+      - REDIS_MODE=postgres
+      - CRAWL_SCHEDULER=postgres
+      - PG_NODE_URL=postgresql://pipeshub_node_login:${PG_NODE_PASSWORD:?PG_NODE_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      - PG_JOBS_URL=postgresql://pipeshub_jobs:${PG_JOBS_PASSWORD:?PG_JOBS_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      # Creating a vector collection or an org's first embedding space is a jobs path.
+      - PGVECTOR_JOBS_DSN=postgresql://pipeshub_jobs:${PG_JOBS_PASSWORD:?PG_JOBS_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      # process_monitor.sh gives query, indexing and connectors their own login (also used for pgvector); the other processes only
+      # read configuration, as the key-value role.
+      - PG_CORE_QUERY_URL=postgresql://pipeshub_query_login:${PG_QUERY_PASSWORD:?PG_QUERY_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      - PG_CORE_INDEXING_URL=postgresql://pipeshub_indexing_login:${PG_INDEXING_PASSWORD:?PG_INDEXING_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      - PG_CORE_CONNECTORS_URL=postgresql://pipeshub_connectors_login:${PG_CONNECTORS_PASSWORD:?PG_CONNECTORS_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      - PG_CORE_URL=postgresql://pipeshub_kv_login:${PG_KV_PASSWORD:?PG_KV_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      - PG_RUNTIME_SERVICE=kv
+      # LISTEN needs a session, so this one bypasses the transaction pooler; the login only listens.
+      - PG_LISTEN_URL=postgresql://pipeshub_kv_login:${PG_KV_PASSWORD:?PG_KV_PASSWORD is empty or unset in .env}@postgres:5432/pipeshub
+    depends_on:
+      mongodb:
+        required: false
+      qdrant:
+        required: false
+      redis:
+        required: false
+      pgbouncer:
+        condition: service_healthy
+      pipeshub-migrate:
+        condition: service_completed_successfully
+      pipeshub-placement:
+        condition: service_started

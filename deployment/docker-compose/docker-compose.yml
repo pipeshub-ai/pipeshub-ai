@@ -19,7 +19,8 @@
 #   kv-etcd       — etcd              (with KV_STORE_TYPE=etcd)
 #   broker-kafka  — Zookeeper + Kafka (with MESSAGE_BROKER=kafka)
 #   sandbox       — coding-sandbox image pull + Docker API proxy (SANDBOX_MODE=docker)
-#   postgres      — PostgreSQL + PgBouncer (opt-in; the app uses it only with docker-compose.postgres-docstore.yml, see ./postgres/README.md)
+#   postgres      — PostgreSQL + PgBouncer (opt-in; the app uses it only with docker-compose.postgres-docstore.yml or
+#                   docker-compose.postgres-only.yml, see ./postgres/README.md)
 #   postgres-migrate — the schema migration job (needs the `postgres` profile too)
 #   search-searxng — SearXNG metasearch (then add SearXNG at http://searxng:8080 under
 #                    Workspace → Web search)
@@ -150,7 +151,7 @@ services:
       - EMBEDDING_SERVER_URL=http://localhost:8002
 
       # Graph database selection — set by install.sh
-      # DATA_STORE accepted values: "neo4j" (default) | "arangodb"
+      # DATA_STORE accepted values: "neo4j" (default) | "arangodb" | "postgres" (with docker-compose.postgres-only.yml)
       - DATA_STORE=${DATA_STORE:-neo4j}
 
       # ArangoDB (active when DATA_STORE=arangodb)
