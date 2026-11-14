@@ -69,24 +69,21 @@ def _links_up(x: str, kind: int) -> str:
             f"ORDER BY l.child_sk, l.kind)")
 
 
-def _unheld_out(x: str) -> str:
-    """Whether a record-to-record relation leaves the record of id ``x`` for a record kg does not hold: one whose id is longer than kg takes, or one that is gone while its
-    edge stays. The walk follows such an edge (and on from it); kg cannot, so the walk must answer."""
-    return (f"EXISTS (SELECT 1 FROM (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_id >= {x} AND e.from_id <= {x} "
-            f"AND e.from_coll = 'records' AND e.to_coll = 'records' ORDER BY e.from_id) e WHERE NOT EXISTS (SELECT 1 FROM {_id('3', 'e.to_id')} k))")
-
-
-def _unheld_in(x: str, coll: str, froms: str) -> str:
-    """Whether an edge of collection ``coll`` comes into the node of id ``x`` from a node of the collections ``froms`` (an array literal) that kg does not hold: as
-    :func:`_unheld_out`, the other way."""
-    held = _id("(CASE e.from_coll WHEN 'records' THEN 3 ELSE 2 END)::smallint", "e.from_id")
-    return (f"EXISTS (SELECT 1 FROM (SELECT e.from_id, e.from_coll FROM graph.edges e WHERE e.org_id = $1 AND e.coll = '{coll}' AND e.to_id >= {x} AND e.to_id <= {x} "
-            f"ORDER BY e.to_id) e WHERE e.from_coll = ANY('{froms}'::text[]) AND NOT EXISTS (SELECT 1 FROM {held} k))")
+def _unheld(x: str) -> str:
+    """Whether an edge the walk can follow touches the node of id ``x`` and a node kg does not hold: a hierarchy relation or a belongs-to edge, out of it or into it, whose
+    other end is a record, a record group or an App kg has no row for (an id longer than its writers take, or a node removed while its edge stays). The walk follows such an
+    edge; kg cannot, so the walk must answer. One rule for every read: each visited node is held to it."""
+    held = _id("(CASE e.oc WHEN 'records' THEN 3 WHEN 'recordGroups' THEN 2 ELSE 1 END)::smallint", "e.oi")
+    out = [f"(SELECT e.to_coll AS oc, e.to_id AS oi FROM graph.edges e WHERE e.org_id = $1 AND e.coll = '{c}' AND e.from_id >= {x} AND e.from_id <= {x} ORDER BY e.from_id)"
+           for c in ("nodeRelations", "belongsTo")]
+    into = [f"(SELECT e.from_coll AS oc, e.from_id AS oi FROM graph.edges e WHERE e.org_id = $1 AND e.coll = '{c}' AND e.to_id >= {x} AND e.to_id <= {x} ORDER BY e.to_id)"
+            for c in ("nodeRelations", "belongsTo")]
+    return (f"EXISTS (SELECT 1 FROM ({' UNION ALL '.join(out + into)}) e WHERE e.oc IN ('records', 'recordGroups', 'apps') "
+            f"AND NOT EXISTS (SELECT 1 FROM {held} k))")
 
 
 APP_KEY = "/* pipeshub:kg.hier_app */ SELECT sk FROM (SELECT * FROM kg.node_keys k WHERE k.org_id = $1 AND k.coll = 1 AND k.id >= $2 ORDER BY k.id LIMIT 1) s WHERE s.id = $2"
 NODE = f"""/* pipeshub:kg.hier_node */ SELECT r.sk, a.id AS app_id FROM {_id("$2", "$3")} r LEFT JOIN LATERAL {_sk("r.app_sk", "kg.node_keys")} a ON a.coll = 1"""
-GRAPH_RECORDS = f"""/* pipeshub:kg.hier_graph_records */ SELECT EXISTS (SELECT 1 FROM unnest($2::text[]) q(id) CROSS JOIN LATERAL {_node("'records'", "q.id")} n)"""
 _DOC = """r.doc->>'connectorId' = {c} AND (r.doc->>'orgId' = {o} OR r.doc->>'orgId' IS NULL) AND coalesce((r.doc->>'isDeleted')::boolean, false) = false
       AND ({s}::text[] IS NULL OR r.doc->>'indexingStatus' = ANY({s}::text[])) AND ({x}::text[] IS NULL OR NOT coalesce(r.doc->>'indexingStatus', '') = ANY({x}::text[]))
       AND ({a}::text IS NULL OR r.id > {a})"""
@@ -98,7 +95,7 @@ BELOW = f"""/* pipeshub:kg.hier_below */ WITH RECURSIVE w(sk, d) AS (
     UNION SELECT x.sk, w.d + 1 FROM w CROSS JOIN LATERAL ({_below("w.sk", 3)}) x WHERE w.d < $3),
   v AS MATERIALIZED (SELECT r.sk, r.id, r.app_sk, r.path FROM (SELECT DISTINCT sk FROM w) q CROSS JOIN LATERAL {_sk("q.sk")} r)
 SELECT (SELECT coalesce(bool_or(v.app_sk IS DISTINCT FROM $4 OR v.path IS NULL), false) FROM v) AS untrusted,
-  EXISTS (SELECT 1 FROM v WHERE {_unheld_out("v.id")}) AS unheld,
+  EXISTS (SELECT 1 FROM v WHERE {_unheld("v.id")}) AS unheld,
   array(SELECT r.id FROM v CROSS JOIN LATERAL {_node("'records'", "v.id")} r
     WHERE {_DOC.format(c="$5", o="$6", s="$7", x="$8", a="$9")} ORDER BY r.id OFFSET $10 LIMIT $11) AS ids"""
 
@@ -108,7 +105,7 @@ NEST = f"""/* pipeshub:kg.hier_nest */ WITH RECURSIVE nest(sk, d) AS (
     UNION SELECT c.sk, nest.d + 1 FROM nest CROSS JOIN LATERAL ({_below("nest.sk", 2, by="group_sk", link=2)}) x CROSS JOIN LATERAL {_sk("x.sk")} c
       CROSS JOIN LATERAL {_node("'recordGroups'", "c.id")} n
     WHERE nest.d < $4 AND (n.doc->>'orgId' = $3 OR n.doc->>'orgId' IS NULL))
-SELECT r.sk, r.id, r.app_sk, r.path IS NULL AS no_path, {_unheld_in("r.id", "belongsTo", "{records,recordGroups}")} AS unheld
+SELECT r.sk, r.id, r.app_sk, r.path IS NULL AS no_path, {_unheld("r.id")} AS unheld
 FROM (SELECT DISTINCT sk FROM nest) q CROSS JOIN LATERAL {_sk("q.sk")} r"""
 
 # The records that belong to one of the groups $2 (sks) and pass the walk's document filters and its file test (its candidates), then those reachable from a candidate no other
@@ -133,7 +130,7 @@ UP = f"""/* pipeshub:kg.hier_up */ WITH RECURSIVE up(node, sk, k) AS (
       SELECT c.parent_sk AS sk FROM {_sk("up.sk")} c UNION ALL SELECT l.parent_sk FROM {_links_up("up.sk", 1)} l) x
       CROSS JOIN LATERAL {_sk("x.sk")} p
     WHERE up.k < $3 AND p.coll = 3)
-SELECT up.node, up.sk, up.k, r.app_sk, r.path IS NULL AS no_path, {_unheld_in("r.id", "nodeRelations", "{records}")} AS unheld
+SELECT up.node, up.sk, up.k, r.app_sk, r.path IS NULL AS no_path, {_unheld("r.id")} AS unheld
 FROM up CROSS JOIN LATERAL {_sk("up.sk")} r"""
 # The members among the sks $2 of the group $3 (its group, or a group link).
 GROUP_MEMBERS = f"""/* pipeshub:kg.hier_group_members */ SELECT c.sk FROM unnest($2::bigint[]) q(sk) CROSS JOIN LATERAL {_sk("q.sk")} c
@@ -210,9 +207,8 @@ async def depths(tx: Tx, org: str, parent_id: str, parent_type: str | None, node
         raise Fallback("reach")
     if any(r["unheld"] for r in rows):
         raise Fallback("unheld")                        # a parent the walk comes down through that kg does not hold
-    missing = set(node_ids) - {r["node"] for r in rows}
-    if missing and await tx.fetchval(GRAPH_RECORDS, org, sorted(missing)):
-        raise Fallback("not_projected")                 # a record the graph holds and kg does not: the walk may reach it
+    if set(node_ids) - {r["node"] for r in rows}:
+        raise Fallback("not_projected")                 # an asked id kg holds no record for (not projected, too long, or gone while an edge to it stays): the walk may still reach it
     sks = sorted({r["sk"] for r in rows})
     if parent_type == "app":
         hits = {r["sk"] for r in await tx.fetch(APP_MEMBERS, org, sks, app_sk, parent_id)}

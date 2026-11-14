@@ -492,7 +492,7 @@ HIERARCHY = "python/app/services/graph_db/postgres/kg/hierarchy.py"
 def hierarchy_statements() -> list[str]:
     """The typed graph's hierarchy reads: composed once, at import, from the module's seek builders."""
     h = importlib.import_module("app.services.graph_db.postgres.kg.hierarchy")
-    return [h.NODE, h.GRAPH_RECORDS, h.BELOW, h.NEST, h.GROUP_RECORDS, h.UP, h.GROUP_MEMBERS, h.APP_MEMBERS]
+    return [h.NODE, h.BELOW, h.NEST, h.GROUP_RECORDS, h.UP, h.GROUP_MEMBERS, h.APP_MEMBERS]
 
 
 RENDERED = {LISTING: listing_statements, HIERARCHY: hierarchy_statements}

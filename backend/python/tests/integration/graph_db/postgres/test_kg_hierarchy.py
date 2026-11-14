@@ -309,6 +309,35 @@ async def test_an_edge_left_after_its_record_was_removed_takes_the_walk(pg_provi
     assert not _served(tally, "by_parent") and not _served(tally, "depths"), dict(tally.c)
 
 
+async def test_a_group_kg_cannot_hold_takes_the_walk(pg_provider, pg_db, tally) -> None:
+    """A record group whose id is longer than kg takes is not in kg, so its member m has no group there: the walk gives m level 1 under the App (a member of one of its live
+    groups); kg sees m's belongs-to edge to a group it does not hold and hands the read to the walk."""
+    org, long = new_org(), "G" * 300
+    await _tree(pg_provider, pg_db, org, extra=[{"_key": "m", "recordName": "m", "connectorId": "app1", "orgId": org, "recordType": "FILE"}])
+    with ctx(org):
+        await pg_provider.batch_upsert_nodes([{"_key": long, "groupName": "long", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}],
+                                             "recordGroups")
+        await pg_provider.batch_create_edges([edge(long, "recordGroups", "app1", "apps"), edge("m", "records", long, "recordGroups")], "belongsTo")
+    await drainer.purge_quarantined(pg_db, org)
+    await flip(pg_db, org)
+    tally.c.clear()
+    walk, got = await _both(org, lambda: pg_provider.get_node_depths_batch("app1", ["m", "f"], 3, "app"))
+    assert got == walk == {"m": 1, "f": 1}
+    assert tally.c[("depths", "unheld")] and not _served(tally, "depths"), dict(tally.c)
+
+
+async def test_an_asked_record_that_is_gone_while_its_edge_stays_takes_the_walk(pg_provider, pg_db, tally) -> None:
+    """b is removed and the edge from a to it stays: the walk still gives b level 1 under a (it follows the edge, whatever is at its end); kg holds no b and hands the read to
+    the walk."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _admin("DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND id = 'b'", org)
+    await flip(pg_db, org)
+    tally.c.clear()
+    walk, got = await _both(org, lambda: pg_provider.get_node_depths_batch("a", ["b"], 3, None))
+    assert got == walk == {"b": 1}
+    assert tally.c[("depths", "not_projected")] and not _served(tally, "depths"), dict(tally.c)
+
 @pytest.mark.parametrize("what", ["by_parent", "depths", "by_group"])
 async def test_a_sampled_read_that_differs_from_the_walk_takes_the_connector_back_to_the_walk(pg_provider, pg_db, monkeypatch, what) -> None:
     """The safety net: with every read sampled, a read kg answers is read again by kg and by the walk in one snapshot; a seeded difference in kg's structure (b moved under f in kg
