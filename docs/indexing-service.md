@@ -372,7 +372,7 @@ flowchart TD
     E --> A
 ```
 
-With fair scheduling off (`FAIR_SCHEDULING_ENABLED=false`, Kafka only) the loop is FIFO: each partition has one message in flight, and the commit is that message's offset + 1. The first message of a batch that is not dispatched (its re-queue backoff has not elapsed, its partition is busy, or its parse or dispatch failed and it is not poison) ends that partition's batch, and the partition is read again from it: at once, or when the message in flight ends. A failure on one partition does not stop the others in the batch.
+With fair scheduling off (`FAIR_SCHEDULING_ENABLED=false`, Kafka only) the loop is FIFO: each partition has one message in flight, and the commit is that message's offset + 1. The first message of a batch that is not dispatched (its re-queue backoff has not elapsed, its partition is busy, or its parse or dispatch failed and it is not poison) ends that partition's batch, and the partition is read again from it: when the message in flight ends (a busy partition), after a failure not before a wait of at least 1 s, doubling per failure of the same message up to 30 s (it is read on the first poll after that), and for a re-queued message not before its `_retry_not_before`. The partition is paused meanwhile, so the others are read at full rate; re-reading it at once spun the loop at ~2,000 polls and ERROR lines a second. Fair scheduling holds a partition whose head fails to parse the same way. A failure on one partition does not stop the others in the batch.
 
 Key structures:
 
