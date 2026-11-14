@@ -3002,6 +3002,11 @@
           "samlSso": "SAML SSO",
           "oauth": "OAuth"
         }
+      },
+      "enterpriseSso": {
+        "title": "Jednotné přihlášení SAML a OpenID Connect",
+        "description": "Přihlašujte uživatele přes Okta, OneLogin nebo jiného poskytovatele identity SAML 2.0 či OpenID Connect.",
+        "contactSales": "Pro nákup napište na {{email}}"
       }
     },
     "connectors": {
@@ -3458,7 +3463,28 @@
         "loadingOptions": "Načítání možností…",
         "noResults": "Nebyly nalezeny žádné výsledky",
         "loadingMore": "Načítání dalších…",
-        "optionsLoadFailed": "Možnosti tohoto filtru se nepodařilo načíst. Zavřete tento seznam a znovu jej otevřete, abyste to zkusili znovu."
+        "optionsLoadFailed": "Možnosti tohoto filtru se nepodařilo načíst. Zavřete tento seznam a znovu jej otevřete, abyste to zkusili znovu.",
+        "folderPaths": {
+          "help": "Cesty začínají na nejvyšší úrovni. * odpovídá libovolným znakům v rámci jednoho názvu složky, ** libovolnému počtu složek, ? jednomu znaku. Zahrnuje se vše uvnitř odpovídající složky. Vzor, který nic nenajde, se zobrazí na kartě konektoru.",
+          "examples": {
+            "oneLevel": "customer/*/quotes: složka quotes každého zákazníka",
+            "anyDepth": "**/quotes: každá složka s názvem quotes v libovolné hloubce (čte každou složku)",
+            "exclude": "archive s možností Vyloučit: vše kromě složky archive"
+          },
+          "caseInsensitive": "Na velikosti písmen v názvech nezáleží. Složky oddělují \\ i /.",
+          "caseSensitive": "Na velikosti písmen v názvech záleží. Napište \\* nebo \\?, chcete-li tyto znaky v názvu najít doslova.",
+          "notFiles": "Vzory vybírají složky, ne soubory. Typy souborů vyberete filtrem File Extensions.",
+          "errors": {
+            "climbsOut": "Složka „{{value}}“ musí být cesta od nejvyšší úrovně, bez „..“.",
+            "emptySegment": "Složka „{{value}}“ obsahuje prázdný název složky mezi dvěma lomítky. Odstraňte nadbytečné „/“.",
+            "excludesEverything": "Vyloučením „{{value}}“ nezbude nic k synchronizaci. Odeberte ji, nebo přepněte na Zahrnout.",
+            "tooLong": "Složka „{{value}}“ je delší než 1024 znaků.",
+            "uncPath": "Složka „{{value}}“ vypadá jako síťová cesta. Začněte na nejvyšší úrovni sdílené složky, bez \\\\server\\share.",
+            "doubleStarInName": "Ve složce „{{value}}“ musí být „**“ celý název složky, například reports/**/2026. Pro část názvu použijte „*“.",
+            "tooManyDoubleStars": "Složka „{{value}}“ používá „**“ více než 4krát. Použijte méně.",
+            "tooManyStars": "Název složky v „{{value}}“ obsahuje více než 16 „*“. Použijte méně."
+          }
+        }
       },
       "syncStrategies": {
         "SCHEDULED": "Plánovaná",
@@ -3610,6 +3636,16 @@
             "title": "Drupal Wiki odmítá dotazy na členy a strukturu stránek",
             "message": "Soukromé prostory se synchronizují jen s přístupem potvrzeným při dřívější synchronizaci, a to jen {{days}} dní po jeho potvrzení. Soukromé prostory, které nikdy nebyly synchronizovány nebo byly potvrzeny dříve, se přeskočí a hierarchie stránek není k dispozici. Otevřených prostorů se to netýká. Úplná synchronizace, včetně té spuštěné změnou filtrů, to pro soukromé prostory ukončí, dokud Drupal Wiki znovu nevypíše jejich členy.",
             "message_dated": "Soukromé prostory se synchronizují jen s přístupem potvrzeným při dřívější synchronizaci, a to jen {{days}} dní po jeho potvrzení. Soukromé prostory, které nikdy nebyly synchronizovány nebo byly potvrzeny dříve, se přeskočí a hierarchie stránek není k dispozici. Otevřených prostorů se to netýká. Úplná synchronizace, včetně té spuštěné změnou filtrů, to pro soukromé prostory ukončí, dokud Drupal Wiki znovu nevypíše jejich členy. Nejstarší používaný přístup byl potvrzen {{confirmedOn}}."
+          },
+          "folder_filter_unmatched": {
+            "title": "Vzor složky nic nenašel",
+            "message": "Žádná složka, kterou tento konektor synchronizuje, neodpovídá {{values}}, takže se pro něj nic nesynchronizuje. Zkontrolujte pravopis ve filtru Folders.",
+            "title_several": "Vzory složek bez shody: {{count}}",
+            "message_several": "Žádná složka, kterou tento konektor synchronizuje, neodpovídá {{values}}, takže se pro ně nic nesynchronizuje. Zkontrolujte pravopis ve filtru Folders.",
+            "title_exclude": "Vzor složky nic nenašel",
+            "message_exclude": "Žádná složka, kterou tento konektor synchronizuje, neodpovídá {{values}}, takže nic nevylučuje. Zkontrolujte pravopis ve filtru Folders.",
+            "title_several_exclude": "Vzory složek bez shody: {{count}}",
+            "message_several_exclude": "Žádná složka, kterou tento konektor synchronizuje, neodpovídá {{values}}, takže nic nevylučují. Zkontrolujte pravopis ve filtru Folders."
           }
         }
       },

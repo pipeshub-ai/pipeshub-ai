@@ -49,6 +49,7 @@ on:
       - 'scripts/prepare_pg_test_db.sh'
       - 'scripts/ensure_pg_cluster.sh'
       - 'scripts/assert_no_skips.py'
+      - 'scripts/test_pg_runtime_shards.py'
       - '.github/workflows/pg-runtime.yml'
   workflow_dispatch:
 
@@ -69,25 +70,22 @@ jobs:
       matrix:
         pg: ['17', '18']
         # The graph suite took ~46 min in one job (over 60 on PostgreSQL 18), so it is split by measured time. graph_tests
-        # are the pytest paths; graph_k splits one file by -k into sets that together hold each of its tests once; graph_cases
-        # is the shard's case count. Shard 5 runs the folder minus what the others name, so a new test file runs there.
-        # scripts/test_pg_runtime_shards.py checks that every case runs exactly once and that the counts add up.
+        # are the pytest paths; graph_k splits one file by -k into sets that together hold each of its tests once. Shard 5 runs
+        # the folder minus what the others name, so a new test file runs there. scripts/test_pg_runtime_shards.py checks that
+        # every case runs exactly once; each shard checks its run against its own collection, so no count is written here.
         shard: [1, 2, 3, 4, 5]
         include:
           # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own
           - shard: 1
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
             graph_k: '[not_current-adversarial]'
-            graph_cases: 1
           # also runs tests/integration/db and tests/integration/pg_runtime
           - shard: 2
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
             graph_k: not [not_current-adversarial] and [current-adversarial]
-            graph_cases: 1
           - shard: 3
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
             graph_k: not [not_current-adversarial] and not [current-adversarial]
-            graph_cases: 13
           # test_kg_read.py stays in shard 5, behind most of the files that run before it in the whole folder: its plan gate
           # depends on the statistics they leave.
           - shard: 4
@@ -100,7 +98,6 @@ jobs:
               tests/integration/graph_db/postgres/test_kh_listing_flat.py
               tests/integration/graph_db/postgres/test_robustness.py
               tests/integration/graph_db/postgres/test_role_batch.py
-            graph_cases: 254
           - shard: 5
             graph_tests: >-
               tests/integration/graph_db/postgres
@@ -113,7 +110,6 @@ jobs:
               --ignore=tests/integration/graph_db/postgres/test_kh_listing_flat.py
               --ignore=tests/integration/graph_db/postgres/test_robustness.py
               --ignore=tests/integration/graph_db/postgres/test_role_batch.py
-            graph_cases: 1463
     services:
       redis:
         image: redis:7.4-bookworm
@@ -165,7 +161,10 @@ jobs:
           KERNEL_TEST_PGBOUNCER: /usr/sbin/pgbouncer
           KERNEL_TEST_MIGRATE_PYTHON: ${{ runner.temp }}/migrate-venv/bin/python
           TMPDIR: ${{ runner.temp }}
-        run: python -m pytest tests/integration/db -m integration --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/py-db-junit.xml"
+        run: |
+          args=(tests/integration/db -m integration -p no:cacheprovider)
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-db.collected" "${args[@]}"
+          python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-db-junit.xml"
 
       - name: Python runtime stores (tests/integration/pg_runtime)
         if: ${{ matrix.shard == 2 }}
@@ -176,7 +175,9 @@ jobs:
           PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
           eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
           export REDIS_RUNTIME_TEST_URL=127.0.0.1:6379
-          python -m pytest tests/integration/pg_runtime -m "not chaos" --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/py-runtime-junit.xml"
+          args=(tests/integration/pg_runtime -m "not chaos" -p no:cacheprovider)
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-runtime.collected" "${args[@]}"
+          python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-runtime-junit.xml"
 
       - name: PostgreSQL graph provider (tests/integration/graph_db/postgres, shard ${{ matrix.shard }})
         working-directory: backend/python
@@ -186,8 +187,16 @@ jobs:
         run: |
           PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
           eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
-          read -ra paths <<< "$GRAPH_TESTS"
-          python -m pytest "${paths[@]}" ${GRAPH_K:+-k "$GRAPH_K"} -m integration --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/py-graph-junit.xml"
+          read -ra args <<< "$GRAPH_TESTS"
+          args+=(-m integration -p no:cacheprovider)
+          if [ -n "$GRAPH_K" ]; then args+=(-k "$GRAPH_K"); fi
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-graph.collected" "${args[@]}"
+          python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-graph-junit.xml"
+
+      # One job is enough: the split is the same in every job. Collecting the folder and the five shards takes a few minutes.
+      - name: Every graph case runs in exactly one shard
+        if: ${{ matrix.shard == 3 && matrix.pg == '17' }}
+        run: python scripts/test_pg_runtime_shards.py --collect
 
       - name: PostgreSQL clusters (on failure)
         if: ${{ failure() }}
@@ -198,11 +207,15 @@ jobs:
 
       - name: No unexpected skips
         if: ${{ always() }}
-        # exactly this shard's graph cases ran, none failed: a suite that registered nothing is not a pass
+        # exactly the cases each run collected ran, none failed or was skipped: a suite that registered nothing is not a pass
         run: |
           reports=("$RUNNER_TEMP/py-graph-junit.xml")
-          if [ "${{ matrix.shard }}" = 2 ]; then reports+=("$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml"); fi
-          python3 scripts/assert_no_skips.py "${reports[@]}" --expect-suite "tests.integration.graph_db.postgres=${{ matrix.graph_cases }}"
+          collected=(--collected "$RUNNER_TEMP/py-graph.collected")
+          if [ "${{ matrix.shard }}" = 2 ]; then
+            reports+=("$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml")
+            collected+=(--collected "$RUNNER_TEMP/py-db.collected" --collected "$RUNNER_TEMP/py-runtime.collected")
+          fi
+          python3 scripts/assert_no_skips.py "${reports[@]}" "${collected[@]}"
 
   node:
     runs-on: ubuntu-latest

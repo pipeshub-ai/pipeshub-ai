@@ -81,7 +81,7 @@ class _Hub:
             "chain_top_groups": [{"ownGroups": ["g9"], "ids": ["s1"]}],
             "chain_top_details": [{"id": "s1", "handle": "records/s1", "parents": ["p9"],
                                    "ownGroups": [{"id": "g9", "deleted": False}]}],
-            "chain_top_facts": [{"hidden": [], "underApp": []}],
+            "chain_top_hidden": [],
             "lineage": [{"ancestors": ["a1"], "declared": ["g1"]}],
             "browse_start": [{"handle": "records/f1", "fromApp": from_app, "crumbNodes": [], "crumbEdges": []}],
             "enrich": [{"i": 0, "row": row}],

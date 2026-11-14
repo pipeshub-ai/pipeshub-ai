@@ -19,6 +19,7 @@ from . import gen
 from .kh_layer import (
     PARTS,
     KhFinding,
+    _Config,
     browse_pages,
     check_world,
     check_worlds,
@@ -37,6 +38,7 @@ from .kh_worlds import (
     DEEP_CHAIN,
     DEEPOPEN,
     DEEPSEED,
+    DEPTHDEL,
     FLATSIDE,
     FOLDERSTUB,
     HIDESEED,
@@ -55,6 +57,7 @@ from .kh_worlds import (
     STUBQ,
     STUBSEED,
     TWOWAY,
+    UNPLACED,
     XBADGE,
     XDECL,
     XGRANT,
@@ -322,6 +325,27 @@ async def test_a_child_below_a_group_that_hides_its_children_is_listed_only_wher
             await layer.release([HIDESEED, DECLHIDE])
 
 
+async def test_a_depth_bound_counts_hops_through_a_deleted_folder(graph_layers) -> None:
+    """DEPTHDEL: the flatten of the App bounded to three hops lists r, which lies three hops down through the deleted folder x, and bounded to two it does not:
+    the same on every store (ArangoDB's walk of the bound stopped at a deleted node, Neo4j's does not)."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+    for layer in graph_layers:
+        await layer.preload([DEPTHDEL])
+        try:
+            ns = await layer._ns(DEPTHDEL)
+            service = KnowledgeHubService(logging.getLogger("kh-depth"), layer._provider, _Config())
+            got = {}
+            for depth in (2, 3):
+                page = await service.get_nodes(user_id=ns.id("u"), org_id=ns.org, parent_id=ns.id("A"), parent_type="app", limit=50, sort_by="name",
+                                               sort_order="asc", flattened=True, depth=depth)
+                got[depth] = {ns.local(i.id) for i in page.items} if page.success else None
+            assert got == {2: {"G"}, 3: {"G", "r"}}, (layer.name, got)
+        finally:
+            await layer.release([DEPTHDEL])
+
+
 async def test_a_flattens_sidebar_keeps_a_record_exactly_where_its_arrow_is_on(graph_layers) -> None:
     """The sidebar of a flatten keeps the rows the flatten shows with children, by the flatten's own arrow: from the App, the stricter rule
     (FLATSIDE: f has no arrow, so the sidebar holds D alone); below a folder, read from the folder's reach (SCOPEDSIDE: R has an arrow, so the
@@ -464,3 +488,18 @@ async def test_generated_worlds_count_what_the_viewer_may_read(graph_layers, kin
             graph_layers, partial(check_worlds, worlds=worlds[mine.start:mine.stop], tag=f"{kind}-{seed}", first=mine.start))
         where = f"{{store}} {kind} seed {seed} worlds {mine.start}-{mine.stop - 1}"
         _assert_each_store(results, where, where)
+
+
+async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(graph_layers) -> None:
+    """UNPLACED: r1's parent and own group are closed, so the App lists it; r2's own group opens, so it is listed there and not under the App; r3
+    is granted but the check denies it, so it is listed nowhere."""
+    async def run(layer: GraphCheckLayer) -> list[KhFinding]:
+        await layer.preload([UNPLACED])
+        try:
+            assert await children_of(layer, UNPLACED, "u", "A", "app") == {"open": True, "r1": False}
+            assert await children_of(layer, UNPLACED, "u", "open", "recordGroup") == {"r2": False}
+            return await check_world(layer, UNPLACED, "unplaced")
+        finally:
+            await layer.release([UNPLACED])
+
+    _assert_each_store(await on_every_store(graph_layers, run), "{store} unplaced", "{store}")

@@ -34,6 +34,8 @@ from app.sources.client.cifs.cifs import CLIENT_NETBIOS_NAME, REPARSE_POINT, Cif
 from app.sources.external.cifs.cifs import CifsDataSource
 from tests.unit.connectors.sources.test_network_share_walker import (
     FakeNetworkShareDataSource,
+    _folder_filter,
+    _share_tree,
 )
 
 
@@ -780,3 +782,82 @@ class TestCifsConnectorStreamAndFilters:
         assert isinstance(created, CifsConnector)
         # The factory's processor, not a second one with its own Redis connection.
         assert created.data_entities_processor is mock_processor
+
+
+def _folder_filters(*values: str):
+    return (FilterCollection(filters=[_folder_filter(*values)]), FilterCollection())
+
+
+class TestCifsFolderPatterns:
+    @pytest.fixture(autouse=True)
+    def _nothing_stored_in_the_share(self, mock_processor):
+        mock_processor.get_records_in_record_group = AsyncMock(return_value=[])
+
+    def test_the_folder_filter_takes_patterns(self):
+        fields = CifsConnector._connector_metadata["config"]["filters"]["sync"]["schema"]["fields"]
+        field = next(f for f in fields if f["name"] == "folder_paths")
+        assert (field["pathStyle"], field["folderWildcards"]) == ("windows", True)
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_complete_walk_flags_a_pattern_that_matched_nothing(self, mock_filters, cifs_connector):
+        mock_filters.return_value = _folder_filters("customer/*/quotes", "custmer/*/quotes", "**/drafts")
+        cifs_connector.data_source = _ds(tree=_share_tree("customer/acme/quotes/q.txt", share=SHARE))
+        cifs_connector.configured_share = SHARE
+        await cifs_connector.run_sync()
+        [item] = cifs_connector.last_action_items
+        assert item.code == "folder_filter_unmatched"
+        assert item.title == "2 folder patterns matched nothing"
+        assert item.params == {"count": "2", "values": '"**/drafts", "custmer/*/quotes"', "context": "several"}
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_an_incomplete_walk_leaves_the_flag_as_it_was(self, mock_filters, cifs_connector):
+        mock_filters.return_value = _folder_filters("custmer/*/quotes", "customer/*/quotes")
+        tree = _share_tree("customer/acme/quotes/q.txt", share=SHARE)
+        cifs_connector.configured_share = SHARE
+        cifs_connector.data_source = _ds(tree=tree)
+        await cifs_connector.run_sync()
+        flagged = cifs_connector.last_action_items
+        assert [i.code for i in flagged] == ["folder_filter_unmatched"]
+        # The typo is fixed, but this walk could not read everything: it cannot tell.
+        mock_filters.return_value = _folder_filters("customer/*/quotes")
+        cifs_connector.data_source = _ds(tree=tree, fail_dirs={(SHARE, "customer/acme")})
+        await cifs_connector.run_sync()
+        assert cifs_connector.last_action_items is flagged
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_an_exclude_pattern_that_matched_nothing_is_worded_as_excluding_nothing(
+        self, mock_filters, cifs_connector
+    ):
+        mock_filters.return_value = (
+            FilterCollection(filters=[_folder_filter("**/archve", exclude=True)]), FilterCollection()
+        )
+        cifs_connector.data_source = _ds(tree=_share_tree("a/archive/q.txt", share=SHARE))
+        cifs_connector.configured_share = SHARE
+        await cifs_connector.run_sync()
+        [item] = cifs_connector.last_action_items
+        assert item.message.endswith("so it excludes nothing. Check the spelling in the Folders filter.")
+        assert item.params["context"] == "exclude"
+
+    async def test_a_pattern_matched_in_one_share_only_is_not_flagged(self, mock_processor):
+        from app.connectors.sources.network_share.operations import walk_shares
+        from app.connectors.sources.network_share.record_mapper import RecordMapper
+
+        tree = _share_tree("customer/acme/quotes/q.txt", share="one") | _share_tree("customer/beta/x.txt", share="two")
+        sync_point = MagicMock()
+        sync_point.read_sync_point = AsyncMock(return_value=None)
+        sync_point.update_sync_point = AsyncMock()
+
+        async def walk(values: tuple[str, ...]):
+            return await walk_shares(
+                data_source=_ds(tree=tree), processor=mock_processor, mapper=RecordMapper(),
+                logger=logging.getLogger("test.cifs"), connector_name=Connectors.CIFS, connector_id="cifs-1",
+                batch_size=50, scope="personal", created_by="user-1", creator_email=None, shares=["one", "two"],
+                sync_filters=FilterCollection(filters=[_folder_filter(*values)]),
+                indexing_filters=FilterCollection(), record_sync_point=sync_point, prune=False,
+            )
+
+        report = await walk(("customer/*/quotes",))
+        assert report.complete
+        assert report.unmatched_patterns_item() is None
+        report = await walk(("customer/*/drafts",))
+        assert report.unmatched_patterns_item().params["values"] == '"customer/*/drafts"'

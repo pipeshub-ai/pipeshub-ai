@@ -2883,6 +2883,11 @@
           "samlSso": "SAML SSO",
           "oauth": "OAuth"
         }
+      },
+      "enterpriseSso": {
+        "title": "SAML 싱글 사인온 및 OpenID Connect",
+        "description": "Okta, OneLogin 또는 기타 SAML 2.0·OpenID Connect ID 공급자로 로그인하도록 합니다.",
+        "contactSales": "구매 문의: {{email}}"
       }
     },
     "connectors": {
@@ -3337,7 +3342,28 @@
         "loadingOptions": "옵션을 불러오는 중…",
         "noResults": "결과를 찾을 수 없습니다",
         "optionsLoadFailed": "이 필터의 옵션을 불러오지 못했습니다. 목록을 닫았다가 다시 열어 재시도하세요.",
-        "loadingMore": "더 불러오는 중…"
+        "loadingMore": "더 불러오는 중…",
+        "folderPaths": {
+          "help": "경로는 최상위 수준에서 시작합니다. *는 폴더 이름 하나 안의 모든 문자, **는 임의 개수의 폴더, ?는 문자 하나와 일치합니다. 일치하는 폴더 안의 모든 항목이 포함됩니다. 아무것도 일치하지 않는 패턴은 커넥터 카드에 표시됩니다.",
+          "examples": {
+            "oneLevel": "customer/*/quotes: 모든 고객의 quotes 폴더",
+            "anyDepth": "**/quotes: 깊이에 상관없이 quotes라는 이름의 모든 폴더(모든 폴더를 읽음)",
+            "exclude": "제외와 함께 archive: archive 폴더를 제외한 모든 항목"
+          },
+          "caseInsensitive": "이름은 대소문자와 관계없이 일치합니다. \\와 / 모두 폴더를 구분합니다.",
+          "caseSensitive": "이름은 대소문자를 구분합니다. 이름에서 이 문자를 찾으려면 \\* 또는 \\?를 쓰세요.",
+          "notFiles": "패턴은 파일이 아니라 폴더를 선택합니다. 파일 형식을 선택하려면 File Extensions를 사용하세요.",
+          "errors": {
+            "climbsOut": "폴더 \"{{value}}\"는 \"..\" 없이 최상위 수준에서 시작하는 경로여야 합니다.",
+            "emptySegment": "폴더 \"{{value}}\"의 두 슬래시 사이에 빈 폴더 이름이 있습니다. 추가된 \"/\"를 제거하세요.",
+            "excludesEverything": "\"{{value}}\"를 제외하면 동기화할 항목이 남지 않습니다. 제거하거나 포함으로 바꾸세요.",
+            "tooLong": "폴더 \"{{value}}\"가 1024자보다 깁니다.",
+            "uncPath": "폴더 \"{{value}}\"가 네트워크 경로처럼 보입니다. \\\\server\\share 없이 공유의 최상위 수준에서 시작하세요.",
+            "doubleStarInName": "폴더 \"{{value}}\"에서 \"**\"는 reports/**/2026처럼 폴더 이름 전체여야 합니다. 이름의 일부에는 \"*\"를 사용하세요.",
+            "tooManyDoubleStars": "폴더 \"{{value}}\"에서 \"**\"를 4번보다 많이 사용합니다. 줄이세요.",
+            "tooManyStars": "\"{{value}}\"의 폴더 이름에 \"*\"가 16개보다 많습니다. 줄이세요."
+          }
+        }
       },
       "syncStrategies": {
         "SCHEDULED": "예약됨",
@@ -3489,6 +3515,16 @@
             "title": "Drupal Wiki가 구성원 및 페이지 구조 쿼리를 거부합니다",
             "message": "비공개 스페이스는 이전 동기화에서 확인된 액세스 권한으로만, 확인 후 {{days}}일 동안만 동기화됩니다. 한 번도 동기화되지 않았거나 그보다 오래전에 확인된 비공개 스페이스는 건너뛰며, 페이지 계층 구조를 사용할 수 없습니다. 공개 스페이스는 영향을 받지 않습니다. 필터 변경으로 시작된 동기화를 포함한 전체 동기화는 Drupal Wiki가 구성원을 다시 나열할 때까지 비공개 스페이스에 대해 이를 중단합니다.",
             "message_dated": "비공개 스페이스는 이전 동기화에서 확인된 액세스 권한으로만, 확인 후 {{days}}일 동안만 동기화됩니다. 한 번도 동기화되지 않았거나 그보다 오래전에 확인된 비공개 스페이스는 건너뛰며, 페이지 계층 구조를 사용할 수 없습니다. 공개 스페이스는 영향을 받지 않습니다. 필터 변경으로 시작된 동기화를 포함한 전체 동기화는 Drupal Wiki가 구성원을 다시 나열할 때까지 비공개 스페이스에 대해 이를 중단합니다. 사용 중인 가장 오래된 액세스 권한은 {{confirmedOn}}에 확인되었습니다."
+          },
+          "folder_filter_unmatched": {
+            "title": "일치하는 폴더가 없는 폴더 패턴",
+            "message": "이 커넥터가 동기화하는 폴더 중 {{values}}와(과) 일치하는 폴더가 없어 동기화되는 항목이 없습니다. Folders 필터의 철자를 확인하세요.",
+            "title_several": "일치하는 폴더가 없는 폴더 패턴 {{count}}개",
+            "message_several": "이 커넥터가 동기화하는 폴더 중 {{values}}와(과) 일치하는 폴더가 없어 동기화되는 항목이 없습니다. Folders 필터의 철자를 확인하세요.",
+            "title_exclude": "일치하는 폴더가 없는 폴더 패턴",
+            "message_exclude": "이 커넥터가 동기화하는 폴더 중 {{values}}와(과) 일치하는 폴더가 없어 제외되는 항목이 없습니다. Folders 필터의 철자를 확인하세요.",
+            "title_several_exclude": "일치하는 폴더가 없는 폴더 패턴 {{count}}개",
+            "message_several_exclude": "이 커넥터가 동기화하는 폴더 중 {{values}}와(과) 일치하는 폴더가 없어 제외되는 항목이 없습니다. Folders 필터의 철자를 확인하세요."
           }
         }
       },

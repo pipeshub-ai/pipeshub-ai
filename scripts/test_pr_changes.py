@@ -60,6 +60,10 @@ class TestDecisions(unittest.TestCase):
         self.assertTrue({"node_unit", "node_build", "codeql_javascript", "e2e_smoke"} <= checks)
         self.assertFalse(checks & (PYTHON_CHECKS | MATRIX | {"frontend"}))
 
+    def test_the_generated_node_file_type_table_runs_the_python_parity_test(self) -> None:
+        checks = runs("backend/nodejs/apps/src/modules/storage/mimetypes/file-types.generated.ts")
+        self.assertTrue({"node_unit", "python_unit"} <= checks)
+
     def test_a_python_only_change_runs_no_node_or_frontend(self) -> None:
         checks = runs("backend/python/app/connectors/sources/jira/connector.py")
         self.assertTrue(PYTHON_CHECKS <= checks)

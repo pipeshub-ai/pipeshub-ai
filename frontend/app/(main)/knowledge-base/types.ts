@@ -385,7 +385,7 @@ export interface KnowledgeHubApiResponse {
   pagination: {
     limit: number;
     totalItems: number;
-    /** True when `totalItems` stopped at the server's cap: it is then a lower bound. */
+    /** True when `totalItems` may not be exact (usually lower; see `totalCapped` in the API spec). */
     totalCapped?: boolean;
     hasNext: boolean;
     hasPrev: boolean;

@@ -1,5 +1,7 @@
 from enum import Enum
 
+from app.config import file_types
+
 
 class DepartmentNames(Enum):
     LEGAL = "Legal"
@@ -395,21 +397,7 @@ class ExtensionTypes(Enum):
 # Common file types PipesHub cannot index. Sync filters offer them so a user can
 # exclude them (Not in); they are kept out of ExtensionTypes because that enum
 # lists the types that can be indexed.
-EXCLUDABLE_FILE_EXTENSIONS: tuple[str, ...] = (
-    # archives
-    "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz",
-    # databases
-    "db", "sqlite", "sqlite3", "mdb", "accdb",
-    # executables and installers
-    "exe", "dll", "msi", "bin", "iso", "dmg", "apk", "jar",
-    # temporary and backup files
-    "tmp", "bak", "swp", "lock",
-    # logs
-    "log",
-    # video and audio
-    "mp4", "mov", "avi", "mkv", "webm", "wmv",
-    "mp3", "wav", "flac", "m4a", "aac", "ogg",
-)
+EXCLUDABLE_FILE_EXTENSIONS: tuple[str, ...] = file_types.EXCLUDE_ONLY_EXTENSIONS
 
 class MimeTypes(Enum):
     PDF = "application/pdf"
@@ -484,98 +472,14 @@ FOLDER_MIME_TYPES = [
     MimeTypes.GOOGLE_DRIVE_FOLDER.value,  # older Google Drive folders
 ]
 
-CODE_FILE_MIME_TYPE_VALUES = frozenset({
-    MimeTypes.PYTHON.value,
-    MimeTypes.PYTHON_SCRIPT.value,
-    MimeTypes.PYTHON_SCRIPT_X.value,
-    MimeTypes.JAVA_SOURCE.value,
-    MimeTypes.C_SOURCE.value,
-    MimeTypes.CPP.value,
-    MimeTypes.PHP.value,
-    MimeTypes.JAVASCRIPT.value,
-    MimeTypes.JAVASCRIPT_TEXT.value,
-    MimeTypes.TYPESCRIPT.value,
-    MimeTypes.CSHARP.value,
-    MimeTypes.GO.value,
-    MimeTypes.RUST.value,
-    MimeTypes.RUBY.value,
-    MimeTypes.SWIFT.value,
-    MimeTypes.KOTLIN.value,
-    MimeTypes.DART.value,
-    MimeTypes.SHELL.value,
-    MimeTypes.SHELL_TEXT.value,
-    MimeTypes.SHELLSCRIPT.value,
-})
+CODE_FILE_MIME_TYPE_VALUES = file_types.CODE_MIMES
 
-CODE_FILE_EXTENSION_VALUES = frozenset({
-    ExtensionTypes.PY.value,
-    ExtensionTypes.JS.value,
-    ExtensionTypes.JSX.value,
-    ExtensionTypes.MJS.value,
-    ExtensionTypes.CJS.value,
-    ExtensionTypes.TS.value,
-    ExtensionTypes.TSX.value,
-    ExtensionTypes.JAVA.value,
-    ExtensionTypes.C.value,
-    ExtensionTypes.H.value,
-    ExtensionTypes.CPP.value,
-    ExtensionTypes.CC.value,
-    ExtensionTypes.CXX.value,
-    ExtensionTypes.HPP.value,
-    ExtensionTypes.HXX.value,
-    ExtensionTypes.CS.value,
-    ExtensionTypes.GO.value,
-    ExtensionTypes.RS.value,
-    ExtensionTypes.RB.value,
-    ExtensionTypes.PHP.value,
-    ExtensionTypes.SWIFT.value,
-    ExtensionTypes.KT.value,
-    ExtensionTypes.KTS.value,
-    ExtensionTypes.DART.value,
-    ExtensionTypes.SH.value,
-    ExtensionTypes.BASH.value,
-    # Parsed by the code parser too; test_code_file_extensions keeps this list
-    # a superset of lang_config's, which it had drifted from (P-3).
-    ExtensionTypes.PYI.value,
-    ExtensionTypes.MTS.value,
-    ExtensionTypes.CTS.value,
-    ExtensionTypes.SCALA.value,
-    ExtensionTypes.GROOVY.value,
-    ExtensionTypes.GRADLE.value,
-    ExtensionTypes.LUA.value,
-})
+# Parsed by the code parser; test_code_file_extensions keeps this a superset of
+# lang_config's, which it had drifted from (P-3).
+CODE_FILE_EXTENSION_VALUES = file_types.GRAMMAR_EXTENSIONS
 
 # MIME type mapping for common file extensions
-FILE_MIME_TYPES = {
-    '.pdf': MimeTypes.PDF,
-    '.doc': MimeTypes.DOC,
-    '.docx': MimeTypes.DOCX,
-    '.xls': MimeTypes.XLS,
-    '.xlsx': MimeTypes.XLSX,
-    '.ppt': MimeTypes.PPT,
-    '.pptx': MimeTypes.PPTX,
-    '.txt': MimeTypes.PLAIN_TEXT,
-    '.csv': MimeTypes.CSV,
-    '.tsv': MimeTypes.TSV,
-    '.json': MimeTypes.JSON,
-    '.yaml': MimeTypes.YAML,
-    '.yml': MimeTypes.YAML,
-    '.xml': MimeTypes.XML,
-    '.zip': MimeTypes.ZIP,
-    '.jpg': MimeTypes.JPEG,
-    '.jpeg': MimeTypes.JPEG,
-    '.png': MimeTypes.PNG,
-    '.gif': MimeTypes.GIF,
-    '.svg': MimeTypes.SVG,
-    '.webp': MimeTypes.WEBP,
-    '.heic': MimeTypes.HEIC,
-    '.heif': MimeTypes.HEIF,
-    '.html': MimeTypes.HTML,
-    '.htm': MimeTypes.HTML,
-    '.md': MimeTypes.MARKDOWN,
-    '.mdx': MimeTypes.MDX,
-    '.epub': MimeTypes.EPUB,
-}
+FILE_MIME_TYPES = {f".{ext}": MimeTypes(mime) for ext, mime in file_types.FILE_MIME_MAP.items()}
 
 
 def normalize_file_extension(extension: str | None) -> str:
@@ -600,58 +504,15 @@ def get_mime_type_for_extension(
     return mapped.value
 
 
-RECONCILIATION_ENABLED_MIME_TYPES = {
-    MimeTypes.SQL_TABLE.value,
-    MimeTypes.SQL_VIEW.value,
-    MimeTypes.GOOGLE_DOCS.value,
-    MimeTypes.GOOGLE_SHEETS.value,
-    MimeTypes.GOOGLE_SLIDES.value,
-    MimeTypes.PDF.value,
-    MimeTypes.DOCX.value,
-    MimeTypes.DOC.value,
-    MimeTypes.PLAIN_TEXT.value,
-    MimeTypes.HTML.value,
-    MimeTypes.BLOCKS.value,
-}
+RECONCILIATION_ENABLED_MIME_TYPES = file_types.RECONCILED_MIMES
 
-RECONCILIATION_ENABLED_EXTENSIONS = {
-    ExtensionTypes.SQL_TABLE.value,
-    ExtensionTypes.SQL_VIEW.value,
-    ExtensionTypes.PDF.value,
-    ExtensionTypes.DOCX.value,
-    ExtensionTypes.DOC.value,
-    ExtensionTypes.TXT.value,
-    ExtensionTypes.MD.value,
-    ExtensionTypes.MDX.value,
-    ExtensionTypes.HTML.value
-}
+RECONCILIATION_ENABLED_EXTENSIONS = file_types.RECONCILED_EXTENSIONS
 
 # Extensions that make a repository blob a CODE_FILE record. Connectors that walk
 # a git tree (GitLab, GitHub) classify each blob against this set; anything outside
 # it is an ordinary FILE record and is gated by the generic mime/extension allowlist
 # instead. Text-based only — a binary listed here would be fed to the code parser.
-SUPPORTED_CODE_FILE_EXTENSIONS = {
-    # C / C++
-    "c", "h", "cpp", "cc", "cxx", "hpp", "hxx",
-    # C#
-    "cs",
-    # Java / JVM
-    "java", "kt", "kts", "scala", "groovy", "gradle",
-    # Python
-    "py", "pyi",
-    # JavaScript / TypeScript
-    "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte",
-    # Go / Rust / Ruby / PHP / Swift / Dart
-    "go", "rs", "rb", "php", "swift", "dart",
-    # Other languages
-    "lua", "pl", "pm", "r", "ex", "exs", "erl", "hs", "clj", "cljs",
-    # Shell
-    "sh", "bash", "zsh", "fish", "ps1",
-    # Markup / stylesheets
-    "html", "htm", "css", "scss", "sass", "less", "md",
-    # Schema / IDL / infra-as-code
-    "sql", "proto", "graphql", "gql", "tf", "tfvars",
-}
+SUPPORTED_CODE_FILE_EXTENSIONS = file_types.REPO_CODE_EXTENSIONS
 
 
 class ProgressStatus(Enum):

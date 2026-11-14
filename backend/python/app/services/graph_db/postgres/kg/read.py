@@ -67,8 +67,9 @@ LITERALS = """/* pipeshub:kg.read_literals */ SELECT r.sk, r.id, r.leaf,
 # The knowledge-hub listing asks class_verdicts in a transaction of its own, without PROFILE (its pages are ordered): sorts are off for the literals' seeks only.
 SORTS_OFF = """/* pipeshub:kg.read_sorts_off */ WITH s AS MATERIALIZED (SELECT current_setting('enable_sort') AS was) SELECT was, set_config('enable_sort', 'off', true) FROM s"""
 SORTS_BACK = "/* pipeshub:kg.read_sorts_back */ SELECT set_config('enable_sort', $1, true)"
+# JIT is off as well: the planner's estimate of a seek per asked id passes jit_above_cost at about 9,500 ids (a CHUNK), and compiling the statement then costs more than reading it.
 PROFILE = """/* pipeshub:kg.read_profile */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('enable_sort', 'off', true), set_config('lock_timeout', '200ms', true),
-    set_config('statement_timeout', '2s', true)"""
+    set_config('statement_timeout', '2s', true), set_config('jit', 'off', true)"""
 
 
 def enabled() -> bool:
@@ -212,7 +213,7 @@ async def accessible_rows(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaita
     """``access.accessible_rows`` with kg answering for the nodes it may. ``run`` opens a read unit (one snapshot, the kg planner profile); ``walk(ids, vrids, access)`` is the walk.
     With ``db``, a share of the answers kg gave is repeated by the walk off this call's path (:mod:`net`), and a difference takes the connector back to the walk; the samples
     read by ``sample_run`` (default ``run``), which must outlive the call."""
-    if access.get("probe"):                                            # the walk refuses a grant probe; kg does not guess
+    if access.get("probe"):                                            # grants tested from the node: the walk reads them (access.probe_grants)
         return await walk(ids, vrids, access)
     try:
         d, shaped = await run(lambda tx: _read(tx, org, ids, access))

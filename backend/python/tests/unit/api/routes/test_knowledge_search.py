@@ -415,14 +415,60 @@ async def test_the_neighbors_answer_matches_the_published_schema_and_dates_a_rec
     assert {k: v for k, v in preview.items() if k in dates} == dates
 
 
-async def test_the_search_answer_matches_the_published_schema_with_its_notes() -> None:
-    payload = {
-        "status": "success", "results": [], "ignoredEntityTypes": ["galaxy"], "kindNotes": ["x is not searched"],
-        "scopeNote": "limited",
-    }
-    _validate("EntitySearchResponse", payload)
+async def _search_answer(hits: list, *, named: bool = False, **body) -> tuple[dict, AsyncMock]:
+    """What the route answers for ``hits`` (as the access check kept them), with named-entity extraction ``named``, and the search it ran.
+
+    The route's own state and access context are built for real, so whatever the route leaves out of them (a turn's
+    selection or bound) is left out here too; only the graph's answer about the caller's access is stubbed."""
+    from app.modules.retrieval.selection_scope import SelectionScope
+
+    ed = "app.agents.actions.knowledge_graph.ops.entity_discovery"
+    ep = "app.modules.retrieval.entity_permissions"
+    search = AsyncMock(return_value=hits)
+    with patch("app.api.routes.chatbot.load_entity_vector_store", AsyncMock(return_value=MagicMock())), \
+         patch(f"{ep}._load_access_context", AsyncMock(return_value=_context())), \
+         patch(f"{ep}._row_scopes", AsyncMock(return_value=(SelectionScope(),))), \
+         patch(f"{ed}.search_entities_for_user", search), \
+         patch(f"{ed}._named_entities_enabled", AsyncMock(return_value=named)):
+        response = await ks.search_entities(_request(), ks.EntitySearchQuery(query="acme", **body), MagicMock())
+    return json.loads(response.body), search
+
+
+async def test_the_search_answer_is_exactly_what_the_published_schema_documents() -> None:
+    from app.modules.retrieval.entity_permissions import EntityHit
+
+    row = {"_key": RID, "recordName": "Doc", "recordType": "FILE", "connectorId": "c1"}
+    found, _ = await _search_answer([
+        EntityHit("u1", "person", "Ada", 0.9, [row], True),
+        EntityHit("o1", "organization", "Acme", 0.8, [row], False),
+        EntityHit(RID, "record", "Acme plan", 0.7, [row], False, indexing_status="QUEUED", indexed=False),
+    ])
+    empty, _ = await _search_answer([])
+    for payload in (found, empty):
+        _validate("EntitySearchResponse", payload)
+    schema = yaml.safe_load(_SPEC.read_text(encoding="utf-8"))["components"]["schemas"]["EntitySearchResponse"]
+    item = schema["properties"]["results"]["items"]["properties"]
+    # every field the route writes is documented, and every documented field is one the route writes
+    assert set(found) | set(empty) == set(schema["properties"])
+    assert {k for r in found["results"] for k in r} == set(item)
+    # the route never limits the search to part of the caller's sources, so it never says it did
+    assert "scopeNote" not in empty
     with pytest.raises(jsonschema.ValidationError):
         _validate("EntitySearchResponse", {"results": [{"entityId": 1}]})
+
+
+@pytest.mark.parametrize("types", [None, []])
+async def test_no_entity_types_or_an_empty_list_searches_every_type(types) -> None:
+    _, search = await _search_answer([], entityTypes=types)
+    assert search.await_args.kwargs["entity_types"] is None
+
+
+async def test_named_entity_alone_is_a_400_while_extraction_is_off_and_searched_while_it_is_on() -> None:
+    with pytest.raises(HTTPException) as err:
+        await _search_answer([], entityTypes=["named_entity"])
+    assert err.value.status_code == 400 and "not enabled" in err.value.detail
+    _, search = await _search_answer([], named=True, entityTypes=["named_entity"])
+    assert search.await_args.kwargs["entity_types"] == ["named_entity"]
 
 
 @pytest.mark.parametrize("failing", ["get_record_taxonomy_links", "get_named_entities_for_record"])

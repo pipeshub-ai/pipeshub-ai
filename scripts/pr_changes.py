@@ -67,6 +67,8 @@ PYTHON_APP = (
     f"{PYTHON}/pyproject.toml",
     f"{PYTHON}/pytest.ini",
     f"{PYTHON}/.coveragerc",
+    # Generated from app/config/file_types.py: the Python parity test is what catches a hand edit.
+    "backend/nodejs/apps/src/modules/storage/mimetypes/file-types.generated.ts",
 )
 
 PYTHON_PACKAGING = (f"{PYTHON}/pyproject.toml", f"{PYTHON}/pytest.ini")
@@ -158,6 +160,8 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/permissions/oracle.py",
     f"{PYTHON}/tests/permissions/scope_corpus.py",
     f"{PYTHON}/tests/permissions/serving_corpus.py",
+    f"{PYTHON}/tests/permissions/gen/**",
+    f"{PYTHON}/tests/permissions/test_scope_projector.py",
     f"{PYTHON}/tests/permissions/scope_layer.py",
     f"{PYTHON}/tests/permissions/stamp_world.py",
     f"{PYTHON}/tests/permissions/store_harness.py",

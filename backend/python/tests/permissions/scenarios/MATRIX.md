@@ -35,8 +35,8 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `local_fs` | container | container | the whole app | `app/connectors/sources/local_fs/connector.py:467` | writer read |
 | `local_repo` | container | container | the whole app | `app/connectors/sources/local_repo/connector.py:38` | writer read |
 | `local_folder` | container | container | the whole app | `app/connectors/sources/local_folder/connector.py:347` | writer read |
-| `cifs` | container | container | the whole app | `app/connectors/sources/cifs/connector.py:84` | writer read |
-| `smb` | container | container | the whole app | `app/connectors/sources/smb/connector.py:86` | writer read |
+| `cifs` | container | container | the whole app | `app/connectors/sources/cifs/connector.py:92` | writer read |
+| `smb` | container | container | the whole app | `app/connectors/sources/smb/connector.py:90` | writer read |
 | `azure_blob` | container | container | the whole app | `app/connectors/sources/azure_blob/connector.py:352` | writer read |
 | `azure_files` | container | container | the whole app | `app/connectors/sources/azure_files/connector.py:327` | writer read |
 | `dropbox_individual` | container | container | the whole app | `app/connectors/sources/dropbox_individual/connector.py:188` | writer read |
