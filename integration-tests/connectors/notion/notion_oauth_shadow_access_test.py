@@ -3,7 +3,9 @@
 The main suite connects with an integration token, whose bot belongs to the workspace, so
 it can only check that nobody is linked (TC-AUTH-001). An OAuth bot is owned by the person
 who approved it. This suite connects that way, checks the creator is linked to that person
-as read from Notion's own ``GET /v1/users/me``, and that the link is what reaches their pages.
+as read from Notion's own ``GET /v1/users/me``, and that the link reaches no page: Notion does
+not say who may open a page now, and the approver's choice in the page picker proved access
+only at that moment.
 
 It needs a token from a one-time browser consent; ``python -m helper.notion_oauth_consent``
 gets one. Without it the suite skips.
@@ -30,8 +32,7 @@ from connectors.notion.constants import (
 from helper.authenticated_identity import assert_authenticated_identity_link
 from helper.graph_provider_utils import wait_for_sync_completion
 from helper.oauth_token_helper import authenticate_connector_with_refresh_token, inject_access_token
-from helper.second_user import SecondUser, second_user  # noqa: F401 - fixture
-from helper.shadow_access_e2e import verify_lent_link_grants_access, verify_shadow_access
+from helper.shadow_access_e2e import _access_paths, _resolve_link
 from helper.source_credentials import source_unavailable
 
 logger = logging.getLogger("notion-oauth-shadow-access")
@@ -135,30 +136,12 @@ class TestNotionOAuthShadowAccess:
         )
 
     @pytest.mark.order(2)
-    async def test_creator_reaches_pages_only_through_linked_account(
-        self, approved_notion_connector: dict[str, Any], pipeshub_client, graph_provider,
-        config_service, vector_store, second_user: SecondUser,  # noqa: F811
-    ) -> None:
-        report = await verify_shadow_access(
-            connector_id=approved_notion_connector["connector_id"],
-            pipeshub_client=pipeshub_client,
-            graph_provider=graph_provider,
-            config_service=config_service,
-            vector_store=vector_store,
-            second_user=second_user,
-            sync_timeout=SYNC_TIMEOUT,
-        )
-        logger.info("Shadow access: %s", report.summary())
-
-    @pytest.mark.order(3)
-    async def test_lent_link_alone_grants_access(
+    async def test_the_approving_account_reaches_no_page(
         self, approved_notion_connector: dict[str, Any], graph_provider,
-        config_service, second_user: SecondUser,  # noqa: F811
     ) -> None:
-        summary = await verify_lent_link_grants_access(
-            connector_id=approved_notion_connector["connector_id"],
-            graph_provider=graph_provider,
-            config_service=config_service,
-            second_user=second_user,
+        link = await _resolve_link(graph_provider, approved_notion_connector["connector_id"])
+        reachable = await _access_paths(graph_provider, link.source_key, link.connector_id, with_org=False)
+        assert not reachable, (
+            f"{link.source.get('email')} reaches {len(reachable)} Notion record(s) through the "
+            f"team connector, which grants none: {dict(list(reachable.items())[:5])}"
         )
-        logger.info("Lent link: %s", summary)

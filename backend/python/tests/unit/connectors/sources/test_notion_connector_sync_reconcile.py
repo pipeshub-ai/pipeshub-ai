@@ -161,7 +161,6 @@ async def test_users_some_without_email_keep_only_their_own_access() -> None:
         {"id": "u1", "type": "person", "name": "A", "person": {"email": "a@example.com"}},
         {"id": "u2", "type": "person", "name": "B", "person": {}}]))
     conn.workspace_id = "ws"
-    conn._add_users_to_workspace_permissions = AsyncMock()
     conn._remove_departed_workspace_users = AsyncMock()
     await conn._sync_users()
     conn._remove_departed_workspace_users.assert_awaited_once_with(["a@example.com"], ["u2"])

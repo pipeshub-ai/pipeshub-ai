@@ -463,15 +463,16 @@ class TestNotionFullSync:
         notion_source_helper: NotionSourceHelper,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-WS-002: the workspace group inherits the app and carries no per-user grant;
-        every synced user reaches it through their link to the app."""
+        """TC-WS-002: the workspace group neither inherits the app nor carries a grant:
+        Notion does not say who may open a page, so a synced user's link to the app
+        reaches no page."""
         connector_id = notion_connector["connector_id"]
         expected_users = await notion_source_helper.person_users_with_email()
 
         grants = await graph_provider.count_permission_edges_to_record_groups(
             connector_id, notion_seed.workspace_id
         )
-        assert grants == 0, f"the workspace inherits the app, but carries {grants} PERMISSION edge(s)"
+        assert grants == 0, f"the workspace is granted to nobody, but carries {grants} PERMISSION edge(s)"
         workspace = await graph_provider.get_record_group_by_external_id(connector_id, notion_seed.workspace_id)
         assert workspace is not None, "workspace RecordGroup missing"
         inherits = await graph_provider.find_edges_between(
@@ -479,12 +480,12 @@ class TestNotionFullSync:
             CollectionNames.APPS.value, connector_id,
             CollectionNames.INHERIT_PERMISSIONS.value,
         )
-        assert len(inherits) == 1, f"expected the workspace to inherit the app, found {len(inherits)} edge(s)"
+        assert not inherits, f"the workspace must not inherit the app, found {len(inherits)} edge(s)"
         app_users = await graph_provider.count_user_app_relation_edges(connector_id)
         assert app_users >= len(expected_users), (
             f"{app_users} users linked to the app; every synced user ({len(expected_users)}) should be"
         )
-        logger.info("TC-WS-002 passed: workspace inherits the app, %d users linked", app_users)
+        logger.info("TC-WS-002 passed: workspace granted to nobody, %d users linked", app_users)
 
     @pytest.mark.order(5)
     async def test_tc_conn_001_connection_test(
