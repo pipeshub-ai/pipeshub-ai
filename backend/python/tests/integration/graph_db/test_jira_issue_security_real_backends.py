@@ -378,16 +378,23 @@ async def test_a_story_stored_under_its_project_moves_under_its_epic_when_read_a
     assert by_key["PROJ-10"] in await _listed_under(world, "bob", by_key["PROJ-6"])
 
 
-async def _reindex(world: dict[str, Any], issue: dict) -> None:
-    """Re-index the stored copy of ``issue`` against the source's current state of it."""
+async def _reindex(world: dict[str, Any], issue: dict, *, context: IssueSecurityContext | None = None,
+                   parent_read_fails: bool = False) -> None:
+    """Re-index the stored copy of ``issue`` against the source's current state of it. With
+    ``context``, the project's security and Browse holders are read as a fresh process reads them."""
     connector = world["connector"]
     ds = MagicMock()
     ds.get_issue = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value=issue)))
     parents = [i for i, _ in ISSUES.values() if i["id"] == (issue["fields"]["parent"] or {}).get("id")]
-    ds.bulk_fetch_issues = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value={"issues": parents})))
+    ds.bulk_fetch_issues = AsyncMock(return_value=MagicMock(
+        status=503 if parent_read_fails else 200, json=MagicMock(return_value={"issues": parents}), text=MagicMock(return_value="")))
+    grants = [{"permission": "BROWSE_PROJECTS", "holder": h} for h in (context.browse_holders or [])] if context else []
+    ds.get_assigned_permission_scheme = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value={"id": 7})))
+    ds.get_permission_scheme_grants = AsyncMock(
+        return_value=MagicMock(status=200, json=MagicMock(return_value={"permissions": grants})))
     connector._get_fresh_datasource = AsyncMock(return_value=ds)
     connector.data_source = ds
-    connector._load_issue_security = AsyncMock(return_value=connector._issue_security[PROJECT_ID])
+    connector._load_issue_security = AsyncMock(return_value=context or connector._issue_security[PROJECT_ID])
     connector.indexing_filters = MagicMock()
     stored = await world["processor"].get_record_by_external_id(
         connector_id=world["connector_id"], external_record_id=issue["id"])
@@ -454,6 +461,115 @@ async def test_a_reporter_outside_the_project_reads_only_their_own_issue_and_the
     await _write(world, [_edited(label, "2024-06-17T10:00:00.000+0000")], again=True)
     assert not await _mismatches(world, readers, by_key)
     assert by_key["PROJ-10"] in await _listed_under(world, "bob", by_key["PROJ-6"])
+
+
+async def test_the_reporter_of_a_sub_task_reads_it_alone_and_it_leaves_its_parent(world: dict[str, Any]) -> None:
+    """Jira grants a sub-task's own reporter Browse on it, not on its parent. Filed under the parent
+    it could only be opened to the parent's readers, so it hangs off its project while the holder is
+    used, and goes back under its parent (and away from dave) when the project drops it."""
+    await _sync_project(world)
+    context = world["connector"]._issue_security[PROJECT_ID]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    label = "sub-task of the unleveled story under the unleveled epic"
+
+    parent, _ = ISSUES["unleveled story under the unleveled epic"]  # read in the same batch: its level is known
+
+    context.browse_holders = [{"type": "reporter"}]
+    await _write(world, [parent, _edited(label, "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})],
+                 again=True)
+    assert not await _mismatches(world, {**readers, "PROJ-12": PROJECT_READERS | {"dave"}}, by_key)
+    assert by_key["PROJ-12"] not in await _listed_under(world, "bob", by_key["PROJ-10"])
+
+    context.browse_holders = []
+    await _write(world, [parent, _edited(label, "2024-06-17T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})],
+                 again=True)
+    assert not await _mismatches(world, readers, by_key)
+    assert by_key["PROJ-12"] in await _listed_under(world, "bob", by_key["PROJ-10"])
+
+
+async def test_a_reindex_in_a_fresh_process_keeps_the_sub_task_with_its_reporter(world: dict[str, Any]) -> None:
+    """The sync files dave's sub-task off its parent and grants him it; a reindex run by a process that
+    has not synced (nothing cached) must place it the same way, not take it from him."""
+    await _sync_project(world)
+    connector = world["connector"]
+    context = connector._issue_security[PROJECT_ID]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    label = "sub-task of the unleveled story under the unleveled epic"
+    parent, _ = ISSUES["unleveled story under the unleveled epic"]
+    context.browse_holders = [{"type": "reporter"}]
+    await _write(world, [parent, _edited(label, "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})],
+                 again=True)
+    expected = {**readers, "PROJ-12": PROJECT_READERS | {"dave"}}
+    assert not await _mismatches(world, expected, by_key)
+
+    fresh = IssueSecurityContext(knowledge=context.knowledge, scheme_id=context.scheme_id,
+                                 members_readable=context.members_readable, members_by_level=context.members_by_level,
+                                 browse_holders=[{"type": "reporter"}])
+    connector._issue_security.clear()
+    connector._parent_levels.clear()
+    connector._browse_issue_holders.clear()
+    await _reindex(world, _edited(label, "2024-06-17T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]}),
+                   context=fresh)
+    assert not await _mismatches(world, expected, by_key)
+    assert by_key["PROJ-12"] not in await _listed_under(world, "bob", by_key["PROJ-10"])
+
+
+async def test_a_reindex_that_cannot_read_the_parent_keeps_the_sub_task_where_the_sync_filed_it(world: dict[str, Any]) -> None:
+    """The sync files dave's sub-task off its parent and grants him it. A reindex whose read of the parent fails
+    keeps it there, with dave's grant written for that place, and so does the next sync, to which the issue is
+    unchanged."""
+    await _sync_project(world)
+    connector = world["connector"]
+    connector._issue_security[PROJECT_ID].browse_holders = [{"type": "reporter"}]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    label = "sub-task of the unleveled story under the unleveled epic"
+    parent, _ = ISSUES["unleveled story under the unleveled epic"]
+    sub = _edited(label, "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})
+    await _write(world, [parent, sub], again=True)
+    expected = {**readers, "PROJ-12": PROJECT_READERS | {"dave"}}
+    assert not await _mismatches(world, expected, by_key)
+
+    connector._parent_levels.clear()
+    later = _edited(label, "2024-06-17T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})
+    await _reindex(world, later, context=connector._issue_security[PROJECT_ID], parent_read_fails=True)
+    assert not await _mismatches(world, expected, by_key)
+    assert by_key["PROJ-12"] not in await _listed_under(world, "bob", by_key["PROJ-10"])
+
+    await _write(world, [later])  # the next incremental sync: unchanged, nothing to write
+    assert not await _mismatches(world, expected, by_key)
+
+
+async def test_a_story_that_becomes_a_sub_task_of_a_leveled_parent_that_cannot_be_read_gains_no_one(
+    world: dict[str, Any],
+) -> None:
+    """PROJ-20 was a story on its own, read by the project. It becomes a sub-task of PROJ-7, whose level only
+    alice holds, now reported by dave; its payload does not carry the level yet and PROJ-7 cannot be read. Its
+    stored access is held: dave, its new reporter, is not granted it and no one else gains it. Once PROJ-7 is
+    read, it goes under PROJ-7 and takes its level."""
+    await _sync_project(world)
+    connector = world["connector"]
+    connector._issue_security[PROJECT_ID].browse_holders = [{"type": "reporter"}]
+    by_key_before = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    await _write(world, [_issue("20", "PROJ-20", "Story")])
+    by_key = await _ticket_ids(world)
+    assert set(by_key) - set(by_key_before) == {"PROJ-20"}
+    assert not await _mismatches(world, {**readers, "PROJ-20": PROJECT_READERS}, by_key)
+
+    connector._parent_levels.clear()  # PROJ-7 is not in the batch, and reading it fails (no source here)
+    sub = _issue("20", "PROJ-20", "Sub-task", parent="7", reporter="dave")
+    sub["fields"]["updated"] = "2024-07-01T10:00:00.000+0000"
+    await _write(world, [sub])
+    assert not await _mismatches(world, {**readers, "PROJ-20": PROJECT_READERS}, by_key)
+
+    leveled_parent, _ = ISSUES["leveled story under the unleveled epic"]  # PROJ-7, read in the same batch now
+    sub["fields"]["updated"] = "2024-07-02T10:00:00.000+0000"
+    await _write(world, [leveled_parent, sub], again=True)
+    assert not await _mismatches(world, {**readers, "PROJ-20": {"alice"}}, by_key)
+    assert by_key["PROJ-20"] in await _listed_under(world, "alice", by_key["PROJ-7"])
 
 
 async def test_an_unread_scheme_keeps_the_reporter_of_a_stored_issue_and_the_story_where_it_was_filed(
