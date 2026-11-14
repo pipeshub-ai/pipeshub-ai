@@ -3510,7 +3510,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         budget = LIMITED_SUBTREE_MAX_CHECKS
         for (drive_id, folder_id), after in sorted(pending.items(), key=lambda kv: kv[0]):
             try:
-                after, budget = await self._clear_cut_out_grants_below(drive_id, folder_id, after, budget)
+                left_after, budget = await self._clear_cut_out_grants_below(drive_id, folder_id, after, budget)
             except Exception as e:
                 self.logger.warning(
                     f"The items below limited folder {folder_id} could not be checked ({type(e).__name__}: {e}); "
@@ -3519,8 +3519,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self._sync_ledger.note_incomplete()
                 left.append({"drive": drive_id, "folder": folder_id, "after": after})
                 continue
-            if after is not None:
-                left.append({"drive": drive_id, "folder": folder_id, "after": after})
+            if left_after is not None:
+                left.append({"drive": drive_id, "folder": folder_id, "after": left_after})
         if pending or stored.get("pending"):
             await self.drive_delta_sync_point.update_sync_point(LIMITED_SUBTREES_SYNC_POINT_KEY, {"pending": left})
         if self._upgrade_drives:
