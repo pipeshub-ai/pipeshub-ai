@@ -346,6 +346,6 @@ def test_the_frontier_and_the_sidebar_reach_walk_only_for_a_node_with_a_child() 
     assert _aql_frontier("node", "X").startswith("UNIQUE(FLATTEN(FOR kh_fg IN (LENGTH(FOR kh_fx, kh_fxe IN 1..1 OUTBOUND node")
     conditions, _ = ArangoHTTPProvider(MagicMock(), MagicMock())._kh_v2_filters_aql(only_containers=True)
     slim = ArangoHTTPProvider._kh_v3_slim_aql(tuple(conditions), "name", stubs=True, browse=True)
-    assert "LET kh_row_from_app = (LENGTH(FOR kh_kx, kh_kxe IN 1..1 OUTBOUND kh_sd" in slim
+    assert "LET kh_row_from_app = (LENGTH(FOR kh_kx, kh_kxe IN 1..1 OUTBOUND kh_sd" in ArangoHTTPProvider._kh_v3_listing_aql()["sidebar_rows"]
     assert "FILTER kh_way OR (LENGTH(FOR kh_kx" in slim
     assert "kh_xc" not in _aql_way_below("kh_ch", every_hop=True) and "kh_rq" not in _aql_way_below("kh_ch", every_hop=True)
