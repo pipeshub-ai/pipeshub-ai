@@ -1,0 +1,2308 @@
+[
+  {
+    "value": "reports",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "reports",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "reports",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "reports",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "reports",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "reports",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "reports",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "reports",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "reports/2026",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "reports/2026",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "reports/2026",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "reports/2026",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "reports/2026",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "reports/2026",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "reports/2026",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "reports/2026",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "/reports/",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "/reports/",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "/reports/",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "/reports/",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "/reports/",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "/reports/",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "/reports/",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "/reports/",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a//b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a//b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a//b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a//b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a//b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a//b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a//b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a//b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a/\\*",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a/\\*",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a/\\*",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a/\\*",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a/\\*",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a/\\*",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a/\\*",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a/\\*",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a\\\\b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a\\\\b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a\\\\b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a\\\\b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a\\\\b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a\\\\b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a\\\\b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "a\\\\b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "empty_segment"
+    ]
+  },
+  {
+    "value": "../x",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "../x",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "../x",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "../x",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "../x",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "../x",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "../x",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "../x",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/../b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/../b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/../b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/../b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/../b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/../b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/../b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/../b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/ .. /b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/ .. /b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/ .. /b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/ .. /b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/ .. /b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/ .. /b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/ .. /b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "a/ .. /b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "climbs_out"
+    ]
+  },
+  {
+    "value": "",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "/",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "/",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "/",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "/",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "/",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "/",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "/",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "/",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "**",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "**",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "**/**",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/**",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**/**",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/**",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**/**",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/**",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "**/**",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/**",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "*",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "*",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "*",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "*",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "*",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "*",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "*",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "*",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "customer/*/quotes",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "customer/*/quotes",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "customer/*/quotes",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "customer/*/quotes",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "customer/*/quotes",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "customer/*/quotes",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "customer/*/quotes",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "customer/*/quotes",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**/quotes",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/quotes",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**/quotes",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/quotes",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**/quotes",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/quotes",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**/quotes",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/quotes",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a**b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a**b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name"
+    ]
+  },
+  {
+    "value": "a**b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a**b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name"
+    ]
+  },
+  {
+    "value": "a**b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a**b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name"
+    ]
+  },
+  {
+    "value": "a**b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a**b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name"
+    ]
+  },
+  {
+    "value": "a/**b/c",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a/**b/c",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name"
+    ]
+  },
+  {
+    "value": "a/**b/c",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a/**b/c",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name"
+    ]
+  },
+  {
+    "value": "a/**b/c",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a/**b/c",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name"
+    ]
+  },
+  {
+    "value": "a/**b/c",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a/**b/c",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name"
+    ]
+  },
+  {
+    "value": "**/**/**/**/**",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/**/**/**/**",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "too_many_double_stars"
+    ]
+  },
+  {
+    "value": "**/**/**/**/**",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/**/**/**/**",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "too_many_double_stars"
+    ]
+  },
+  {
+    "value": "**/**/**/**/**",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/**/**/**/**",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything",
+      "too_many_double_stars"
+    ]
+  },
+  {
+    "value": "**/**/**/**/**",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/**/**/**/**",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything",
+      "too_many_double_stars"
+    ]
+  },
+  {
+    "value": "**/**/**/**",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/**/**/**",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**/**/**/**",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/**/**/**",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**/**/**/**",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/**/**/**",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "**/**/**/**",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/**/**/**",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "*****************",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "*****************",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name",
+      "too_many_stars"
+    ]
+  },
+  {
+    "value": "*****************",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "*****************",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name",
+      "too_many_stars"
+    ]
+  },
+  {
+    "value": "*****************",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "*****************",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name",
+      "too_many_stars"
+    ]
+  },
+  {
+    "value": "*****************",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "*****************",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name",
+      "too_many_stars"
+    ]
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "\\\\server\\share\\reports",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "\\\\server\\share\\reports",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "\\\\server\\share\\reports",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "unc_path"
+    ]
+  },
+  {
+    "value": "\\\\server\\share\\reports",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "unc_path"
+    ]
+  },
+  {
+    "value": "\\\\server\\share\\reports",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "\\\\server\\share\\reports",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "\\\\server\\share\\reports",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "unc_path"
+    ]
+  },
+  {
+    "value": "\\\\server\\share\\reports",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "unc_path"
+    ]
+  },
+  {
+    "value": "\\\\reports",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "\\\\reports",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "\\\\reports",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "\\\\reports",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "\\\\reports",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "\\\\reports",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "\\\\reports",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "\\\\reports",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "//server/share",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "//server/share",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "//server/share",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "//server/share",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "//server/share",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "//server/share",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "//server/share",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "//server/share",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": [
+      "too_long"
+    ]
+  },
+  {
+    "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "too_long"
+    ]
+  },
+  {
+    "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "too_long"
+    ]
+  },
+  {
+    "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "too_long"
+    ]
+  },
+  {
+    "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": [
+      "too_long"
+    ]
+  },
+  {
+    "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "too_long"
+    ]
+  },
+  {
+    "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": [
+      "too_long"
+    ]
+  },
+  {
+    "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "too_long"
+    ]
+  },
+  {
+    "value": "q?",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "q?",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "q?",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "q?",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "q?",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "q?",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "q?",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "q?",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a\\*\\*b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a\\*\\*b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a\\*\\*b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a\\*\\*b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a\\*\\*b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a\\*\\*b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a\\*\\*b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a\\*\\*b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a\\**b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a\\**b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a\\**b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a\\**b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name"
+    ]
+  },
+  {
+    "value": "a\\**b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a\\**b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "a\\**b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "a\\**b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "double_star_in_name"
+    ]
+  },
+  {
+    "value": "café/*",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "café/*",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "café/*",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "café/*",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "café/*",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "café/*",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "café/*",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "café/*",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "Project [2024]",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "Project [2024]",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "Project [2024]",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "Project [2024]",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "Project [2024]",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "Project [2024]",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "Project [2024]",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "Project [2024]",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "  spaced  ",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "  spaced  ",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "  spaced  ",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "  spaced  ",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "  spaced  ",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "  spaced  ",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "  spaced  ",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "  spaced  ",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "customer\\*\\quotes",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "customer\\*\\quotes",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "customer\\*\\quotes",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "customer\\*\\quotes",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "customer\\*\\quotes",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "customer\\*\\quotes",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "customer\\*\\quotes",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "customer\\*\\quotes",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "report ",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "report ",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "report ",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "report ",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "report ",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "report ",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "report ",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "report ",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": " a /b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": " a /b",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": " a /b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": " a /b",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": " a /b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": " a /b",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": " a /b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": " a /b",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**/ quotes",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/ quotes",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**/ quotes",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/ quotes",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**/ quotes",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/ quotes",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "**/ quotes",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "**/ quotes",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "/**/",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "/**/",
+    "exclude": false,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "/**/",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "/**/",
+    "exclude": false,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": []
+  },
+  {
+    "value": "/**/",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "/**/",
+    "exclude": true,
+    "pathStyle": "posix",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything"
+    ]
+  },
+  {
+    "value": "/**/",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": false,
+    "problems": []
+  },
+  {
+    "value": "/**/",
+    "exclude": true,
+    "pathStyle": "windows",
+    "wildcards": true,
+    "problems": [
+      "excludes_everything"
+    ]
+  }
+]
