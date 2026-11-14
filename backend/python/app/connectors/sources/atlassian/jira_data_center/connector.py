@@ -1560,7 +1560,8 @@ class JiraDataCenterConnector(BaseConnector):
         self._dc_name_to_source_id = {}
         self._user_read_unfinished = False
 
-        cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        # A failed read raises: read as no links, it would link no one while product access is unknown.
+        cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
         self._stored_app_users = cached_app_users
         pipeshub_users = await self.data_entities_processor.get_all_active_users()
 
