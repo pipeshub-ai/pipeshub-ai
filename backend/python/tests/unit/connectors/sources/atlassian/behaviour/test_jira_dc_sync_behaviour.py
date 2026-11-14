@@ -2852,6 +2852,39 @@ class TestBrowseHolders:
         assert db.records["1001"].version == 3
         assert db.records["1001"].access_rule == AccessRule.OPEN and db.records["1001"].rewrite_permissions is False
 
+    @pytest.mark.parametrize("named_by", ["reporter", "user field"])
+    async def test_an_account_that_gains_product_access_reads_the_issues_its_holder_names_without_them_changing(
+        self, jira, db, store, search, named_by,
+    ) -> None:
+        """Carol's email is hidden, so a holder that names her is granted only through the linked accounts: when
+        she gains product access, the stored issues that may name her are read again, though none changed."""
+        holder = REPORTER if named_by == "reporter" else {"type": "userCustomField", "parameter": FIELD_USERS}
+        mine = story("1001", "ENG-1", reporter={"key": "carol-key", "name": "carol"},
+                     **({FIELD_USERS: [{"key": "carol-key", "name": "carol", "active": True}]} if named_by == "user field" else {}))
+        stub_site(jira, search)
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key",)
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        scheme_with(jira, holder)
+        search.add("ENG", 0, [mine])
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert CAROL not in grants(db, "1001")
+
+        db.cached_app_users = list(db.app_users)
+        product_group(*LICENSED)
+        await connector.run_sync()  # the search answers the same unchanged issue
+
+        field = "reporter" if named_by == "reporter" else f"cf[{FIELD_USERS.removeprefix('customfield_')}]"
+        assert any(f'{field} in ("carol")' in jql for jql in search.jql)
+        assert CAROL in grants(db, "1001")
+
     async def test_a_reindex_reads_the_holders_and_applies_them(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         scheme_with(jira, REPORTER)

@@ -204,6 +204,8 @@ ANCESTOR_STUB_FIELDS: list[str] = [
 PARENT_LEVEL_FIELDS: list[str] = ["security", "project"]
 # Parents named in one JQL clause when their children are read again.
 CHILD_REREAD_CHUNK: int = 50
+# Usernames per JQL clause when the issues naming newly linked accounts are read again.
+HOLDER_REREAD_CHUNK: int = 200
 
 
 class GroupPickerPage(NamedTuple):
@@ -3685,6 +3687,8 @@ class JiraDataCenterConnector(BaseConnector):
             await self._reread_stored_issues(
                 project_key, project_id, jira_users, stats, changed_levels, every_issue=reread == "project"
             )
+        if reread != "project" and not is_new_project and security.browse_holders and self._newly_listed_user_keys:
+            await self._reread_issues_naming(project_key, project_id, jira_users, stats, security.browse_holders)
         if self._reread_whole_project:
             # Jira refused the JQL naming children, here or in the pass above. Every stored issue is read
             # before the digests are saved, and the parents wait in the checkpoint until it has been.
@@ -3822,6 +3826,38 @@ class JiraDataCenterConnector(BaseConnector):
         finally:
             self._collect_parents = collecting
             self._rereading_children = False
+
+    async def _reread_issues_naming(
+        self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
+        holders: list[dict[str, Any]],
+    ) -> None:
+        """Rebuild the stored issues whose per-issue Browse holders may name a newly linked account. Its grant
+        there is resolved through the linked accounts, so it arrives only when the issue is read again, and
+        nothing on the issue changed. A server that refuses the JQL has every stored issue read instead."""
+        names = sorted(n for n, key in self._dc_name_to_source_id.items() if key in self._newly_listed_user_keys)
+        jql_fields: set[str] = set()
+        for h in holders:
+            field = str(h.get("parameter") or h.get("value") or "")
+            if h.get("type") in ("reporter", "assignee"):
+                jql_fields.add(h["type"])
+            elif h.get("type") == "userCustomField" and field.removeprefix("customfield_").isdigit():
+                jql_fields.add(f"cf[{field.removeprefix('customfield_')}]")
+        if not names or not jql_fields:
+            return
+        try:
+            for i in range(0, len(names), HOLDER_REREAD_CHUNK):
+                quoted = ", ".join(json.dumps(n) for n in names[i:i + HOLDER_REREAD_CHUNK])
+                clause = "(" + " OR ".join(f"{f} in ({quoted})" for f in sorted(jql_fields)) + ")"
+                async for batch, _more, _ts in self._fetch_issues_batched(
+                    project_key, project_id, users, None, None, is_new_project=True, stored_only=True, extra_jql=clause,
+                ):
+                    if batch:
+                        await self._process_new_records(batch, project_key, stats)
+        except JiraReadError as e:
+            if e.status != HttpStatusCode.BAD_REQUEST.value:
+                raise
+            self.logger.warning(f"Jira refused the JQL naming newly linked accounts in {project_key}; reading every stored issue")
+            self._reread_whole_project = True
 
     async def _fetch_issues_batched(
         self,
