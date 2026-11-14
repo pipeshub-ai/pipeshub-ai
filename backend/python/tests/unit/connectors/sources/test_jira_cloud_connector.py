@@ -132,6 +132,17 @@ def _make_mock_response(status=200, data=None):
     return resp
 
 
+def _empty_user_page():
+    resp = _make_mock_response(200)
+    resp.json = MagicMock(return_value=[])
+    return resp
+
+
+def _then_empty(first):
+    """``/users/search`` answers ``first``, then an empty page: the list ends only on an empty page."""
+    return AsyncMock(side_effect=[first, _empty_user_page()])
+
+
 def _make_app_user(email="user@example.com", account_id="acc-1", name="User One"):
     return AppUser(
         app_name=Connectors.JIRA,
@@ -1029,7 +1040,7 @@ class TestFetchUsersCoverage:
             {"accountId": "u3", "accountType": "atlassian", "emailAddress": "u3@test.com", "displayName": "Inactive", "active": False},
         ]
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, users_data))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         result = await connector._fetch_users()
@@ -1049,6 +1060,7 @@ class TestFetchUsersCoverage:
         mock_ds.get_all_users = AsyncMock(side_effect=[
             _make_mock_response(200, batch1),
             _make_mock_response(200, batch2),
+            _empty_user_page(),  # only an empty page ends the list
         ])
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -1060,7 +1072,7 @@ class TestFetchUsersCoverage:
         connector = _make_connector()
         connector.data_source = MagicMock()
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(500))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(500))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         with pytest.raises(Exception, match="Failed to fetch users"):
@@ -1079,7 +1091,7 @@ class TestFetchUsersCoverage:
         connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(403))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(403))
         mock_ds.find_users = AsyncMock()
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector.notify = AsyncMock()
@@ -1104,7 +1116,7 @@ class TestFetchUsersCoverage:
         connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(401))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(401))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector.notify = AsyncMock()
 
@@ -1120,7 +1132,7 @@ class TestFetchUsersCoverage:
         resp = _make_mock_response(200)
         resp.json.side_effect = Exception("bad json")
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=resp)
+        mock_ds.get_all_users = _then_empty(resp)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         result = await connector._fetch_users()
@@ -1132,7 +1144,7 @@ class TestFetchUsersCoverage:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, {
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, {
             "values": [{"accountId": "u1", "accountType": "atlassian", "emailAddress": "u1@test.com", "active": True}]
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -1163,7 +1175,7 @@ class TestFetchUsersPhases:
             {"accountId": "u2", "accountType": "atlassian", "active": True},
         ]
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, users_data))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         result = await connector._fetch_users()
@@ -1190,7 +1202,7 @@ class TestFetchUsersPhases:
         reverse_resp = _make_mock_response(200, [{"accountId": "u2", "displayName": "Hidden User"}])
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, users_data))
         mock_ds.find_users = AsyncMock(return_value=reverse_resp)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -1214,7 +1226,7 @@ class TestFetchUsersPhases:
             {"accountId": "u9", "accountType": "atlassian", "emailAddress": "gone@example.com", "active": False},
         ]
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, users_data))
         mock_ds.find_users = AsyncMock(return_value=_make_mock_response(200, [
             {"accountId": "u9", "accountType": "atlassian", "emailAddress": "gone@example.com", "active": False},
         ]))
@@ -1232,7 +1244,7 @@ class TestFetchUsersPhases:
             return_value=[MagicMock(email="hidden@example.com")]
         )
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, [
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, [
             {"accountId": "u2", "accountType": "atlassian", "active": True},
         ]))
         mock_ds.find_users = AsyncMock(return_value=_make_mock_response(200, [{"accountId": "other"}]))
@@ -1308,7 +1320,7 @@ class TestFetchUsersPhases:
         ])
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, [
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, [
             {"accountId": "u2", "accountType": "atlassian", "active": True}]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -1330,12 +1342,59 @@ class TestFetchUsersPhases:
         connector.data_entities_processor.get_all_app_users = AsyncMock(side_effect=get_all_app_users)
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, [
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, [
             {"accountId": "u2", "accountType": "atlassian", "active": True, "emailAddress": "h@x.com"}]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         with pytest.raises(ConnectionError):
             await connector._fetch_users()
+
+    @pytest.mark.asyncio
+    async def test_a_short_page_is_not_the_end_of_the_user_list(self) -> None:
+        """/users/search answers a bare array with no end marker: a page shorter than asked for may be followed by
+        more, so only an empty page ends the list, and the next page starts after the rows returned."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        first = [{"accountId": "a1", "accountType": "atlassian", "active": True}]
+        second = [{"accountId": "a2", "accountType": "atlassian", "active": True}]
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(side_effect=[
+            _make_mock_response(200, first), _make_mock_response(200, second), _empty_user_page()])
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        rows = await connector._fetch_all_jira_users_bulk()
+        assert [r["accountId"] for r in rows] == ["a1", "a2"]
+        assert [c.kwargs["startAt"] for c in mock_ds.get_all_users.await_args_list] == [0, 1, 2]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("row", [{"accountId": "unknown", "accountType": "atlassian"},
+                                     {"accountId": "x1", "accountType": "unknown"}], ids=["account_id", "account_type"])
+    async def test_fallback_rows_make_the_user_list_unfinished(self, row: dict) -> None:
+        """User schema: during an outage "all parameters have fallback values" (accountId "unknown"): the read is not
+        the directory, so nobody may be withdrawn for missing from it."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, [
+            {"accountId": "a1", "accountType": "atlassian", "active": True}, row]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        await connector._fetch_all_jira_users_bulk()
+        assert connector._user_read_unfinished is True
+
+    @pytest.mark.asyncio
+    async def test_too_many_withdrawals_in_one_sync_are_held(self) -> None:
+        """More accounts leaving at once than a directory loses is more likely a user list read wrong: they keep
+        the connector, and the connector's owner is told."""
+        connector = _make_connector()
+        connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        connector.notify = AsyncMock()
+        connector._stored_app_users = [
+            AppUser(id=f"n{i}", app_name=Connectors.JIRA, connector_id="c", source_user_id=f"u{i}", email=f"u{i}@x.com",
+                    full_name=str(i)) for i in range(40)]
+        await connector._withdraw_ineligible_app_users([], {f"u{i}" for i in range(11)})
+        connector.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+        connector.notify.assert_awaited_once()
+        await connector._withdraw_ineligible_app_users([], {f"u{i}" for i in range(10)})
+        connector.data_entities_processor.withdraw_app_user_access.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_reverse_lookup_skipped_when_all_resolved(self):
@@ -1348,7 +1407,7 @@ class TestFetchUsersPhases:
             {"accountId": "u1", "accountType": "atlassian", "emailAddress": "u1@test.com", "active": True},
         ]
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, users_data))
         mock_ds.find_users = AsyncMock()
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -1370,7 +1429,7 @@ class TestFetchUsersPhases:
             {"accountId": "u1", "accountType": "atlassian", "active": True},
         ]
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, users_data))
         mock_ds.find_users = AsyncMock(return_value=_make_mock_response(500))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -1395,7 +1454,7 @@ class TestFetchUsersPhases:
         )
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(403))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(403))
         mock_ds.find_users = AsyncMock(side_effect=[
             _make_mock_response(200, [{"accountId": "acc-alice", "displayName": "Alice"}]),
             _make_mock_response(200, [{"accountId": "acc-bob", "displayName": "Bob"}]),
@@ -1421,7 +1480,7 @@ class TestFetchUsersPhases:
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(403))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(403))
         mock_ds.find_users = AsyncMock()
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
