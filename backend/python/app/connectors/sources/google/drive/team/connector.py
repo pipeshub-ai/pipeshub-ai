@@ -239,6 +239,10 @@ RESEED_SHARED_WITH_ME = "reseed_shared_with_me"
 # checkpoint that moves on past a failure gives nothing up. Past the cap the listing itself is read again instead.
 FAILED_ITEMS = "failed_items"
 MAX_FAILED_ITEMS = 500
+# On a user's checkpoint: items of their change feed that still failed when the feed stopped holding for them (after
+# MAX_HELD_RUNS), read again by id on later runs like FAILED_ITEMS. Kept apart from FAILED_ITEMS, which belongs to
+# the shared-with-me re-read.
+FEED_FAILED_ITEMS = "feed_failed_items"
 # Removed files whose check stayed undecided for MAX_UNRECOGNISED_403_RUNS runs, as "fileId:driveId", per user and per
 # user and shared drive, on keys of their own: re-reading a feed in full deletes its checkpoint, never these. Each is
 # kept and checked again on later runs until a clean answer settles it, without holding anything. None is ever dropped
@@ -1780,7 +1784,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         can_list_children: bool = False,
         can_share: bool = False,
         item_drive_id: str | None = None,
-        stored: bool = False,
+        item_is_stored: bool = False,
     ) -> Tuple[List[Permission], bool, List[str]]:
         """
         Fetch all permissions for a Google Drive resource (file or shared drive) with pagination.
@@ -1983,7 +1987,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # item answers its readers with no entries. Taken as the fallback for a stored item, it kept a just-removed
         # grant; a new item has nothing stored to keep, so it still gets the reader's grant.
         # shortcut: a refusal (403) from such a user is still taken as ordinary, upgrade if one is seen to hide a revoke.
-        if not permissions and not source_entries and (can_share or (stored and not (is_drive or item_drive_id))):
+        if not permissions and not source_entries and (can_share or (item_is_stored and not (is_drive or item_drive_id))):
             raise RuntimeError(
                 f"Empty permission list for {resource_id}, from a user who can share it or for a stored My Drive item"
             )
@@ -4240,7 +4244,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     can_list_children=bool((metadata.get("capabilities") or {}).get("canListChildren")),
                     can_share=bool((metadata.get("capabilities") or {}).get("canShare")),
                     item_drive_id=item_drive_id,
-                    stored=existing_record is not None,
+                    item_is_stored=existing_record is not None,
                 )
 
                 if is_fallback_permissions:
@@ -5068,6 +5072,41 @@ class GoogleDriveTeamConnector(BaseConnector):
             owner_sources: dict[str, GoogleDriveDataSource] = {}
             held_removals = FolderFailureRuns(sync_point.get(HELD_REMOVED_CHANGES))
             removal_retry_error: Exception | None = None
+            feed_failed = self._track_failed_items()
+            feed_retry = [str(i) for i in sync_point.get(FEED_FAILED_ITEMS) or []]
+            failures_before_retry = self._sync_ledger.item_failures
+            if feed_retry:
+                retried = [
+                    m for m in await self._fetch_failed_items(feed_retry, user_drive_data_source)
+                    if not (m.get("driveId") and m["driveId"] in member_drive_ids)
+                ]
+                batch_records, batch_count, total_changes = await self._process_drive_files_batch(
+                    files=[m for m in retried if not m.get("driveId")],
+                    user_id=user_permission_id,
+                    user_email=user.email,
+                    drive_id=drive_id,
+                    is_shared_drive=False,
+                    context_name=f"user {user.email}",
+                    batch_records=batch_records,
+                    batch_count=batch_count,
+                    total_counter=total_changes,
+                    drive_data_source=user_drive_data_source,
+                    tracked_folder_ids=tracked_folder_ids,
+                )
+                batch_records, batch_count, total_changes = await self._process_shared_with_me_items(
+                    items=[m for m in retried if m.get("driveId")],
+                    user=user,
+                    user_permission_id=user_permission_id,
+                    personal_drive_id=drive_id,
+                    context_name=f"shared with me for user {user.email}",
+                    batch_records=batch_records,
+                    batch_count=batch_count,
+                    total_counter=total_changes,
+                    drive_data_source=user_drive_data_source,
+                    tracked_folder_ids=tracked_folder_ids,
+                )
+            # Read again by id, they are carried by their ids: holding the feed for them would re-read it every run.
+            retry_failures = self._sync_ledger.item_failures - failures_before_retry
 
             while True:
                 # Prepare changes_list parameters
@@ -5251,7 +5290,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             # The re-read's failures are carried by their ids, not by holding the feed: a hold would read the feed
             # again on every run one of them keeps failing.
             reseed_failures = self._sync_ledger.item_failures - failures_before_reseed
-            if self._sync_ledger.item_failures - reseed_failures > failures_before:
+            if self._sync_ledger.item_failures - reseed_failures - retry_failures > failures_before:
                 hold = hold_again(sync_point)
                 if hold is not None:
                     await self.drive_delta_sync_point.update_sync_point(sync_point_key, {**hold, **reseeded})
@@ -5260,9 +5299,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                     )
                     return
                 self.logger.error(
-                    f"Some changes for {user.email} failed on {MAX_HELD_RUNS} runs in a row; moving on. They "
-                    "are synced again when the items change next, or by a full sync."
+                    f"Some changes for {user.email} failed on {MAX_HELD_RUNS} runs in a row; moving on. They are "
+                    "read again by id on later runs."
                 )
+            if not await self._keep_failed_items(sync_point_key, feed_failed):
+                return  # too many to keep by id: the user's Drive is listed in full again
+            if feed_failed or feed_retry:
+                reseeded = {**reseeded, FEED_FAILED_ITEMS: sorted(feed_failed)}
 
             # Update sync point with latest page token
             if current_page_token and current_page_token != page_token:

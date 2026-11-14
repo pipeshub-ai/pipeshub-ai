@@ -3070,6 +3070,28 @@ async def test_an_empty_permission_list_for_a_my_drive_item_is_read_again_so_a_r
     assert (BOB, "USER", "READ") in ws.grants("f")
 
 
+async def test_a_my_drive_item_that_keeps_failing_is_read_again_by_id_after_its_feed_moves_on(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB), reader(carol)])
+    await ws.sync()
+
+    ws.world.unshare("f", carol)
+    ws.world.files["f"].perm_access = "empty"
+    for _ in range(MAX_HELD_RUNS + 1):  # the feeds hold, then move on past the change
+        await ws.sync()
+    assert (carol, "USER", "READ") in ws.grants("f"), "kept as stored while it cannot be read"
+
+    ws.world.files["f"].perm_access = None
+    await ws.sync()
+    assert (carol, "USER", "READ") not in ws.grants("f"), "read again by id once the feed moved on"
+    assert (BOB, "USER", "READ") in ws.grants("f")
+    await ws.sync()
+    assert not ws.incomplete
+
+
 async def test_an_empty_permission_list_for_a_new_my_drive_item_still_grants_its_reader(ws: Workspace) -> None:
     carol = "carol@example.com"  # not a synced user: Bob is the only one who reads it
     ws.world.add_user(carol)
