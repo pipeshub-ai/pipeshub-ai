@@ -198,7 +198,8 @@ async def test_a_node_the_oracle_admits_past_the_cap_is_listed_under_its_parent(
 
 async def test_a_browse_lists_every_child_the_check_admits_however_many_sort_ahead_of_it(graph_layers) -> None:
     """WIDE: f's 230 children are all left to the check, which admits the first ten and the last thirty (past the first 200 by id). Every page
-    of f lists them in order, the later pages from the cursor of the earlier, with a total that is exact or says it is a lower bound."""
+    of f lists them in order, the later pages from the cursor of the earlier, with a total that is exact or says it is a lower bound. g's
+    second page starts at a child the check admitted on the first."""
     readable = [f"k{i:03d}" for i in (*range(10), *range(200, 230))]
     for layer in graph_layers:
         await layer.preload([WIDE])
@@ -208,6 +209,8 @@ async def test_a_browse_lists_every_child_the_check_admits_however_many_sort_ahe
             ns = await layer._ns(WIDE)
             assert [ns.local(i.id) for i in items] == readable, layer.name
             assert set(totals) == set(counted) == {len(readable)}, (layer.name, totals, counted)
+            items, totals, _ = await browse_pages(layer, WIDE, "u", "g", "recordGroup")
+            assert [ns.local(i.id) for i in items] == [f"j{i:02d}" for i in range(10)] and set(totals) == {10}, layer.name
             bad = _bad(await check_world(layer, WIDE, "wide"))
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:

@@ -8347,8 +8347,8 @@ class IGraphDBProvider(ABC):
         of ``app_id`` among the start and them."""
         raise NotImplementedError
 
-    # A browse asks the batch check about the children of a node its rules do not select (``undecided``) in the page's order from its boundary:
-    # this many in the first read (all of them when there are no more), then more each read, up to ``_KH_UNDECIDED_WINDOW_MAX``
+    # A browse asks the batch check about the children of a node its rules do not select (``undecided``) in the page's order from its boundary,
+    # reading ``_KH_UNDECIDED_WINDOW_MAX`` at a time: this many first (all of them when there are no more), then more each time
     # (`_kh_v3_browse_undecided`). A node's arrow and a stub's listing ask about this many, the first by id.
     # shortcut: a row whose only child the check admits lies past the first ``_KH_UNDECIDED_MAX`` by id shows no arrow (PostgreSQL samples
     # ``ARROW_CHILDREN`` the same way); read the frontier in windows too if that shows up.
@@ -8373,32 +8373,36 @@ class IGraphDBProvider(ABC):
 
         ``read(admitted, edge, n)`` reads the page (``rows``: up to ``limit + 1``, nearest the boundary first) with the ids ``admitted`` listed,
         and the first ``n`` children the rules leave undecided past ``edge`` (``after`` when None) in the page's order, as
-        ``{id, sortKey, nullRank}``. Every undecided child up to the last one asked is decided, so the page is exact once its last row lies there;
-        the children are asked in windows until it does, or every one is asked, or the budget is spent. Returns the payload and the last child
-        asked when some were left unasked (None when none was), which `_kh_v3_end_at` ends the page at."""
-        def decided(cut: dict[str, Any]) -> bool:
-            rows = payload.get("rows") or []
-            return len(rows) > limit and not self._kh_v3_past(rows[limit], cut, descending=descending, direction=direction)
-
+        ``{id, sortKey, nullRank}``. Every undecided child up to the last one asked is decided, so the page is exact once ``limit + 1`` of its
+        rows lie there. The children in hand are asked about a window at a time (more each time) until that holds, or every one is asked, or the
+        budget is spent; the page is read again only to list what the check admitted, or for the next children once those in hand run out.
+        Returns the payload and the last child asked when some were left unasked (None when none was), which `_kh_v3_end_at` ends the page at."""
+        most = self._KH_UNDECIDED_WINDOW_MAX
         admitted: list[str] = []
-        window, t0 = self._KH_UNDECIDED_MAX, time.monotonic()
-        payload, left = await read(admitted, after, window + 1)
+        fresh: list[dict[str, Any]] = []      # admitted since the page was last read
+
+        def decided(cut: dict[str, Any]) -> bool:
+            listed = [r for r in payload.get("rows") or [] if not self._kh_v3_past(r, cut, descending=descending, direction=direction)]
+            return len(listed) + len(fresh) > limit
+
+        payload, left = await read(admitted, after, most + 1)
+        beyond, left = len(left) > most, left[:most]
+        window, t0, cut = self._KH_UNDECIDED_MAX, time.monotonic(), None
         while left:
-            ask = left[:window]
+            ask, left = left[:window], left[window:]
+            window = min(most, window * 8)
             ok = await self._kh_v3_admitted([u["id"] for u in ask], org_id=org_id, access=access, transaction=transaction)
+            fresh += [u for u in ask if u["id"] in ok]
             admitted += [u["id"] for u in ask if u["id"] in ok]
-            cut = ask[-1] if len(left) > window else None
-            if cut is not None and not ok and decided(cut):
-                return payload, cut
-            window = min(self._KH_UNDECIDED_WINDOW_MAX, window * 8)
-            if cut is None or time.monotonic() - t0 > self._KH_UNDECIDED_BUDGET_S:
-                if ok:
-                    payload, _ = await read(admitted, None, 0)
-                return payload, cut
-            payload, left = await read(admitted, cut, window + 1)
-            if decided(cut):
-                return payload, cut
-        return payload, None
+            cut = ask[-1] if left or beyond else None
+            if cut is None or decided(cut) or time.monotonic() - t0 > self._KH_UNDECIDED_BUDGET_S:
+                break
+            if not left:      # the children in hand are asked: the next ones, with the page listing what was admitted
+                payload, left = await read(admitted, cut, most + 1)
+                beyond, left, fresh = len(left) > most, left[:most], []
+        if fresh:
+            payload, _ = await read(admitted, None, 0)
+        return payload, cut
 
     @staticmethod
     def _kh_v3_past(row: dict[str, Any], edge: dict[str, Any], *, descending: bool, direction: str) -> bool:

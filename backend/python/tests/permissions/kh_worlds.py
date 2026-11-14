@@ -632,7 +632,8 @@ gates: [[u, A]]
 
 # WIDE: a group f with more children its rules leave to the check than one read asks it about (`_KH_UNDECIDED_MAX`): each is readable only
 # through q, the first ten and the last thirty (past the first 200 by id) are, the rest are not. A browse of f lists all forty in order, over
-# pages whose first ones are decided before every child is asked about (a total that says it is a lower bound).
+# pages whose first ones are decided before every child is asked about (a total that says it is a lower bound). g's ten children are all left to
+# the check too, few enough to ask about at once: its second page starts at one of them.
 WIDE_KIDS = 230
 WIDE = world_from_data(yaml.safe_load("""
 principals: [{id: u}]
@@ -640,9 +641,11 @@ nodes:
   - {id: A, kind: app, app_type: DRIVE}
   - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
   - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
-""" + "".join(f"  - {{id: k{i:03d}, kind: record, connector: A, rule: STRICT, parents: [f, q], inherits: [q]}}\n" if i < 10 or i >= 200 else
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+""" + "".join(f"  - {{id: j{i:02d}, kind: record, connector: A, rule: STRICT, parents: [g, q], inherits: [q]}}\n" for i in range(10)) + "".join(
+    f"  - {{id: k{i:03d}, kind: record, connector: A, rule: STRICT, parents: [f, q], inherits: [q]}}\n" if i < 10 or i >= 200 else
               f"  - {{id: k{i:03d}, kind: record, connector: A, rule: STRICT, parents: [f]}}\n" for i in range(WIDE_KIDS)) + """\
-grants: [[u, f], [u, q]]
+grants: [[u, f], [u, q], [u, g]]
 gates: [[u, A]]
 """))
 

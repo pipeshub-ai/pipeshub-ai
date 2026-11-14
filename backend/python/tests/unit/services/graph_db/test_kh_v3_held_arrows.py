@@ -161,7 +161,19 @@ async def test_a_browse_asks_about_its_undecided_children_a_window_at_a_time_unt
     payload, cut, resume = await _undecided(provider, read, 50)
     assert [r["id"] for r in payload["rows"]] == ["open0399", "open0799"] and cut is None and resume is None
     assert [len(c.kwargs["node_ids"]) for c in provider.check_access.await_args_list] == [200, 800]
-    assert calls == [(0, None, 201), (0, "shut0199", 1601), (2, None, 0)]
+    # one read for the page and the children, one to list the two the check admitted
+    assert calls == [(0, None, 2001), (2, None, 0)]
+
+
+async def test_past_the_children_in_hand_the_page_is_read_again_from_the_last_one_asked(monkeypatch) -> None:
+    provider = _provider({})
+    monkeypatch.setattr(Neo4jProvider, "_KH_UNDECIDED_WINDOW_MAX", 300)
+    children = [_child(i) for i in range(1000)]
+    calls, read = _reader(children, [], limit=50)
+    payload, cut, resume = await _undecided(provider, read, 50)
+    assert [r["id"] for r in payload["rows"]] == ["open0399", "open0799"] and cut is None and resume is None
+    assert [len(c.kwargs["node_ids"]) for c in provider.check_access.await_args_list] == [200, 100, 300, 300, 100]
+    assert calls == [(0, None, 301), (0, "shut0299", 301), (1, "shut0599", 301), (2, "shut0899", 301)]
 
 
 async def test_a_page_decided_before_its_undecided_children_run_out_stands_with_a_lower_bound_total() -> None:

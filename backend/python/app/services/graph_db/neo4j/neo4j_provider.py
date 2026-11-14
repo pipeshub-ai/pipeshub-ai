@@ -22610,7 +22610,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "kh_cross": cross,
             # the first undecided children past the page's boundary (`_kh_v3_browse_undecided`)
             "ku_null_rank": (after or {}).get("nullRank"), "ku_sort_key": (after or {}).get("sortKey"), "ku_id": (after or {}).get("id"),
-            "kh_uread": self._KH_UNDECIDED_MAX + 1,
+            "kh_uread": self._KH_UNDECIDED_WINDOW_MAX + 1,
         })
         if probe:
             params.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})

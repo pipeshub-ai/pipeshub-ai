@@ -66,24 +66,23 @@ async def test_the_app_reads_its_undecided_children_in_its_own_page_statement() 
 
 
 async def test_past_the_first_window_the_browse_asks_about_the_next_children_in_the_page_s_order() -> None:
-    """More undecided children than one read asks about: the next read asks about those past the last one asked, so a child the check admits
-    past the first window is listed (it was left out when the browse asked about the first ones by id alone)."""
+    """More undecided children than one window asks about: the next window asks about those past the last one asked, so a child the check
+    admits past the first window is listed (it was left out when the browse asked about the first ones by id alone)."""
     cap = Neo4jProvider._KH_UNDECIDED_MAX
     kids = [f"k{i:04d}" for i in range(cap + 1)]
     provider = _provider(admits={kids[cap]})
-    answers, reads = [_payload(kids), _payload(kids[cap:]), _payload([])], []
+    answers, reads = [_payload(kids), _payload([])], []
 
     async def query(_q: str, parameters: dict, **_: object) -> list[dict]:
         reads.append(dict(parameters))      # the statement's parameters as each read had them
         return answers.pop(0)
     provider._kh_query = query
     await _browse(provider, "g1")
-    first, second, third = reads
-    assert first["kh_uread"] == cap + 1 and first["ku_id"] is None
+    first, second = reads
+    assert first["kh_uread"] == Neo4jProvider._KH_UNDECIDED_WINDOW_MAX + 1 and first["ku_id"] is None
     assert [len(c.kwargs["node_ids"]) for c in provider.check_access.await_args_list] == [cap, 1]
-    # the second read starts past the last child asked; the third lists the one the check admits, and reads no more undecided ones
-    assert second["ku_id"] == kids[cap - 1] and second["kh_placed"] == []
-    assert third["kh_placed"] == [kids[cap]] and third["kh_uread"] == 0
+    # the second read lists the one the check admits, and reads no more undecided ones
+    assert second["kh_placed"] == [kids[cap]] and second["kh_uread"] == 0
 
 
 async def test_a_browse_walks_below_a_child_for_the_stub_test_only_when_the_child_is_a_stub() -> None:

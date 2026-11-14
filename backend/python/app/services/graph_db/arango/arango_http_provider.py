@@ -20580,7 +20580,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 children past ``edge``."""
                 if len(admitted) not in pages:
                     pages[len(admitted)] = await page_rows(_Visible(nodes=[*visible.nodes, *(handle[a] for a in admitted)]))
-                i = at[edge["id"]] + 1 if edge is not None and edge["id"] in at else 0
+                i = at[edge["id"]] + 1 if edge is not None and edge is not after else 0      # ``ordered`` begins past ``after``
                 return pages[len(admitted)], ordered[i:i + n]
             rows, cut = await self._kh_v3_browse_undecided(
                 read, after=after, limit=limit, descending=descending, direction=direction, org_id=org_id, access=access, transaction=transaction)
@@ -20617,7 +20617,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None, hiding: bool,
     ) -> list[dict[str, Any]]:
         """The undecided children ``handles`` past ``after`` in the page's order, nearest the boundary first, as ``{id, sortKey, nullRank, h}``:
-        their sort keys read as the page reads its rows' (`_kh_v3_slim_aql`)."""
+        their sort keys read as the page reads its rows' (`_kh_v3_slim_aql`). No more than one read asks about: asked about at once, in no order."""
+        if len(handles) <= self._KH_UNDECIDED_MAX:
+            return [{"id": h.split("/", 1)[1], "h": h} for h in handles]
         slim = await self.http_client.execute_aql(
             self._kh_v3_slim_aql((), sort_field, hiding=hiding),
             bind_vars={"kh_nodes": handles, "kh_member_groups": [], "kh_collection": False, "org_id": org_id, "app_id": app_id,
