@@ -99,8 +99,9 @@ jobs:
     name: graph (shard ${{ matrix.shard }})
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    # shard 2 is one test case (the adversarial worlds on both stores), which no split of the workflow can shorten
-    timeout-minutes: ${{ matrix.shard == 2 && 60 || 45 }}
+    # shard 2 is one test case (the adversarial worlds on both stores), which no split of the workflow can shorten;
+    # shard 1 (graph_permissions) took 38 minutes on CI, so it gets the same headroom
+    timeout-minutes: ${{ (matrix.shard == 1 || matrix.shard == 2) && 60 || 45 }}
     strategy:
       fail-fast: false
       matrix:
