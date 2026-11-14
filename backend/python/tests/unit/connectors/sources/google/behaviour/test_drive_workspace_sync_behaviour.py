@@ -1368,6 +1368,27 @@ async def test_a_full_sync_that_cannot_read_a_selected_folders_parent_keeps_it_a
     assert {"Picked", "deep.txt"} <= ws.names()
 
 
+async def test_a_selected_folders_parent_one_member_cannot_read_is_written_again_by_one_who_can(ws: Workspace) -> None:
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "organizer"})
+    ws.world.folder("team-parent", "Projects", parent="sd-1")
+    ws.world.folder("pick", "Picked", parent="team-parent")
+    ws.world.add_item("deep", "deep.txt", parent="pick")
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await ws.sync()
+    assert not ws.records.records["team-parent"].is_placeholder
+
+    ws.world.files["team-parent"].perms.append(reader(carol))
+    # A full sync from no sync points; Alice's sweep (the first) cannot read the parent, Bob's can.
+    ws.sync_points.sync_points.clear()
+    ws.http.fail("GET", "/drive/v3/files/team-parent", 404, "notFound", when=lambda r: r.identity == ALICE)
+    await ws.sync()
+
+    assert (carol, "USER", "READ") in ws.grants("team-parent"), "written again by the member who can read it"
+    assert ws.records.records["pick"].parent_external_record_id == "team-parent"
+
+
 async def test_a_selected_shortcut_syncs_the_folder_it_points_to(ws: Workspace) -> None:
     ws.world.folder("pick", "Picked", parent="root-bob", owner=BOB)
     ws.world.add_item("deep", "deep.txt", parent="pick", owner=BOB)

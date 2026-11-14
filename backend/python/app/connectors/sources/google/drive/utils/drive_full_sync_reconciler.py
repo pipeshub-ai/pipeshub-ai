@@ -43,10 +43,21 @@ class FullSyncLedger:
         self.failed_ids: set[str] = set()
         self.skipped_drives = 0
         self.full_listings = 0
+        # Ancestors a sweep kept unread. Seen only once every sweep of the run is done (see_kept_ancestors): seen
+        # earlier, they would stop a later user who can read one from writing it again.
+        self.kept_ancestors: set[str] = set()
 
     def see(self, external_id: str | None) -> None:
         if external_id:
             self.seen.add(str(external_id))
+
+    def keep_ancestor(self, external_id: str | None) -> None:
+        if external_id:
+            self.kept_ancestors.add(str(external_id))
+
+    def see_kept_ancestors(self) -> None:
+        """Count the ancestors no sweep of the run could read as seen, so the stale-record cleanup keeps them."""
+        self.seen |= self.kept_ancestors
 
     def fail_item(self, external_id: str | None = None) -> None:
         self.item_failures += 1

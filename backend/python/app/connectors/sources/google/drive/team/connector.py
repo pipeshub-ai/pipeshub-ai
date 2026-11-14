@@ -844,6 +844,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # filter without being seen, so cleanup would read them as deleted.
                 self._sync_ledger.note_incomplete()
             await self._keep_records_no_listing_may_show()
+            self._sync_ledger.see_kept_ancestors()
             await reconcile_unseen_records(
                 self.data_entities_processor,
                 self.connector_id,
@@ -4644,7 +4645,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             next_frontier = await settle_ancestor_level(
                 self.data_entities_processor, self.connector_id, frontier,
-                [record for record, _ in backfills], visited, needs_backfill, self._sync_ledger.see,
+                [record for record, _ in backfills], visited, needs_backfill, self._sync_ledger.keep_ancestor,
             )
 
             total += len(frontier)
@@ -4657,7 +4658,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     self.connector_id, [record.id for record in next_frontier if record.id]
                 )
                 for record in next_frontier:
-                    self._sync_ledger.see(record.external_record_id)
+                    self._sync_ledger.keep_ancestor(record.external_record_id)
                 break
             frontier = next_frontier
 
