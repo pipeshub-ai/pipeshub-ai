@@ -552,6 +552,25 @@ async def test_a_selected_folders_parent_shared_later_is_linked_on_the_next_sync
     assert drive.records.records["pick"].parent_external_record_id == "their-parent"
 
 
+async def test_a_full_sync_that_cannot_read_a_selected_folders_parent_keeps_it_and_the_path(drive: Harness) -> None:
+    drive.world.folder("my-parent", "My projects", parent=ROOT, owner=ME)
+    drive.world.folder("pick", "Picked", parent="my-parent", owner=ME)
+    my_file(drive.world, "in-1", "in-1.txt", parent="pick")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await drive.sync()
+    assert not drive.records.records["my-parent"].is_placeholder, "the sweep made the parent a real record"
+
+    # A full sync from no sync points: the listing leaves the parent out (it is outside the filter), and the
+    # sweep cannot read it again.
+    drive.sync_points.sync_points.clear()
+    drive.http.fail("GET", "/drive/v3/files/my-parent", 500, "backendError")
+    await drive.sync()
+
+    assert "my-parent" in drive.records.records, "kept as stored, not removed as gone"
+    assert drive.records.records["pick"].parent_external_record_id == "my-parent"
+    assert {"Picked", "in-1.txt"} <= drive.names()
+
+
 async def test_a_selected_shortcut_syncs_the_folder_it_points_to(drive: Harness) -> None:
     drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
     my_file(drive.world, "in-1", "in-1.txt", parent="pick")

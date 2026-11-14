@@ -1026,7 +1026,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             next_frontier = await settle_ancestor_level(
                 self.data_entities_processor, self.connector_id, frontier,
-                [record for record, _ in backfills], visited, needs_backfill,
+                [record for record, _ in backfills], visited, needs_backfill, self._sync_ledger.see,
             )
 
             total += len(frontier)
@@ -1034,10 +1034,12 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 self.logger.error(
                     f"Placeholder sweep exceeded safety bound ({PLACEHOLDER_SWEEP_SAFETY_MAX}); aborting"
                 )
-                # Touched but not read: kept as stored, so a full sync's unlink leaves their edges.
+                # Touched but not read: kept as stored, so neither a full sync's unlink nor its cleanup removes them.
                 self.data_entities_processor.note_kept_records(
                     self.connector_id, [record.id for record in next_frontier if record.id]
                 )
+                for record in next_frontier:
+                    self._sync_ledger.see(record.external_record_id)
                 break
             frontier = next_frontier
 
