@@ -77,11 +77,13 @@ async def test_a_dead_write_is_not_recovered_inside_its_grace_by_the_store_clock
 
 
 def reaching_the_store_late(g: StoreGraph, store: Clock, times: int, *, after: bool = False) -> None:
-    """The next ``times`` compare-and-sets reach the store minutes after the writer read its clock (``after``: they land on time, and the writer
-    hears minutes later)."""
+    """The next ``times`` compare-and-sets of the leases reach the store minutes after the writer read its clock (``after``: they land on time, and
+    the writer hears minutes later)."""
     real, left = g.update_node_fields_if_match, {"n": times}
 
     async def late(*a: object, **k: object) -> object:
+        if OPEN_WRITES_KEY not in a[2]:       # (a registration of roots is timed by nothing)
+            return await real(*a, **k)
         if left["n"] and not after:
             left["n"] -= 1
             store.now += 180
@@ -149,6 +151,24 @@ async def test_a_sweep_whose_re_lease_reaches_the_store_late_writes_nothing_and_
     assert g.app[OPEN_WRITES_KEY] == before                                   # refused whole: nothing short was written
     assert await recover_expired_writes(g, "c") == (1 if dead else 0)        # the next sweep, on time
     assert parse_open_writes(g.app[OPEN_WRITES_KEY]) == {"live": {"u": int(store()) + OPEN_WRITE_SECONDS, "r": ["r1"]}}
+
+
+async def test_a_recovery_whose_registration_is_slow_still_closes_the_dead_write_and_re_leases_the_unknown_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The registration of the dead write's roots commits on its own and can take longer than a clock read may be old: the re-lease written with the
+    close is timed after it, so the close is not refused and the dead lease is not left behind."""
+    store = Clock()
+    g = StoreGraph(store)
+    a_finished_pass(g.app)
+    g.app[OPEN_WRITES_KEY] = json.dumps({"live": {"u": int(store()), "k": 1, "r": ["r1"]}, "gone": {"u": int(store()) - DEAD, "r": ["r2"]}})
+    real = sg.register_pending_roots
+
+    async def slow(*a: object, **k: object) -> object:
+        store.now += 10                       # longer than STORE_CLOCK_TIMEOUT_SECONDS
+        return await real(*a, **k)
+    monkeypatch.setattr(sg, "register_pending_roots", slow)
+    assert await recover_expired_writes(g, "c") == 1
+    assert parse_open_writes(g.app[OPEN_WRITES_KEY]) == {"live": {"u": int(store()) + OPEN_WRITE_SECONDS, "r": ["r1"]}}
+    assert set(parse(g.app[PENDING_KEY])) == {"r2"} and g.app[sg.CLOSED_KEY] == 1
 
 
 async def test_a_late_renewal_on_its_last_attempt_leaves_the_old_lease_running() -> None:

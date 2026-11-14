@@ -373,20 +373,28 @@ async def recover_expired_writes(graph_provider: Any, connector_id: str, *, cloc
     cutoff = now - OPEN_WRITE_GRACE_SECONDS
     relet = {t for t, e in held.items() if e.get("k")}
     dead = {t: e for t, e in held.items() if not e.get("k") and e["u"] <= cutoff}
-    released = {t: ({**{f: v for f, v in e.items() if f != "k"}, "u": int(now) + OPEN_WRITE_SECONDS} if e.get("k") else e) for t, e in held.items()}
-    by = _in_time(now, clock) if relet else None      # a re-lease written late would be short: the store refuses it, and the next sweep tries again
+
+    def released(at: float) -> dict[str, dict[str, Any]]:
+        """The leases with each `k` one given a full lease from ``at``, a time read from the store's clock."""
+        return {t: ({**{f: v for f, v in e.items() if f != "k"}, "u": int(at) + OPEN_WRITE_SECONDS} if e.get("k") else e) for t, e in held.items()}
+
     if not dead or (closed is not None and whole_number(closed) is None):
         if relet:      # (the dead leases stay: with the counter unreadable they are the only record)
-            await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes(released)}, {OPEN_WRITES_KEY: raw}, by)
+            # a re-lease written late would be short: the store refuses it, and the next sweep tries again
+            await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes(released(now))}, {OPEN_WRITES_KEY: raw}, _in_time(now, clock))
         return 0
-    kept = {t: e for t, e in released.items() if t not in dead}
-    updates: dict[str, Any] = {OPEN_WRITES_KEY: _dump_open_writes(kept), CLOSED_KEY: (whole_number(closed) or 0) + len(dead)}
+    updates: dict[str, Any] = {CLOSED_KEY: (whole_number(closed) or 0) + len(dead)}
     if all("r" in e for e in dead.values()):
         if roots := sorted({r for e in dead.values() for r in e["r"]}):
             await register_pending_roots(graph_provider, connector_id, roots)
     else:
         updates[UNSAFE_KEY] = new_unsafe_mark()
-    return len(dead) if await _swap(graph_provider, connector_id, updates, {OPEN_WRITES_KEY: raw, CLOSED_KEY: closed}, by) else 0
+    # The re-leases are timed after the registration, which can take longer than a clock read may be old: by a time read from the store's clock now
+    if relet and (now := await store_now(graph_provider, clock)) is None:
+        return 0
+    updates[OPEN_WRITES_KEY] = _dump_open_writes({t: e for t, e in released(now).items() if t not in dead})
+    return len(dead) if await _swap(graph_provider, connector_id, updates, {OPEN_WRITES_KEY: raw, CLOSED_KEY: closed},
+                                    _in_time(now, clock) if relet else None) else 0
 
 
 class OpenWrites:

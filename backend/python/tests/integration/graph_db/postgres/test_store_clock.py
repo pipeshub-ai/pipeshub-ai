@@ -47,3 +47,30 @@ async def test_a_compare_and_set_is_refused_once_the_databases_clock_is_past_the
         assert (await pg_provider.get_document("c1", CollectionNames.APPS.value))["name"] == "app"
         assert await pg_provider.update_node_fields_if_match("c1", CollectionNames.APPS.value, {"name": "in time"}, {"name": "app"}, clock_at_most=now + 60)
         assert (await pg_provider.get_document("c1", CollectionNames.APPS.value))["name"] == "in time"
+
+
+async def test_a_write_that_waits_for_the_row_lock_past_its_bound_is_refused_when_the_holder_rolls_back(pg_provider, org_ctx) -> None:
+    """The bound is checked after the row lock is held: a holder that only locked the row, or that rolls back, would otherwise let a write that waited
+    past its bound apply (the clock read before the wait is not read again)."""
+    import asyncio
+    import os
+
+    import asyncpg
+
+    org = uuid.uuid4().hex[:24]
+    with org_ctx(org):
+        assert await pg_provider.batch_upsert_nodes([{"_key": "c1", "name": "app"}], CollectionNames.APPS.value)
+        holder = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+        try:
+            locked = holder.transaction()
+            await locked.start()
+            await holder.execute("SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = 'c1' FOR UPDATE", org, CollectionNames.APPS.value)
+            now = await pg_provider.store_time()
+            write = asyncio.ensure_future(pg_provider.update_node_fields_if_match(
+                "c1", CollectionNames.APPS.value, {"name": "late"}, {"name": "app"}, clock_at_most=now + 1))
+            await asyncio.sleep(2.5)                                          # the write waits for the row past its bound
+            await locked.rollback()
+            assert not await write
+        finally:
+            await holder.close()
+        assert (await pg_provider.get_document("c1", CollectionNames.APPS.value))["name"] == "app"
