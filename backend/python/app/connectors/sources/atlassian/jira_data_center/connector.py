@@ -2700,13 +2700,15 @@ class JiraDataCenterConnector(BaseConnector):
                 if isinstance(payload, list):
                     batch_members = payload
                     is_last = None
-                elif isinstance(payload, dict):
-                    vals = payload.get("values", [])
-                    batch_members = vals if isinstance(vals, list) else []
+                elif isinstance(payload, dict) and isinstance(payload.get("values"), list):
+                    batch_members = payload["values"]
                     is_last = payload.get("isLast")
                 else:
-                    batch_members = []
-                    is_last = True
+                    # Not a page: the members are unknown, not none (read as the end, the members read so far
+                    # would pass for all of them).
+                    self.logger.warning("Group %s answered a member page that is not a page", group_name)
+                    self._note_unread(None)
+                    return None
 
                 if not batch_members:
                     break
