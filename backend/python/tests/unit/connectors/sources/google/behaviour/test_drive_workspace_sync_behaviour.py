@@ -476,6 +476,18 @@ async def test_a_shared_drive_page_quota_error_is_retried(ws: Workspace, backoff
     assert backoff_sleeps
 
 
+def reaches(ws: Workspace, email: str, external_id: str) -> bool:
+    """Whether a user grant on the item, or on a record it inherits from (up its parents), names the person."""
+    record = ws.records.records.get(external_id)
+    while record is not None:
+        if email in ws.records.perm_emails(record.external_record_id):
+            return True
+        if not record.inherit_permissions or not record.parent_external_record_id:
+            return False
+        record = ws.records.records.get(record.parent_external_record_id)
+    return False
+
+
 async def test_a_file_shared_out_of_a_drive_the_user_is_not_a_member_of_is_synced_for_them(ws: Workspace) -> None:
     ws.world.add_user("carol@example.com")
     ws.world.add_drive("sd-x", "Carol's team", {"carol@example.com": "organizer"})
@@ -488,7 +500,8 @@ async def test_a_file_shared_out_of_a_drive_the_user_is_not_a_member_of_is_synce
     assert {"Handbook", "chapter-1.txt"} <= ws.names()
     assert "budget.txt" not in ws.names()
     assert "0S:bob@example.com" in ws.records.records["sd-x-page"].shared_with_me_record_group_ids
-    assert BOB in ws.records.perm_emails("sd-x-page")
+    # Through the folder's grant, as in Drive: the page's own list names him only as inherited.
+    assert reaches(ws, BOB, "sd-x-page")
 
 
 async def test_the_shared_drive_filter_skips_excluded_drives(ws: Workspace) -> None:
@@ -1384,7 +1397,7 @@ async def test_a_folder_shortcut_into_a_shared_drive_the_user_is_not_in_lists_it
     await ws.sync()
 
     assert {"Handbook", "chapter-1.txt"} <= ws.names()
-    assert BOB in ws.records.perm_emails("sd-x-page")
+    assert reaches(ws, BOB, "sd-x-page")
     assert ws.user_checkpoint(BOB) is not None
 
 
@@ -2681,8 +2694,9 @@ async def test_members_only_counts_the_people_of_a_member_group_who_are_not_sync
 
     await ws.sync()
 
-    # Bob's own sync adds his grant; Dana is a member only through the group and is not a synced user.
-    assert f1_people(ws) == {BOB, PARTNER, "mixed@example.com"}
+    # The list is read as Alice, the drive's Manager: Bob reads it as a member and through mixed@, and has no grant
+    # of his own on it. Dana is a member only through the group and is not a synced user.
+    assert f1_people(ws) == {PARTNER, "mixed@example.com"}
 
 
 async def test_members_only_keeps_a_group_nested_in_a_member_group_whole(ws: Workspace) -> None:
