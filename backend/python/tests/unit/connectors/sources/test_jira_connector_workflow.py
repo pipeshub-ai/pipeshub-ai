@@ -451,6 +451,7 @@ class TestDeletionHandling:
         issue_record.id = "internal-1"
         issue_record.external_record_id = "ext-1"
         dep.get_record_by_issue_key = AsyncMock(return_value=issue_record)
+        dep.get_records_by_parent = AsyncMock(return_value=[])  # no restricted comment records
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             await connector._handle_deleted_issue("PROJ-1")

@@ -4,10 +4,16 @@ An issue's content is indexed once and served to everyone who can open the issue
 may only hold what all of them can see in Jira. A comment restricted to a project role or
 a group (``visibility``), or a Jira Service Management internal note (``jsdPublic`` false),
 is readable by fewer people than the issue, and so is a file attached in one.
+
+Such a comment is synced as a record of its own under the issue (``restricted_comment_grants``).
 """
 
 from collections.abc import Callable, Iterable
 from typing import Any
+
+from app.models.permission import EntityType, Permission, PermissionType
+
+COMMENT_RECORD_PREFIX = "comment_"
 
 # (filenames lower-cased, attachment ids) that one description or comment shows.
 Refs = tuple[set[str], set[str]]
@@ -18,6 +24,41 @@ def is_restricted_comment(comment: dict[str, Any]) -> bool:
     if comment.get("visibility"):
         return True
     return comment.get("jsdPublic") is False
+
+
+def restricted_comment_grants(
+    comment: dict[str, Any],
+    *,
+    project_key: str,
+    role_ids: dict[str, str],
+    group_ids: dict[str, str],
+    product_access_groups: list[str] | None,
+) -> list[Permission]:
+    """Who Jira shows a restricted comment to, among the people who read its issue.
+
+    ``visibility`` names a project role (by name) or a group (by id, or by name). A Service
+    Management internal note is read by everyone who opens the issue in Jira itself, not
+    through the customer portal: the people with product access, ``product_access_groups``
+    (None when the application roles could not be read in full). Anything unresolved grants
+    nobody, so the comment stays closed.
+    """
+    visibility = comment.get("visibility")
+    if visibility:
+        if not isinstance(visibility, dict):
+            return []
+        kind = visibility.get("type")
+        identifier, name = str(visibility.get("identifier") or ""), str(visibility.get("value") or "")
+        if kind == "group":
+            group_id = group_ids.get(identifier) or group_ids.get(name) or identifier
+            return [Permission(entity_type=EntityType.GROUP, external_id=group_id, type=PermissionType.READ)] \
+                if group_id else []
+        if kind == "role":
+            role_id = identifier if identifier.isdigit() else role_ids.get(identifier) or role_ids.get(name)
+            return [Permission(entity_type=EntityType.ROLE, external_id=f"{project_key}_{role_id}",
+                               type=PermissionType.READ)] if role_id else []
+        return []
+    return [Permission(entity_type=EntityType.GROUP, external_id=g, type=PermissionType.READ)
+            for g in product_access_groups or []]
 
 
 def public_comments(comments: Iterable[Any]) -> list[dict[str, Any]]:
