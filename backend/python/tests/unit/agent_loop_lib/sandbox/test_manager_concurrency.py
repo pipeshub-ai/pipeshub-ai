@@ -198,3 +198,188 @@ class TestSandboxManagerConcurrency:
         assert sid is not None
         assert isinstance(backend, _FakeBackend)
         assert backend._provisioned
+
+
+class _PerCallBackend(_FakeBackend):
+    """Not metered, like Docker: it only uses resources while a call runs."""
+
+    class capabilities:  # stands in for SandboxCapabilities
+        is_metered = False
+
+
+class TestPerCallSlots:
+    def _manager(self, gov: SandboxResourceGovernor, wait_s: float = 0.0) -> SandboxManager:
+        mgr = SandboxManager(governor=gov, slot_wait_s=wait_s)
+        mgr.register_backend_factory(SandboxType.CODING, _PerCallBackend)
+        return mgr
+
+    async def test_idle_sandbox_holds_no_slot(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        mgr = self._manager(gov)
+        sid, _ = await mgr.get_or_create(SandboxType.CODING)
+        await mgr.get_or_create(SandboxType.CODING)  # a second idle sandbox still fits
+        assert gov.snapshot()["total"] == 0
+
+        async with mgr.slot(SandboxType.CODING, sid):
+            assert gov.snapshot()["total"] == 1
+        assert gov.snapshot()["total"] == 0
+
+    async def test_call_waits_for_a_free_slot(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        mgr = self._manager(gov, wait_s=5)
+        sid1, _ = await mgr.get_or_create(SandboxType.CODING)
+        sid2, _ = await mgr.get_or_create(SandboxType.CODING)
+        release = asyncio.Event()
+
+        async def first() -> None:
+            async with mgr.slot(SandboxType.CODING, sid1):
+                await release.wait()
+
+        async def second() -> str:
+            async with mgr.slot(SandboxType.CODING, sid2):
+                return "ran"
+
+        t1 = asyncio.create_task(first())
+        await asyncio.sleep(0.01)
+        t2 = asyncio.create_task(second())
+        await asyncio.sleep(0.02)
+        assert not t2.done()
+        release.set()
+        assert await asyncio.wait_for(t2, 1) == "ran"
+        await t1
+        assert gov.snapshot()["total"] == 0
+
+    async def test_full_without_wait_raises(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        mgr = self._manager(gov)
+        sid1, _ = await mgr.get_or_create(SandboxType.CODING)
+        sid2, _ = await mgr.get_or_create(SandboxType.CODING)
+        async with mgr.slot(SandboxType.CODING, sid1):
+            with pytest.raises(GovernorLimitExceeded):
+                async with mgr.slot(SandboxType.CODING, sid2):
+                    pass
+
+    async def test_the_wait_note_names_the_tool_and_is_cleared_once_the_slot_is_granted(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        notes: list[tuple[str, bool]] = []
+
+        async def note(tool: str, waiting: bool) -> None:
+            notes.append((tool, waiting))
+
+        mgr = SandboxManager(governor=gov, slot_wait_s=5, on_slot_wait=note)
+        mgr.register_backend_factory(SandboxType.CODING, _PerCallBackend)
+        sid1, _ = await mgr.get_or_create(SandboxType.CODING)
+        sid2, _ = await mgr.get_or_create(SandboxType.CODING)
+        async with mgr.slot(SandboxType.CODING, sid1):
+            pass
+        assert notes == []  # no wait, no note
+        release = asyncio.Event()
+
+        async def first() -> None:
+            async with mgr.slot(SandboxType.CODING, sid1):
+                await release.wait()
+
+        async def second() -> list[tuple[str, bool]]:
+            async with mgr.slot(SandboxType.CODING, sid2, tool="install_packages"):
+                return list(notes)
+
+        t1 = asyncio.create_task(first())
+        await asyncio.sleep(0.01)
+        t2 = asyncio.create_task(second())
+        await asyncio.sleep(0.02)
+        assert notes == [("install_packages", True)]
+        release.set()
+        assert await asyncio.wait_for(t2, 1) == [("install_packages", True), ("install_packages", False)]
+        await t1
+
+    async def test_a_call_cancelled_while_waiting_takes_no_slot(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        mgr = self._manager(gov, wait_s=5)
+        sid1, _ = await mgr.get_or_create(SandboxType.CODING)
+        sid2, _ = await mgr.get_or_create(SandboxType.CODING)
+        async with mgr.slot(SandboxType.CODING, sid1):
+            waiter = asyncio.create_task(mgr.slot(SandboxType.CODING, sid2).__aenter__())
+            await asyncio.sleep(0.02)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+            assert gov.snapshot()["total"] == 1
+        assert gov.snapshot()["total"] == 0
+        async with mgr.slot(SandboxType.CODING, sid2):  # the slot is free again
+            assert gov.snapshot()["total"] == 1
+
+    async def test_a_failing_wait_note_does_not_fail_the_call(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+
+        async def broken(tool: str, waiting: bool) -> None:
+            raise RuntimeError("stream closed")
+
+        mgr = SandboxManager(governor=gov, slot_wait_s=5, on_slot_wait=broken)
+        mgr.register_backend_factory(SandboxType.CODING, _PerCallBackend)
+        sid1, _ = await mgr.get_or_create(SandboxType.CODING)
+        sid2, _ = await mgr.get_or_create(SandboxType.CODING)
+        release = asyncio.Event()
+
+        async def first() -> None:
+            async with mgr.slot(SandboxType.CODING, sid1):
+                await release.wait()
+
+        async def second() -> str:
+            async with mgr.slot(SandboxType.CODING, sid2):
+                return "ran"
+
+        t1 = asyncio.create_task(first())
+        await asyncio.sleep(0.01)
+        t2 = asyncio.create_task(second())
+        await asyncio.sleep(0.02)
+        release.set()
+        assert await asyncio.wait_for(t2, 1) == "ran"
+        await t1
+
+    async def test_the_wait_note_is_cleared_when_the_wait_times_out(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        notes: list[tuple[str, bool]] = []
+
+        async def note(tool: str, waiting: bool) -> None:
+            notes.append((tool, waiting))
+
+        mgr = SandboxManager(governor=gov, slot_wait_s=0.05, on_slot_wait=note)
+        mgr.register_backend_factory(SandboxType.CODING, _PerCallBackend)
+        sid1, _ = await mgr.get_or_create(SandboxType.CODING)
+        sid2, _ = await mgr.get_or_create(SandboxType.CODING)
+        async with mgr.slot(SandboxType.CODING, sid1):
+            with pytest.raises(GovernorLimitExceeded):
+                async with mgr.slot(SandboxType.CODING, sid2):
+                    pass
+        assert notes == [("run_code", True), ("run_code", False)]
+
+
+class TestMeteredSlots:
+    """Metered backends (the default when a backend reports no capabilities) keep their slot for life."""
+
+    async def test_calls_on_a_metered_sandbox_take_no_extra_slot(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        mgr = SandboxManager(governor=gov)
+        mgr.register_backend_factory(SandboxType.CODING, _FakeBackend)
+        sid, _ = await mgr.get_or_create(SandboxType.CODING)
+        assert gov.snapshot()["total"] == 1
+        async with mgr.slot(SandboxType.CODING, sid):
+            assert gov.snapshot()["total"] == 1
+        await mgr.destroy_all()
+        assert gov.snapshot()["total"] == 0
+
+    async def test_a_creation_waiting_for_a_slot_does_not_hold_the_manager_lock(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        holder = SandboxManager(governor=gov)
+        holder.register_backend_factory(SandboxType.CODING, _FakeBackend)
+        await holder.get_or_create(SandboxType.CODING)  # takes the only slot
+        mgr = SandboxManager(governor=gov, slot_wait_s=5)
+        mgr.register_backend_factory(SandboxType.CODING, _FakeBackend)
+        waiting = asyncio.create_task(mgr.get_or_create(SandboxType.CODING))
+        await asyncio.sleep(0.02)
+        assert not waiting.done()
+        assert not mgr._lock.locked()
+        await holder.destroy_all()
+        await asyncio.wait_for(waiting, 1)
+        await mgr.destroy_all()
+        assert gov.snapshot()["total"] == 0

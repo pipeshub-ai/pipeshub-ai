@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
 from app.agent_loop_lib.sandbox.coding.egress_firewall import ensure_egress_network_sync
+from app.agent_loop_lib.sandbox.coding.settings import _env_cap
 
 __all__ = [
     "DockerClientProvider",
@@ -47,6 +48,7 @@ class DockerClientProvider:
     already serialized by the Docker daemon itself."""
 
     def __init__(self, *, max_workers: int = 4) -> None:
+        self._max_workers = max_workers
         self._client: Any | None = None
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
@@ -66,7 +68,9 @@ class DockerClientProvider:
         with self._lock:
             if self._client is None:
                 import docker
-                self._client = docker.from_env()
+                # One connection per pool thread: a run holds its connection for the
+                # container's life (container.wait), and docker-py's default pool is 10.
+                self._client = docker.from_env(max_pool_size=max(self._max_workers, 10))
                 logger.debug("DockerClientProvider: created shared docker client")
             return self._client
 
@@ -169,18 +173,24 @@ _default_provider: DockerClientProvider | None = None
 _default_lock = threading.Lock()
 
 
-def get_default_provider(*, max_workers: int = 4) -> DockerClientProvider:
+def get_default_provider(*, max_workers: int | None = None) -> DockerClientProvider:
     """The process-wide provider.
 
     Shared deliberately: `max_workers` doubles as the ceiling on concurrent
     blocking docker operations, which only bounds anything if every sandbox
-    in the process draws from the same pool.
+    in the process draws from the same pool. Defaults to the governor's
+    process-wide cap (`SANDBOX_MAX_TOTAL`).
     """
     global _default_provider
     if _default_provider is not None:
         return _default_provider
     with _default_lock:
         if _default_provider is None:
+            if max_workers is None:
+                # A run blocks its thread for the container's life (`container.wait`),
+                # so size the pool to the governor's process-wide cap; an unlimited
+                # cap still needs a finite pool.
+                max_workers = _env_cap("SANDBOX_MAX_TOTAL", 50) or 50
             _default_provider = DockerClientProvider(max_workers=max_workers)
             atexit.register(_default_provider.close)
         return _default_provider
