@@ -13,6 +13,7 @@ import os
 import re
 import time
 from collections import Counter
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -42,6 +43,14 @@ def _hex(name: str) -> str:
 
 def _bound(org: str):  # noqa: ANN202
     return bind(OrgContext(org, None, "job", "job:test", "t"))
+
+
+def _replace(monkeypatch: pytest.MonkeyPatch, name: str, old: str, new: str) -> None:
+    """Patch a statement of ``kg_read`` by replacing text in it, and fail when nothing was replaced: a statement that changed would otherwise run unpatched and test nothing."""
+    original = getattr(kg_read, name)
+    patched = original.replace(old, new)
+    assert patched != original, f"kg_read.{name} no longer contains {old!r}"
+    monkeypatch.setattr(kg_read, name, patched)
 
 
 @pytest.fixture(autouse=True)
@@ -358,7 +367,7 @@ async def test_a_literal_kg_cannot_vouch_for_never_admits_and_the_node_takes_the
     assert c.x in d.walk and c.x not in d.admit
     await _same_as_walk(pg_provider, c)
     # without the child check the flag alone admits (what the earlier read did): the check is what stops it
-    monkeypatch.setattr(kg_read, "LITERALS", kg_read.LITERALS.replace("(r.kind <> 3 OR coalesce(", "(true OR coalesce("))
+    _replace(monkeypatch, "LITERALS", "(r.kind <> 3 OR coalesce(", "(true OR coalesce(")
     assert c.x in (await _decide(pg_db, c.org, c.ids, c.access)).admit
 
 
@@ -414,12 +423,15 @@ async def test_a_blocked_or_slow_read_hands_the_call_to_the_walk_at_once(layer, 
     assert got == want
     assert waited < 1.5, f"the read waited {waited:.1f} s on the lock"
     # a read that runs past the statement limit
-    monkeypatch.setattr(kg_read, "PROFILE", kg_read.PROFILE.replace("'2s'", "'100ms'"))
-    monkeypatch.setattr(kg_read, "CLASSES", kg_read.CLASSES.replace("WHERE org_id = $1", "WHERE (SELECT pg_sleep(2)) IS NOT NULL AND org_id = $1"))
+    _replace(monkeypatch, "PROFILE", "'2s'", "'100ms'")
+    _replace(monkeypatch, "CLASSES", "WHERE k.org_id = $1", "WHERE (SELECT pg_sleep(2)) IS NOT NULL AND k.org_id = $1")
+    fell: list[tuple[str, ...]] = []
+    monkeypatch.setattr(kg_read, "FALLBACKS", SimpleNamespace(inc=lambda *labels, value=1.0: fell.append(labels)))
     t0 = time.perf_counter()
     got = await _ask(pg_provider, c.org, c.uid, c.ids, c.access, None)
     assert got == want
     assert time.perf_counter() - t0 < 1.5
+    assert ("error",) in fell, f"the read did not run past its limit, so the walk took nothing over ({fell})"
 
 
 async def test_a_read_never_returns_another_orgs_rows(layer, pg_provider, pg_db) -> None:
