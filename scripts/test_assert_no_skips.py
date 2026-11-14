@@ -100,6 +100,13 @@ class Collected(unittest.TestCase):
         # an ignored file is not a file the run names
         self.assertEqual(collect(["tests", "--ignore", "tests/test_b.py"], cwd=self.dir)[1], "")
 
+    def test_a_named_file_is_matched_however_its_path_is_written(self) -> None:
+        # node ids are relative to pytest's rootdir (here the pytest.ini directory), not to the argument as written
+        for path, cwd in (("./tests/test_b.py", self.dir), (str(self.dir / "tests/test_b.py"), self.dir), ("test_b.py", self.dir / "tests")):
+            self.assertEqual(collect([path], cwd=cwd)[1], "", path)
+        empty = self._file("test_e.py", "def helper(): pass\n")
+        self.assertIn("no case selected", collect(["tests/test_b.py", f"./{empty}"], cwd=self.dir)[1])
+
     def test_nothing_collected_fails(self) -> None:
         self.assertIn("exited 5", collect(["tests", "-k", "nothing_matches"], cwd=self.dir)[1])
 

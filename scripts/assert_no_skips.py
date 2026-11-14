@@ -75,7 +75,11 @@ def collect(args: list[str], cwd: str | Path | None = None) -> tuple[list[str], 
         # an import error takes its whole file out of the run; pytest exits 2 for it and 5 for nothing collected
         return ids, f"pytest --collect-only exited {proc.returncode} with {len(ids)} cases:\n{proc.stderr}{proc.stdout}"
     files = [a for prev, a in zip(["", *args], args) if a.endswith(".py") and not a.startswith("-") and prev not in ("--ignore", "--deselect")]
-    empty = [f for f in files if not any(i.startswith(f"{f}::") for i in ids)]
+    # node ids are relative to pytest's rootdir, which the output does not name: match a file by the tail of its resolved path.
+    # shortcut: a same-named file at a shorter path could stand in for an empty one; read rootdir from pytest if that layout appears.
+    base = Path(cwd or ".").resolve()
+    selected = {Path(i.split("::", 1)[0]).parts for i in ids}
+    empty = [f for f in files if not any((base / f).resolve().parts[-len(s):] == s for s in selected)]
     return ids, "".join(f"{f}: no case selected (a suite that registers nothing is not a pass)\n" for f in empty)
 
 
