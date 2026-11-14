@@ -19,7 +19,6 @@ from app.services.permissions.structure_generation import (
     OPEN_WRITES_KEY,
     OPENED_KEY,
     PENDING_KEY,
-    UNSAFE_KEY,
     close_write,
     leaving_vrid,
     open_write,
@@ -173,38 +172,3 @@ async def test_the_store_clock_is_close_to_this_hosts_and_a_skewed_sweeper_leave
     monkeypatch.setattr(sg, "time", SimpleNamespace(time=lambda: time.time() + 3600))      # a sweeper host an hour ahead
     assert await recover_expired_writes(backend.provider, conn) == 0
     assert unclosed_writes(await app_of(backend, conn)) == 1
-
-
-async def test_an_unclassified_block_outside_a_transaction_is_leased_and_a_killed_one_is_closed_unsafe_by_the_sweep(backend, monkeypatch) -> None:
-    """A block that runs an unclassified write without a transaction opens every connector of the organisation first: with a lease, so a process
-    killed before its closing step is recovered by the sweep (the connector marked unsafe: a full pass) instead of waiting for an operator."""
-    from app.connectors.core.base.data_store.graph_data_store import (
-        GraphTransactionStore,
-    )
-    from app.core.org_context import for_org
-    from app.services.vector_db.scope_backfill import BACKFILL_KEYS
-
-    _, conn, *_ = await _world(backend)
-    await finish_pass(backend.provider, conn)
-    org = (await app_of(backend, conn))["orgId"]
-
-    async def get_org_apps(*a, **kw) -> list:
-        return [await app_of(backend, conn)]
-
-    monkeypatch.setattr(backend.provider, "get_org_apps", get_org_apps)
-    tx = GraphTransactionStore(backend.provider, None)
-    with for_org(org, job="test"):
-        await tx._mark_org_before_unclassified_write()                                  # ... the write runs and the process is killed
-    app = await app_of(backend, conn)
-    [lease] = parse_open_writes(app[OPEN_WRITES_KEY]).values()
-    assert "r" not in lease and unclosed_writes(app) == 1 and not await current(backend.provider, conn)
-    clock = Clock()
-    clock.now = await backend.provider.store_time()
-    assert await recover_expired_writes(backend.provider, conn, clock=clock) == 0       # live
-    clock.now += OPEN_WRITE_SECONDS + OPEN_WRITE_GRACE_SECONDS + 1
-    assert await recover_expired_writes(backend.provider, conn, clock=clock) == 1
-    app = await app_of(backend, conn)
-    assert unclosed_writes(app) == 0 and not app.get(OPEN_WRITES_KEY) and app.get(UNSAFE_KEY) and not await current(backend.provider, conn)
-    await finish_pass(backend.provider, conn)                                           # the full pass the mark asks for, which records it
-    await backend.provider.update_node(conn, CollectionNames.APPS.value, {BACKFILL_KEYS["unsafe"]: app[UNSAFE_KEY]})
-    assert await current(backend.provider, conn)

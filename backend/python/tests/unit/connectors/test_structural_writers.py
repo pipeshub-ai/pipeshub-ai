@@ -22,6 +22,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     _STRUCTURAL_WRITERS,
     GraphDataStore,
     GraphTransactionStore,
+    UnclassifiedProviderWrite,
 )
 from tests.unit.connectors import graph_provider_classes as classes
 
@@ -508,92 +509,32 @@ def _production_store(monkeypatch, *, doc: dict, org_apps: list[dict], explicit:
     provider.rollback_transaction = AsyncMock()
     provider.update_node = AsyncMock()
     provider.batch_create_edges = AsyncMock()
-    provider.update_node_fields_if_match = AsyncMock(return_value=True)      # the lease of a write that opens a connector
-    provider.store_time = AsyncMock(return_value=1_000_000.0)
-    provider.is_write_conflict = MagicMock(return_value=False)
     return provider, GraphDataStore(MagicMock(), provider)
 
 
-async def test_in_production_an_unclassified_write_marks_every_connector_of_the_organisation_unsafe(monkeypatch) -> None:
-    """Which connector the write touched is not known, so the ones the transaction saw are not enough: a write on `c2` after a lookup
-    of `c1` would leave `c2` looking current."""
+@pytest.mark.parametrize("explicit", [True, False])
+async def test_in_production_an_unclassified_write_is_refused_before_it_reaches_the_provider(monkeypatch, explicit: bool) -> None:
+    """Which connector a write nobody classified touches is not known: nothing could fence it or say what it changed. It is refused, in
+    production too (and inside or outside a real transaction), with the method named and what to do instead."""
     from app.core import org_context
 
-    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}, {"_key": "c2"}, {"id": "c3"}])
+    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=explicit)
+    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), \
+            pytest.raises(UnclassifiedProviderWrite, match=r"graph_provider\.batch_create_edges .*classified"):
+        async with store_provider.transaction() as tx:
+            await tx._connector_of_node(R, "r1")
+            await _Scratch.via_local_alias(tx, "r1")
+    provider.batch_create_edges.assert_not_awaited()
+    provider.update_node.assert_not_awaited()          # nothing to mark: no write reached the provider
+
+
+async def test_in_production_a_read_still_goes_through_the_proxy(monkeypatch) -> None:
+    from app.core import org_context
+
+    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
     with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")):
         async with store_provider.transaction() as tx:
-            await tx._connector_of_node(R, "r1")  # the transaction has seen c1
-            await _Scratch.via_local_alias(tx, "r1")  # an unclassified write: let through, but remembered
-    provider.batch_create_edges.assert_awaited()
-    provider.get_org_apps.assert_awaited_with("o1", active_only=False, raise_on_error=True)
-    marked = {c.args[0] for c in provider.update_node.await_args_list if c.args[2] == {"scopeProjectionUnsafe": ANY}}
-    assert marked == {"c1", "c2", "c3"}
-
-
-async def test_an_unclassified_write_with_no_lookup_is_charged_to_the_ambient_organisation(monkeypatch) -> None:
-    from app.core import org_context
-
-    provider, store_provider = _production_store(monkeypatch, doc={}, org_apps=[{"_key": "c1"}, {"_key": "c2"}])
-    with org_context.bind(org_context.OrgContext("o9", None, "service", "test", "-")):
-        async with store_provider.transaction() as tx:
-            await _Scratch.via_local_alias(tx, "r1")  # nothing looked up first
-    provider.get_org_apps.assert_awaited_with("o9", active_only=False, raise_on_error=True)
-    assert {c.args[0] for c in provider.update_node.await_args_list} == {"c1", "c2"}
-
-
-async def test_an_unclassified_write_with_no_organisation_is_refused_before_it_reaches_the_provider(monkeypatch) -> None:
-    from app.core.org_context import MissingOrgContext
-
-    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}, {"_key": "c2"}])
-    with pytest.raises(MissingOrgContext):
-        async with store_provider.transaction() as tx:
-            await tx._connector_of_node(R, "r1")
-            await _Scratch.via_local_alias(tx, "r1")
-    provider.batch_create_edges.assert_not_awaited()  # nothing was written: there is nothing to mark or to undo
-    provider.commit_transaction.assert_not_awaited()
-    provider.get_org_apps.assert_not_awaited()
-
-
-async def test_outside_a_transaction_an_unclassified_write_is_refused_when_the_organisations_connectors_cannot_be_listed(monkeypatch) -> None:
-    from app.core import org_context
-
-    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[], explicit=False)
-    provider.get_org_apps = AsyncMock(side_effect=RuntimeError("graph down"))
-    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(RuntimeError):
-        async with store_provider.transaction() as tx:
-            await tx._connector_of_node(R, "r1")
-            await _Scratch.via_local_alias(tx, "r1")
-    provider.batch_create_edges.assert_not_awaited()  # it would have committed with nothing to undo or to mark
-
-
-async def test_outside_a_transaction_every_connector_of_the_organisation_is_marked_before_an_unclassified_write_that_then_fails(monkeypatch) -> None:
-    from app.core import org_context
-
-    provider, store_provider = _production_store(
-        monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}, {"_key": "c2"}, {"id": "c3"}], explicit=False)
-    order: list[str] = []
-
-    async def write(*args, **kwargs) -> None:
-        order.append("write")
-        raise RuntimeError("connection reset")
-
-    async def mark(*args, **kwargs) -> None:
-        order.append("mark")
-
-    provider.batch_create_edges = AsyncMock(side_effect=write)
-    provider.update_node = AsyncMock(side_effect=mark)
-    provider.update_node_fields_if_match = AsyncMock(side_effect=lambda *a, **k: (order.append("mark"), True)[1])
-    # the listing works once (before the write) and is down when the failure handler would look again
-    provider.get_org_apps = AsyncMock(side_effect=[[{"_key": "c1"}, {"_key": "c2"}, {"id": "c3"}], RuntimeError("graph down")])
-    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(RuntimeError):
-        async with store_provider.transaction() as tx:
-            await tx._connector_of_node(R, "r1")
-            await _Scratch.via_local_alias(tx, "r1")
-    assert order[:4] == ["mark", "mark", "mark", "write"]  # every connector is marked before the write, which then fails
-    assert set(order[4:]) <= {"mark"}
-    opened = {c.args[0] for c in provider.update_node_fields_if_match.await_args_list if "scopeProjectionOpened" in c.args[2]}
-    assert opened == {"c1", "c2", "c3"}  # every connector is opened before the write, also the ones the block never looked at
-    assert all(len(c.args) < 4 or c.args[3] is None for c in provider.update_node.await_args_list)  # on their own: they survive the failure
+            assert await tx.graph_provider.get_document("r1", R) == {"connectorId": "c1"}
 
 
 async def test_in_production_the_raw_client_is_refused_not_returned_unmarked(monkeypatch) -> None:
@@ -829,6 +770,42 @@ def test_the_classes_hold_the_writers_that_were_missed() -> None:
             "delete_connector_instance", "link_record_to_group", "execute_query"} <= classes.STRUCTURAL
 
 
+# A transaction store's provider is the guarded proxy: anything but a read reached through it outside the store's classified methods is refused
+# at run time. This keeps app code from reaching for it at all. (file relative to app/, the line's text) -> why it is safe.
+_TX_PROVIDER = re.compile(r"\b(?:tx_store|tx|txn_store|transaction_store)\.graph_provider\b(?:\.(\w+))?")
+_TX_PROVIDER_ALLOWED = {
+    "services/permissions/structure_generation.py": "bump_generation_in runs inside the store's classified flush (flush_scope_generation)",
+}
+
+
+def tx_provider_writes(path: str, text: str) -> list[tuple[str, int, str]]:
+    """Each use of a transaction store's provider in ``text`` that is not a direct read call: a write, an alias, a bound method."""
+    from app.connectors.core.base.data_store.graph_data_store import _is_read
+
+    return [(path, n, line.strip()) for n, line in enumerate(text.splitlines(), 1) for m in _TX_PROVIDER.finditer(line)
+            if not (m.group(1) and _is_read(m.group(1)) and line[m.end():].lstrip().startswith("("))]
+
+
+def test_no_app_code_reaches_a_transaction_stores_provider_except_to_read() -> None:
+    found = []
+    for f in sorted(_APP.rglob("*.py")):
+        rel = str(f.relative_to(_APP))
+        if rel != "connectors/core/base/data_store/graph_data_store.py" and rel not in _TX_PROVIDER_ALLOWED:
+            found += tx_provider_writes(rel, f.read_text(encoding="utf-8"))
+    assert found == [], f"call a classified GraphTransactionStore method instead (an unclassified write is refused at run time): {found}"
+
+
+@pytest.mark.parametrize("line", [
+    "await tx_store.graph_provider.batch_upsert_nodes(nodes, 'records', transaction=tx_store.txn)",
+    "gp = tx.graph_provider",
+    "write = tx_store.graph_provider.update_node",
+    "await getattr(tx_store.graph_provider, name)(doc)",
+])
+def test_the_scan_finds_a_write_an_alias_and_a_bound_method_and_lets_a_read_through(line: str) -> None:
+    assert tx_provider_writes("x.py", line)
+    assert tx_provider_writes("x.py", "doc = await tx_store.graph_provider.get_record_by_id(rid, transaction=tx_store.txn)") == []
+
+
 def test_no_structural_provider_write_outside_the_store_is_unlisted() -> None:
     unlisted = {k: v for k, v in _structural_calls_outside_the_store().items() if k not in _OUTSIDE_THE_STORE}
     assert not unlisted, f"route these through GraphTransactionStore, or move the generation and list them with a reason: {unlisted}"
@@ -973,29 +950,12 @@ async def test_a_full_sync_moves_the_generation_when_it_removed_edges_or_may_hav
 
 
 class _AppDocs:
-    """The app documents of a fake provider: update_node merges, increment_node_field is atomic (one statement, as on the three providers), and
-    update_node_fields_if_match is their compare-and-set (`swap`, logged with the fields it writes). Other documents read as before."""
+    """The app documents of a fake provider: update_node merges, increment_node_field is atomic (one statement, as on the three providers)."""
 
     def __init__(self, provider, ids: list[str], fail=lambda kind, key: False, missing: tuple[str, ...] = ()) -> None:
         self.docs: dict[str, dict] = {i: {} for i in ids}
         self.log: list[tuple[str, str, str]] = []
         self.fail = fail
-        other = provider.get_document
-
-        async def get(key, collection, *args, **kwargs) -> dict | None:
-            return {"_key": key, **self.docs[key]} if key in self.docs and collection == CollectionNames.APPS.value else await other(key, collection, *args, **kwargs)
-
-        async def swap(key, collection, updates, expected, *args, **kwargs) -> bool:
-            if any(self.docs[key].get(f) != v for f, v in expected.items()):
-                return False
-            if self.fail("swap:" + ",".join(sorted(updates)), key):
-                raise RuntimeError("graph down")
-            self.log.append(("swap", key, ",".join(sorted(updates))))
-            self.docs[key].update(updates)
-            return True
-
-        provider.get_document = AsyncMock(side_effect=get)
-        provider.update_node_fields_if_match = AsyncMock(side_effect=swap)
 
         async def update(key, collection, updates, *args, **kwargs) -> bool:
             if self.fail("update", key):
@@ -1027,247 +987,6 @@ def _recorded_pass(doc: dict) -> dict:
 
     return {**doc, K["state"]: "done", K["version"]: SCOPE_FIELDS_VERSION, K["generation"]: current_scope_generation(), K["structure_generation"]: 0,
             K["unsafe"]: doc.get("scopeProjectionUnsafe")}
-
-
-async def test_an_unclassified_write_outside_a_transaction_opens_before_it_runs_and_closes_after_the_mark_has_landed(monkeypatch) -> None:
-    from app.core import org_context
-    from app.services.permissions.currency import app_is_current
-
-    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}, {"_key": "c2"}], explicit=False)
-    apps = _AppDocs(provider, ["c1", "c2"])
-
-    async def the_write(*args, **kwargs) -> None:
-        apps.log.append(("write", "-", "-"))
-        for doc in apps.docs.values():              # during the write every connector is opened and not closed: nothing is current
-            assert doc["scopeProjectionOpened"] == 1 and not doc.get("scopeProjectionClosed") and not app_is_current(_recorded_pass(doc))
-
-    provider.batch_create_edges = AsyncMock(side_effect=the_write)
-    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")):
-        async with store_provider.transaction() as tx:
-            await _Scratch.via_local_alias(tx, "r1")
-    kinds = [(k, f) for k, _, f in apps.log]
-    assert kinds.index(("write", "-")) > max(i for i, (k, f) in enumerate(kinds) if "scopeProjectionOpened" in f)         # every opening step first
-    for key in ("c1", "c2"):
-        steps = [(k, f) for k, c, f in apps.log if c == key and k != "write"]
-        assert steps == [("swap", "scopeProjectionOpenWrites,scopeProjectionOpened"), ("update", "scopeProjectionUnsafe"),
-                         ("swap", "scopeProjectionClosed,scopeProjectionOpenWrites")], key                # each opening is leased, each closing drops it
-        assert apps.docs[key]["scopeProjectionOpened"] == apps.docs[key]["scopeProjectionClosed"] == 1 and isinstance(apps.docs[key]["scopeProjectionUnsafe"], int)
-        assert apps.docs[key]["scopeProjectionOpenWrites"] is None
-
-
-async def test_a_closing_step_that_never_lands_leaves_the_connector_opened_and_not_current(monkeypatch) -> None:
-    from app.core import org_context
-    from app.services.permissions.currency import app_is_current
-
-    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
-    monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
-    monkeypatch.setattr("app.services.permissions.structure_generation._backoff", AsyncMock())
-    apps = _AppDocs(provider, ["c1"], fail=lambda kind, key: "scopeProjectionClosed" in kind)
-
-    async def failing_write(*args, **kwargs) -> None:
-        raise RuntimeError("connection reset")
-
-    provider.batch_create_edges = AsyncMock(side_effect=failing_write)
-    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(RuntimeError, match="connection reset"):
-        async with store_provider.transaction() as tx:
-            await _Scratch.via_local_alias(tx, "r1")
-    doc = apps.docs["c1"]
-    assert doc["scopeProjectionOpened"] == 1 and not doc.get("scopeProjectionClosed")                  # opened, never closed
-    assert not app_is_current(_recorded_pass(doc))
-
-
-async def test_a_block_whose_process_dies_after_an_unclassified_write_is_recovered_by_the_sweep_when_its_lease_runs_out(monkeypatch) -> None:
-    """The process is killed between the write and its closing step: the connector stays not current while the lease runs, then the sweep marks it
-    unsafe (the write's reach is unknown, so a full pass) and closes it, with no operator. Before, the opening had no lease and only an operator's
-    --close-open-mark could close it."""
-    from app.core import org_context
-    from app.services.permissions import structure_generation as sg
-    from app.services.permissions.currency import app_is_current
-    from app.services.vector_db.scope_backfill import BACKFILL_KEYS
-
-    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
-    apps = _AppDocs(provider, ["c1"])
-    now = 1_000_000.0
-    provider.store_time = AsyncMock(side_effect=lambda: now)
-
-    class Killed(BaseException):
-        pass
-
-    async def killed(*args, **kwargs) -> None:
-        raise Killed
-
-    provider.batch_create_edges = AsyncMock(side_effect=killed)
-    monkeypatch.setattr(GraphDataStore, "_mark_unsafe_after_failed_block", AsyncMock())      # nothing runs after the kill
-    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(Killed):
-        async with store_provider.transaction() as tx:
-            await _Scratch.via_local_alias(tx, "r1")
-    doc = apps.docs["c1"]
-    assert doc["scopeProjectionOpened"] == 1 and not doc.get("scopeProjectionClosed") and not app_is_current(_recorded_pass(doc))
-    assert await sg.recover_expired_writes(provider, "c1") == 0                         # live as far as the store's clock says
-    now += sg.OPEN_WRITE_SECONDS + sg.OPEN_WRITE_GRACE_SECONDS + 1
-    assert await sg.recover_expired_writes(provider, "c1") == 1
-    doc = apps.docs["c1"]
-    assert doc["scopeProjectionClosed"] == 1 and isinstance(doc["scopeProjectionUnsafe"], int)
-    assert not app_is_current({**_recorded_pass(doc), BACKFILL_KEYS["unsafe"]: None})      # a pass from before the mark is not current
-    assert app_is_current(_recorded_pass(doc))                                               # a pass that read the mark is
-
-
-async def test_a_long_block_renews_its_leases_before_each_unclassified_write(monkeypatch) -> None:
-    from app.connectors.core.base.data_store import graph_data_store as gds
-    from app.core import org_context
-    from app.services.permissions import structure_generation as sg
-
-    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
-    apps = _AppDocs(provider, ["c1"])
-    now = {"store": 1_000_000.0, "host": 0.0}
-    provider.store_time = AsyncMock(side_effect=lambda: now["store"])
-    monkeypatch.setattr(gds, "monotonic", lambda: now["host"])
-
-    def deadline() -> int:
-        [lease] = sg.parse_open_writes(apps.docs["c1"]["scopeProjectionOpenWrites"]).values()
-        return lease["u"]
-
-    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")):
-        async with store_provider.transaction() as tx:
-            await _Scratch.via_local_alias(tx, "r1")
-            first = deadline()
-            now["store"] += 100
-            now["host"] += 100
-            await _Scratch.via_local_alias(tx, "r1")
-            assert deadline() == first                                                  # not on every write
-            now["store"] += sg.OPEN_WRITE_SECONDS
-            now["host"] += sg.OPEN_WRITE_SECONDS
-            await _Scratch.via_local_alias(tx, "r1")
-            assert deadline() == first + 100 + sg.OPEN_WRITE_SECONDS                    # past half its lease: renewed before the write
-            assert await sg.recover_expired_writes(provider, "c1") == 0
-    assert apps.docs["c1"]["scopeProjectionClosed"] == 1 and apps.docs["c1"]["scopeProjectionOpenWrites"] is None
-
-
-async def test_a_renewal_that_gives_up_twice_is_tried_again_at_the_next_write_so_the_lease_never_runs_out(monkeypatch) -> None:
-    """A renewal that cannot be written (the document is too contended) returns the old token and leaves the old deadline. If the timer moved anyway,
-    two give-ups in a row would let the writes that follow skip renewal past the deadline and its grace, and the sweep would close a live block."""
-    from app.connectors.core.base.data_store import graph_data_store as gds
-    from app.core import org_context
-    from app.services.permissions import structure_generation as sg
-
-    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
-    monkeypatch.setattr(sg, "_backoff", AsyncMock())
-    apps = _AppDocs(provider, ["c1"])
-    now = {"store": 1_000_000.0, "host": 0.0, "contended": False}
-    provider.store_time = AsyncMock(side_effect=lambda: now["store"])
-    monkeypatch.setattr(gds, "monotonic", lambda: now["host"])
-    swap = provider.update_node_fields_if_match.side_effect
-
-    async def contended(key, collection, updates, *args, **kwargs) -> bool:
-        if now["contended"] and set(updates) == {"scopeProjectionOpenWrites"}:      # every renewal loses its compare-and-set
-            return False
-        return await swap(key, collection, updates, *args, **kwargs)
-    provider.update_node_fields_if_match = AsyncMock(side_effect=contended)
-
-    def later(seconds: float) -> None:
-        now["store"] += seconds
-        now["host"] += seconds
-
-    def deadline() -> int:
-        [lease] = sg.parse_open_writes(apps.docs["c1"]["scopeProjectionOpenWrites"]).values()
-        return lease["u"]
-
-    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")):
-        async with store_provider.transaction() as tx:
-            await _Scratch.via_local_alias(tx, "r1")
-            first = deadline()
-            now["contended"] = True
-            for _ in range(2):                                                        # two give-ups in a row
-                later(sg.OPEN_WRITE_SECONDS / 2 + 1)
-                await _Scratch.via_local_alias(tx, "r1")
-                assert deadline() == first
-            now["contended"] = False
-            later(10)                                                                  # well inside half a lease since the last give-up
-            await _Scratch.via_local_alias(tx, "r1")
-            assert deadline() == int(now["store"]) + sg.OPEN_WRITE_SECONDS             # renewed at once, not half a lease later
-            assert await sg.recover_expired_writes(provider, "c1") == 0
-
-
-async def test_a_write_opened_without_a_lease_is_counted_closed_once_even_when_its_close_applied_and_then_raised(monkeypatch) -> None:
-    """The lease list does not read, so the block opens the connector with the plain counter (no token). Its close is an increment: when it applies
-    and its answer is lost, the failure path that closes again must not count it a second time (with another write open, opened == closed would read
-    the connector as current while that write still runs)."""
-    from app.core import org_context
-
-    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
-    monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
-    apps = _AppDocs(provider, ["c1"])
-    apps.docs["c1"].update({"scopeProjectionOpenWrites": "{nope", "scopeProjectionOpened": 1})     # another write is open, and the list does not read
-    plain = provider.increment_node_field.side_effect
-
-    async def applies_then_raises(key, collection, field, *args, **kwargs) -> int:
-        value = await plain(key, collection, field, *args, **kwargs)
-        if field == "scopeProjectionClosed":
-            raise TimeoutError("applied, but the answer never came")
-        return value
-    provider.increment_node_field = AsyncMock(side_effect=applies_then_raises)
-
-    async def failing_write(*args, **kwargs) -> None:
-        raise RuntimeError("connection reset")
-    provider.batch_create_edges = AsyncMock(side_effect=failing_write)
-    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(RuntimeError, match="connection reset"):
-        async with store_provider.transaction() as tx:
-            await _Scratch.via_local_alias(tx, "r1")
-    doc = apps.docs["c1"]
-    assert doc["scopeProjectionOpened"] == 2 and doc["scopeProjectionClosed"] == 1          # the other write is still counted open
-
-
-async def test_a_connector_is_not_closed_when_its_mark_did_not_land(monkeypatch) -> None:
-    from app.core import org_context
-
-    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}, {"_key": "c2"}], explicit=False)
-    monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
-    apps = _AppDocs(provider, ["c1", "c2"], fail=lambda kind, key: kind == "update" and key == "c2")        # c2's mark never lands
-    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(RuntimeError, match="graph down"):
-        async with store_provider.transaction() as tx:
-            await _Scratch.via_local_alias(tx, "r1")
-    assert apps.docs["c1"].get("scopeProjectionClosed") == 1 and not apps.docs["c2"].get("scopeProjectionClosed")       # no closing step for c2
-    assert apps.docs["c2"]["scopeProjectionOpened"] == 1
-
-
-async def test_a_connector_whose_app_document_is_missing_is_not_closed_for_a_mark_that_was_not_written(monkeypatch) -> None:
-    from app.core import org_context
-
-    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
-    apps = _AppDocs(provider, ["c1"], missing=("c1",))                                  # update_node answers False, it does not raise
-    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(RuntimeError):
-        async with store_provider.transaction() as tx:
-            await _Scratch.via_local_alias(tx, "r1")
-            raise RuntimeError("boom")
-    assert not apps.docs["c1"].get("scopeProjectionClosed") and not [e for e in apps.log if e[2] == "scopeProjectionClosed"]
-
-
-async def test_a_closing_step_that_may_have_been_applied_is_not_counted_twice(monkeypatch) -> None:
-    """An exception from the closing step proves nothing (a timeout can arrive after the store applied it): counting it again would count a write
-    that is still running as closed. The close drops the lease in the same compare-and-set, so a retry finds it gone and counts nothing. Two
-    overlapping writes: A's close is applied and then raises; the connector must stay not current."""
-    from app.core import org_context
-    from app.services.permissions.currency import app_is_current
-
-    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
-    monkeypatch.setattr("app.services.permissions.structure_generation._backoff", AsyncMock())
-    apps = _AppDocs(provider, ["c1"])
-    plain = provider.update_node_fields_if_match.side_effect
-
-    async def applies_then_raises(key, collection, updates, *args, **kwargs) -> bool:
-        done = await plain(key, collection, updates, *args, **kwargs)
-        if "scopeProjectionClosed" in updates:
-            raise TimeoutError("applied, but the answer never came")
-        return done
-
-    provider.update_node_fields_if_match = AsyncMock(side_effect=applies_then_raises)
-    apps.docs["c1"]["scopeProjectionOpened"] = 1                                    # B opened earlier and is still running
-    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")):
-        async with store_provider.transaction() as tx:                              # A
-            await _Scratch.via_local_alias(tx, "r1")
-    doc = apps.docs["c1"]
-    assert doc["scopeProjectionOpened"] == 2 and doc["scopeProjectionClosed"] == 1          # applied once, not counted again
-    assert not app_is_current(_recorded_pass(doc))                                          # B is still open
 
 
 async def test_two_blocks_writing_at_once_each_count_and_the_connector_is_current_only_when_both_have_closed(monkeypatch) -> None:

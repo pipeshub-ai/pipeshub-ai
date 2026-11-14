@@ -3,13 +3,11 @@ import contextvars
 import functools
 import inspect
 import logging
-import os
 import random
 import re
 from collections.abc import Awaitable, Callable, Collection
 from contextlib import asynccontextmanager, suppress
 from logging import Logger
-from time import monotonic
 from typing import Any, AsyncContextManager, Optional, TypeVar
 
 # Import Neo4j exceptions with fallback for compatibility
@@ -25,7 +23,6 @@ from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
 )
-from app.core import org_context
 from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, GraphWriteError
 from app.models.entities import (
     AppMetadata,
@@ -46,16 +43,9 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import (
-    OPEN_WRITE_SECONDS,
-    OPEN_WRITES_KEY,
     UNSAFE_KEY,
-    OpenWritesUnreadable,
     ScopeGenerationConflict,
-    close_write,
     new_unsafe_mark,
-    open_write,
-    parse_open_writes,
-    renew_write,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -235,8 +225,8 @@ write_collections = [
 # `GraphTransactionStore.graph_provider` is this proxy. A read goes through. Anything else must happen inside a store method that
 # is classified (structural, with how to find its connector, or harmless): those are wrapped at the bottom of this module and set
 # `_CLASSIFIED_SCOPE`. A provider write reached from anywhere else (an unlisted method, a helper given the provider, an alias, a
-# bound method, `getattr`, the raw client) finds no scope: under pytest it raises `UnclassifiedProviderWrite`; in production it is
-# logged once per name and let through, so a missed classification never takes a sync down. The scope is read when the attribute is fetched:
+# bound method, `getattr`, the raw client) finds no scope and raises `UnclassifiedProviderWrite`, in production too: which connector it
+# touches is not known, so nothing could fence it or say what it changed. The scope is read when the attribute is fetched:
 # a bound method fetched inside a classified method and called after it returned is not seen (a limit; the guard test over the store's source
 # and review keep that shape out).
 _CLASSIFIED_SCOPE: contextvars.ContextVar[str | None] = contextvars.ContextVar("graph_store_classified_scope", default=None)
@@ -245,7 +235,6 @@ _WRITE_WORDS = ("or_create", "or_insert", "or_update", "and_create", "and_delete
                 "create", "delete", "remove", "insert", "replace")
 _RAW_CLIENTS = frozenset({"client", "http_client"})
 _RAW_ACCESS = _RAW_CLIENTS | {"execute_query", "execute_aql", "execute"}
-_warned: set[str] = set()
 
 
 class UnclassifiedProviderWrite(RuntimeError):
@@ -257,15 +246,10 @@ def _is_read(name: str) -> bool:
 
 
 class _GuardedProvider:
-    __slots__ = ("_provider", "_on_unclassified", "_before_unclassified")
+    __slots__ = ("_provider",)
 
-    def __init__(
-        self, provider: IGraphDBProvider, on_unclassified: Callable[[], None] | None = None,
-        before_unclassified: Callable[[], Awaitable[None]] | None = None,
-    ) -> None:
+    def __init__(self, provider: IGraphDBProvider) -> None:
         object.__setattr__(self, "_provider", provider)
-        object.__setattr__(self, "_on_unclassified", on_unclassified)
-        object.__setattr__(self, "_before_unclassified", before_unclassified)
 
     def __getattr__(self, name: str):  # noqa: ANN204
         attr = getattr(self._provider, name)
@@ -273,25 +257,8 @@ class _GuardedProvider:
             return attr
         if name not in _RAW_ACCESS and _CLASSIFIED_SCOPE.get() is not None:
             return attr
-        if os.environ.get("PYTEST_CURRENT_TEST") or name in _RAW_CLIENTS or not callable(attr):
-            # the raw client (`client`, `http_client`) cannot be wrapped to mark the organisation's connectors before its first write,
-            # and nothing reaches it through a transaction store: it is refused, in production too
-            raise UnclassifiedProviderWrite(f"graph_provider.{name} is reached outside a classified store method")
-        if self._on_unclassified is not None:
-            self._on_unclassified()  # fail closed: the connectors this transaction saw are marked unsafe when it ends
-        if name not in _warned:
-            _warned.add(name)
-            logging.getLogger(__name__).error("graph_provider.%s reached outside a classified store method", name)
-        before = self._before_unclassified
-        if before is None or not callable(attr):
-            return attr
-
-        async def after_marking(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-            await before()  # may refuse: then the write never reaches the provider
-            result = attr(*args, **kwargs)
-            return await result if inspect.isawaitable(result) else result
-
-        return after_marking
+        raise UnclassifiedProviderWrite(f"graph_provider.{name} is a write reached outside a classified store method: call it through a "
+                                        "GraphTransactionStore method classified as structural or harmless")
 
     def __setattr__(self, name: str, value: object) -> None:
         setattr(self._provider, name, value)
@@ -329,30 +296,17 @@ class StructuralMarks(set):
         return None if connector in self.whole or not self.roots.get(connector) else set(self.roots[connector])
 
 
-async def _lease_until(provider: IGraphDBProvider, connector_id: str, token: str | None) -> int | None:
-    """The deadline the connector's lease ``token`` holds now; None when there is none or the list does not read."""
-    if token is None:
-        return None
-    app = await provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
-    try:
-        return parse_open_writes(app.get(OPEN_WRITES_KEY) or None).get(token, {}).get("u")
-    except OpenWritesUnreadable:
-        return None
-
-
 class GraphTransactionStore(TransactionStore):
     """
     Graph database transaction-aware data store using IGraphDBProvider.
     """
 
     def __init__(self, graph_provider: IGraphDBProvider, txn: str, *, explicit: bool = False) -> None:
-        self.unclassified_write = False
-        self._org_marked_for_unclassified = False
         # The structure bookkeeping (the guarded provider, the reads before and after a structural write, the bump) exists only while the
         # scope fields are on: with them off the store reaches the provider directly and makes no query it did not make before.
         self.tracked = scope_fields_enabled()
         self.graph_provider = (
-            _GuardedProvider(graph_provider, self._note_unclassified, self._mark_org_before_unclassified_write) if self.tracked else graph_provider)
+            _GuardedProvider(graph_provider) if self.tracked else graph_provider)
         self.txn = txn  # Transaction ID (string) for HTTP provider
         self.explicit = explicit  # the block runs in one real transaction
         self.logger = graph_provider.logger
@@ -369,56 +323,6 @@ class GraphTransactionStore(TransactionStore):
         self._connector_of: dict[tuple[str, str], str | None] = {}
         # nodes this transaction created: no stamp can be stale for them, whatever edges it then gives them
         self.new_nodes: set[tuple[str, str]] = set()
-        # Connectors this transaction opened (before an unclassified write outside a transaction) with the token of their lease, the ones whose unsafe
-        # mark was then written, and the ones closed: only a connector marked is closed, so a closing step never covers a mark that did not land.
-        self.opened: dict[str, str | None] = {}
-        self._renewed_at = 0.0
-        self.marked: set[str] = set()
-        self.closed: set[str] = set()
-
-    def _note_unclassified(self) -> None:
-        # Before the write is forwarded: with no organisation it could not be charged to one at the end, and outside an explicit
-        # transaction it would already be committed with nothing to mark or roll back. It is refused instead (`MissingOrgContext`).
-        org_context.current()
-        self.unclassified_write = True
-
-    async def _mark_org_before_unclassified_write(self) -> None:
-        """Outside an explicit transaction an unclassified write commits as it runs and cannot be undone, and which connector it touches
-        is not known: every connector of the organisation is marked unsafe first, and the write is refused (the error propagates) when
-        the lookup or a mark fails. In an explicit transaction the rollback undoes it, and the marks are written when the block ends."""
-        if self.explicit:
-            return
-        provider = self.graph_provider._provider
-        if self._org_marked_for_unclassified:
-            # a long block renews its leases before a write, so the sweep never reads it as dead and closes it while it still writes.
-            # shortcut: nothing in the store fences the forwarded write itself. After a renewal at most half a lease plus the grace (420 s) separate
-            # this check from the sweep; after renewals that gave up, as little as the grace (a write at 602 s on a lease due at 600 s can be
-            # reclaimed at 720 s). A write that lands after the sweep closed its lease leaves a pass that ran in between reading current until the
-            # block's own mark lands (never, if the process dies first). Only without explicit transactions (NEO4J_EXPLICIT_TRANSACTIONS=false);
-            # upgrade with a fence checked in the write's own transaction.
-            if monotonic() - self._renewed_at > OPEN_WRITE_SECONDS / 2:
-                renewed = True
-                for connector_id in sorted(self.opened):
-                    old = self.opened[connector_id]
-                    before = await _lease_until(provider, connector_id, old)
-                    new = self.opened[connector_id] = await renew_write(provider, connector_id, old)
-                    # A renewal that gave up returns the old token and leaves the old deadline: the timer stays, so the next write tries again
-                    # (moving it would let two give-ups in a row skip renewal past the deadline and its grace).
-                    renewed &= new is None or new != old or (await _lease_until(provider, connector_id, new) or 0) > (before or 0)
-                if renewed:
-                    self._renewed_at = monotonic()
-            return
-        org_id = org_context.current().org_id
-        apps = await provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
-        seen = {c for c in self._connector_of.values() if c} | self.structural_connectors
-        ids = seen | {str(k) for a in apps if (k := a.get("_key") or a.get("id"))}
-        self._renewed_at = monotonic()
-        for connector_id in sorted(ids):
-            # Counted and leased in one compare-and-set: concurrent blocks each count, the connector is not current while opened > closed, and a
-            # block whose process dies leaves a lease that runs out, after which the sweep marks the connector unsafe and closes it (no roots: the
-            # write's reach is unknown).
-            self.opened[connector_id] = await open_write(provider, connector_id)
-        self._org_marked_for_unclassified = True
 
     async def _connector_of_node(self, collection: str, node_id: str) -> str | None:
         return (await self._connectors_of([(collection, node_id)])).get((collection, node_id))
@@ -1709,75 +1613,30 @@ class GraphDataStore(DataStoreProvider):
         without one the statements of the block already committed one by one, so the mark is written on its own and survives the failure."""
         transaction = tx_store.txn if tx_store.explicit else None
         for connector_id in sorted(connector_ids):
-            # Retried; if it never lands the connector stays opened (not current) and is not closed.
             for attempt in range(_MARK_ATTEMPTS):
                 try:
-                    # False: no such app document, so no mark was written and the opening must not be counted as closed
-                    if await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: new_unsafe_mark()}, transaction) is not False:
-                        tx_store.marked.add(connector_id)
+                    await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: new_unsafe_mark()}, transaction)
                     break
                 except Exception:
                     if attempt + 1 == _MARK_ATTEMPTS:
                         raise
                     await asyncio.sleep(0.2 * (attempt + 1))
 
-    async def _mark_unsafe_after_unclassified_write(self, tx_store: "GraphTransactionStore") -> None:
-        """A write nobody classified reached the provider, and which connector it touched is not known (the proxy sees a method
-        name, not a target): every connector of the organisation this block runs for may have changed structurally, so none of their
-        stamps is current. The connectors the transaction saw are marked first, then the organisation's, also when the block never
-        resolved a connector. The organisation comes from the ambient context, resolved here and not inside any ``try``: with none the
-        block fails (``MissingOrgContext``), because it cannot say what it changed and must not commit as if it were harmless."""
-        seen = {c for c in tx_store._connector_of.values() if c} | tx_store.structural_connectors
-        await self._mark_unsafe(tx_store, seen)
-        org_id = org_context.current().org_id
-        apps = await self.graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
-        await self._mark_unsafe(tx_store, {str(k) for a in apps if (k := a.get("_key") or a.get("id"))} - seen)
-        await self._close_opened(tx_store)
-
-    async def _close_opened(self, tx_store: "GraphTransactionStore") -> None:
-        """Close the writes this block opened on the connectors whose unsafe mark has been written (`close_write`: the lease is dropped and the write
-        counted closed in one compare-and-set, idempotent, so it is retried; a write opened without a lease is counted once, since a second increment
-        of an applied one would count a write that is still running as closed). A close that does not land (logged) leaves the connector opened, which
-        is not current, until its lease runs out and the sweep closes it."""
-        for connector_id in sorted((tx_store.opened.keys() & tx_store.marked) - tx_store.closed):
-            if tx_store.opened[connector_id] is None:
-                # a plain counter close is tried once for the whole block: an error proves nothing (the increment may have applied), and a second
-                # call (the failure path closes again) would count a write that is still running as closed
-                tx_store.closed.add(connector_id)
-            if await close_write(self.graph_provider, connector_id, tx_store.opened[connector_id]):
-                tx_store.closed.add(connector_id)
-                continue
-            self.logger.error("could not close the unclassified write on connector %s: it stays not current until its lease runs out (the sweep "
-                              "closes it) or, opened without a lease, until the next pass is run with --close-open-mark", connector_id)
-
     async def _mark_unsafe_after_failed_block(self, tx_store: "GraphTransactionStore") -> None:
-        """A block that failed without an explicit transaction left its earlier statements committed: the connectors a structural (or an
-        unclassified) write touched changed with no bump, so their stamps are marked unsafe. In an explicit transaction the rollback
-        undoes it all. Best effort: a mark that cannot be written is logged at error and never masks the failure."""
+        """A block that failed without an explicit transaction left its earlier statements committed: the connectors a structural write
+        touched changed with no bump, so their stamps are marked unsafe. In an explicit transaction the rollback undoes it all. Best
+        effort: a mark that cannot be written is logged at error and never masks the failure."""
         if not tx_store.tracked or tx_store.explicit:
             return
-        connectors = set(tx_store.structural_connectors)
-        if tx_store.unclassified_write:
-            try:  # the whole organisation, as when the block completes
-                await self._mark_unsafe_after_unclassified_write(tx_store)
-            except Exception:
-                self.logger.error("could not mark the connectors of the organisation scope-unsafe after a failed block")
-            connectors |= {c for c in tx_store._connector_of.values() if c}
-        for connector_id in sorted(connectors):
+        for connector_id in sorted(tx_store.structural_connectors):
             try:
                 await self._mark_unsafe(tx_store, [connector_id])
             except BaseException:
                 self.logger.error("could not mark connector %s scope-unsafe after a failed block", connector_id)
-        try:
-            await self._close_opened(tx_store)
-        except BaseException:
-            self.logger.error("could not close the unclassified writes of a failed block")
 
     async def _flush_scope_generation(self, tx_store: "GraphTransactionStore") -> None:
         if not tx_store.tracked:
             return
-        if tx_store.unclassified_write:
-            await self._mark_unsafe_after_unclassified_write(tx_store)
         touched = sorted(tx_store.structural_connectors)
         if not touched:
             return
