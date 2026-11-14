@@ -12,7 +12,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.connectors.core.base.connector.connector_service import IncompleteSyncError
-from app.connectors.sources.google.common.connector_google_exceptions import DriveSyncIncomplete
+from app.connectors.sources.google.common.connector_google_exceptions import (
+    DriveSyncIncomplete,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

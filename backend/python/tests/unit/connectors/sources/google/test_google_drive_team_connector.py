@@ -56,6 +56,7 @@ import io
 import logging
 import os
 import re
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -5117,7 +5118,7 @@ class TestSweepPlaceholderRecords:
         assert backfilled_record.is_placeholder is False
 
     @pytest.mark.asyncio
-    async def test_an_unreadable_ancestor_found_by_external_id_is_not_rewritten(self):
+    async def test_an_unreadable_ancestor_found_by_external_id_is_not_rewritten(self) -> None:
         """B is read and backfilled; its parent A, read back by external id (a plain Record in every graph store), can
         not be read at the source. A is kept as stored, not written: a plain Record fails every store's file write,
         which stopped the user's whole sync."""
@@ -5138,7 +5139,7 @@ class TestSweepPlaceholderRecords:
         backfilled_b.parent_external_record_id = "A"
         backfilled_b.parent_record_type = RecordType.FILE
 
-        async def _fake_generator(metadata, *args, **kwargs):
+        async def _fake_generator(metadata: list, *args: object, **kwargs: object) -> AsyncIterator[tuple]:
             for _ in metadata:
                 yield (backfilled_b, [], MagicMock())
 
