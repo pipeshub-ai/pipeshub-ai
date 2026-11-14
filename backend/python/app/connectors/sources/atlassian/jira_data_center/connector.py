@@ -211,6 +211,35 @@ class GroupPickerPage(NamedTuple):
     cut_off: bool = False
 
 
+# The Jira Data Center releases Atlassian supports, as of 2026-11-14: 10.2 to 11.3 (Atlassian Support End of Life
+# Policy, https://confluence.atlassian.com/support/atlassian-support-end-of-life-policy-201851003.html). Each one's
+# REST API was checked against its own specification (developer.atlassian.com/server/jira/platform/rest/v<NNNNN>/).
+DC_SUPPORTED_VERSIONS: tuple[tuple[int, int], tuple[int, int]] = ((10, 2), (11, 3))
+
+
+class DcRestProfile(NamedTuple):
+    """Where the documented REST APIs of the supported Jira Data Center versions differ. Everything else the connector
+    reads (applicationrole, group/member, the permission scheme and issue security routes, GET issue's 404) reads the
+    same in the specifications of 10.2 to 11.3."""
+
+    supported: bool
+    # GET /rest/api/2/user/list is in the 10.3 specification (from 10.3.13, JRASERVER-78660) and in 11.0 to 11.3,
+    # and not in 10.2 or 10.4 to 10.7, where /user/search is the only listing.
+    user_list: bool
+
+
+def dc_rest_profile(version: tuple[int, ...] | None) -> DcRestProfile:
+    """The profile of a Data Center version (``serverInfo``'s ``versionNumbers``). An unknown version is not supported:
+    the sync then keeps the stored links and links no one new, and tries the user list as before."""
+    if not version or len(version) < 2:
+        return DcRestProfile(supported=False, user_list=True)
+    release, patch = tuple(version[:2]), tuple((*version[:3], 0, 0)[:3])
+    return DcRestProfile(
+        supported=DC_SUPPORTED_VERSIONS[0] <= release <= DC_SUPPORTED_VERSIONS[1],
+        user_list=(10, 3, 13) <= patch < (10, 4, 0) or release >= (11, 0),
+    )
+
+
 class GroupMemberships(NamedTuple):
     """Group id/name -> members for role resolution. None marks a group whose members are unknown.
 
@@ -526,6 +555,9 @@ class JiraDataCenterConnector(BaseConnector):
         # Projects whose checkpoint holds ``people_handed`` after this sync's walk.
         self._handed_projects: set[str] = set()
         self._own_key: str | None = None  # the account the connector authenticates as
+        # The server's version (GET serverInfo) and what its REST API documents; read once per sync.
+        self._dc_version: tuple[int, ...] | None = None
+        self._dc_profile: DcRestProfile = dc_rest_profile(None)
         # Keys of the active members of the application roles' groups (Jira product access);
         # None when they could not all be read.
         self._licensed_keys: set[str] | None = None
@@ -928,6 +960,33 @@ class JiraDataCenterConnector(BaseConnector):
             email.strip() if isinstance(email, str) else None, self._own_key,
         )
 
+    async def _read_server_version(self) -> None:
+        """Read the server's version once per sync. GET /rest/api/2/serverInfo's ServerInfoBean has no documented
+        fields in the 10.2 to 11.3 specifications; Data Center answers ``versionNumbers`` (as Atlassian's own server,
+        jira.atlassian.com, does: ``"versionNumbers": [10, 3, 26]``), with ``version`` as text. Anything else leaves
+        the version unknown, which takes the unsupported path."""
+        version: tuple[int, ...] | None = None
+        try:
+            response = await (await self._get_fresh_datasource()).get_server_info_v2()
+            data = self._safe_json_parse(response, "GET /rest/api/2/serverInfo") \
+                if response and response.status == HttpStatusCode.OK.value else None
+            numbers = (data or {}).get("versionNumbers")
+            text = (data or {}).get("version")
+            if isinstance(numbers, list) and len(numbers) >= 2 and all(type(n) is int for n in numbers):
+                version = tuple(numbers)
+            elif isinstance(text, str) and re.fullmatch(r"\d+(\.\d+)+", text.strip()):
+                version = tuple(int(n) for n in text.strip().split("."))
+        except Exception as e:
+            self.logger.warning("Could not read the Jira Data Center version: %s", e)
+        self._dc_version, self._dc_profile = version, dc_rest_profile(version)
+        if not self._dc_profile.supported:
+            shown = ".".join(map(str, version)) if version else "unknown"
+            low, high = (".".join(map(str, v)) for v in DC_SUPPORTED_VERSIONS)
+            self.logger.warning(
+                "Jira Data Center version %s is not one the connector supports (%s to %s): accounts already linked "
+                "keep their access and no new account is linked", shown, low, high,
+            )
+
     async def run_sync(self) -> None:
         """
         Run sync of Jira projects and issues - only new/updated tickets
@@ -947,6 +1006,7 @@ class JiraDataCenterConnector(BaseConnector):
                     )
 
             await self._register_authenticated_identity()
+            await self._read_server_version()
 
             # Load sync and indexing filters (loaded in run_sync to ensure latest values)
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1547,6 +1607,7 @@ class JiraDataCenterConnector(BaseConnector):
         with self._keep_sync_state(*self._SYNC_STATE):
             self._kept_unread_access = False
             self._kept_after_refusal = []
+            await self._read_server_version()
             jira_users = await self._eligible_users(await self._fetch_users())
             # Linked here, they are no longer new to the next sync: its re-read of their issues is saved first.
             await self._note_newly_listed(jira_users)
@@ -1882,7 +1943,7 @@ class JiraDataCenterConnector(BaseConnector):
         self._user_bulk_refused = False
         self._user_bulk_incomplete = False
 
-        list_users = await self._fetch_users_via_list()
+        list_users = await self._fetch_users_via_list() if self._dc_profile.user_list else None
         if list_users is not None:
             return list_users
 
@@ -2446,7 +2507,8 @@ class JiraDataCenterConnector(BaseConnector):
         but the connector's own account, which uses Jira.
         """
         self._app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
-        self._licensed_keys = await self._read_licensed_keys()
+        # On a version whose REST API was not checked, product access is not taken from it.
+        self._licensed_keys = await self._read_licensed_keys() if self._dc_profile.supported else None
         eligible = self._licensed_keys
         if eligible is None:
             eligible = {u.source_user_id for u in self._stored_app_users} | {self._own_key}

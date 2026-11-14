@@ -33,6 +33,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
 )
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
+    dc_rest_profile,
 )
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
@@ -627,6 +628,7 @@ async def test_a_reader_who_loses_jira_product_access_reads_nothing(world: dict[
     connector._get_fresh_datasource = AsyncMock(return_value=MagicMock(get_all_application_roles_v2=AsyncMock(return_value=roles)))
     connector._fetch_group_members = AsyncMock(return_value=[PEOPLE[n] for n in PEOPLE if n != "carol"])
     connector._stored_app_users = await world["processor"].get_all_app_users(world["connector_id"])
+    connector._dc_profile = dc_rest_profile((11, 3, 13))  # a supported version, as serverInfo would say
 
     kept = await connector._eligible_users(_users(world))
 

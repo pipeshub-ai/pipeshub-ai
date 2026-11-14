@@ -85,6 +85,7 @@ def _jira(cls: type) -> MagicMock:
     c._sync_project_lead_roles = AsyncMock()
     c.data_entities_processor.on_new_app_users = AsyncMock()
     c._note_newly_listed = AsyncMock(return_value=[])
+    c._read_server_version = AsyncMock()
     return c
 
 

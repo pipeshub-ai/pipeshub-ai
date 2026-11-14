@@ -189,6 +189,7 @@ LICENSED = ("alice-key", "bob-key", "carol-key", "dave-key")
 def stub_site(api: AtlassianApiStub, search: IssueSearch) -> None:
     """A small but complete Jira DC site: users, groups, roles, one project, its ACL."""
     api.on("GET", f"{API}/field", json_response([{"id": EPIC_FIELD, "name": "Epic Link", "schema": {"custom": DC_EPIC_LINK_SCHEMA_CUSTOM}}]))
+    api.on("GET", f"{API}/serverInfo", {"version": "11.3.13", "versionNumbers": [11, 3, 13], "deploymentType": "Server"})
 
     def user_list(request: httpx.Request) -> httpx.Response:
         if AtlassianApiStub.query(request).get("cursor") == "abc":
@@ -1018,6 +1019,86 @@ class TestProductAccess:
         await connector.run_sync()
 
         assert db.app_users == [] and [u.email for u in db.withdrawn_users] == ["bob@example.com"]
+
+
+class TestVersions:
+    """Behaviour per Jira Data Center version, each checked against that version's REST specification
+    (developer.atlassian.com/server/jira/platform/rest/v<NNNNN>/): the oldest supported (10.2), the 10.3 LTS before
+    and after /user/list was added (10.3.13), a middle release without it (10.5) and the newest (11.3)."""
+
+    @staticmethod
+    def _searchable_directory(jira: AtlassianApiStub) -> None:
+        """/user/search with username "." lists the directory, as on these versions."""
+        everyone = [user("alice-key", "alice", "alice@example.com"), user("bob-key", "bob", "bob@example.com"),
+                    user("carol-key", "carol", "carol@example.com")]
+        jira.on("GET", f"{API}/user/search", lambda request: json_response(
+            everyone if AtlassianApiStub.query(request).get("username") == "." else []))
+
+    @pytest.mark.parametrize(
+        ("version", "supported", "user_list"),
+        [
+            pytest.param((10, 2, 1), True, False, id="10.2 oldest supported"),
+            pytest.param((10, 3, 12), True, False, id="10.3 before the user list"),
+            pytest.param((10, 3, 13), True, True, id="10.3 with the user list"),
+            pytest.param((10, 5, 1), True, False, id="10.5 middle"),
+            pytest.param((11, 0, 1), True, True, id="11.0"),
+            pytest.param((11, 3, 13), True, True, id="11.3 newest"),
+            pytest.param((9, 12, 20), False, False, id="9.12 out of support"),
+            pytest.param((11, 4, 0), False, True, id="a release not checked yet"),
+            pytest.param(None, False, True, id="unknown"),
+        ],
+    )
+    def test_the_rest_profile_of_each_version(self, version, supported, user_list) -> None:
+        from app.connectors.sources.atlassian.jira_data_center.connector import (
+            dc_rest_profile,
+        )
+
+        assert dc_rest_profile(version) == (supported, user_list)
+
+    @pytest.mark.parametrize(
+        ("server_info", "lists"),
+        [
+            pytest.param({"version": "10.2.1", "versionNumbers": [10, 2, 1]}, False, id="10.2"),
+            pytest.param({"version": "10.5.1", "versionNumbers": [10, 5, 1]}, False, id="10.5"),
+            pytest.param({"version": "10.3.13", "versionNumbers": [10, 3, 13]}, True, id="10.3.13"),
+            pytest.param({"version": "11.3.13"}, True, id="11.3 from the version text"),
+        ],
+    )
+    async def test_the_user_list_is_read_only_where_its_version_documents_it(
+        self, jira, db, store, search, server_info, lists,
+    ) -> None:
+        stub_site(jira, search)
+        self._searchable_directory(jira)
+        jira.on("GET", f"{API}/serverInfo", server_info)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert bool(jira.calls("GET", f"{API}/user/list")) is lists
+        assert "alice@example.com" in {u.email for u in db.app_users}
+
+    @pytest.mark.parametrize(
+        "server_info",
+        [
+            pytest.param(json_response({"version": "9.12.20", "versionNumbers": [9, 12, 20]}), id="9.12"),
+            pytest.param(json_response({"version": "12.0.0", "versionNumbers": [12, 0, 0]}), id="a later release"),
+            pytest.param(json_response({"errorMessages": ["busy"]}, status=503), id="unreadable"),
+            pytest.param(json_response({"version": "next"}), id="no version number"),
+        ],
+    )
+    async def test_an_unsupported_or_unknown_version_links_no_one_new_and_withdraws_no_one(
+        self, jira, db, store, search, server_info,
+    ) -> None:
+        stub_site(jira, search)
+        self._searchable_directory(jira)
+        jira.on("GET", f"{API}/serverInfo", server_info)
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"} and db.withdrawn_users == []
 
 
 class TestUserDirectoryFallbacks:
