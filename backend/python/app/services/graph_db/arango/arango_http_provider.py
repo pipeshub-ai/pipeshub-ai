@@ -8183,7 +8183,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Fallback for unmatched inputs: find legacy unnormalized rows with mixed-case stored emails
             unmatched = [e for e in wanted if e not in found or not found[e].is_active]
-            if unmatched:
+            is_backfilled = False
+            if unmatched and hasattr(self, "config_service") and self.config_service:
+                try:
+                    flag = await self.config_service.get_config(USER_EMAIL_NORMALIZATION_FLAG)
+                    is_backfilled = bool(flag and flag.get("done") is True)
+                except Exception:
+                    is_backfilled = False
+
+            if unmatched and not is_backfilled:
                 legacy_query = f"""
                 FOR user IN {CollectionNames.USERS.value}
                     {org_filter}
@@ -8256,11 +8264,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if is_active:
                     return candidate
 
-            # Legacy fallback during rollout: runs separately only for scoped lookups when
-            # indexed lookup does not find an active user and backfill is not yet complete.
-            if not scoped:
-                return candidate
-
+            # Legacy fallback during rollout: runs when indexed lookup does not find an active
+            # user and backfill is not yet complete.
             is_backfilled = False
             if hasattr(self, "config_service") and self.config_service:
                 try:
@@ -9008,14 +9013,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 LIMIT 1
                 RETURN doc
             """
-            bind_vars: dict[str, Any] = {
+            exact_bind_vars: dict[str, Any] = {
                 "email": email.lower(),
-                "stripped": email.strip().lower(),
                 "org_id": org_id,
             }
 
             results = await self.http_client.execute_aql(
-                exact_query, bind_vars=bind_vars, txn_id=transaction
+                exact_query, bind_vars=exact_bind_vars, txn_id=transaction
             )
             if results:
                 return Person.from_arango_person(results[0])
@@ -9026,8 +9030,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 LIMIT 1
                 RETURN doc
             """
+            fallback_bind_vars: dict[str, Any] = {
+                "stripped": email.strip().lower(),
+                "org_id": org_id,
+            }
             fallback_results = await self.http_client.execute_aql(
-                fallback_query, bind_vars=bind_vars, txn_id=transaction
+                fallback_query, bind_vars=fallback_bind_vars, txn_id=transaction
             )
             return Person.from_arango_person(fallback_results[0]) if fallback_results else None
         except Exception as e:

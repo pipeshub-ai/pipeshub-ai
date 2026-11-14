@@ -6315,7 +6315,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Fallback for unmatched inputs: find legacy unnormalized rows with mixed-case stored emails
             unmatched = [e for e in wanted if e not in found or not found[e].is_active]
-            if unmatched:
+            is_backfilled = False
+            if unmatched and hasattr(self, "config_service") and self.config_service:
+                try:
+                    flag = await self.config_service.get_config(USER_EMAIL_NORMALIZATION_FLAG)
+                    is_backfilled = bool(flag and flag.get("done") is True)
+                except Exception:
+                    is_backfilled = False
+
+            if unmatched and not is_backfilled:
                 legacy_where = "WHERE u.orgId = $org_id AND toLower(trim(u.email)) IN $emails" if scoped else "WHERE toLower(trim(u.email)) IN $emails"
                 legacy_query = f"""
                 MATCH (u:User)
@@ -6387,11 +6395,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if is_active:
                     return candidate
 
-            # Legacy fallback query during rollout: runs only when backfill is not complete
-            # and only for scoped lookups to avoid full table scans across all users.
-            if not scoped:
-                return candidate
-
+            # Legacy fallback query during rollout: runs when backfill is not complete.
             is_backfilled = False
             if hasattr(self, "config_service") and self.config_service:
                 try:
@@ -6401,9 +6405,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     is_backfilled = False
 
             if not is_backfilled:
-                legacy_query = """
+                legacy_where = "WHERE u.orgId = $org_id AND toLower(trim(u.email)) = $email" if scoped else "WHERE toLower(trim(u.email)) = $email"
+                legacy_query = f"""
                 MATCH (u:User)
-                WHERE u.orgId = $org_id AND toLower(trim(u.email)) = $email
+                {legacy_where}
                 RETURN u
                 ORDER BY coalesce(u.isActive, false) DESC, u.id ASC
                 LIMIT 1
@@ -10983,7 +10988,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             lookup_emails = list(dict.fromkeys([e for e in (email, email.strip().lower()) if e]))
             query = """
             MATCH (n)
-            WHERE (n:User OR n:Group OR n:Person OR n:People)
+            WHERE (n:User OR n:Group OR n:Person)
             AND n.email IN $emails
             RETURN n.id AS id
             LIMIT 1
@@ -11001,7 +11006,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Fallback for unnormalized legacy nodes
             fallback_query = """
             MATCH (n)
-            WHERE (n:User OR n:Group OR n:Person OR n:People)
+            WHERE (n:User OR n:Group OR n:Person)
             AND toLower(trim(n.email)) = $email
             RETURN n.id AS id
             LIMIT 1
@@ -11041,7 +11046,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             query = """
             MATCH (n)
-            WHERE (n:User OR n:Group OR n:Person OR n:People)
+            WHERE (n:User OR n:Group OR n:Person)
             AND n.email IN $emails
             RETURN n.email AS email, n.id AS id, labels(n) AS labels
             """
@@ -11084,7 +11089,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 unmatched_norm = list(dict.fromkeys(e.strip().lower() for e in unmatched if e))
                 fallback_query = """
                 MATCH (n)
-                WHERE (n:User OR n:Group OR n:Person OR n:People)
+                WHERE (n:User OR n:Group OR n:Person)
                 AND toLower(trim(n.email)) IN $emails
                 RETURN n.email AS email, n.id AS id, labels(n) AS labels
                 """

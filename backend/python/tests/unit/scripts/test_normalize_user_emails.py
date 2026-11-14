@@ -10,6 +10,7 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames
 from app.scripts.normalize_user_emails import (
+    EXIT_INVALID,
     EXIT_PARTIAL,
     EXIT_SUCCESS,
     build_parser,
@@ -190,3 +191,49 @@ async def test_stalled_batch_apply_mode_halts_and_fails_batch() -> None:
     assert completed["total_scanned"] == 1
     assert completed["total_updated"] == 1
     assert completed["failed_batches"] == 1
+
+
+def test_batch_size_validation_cli() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--org", "o1", "--batch-size", "0"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--org", "o1", "--batch-size", "-10"])
+
+
+@pytest.mark.asyncio
+async def test_batch_size_validation_programmatic() -> None:
+    graph = MagicMock()
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(graph, org_id="o1", apply=False, logger=logger, out=out, batch_size=0)
+    assert code == EXIT_INVALID
+    lines = _lines(out)
+    assert lines[0]["error"] == "Batch size must be a positive integer."
+
+
+@pytest.mark.asyncio
+async def test_all_orgs_enumerates_inactive_and_external_and_deduplicates() -> None:
+    graph = MagicMock()
+    internal_docs = [{"id": "org_1"}, {"id": "org_2"}]
+    external_docs = [{"id": "org_2"}, {"_key": "org_3"}]
+    graph.get_all_orgs = AsyncMock(side_effect=[internal_docs, external_docs])
+    graph.fetch_unnormalized_users = AsyncMock(return_value=[])
+
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(graph, all_orgs=True, apply=False, logger=logger, out=out)
+    assert code == EXIT_SUCCESS
+
+    # Verify both calls were made to get_all_orgs with active=False
+    assert graph.get_all_orgs.await_count == 2
+    first_call = graph.get_all_orgs.await_args_list[0].kwargs
+    second_call = graph.get_all_orgs.await_args_list[1].kwargs
+    assert first_call["active"] is False and first_call["is_external"] is False
+    assert second_call["active"] is False and second_call["is_external"] is True
+
+    # Verify fetch was called for exactly org_1, org_2, org_3 (deduplicated)
+    called_orgs = [call.args[0] for call in graph.fetch_unnormalized_users.await_args_list]
+    assert called_orgs == ["org_1", "org_2", "org_3"]

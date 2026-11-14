@@ -245,6 +245,10 @@ async def run_normalization(
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
     """Entrypoint to normalize user emails across one or all organizations."""
+    if batch_size <= 0:
+        out.write(json.dumps({"error": "Batch size must be a positive integer."}) + "\n")
+        return EXIT_INVALID
+
     if not org_id and not all_orgs:
         out.write(json.dumps({"error": "Either --org or --all-orgs must be provided."}) + "\n")
         return EXIT_INVALID
@@ -252,17 +256,24 @@ async def run_normalization(
     total_stats = {"total_scanned": 0, "total_updated": 0, "total_failed_batches": 0}
 
     if org_id:
-        target_orgs = [org_id]
+        target_orgs = [str(org_id)]
     else:
         try:
             with org_context.system("normalize_user_emails.get_all_orgs"):
-                org_docs = await graph.get_all_orgs(raise_on_error=True)
+                internal_orgs = await graph.get_all_orgs(
+                    active=False, is_external=False, raise_on_error=True
+                )
+                external_orgs = await graph.get_all_orgs(
+                    active=False, is_external=True, raise_on_error=True
+                )
+                org_docs = (internal_orgs or []) + (external_orgs or [])
         except Exception as exc:
             logger.exception("Failed to enumerate organizations")
             out.write(json.dumps({"error": type(exc).__name__, "message": str(exc)}) + "\n")
             return EXIT_INVALID
 
         target_orgs = []
+        seen_orgs = set()
         for o in org_docs or []:
             if not o:
                 continue
@@ -271,7 +282,10 @@ async def run_normalization(
                 logger.error("Organization document is missing id or _key: %s", o)
                 out.write(json.dumps({"error": "InvalidOrganizationDocument", "doc": o}) + "\n")
                 return EXIT_INVALID
-            target_orgs.append(str(oid))
+            sid = str(oid)
+            if sid not in seen_orgs:
+                seen_orgs.add(sid)
+                target_orgs.append(sid)
 
     for target in target_orgs:
         try:
@@ -329,6 +343,16 @@ async def normalize_all_orgs(
     )
 
 
+def _positive_int(val: str) -> int:
+    try:
+        ival = int(val)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Invalid integer value: {val!r}") from None
+    if ival <= 0:
+        raise argparse.ArgumentTypeError(f"Batch size must be a positive integer, got {ival}")
+    return ival
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="normalize_user_emails",
@@ -345,7 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--batch-size",
-        type=int,
+        type=_positive_int,
         default=DEFAULT_BATCH_SIZE,
         help=f"Number of records per update batch (default: {DEFAULT_BATCH_SIZE})",
     )
