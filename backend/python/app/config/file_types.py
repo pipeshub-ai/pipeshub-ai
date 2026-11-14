@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Final, Literal
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-REGISTRY_VERSION: Final = 1
+REGISTRY_VERSION: Final = 2
 
 Tier = Literal["heavy", "light"]
 MimeRole = Literal["gate", "parse", "tier", "kind", "ext_hint", "code", "reconcile", "ooxml"]
@@ -56,6 +56,18 @@ class Route(StrEnum):
     YAML = "yaml"
     IMAGE = "image"
     CODE = "code"
+    LIBREOFFICE_DOCX = "libreoffice_docx"
+    MSG = "msg"
+    PLAIN_TEXT = "plain_text"
+
+
+class Prep(StrEnum):
+    """What the indexer does to a file's bytes before either pipeline parses them."""
+
+    NONE = "none"
+    OOXML_WORD = "ooxml_word"  # macro-enabled or template Word package, rewritten as a plain .docx
+    OOXML_SLIDES = "ooxml_slides"  # PowerPoint template, rewritten as a plain .pptx
+    CAPPED_TEXT = "capped_text"  # text kept to its head and tail, decoded to UTF-8
 
 
 class FilterRole(StrEnum):
@@ -92,6 +104,18 @@ class FileType:
     upload_mime: str | None = None  # Node's value when it is not the canonical mime
     preview: bool = False  # repository connectors render it as a document preview
     internal: bool = False  # a PipesHub type, not a file extension a user has
+    prep: Prep = Prep.NONE
+    ext_wins: bool = False  # the extension decides over any mime, text/plain included
+    odf_container: bool = False  # its encrypted form is a zip whose manifest lists encryption data
+    blocks_like: str | None = None  # the extension its blocks are cited as (sheet rows, pages)
+    since: int = 1  # the REGISTRY_VERSION that made it indexable
+    route_since: int = 1  # the REGISTRY_VERSION that gave its extension a dispatch branch
+    # A FILE stored as text/plain is read as this type, not as text: what was read as text before
+    # was the package's raw bytes. False for log/cfg, which stay on the text path they had.
+    wins_over_text_plain: bool = False
+    # Checked for a password by its extension or mime wherever it is routed. Off for dotx/potx,
+    # which are checked only when read as themselves, so a cell read as another type stays as it was.
+    password_check_by_name: bool = True
 
     @property
     def indexable(self) -> bool:
@@ -100,6 +124,16 @@ class FileType:
     @property
     def canonical_mime(self) -> str | None:
         return self.mimes[0] if self.mimes else self.alias_mime
+
+
+_DOCX_BASE = "application/vnd.openxmlformats-officedocument.wordprocessingml"
+_PPTX_BASE = "application/vnd.openxmlformats-officedocument.presentationml"
+_DOCX = f"{_DOCX_BASE}.document"
+_PPTX = f"{_PPTX_BASE}.presentation"
+_DOCM = "application/vnd.ms-word.document.macroEnabled.12"
+_XLSM = "application/vnd.ms-excel.sheet.macroEnabled.12"
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_OCTET = "application/octet-stream"
 
 
 def _roles(*names: MimeRole) -> frozenset[MimeRole]:
@@ -201,8 +235,15 @@ _MIME_ROLES: dict[str, frozenset[MimeRole]] = {
         "image/x-webp",
         "image/svg", "application/svg+xml", "text/xml-svg", "application/xml-svg",
     ), _HINT),
-    "application/vnd.ms-word.document.macroEnabled.12": _OOXML,
-    "application/vnd.ms-excel.sheet.macroEnabled.12": _OOXML,
+    _DOCM: _ALL | _roles("ooxml"),
+    _XLSM: _ALL | _roles("ooxml"),
+    f"{_DOCX_BASE}.template": _ALL,
+    f"{_PPTX_BASE}.template": _ALL,
+    "application/vnd.ms-outlook": _ALL,
+    "application/vnd.oasis.opendocument.text": _ALL,
+    "application/rtf": _ALL,
+    "text/rtf": _ALL,
+    "application/x-rtf": _ALL,
     "application/vnd.ms-powerpoint.presentation.macroEnabled.12": _OOXML,
 }
 
@@ -219,7 +260,6 @@ _EXT_HINT_OVERRIDES: dict[str, str] = {
     "image/svg+xml; charset=utf-8": "svg",
     "application/msword; charset=utf-8": "doc",
     "application/x-msword; charset=utf-8": "doc",
-    "application/vnd.ms-excel.sheet.macroEnabled.12": "xls",
     "application/vnd.ms-excel; charset=utf-8": "xls",
     "application/csv; charset=utf-8": "csv",
     "text/csv; charset=utf-8": "csv",
@@ -247,7 +287,7 @@ _EXT_HINT_OVERRIDES: dict[str, str] = {
 
 def _offer(**kw: object) -> FileType:
     """An indexable type the extension filter offers."""
-    return FileType(ext_indexable=True, filter=FilterRole.OFFER, preview=True, **kw)  # type: ignore[arg-type]
+    return FileType(**{"ext_indexable": True, "filter": FilterRole.OFFER, "preview": True, **kw})  # type: ignore[arg-type]
 
 
 def _code(key: str, mimes: tuple[str, ...] = (), *, extensions: tuple[str, ...] | None = None,
@@ -260,12 +300,20 @@ def _code(key: str, mimes: tuple[str, ...] = (), *, extensions: tuple[str, ...] 
     )
 
 
-def _legacy_code(key: str, mimes: tuple[str, ...] = (), *, repo_code: bool = True) -> FileType:
-    """A grammar the code parser has whose extension the FILE gate still refuses."""
-    return FileType(
-        key=key, format="code", extensions=(key,), mimes=mimes, grammar=True,
-        repo_code=repo_code, filter=FilterRole.OFFER_LEGACY, preview=True,
+def _grammar(key: str, mimes: tuple[str, ...] = (), *, repo_code: bool = True) -> FileType:
+    """A grammar the code parser has; the gate takes it by extension only."""
+    return _offer(
+        key=key, format="code", extensions=(key,), mimes=mimes, grammar=True, repo_code=repo_code,
+        route=Route.CODE, since=2,
     )
+
+
+def _new(**kw: object) -> FileType:
+    """A type the extension decides, whatever mime a connector stored with it."""
+    return _offer(**{
+        "ext_wins": True, "mime_indexable": True, "upload": True, "since": 2, "preview": False,
+        "wins_over_text_plain": True, **kw,
+    })
 
 
 def _repo_text(key: str, mime: str | None = None) -> FileType:
@@ -297,11 +345,6 @@ def _stored(key: str, mime: str | None = None, *, alias: str | None = None,
 def _internal(key: str, *mimes: str, **kw: object) -> FileType:
     return FileType(key=key, mimes=mimes, internal=True, **kw)  # type: ignore[arg-type]
 
-
-_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-_PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-_OCTET = "application/octet-stream"
 
 # Offered types come first, in the order the extension filter lists them; the exclude-only types
 # follow in their filter order.
@@ -424,16 +467,15 @@ FILE_TYPES: tuple[FileType, ...] = (
     _code("dart", ("application/dart",)),
     _code("sh", ("application/x-sh", "text/x-sh", "text/x-shellscript"), extensions=("sh", "bash"),
           fmt="txt"),
-    _legacy_code("pyi"),
-    _legacy_code("mts", repo_code=False),
-    _legacy_code("cts", repo_code=False),
-    _legacy_code("scala", ("text/x-scala",)),
-    _legacy_code("groovy", ("text/x-groovy",)),
-    _legacy_code("gradle"),
-    _legacy_code("lua", ("text/x-lua",)),
-    # The legacy dispatch has no branch for it (F23): the gate passes it and the parse fails.
+    _grammar("pyi"),
+    _grammar("mts", repo_code=False),
+    _grammar("cts", repo_code=False),
+    _grammar("scala", ("text/x-scala",)),
+    _grammar("groovy", ("text/x-groovy",)),
+    _grammar("gradle"),
+    _grammar("lua", ("text/x-lua",)),
     _offer(key="htm", format="html", extensions=("htm",), alias_mime="text/html", tier="light",
-           kind="text", repo_code=True, file_mime_map=True, upload=True),
+           kind="text", route=Route.HTML, route_since=2, repo_code=True, file_mime_map=True, upload=True),
     FileType(key="blocks", format="blocks", extensions=("blocks",), mimes=("application/blocks",),
              mime_indexable=True, mime_tier="light", route=Route.BLOCKS,
              filter=FilterRole.OFFER_LEGACY, preview=True, internal=True),
@@ -444,6 +486,34 @@ FILE_TYPES: tuple[FileType, ...] = (
            mimes=("application/yaml", "application/x-yaml", "text/yaml"), mime_indexable=True,
            tier="light", mime_tier="light", kind="text", mime_kind="text", route=Route.YAML,
            legacy_parser=True, file_mime_map=True, upload=True, upload_mime="application/x-yaml"),
+    _new(key="msg", format="msg", extensions=("msg",), mimes=("application/vnd.ms-outlook",),
+         tier="light", mime_tier="light", kind="text", mime_kind="text", route=Route.MSG,
+         blocks_like="html"),
+    _new(key="odt", format="odt", extensions=("odt",), mimes=("application/vnd.oasis.opendocument.text",),
+         tier="heavy", mime_tier="heavy", kind="docling_docx", mime_kind="docling_docx",
+         route=Route.LIBREOFFICE_DOCX, odf_container=True, libreoffice_from="odt", blocks_like="docx"),
+    _new(key="rtf", format="rtf", extensions=("rtf",),
+         mimes=("application/rtf", "text/rtf", "application/x-rtf"), tier="heavy", mime_tier="heavy",
+         kind="docling_docx", mime_kind="docling_docx", route=Route.LIBREOFFICE_DOCX,
+         libreoffice_from="rtf", blocks_like="docx", upload_mime="text/rtf"),
+    _new(key="xlsm", format="xlsx", extensions=("xlsm",), mimes=(_XLSM,), tier="heavy",
+         mime_tier="heavy", kind="excel_load", mime_kind="excel_load", route=Route.XLSX,
+         ooxml_container=True, blocks_like="xlsx"),
+    _new(key="log", format="log", extensions=("log",), alias_mime="text/plain", mime_indexable=False,
+         wins_over_text_plain=False,
+         tier="light", kind="text", route=Route.PLAIN_TEXT, prep=Prep.CAPPED_TEXT, blocks_like="txt"),
+    _new(key="cfg", format="cfg", extensions=("cfg",), alias_mime="text/plain", mime_indexable=False,
+         wins_over_text_plain=False,
+         tier="light", kind="text", route=Route.PLAIN_TEXT, prep=Prep.CAPPED_TEXT, blocks_like="txt"),
+    _new(key="docm", format="docm", extensions=("docm",), mimes=(_DOCM,), tier="heavy",
+         mime_tier="heavy", kind="docling_docx", mime_kind="docling_docx", route=Route.DOCX,
+         prep=Prep.OOXML_WORD, ooxml_container=True, blocks_like="docx"),
+    _new(key="dotx", format="dotx", password_check_by_name=False, extensions=("dotx",), mimes=(f"{_DOCX_BASE}.template",),
+         tier="heavy", mime_tier="heavy", kind="docling_docx", mime_kind="docling_docx",
+         route=Route.DOCX, prep=Prep.OOXML_WORD, ooxml_container=True, blocks_like="docx"),
+    _new(key="potx", format="potx", password_check_by_name=False, extensions=("potx",), mimes=(f"{_PPTX_BASE}.template",),
+         tier="heavy", mime_tier="heavy", kind="docling_docx", mime_kind="docling_docx",
+         route=Route.PPTX, prep=Prep.OOXML_SLIDES, ooxml_container=True, blocks_like="pptx"),
     # Exclude-only, in filter order.
     _exclude("zip", "application/zip", file_mime_map=True),
     _exclude("7z", "application/x-7z-compressed"),
@@ -470,7 +540,6 @@ FILE_TYPES: tuple[FileType, ...] = (
     _exclude("bak"),
     _exclude("swp"),
     _exclude("lock"),
-    _exclude("log", alias="text/plain"),
     _exclude("mp4", "video/mp4"),
     _exclude("mov", "video/quicktime"),
     _exclude("avi", "video/x-msvideo"),
@@ -489,11 +558,7 @@ FILE_TYPES: tuple[FileType, ...] = (
                               "tf", "tfvars")),
     _repo_text("css", "text/css"),
     _repo_text("sql", "application/sql"),
-    # Office containers only the password check knows.
-    FileType(key="docm", extensions=("docm",), mimes=("application/vnd.ms-word.document.macroEnabled.12",),
-             ooxml_container=True),
-    FileType(key="xlsm", extensions=("xlsm",), mimes=("application/vnd.ms-excel.sheet.macroEnabled.12",),
-             kind="excel_load", ooxml_container=True),
+    # An Office container only the password check knows.
     FileType(key="pptm", extensions=("pptm",),
              mimes=("application/vnd.ms-powerpoint.presentation.macroEnabled.12",), ooxml_container=True),
     # PipesHub's own types: connectors write these mimes, no file carries them.
@@ -534,10 +599,8 @@ FILE_TYPES: tuple[FileType, ...] = (
     _stored("avif", "image/avif"),
     _stored("jxr", "image/jxr"),
     _stored("icns", "image/x-icns"),
-    _stored("odt", "application/vnd.oasis.opendocument.text"),
     _stored("ods", "application/vnd.oasis.opendocument.spreadsheet"),
     _stored("odp", "application/vnd.oasis.opendocument.presentation"),
-    _stored("rtf", "text/rtf"),
     FileType(key="xml", extensions=("xml",), mimes=("application/xml",), file_mime_map=True, upload=True,
              upload_mime="text/xml"),
     _stored("appmdx", alias="application/mdx"),
@@ -591,7 +654,6 @@ FILE_TYPES: tuple[FileType, ...] = (
     _stored("dcm", "application/dicom"),
     _stored("nii", "application/x-nifti"),
     _stored("mrc", "application/marc"),
-    _stored("msg", "application/vnd.ms-outlook"),
     _stored("pages", "application/x-iwork-pages-sffpages"),
     _stored("numbers", "application/x-iwork-numbers-sffnumbers"),
     _stored("key", "application/x-iwork-keynote-sffkey"),
@@ -737,8 +799,10 @@ MIME_EXTENSION_HINTS: Final = {
     **_EXT_HINT_OVERRIDES,
 }
 
-OOXML_EXTENSIONS: Final = frozenset(_extensions(ft for ft in FILE_TYPES if ft.ooxml_container))
-OOXML_MIMES: Final = frozenset(m.lower() for m, _ in _spellings("ooxml"))
+OOXML_EXTENSIONS: Final = frozenset(_extensions(
+    ft for ft in FILE_TYPES if ft.ooxml_container and ft.password_check_by_name
+))
+OOXML_MIMES: Final = frozenset(m.lower() for m, ft in _spellings("ooxml") if ft.password_check_by_name)
 
 DOCLING_NAME_EXTENSIONS: Final = {
     ext: ft.docling_name_ext for ft in FILE_TYPES if ft.docling_name_ext for ext in ft.extensions
@@ -751,21 +815,88 @@ FILE_MIME_MAP: Final = {
     ext: ft.canonical_mime for ft in FILE_TYPES if ft.file_mime_map for ext in ft.extensions
 }
 
-_TIER_BY_MIME: Final = _mime_side({m: ft for m, ft in _spellings("tier") if ft.mime_tier})
-_KIND_BY_MIME: Final = _mime_side({m: ft for m, ft in _spellings("kind") if ft.mime_kind})
+# Every spelling of a type the gate takes by mime, case and parameters aside. Source code is left
+# out: the code route is chosen by the exact code mimes (or the extension), so a code mime in
+# another spelling stays as unknown as it always was.
+_ROUTED_MIMES: Final = {
+    normalize_mime(m): ft
+    for ft in FILE_TYPES
+    if ft.mime_indexable and ft.route is not Route.CODE
+    for m in ft.mimes
+}
+
+
+def _routed_spellings(field: str) -> dict[str, FileType]:
+    return {m: ft for m, ft in _ROUTED_MIMES.items() if getattr(ft, field)}
+
+
+_TIER_BY_MIME: Final = {
+    **_mime_side({m: ft for m, ft in _spellings("tier") if ft.mime_tier}),
+    **_routed_spellings("mime_tier"),
+}
+_KIND_BY_MIME: Final = {
+    **_mime_side({m: ft for m, ft in _spellings("kind") if ft.mime_kind}),
+    **_routed_spellings("mime_kind"),
+}
+_FORMAT_BY_MIME: Final = {
+    **{normalize_mime(m): ft.format for m, ft in _spellings("parse") if ft.format},
+    **{m: ft.format for m, ft in _routed_spellings("format").items()},
+}
+
+
+# The mimes the dispatch matched before the registry's second version, each as it matched it
+# (exactly), and the extensions it had a branch for. Whatever these route keeps that route.
+_MAIN_CHAIN_MIMES: Final = {
+    **{
+        ft.mimes[0]: ft
+        for ft in FILE_TYPES
+        if ft.since == 1 and ft.mime_indexable and ft.route not in (None, Route.CODE) and ft.mimes
+    },
+    "image/jpg": _BY_MIME["image/jpg"],
+}
+_MAIN_CHAIN_EXTENSIONS: Final = {
+    ext: ft
+    for ft in FILE_TYPES
+    if ft.since == 1 and ft.route_since == 1 and ft.ext_indexable and ft.route not in (None, Route.CODE)
+    for ext in ft.extensions
+}
+
+
+def _new_type_wins(ft: FileType, mime_type: object, *, is_code_file_record: bool = False) -> bool:
+    """Whether a type the extension decides is read as itself rather than as its stored mime.
+
+    Only where the dispatch read nothing before: a mime it had a branch for keeps that branch
+    (a .log stored as application/json stays JSON), except text/plain for the packages whose raw
+    bytes were read as text. A CODE_FILE was judged on its extension and refused, so it is free.
+    """
+    if is_code_file_record or not isinstance(mime_type, str):
+        return True
+    if mime_type in CODE_MIMES:
+        return False
+    if mime_type == "text/plain":
+        return ft.wins_over_text_plain
+    return mime_type not in _MAIN_CHAIN_MIMES
+
+
+# xlsm had its parse kind by extension before it was indexable; it keeps it whatever the mime.
+_KIND_BY_EXTENSION_BEFORE: Final = frozenset({"xlsm"})
+
+
+def _extension_decides(ft: FileType, mime_type: object) -> bool:
+    return not ft.ext_wins or _new_type_wins(ft, mime_type)
 
 
 def tier(extension: str | None, mime_type: str | None) -> Tier:
     """Parse tier: by extension, else by mime, else heavy (the safe side for an unknown format).
 
-    The mime is lower-cased (not otherwise normalised) before the extension is looked at, so a
-    malformed mime fails the same way whatever the extension.
+    The mime is lower-cased before the extension is looked at, so a malformed mime fails the
+    same way whatever the extension.
     """
     mime_key = (mime_type or "").lower()
     ft = _BY_EXTENSION.get(normalize_extension(extension))
-    if ft is not None and ft.tier:
+    if ft is not None and ft.tier and _extension_decides(ft, mime_type):
         return ft.tier
-    ft = _TIER_BY_MIME.get(mime_key)
+    ft = _TIER_BY_MIME.get(mime_key) or _TIER_BY_MIME.get(normalize_mime(mime_key))
     if ft is not None and ft.mime_tier:
         return ft.mime_tier
     return "heavy"
@@ -774,14 +905,261 @@ def tier(extension: str | None, mime_type: str | None) -> Tier:
 def kind(extension: str | None, mime_type: str | None) -> str | None:
     """Parse kind: by extension, else by mime, else None."""
     ft = _BY_EXTENSION.get(normalize_extension(extension))
-    if ft is not None and ft.kind:
+    if ft is not None and ft.kind and (_extension_decides(ft, mime_type) or ft.key in _KIND_BY_EXTENSION_BEFORE):
         return ft.kind
-    ft = _KIND_BY_MIME.get((mime_type or "").lower())
+    mime_key = (mime_type or "").lower()
+    ft = _KIND_BY_MIME.get(mime_key) or _KIND_BY_MIME.get(normalize_mime(mime_key))
     return ft.mime_kind if ft is not None else None
 
 
 def extension_for_mime(mime_type: str | None) -> str | None:
-    return MIME_EXTENSION_HINTS.get(mime_type)  # type: ignore[arg-type]
+    """The extension a mime type stands for, by its hint, in any case and with any parameters."""
+    hint = MIME_EXTENSION_HINTS.get(mime_type)  # type: ignore[arg-type]
+    if hint is not None or not isinstance(mime_type, str):
+        return hint
+    return MIME_EXTENSION_HINTS.get(normalize_mime(mime_type))
+
+
+def _ext_type(extension: object) -> FileType | None:
+    return _BY_EXTENSION.get(normalize_extension(extension)) if isinstance(extension, str) else None
+
+
+def _mime_type(mime_type: object) -> FileType | None:
+    return _ROUTED_MIMES.get(normalize_mime(mime_type)) if isinstance(mime_type, str) else None
+
+
+def ext_wins(extension: str | None) -> bool:
+    """Whether the extension alone decides how the file is read."""
+    ft = _ext_type(extension)
+    return ft is not None and ft.ext_wins
+
+
+def parse_format(mime_type: str | None, extension: str | None) -> str | None:
+    """The parsing service's format key.
+
+    A source file goes by its extension (a file read out of a git tree arrives as text/plain);
+    otherwise the mime wins over the extension, as it always has. A type the extension decides
+    goes by its extension wherever the mime named nothing that was read before.
+    """
+    ft = _BY_EXTENSION.get((extension or "").lower().lstrip("."))
+    ext_format = ft.format if ft is not None else None
+    if ft is not None and ext_format == "code":
+        return ext_format
+    if ft is not None and ft.ext_wins and _new_type_wins(ft, mime_type):
+        return ext_format
+    if mime_type and mime_type in MIME_FORMATS and _BY_MIME[normalize_mime(mime_type)].since == 1:
+        return MIME_FORMATS[mime_type]
+    if ft is not None and ft.since == 1 and ext_format:
+        return ext_format
+    if isinstance(mime_type, str) and (fmt := _FORMAT_BY_MIME.get(normalize_mime(mime_type))):
+        return fmt
+    return ext_format
+
+
+def blocks_like(extension: str | None) -> str | None:
+    """The extension whose citations a type's blocks get: an .xlsm is cited like an .xlsx."""
+    ft = _ext_type(extension)
+    return ft.blocks_like if ft is not None and ft.blocks_like else extension
+
+
+# The legacy dispatch's order after its mime-only branches: the first route the extension or the
+# mime names wins.
+_LEGACY_ORDER: Final = (
+    Route.PDF, Route.EPUB, Route.DOCX, Route.DOC, Route.XLSX, Route.XLS, Route.CSV, Route.TSV,
+    Route.HTML, Route.PPTX, Route.PPT, Route.MD, Route.MDX, Route.TXT, Route.SQL_TABLE,
+    Route.SQL_VIEW, Route.JSON, Route.YAML, Route.IMAGE, Route.MSG, Route.LIBREOFFICE_DOCX,
+)
+_GOOGLE_ROUTES: Final = frozenset({Route.GOOGLE_SLIDES, Route.GOOGLE_DOCS, Route.GOOGLE_SHEETS})
+
+
+@dataclass(frozen=True, slots=True)
+class Dispatch:
+    route: Route
+    file_type: FileType | None  # None for the code route, which the record decides
+
+
+def _main_route(mime_type: object, extension: object, *, reads_as_code_file: bool) -> Dispatch | None:
+    """The dispatch as it was before the registry's second version: exact spellings only."""
+    mime = mime_type if isinstance(mime_type, str) else None
+    by_mime = _MAIN_CHAIN_MIMES.get(mime) if mime is not None else None
+    if by_mime is not None and by_mime.route in _GOOGLE_ROUTES:
+        return Dispatch(by_mime.route, by_mime)  # type: ignore[arg-type]
+    if mime == "text/html":
+        return Dispatch(Route.HTML, by_mime)
+    if reads_as_code_file:
+        return Dispatch(Route.CODE, None)
+    if mime == "text/plain":
+        return Dispatch(Route.TXT, by_mime)
+    if by_mime is not None and by_mime.route in (Route.BLOCKS, Route.GMAIL):
+        return Dispatch(by_mime.route, by_mime)  # type: ignore[arg-type]
+    by_ext = _MAIN_CHAIN_EXTENSIONS.get(extension) if isinstance(extension, str) else None
+    return _first_in_order(by_ext, by_mime)
+
+
+def _first_in_order(by_ext: FileType | None, by_mime: FileType | None) -> Dispatch | None:
+    for route in _LEGACY_ORDER:
+        for ft in (by_ext, by_mime):
+            if ft is not None and ft.route is route:
+                return Dispatch(route, ft)
+    return None
+
+
+def _widened_route(mime_type: object, extension: object) -> Dispatch | None:
+    """A route for what the dispatch read nothing of before: any case, parameters, alias spelling."""
+    mime = normalize_mime(mime_type) if isinstance(mime_type, str) else None
+    by_mime = _ROUTED_MIMES.get(mime) if mime else None
+    if by_mime is not None and by_mime.route in _GOOGLE_ROUTES:
+        return Dispatch(by_mime.route, by_mime)  # type: ignore[arg-type]
+    if mime == "text/html":
+        return Dispatch(Route.HTML, by_mime)
+    if mime == "text/plain":
+        return Dispatch(Route.TXT, by_mime)
+    if by_mime is not None and by_mime.route in (Route.BLOCKS, Route.GMAIL):
+        return Dispatch(by_mime.route, by_mime)  # type: ignore[arg-type]
+    by_ext = _ext_type(extension)
+    if by_ext is not None and not by_ext.ext_indexable:
+        by_ext = None
+    if by_ext is not None and by_mime is not None:
+        # An existing type's spelling keeps its reader against a newer one's.
+        if by_ext.since > 1 and by_mime.since == 1:
+            by_ext = None
+        elif by_mime.since > 1 and by_ext.since == 1:
+            by_mime = None
+    late = by_ext if by_ext is not None and by_ext.route_since > 1 else None
+    found = _first_in_order(None if late else by_ext, by_mime)
+    if found is None and late is not None and late.route is not None:
+        # htm reaches its HTML branch only when the mime names nothing.
+        return Dispatch(late.route, late)
+    return found
+
+
+def legacy_route(
+    mime_type: str | None,
+    extension: str | None,
+    *,
+    code_extension: str | None,
+    reads_as_code_file: bool,
+    is_code_file_record: bool = False,
+) -> Dispatch | None:
+    """The in-process parser a file goes to, or None when there is none.
+
+    Whatever the dispatch routed before keeps its route. A type the extension decides (from
+    *code_extension*, the extension with the file name as fallback) is read as itself where the
+    mime named nothing read before, and a package stored as text/plain is read as itself, not as
+    text. What still has no route is matched in any case, with parameters and alias spellings.
+    """
+    winner = _ext_type(code_extension)
+    if (
+        winner is not None
+        and winner.ext_wins
+        and winner.route is not None
+        and _new_type_wins(winner, mime_type, is_code_file_record=is_code_file_record)
+    ):
+        return Dispatch(winner.route, winner)
+    main = _main_route(mime_type, extension, reads_as_code_file=reads_as_code_file)
+    if main is not None:
+        return main
+    return _widened_route(mime_type, extension)
+
+
+GateRefusal = Literal["type", "disabled", "too_large"]
+TEXT_MAX_DOWNLOAD_BYTES: Final = 256 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class GateDecision:
+    supported: bool
+    judged_extension: object  # the extension the refusal is reported for
+    file_type: FileType | None  # the type that decides how the file is read
+    refusal: GateRefusal | None = None
+
+
+def gate_decision(
+    *,
+    mime: object,
+    extension: object,
+    record_name: str | None,
+    is_code_file: bool,
+    code_file_extension: str | None,
+    size_bytes: object = None,
+    disabled: frozenset[str] = frozenset(),
+) -> GateDecision:
+    """Whether the indexer reads a record's file, from what the record says about it.
+
+    A FILE is taken by a mime or an extension of an indexable type. A CODE_FILE's mime is not
+    trusted (repository walkers default it to text/plain), so it is judged on the extension of its
+    name alone. A type in *disabled*, or a capped-text file larger than the download ceiling, is
+    refused before anything is downloaded.
+    """
+    if (extension is None or extension == "unknown") and mime is not None and mime != "unknown":
+        derived = extension_for_mime(mime)  # type: ignore[arg-type]
+        if derived:
+            extension = derived
+    from_name = False
+    if extension == "unknown" and mime != "text/gmail_content" and record_name and "." in record_name:
+        extension = record_name.split(".")[-1]
+        from_name = True
+
+    if is_code_file:
+        judged: object = code_file_extension
+        by_ext = _ext_type(code_file_extension)
+        supported = code_file_extension in REPO_CODE_EXTENSIONS or (
+            by_ext is not None and by_ext.ext_indexable
+        )
+        decisive = by_ext
+    else:
+        judged = extension
+        by_ext = _ext_type(extension)
+        by_mime = _mime_type(mime)
+        if by_mime is None and mime in GATE_MIMES:
+            by_mime = _BY_MIME.get(normalize_mime(mime))  # type: ignore[arg-type]
+        ext_ok = by_ext is not None and by_ext.ext_indexable
+        if from_name and ext_ok and not by_ext.ext_wins and extension not in GATE_EXTENSIONS:
+            # The dispatch never sees an extension taken from the name, only the record's own:
+            # beyond the types the extension decides, the name is matched as it always was.
+            ext_ok = False
+        supported = ext_ok or by_mime is not None
+        if ext_ok and by_ext.ext_wins and _new_type_wins(by_ext, mime):
+            decisive = by_ext
+        else:
+            decisive = by_mime if by_mime is not None else (by_ext if ext_ok else None)
+    if not supported:
+        return GateDecision(False, judged, None, "type")
+    if decisive is not None and decisive.key in disabled:
+        return GateDecision(False, judged, decisive, "disabled")
+    if (
+        decisive is not None
+        and decisive.prep is Prep.CAPPED_TEXT
+        and isinstance(size_bytes, int)
+        and size_bytes > TEXT_MAX_DOWNLOAD_BYTES
+    ):
+        return GateDecision(False, judged, decisive, "too_large")
+    return GateDecision(True, judged, decisive)
+
+
+FILE_TYPES_CONFIG_KEY: Final = "/services/file_types/config"
+
+
+def disabled_from_env(value: str | None) -> dict[str, list[str]] | None:
+    """``FILE_TYPES_DISABLED`` ("msg,rtf") as the setting it stands in for, or None when unset."""
+    if not value:
+        return None
+    return {"disabled": [v.strip() for v in value.split(",") if v.strip()]}
+
+
+def disabled_keys(config: object) -> frozenset[str]:
+    """The registry keys a ``{"disabled": [...]}`` setting turns off; anything else turns off none."""
+    values = config.get("disabled") if isinstance(config, dict) else None
+    if not isinstance(values, (list, tuple)):
+        return frozenset()
+    keys = {ft.key for ft in FILE_TYPES}
+    return frozenset(v.lower() for v in values if isinstance(v, str) and v.lower() in keys)
+
+
+def canonical_mime_for_new_extension(extension: str | None) -> str | None:
+    """The mime to store for a type made indexable after the first registry, by its extension."""
+    ft = _ext_type(extension)
+    return ft.canonical_mime if ft is not None and ft.since > 1 else None
 
 
 def filter_option_ids() -> tuple[str, ...]:
@@ -813,7 +1191,9 @@ def node_upload_table() -> dict[str, str]:
 
 
 def node_indexable_extensions() -> tuple[str, ...]:
-    return tuple(sorted(_extensions(ft for ft in FILE_TYPES if ft.ext_indexable and not ft.internal)))
+    return tuple(sorted(_extensions(
+        ft for ft in FILE_TYPES if ft.ext_indexable and ft.upload and not ft.internal
+    )))
 
 
 # --------------------------------------------------------------------------- Node emit

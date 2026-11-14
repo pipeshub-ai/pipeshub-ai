@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from app.config import file_types
 from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
@@ -80,12 +81,15 @@ def mime_for(rel_path: str, *, is_directory: bool) -> str:
     if is_directory:
         return MimeTypes.FOLDER.value
     guessed, _ = mimetypes.guess_type(rel_path)
-    if not guessed:
-        return MimeTypes.BIN.value
-    try:
-        return MimeTypes(guessed).value
-    except ValueError:
-        return MimeTypes.BIN.value
+    if guessed:
+        try:
+            return MimeTypes(guessed).value
+        except ValueError:
+            pass
+    # The host's mime table may not know a newer indexable type (.cfg, .docm on some systems) or
+    # may spell it another way (text/rtf); it is stored under its own mime all the same.
+    extension = rel_path.rsplit("/", 1)[-1].rpartition(".")[2] if "." in rel_path.rsplit("/", 1)[-1] else None
+    return file_types.canonical_mime_for_new_extension(extension) or MimeTypes.BIN.value
 
 
 @dataclass(frozen=True)

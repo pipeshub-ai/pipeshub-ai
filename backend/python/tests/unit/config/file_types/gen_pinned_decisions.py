@@ -196,6 +196,25 @@ def build_cases() -> list[tuple[str | None, str | None, str, str]]:
     return unique
 
 
+# Extensions whose cells against every mime main already read are pinned too (QA-3): a type the
+# extension decides must not take over a cell main indexed under its mime.
+NEW_EXTENSIONS = ("msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx")
+
+
+def extended_cases(snapshot: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+    """The new extensions crossed with every mime main's gate took alone, for FILE and CODE_FILE.
+
+    Derived from the snapshot itself, so every tree builds the same list.
+    """
+    accepted = sorted({
+        r[1] for r in snapshot["rows"]
+        if r[0] is None and r[2] == "file" and r[3] == FILE and isinstance(r[1], str) and r[4] == "ok"
+    })
+    existing = {case_key(r) for r in snapshot["rows"]}
+    cases = [(e, m, f"file.{e}", rt) for e in NEW_EXTENSIONS for m in accepted for rt in (FILE, CODE_FILE)]
+    return [c for c in cases if case_key(c) not in existing]
+
+
 def case_key(case: Sequence[object]) -> str:
     """A hashable key for a case, whose extension or mime may be a list or a dict."""
     return json.dumps(list(case[:4]), sort_keys=True)
@@ -515,6 +534,8 @@ def iter_shard(items: Sequence[Any], shard: int, shards: int) -> Iterator[Any]:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--write", nargs="?", const=str(SNAPSHOT), metavar="PATH")
+    parser.add_argument("--extend", metavar="PINNED",
+                        help="decide extended_cases on this tree and append them to PINNED")
     parser.add_argument("--replay", nargs=2, metavar=("PINNED", "OUT"),
                         help="recompute the decisions for the universe pinned in PINNED into OUT")
     args = parser.parse_args(argv)
@@ -522,6 +543,16 @@ def main(argv: list[str]) -> int:
         cases = build_cases()
         Path(args.write).write_text(dump(asyncio.run(compute(cases))))
         print(f"wrote {len(cases)} cases to {args.write}")
+        return 0
+    if args.extend:
+        path = Path(args.extend)
+        snapshot = load(path)
+        extra = extended_cases(snapshot)
+        with _quiet_env():
+            rows = asyncio.run(_decide_all(extra))
+        snapshot["rows"].extend([*c, *r] for c, r in zip(extra, rows, strict=True))
+        path.write_text(dump(snapshot))
+        print(f"appended {len(extra)} cases to {path}")
         return 0
     if args.replay:
         pinned, out = (Path(p) for p in args.replay)

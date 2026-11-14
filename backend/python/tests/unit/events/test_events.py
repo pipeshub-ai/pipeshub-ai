@@ -125,13 +125,12 @@ def _rewrapped(error: Exception) -> Exception:
         return wrapped
 
 
-# Types the record handler's gate accepts that no dispatch branch routes (F23 repro):
-# an extension the handler derives from the mime but never hands on, and an extension
-# its list has that the HTML branch does not.
+# Types no dispatch branch routes. The F23 repros (image/pjpeg, application/x-pdf, htm) route
+# now that every spelling of an indexable type does; HEIC has a parser but no branch.
 _GATE_ACCEPTS_DISPATCH_REFUSES = [
-    (None, "image/pjpeg"),
-    (None, "application/x-pdf"),
-    ("htm", "application/octet-stream"),
+    (None, "image/heic"),
+    ("heic", "application/octet-stream"),
+    ("heif", "image/heif"),
 ]
 
 
@@ -1648,7 +1647,7 @@ class TestOnEventExtensionDispatch:
         assert MessageErrorClassifier.classify_by_exception(_rewrapped(error)) == MessageErrorType.TERMINAL
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("extension", "mime_type"), [("htm", "application/octet-stream"), (None, "image/pjpeg")])
+    @pytest.mark.parametrize(("extension", "mime_type"), [("heic", "application/octet-stream"), (None, "image/heic")])
     async def test_the_unsupported_reason_names_the_extension(self, extension, mime_type) -> None:
         error = await _unroutable_error(extension, mime_type)
 
