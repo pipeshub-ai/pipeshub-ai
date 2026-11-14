@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.connectors.core.registry.filters import FilterCollection, IndexingFilterKey
 from app.connectors.core.registry.folder_scope import FolderScope
@@ -95,20 +95,67 @@ class ShareWalker:
         # The folders the walk is inside right now, outermost first.
         open_dirs: list[tuple[int, datetime | None, datetime | None, str]] = []
         chosen_folders = {p.rstrip("/") for p in scope.list_prefixes if p}
+        # Set when the store saved nothing of a batch; the walk then fails at its end.
+        store_failure: Exception | None = None
+        saved_any = False
 
         def mark_unread(server_path: str) -> None:
             nonlocal complete
             complete = False
             unread.add(f"{share}/{identity_rel_path(server_path)}" if server_path else share)
 
+        async def save(
+            store: Callable[[list[Any]], Awaitable[None]],
+            batch: list[Any],
+            ids_of: Callable[[Any], list[str]],
+        ) -> None:
+            # A record the store always rejects failed its whole batch, which was
+            # then kept and sent again with every later file. Each record is
+            # retried alone, and only the ones that still fail are left unread.
+            nonlocal complete, store_failure, saved_any
+            try:
+                await store(batch)
+                saved_any = True
+                return
+            except NetworkShareAuthError:
+                raise
+            except Exception:
+                self.logger.warning(
+                    "Saving %d records failed; saving them one at a time", len(batch), exc_info=True
+                )
+            failure: Exception | None = None
+            saved = False
+            for item in batch:
+                try:
+                    await store([item])
+                    saved = saved_any = True
+                except NetworkShareAuthError:
+                    raise
+                except Exception as exc:
+                    failure = exc
+                    complete = False
+                    ids = ids_of(item)
+                    unread.update(ids)
+                    self.logger.exception("Failed to save %s", ids[0])
+            # Nothing of the batch saved: the store is failing, unless it was one
+            # record and the store has saved others, which makes it that record.
+            # The walk goes on, so a store that recovers saves the rest.
+            if failure is not None and not saved and (len(batch) > 1 or not saved_any):
+                store_failure = failure
+
         async def flush() -> None:
             nonlocal upserts, moves
             if upserts:
-                await self.flush_upserts(upserts)
-                upserts = []
+                batch, upserts = upserts, []
+                await save(self.flush_upserts, batch, lambda item: [item[0].external_record_id])
             if moves:
-                await self.flush_moves(moves)
-                moves = []
+                batch_moves, moves = moves, []
+                # A move that failed leaves the record at its old path, which the walk did not see.
+                await save(
+                    self.flush_moves,
+                    batch_moves,
+                    lambda item: [item[1].external_record_id, item[0]],
+                )
 
         def enclosing_folder(entry: DirectoryEntry) -> str | None:
             # Samba follows a directory symlink on the server and lists it as a
@@ -378,6 +425,8 @@ class ShareWalker:
                 await flush()
 
         await flush()
+        if store_failure is not None:
+            raise store_failure
         return WalkResult(
             seen=seen, complete=complete, max_timestamp_ms=max_ts, unread=unread
         )

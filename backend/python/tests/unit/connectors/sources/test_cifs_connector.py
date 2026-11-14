@@ -26,6 +26,7 @@ from app.connectors.sources.network_share.errors import (
     DirectoryListingError,
     NetworkShareAuthError,
     ShareListingError,
+    ShareWalkIncompleteError,
 )
 from app.connectors.sources.network_share.record_mapper import revision_id
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType, User
@@ -556,9 +557,43 @@ class TestCifsConnectorSync:
         cifs_connector.configured_share = SHARE
         stored = _file_record(ext_id=f"{SHARE}/a.txt", revision="old")
         mock_processor.get_records_by_record_type = AsyncMock(return_value=[stored])
-        await cifs_connector.run_sync()
+        with pytest.raises(ShareWalkIncompleteError):
+            await cifs_connector.run_sync()
         mock_processor.on_record_deleted.assert_not_awaited()
         cifs_connector.record_sync_point.update_sync_point.assert_not_awaited()
+        cifs_connector.notify.assert_awaited_once()
+        assert cifs_connector.notify.await_args.kwargs["title"] == "CIFS: Sync could not read the share"
+        assert SHARE in cifs_connector.notify.await_args.kwargs["message"]
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_one_unreadable_subfolder_fails_the_run_with_one_notice(self, mock_filters, cifs_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        cifs_connector.data_source = _ds(
+            tree={(SHARE, ""): [_entry("locked", is_directory=True, file_id=5)]},
+            fail_dirs={(SHARE, "locked")},
+        )
+        cifs_connector.configured_share = SHARE
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[])
+        with pytest.raises(ShareWalkIncompleteError):
+            await cifs_connector.run_sync()
+        mock_processor.on_record_deleted.assert_not_awaited()
+        cifs_connector.notify.assert_awaited_once()
+        assert cifs_connector.notify.await_args.kwargs["title"] == "CIFS: Some folders could not be read"
+        assert not cifs_connector.full_sync_coverage().complete
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_sync_with_no_share_does_not_reuse_the_last_walk(self, mock_filters, cifs_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        cifs_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt", file_id=5)]})
+        cifs_connector.configured_share = SHARE
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[])
+        await cifs_connector.run_sync()
+        assert cifs_connector.full_sync_coverage().complete
+
+        cifs_connector.configured_share = None
+        await cifs_connector.run_sync()
+
+        assert not cifs_connector.full_sync_coverage().complete
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_a_refused_sign_in_notifies_and_fails_the_run(self, mock_filters, cifs_connector, mock_processor):
