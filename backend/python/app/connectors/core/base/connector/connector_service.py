@@ -89,6 +89,18 @@ class ActionItem(BaseModel):
     params: dict[str, str] | None = None
 
 
+def replace_action_item(connector: object, code: str, item: ActionItem | None) -> None:
+    """Set or clear the connector's item ``code`` for this run, keeping its other items.
+
+    The runner writes ``last_action_items`` only when it is a list, so this always
+    leaves one: an empty list clears the card's badge.
+    """
+    items = [i for i in (getattr(connector, "last_action_items", None) or []) if i.code != code]
+    if item is not None:
+        items.append(item)
+    connector.last_action_items = items
+
+
 def action_items_json(items: list[ActionItem]) -> str | None:
     """Action items as the app doc stores them: JSON text, or None when nothing is left
     to do, which clears the card's badge."""

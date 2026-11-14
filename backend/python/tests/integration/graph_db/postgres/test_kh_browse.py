@@ -13,6 +13,7 @@ from app.exceptions.graph_db_exceptions import KnowledgeHubListingTooLarge
 from app.services.graph_db.postgres import kh_browse, kh_listing
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import net
+from app.services.graph_db.postgres.kg import read as kg_read
 
 from .pg_support import new_org
 from .test_kh_listing_flat import (
@@ -419,8 +420,8 @@ async def test_a_node_counts_only_live_linked_children_against_its_bound_and_lis
 CUSTOM_ONLY = ("wide ", "children ", "undecided ", "count ")
 
 
-# an index condition that names the node (or nodes) the statement asks about: a parent, a key, a child, an id (not merely the org, a kind or a class)
-NODE_COND = re.compile(r"\b(parent_sk|sk|child_sk|id|app_sk|group_sk)\b\)?(::text)?\s*=")
+# an index condition that names the node (or nodes) the statement asks about: a parent, a key, a child, an id (not merely the org, a kind or a class); ``>=`` is a seek's
+NODE_COND = re.compile(r"\b(parent_sk|sk|child_sk|id|app_sk|group_sk)\b\)?(::text)?\s*>?=")
 
 
 @pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
@@ -664,7 +665,7 @@ async def test_a_browse_of_many_chain_top_holders_resolves_the_chain_tops_once(p
         await p.batch_create_edges([edge("u1", "users", i, "recordGroups" if i.startswith("g") else "records", type="USER", role="READER") for i in granted], "permission")
     await flip(pg_db, org)
     calls: dict[str, int] = {}
-    for name in ("_kh_v3_chain_top_groups", "_kh_v3_chain_top_candidates", "_kh_v3_chain_top_facts"):
+    for name in ("_kh_v3_chain_top_groups", "_kh_v3_chain_top_candidates", "_kh_v3_chain_top_hidden"):
         real = getattr(kh_browse.KhBrowseMixin, name)
 
         async def counted(self, *a, _real=real, _name=name, **kw) -> object:
@@ -673,7 +674,50 @@ async def test_a_browse_of_many_chain_top_holders_resolves_the_chain_tops_once(p
         monkeypatch.setattr(kh_browse.KhBrowseMixin, name, counted)
     page = await browse(p, org, "fold", granted, limit=50)
     assert [r["id"] for r in page["rows"]] == groups[:50] and all(r["hasChildren"] for r in page["rows"]) and page["total"] == 300, page["rows"][:3]
-    assert calls == {"_kh_v3_chain_top_groups": 1, "_kh_v3_chain_top_candidates": 1, "_kh_v3_chain_top_facts": 1}, calls
+    assert calls == {"_kh_v3_chain_top_groups": 1, "_kh_v3_chain_top_candidates": 1, "_kh_v3_chain_top_hidden": 1}, calls
+
+
+async def test_the_chain_top_read_seeks_each_granted_id_whatever_the_statistics(pg_db) -> None:
+    """EXPLAIN gate for ``CHAIN_GRANTED`` (``_kh_v3_chain_top_groups``): an org of 4,000 records and 200 groups, 600 of them granted, read as the call reads it (custom plan, sorts off),
+    before the table is analysed after the rows arrived and after. Every scan of kg.records, kg.node_keys and graph.nodes is a seek of its unique key: an index scan bounded by the key,
+    at most one row and a few pages per probe. Written as a join on ``id = ANY($2)``, the plan read the connector's records or every graph node of the org depending on the
+    statistics (a few ms or several hundred on the same rows)."""
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 2, readable_kids=[])
+    await seed_folder(p, pg_db, new_org(), 2, readable_kids=[])
+    await _admin("ANALYZE kg.records; ANALYZE kg.node_keys; ANALYZE graph.nodes")
+    await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk) SELECT $1, 70000000 + g, CASE WHEN g <= 200 THEN 2 ELSE 3 END, 'chain' || g, CASE WHEN g <= 200 THEN 2 ELSE 3 END, "
+                 "a.sk FROM generate_series(1, 4200) g JOIN kg.node_keys a ON a.org_id = $1 AND a.coll = 1 AND a.id = 'app1'", org)
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, CASE WHEN g <= 200 THEN 'recordGroups' ELSE 'records' END, 'chain' || g, '{\"accessRule\": \"OPEN\"}'::jsonb "
+                 "FROM generate_series(1, 4200) g", org)
+    granted = [f"chain{g}" for g in range(1, 4201, 7)]
+
+    def not_seeks(node: dict) -> list[str]:
+        found = []
+        rel = node.get("Relation Name") or ""
+        if rel in ("records", "node_keys") or rel.startswith("nodes"):
+            index, cond, loops = node.get("Index Name") or "", node.get("Index Cond", ""), max(node.get("Actual Loops", 0), 1)
+            pages = (node.get("Shared Hit Blocks", 0) + node.get("Shared Read Blocks", 0)) / loops
+            if node["Node Type"] != "Index Scan" or not re.fullmatch(r"records_id|node_keys_pkey|nodes\w*_pkey", index):
+                found.append(f"{node['Node Type']} {index} on {rel}")
+            elif "org_id = " not in cond or not re.search(r"\bid >= ", cond):
+                found.append(f"{index}: the index condition {cond} does not bound the id")
+            elif node["Actual Rows"] > 1 or pages > 8:
+                found.append(f"{index}: {node['Actual Rows']} rows and {pages:.1f} pages per probe ({loops} probes)")
+        return found + [x for child in node.get("Plans", []) for x in not_seeks(child)]
+
+    for state in ("fresh", "analysed"):
+        if state == "analysed":
+            await _admin("ANALYZE kg.records; ANALYZE kg.node_keys; ANALYZE graph.nodes")
+
+        async def go(tx) -> tuple[object, int]:
+            await tx.fetchval(kg_read.SORTS_OFF)
+            ran = await tx.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + kgl.CHAIN_GRANTED, org, granted, "app1")
+            return (json.loads(ran) if isinstance(ran, str) else ran)[0], len(await tx.fetch(kgl.CHAIN_GRANTED, org, granted, "app1"))
+        with ctx(org):
+            plan, rows = await p._kq(go, None)
+        assert rows == len(granted), (state, rows)
+        assert not (bad := not_seeks(plan["Plan"])), f"{state}: not a seek per key: {bad}"
 
 
 async def test_a_request_reads_at_most_its_budget_over_all_its_placeholder_walks_and_resumes_at_one_it_cannot_finish(pg_db, monkeypatch) -> None:

@@ -42,7 +42,8 @@ class ServingCorpus:
     connectors: frozenset[str] = frozenset()
 
     def scope_filter(self, scopes: ViewerScopes, *, served: frozenset[str] | None = None, defer: bool = True) -> ScopeFilter:
-        return stamp_filter(scopes, self.connectors if served is None else served, defer=defer)
+        """As the planner builds it: a connector the viewer reads as legacy is never served (it is outside `gated_apps`)."""
+        return stamp_filter(scopes, (self.connectors if served is None else served) - scopes.legacy_apps, defer=defer)
 
     def refused(self, rid: str) -> bool:
         """Whether the stamper left the record to the legacy filter."""
@@ -84,8 +85,9 @@ async def build(scenario: Scenario, world: World | None = None) -> ServingCorpus
 
 def legacy_returns(scopes: ViewerScopes, rids: Iterable[str], payload: dict) -> bool:
     """Whether the request's own container arms (`AccessibleContainers`) return the point: a connector the viewer passes the gate for (the arms carry
-    every gated app, not only those that open everything), a record group or root group the viewer reads, or a record granted to the viewer directly."""
-    return bool(set(payload["connectorIds"]) & scopes.gated_apps or {*payload["recordGroupIds"], *payload["rootRecordGroupIds"]} & scopes.readable_groups
+    every gated app, the viewer's legacy ones included, not only those that open everything), a record group or root group the viewer reads, or a
+    record granted to the viewer directly."""
+    return bool(set(payload["connectorIds"]) & (scopes.gated_apps | scopes.legacy_apps) or {*payload["recordGroupIds"], *payload["rootRecordGroupIds"]} & scopes.readable_groups
                 or any(r in scopes.readable_scopes for r in rids))
 
 
@@ -101,12 +103,12 @@ class Verdict:
 
 def judge(corpus: ServingCorpus, admitted: dict[str, set[str]], served: frozenset[str] | None = None) -> Verdict:
     """``admitted`` is the records each viewer's search returned. A record the stamper left to the legacy filter, or of a connector that is not
-    in ``served``, is the legacy request's (the post-check decides it), so it is none of the three."""
+    in ``served`` or that the viewer reads as legacy, is the legacy request's (the post-check decides it), so it is none of the three."""
     out = Verdict()
     served = corpus.connectors if served is None else served
     for viewer, (scopes, truth) in corpus.viewers.items():
         for rid, payload in corpus.points.items():
-            if corpus.refused(rid) or not set(payload["connectorIds"]) <= served:
+            if corpus.refused(rid) or not set(payload["connectorIds"]) <= served - scopes.legacy_apps:
                 continue
             got, may = rid in admitted.get(viewer, ()), truth.get(rid, False)
             if got and not may:
