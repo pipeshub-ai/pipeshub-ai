@@ -306,12 +306,37 @@ async def test_a_call_without_an_org_fails_instead_of_denying(pg_provider) -> No
         await pg_provider.get_knowledge_hub_access_v3("u", "o")
 
 
-async def test_an_access_with_a_grant_probe_is_refused_rather_than_answered_without_its_grants(w: World) -> None:
-    from app.services.graph_db.postgres.base import NotImplementedInPostgres
-    await w.nodes("records", rec("r"))
-    await w.child(("apps", APP), ("records", "r"))
-    with pytest.raises(NotImplementedInPostgres):
-        await w.p.check_access("u", w.org, node_ids=["r"], access={"grantee_ids": ["u"], "gated_app_ids": [APP], "by_connector": {}, "probe": {"connector_id": APP, "grantees": ["u"]}})
+async def test_an_access_with_a_grant_probe_reads_its_grants_from_the_nodes_as_neo4j_does(w: World) -> None:
+    """``probe`` (``Neo4jProvider._kh_grants_by_probe``): a live record or group of the probe's connector a grantee holds a permission on (an organisation's when its type shares
+    with the organisation) is granted, the rest of ``by_connector`` is not read, and ``cross`` adds the other connectors' grants, as ids or as holders to test on each node
+    (``_kh_cross_by_probe``). The same nodes open as for the grants the access read lists."""
+    await w.nodes("apps", {"_key": "app2", "type": "CONNECTOR", "isActive": True})
+    await w.edge("permission", ("users", "u"), ("apps", "app2"), type="USER", role="READER")
+    await w.nodes("teams", {"_key": "t"})
+    await w.nodes("organizations", {"_key": "o"})
+    await w.member("u", "t", "teams")
+    await w.edge("belongsTo", ("users", "u"), ("organizations", "o"), entityType="ORGANIZATION")
+    await w.nodes("records", rec("direct"), rec("byTeam"), rec("orgShared"), rec("orgOther"), rec("gone", isDeleted=True), rec("none"), rec("other", connectorId="app2"))
+    for r in ("direct", "byTeam", "orgShared", "orgOther", "gone", "none"):
+        await w.child(("apps", APP), ("records", r), inherits=False)      # opened only by a grant on the record (a seed)
+    await w.child(("apps", "app2"), ("records", "other"), inherits=False)
+    await w.edge("permission", ("users", "u"), ("records", "direct"), type="USER", role="READER")
+    await w.edge("permission", ("teams", "t"), ("records", "byTeam"), type="TEAM", role="READER")
+    await w.edge("permission", ("organizations", "o"), ("records", "orgShared"), type="ORG", role="READER")
+    await w.edge("permission", ("organizations", "o"), ("records", "orgOther"), type="USER", role="READER")
+    await w.edge("permission", ("users", "u"), ("records", "gone"), type="USER", role="READER")
+    await w.edge("permission", ("users", "u"), ("records", "other"), type="USER", role="READER")
+    ids = ["direct", "byTeam", "orgShared", "orgOther", "gone", "none", "other"]
+    listed = await w.p.get_knowledge_hub_access_v3("u", w.org)
+    assert await w.allowed("u", *ids, access=listed) == {"direct", "byTeam", "orgShared", "other"}
+    probe = {"grantee_ids": listed["grantee_ids"], "gated_app_ids": listed["gated_app_ids"], "by_connector": {"app2": ["none"]},      # by_connector is not read
+             "probe": {"connector_id": APP, "grantees": ["u", "t", "o"]}}
+    assert await w.allowed("u", *ids, access=probe) == {"direct", "byTeam", "orgShared"}
+    assert await w.allowed("u", *ids, access={**probe, "cross": ["other"]}) == {"direct", "byTeam", "orgShared", "other"}
+    assert await w.allowed("u", *ids, access={**probe, "cross": {"probe": ["app2"], "common": [], "scoped": {"app2": ["u"]}}}) == {"direct", "byTeam", "orgShared", "other"}
+    assert await w.allowed("u", *ids, access={**probe, "cross": {"probe": ["app2"], "common": ["u"], "scoped": {}}}) == {"direct", "byTeam", "orgShared", "other"}
+    assert await w.allowed("u", *ids, access={**probe, "cross": {"probe": ["app2"], "common": [], "scoped": {APP: ["u"]}}}) == {"direct", "byTeam", "orgShared"}
+    assert await w.allowed("u", *ids, access={**probe, "probe": {"connector_id": APP, "grantees": []}}) == set()
 
 
 async def test_a_null_in_a_document_is_a_missing_field_for_the_rule_and_the_flags(w: World, pg_db) -> None:
