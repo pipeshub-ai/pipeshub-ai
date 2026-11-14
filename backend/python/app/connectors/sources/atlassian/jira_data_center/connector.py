@@ -4821,10 +4821,13 @@ class JiraDataCenterConnector(BaseConnector):
         if security is None or not security.enforce:
             return True
         if is_subtask:
-            if not security.browse_holders or read_security_level(fields)[1] is not None:
+            present, level_id = read_security_level(fields)
+            if not security.browse_holders or level_id is not None:
                 return True
-            if security.knowledge != SchemeKnowledge.PRESENT:
-                return security.knowledge != SchemeKnowledge.NONE  # no scheme: no level on it or its parent
+            if security.knowledge == SchemeKnowledge.NONE:
+                return False  # no scheme: no level on it or its parent
+            if not present:
+                return True  # its level is unknown
             parent = await self._parent_level(parent_id)
             return parent is not None and parent[1] is not None
         if security.browse_holders is None:

@@ -178,7 +178,12 @@ class TestParentGate:
             pytest.param(SchemeKnowledge.PRESENT, [], None, None, True, id="no per-issue holder"),
             pytest.param(SchemeKnowledge.PRESENT, None, None, None, True, id="holders unread"),
             pytest.param(SchemeKnowledge.NONE, [{"type": "reporter"}], None, None, False, id="no scheme"),
-            pytest.param(SchemeKnowledge.UNKNOWN, [{"type": "reporter"}], None, None, True, id="scheme unknown"),
+            pytest.param(SchemeKnowledge.UNKNOWN, [{"type": "reporter"}], None, None, False,
+                         id="scheme unread, neither has a level"),
+            pytest.param(SchemeKnowledge.UNKNOWN, [{"type": "reporter"}], None, "20", True,
+                         id="scheme unread, the parent has a level"),
+            pytest.param(SchemeKnowledge.UNKNOWN, [{"type": "reporter"}], "absent", None, True,
+                         id="its level not returned"),
         ],
     )
     async def test_a_sub_task_leaves_its_parent_only_where_a_holder_may_read_it_alone(
@@ -192,6 +197,8 @@ class TestParentGate:
         connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value=parent)))
         security = IssueSecurityContext(knowledge=knowledge, members_readable=True, browse_holders=holders)
         fields = {"project": {"id": "10", "key": "P"}, "security": {"id": own_level} if own_level else None}
+        if own_level == "absent":
+            del fields["security"]
         assert await connector._files_under_parent(fields, "5", security, is_subtask=True) is files
 
     async def test_a_parent_the_account_cannot_see_is_not_a_parent(self) -> None:
