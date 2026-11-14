@@ -13,7 +13,7 @@ import yaml
 
 from . import kh_layer
 from .graph import Namespace
-from .layers import GraphCheckLayer
+from .layers import GraphCheckLayer, arango_graph
 from .runner import OracleLayer
 from .scenario import world_from_data
 
@@ -262,3 +262,29 @@ async def test_a_release_cancelled_midway_keeps_the_world_for_a_later_release() 
     assert WORLD in layer._prefix
     await layer.release([WORLD])
     assert layer._prefix == {} and unloads == [["w0-"], ["w0-"]]
+
+
+STORED = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: s, kind: group, connector: A, rule: INHERITED, parents: [A], belongs: [A]}
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [s], belongs: [A]}
+  - {id: r, kind: record, connector: A, rule: OPEN, parents: [g], belongs: [g]}
+grants: [[u, r]]
+gates: [[u, A]]
+"""))
+
+
+# Where the placement rule (`place_chain_tops`) puts r under the App, by store shape. It puts a chain-top with no own group the viewer may open
+# under the App wherever that group hangs, so r is under the App on ArangoDB's graph too (no s there, so g hangs from nothing).
+UNDER_THE_APP = {"as written": {"r"}, "arango": {"r"}}
+
+
+def test_the_app_places_a_chain_top_by_the_graph_the_store_holds() -> None:
+    """r's own group g hangs from the App through s, whose rule no connector writes, and ArangoDB keeps no node with an unknown rule (`arango_graph`).
+    The layer reads parents and own groups from each store's own graph (`kh_layer.stored`), so its expectation for the App is `UNDER_THE_APP` of
+    that store; the check admits r on both."""
+    for reference, shape in ((OracleLayer(), "as written"), (OracleLayer(arango_graph), "arango")):
+        assert reference.explain(STORED, "u", ["r"])["r"].admitted
+        assert kh_layer.chain_tops(reference, STORED, "u", "A") == UNDER_THE_APP[shape], shape
