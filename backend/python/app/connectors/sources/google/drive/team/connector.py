@@ -3468,7 +3468,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _permissions_as_drive_manager(
         self, file_id: str, drive_id: str, user_email: str | None, read_as: dict
-    ) -> Tuple[List[Permission], bool, List[str]] | None:
+    ) -> tuple[list[Permission], bool, list[str]] | None:
         """The item's permission list read as a Manager of its shared drive, for a reader Google answers with no
         list. Managers keep access through limited folders and can always list sharing, so their list is the
         item's. None when no Manager could read it: the reader's own grant is all that is known then.
