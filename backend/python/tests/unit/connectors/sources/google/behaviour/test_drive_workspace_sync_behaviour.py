@@ -3130,6 +3130,74 @@ async def test_a_reading_member_loses_a_grant_of_their_own_stored_by_an_earlier_
     assert not reaches(ws, BOB, "f"), "the limit cuts him out"
 
 
+def _old_style_grant(ws: Workspace, external_id: str, email: str) -> None:
+    """A reader's own grant on an item, as an earlier version stored it to stand in for their drive membership."""
+    ws.records.permissions[external_id] = [
+        *ws.records.permissions.get(external_id, []),
+        Permission(email=email, type=PermissionType.READ, entity_type=EntityType.USER),
+    ]
+
+
+def _as_before_the_upgrade(ws: Workspace) -> None:
+    """No mark that the drives were listed again once (the key is spelled out, as an earlier version has none)."""
+    for key in [k for k in ws.sync_points.sync_points if k.endswith("stand_in_grants_cleared")]:
+        del ws.sync_points.sync_points[key]
+
+
+async def test_a_folder_turning_limited_takes_an_old_style_grant_off_the_items_below_it(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.folder("sub", "Sub", parent="dir")
+    ws.world.add_item("f", "x.txt", parent="sub")
+    await ws.sync()
+    _old_style_grant(ws, "f", BOB)
+    assert reaches(ws, BOB, "f")
+
+    # The changes feed reports the folder alone.
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+
+    assert BOB not in ws.records.perm_emails("f")
+    assert not reaches(ws, BOB, "f") and not reaches(ws, BOB, "sub"), "the limit cuts Bob out of everything below"
+    assert reaches(ws, ALICE, "f"), "a Manager keeps it"
+
+
+async def test_a_direct_grant_below_a_folder_turning_limited_stays(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f", "x.txt", parent="dir", perms=[reader(BOB)])
+    await ws.sync()
+
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+
+    assert reaches(ws, BOB, "f"), "his own grant on the item, which the Manager's list names"
+
+
+async def test_the_first_sync_after_the_upgrade_replaces_old_style_grants(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f", "x.txt", parent="dir")
+    ws.world.folder("locked", "Locked", parent="sd-1").meta["inheritedPermissionsDisabled"] = True
+    ws.world.add_item("g", "y.txt", parent="locked")
+    await ws.sync()
+    # As an earlier version left them: Bob's own grants, one on an item he still reads through the drive, one below
+    # a folder that was already limited.
+    _old_style_grant(ws, "f", BOB)
+    _old_style_grant(ws, "g", BOB)
+    _as_before_the_upgrade(ws)
+
+    await ws.sync()
+
+    assert BOB not in ws.records.perm_emails("f") and reaches(ws, BOB, "f"), "through the drive, not a grant of his own"
+    assert BOB not in ws.records.perm_emails("g") and not reaches(ws, BOB, "g")
+    assert reaches(ws, ALICE, "g")
+
+    _old_style_grant(ws, "f", BOB)
+    await ws.sync()
+    assert BOB in ws.records.perm_emails("f"), "once per drive: the next run does not list it again"
+
+
 async def test_a_shared_drive_item_is_read_as_its_manager_once_for_all_its_reading_members(ws: Workspace) -> None:
     dana = "dana@example.com"
     ws.world.add_user(dana)

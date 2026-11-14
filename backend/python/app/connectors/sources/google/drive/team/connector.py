@@ -255,6 +255,15 @@ UNDECIDED_PARTS = "parts"
 UNDECIDED_NEXT_PART = "next_part"
 # Every undecided list's first key, so a full sync's cleanup spares their files whoever is synced (`keys`).
 UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY = "undecided_removal_keys"
+# On the connector's checkpoint: the shared drives every member has listed again once, so no grant an earlier
+# version gave a reader of an item to stand in for their membership is left on the items they can see.
+STAND_IN_CLEANUP_SYNC_POINT_KEY = "stand_in_grants_cleared"
+STAND_IN_CLEANED_DRIVES = "drives"
+# On the connector's checkpoint: folders that turned limited whose stored descendants still need checking for
+# members the limit cuts out, as {"drive", "folder", "after": last record id checked}.
+LIMITED_SUBTREES_SYNC_POINT_KEY = "limited_subtrees_pending"
+# Descendants checked per run; the rest wait for the next run.
+LIMITED_SUBTREE_MAX_CHECKS = 2000
 # The list of the unseen audience files a full sync's cleanup could not decide, tied to no user (no source user id is
 # "kept"): every run checks them again, as those of a user no longer in the directory.
 UNDECIDED_KEPT_KEY = f"{UNDECIDED_REMOVALS_SYNC_POINT_PREFIX}kept"
@@ -527,6 +536,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         # (item id, None for a member of its drive, else the reader): the item's list read as a Manager, this run.
         self._manager_reads: dict[tuple[str, str | None], tuple | None] = {}
         self._manager_read_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
+        # This run: drives listed again once (STAND_IN_CLEANUP_SYNC_POINT_KEY), and per drive the folders that turned
+        # limited (every limited folder of a drive listed again once).
+        self._upgrade_drives: set[str] = set()
+        self._limited_subtrees: dict[str, set[str]] = {}
         # Drives with a member group the directory will not list: who else can open their files is unknown.
         self._drive_members_unread: set[str] = set()
         # Per shared drive, this run: its restrictions, and the people and groups that are members.
@@ -789,6 +802,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._manager_sources = {}
             self._manager_reads = {}
             self._manager_read_locks = {}
+            self._upgrade_drives = set()
+            self._limited_subtrees = {}
             self._drive_members_unread = set()
             self._drive_restrictions = {}
             self._assumed_restrictions = set()
@@ -831,6 +846,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 drive_id for drive in all_drives if (drive_id := drive.get("id"))
             }
             await self._restore_returning_users()
+            await self._list_drives_again_once()
 
             # Step 4: Settle the folder filter scope across all users before any of
             # them syncs files, so nobody filters against a half-resolved scope
@@ -844,6 +860,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info("Processing user drives in batches...")
             # Use users synced in Step 1
             await self._process_users_in_batches(self.synced_users)
+            await self._clear_cut_out_grants_below_limited_folders()
             await self._recheck_unvisited_undecided_removals()
             if self._reach_candidates and len(self._account_domains or ()) > 1:
                 # Files read this run can ask Google how far a domain share reaches, now or when it is asked again
@@ -3464,6 +3481,112 @@ class GoogleDriveTeamConnector(BaseConnector):
             await self._drop_reporters_grant(record, user)
             raise
 
+    async def _list_drives_again_once(self) -> None:
+        """Once per shared drive, every member lists it from the start. An earlier version gave a reader an item's
+        permission list did not name a grant of their own on it, standing in for their drive membership, and that
+        grant outlasted a limit or a removal from the drive. Read again, each item gets its exact list, and the
+        limited folders found are checked below (_clear_cut_out_grants_below_limited_folders)."""
+        marker = await self.drive_delta_sync_point.read_sync_point(STAND_IN_CLEANUP_SYNC_POINT_KEY) or {}
+        done = set(marker.get(STAND_IN_CLEANED_DRIVES) or [])
+        for drive_id in sorted(self._synced_drive_ids - done):
+            await self._read_drive_again(drive_id, reseed=False)
+            self._upgrade_drives.add(drive_id)
+
+    async def _clear_cut_out_grants_below_limited_folders(self) -> None:
+        """For every folder that turned limited, this run or an earlier one not finished, take from its stored
+        descendants the grants of their own held by members of the drive that the item's list (read as a Manager)
+        does not name: a limit cuts the members' access through the drive, and such a grant only stood in for it.
+        At most LIMITED_SUBTREE_MAX_CHECKS descendants a run; the rest, and a folder whose check failed, wait on
+        the checkpoint for the next run."""
+        stored = await self.drive_delta_sync_point.read_sync_point(LIMITED_SUBTREES_SYNC_POINT_KEY) or {}
+        pending: dict[tuple[str, str], str | None] = {
+            (entry["drive"], entry["folder"]): entry.get("after")
+            for entry in stored.get("pending") or [] if isinstance(entry, dict) and entry.get("drive") and entry.get("folder")
+        }
+        for drive_id, folders in self._limited_subtrees.items():
+            for folder_id in folders:
+                pending[(drive_id, folder_id)] = None
+        left: list[dict[str, str | None]] = []
+        budget = LIMITED_SUBTREE_MAX_CHECKS
+        for (drive_id, folder_id), after in sorted(pending.items(), key=lambda kv: kv[0]):
+            try:
+                after, budget = await self._clear_cut_out_grants_below(drive_id, folder_id, after, budget)
+            except Exception as e:
+                self.logger.warning(
+                    f"The items below limited folder {folder_id} could not be checked ({type(e).__name__}: {e}); "
+                    "they are checked again next run"
+                )
+                self._sync_ledger.note_incomplete()
+                left.append({"drive": drive_id, "folder": folder_id, "after": after})
+                continue
+            if after is not None:
+                left.append({"drive": drive_id, "folder": folder_id, "after": after})
+        if pending or stored.get("pending"):
+            await self.drive_delta_sync_point.update_sync_point(LIMITED_SUBTREES_SYNC_POINT_KEY, {"pending": left})
+        if self._upgrade_drives:
+            marker = await self.drive_delta_sync_point.read_sync_point(STAND_IN_CLEANUP_SYNC_POINT_KEY) or {}
+            done = sorted(set(marker.get(STAND_IN_CLEANED_DRIVES) or []) | self._upgrade_drives)
+            await self.drive_delta_sync_point.update_sync_point(STAND_IN_CLEANUP_SYNC_POINT_KEY, {STAND_IN_CLEANED_DRIVES: done})
+
+    async def _clear_cut_out_grants_below(
+        self, drive_id: str, folder_id: str, after: str | None, budget: int
+    ) -> tuple[str | None, int]:
+        """Check the stored descendants of one limited folder, in id order from past `after`. Returns the last id
+        checked when the budget ran out first (None when all were), and the budget left. A failed read raises."""
+        group = await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, drive_id)
+        if group is None or not getattr(group, "id", None):
+            return None, budget
+        children: dict[str, list[Record]] = {}
+        page_after: str | None = None
+        page_size = drive_full_sync_reconciler.RECONCILE_PAGE_SIZE
+        while True:
+            page = await self.data_entities_processor.get_records_by_status(
+                self.connector_id, None, limit=page_size, record_group_id=group.id, after_key=page_after
+            )
+            if not isinstance(page, list):
+                raise TypeError("the stored record listing was not readable")
+            for record in page:
+                if record.parent_external_record_id:
+                    children.setdefault(record.parent_external_record_id, []).append(record)
+            if len(page) < page_size or not getattr(page[-1], "id", None):
+                break
+            page_after = page[-1].id
+        below: list[Record] = []
+        todo, seen = [folder_id], {folder_id}
+        while todo:
+            for child in children.get(todo.pop(), ()):
+                if child.external_record_id not in seen:
+                    seen.add(child.external_record_id)
+                    below.append(child)
+                    todo.append(child.external_record_id)
+        members = set(await self._drive_member_email_list(drive_id))
+        read_as = {"inherited_permissions_disabled": False, "inherits_from_drive": True, "item_drive_id": drive_id}
+        last: str | None = None
+        for record in sorted(below, key=lambda r: r.id):
+            if after is not None and record.id <= after:
+                continue
+            if budget <= 0:
+                return last or after, 0
+            budget -= 1
+            holders = {
+                (u.email or "").lower()
+                for u in await self.data_entities_processor.get_users_with_permission_to_node(
+                    record.id, CollectionNames.RECORDS.value, raise_on_error=True
+                )
+            }
+            cut = sorted((holders & members) - {""})
+            if cut:
+                managed = await self._permissions_as_drive_manager(record.external_record_id, drive_id, cut[0], read_as)
+                # No Manager can list it: a member reaches it through the drive only (decision for such drives).
+                named = {(p.email or "").lower() for p in managed[0]} if managed is not None else set()
+                for email in cut:
+                    if email not in named:
+                        await self.data_entities_processor.delete_permission_from_record(
+                            record.id, email, self.connector_id
+                        )
+            last = record.id
+        return None, budget
+
     async def _drive_member_email_list(self, drive_id: str) -> list[str]:
         """Everyone who is a member of a shared drive, directly or through a member group, synced or not, this run.
         A member group the directory cannot list adds nobody, and marks the drive's members unread."""
@@ -4326,6 +4449,20 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # If drive_data_source is provided, use it; otherwise fall back to service account
                 limited_access = bool(metadata.get("inheritedPermissionsDisabled"))
                 item_drive_id = metadata.get("driveId")
+                if (
+                    limited_access and item_drive_id and existing_record is not None
+                    and metadata.get("mimeType") == MimeTypes.GOOGLE_DRIVE_FOLDER.value
+                    and file_id not in self._limited_subtrees.get(item_drive_id, ())
+                    and (
+                        item_drive_id in self._upgrade_drives
+                        or await self.data_entities_processor.inheritance_when_unreadable(
+                            CollectionNames.RECORDS.value, existing_record.id
+                        )
+                    )
+                ):
+                    # It turned limited (it still inherits as stored): the changes feed reports it alone, so what
+                    # its descendants hold for members it now cuts out is checked once the run has written it.
+                    self._limited_subtrees.setdefault(item_drive_id, set()).add(file_id)
                 read_as = {
                     "inherited_permissions_disabled": limited_access,
                     "inherits_from_drive": not item_drive_id or file_record.external_record_group_id == item_drive_id,
