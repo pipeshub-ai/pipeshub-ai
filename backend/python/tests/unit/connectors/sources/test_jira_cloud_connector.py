@@ -1587,6 +1587,9 @@ class TestFetchGroupMembersCoverage:
 
         result = await connector._fetch_group_members("g1", "devs")
         assert result == (["acc-1"], True)
+        # A group's name can change; its id cannot, so the members are read by id (the docs recommend groupId).
+        assert mock_ds.get_users_from_group.await_args.kwargs["groupId"] == "g1"
+        assert mock_ds.get_users_from_group.await_args.kwargs["groupname"] is None
 
     @pytest.mark.asyncio
     async def test_pagination(self):

@@ -3511,9 +3511,12 @@ class JiraConnector(BaseConnector):
 
         while True:
             try:
+                # "As a group's name can change, use of groupId is recommended to identify a group."
+                # (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-groups/)
                 response = await self._call_with_retry(
                     lambda ds: ds.get_users_from_group(
-                        groupname=group_name,
+                        groupId=group_id or None,
+                        groupname=None if group_id else group_name,
                         includeInactiveUsers=False,
                         startAt=start_at,
                         maxResults=max_results,
