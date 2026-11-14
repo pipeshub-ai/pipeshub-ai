@@ -913,6 +913,51 @@ class TestProductAccess:
 
         assert {u.email for u in db.app_users} == {"bob@example.com"} and db.withdrawn_users == []
 
+    @pytest.mark.parametrize(
+        "row",
+        [pytest.param({"displayName": "Bob"}, id="no key or name"), pytest.param({"key": ""}, id="an empty key"),
+         pytest.param("bob-key", id="not an object")],
+    )
+    async def test_a_product_group_member_row_without_an_identifier_leaves_product_access_unknown(
+        self, jira, db, store, search, row,
+    ) -> None:
+        """Skipping the row would leave a member list read in full without that member."""
+        stub_site(jira, search)
+
+        def members(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request)["groupname"] == "jira-software-users":
+                return json_response({"values": [{"key": "alice-key"}, row], "isLast": True})
+            return json_response({"values": [{"key": "alice-key"}], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"} and db.withdrawn_users == []
+
+    async def test_a_failed_read_of_the_linked_accounts_fails_the_sync_and_changes_no_access(
+        self, jira, db, store, search,
+    ) -> None:
+        """Read as no accounts, it would link no one while product access is unknown, and save every group empty."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+
+        async def linked(connector_id: str, *, raise_on_error: bool = False) -> list[AppUser]:
+            if raise_on_error:
+                raise RuntimeError("graph unavailable")
+            return []  # what the store answers on a failed read without raise_on_error
+
+        db.get_all_app_users = linked
+        connector, _ = await make_connector(db, store)
+
+        with pytest.raises(RuntimeError, match="graph unavailable"):
+            await connector.run_sync()
+
+        assert db.app_users == [] and db.groups_saved == {} and db.withdrawn_users == []
+
     async def test_roles_read_in_full_with_no_groups_give_no_account_product_access(self, jira, db, store, search) -> None:
         """Only an administrator can read the roles, so the answer is the whole picture: access comes only through
         a role's groups, and no role has one."""
