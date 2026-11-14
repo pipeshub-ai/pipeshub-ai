@@ -166,7 +166,7 @@ functions:
       - {"name": "p_principals", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
       - {"name": "p_nodes", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
       - {"name": "p_gtypes", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 64]}
-      - {"name": "p_roles", "type": "text[]", "max_items": 5000, "item_length": [0, 64]}
+      - {"name": "p_roles", "type": "text[]", "max_items": 5000}
       - {"name": "p_apps", "type": "bigint[]", "max_items": 5000}
       - {"name": "p_leaves", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
     returns: "int"

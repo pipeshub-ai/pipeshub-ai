@@ -25,6 +25,7 @@ holds them to the oracle:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import zlib
 from collections import Counter
@@ -38,6 +39,8 @@ from . import oracle
 from .runner import OracleLayer
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from .layers import GraphCheckLayer
     from .model import Node, Parent, World
 
@@ -50,6 +53,7 @@ BIG_PAGE = 200
 SAMPLED_FIRST = 20  # the first nodes a viewer opens, and one node in SAMPLE_EVERY after, page by PAGE
 SAMPLE_EVERY = 4
 MAX_PAGES = 400
+CHUNK = 25  # worlds a store holds at once (`check_worlds`): a store larger than its page cache slows every statement
 
 
 SKIPPED: Any = object()  # a browse the layer did not run: past its budget of opens (`MAX_OPENS`)
@@ -147,13 +151,27 @@ def _ancestors(world: World, node: Node) -> list[Parent]:
     return out
 
 
+def stored(reference: OracleLayer, world: World) -> World:
+    """The world as the store under test holds it (the reference's shape): only the nodes it keeps, and only the edges between them. ArangoDB
+    keeps no node with an unknown rule and no deleted or placeholder group, so a chain through one does not reach the App there."""
+    graph, _ = reference._store(world)
+    kept = {reference._ns.local(n["id"]) for n in graph["nodes"]}
+    return replace(world, nodes=tuple(
+        replace(n, parents=tuple(p for p in n.parents if p.id in kept), belongs=tuple(g for g in n.belongs if g in kept),
+                inherits=tuple(i for i in n.inherits if i in kept))
+        for n in world.nodes if n.id in kept))
+
+
 def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> set[str]:
     """The granted rows a browse of ``node`` (an App or a group) lists beside its hierarchy children, by the placement rule the stores share
     (``GraphDBProvider._kh_v3_chain_tops``, ``place_chain_tops``): a live, OPEN, non-placeholder record or group of the App the viewer is
     granted, with no hierarchy parent the viewer may open and not the App's hierarchy child, outside a group that hides its children. It is
     listed under each of its own groups (a record's groups, a group's parent groups) the viewer may open; with none, under the App when it
     has no own group or one that hangs from the App. A group's browse places only the records that belong to it. None in an App that opens
-    everything."""
+    everything. The parents, groups and chains to the App are read from the world as the store holds it (`stored`), as the store reads them."""
+    asked_world, world = world, stored(reference, world)
+    if node not in {n.id for n in world.nodes}:      # a node the store does not keep lists nothing
+        return set()
     target = world.node(node)
     app_id = node if target.kind == "app" else target.connector
     if app_id is None:      # a group of no App: nothing is placed under it
@@ -175,7 +193,7 @@ def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> 
              and (target.kind == "app" or (n.kind == "record" and node in n.belongs))]
     asked = sorted({i for n in cands for i in [n.id, *hier(n), *own(n)]})
     # the stores' check admits a placeholder asked by id where it would admit a real node there (the oracle refuses every placeholder): asked as one
-    real = replace(world, nodes=tuple(replace(n, placeholder=False) for n in world.nodes))
+    real = replace(asked_world, nodes=tuple(replace(n, placeholder=False) for n in asked_world.nodes))
     ok = {i for i, v in reference.explain(real, viewer, asked).items() if v.admitted}
     out = set()
     for n in cands:
@@ -228,6 +246,42 @@ async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "
             add("sidebar", f"flatten: the sidebar leaves out {missing}, which the flatten lists with an arrow")
         found.extend(await _browse(layer, reference, world, viewer, seen, scenario_id))
     return found
+
+
+async def check_worlds(layer: GraphCheckLayer, worlds: list[World], tag: str) -> list[KhFinding]:
+    """`check_world` of every world on one store, loaded and released `CHUNK` at a time (`<tag>-<index>` names each); a chunk is released even
+    when its load or a check of it raises or is cancelled (`preload` names the worlds before it loads them)."""
+    found: list[KhFinding] = []
+    for start in range(0, len(worlds), CHUNK):
+        chunk = worlds[start:start + CHUNK]
+        try:
+            await layer.preload(chunk)
+            for offset, world in enumerate(chunk):
+                found += await check_world(layer, world, f"{tag}-{start + offset}")
+        finally:
+            await layer.release(chunk)
+    return found
+
+
+async def on_every_store(
+    layers: list[GraphCheckLayer], run: Callable[[GraphCheckLayer], Awaitable[list[KhFinding]]],
+) -> list[tuple[GraphCheckLayer, list[KhFinding] | Exception]]:
+    """``run`` on every store at once, each store's findings apart: the stores are separate servers, so one runs its statements while the other's
+    wait. A store that raises has its exception in place of its findings, and the others still finish. Anything that is no ``Exception`` (the
+    test's timeout, an interrupt) stops every store and is raised; a cancelled store still releases what it loaded."""
+    tasks = [asyncio.ensure_future(run(layer)) for layer in layers]
+    try:
+        pending = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_EXCEPTION)
+            for task in done:
+                if not task.cancelled() and task.exception() is not None and not isinstance(task.exception(), Exception):
+                    raise task.exception()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return [(layer, task.exception() or task.result()) for layer, task in zip(layers, tasks, strict=True)]
 
 
 class _Config:
