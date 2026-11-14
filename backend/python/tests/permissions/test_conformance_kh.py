@@ -55,10 +55,12 @@ from .kh_worlds import (
     STUBQ,
     STUBSEED,
     TWOWAY,
+    XBADGE,
     XDECL,
     XGRANT,
     XHOP,
     XLINK,
+    XLINKBADGE,
     XSTUB,
 )
 from .runner import OracleLayer
@@ -388,6 +390,48 @@ async def test_a_grant_on_a_node_of_another_app_passes_the_hop(graph_layers) -> 
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
             await layer.release([XHOP, XLINK])
+
+
+async def test_a_role_grants_on_any_gated_app_and_a_source_accounts_role_only_inside_its_connector(graph_layers) -> None:
+    """A grant to a principal the viewer holds counts on a node of any gated App, whatever the principal's own connector (XBADGE: a role of App
+    R opens c through x of App B, and a of App A). A source account's roles count inside the account's connector only, whatever their own
+    (XLINKBADGE: e opens through y of B, z of A does not)."""
+    oracle = OracleLayer()
+    assert {k for k, v in oracle.explain(XBADGE, "u", ["c", "a"]).items() if v.admitted} == {"c", "a"}
+    assert {k for k, v in oracle.explain(XLINKBADGE, "u", ["e", "z"]).items() if v.admitted} == {"e"}
+    for layer in graph_layers:
+        await layer.preload([XBADGE, XLINKBADGE])
+        try:
+            assert await layer.admitted(XBADGE, "u", ["c", "a"]) == {"c", "a"}, layer.name
+            assert await layer.admitted(XLINKBADGE, "u", ["e", "z"]) == {"e"}, layer.name
+            if layer.name == "neo4j":       # the other connectors' grants a page of A reads in one list (`_kh_v3_cross`)
+                for world, want in ((XBADGE, {"x"}), (XLINKBADGE, {"y"})):
+                    ns = await layer._ns(world)
+                    gate = await layer._provider.get_knowledge_hub_access_context_v2(ns.id("u"), ns.org)
+                    cross = await layer._provider._kh_v3_cross(ns.id("u"), ns.org, gate["gated_app_ids"], ns.id("A"), None)
+                    assert {ns.local(i) for i in cross or []} == want, (layer.name, cross)
+            bad = [f for world in (XBADGE, XLINKBADGE) for f in _bad(await check_world(layer, world, "xbadge"))]
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([XBADGE, XLINKBADGE])
+
+
+async def test_a_viewer_past_the_bound_of_one_list_still_reads_through_every_cross_app_grant(graph_layers, monkeypatch) -> None:
+    """Past the bound of one list of cross-connector grants, Neo4j tests them on each node instead: a node granted only through an id past the
+    bound still opens what hangs below it, and a source account's grant still counts inside its own connector only. Here the bound is 0, so
+    every id is past it."""
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+    monkeypatch.setattr(Neo4jProvider, "_KH_CROSS_MAX", 0)
+    worlds = (XHOP, XLINK, XBADGE, XLINKBADGE)
+    for layer in (layer for layer in graph_layers if layer.name == "neo4j"):
+        await layer.preload(worlds)
+        try:
+            assert await children_of(layer, XHOP, "u", "g", "recordGroup") == {"d": False}, layer.name
+            bad = [f for world in worlds for f in _bad(await check_world(layer, world, "pastbound"))]
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release(worlds)
 
 
 async def test_a_granted_strict_group_below_a_seed_the_app_does_not_reach_is_read_and_listed_nowhere(graph_layers) -> None:
