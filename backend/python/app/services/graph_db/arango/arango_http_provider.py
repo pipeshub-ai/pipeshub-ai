@@ -20705,18 +20705,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> list[dict[str, Any]]:
         return await self._kh_v3_run("chain_top_details", {"kh_keys": node_ids}, transaction)
 
-    async def _kh_v3_chain_top_facts(
-        self,
-        app_id: str,
-        node_ids: list[str],
-        group_ids: list[str],
-        transaction: str | None,
-    ) -> dict[str, set[str]]:
-        rows = await self._kh_v3_run("chain_top_facts", {
-            "app_id": app_id, "kh_nodes": node_ids, "kh_groups": group_ids,
-        }, transaction)
-        row = rows[0] if rows else {}
-        return {"hidden": set(row.get("hidden") or []), "underApp": set(row.get("underApp") or [])}
+    async def _kh_v3_chain_top_hidden(
+        self, app_id: str, node_ids: list[str], transaction: str | None,
+    ) -> set[str]:
+        return set(await self._kh_v3_run("chain_top_hidden", {"kh_nodes": node_ids}, transaction))
 
     async def _kh_v3_walk(
         self, starts: list[str], step: str, bind: dict[str, Any], depth: int, transaction: str | None,
@@ -21408,33 +21400,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     ownGroups: (FOR kh_g IN {owns("kh_c")} RETURN {{id: kh_g._key, deleted: kh_g.isDeleted == true}})
                 }}
             """,
-            # The costly walks, for the chain-tops only (``_kh_v3_chain_top_facts``).
-            "chain_top_facts": f"""
-            LET kh_app = DOCUMENT("{apps}", @app_id)
-            RETURN {{
-                hidden: (
-                    FOR kh_c IN UNION(
-                        (FOR x IN {records} FILTER x._key IN @kh_nodes RETURN x),
-                        (FOR x IN {groups} FILTER x._key IN @kh_nodes RETURN x)
-                    )
-                        FILTER {_aql_hidden_above("kh_c", "ct")} OR {_aql_in_hidden_group("kh_c", "cg")}
-                        RETURN kh_c._key
-                ),
-                underApp: (
-                    FOR kh_g IN {groups}
-                        FILTER kh_g._key IN @kh_groups
-                        FILTER LENGTH(
-                            FOR kh_a, kh_ae, kh_ap IN 1..50 INBOUND kh_g {relations}
-                                PRUNE kh_ae != null AND (kh_ae.relationshipType NOT IN {hierarchy}
-                                    OR kh_a._id == kh_app._id)
-                                OPTIONS {{uniqueVertices: "path"}}
-                                FILTER kh_ap.edges[*].relationshipType ALL IN {hierarchy}
-                                FILTER kh_a._id == kh_app._id
-                                LIMIT 1
-                                RETURN 1) > 0
-                        RETURN kh_g._key
-                )
-            }}
+            # The costly walk, for the chain-tops only (``_kh_v3_chain_top_hidden``).
+            "chain_top_hidden": f"""
+            FOR kh_c IN UNION(
+                (FOR x IN {records} FILTER x._key IN @kh_nodes RETURN x),
+                (FOR x IN {groups} FILTER x._key IN @kh_nodes RETURN x)
+            )
+                FILTER {_aql_hidden_above("kh_c", "ct")} OR {_aql_in_hidden_group("kh_c", "cg")}
+                RETURN kh_c._key
             """,
             "lineage": f"""
             LET kh_start = FIRST(UNION(
