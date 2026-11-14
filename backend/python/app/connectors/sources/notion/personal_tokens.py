@@ -32,6 +32,12 @@ def token_path(connector_id: str, user_id: str) -> str:
     return f"{tokens_dir(connector_id)}{user_id}"
 
 
+def content_state_path(connector_id: str) -> str:
+    """Whether the connector's content was indexed again without other pages' titles. In the
+    configuration store, not a sync point: a full sync forgets its sync points."""
+    return f"/services/connectors/{connector_id}/notionContent"
+
+
 async def link_token(config_service: ConfigurationService, connector_id: str, user_id: str, token: str) -> None:
     """Store ``user_id``'s token for the connector, replacing any earlier one."""
     now = get_epoch_timestamp_in_ms()
@@ -48,9 +54,10 @@ async def unlink_token(config_service: ConfigurationService, connector_id: str, 
 
 
 async def unlink_all(config_service: ConfigurationService, connector_id: str) -> bool:
-    """Drop every user's token for a connector that is going away; True once none is left."""
-    gone = [await delete_config_confirmed(config_service, key)
-            for key in await config_service.list_keys_in_directory(tokens_dir(connector_id))]
+    """Drop every user's token, and the content state, of a connector that is going away; True
+    once none is left."""
+    keys = [*await config_service.list_keys_in_directory(tokens_dir(connector_id)), content_state_path(connector_id)]
+    gone = [await delete_config_confirmed(config_service, key) for key in keys]
     return all(gone)
 
 

@@ -3641,6 +3641,7 @@ class TestProcessBlocksRecursive:
     @pytest.mark.asyncio
     async def test_synced_block_reference_fetches_from_original(self):
         conn = _make_connector_fullcov()
+        conn._PER_PAGE_ACCESS = False  # one audience, as on the personal connector: a synced copy is shown
         mock_block = MagicMock(spec=Block)
         mock_block.data = "synced"
         mock_block.format = DataFormat.MARKDOWN
@@ -3690,6 +3691,7 @@ class TestProcessBlocksRecursive:
     @pytest.mark.asyncio
     async def test_parsed_group_synced_block_reference(self):
         conn = _make_connector_fullcov()
+        conn._PER_PAGE_ACCESS = False  # one audience, as on the personal connector: a synced copy is shown
         mock_group = MagicMock(spec=BlockGroup)
         mock_group.children = None
 
@@ -6050,6 +6052,7 @@ class TestProcessBlocksRecursiveSynced:
     @pytest.mark.asyncio
     async def test_synced_block_reference_fetches_from_original(self):
         conn = _make_connector_fullcov()
+        conn._PER_PAGE_ACCESS = False  # one audience, as on the personal connector: a synced copy is shown
         parser = NotionBlockParser(conn.logger)
         blocks, groups = [], []
 

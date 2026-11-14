@@ -7,6 +7,7 @@ Authentication: OAuth 2.0
 import base64
 import bisect
 import hashlib
+import inspect
 import math
 import mimetypes
 import re
@@ -109,8 +110,10 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.notion.notion import (
     NotionClient,
+    NotionResponse,
     NotionRESTClientViaOAuth,
     NotionTokenConfig,
     notion_api_base_url,
@@ -229,6 +232,72 @@ def _with_comment_digest(
         return revision
     digest = hashlib.sha256("\n".join(stamps).encode()).hexdigest()[:16]
     return f"{revision}|comments:{digest}"
+
+
+def _without_linked_content(node: object) -> None:
+    """Remove, in place, what a Notion object shows of other pages: a page or database mention's
+    title, every rollup, and on a page that relates to others, its formulas.
+
+    Notion returns a mention's title to the integration whatever the reader may open, and a rollup
+    or a formula over a relation is computed from the related pages. Each of those pages has readers
+    of its own, so a reader of this one must not learn them from it.
+    """
+    if isinstance(node, list):
+        for item in node:
+            _without_linked_content(item)
+        return
+    if not isinstance(node, dict):
+        return
+    if node.get("type") == "mention" and (node.get("mention") or {}).get("type") in ("page", "database"):
+        node["plain_text"] = ""
+    if node.get("type") == "rollup" and "rollup" in node:
+        node["rollup"] = {"type": "unsupported"}
+    properties = node.get("properties") if node.get("object") == "page" else None
+    if isinstance(properties, dict) and any(
+        isinstance(p, dict) and p.get("type") == "relation" for p in properties.values()
+    ):
+        for prop in properties.values():
+            if isinstance(prop, dict) and prop.get("type") == "formula":
+                prop["formula"] = {"type": "unsupported"}
+    for value in node.values():
+        _without_linked_content(value)
+
+
+class _BodyWithoutLinkedContent:
+    """A Notion response body whose ``json()`` has gone through ``_without_linked_content``."""
+
+    def __init__(self, body: HTTPResponse) -> None:
+        self._body = body
+        self._parsed: object = None
+
+    def json(self) -> object:
+        if self._parsed is None:
+            self._parsed = self._body.json()
+            _without_linked_content(self._parsed)
+        return self._parsed
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._body, name)
+
+
+class _DataSourceWithoutLinkedContent:
+    """A NotionDataSource whose successful responses carry no content of other pages."""
+
+    def __init__(self, inner: NotionDataSource) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> object:
+        attr = getattr(self._inner, name)
+        if not inspect.iscoroutinefunction(attr):
+            return attr
+
+        async def call(*args: object, **kwargs: object) -> NotionResponse:
+            response = await attr(*args, **kwargs)
+            if getattr(response, "success", False) and getattr(response, "data", None) is not None:
+                response.data = _BodyWithoutLinkedContent(response.data)
+            return response
+
+        return call
 
 
 def _user_email(user: object) -> str:
@@ -513,6 +582,9 @@ class NotionConnector(BaseConnector):
         # The grants _apply_page_access last wrote in full, so an unchanged sync writes none.
         self._access_written: str | None = None
         self._access_write_failures = 0
+        # Records indexed again this sync without other pages' titles: nobody reads them until next
+        # sync. None until that step has run this sync: then nobody reads anything.
+        self._withheld: set[str] | None = set()
 
     def _oauth_config_type(self) -> str:
         """Key this connector's shared OAuth apps are stored under.
@@ -797,7 +869,7 @@ class NotionConnector(BaseConnector):
             self.logger.info(f"🚀 Starting Notion sync for org: {org_id}")
             self._sync_incomplete = False
             self._failed_pages = set()
-            self._readers, self._published, self._listed_rows = {}, None, None
+            self._readers, self._published, self._listed_rows, self._withheld = {}, None, None, None
 
             datasource = await self._get_fresh_datasource()
             await self._assert_required_capabilities(datasource)
@@ -821,6 +893,12 @@ class NotionConnector(BaseConnector):
                 # What each linked personal access token may open; a failure here only leaves
                 # that person, or everyone, without grants this sync.
                 await self._load_personal_access()
+                try:
+                    await self._reindex_without_linked_content()
+                except Exception as e:
+                    # _withheld stays None: nobody is granted this sync, and the next one tries again.
+                    self._sync_incomplete = True
+                    self.logger.error(f"Asking for Notion content to be indexed again failed: {e}", exc_info=True)
 
                 # Step 2: Sync all data sources (Search API returns all, regardless of hierarchy)
                 await self._sync_objects_by_type("data_source")
@@ -1131,6 +1209,32 @@ class NotionConnector(BaseConnector):
             self._access_write_failures += 1
             self.logger.error(f"Writing who may read each Notion page failed: {e}", exc_info=True)
 
+    async def _reindex_without_linked_content(self) -> None:
+        """Before the walk: have every page and data source stored before content dropped other
+        pages' titles indexed again, once, and put them in ``_withheld``, granted to nobody this
+        sync while that indexing runs. Records this code writes need none of it.
+
+        shortcut: the next sync grants them, assuming indexing finished within one sync interval;
+        wait for each record's indexing to report back if it ever takes longer.
+        """
+        key = personal_tokens.content_state_path(self.connector_id)
+        state = await self.config_service.get_config(key, use_cache=False, raise_on_error=True) or {}
+        pending = set(state.get("pending") or ())
+        if state.get("done") and not pending:
+            self._withheld = set()
+            return
+        stored = [
+            r for record_type in (RecordType.WEBPAGE, RecordType.DATASOURCE)
+            for r in await self.data_entities_processor.get_records_by_record_type(self.connector_id, record_type)
+            if not r.is_placeholder and (not state.get("done") or r.id in pending)
+        ]
+        self._withheld = {r.id for r in stored}
+        published = set(await self.data_entities_processor.reindex_existing_records(stored)) if stored else set()
+        if not await self.config_service.set_config(
+            key, {"done": True, "pending": [r.id for r in stored if r.id not in published]},
+        ):
+            raise RuntimeError("the configuration store did not keep the reindex state")
+
     def _readers_of(self, object_id: str) -> set[str]:
         readers = set(self._readers.get(object_id, ()))
         if self._published is not None and object_id in self._published:
@@ -1161,7 +1265,8 @@ class NotionConnector(BaseConnector):
                 rows[r.parent_external_record_id].add(r.external_record_id)
         wanted: list[tuple[Record, list[str]]] = []
         for record in stored:
-            readers = self._readers_of(record.external_record_id)
+            withheld = self._withheld is None or record.id in self._withheld
+            readers = set() if withheld else self._readers_of(record.external_record_id)
             if record.record_type == RecordType.DATASOURCE:
                 if self._listed_rows is None:
                     readers = set()
@@ -3130,9 +3235,13 @@ class NotionConnector(BaseConnector):
 
         async def record_child(external_id: str) -> ChildRecord | None:
             if external_id not in record_children:
-                record_children[external_id] = await self.get_record_child_by_external_id(
+                child = await self.get_record_child_by_external_id(
                     external_id, data_source_id if external_id in row_ids else None
                 )
+                if child is not None and self._PER_PAGE_ACCESS and external_id not in row_ids:
+                    # A relation's target has readers of its own: the table shows its id, not its title.
+                    child = child.model_copy(update={"child_name": None})
+                record_children[external_id] = child
             return record_children[external_id]
 
         async def user_child(user_id: str) -> ChildRecord | None:
@@ -3819,6 +3928,9 @@ class NotionConnector(BaseConnector):
         """Children of a block. A synced block whose original lives on a page the integration
         cannot see gets a 404 for the original's children: it renders empty rather than failing
         the whole page."""
+        if children_block_id != block_id and self._PER_PAGE_ACCESS:
+            # A synced copy shows another page's content, which has readers of its own.
+            return []
         try:
             return await self._process_blocks_recursive(children_block_id, *args)
         except HTTPException as e:
@@ -5867,4 +5979,6 @@ class NotionConnector(BaseConnector):
             if getattr(internal_client, "headers", None) is not None:
                 internal_client.headers["Authorization"] = f"Bearer {fresh_token}"
 
-        return NotionDataSource(self.notion_client)
+        datasource = NotionDataSource(self.notion_client)
+        # Each page has its own readers here, so one page's content must not carry another's.
+        return _DataSourceWithoutLinkedContent(datasource) if self._PER_PAGE_ACCESS else datasource

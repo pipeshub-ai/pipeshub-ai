@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.connectors.sources.notion import personal_tokens
-from app.connectors.sources.notion.connector import NotionConnector, _TokenRejected
+from app.connectors.sources.notion.block_parser import NotionBlockParser
+from app.connectors.sources.notion.connector import (
+    NotionConnector,
+    _DataSourceWithoutLinkedContent,
+    _TokenRejected,
+    _without_linked_content,
+)
 from app.connectors.sources.notion_personal.connector import NotionPersonalConnector
 from app.models.blocks import (
     Block,
@@ -74,6 +80,8 @@ def _connector(token_datasource: MagicMock | None = None) -> NotionConnector:
         side_effect=lambda uid, **_: User(email=ALICE, user_id=uid, org_id="org-1", is_active=True) if uid == "u-alice" else None
     )
     conn.data_entities_processor.on_updated_record_permissions = AsyncMock()
+    # Content already indexed without other pages' titles: the one-time reindex is done.
+    conn.config_service.values[personal_tokens.content_state_path(conn.connector_id)] = {"done": True}
     if token_datasource is not None:
         conn._visible_with_token = lambda token, email: conn._visible_with_client(token_datasource, email)
     return conn
@@ -149,7 +157,7 @@ async def test_the_token_of_a_user_who_left_the_org_or_was_deactivated_is_delete
     await _link(conn, "u-gone")
     conn.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=user)
     await conn._load_personal_access()
-    assert conn._readers == {} and not conn.config_service.values
+    assert conn._readers == {} and personal_tokens.token_path(conn.connector_id, "u-gone") not in conn.config_service.values
     ds.retrieve_bot_user.assert_not_awaited()
 
 
@@ -207,7 +215,7 @@ def _record(ext: str, record_type: RecordType = RecordType.WEBPAGE, parent: str 
     rec.id, rec.external_record_id, rec.record_type = f"rid-{ext}", ext, record_type
     # A record read back from the store does not keep its parent's type.
     rec.parent_external_record_id, rec.parent_record_type = parent, None
-    rec.inherit_permissions = True
+    rec.inherit_permissions, rec.is_placeholder = True, False
     return rec
 
 
@@ -342,3 +350,117 @@ def test_a_page_shows_no_title_of_a_page_or_database_it_links_to_or_holds() -> N
     assert (child.data, child.source_name, child.source_id) == ("", None, "p-secret")
     assert child.table_row_metadata.children_records[0].child_name is None
     assert text.data == "Quarterly plan"
+
+
+# ---- what a page's content may show of other pages --------------------------------------------
+
+def _mention(kind: str, title: str) -> dict[str, Any]:
+    return {"type": "mention", "mention": {"type": kind, kind: {"id": "x"}}, "plain_text": title, "href": "https://www.notion.so/x"}
+
+
+def test_mentions_rollups_and_relation_formulas_lose_what_comes_from_other_pages() -> None:
+    body = {"results": [{
+        "object": "block", "type": "paragraph", "paragraph": {"rich_text": [
+            {"type": "text", "plain_text": "See "}, _mention("page", "Layoffs 2027"), _mention("database", "Salaries"),
+            _mention("user", "Alice"), _mention("date", "2027-01-01")]},
+    }, {
+        "object": "page", "properties": {
+            "Project": {"type": "relation", "relation": [{"id": "r1"}]},
+            "Budget": {"type": "rollup", "rollup": {"type": "number", "number": 900000}},
+            "Owner names": {"type": "formula", "formula": {"type": "string", "string": "Layoffs 2027"}},
+        },
+    }, {
+        "object": "page", "properties": {"Total": {"type": "formula", "formula": {"type": "number", "number": 3}}},
+    }]}
+    _without_linked_content(body)
+    rich = body["results"][0]["paragraph"]["rich_text"]
+    assert [r["plain_text"] for r in rich] == ["See ", "", "", "Alice", "2027-01-01"]
+    assert rich[1]["mention"]["page"]["id"] == "x", "the link keeps its target"
+    related = body["results"][1]["properties"]
+    assert related["Budget"]["rollup"] == {"type": "unsupported"}
+    assert related["Owner names"]["formula"] == {"type": "unsupported"}
+    assert body["results"][2]["properties"]["Total"]["formula"]["number"] == 3, "a formula over its own row stays"
+
+
+@pytest.mark.asyncio
+async def test_the_team_connector_reads_notion_through_the_filter_and_the_personal_one_does_not() -> None:
+    raw = MagicMock()
+    raw.json.return_value = {"rich_text": [_mention("page", "Layoffs 2027")]}
+    inner = MagicMock()
+    inner.retrieve_block = AsyncMock(return_value=MagicMock(success=True, data=raw))
+    response = await _DataSourceWithoutLinkedContent(inner).retrieve_block("b1")
+    assert response.data.json()["rich_text"][0]["plain_text"] == ""
+    assert response.data.json() is response.data.json(), "parsed and filtered once"
+
+    team = _connector()
+    team.notion_client = MagicMock()
+    team.notion_client.get_client.return_value = MagicMock(access_token="tok")
+    team.config_service = MagicMock(get_config=AsyncMock(return_value={"auth": {"authType": "API_TOKEN", "apiToken": "tok"}}))
+    assert isinstance(await team._get_fresh_datasource(), _DataSourceWithoutLinkedContent)
+    team._PER_PAGE_ACCESS = False
+    assert not isinstance(await team._get_fresh_datasource(), _DataSourceWithoutLinkedContent)
+
+
+@pytest.mark.asyncio
+async def test_a_synced_copy_of_another_pages_block_shows_nothing_on_the_team_connector() -> None:
+    conn = _connector()
+    conn._process_blocks_recursive = AsyncMock(return_value=["child"])
+    assert await conn._process_children_of("copy-1", "original-1") == []
+    conn._process_blocks_recursive.assert_not_awaited()
+    assert await conn._process_children_of("block-1", "block-1") == ["child"], "a block's own children stay"
+
+
+@pytest.mark.asyncio
+async def test_a_relation_without_a_title_shows_its_target_id() -> None:
+    parser = NotionBlockParser(MagicMock())
+    callback = AsyncMock(return_value=ChildRecord(child_type=ChildType.RECORD, child_id="rid", child_name=None))
+    value = await parser._extract_property_value_with_resolution(
+        {"type": "relation", "relation": [{"id": "page-9"}]}, get_record_child_callback=callback)
+    assert value == "page-9"
+
+
+@pytest.mark.asyncio
+async def test_content_indexed_with_other_pages_titles_is_indexed_again_once_and_granted_after() -> None:
+    conn = _connector()
+    conn._readers = {"a": {ALICE}, "b": {ALICE}}
+    key = personal_tokens.content_state_path(conn.connector_id)
+    del conn.config_service.values[key]  # stored by an earlier version
+    reindex = conn.data_entities_processor.reindex_existing_records = AsyncMock(return_value=["rid-a"])
+    records = (_record("a"), _record("b"))
+
+    async def sync() -> dict[str, list[str]]:
+        by_type = {RecordType.WEBPAGE: list(records)}
+        conn.data_entities_processor.get_records_by_record_type = AsyncMock(side_effect=lambda _c, t: by_type.get(t, []))
+        conn._withheld = None  # as each sync starts
+        await conn._reindex_without_linked_content()
+        conn.data_entities_processor.on_updated_record_permissions.reset_mock()
+        return await _applied(conn, *records)
+
+    assert await sync() == {"a": [], "b": []}, "nobody while it is indexed again"
+    assert [r.id for r in reindex.await_args.args[0]] == ["rid-a", "rid-b"]
+    assert conn.config_service.values[key] == {"done": True, "pending": ["rid-b"]}
+    assert await sync() == {"a": [ALICE], "b": []}, "b's reindex did not go out: it waits"
+    reindex.return_value = ["rid-b"]
+    await sync()
+    reindex.reset_mock()
+    assert await sync() == {"a": [ALICE], "b": [ALICE]}
+    reindex.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_connector_with_nothing_stored_yet_needs_no_reindex() -> None:
+    conn = _connector()
+    key = personal_tokens.content_state_path(conn.connector_id)
+    del conn.config_service.values[key]
+    conn.data_entities_processor.reindex_existing_records = AsyncMock(return_value=[])
+    await conn._reindex_without_linked_content()
+    assert conn._withheld == set() and conn.config_service.values[key] == {"done": True, "pending": []}
+    conn.data_entities_processor.reindex_existing_records.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_until_the_reindex_step_has_run_nobody_is_granted() -> None:
+    conn = _connector()
+    conn._readers = {"a": {ALICE}}
+    conn._withheld = None
+    assert await _applied(conn, _record("a")) == {"a": []}
