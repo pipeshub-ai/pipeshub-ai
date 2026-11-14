@@ -280,13 +280,17 @@ class TestWithdrawnAccounts:
     @pytest.mark.parametrize("flag", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_refused",
                                       "_user_bulk_incomplete"])
     def test_a_directory_not_read_in_full_keeps_every_level_grant(self, flag: str) -> None:
+        """Of the level's members, a linked account the read missed keeps its grant; an account no longer linked
+        (withdrawn) that only the payload names gets none."""
         c = _connector()
         c._listed_user_keys = {"alice-key"}
+        c._stored_app_users = [_user("alice-key", "alice@example.com"), _user("gone", "unresolved@x.com")]
         c._issue_security["10"] = IssueSecurityContext(
             knowledge=SchemeKnowledge.PRESENT, members_readable=True,
             members_by_level={"1": [
                 {"type": "user", "parameter": "alice-key", "user": {"key": "alice-key"}},
                 {"type": "user", "parameter": "gone", "user": {"key": "gone", "emailAddress": "unresolved@x.com"}},
+                {"type": "user", "parameter": "left", "user": {"key": "left", "emailAddress": "withdrawn@x.com"}},
             ]},
         )
         issue = {"id": "9", "key": "P-9", "fields": {
@@ -330,3 +334,16 @@ class TestWithdrawnAccounts:
         c._fetch_ancestor_level = AsyncMock()
         assert await c._sweep_placeholder_records({"10"}, set()) == 0
         c._fetch_ancestor_level.assert_not_awaited()
+
+    async def test_linking_users_between_syncs_saves_their_re_read_first(self) -> None:
+        c = _connector()
+        c.data_source = MagicMock()
+        order: list = []
+        listed = [_user("alice-key", "a@x.com"), _user("carol-key", "c@x.com")]
+        c._fetch_users = AsyncMock(return_value=listed)
+        c._stored_app_users = [listed[0]]
+        c._note_people_to_reread = AsyncMock(side_effect=lambda ids: order.append(("note", sorted(ids))))
+        c.data_entities_processor.on_new_app_users = AsyncMock(side_effect=lambda _u: order.append(("link",)))
+        c._sync_user_groups = AsyncMock()
+        await c._link_users_and_groups()
+        assert order == [("note", ["carol-key"]), ("link",)]

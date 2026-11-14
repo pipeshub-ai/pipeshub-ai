@@ -965,10 +965,7 @@ class JiraDataCenterConnector(BaseConnector):
                     "project access are kept, and anything with nothing stored is saved from what was read. "
                     "The next sync reads it again"
                 )
-            linked_before = {u.source_user_id for u in self._stored_app_users}
-            self._newly_listed_user_keys = await self._note_people_to_reread(
-                {u.source_user_id for u in jira_users if u.source_user_id} - linked_before
-            )
+            self._newly_listed_user_keys = await self._note_newly_listed(jira_users)
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
@@ -1532,6 +1529,8 @@ class JiraDataCenterConnector(BaseConnector):
             self._kept_unread_access = False
             self._kept_after_refusal = []
             jira_users = await self._fetch_users()
+            # Linked here, they are no longer new to the next sync: its re-read of their issues is saved first.
+            await self._note_newly_listed(jira_users)
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
             await self._sync_user_groups(jira_users)
@@ -4716,6 +4715,11 @@ class JiraDataCenterConnector(BaseConnector):
             and level_reads_alike(security, parent_level)
         )
 
+    async def _note_newly_listed(self, jira_users: list[AppUser]) -> set[str]:
+        """``_note_people_to_reread`` for the listed accounts no stored link names yet."""
+        linked_before = {u.source_user_id for u in self._stored_app_users}
+        return await self._note_people_to_reread({u.source_user_id for u in jira_users if u.source_user_id} - linked_before)
+
     async def _note_people_to_reread(self, newly_listed: set[str]) -> set[str]:
         """The accounts whose leveled issues need reading again: these, and those an earlier sync saved but did
         not hand to every project. Saved before the accounts are linked, since once linked they are no longer new."""
@@ -4755,10 +4759,11 @@ class JiraDataCenterConnector(BaseConnector):
 
     def _directory_grants(self, permissions: list[Permission], users: dict[str, AppUser]) -> list[Permission]:
         """An issue's own grants (reporter, assignee, level members) name only accounts in the synced
-        directory; nothing is dropped when the directory was not read in full."""
-        if not self._directory_read_complete():
-            return permissions
+        directory. When it was not read in full, the accounts linked to the connector (the last complete state)
+        count too, but never one the issue payload alone names, such as an account withdrawn earlier."""
         listed = {u.email.lower() for u in users.values() if u.email}
+        if not self._directory_read_complete():
+            listed |= {u.email.lower() for u in self._stored_app_users if u.email}
         return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed]
 
     def _secure_ancestor_stub(

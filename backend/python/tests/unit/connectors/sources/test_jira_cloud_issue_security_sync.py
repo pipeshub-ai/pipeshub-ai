@@ -1748,19 +1748,21 @@ class TestIssueGrantsNameListedAccountsOnly:
         assert {p.email for p in perms} == {"asg@x.com"}
 
     @pytest.mark.parametrize("not_in_full", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_refused", "empty"])
-    def test_a_directory_not_read_in_full_drops_nothing(self, not_in_full: str) -> None:
+    def test_a_directory_not_read_in_full_counts_the_linked_accounts_and_no_one_else(self, not_in_full: str) -> None:
         c = _connector()
         c._stored_app_users = [AppUser(app_name="JIRA", connector_id="c", source_user_id="acc-l", org_id="org-1",
                                        email="linked@x.com", full_name="L", is_active=True)]
         c._listed_account_ids = {"acc-l"}
-        perms = [Permission(entity_type=EntityType.USER, email="former@x.com", type=PermissionType.READ),
+        perms = [Permission(entity_type=EntityType.USER, email="Linked@x.com", type=PermissionType.READ),
+                 Permission(entity_type=EntityType.USER, email="withdrawn@x.com", type=PermissionType.READ),
                  Permission(entity_type=EntityType.GROUP, external_id="g", type=PermissionType.READ)]
-        assert c._directory_grants(perms, {}) == perms[1:]
+        assert c._directory_grants(perms, {}) == perms[2:]
         if not_in_full == "empty":
             c._listed_account_ids = set()  # no one listed, though accounts were linked: not a read of the whole list
         else:
             setattr(c, not_in_full, True)
-        assert c._directory_grants(perms, {}) == perms
+        # A linked account the read missed keeps its grant; one only the payload names (withdrawn) does not.
+        assert c._directory_grants(perms, {}) == [perms[0], perms[2]]
 
     @staticmethod
     def _pass(c: JiraConnector, stored: str | None = None) -> tuple[list, list]:
@@ -1831,3 +1833,35 @@ class TestIssueGrantsNameListedAccountsOnly:
         assert await c._note_people_to_reread({"acc-1"}) == ["acc-0", "acc-1"]
         assert json.loads(store["people_reread"]["accounts"]) == ["acc-0", "acc-1"]
         assert await c._note_people_to_reread(set()) == ["acc-0", "acc-1"]  # an earlier sync failed before handing them on
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("failed", "skipped", "cleared"), [
+        ([], [], True), (["PROJ"], [], False), ([], ["OPS"], False)], ids=["all_handed_on", "a_project_failed", "a_project_not_built"])
+    async def test_the_saved_accounts_are_cleared_only_once_every_project_took_them(
+        self, failed: list, skipped: list, cleared: bool,
+    ) -> None:
+        c = _connector()
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.update_sync_point = AsyncMock()
+        c._newly_listed_account_ids = ["acc-1"]
+        c._skipped_project_keys = skipped
+        await c._people_to_reread_handed_on({"failed_project_keys": failed})
+        assert c.issues_sync_point.update_sync_point.await_count == (1 if cleared else 0)
+
+    @pytest.mark.asyncio
+    async def test_linking_users_between_syncs_saves_their_re_read_first(self) -> None:
+        c = _connector()
+        c.data_source = MagicMock()
+        order: list[str] = []
+        listed = _users()
+        c._fetch_users = AsyncMock(return_value=listed)
+        c._stored_app_users = [listed[0]]
+        c._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
+        c._keep_licensed_users = AsyncMock(side_effect=lambda users, _m: users)
+        c._note_people_to_reread = AsyncMock(side_effect=lambda ids: order.append(("note", sorted(ids))))
+        c.data_entities_processor.on_new_app_users = AsyncMock(side_effect=lambda _u: order.append(("link",)))
+        c._sync_user_groups = AsyncMock(return_value=None)
+        c._list_projects_with_filter = AsyncMock(return_value=[])
+        c._sync_project_lead_roles = AsyncMock()
+        await c._link_users_groups_and_roles()
+        assert order == [("note", ["acc-2", "acc-9"]), ("link",)]

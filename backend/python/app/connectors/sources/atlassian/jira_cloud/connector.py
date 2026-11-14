@@ -565,6 +565,8 @@ class JiraConnector(BaseConnector):
         self._deactivated_account_ids: set[str] = set()
         self._newly_listed_account_ids: list[str] = []
         self._listed_account_ids: set[str] = set()
+        # Projects this sync could not build, so their issues were not read: they still owe a re-read.
+        self._skipped_project_keys: list[str] = []
         # The emails of the directory snapshot last filtered against (the map itself, then its emails).
         self._listed_emails: tuple[object, set[str]] = (None, set())
         self._app_roles_mapping: Optional[dict[str, list[dict[str, str]]]] = None
@@ -981,10 +983,7 @@ class JiraConnector(BaseConnector):
             unlicensed_ids = {u.source_user_id for u in jira_users} - {u.source_user_id for u in licensed_users}
             jira_users = licensed_users
             # Their issues were written without their own grants (or lost them when withdrawn).
-            linked_before = {u.source_user_id for u in self._stored_app_users}
-            self._newly_listed_account_ids = await self._note_people_to_reread(
-                {u.source_user_id for u in jira_users if u.source_user_id} - linked_before
-            )
+            self._newly_listed_account_ids = await self._note_newly_listed(jira_users)
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
@@ -1031,9 +1030,7 @@ class JiraConnector(BaseConnector):
             # 7. Sync issues (incremental via checkpoint), then deletions
             last_sync_time = await self._get_issues_sync_checkpoint()
             sync_stats = await self._sync_all_project_issues(projects, jira_users, last_sync_time)
-            if self._newly_listed_account_ids and not sync_stats.get("failed_project_keys"):
-                # Every project now holds the accounts in its own checkpoint, or did not need them.
-                await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": "[]"})
+            await self._people_to_reread_handed_on(sync_stats)
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
             failed_issue_projects = set(sync_stats.get("failed_project_keys") or [])
             await self._handle_issue_deletions(
@@ -2248,6 +2245,8 @@ class JiraConnector(BaseConnector):
             # Same licence filter as a full sync: an account without Jira product access is not linked.
             self._app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
             jira_users = await self._keep_licensed_users(jira_users, self._app_roles_mapping)
+            # Linked here, they are no longer new to the next sync: its re-read of their issues is saved first.
+            await self._note_newly_listed(jira_users)
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
             groups_members_map = await self._sync_user_groups(jira_users)
@@ -2742,12 +2741,13 @@ class JiraConnector(BaseConnector):
         """An issue's own grants (reporter, assignee, user fields, level members) name only accounts in the
         synced directory (``user_by_account_id``, never one widened with the issue's own people): Jira treats an
         account without product access, or a deactivated one, as anonymous. A directory not read in full is not
-        the whole directory, so nothing is dropped then."""
-        if not self._directory_read_complete():
-            return permissions
+        the whole directory: the accounts linked to the connector (the last complete state) count too, but never
+        one the issue payload alone names, such as an account withdrawn earlier."""
         if self._listed_emails[0] is not user_by_account_id:
             self._listed_emails = (user_by_account_id, {u.email.lower() for u in user_by_account_id.values() if u.email})
         listed = self._listed_emails[1]
+        if not self._directory_read_complete():
+            listed = listed | {u.email.lower() for u in self._stored_app_users if u.email}
         return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed]
 
     async def _fallback_permissions_for_forbidden_scheme(
@@ -4132,6 +4132,7 @@ class JiraConnector(BaseConnector):
         # record group / ACL are preserved (on_new_record_groups only touches listed projects).
         built_keys = {rg.short_name for rg, _ in record_groups}
         skipped_keys = [p.get("key") for p in projects if p.get("key") and p.get("key") not in built_keys]
+        self._skipped_project_keys = skipped_keys
         if skipped_keys:
             self._kept_unread_access = True
             preview = ", ".join(skipped_keys[:10])
@@ -4637,6 +4638,11 @@ class JiraConnector(BaseConnector):
             if batch:
                 await self._process_new_records(batch, project_key, stats)
 
+    async def _note_newly_listed(self, jira_users: list[AppUser]) -> list[str]:
+        """``_note_people_to_reread`` for the listed accounts no stored link names yet."""
+        linked_before = {u.source_user_id for u in self._stored_app_users}
+        return await self._note_people_to_reread({u.source_user_id for u in jira_users if u.source_user_id} - linked_before)
+
     async def _note_people_to_reread(self, newly_listed: set[str]) -> list[str]:
         """The accounts whose issues need reading again: these, and those an earlier sync saved but did not
         hand to every project. Saved before the accounts are linked: once linked they are no longer new, so a
@@ -4650,6 +4656,12 @@ class JiraConnector(BaseConnector):
         if set(pending) != saved:
             await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": json.dumps(pending)})
         return pending
+
+    async def _people_to_reread_handed_on(self, sync_stats: dict[str, Any]) -> None:
+        """Clear the saved accounts once every project holds them in its own checkpoint, or did not need them: no
+        project failed its issue pass, and none was left out of it because it could not be built."""
+        if self._newly_listed_account_ids and not sync_stats.get("failed_project_keys") and not self._skipped_project_keys:
+            await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": "[]"})
 
     async def _reread_for_newly_listed(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],

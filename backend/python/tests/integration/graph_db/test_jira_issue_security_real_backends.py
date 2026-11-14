@@ -561,9 +561,13 @@ async def test_a_withdrawn_reporter_reads_nothing_of_theirs_through_the_org_team
     assert not await _mismatches(world, {**readers, "PROJ-1": PROJECT_READERS | {"dave"}}, by_key)
 
 
-async def test_a_reindex_does_not_grant_a_withdrawn_reporter_whose_email_is_in_the_payload(world: dict[str, Any]) -> None:
-    """The reindex resolves the issue's own people from its payload too; the grants it writes must still name only
-    the synced directory, or a withdrawn reporter named there with an email would get the issue back."""
+@pytest.mark.parametrize("read_in_full", [True, False], ids=["read_in_full", "read_cut_short"])
+async def test_a_reindex_does_not_grant_a_withdrawn_reporter_whose_email_is_in_the_payload(
+    world: dict[str, Any], read_in_full: bool,
+) -> None:
+    """The reindex resolves the issue's own people from its payload too; the grants it writes, and those a sync's
+    rewrite writes, must still name only the synced directory (with the linked accounts when the user list was not
+    read in full), or a withdrawn reporter named there with an email would get the issue back."""
     await _sync_project(world)
     connector, processor = world["connector"], world["processor"]
     context = connector._issue_security[PROJECT_ID]
@@ -583,5 +587,11 @@ async def test_a_reindex_does_not_grant_a_withdrawn_reporter_whose_email_is_in_t
     await connector._withdraw_ineligible_app_users(listed, {PEOPLE["dave"]})
     assert not await _mismatches(world, readers, by_key)
 
-    await _reindex(world, _edited("plain task", "2024-06-17T10:00:00.000+0000", reporter=dave), context=context)
+    # The next sync starts from the links left; its user list may be cut short.
+    connector._stored_app_users = await processor.get_all_app_users(world["connector_id"])
+    connector._user_read_unfinished = not read_in_full
+    await _write(world, [_edited("plain task", "2024-06-17T10:00:00.000+0000", reporter=dave)], users=listed)
+    assert not await _mismatches(world, readers, by_key)
+
+    await _reindex(world, _edited("plain task", "2024-06-18T10:00:00.000+0000", reporter=dave), context=context)
     assert not await _mismatches(world, readers, by_key)
