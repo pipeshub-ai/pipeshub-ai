@@ -976,3 +976,65 @@ class TestWithdrawnAccounts:
         await sync(connector, jql_search, recent=[])
         assert ("USER", "carol@example.com") in readers(db, "2")
         assert "2" in {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}
+
+    async def test_a_level_holder_a_short_user_list_missed_keeps_their_grant_or_has_the_issue_read_again(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """carol is on the user list's second page, which fails. A level naming her by key alone still grants
+        her (she is linked); one naming her by username alone cannot be resolved, so its issues are read again
+        once the list is read in full, though neither issue changed."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="carol-key", user={"key": "carol-key"})],
+                            TEAM: [CAROL_BY_NAME]})
+        by_key, by_name = sec_issue("2", "ENG-2", level=SECRET), sec_issue("3", "ENG-3", level=TEAM)
+        jql_search.put(by_key, by_name)
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=[by_key, by_name])
+        assert ("USER", "carol@example.com") in readers(db, "2") and ("USER", "carol@example.com") in readers(db, "3")
+
+        full_list = next(r for m, path, r in jira._routes if (m, path) == ("GET", f"{API}/user/list"))
+
+        def first_page_only(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("cursor") == "abc":
+                return json_response({"errorMessages": ["expired"]}, status=401)
+            return full_list(request)
+
+        jira.on("GET", f"{API}/user/list", first_page_only)
+        changed = [sec_issue("2", "ENG-2", level=SECRET, updated=ts(2)), sec_issue("3", "ENG-3", level=TEAM, updated=ts(2))]
+        jql_search.put(*changed)
+        await sync(connector, jql_search, recent=changed)
+        assert connector._user_read_unfinished is True and db.withdrawn_users == []
+        assert ("USER", "carol@example.com") in readers(db, "2")
+        assert json.loads(store.values_for("project_ENG")["security_levels"]).get("*") == "retry"
+
+        jira.on("GET", f"{API}/user/list", full_list)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "3")
+
+    async def test_an_account_listed_again_stays_owed_a_re_read_until_the_stub_sweep_has_run(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """carol is listed again and the leveled issues are read again, but the sweep that re-secures the project's
+        stubs is skipped (the synced users could not be read): she stays owed, so the next sync reads and sweeps."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("reporter")]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="carol"))
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        everyone = next(r for m, path, r in jira._routes if (m, path) == ("GET", f"{API}/user/list"))
+        everyone_but_carol = [user("alice-key", "alice", "alice@example.com"), user("bob-key", "bob", "bob@example.com"),
+                              user("dave-key", "dave", None)]
+        jira.on("GET", f"{API}/user/list", json_response({"values": everyone_but_carol, "isLast": True}))
+        await sync(connector, jql_search, recent=[])
+        assert [u.source_user_id for u in db.withdrawn_users] == ["carol-key"]
+
+        jira.on("GET", f"{API}/user/list", everyone)
+        real_sweep = connector._sweep_placeholder_records
+        connector._sweep_placeholder_records = AsyncMock(return_value=None)
+        await sync(connector, jql_search, recent=[])
+        assert json.loads(store.values_for("people_reread")["accounts"]) == ["carol-key"]
+
+        connector._sweep_placeholder_records = AsyncMock(side_effect=real_sweep)
+        await sync(connector, jql_search, recent=[])
+        assert connector._sweep_placeholder_records.await_args.kwargs["full_sync_project_ids"] == {"10000"}
+        assert json.loads(store.values_for("people_reread")["accounts"]) == []

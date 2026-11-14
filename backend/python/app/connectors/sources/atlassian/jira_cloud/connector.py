@@ -565,6 +565,8 @@ class JiraConnector(BaseConnector):
         self._deactivated_account_ids: set[str] = set()
         self._newly_listed_account_ids: list[str] = []
         self._listed_account_ids: set[str] = set()
+        # Every account the user list showed, active or not.
+        self._seen_account_ids: set[str] = set()
         # Projects this sync could not build, so their issues were not read: they still owe a re-read.
         self._skipped_project_keys: list[str] = []
         # The emails of the directory snapshot last filtered against (the map itself, then its emails).
@@ -1030,7 +1032,6 @@ class JiraConnector(BaseConnector):
             # 7. Sync issues (incremental via checkpoint), then deletions
             last_sync_time = await self._get_issues_sync_checkpoint()
             sync_stats = await self._sync_all_project_issues(projects, jira_users, last_sync_time)
-            await self._people_to_reread_handed_on(sync_stats)
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
             failed_issue_projects = set(sync_stats.get("failed_project_keys") or [])
             await self._handle_issue_deletions(
@@ -1046,13 +1047,14 @@ class JiraConnector(BaseConnector):
 
             # 8. Backfill placeholder ancestors that out-of-scope sync filters left
             # unreconciled (metadata only; they remain non-indexed stubs).
-            await self._sweep_placeholder_records(
+            swept = await self._sweep_placeholder_records(
                 synced_project_ids={p.external_group_id for p, _ in projects},
                 # Projects whose leveled issues were all re-read get their stubs re-submitted
                 # too, so stubs written open before issue security existed are corrected once.
                 full_sync_project_ids=(sync_stats.get("full_sync_project_ids") or set())
                 | (sync_stats.get("leveled_reread_project_ids") or set()),
             )
+            await self._people_to_reread_handed_on(sync_stats, swept=swept)
 
             # 9. Outcome: notify when any project failed issue sync (include keys)
             failed_keys = sync_stats.get("failed_project_keys") or []
@@ -1130,7 +1132,7 @@ class JiraConnector(BaseConnector):
         self,
         synced_project_ids: set[str],
         full_sync_project_ids: set[str] | None = None,
-    ) -> None:
+    ) -> bool:
         """Backfill the full ancestor breadcrumb for placeholder stubs left unreconciled.
 
         Time/created-time sync filters don't respect hierarchy: an in-scope child can be
@@ -1166,10 +1168,11 @@ class JiraConnector(BaseConnector):
         intended trade: a stub is a non-indexed breadcrumb, not worth a fetch every sync.
 
         Reconciliation is keyed by external id and idempotent, so an interrupted sweep is
-        completed by the next sync's sweep.
+        completed by the next sync's sweep. Returns False when it was skipped because the
+        synced users could not be read, True otherwise (nothing to do included).
         """
         if not synced_project_ids:
-            return
+            return True
 
         full_sync_project_ids = full_sync_project_ids or set()
         visited: set[str] = set()
@@ -1189,7 +1192,7 @@ class JiraConnector(BaseConnector):
             frontier.append(stub)
 
         if not frontier:
-            return
+            return True
 
         # Jira's issue payload omits emailAddress, so resolve creator/reporter/assignee
         # against the synced directory exactly as the reindex path does. An empty directory from a
@@ -1198,7 +1201,7 @@ class JiraConnector(BaseConnector):
             synced_users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
         except Exception as e:
             self.logger.warning("Placeholder sweep skipped: the synced users could not be read: %s", e)
-            return
+            return False
         user_by_account_id: dict[str, AppUser] = {
             u.source_user_id: u for u in synced_users if u.source_user_id
         }
@@ -1259,6 +1262,7 @@ class JiraConnector(BaseConnector):
                 )
                 break
             frontier = next_frontier
+        return True
 
     async def _bulk_fetch_ancestor_level(
         self, frontier: list[Record]
@@ -2304,6 +2308,7 @@ class JiraConnector(BaseConnector):
             if u.get("accountType") == "atlassian" and u.get("active", True) and u.get("accountId")
         }
         self._listed_account_ids = listed_active
+        self._seen_account_ids = {u["accountId"] for u in raw_jira_users if u.get("accountId")}
         # Deactivated, or gone from the directory: neither can sign in. Only acted on after a complete read.
         self._deactivated_account_ids = {
             u["accountId"] for u in raw_jira_users
@@ -2737,17 +2742,24 @@ class JiraConnector(BaseConnector):
             return False
         return bool(self._listed_account_ids) or not self._stored_app_users
 
+    def _linked_not_read(self) -> list[AppUser]:
+        """On a user list not read in full, the linked accounts it did not show: they keep their last complete
+        state. One it showed (deactivated, or without product access) does not."""
+        if self._directory_read_complete():
+            return []
+        return [u for u in self._stored_app_users if u.source_user_id not in self._seen_account_ids]
+
     def _directory_grants(self, permissions: list[Permission], user_by_account_id: dict[str, AppUser]) -> list[Permission]:
         """An issue's own grants (reporter, assignee, user fields, level members) name only accounts in the
         synced directory (``user_by_account_id``, never one widened with the issue's own people): Jira treats an
         account without product access, or a deactivated one, as anonymous. A directory not read in full is not
-        the whole directory: the accounts linked to the connector (the last complete state) count too, but never
+        the whole directory: the linked accounts it did not show (the last complete state) count too, but never
         one the issue payload alone names, such as an account withdrawn earlier."""
         if self._listed_emails[0] is not user_by_account_id:
             self._listed_emails = (user_by_account_id, {u.email.lower() for u in user_by_account_id.values() if u.email})
         listed = self._listed_emails[1]
-        if not self._directory_read_complete():
-            listed = listed | {u.email.lower() for u in self._stored_app_users if u.email}
+        if linked := self._linked_not_read():
+            listed = listed | {u.email.lower() for u in linked if u.email}
         return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed]
 
     async def _fallback_permissions_for_forbidden_scheme(
@@ -4462,7 +4474,7 @@ class JiraConnector(BaseConnector):
             await self._record_security_levels(
                 project_key, levels_to_save, force=security.defer_checkpoint
             )
-        await self._reread_for_newly_listed(
+        people_reread = await self._reread_for_newly_listed(
             project_key, project_id, jira_users, stats, security, project_sync_data,
             covered=is_new_project or reread == "project",
         )
@@ -4503,7 +4515,7 @@ class JiraConnector(BaseConnector):
             "updated_count": stats["updated_count"],
             "is_new_project": is_new_project,
             # Any second pass rewrote leveled issues, so their stubs are re-secured too.
-            "leveled_reread": reread is not None or placement_reread,
+            "leveled_reread": reread is not None or placement_reread or people_reread,
         }
 
     def _issue_scope_conditions(
@@ -4657,19 +4669,22 @@ class JiraConnector(BaseConnector):
             await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": json.dumps(pending)})
         return pending
 
-    async def _people_to_reread_handed_on(self, sync_stats: dict[str, Any]) -> None:
+    async def _people_to_reread_handed_on(self, sync_stats: dict[str, Any], *, swept: bool) -> None:
         """Clear the saved accounts once every project holds them in its own checkpoint, or did not need them: no
-        project failed its issue pass, and none was left out of it because it could not be built."""
-        if self._newly_listed_account_ids and not sync_stats.get("failed_project_keys") and not self._skipped_project_keys:
+        project failed its issue pass, none was left out of it because it could not be built or its selected key
+        could not be looked up, and the placeholder sweep that re-secures the re-read projects' stubs ran."""
+        if (self._newly_listed_account_ids and swept and not sync_stats.get("failed_project_keys")
+                and not self._skipped_project_keys and not self._unresolved_selected_keys):
             await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": "[]"})
 
     async def _reread_for_newly_listed(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
         security: IssueSecurityContext, checkpoint: dict[str, Any] | None, *, covered: bool,
-    ) -> None:
+    ) -> bool:
         """An issue's own grants name only listed accounts, and a withdrawn account loses them, so an
         account listed again (or for the first time) gets them back only when its issues are read again.
-        The accounts are saved before the pass and cleared after it, so a pass that fails is repeated."""
+        The accounts are saved before the pass and cleared after it, so a pass that fails is repeated.
+        True when the pass ran, so the project's stubs are re-secured by the placeholder sweep."""
         try:
             pending = set(json.loads((checkpoint or {}).get("people_reread") or "[]"))
         except (TypeError, ValueError):
@@ -4679,16 +4694,17 @@ class JiraConnector(BaseConnector):
         if covered or not security.enforce or not names_people:
             if pending - set(self._newly_listed_account_ids):
                 await self._update_project_sync_checkpoint(project_key, people_reread="[]")
-            return
+            return False
         if not pending:
-            return
+            return False
         await self._update_project_sync_checkpoint(project_key, people_reread=json.dumps(sorted(pending)))
         if security.browse_holders is None:
-            return  # holders unknown: an issue read now keeps its stored grants; the next sync that reads them re-reads
+            return False  # holders unknown: an issue read now keeps its stored grants; the next sync that reads them re-reads
         failures_before = self._issue_build_failures
         await self._reread_issues_naming(project_key, project_id, users, stats, sorted(pending), security)
         if self._issue_build_failures == failures_before:
             await self._update_project_sync_checkpoint(project_key, people_reread="[]")
+        return True
 
     async def _reread_issues_naming(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
@@ -5279,8 +5295,9 @@ class JiraConnector(BaseConnector):
         # Use the user-facing site URL for weburl construction
         atlassian_domain = self.site_url if self.site_url else ""
 
-        # Create accountId -> AppUser lookup for matching issue creators/assignees
-        user_by_account_id = {user.source_user_id: user for user in users if user.source_user_id}
+        # Create accountId -> AppUser lookup for matching issue creators/assignees. A user list not read in full
+        # leaves out linked accounts, whose grants (a level holder named by account id alone) would be dropped.
+        user_by_account_id = {u.source_user_id: u for u in [*self._linked_not_read(), *users] if u.source_user_id}
 
         # A story's place depends on its epic's level, which the story does not carry.
         self._remember_parent_levels(issues)
