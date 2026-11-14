@@ -3095,6 +3095,23 @@ async def test_a_reader_cut_out_by_a_limited_folder_keeps_no_grant_below_it(ws: 
     assert BOB not in ws.records.perm_emails("f"), "only the folder's own grants and its Managers reach below a limit"
 
 
+async def test_a_drive_with_no_manager_gives_its_reading_members_no_grant_that_outlasts_a_limited_folder(
+    ws: Workspace, caplog: pytest.LogCaptureFixture
+) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "reader", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f", "x.txt", parent="dir")
+    await ws.sync()
+    assert BOB not in ws.records.perm_emails("f") and reaches(ws, BOB, "f"), "a member, through the drive"
+    assert sum("sd-1 has no active Manager" in r.getMessage() for r in caplog.records) == 1, "once per run"
+
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+
+    assert not reaches(ws, BOB, "f") and not reaches(ws, ALICE, "f"), "the limit cuts both members out"
+    assert not reaches(ws, BOB, "dir")
+
+
 async def test_a_shared_drive_item_is_read_as_its_manager_once_for_all_its_reading_members(ws: Workspace) -> None:
     dana = "dana@example.com"
     ws.world.add_user(dana)

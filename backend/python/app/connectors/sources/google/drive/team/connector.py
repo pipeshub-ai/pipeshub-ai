@@ -3487,8 +3487,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._drive_managers[drive_id] = [e for e in dict.fromkeys(managers) if e in active]
             if not self._drive_managers[drive_id]:
                 self.logger.warning(
-                    f"Shared drive {drive_id} has no active Manager: an item only its readers sync keeps the sharing "
-                    "stored for it until someone who can list it reads it"
+                    f"Shared drive {drive_id} has no active Manager, so the sharing of its items cannot be read: its "
+                    "members reach them through the drive only. Adding an active Manager to the drive restores exact "
+                    "sharing"
                 )
         return self._drive_managers[drive_id]
 
@@ -4329,16 +4330,28 @@ class GoogleDriveTeamConnector(BaseConnector):
                     can_share=bool((metadata.get("capabilities") or {}).get("canShare")),
                     **read_as,
                 )
+                member_reads_through_drive = False
                 if is_fallback_permissions and item_drive_id:
                     # A shared drive reader cannot list the item's sharing; a manager of its drive always can.
                     managed = await self._permissions_as_drive_manager(file_id, item_drive_id, user_email, read_as)
                     if managed is not None:
                         new_permissions, is_fallback_permissions, individually_shared_emails = managed
+                    elif read_as["inherits_from_drive"] and user_email and (
+                        user_email.lower() in await self._drive_member_email_list(item_drive_id)
+                    ):
+                        # No Manager can list it: a member reaches it from the drive through the folders above, as in
+                        # Drive, so a limited folder cuts them out; a grant of their own would outlast that.
+                        # shortcut: a member cut out by a limited folder who also holds a direct grant on this item
+                        # loses it here, since only a Manager can list it; an active Manager on the drive avoids that.
+                        new_permissions, member_reads_through_drive = [], True
 
                 if is_fallback_permissions:
                     permissions_changed = False
-                    file_record.inherit_permissions = await self.data_entities_processor.inheritance_when_unreadable(
-                        CollectionNames.RECORDS.value, existing_record.id if existing_record else None
+                    file_record.inherit_permissions = (
+                        not limited_access if member_reads_through_drive
+                        else await self.data_entities_processor.inheritance_when_unreadable(
+                            CollectionNames.RECORDS.value, existing_record.id if existing_record else None
+                        )
                     )
                     if existing_record is not None:
                         if new_permissions:
