@@ -216,7 +216,9 @@ class TestJiraFetchUsers:
         ]
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(data=page1))
+        empty = _make_mock_response()
+        empty.json = MagicMock(return_value=[])  # only an empty page ends the list
+        mock_ds.get_all_users = AsyncMock(side_effect=[_make_mock_response(data=page1), empty])
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await connector._fetch_users()
