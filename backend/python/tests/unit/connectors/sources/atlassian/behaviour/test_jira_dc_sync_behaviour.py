@@ -156,6 +156,7 @@ class IssueSearch:
     def __init__(self) -> None:
         self.pages: dict[tuple[str, int], Any] = {}
         self.jql: list[str] = []
+        self.fields_asked: list[list[str]] = []
 
     def add(self, project: str, start: int, issues: object, total: Optional[int] = None) -> None:
         if isinstance(issues, (httpx.Response, list)) and not (isinstance(issues, list) and issues and isinstance(issues[0], dict)):
@@ -167,6 +168,7 @@ class IssueSearch:
         body = json.loads(request.content)
         jql = body["jql"]
         self.jql.append(jql)
+        self.fields_asked.append(body.get("fields") or [])
         project = jql.split('project = "')[1].split('"')[0] if 'project = "' in jql else "*"
         page = self.pages.get((project, int(body.get("startAt", 0))), {"issues": [], "total": 0})
         if isinstance(page, list):
@@ -2516,3 +2518,240 @@ class TestAttachmentMetByTwoWritersAtOnce:
             ).id
 
         assert await new_id() == await new_id() == new_record_id(CONNECTOR_ID, "attachment_203")
+
+
+SCHEME_PATH = f"{API}/permissionscheme/7/permission"
+FIELD_USERS, FIELD_GROUP = "customfield_20000", "customfield_20001"
+REPORTER, ASSIGNEE = {"type": "reporter"}, {"type": "assignee"}
+CAROL = ("EntityType.USER", None, "carol@example.com")
+
+
+def scheme_with(jira: AtlassianApiStub, *holders: dict[str, Any], permission: str = "BROWSE_PROJECTS") -> None:
+    """The ENG scheme: the devs group plus these holders on ``permission``."""
+    jira.on("GET", SCHEME_PATH, {"permissions": [
+        {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+        *({"permission": permission, "holder": h} for h in holders),
+    ]})
+
+
+def scheme_unread(jira: AtlassianApiStub, status: int = 500) -> None:
+    jira.on("GET", f"{API}/project/ENG/permissionscheme", json_response({"errorMessages": ["busy"]}, status=status))
+
+
+def story(iid: str, key: str, updated: str = ts(1), **fields: object) -> dict[str, Any]:
+    row = issue(iid, key, updated)
+    row["fields"].update(fields)
+    return row
+
+
+def grants(db: FakeRecordsDb, external_id: str) -> list[tuple[str, Optional[str], Optional[str]]]:
+    return sorted((str(p.entity_type), p.external_id, p.email) for p in db.record_permissions.get(external_id, []))
+
+
+def stored_ticket() -> TicketRecord:
+    return TicketRecord(
+        id="t-1", org_id="org-1", external_record_id="1001", record_name="[ENG-1] old", record_type=RecordType.TICKET,
+        origin="CONNECTOR", connector_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, external_record_group_id="10000",
+        version=2, mime_type="text/plain", source_updated_at=1,
+    )
+
+
+class TestBrowseHolders:
+    """Browse Projects held by the reporter, the assignee or a user or group field is granted on the issue."""
+
+    async def sync(self, jira, db, store, search, issues, *holders, connector=None) -> JiraDataCenterConnector:
+        stub_site(jira, search)
+        scheme_with(jira, *holders)
+        search.add("ENG", 0, issues)
+        if connector is None:
+            connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        return connector
+
+    async def test_the_reporter_and_assignee_read_their_issue_and_a_project_without_such_holders_grants_nothing(
+        self, jira, db, store, search
+    ) -> None:
+        mine = story("1001", "ENG-1", assignee={"key": "bob-key", "name": "bob", "displayName": "Bob"})
+        await self.sync(jira, db, store, search, [mine], REPORTER, ASSIGNEE)
+        assert grants(db, "1001") == [("EntityType.USER", None, "bob@example.com"), CAROL]
+        assert db.records["1001"].access_rule.value == "OPEN" and db.records["1001"].rewrite_permissions is True
+
+        other_db, other_store = JiraRecordsDb(), FakeCheckpointStore()
+        await self.sync(jira, other_db, other_store, search, [mine])
+        assert grants(other_db, "1001") == [] and other_db.records["1001"].access_rule.value == "STRICT"
+
+    async def test_a_permission_other_than_browse_is_ignored(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        scheme_with(jira, REPORTER, permission="EDIT_ISSUES")
+        search.add("ENG", 0, [story("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert grants(db, "1001") == []
+
+    async def test_user_and_group_fields_grant_the_people_they_name_and_skip_those_who_cannot_be_granted(
+        self, jira, db, store, search
+    ) -> None:
+        holders = ({"type": "userCustomField", "parameter": FIELD_USERS}, {"type": "groupCustomField", "parameter": FIELD_GROUP})
+        users = [
+            {"key": "bob-key", "name": "bob", "active": True},
+            {"key": "old-key", "name": "old", "active": False, "emailAddress": "old@example.com"},
+            {"key": "ghost-key", "name": "ghost"},  # not in the directory and no email
+        ]
+        await self.sync(jira, db, store, search, [story("1001", "ENG-1", **{FIELD_USERS: users, FIELD_GROUP: {"name": "ops"}})], *holders)
+        assert grants(db, "1001") == [("EntityType.GROUP", "ops", None), ("EntityType.USER", None, "bob@example.com")]
+        assert {FIELD_USERS, FIELD_GROUP} <= set(search.fields_asked[-1]), "the issue read asks for the holder fields"
+
+    async def test_a_deactivated_reporter_gets_no_grant(self, jira, db, store, search) -> None:
+        gone = {"key": "carol-key", "name": "carol", "displayName": "Carol", "active": False, "emailAddress": "carol@example.com"}
+        await self.sync(jira, db, store, search, [story("1001", "ENG-1", reporter=gone)], REPORTER)
+        assert grants(db, "1001") == []
+
+    async def test_a_sub_task_gets_no_grant_and_follows_its_parent(self, jira, db, store, search) -> None:
+        parent, child = story("1001", "ENG-1"), issue("1002", "ENG-2", ts(2), parent="1001")
+        await self.sync(jira, db, store, search, [parent, child], REPORTER)
+        assert grants(db, "1001") == [CAROL]
+        assert grants(db, "1002") == [] and db.records["1002"].access_rule.value == "STRICT"
+        assert db.records["1002"].parent_external_record_id == "1001"
+
+    async def test_a_story_leaves_its_epic_while_a_holder_names_its_reporter_and_returns_when_it_goes(
+        self, jira, db, store, search
+    ) -> None:
+        epic_story = story("1003", "ENG-3", **{EPIC_FIELD: "ENG-1"})
+        connector = await self.sync(jira, db, store, search, [epic_story], REPORTER)
+        assert db.records["1003"].parent_external_record_id is None and grants(db, "1003") == [CAROL]
+
+        scheme_with(jira)
+        await connector.run_sync()  # nothing moved on the issue
+        assert db.records["1003"].parent_external_record_id == "1001"
+        assert grants(db, "1003") == [] and store.values_for("project_ENG")["browse_holders"] == ""
+
+    async def test_a_change_of_holders_re_reads_stored_issues_once(self, jira, db, store, search) -> None:
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
+        digest = store.values_for("project_ENG")["browse_holders"]
+        assert digest not in ("", "?")
+
+        async def batches_after(*holders: dict[str, Any]) -> int:
+            scheme_with(jira, *holders)
+            before = len(db.record_batches)
+            await connector.run_sync()
+            return len(db.record_batches) - before
+
+        assert await batches_after(REPORTER) == 0, "same holders, nothing changed on the issue"
+        assert await batches_after(REPORTER, ASSIGNEE) == 1
+        assert store.values_for("project_ENG")["browse_holders"] != digest
+        assert await batches_after() == 1 and grants(db, "1001") == []
+        assert store.values_for("project_ENG")["browse_holders"] == ""
+
+    async def test_a_project_stored_before_the_holders_were_read_is_re_read_once(self, jira, db, store, search) -> None:
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")])
+        store.values_for("project_ENG").pop("browse_holders", None)  # as saved by a version that did not read them
+        scheme_with(jira, REPORTER)
+        await connector.run_sync()
+        assert grants(db, "1001") == [CAROL]
+
+    async def test_an_unreadable_scheme_keeps_the_grants_and_marks_the_project_before_the_walk(
+        self, jira, db, store, search
+    ) -> None:
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
+        digest = store.values_for("project_ENG")["browse_holders"]
+
+        scheme_unread(jira)
+        search.add("ENG", 0, json_response({"errorMessages": ["down"]}, status=500))
+        await connector.run_sync()  # the walk fails: the marker was saved before it
+        assert store.values_for("project_ENG")["browse_holders"] == "?"
+
+        search.add("ENG", 0, [story("1001", "ENG-1", ts(2))])
+        await connector.run_sync()  # the issue changed while the scheme was unread
+        assert grants(db, "1001") == [CAROL] and store.values_for("project_ENG")["browse_holders"] == "?"
+        assert db.content_updates and db.content_updates[-1].external_record_id == "1001"
+
+        jira.on("GET", f"{API}/project/ENG/permissionscheme", {"id": 7})
+        before = len(db.record_batches)
+        await connector.run_sync()  # read again: re-read once, whatever the digest was
+        assert len(db.record_batches) == before + 1 and store.values_for("project_ENG")["browse_holders"] == digest
+        assert grants(db, "1001") == [CAROL]
+
+    async def test_a_first_sync_with_an_unread_scheme_grants_nothing_and_does_not_loop(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        scheme_unread(jira)
+        search.add("ENG", 0, [story("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert grants(db, "1001") == [] and (store.values_for("project_ENG").get("browse_holders") or "") == ""
+        before = len(db.record_batches)
+        await connector.run_sync()
+        assert len(db.record_batches) == before
+
+    async def test_a_level_cleared_while_the_scheme_is_unread_drops_the_old_grants_but_an_absent_level_keeps_them(
+        self, jira, db, store, search
+    ) -> None:
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
+        scheme_unread(jira)
+
+        search.add("ENG", 0, [story("1001", "ENG-1", ts(2))])
+        await connector.run_sync()
+        assert grants(db, "1001") == [CAROL]
+
+        search.add("ENG", 0, [story("1001", "ENG-1", ts(3), security=None)])
+        await connector.run_sync()
+        assert grants(db, "1001") == []
+
+    async def test_a_full_sync_with_an_unread_scheme_does_not_replace_the_stored_grants(
+        self, jira, db, store, search
+    ) -> None:
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
+        store.values_for("project_ENG").update(last_sync_time=None, last_issue_updated=None)  # a full sync wipes the timestamps
+        scheme_unread(jira)
+        db.record_batches.clear()
+        await connector.run_sync()
+        assert grants(db, "1001") == [CAROL]
+        assert not any(r.external_record_id == "1001" for batch in db.record_batches for r in batch), (
+            "written through the content update, which leaves grants alone, not on_new_records"
+        )
+
+    async def test_a_story_stays_where_it_was_filed_while_the_scheme_is_unread(self, jira, db, store, search) -> None:
+        under_reporter = story("1003", "ENG-3", **{EPIC_FIELD: "ENG-1"})
+        connector = await self.sync(jira, db, store, search, [under_reporter], REPORTER)
+        scheme_unread(jira)
+        search.add("ENG", 0, [story("1003", "ENG-3", ts(2), **{EPIC_FIELD: "ENG-1"})])
+        await connector.run_sync()
+        assert db.records["1003"].parent_external_record_id is None and grants(db, "1003") == [CAROL]
+
+        other_db, other_store = JiraRecordsDb(), FakeCheckpointStore()
+        connector = await self.sync(jira, other_db, other_store, search, [under_reporter])  # no such holder: under its epic
+        assert other_db.records["1003"].parent_external_record_id == "1001"
+        scheme_unread(jira)
+        search.add("ENG", 0, [story("1003", "ENG-3", ts(2), **{EPIC_FIELD: "ENG-1"})])
+        await connector.run_sync()
+        assert other_db.records["1003"].parent_external_record_id == "1001"
+
+    async def test_a_reindex_reads_the_holders_and_applies_them(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        scheme_with(jira, REPORTER)
+        connector, _ = await make_connector(db, store)
+        ticket = stored_ticket()
+        db.records["1001"] = ticket
+        db.cached_app_users = [AppUser(
+            app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="carol-key", org_id="org-1",
+            email="carol@example.com", full_name="Carol", is_active=True,
+        )]
+        jira.on("GET", f"{API}/issue/1001", story("1001", "ENG-1", ts(6)))
+        await connector.reindex_records([ticket])
+        assert grants(db, "1001") == [CAROL]
+
+    async def test_an_unreadable_scheme_does_not_stop_a_reindex_and_marks_the_project(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        for status in (403, 500):
+            scheme_unread(jira, status)
+            connector, _ = await make_connector(db, store)
+            await connector._update_project_sync_checkpoint("ENG", browse_holders="abc")
+            ticket = stored_ticket()
+            db.records["1001"] = ticket
+            db.record_permissions["1001"] = []
+            jira.on("GET", f"{API}/issue/1001", story("1001", "ENG-1", ts(6)))
+            await connector.reindex_records([ticket])
+            assert db.records["1001"].version == 3, f"reindexed with the scheme answering {status}"
+            assert db.records["1001"].rewrite_permissions is False
+            assert store.values_for("project_ENG")["browse_holders"] == "?"

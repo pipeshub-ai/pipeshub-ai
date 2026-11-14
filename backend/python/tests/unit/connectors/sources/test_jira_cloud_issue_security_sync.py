@@ -20,6 +20,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     UNREADABLE_TRANSIENT,
     IssueSecurityContext,
     SchemeKnowledge,
+    browse_issue_holders,
     unreadable_reason,
 )
 from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
@@ -1524,8 +1525,8 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         grants = ["x", None, {"permission": "BROWSE_PROJECTS", "holder": "reporter"},
                   {"permission": "BROWSE_PROJECTS", "holder": None},
                   {"permission": "BROWSE_PROJECTS", "holder": {"type": "assignee"}}]
-        assert JiraConnector._browse_issue_holders_of(grants) == [{"type": "assignee"}]
-        assert JiraConnector._browse_issue_holders_of(None) == []
+        assert browse_issue_holders(grants) == [{"type": "assignee"}]
+        assert browse_issue_holders(None) == []
 
     @pytest.mark.asyncio
     async def test_a_reindex_that_cannot_read_the_scheme_still_applies_the_change_and_keeps_the_grants(self) -> None:

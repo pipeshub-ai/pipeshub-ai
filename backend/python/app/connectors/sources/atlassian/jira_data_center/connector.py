@@ -72,11 +72,13 @@ from app.connectors.sources.atlassian.core.html_utils import (
     inline_images_as_markdown,
 )
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    BROWSE_ISSUE_HOLDER_TYPES,
     UNREADABLE_REASONS,
     IssueSecurityContext,
     SchemeKnowledge,
     apply_issue_access,
     apply_issue_access_settled,
+    browse_issue_holders,
     classify_scheme_response,
     collect_paged_values,
     custom_field_ids_from_members,
@@ -535,6 +537,8 @@ class JiraDataCenterConnector(BaseConnector):
         # read this sync, and project key -> why its levels could not be applied.
         self._issue_security: dict[str, IssueSecurityContext] = {}
         self._scheme_members: dict[str, tuple[bool, dict[str, list[dict[str, Any]]]]] = {}
+        # Project key -> its Browse holders that name people per issue; absent when unread.
+        self._browse_issue_holders: dict[str, list[dict[str, Any]]] = {}
         self._unreadable_security: dict[str, str] = {}
         self._never_tightened_security: set[str] = set()
         self._skipped_holders_logged: set[tuple[str, str | None, str]] = set()
@@ -1226,6 +1230,7 @@ class JiraDataCenterConnector(BaseConnector):
         given_up_issues: dict[str, str] | None = None,
         security_levels: str | None = None,
         child_parents: str | None = None,
+        browse_holders: str | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -1238,6 +1243,7 @@ class JiraDataCenterConnector(BaseConnector):
             given_up_issues: Issue id -> updated value when it was given up on, for issues skipped until they change
             security_levels: JSON map of level id -> digest of its holders (``"*"`` marks a read to repeat)
             child_parents: JSON map of parent issue id -> epic key whose children are still to be read again
+            browse_holders: Digest of the Browse holders that name people per issue ("?" when unread)
         """
         sync_point_key = f"project_{project_key}"
 
@@ -1254,7 +1260,9 @@ class JiraDataCenterConnector(BaseConnector):
             if stored or existing.get(field):
                 sync_point_data[field] = json.dumps(stored, sort_keys=True)
         # Kept as JSON text: a sync point holds primitives only.
-        for field, text in (("security_levels", security_levels), ("child_parents", child_parents)):
+        for field, text in (
+            ("security_levels", security_levels), ("child_parents", child_parents), ("browse_holders", browse_holders),
+        ):
             stored_text = text if text is not None else existing.get(field)
             if stored_text is not None:
                 sync_point_data[field] = stored_text
@@ -2138,6 +2146,7 @@ class JiraDataCenterConnector(BaseConnector):
         keeps the project's stored access instead of replacing it.
         """
         permissions: list[Permission] = []
+        self._browse_issue_holders.pop(project_key, None)
 
         try:
             datasource = await self._get_fresh_datasource()
@@ -2213,6 +2222,7 @@ class JiraDataCenterConnector(BaseConnector):
             permission_grants = grants_response.json().get("permissions", [])
             if not isinstance(permission_grants, list):
                 permission_grants = []
+            self._browse_issue_holders[project_key] = browse_issue_holders(permission_grants)
 
             # Step 3: Filter for BROWSE_PROJECTS permission (determines who can see the project)
             relevant_permission_types = ["BROWSE_PROJECTS"]
@@ -2369,7 +2379,8 @@ class JiraDataCenterConnector(BaseConnector):
                         type=PermissionType.READ
                     ))
 
-                elif holder_type in ("groupCustomField", "userCustomField"):
+                elif holder_type in BROWSE_ISSUE_HOLDER_TYPES:
+                    # Named per issue: granted on each issue (core/jira_issue_security.py), not here.
                     continue
 
                 else:
@@ -3180,6 +3191,7 @@ class JiraDataCenterConnector(BaseConnector):
         if app_roles_mapping is None:
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
+        self._browse_issue_holders = {}
         perm_user_by_key: dict[str, AppUser] = {}
         if jira_users:
             perm_user_by_key = {u.source_user_id: u for u in jira_users if u.source_user_id}
@@ -3366,6 +3378,54 @@ class JiraDataCenterConnector(BaseConnector):
     def _security_with_roles(self, security: IssueSecurityContext) -> IssueSecurityContext:
         return hold_levels_naming_unread_roles(security, app_roles_unread=self._app_roles_unread)
 
+    async def _attach_browse_holders(
+        self, security: IssueSecurityContext, project_key: str, *, fresh: bool = False,
+    ) -> IssueSecurityContext:
+        """Give the context the project's per-issue Browse holders: from this sync's scheme read, or
+        with ``fresh`` (a reindex between syncs) read now, leaving the sync's copy alone. They stay
+        None when the scheme could not be read."""
+        if security.enforce:
+            holders = await self._read_browse_issue_holders(project_key) if fresh else (
+                self._browse_issue_holders.get(project_key)
+            )
+            security.browse_holders = holders
+            security.custom_field_ids = sorted({
+                *security.custom_field_ids, *custom_field_ids_from_members({"browse": holders or []}),
+            })
+            if fresh and holders is None:
+                await self._mark_browse_holders_unread(project_key)
+        return security
+
+    async def _mark_browse_holders_unread(self, project_key: str) -> None:
+        """A reindex that could not read the holders may have dropped a stored reporter or assignee
+        grant; the `?` marker makes the next sync that reads them re-read the project's issues."""
+        try:
+            stored = ((await self._get_project_sync_checkpoint(project_key)) or {}).get("browse_holders") or ""
+            if stored not in ("", "?"):
+                await self._update_project_sync_checkpoint(project_key, browse_holders="?")
+        except Exception as e:
+            self.logger.warning("Could not mark the Browse holders of %s unread: %s", project_key, e)
+
+    async def _read_browse_issue_holders(self, project_key: str) -> list[dict[str, Any]] | None:
+        try:
+            status, scheme = await self._security_read(
+                lambda ds: ds.get_assigned_permission_scheme_v2(projectKeyOrId=project_key),
+                f"the permission scheme of {project_key}",
+            )
+            scheme_id = scheme.get("id") if status == HttpStatusCode.OK.value and scheme else None
+            if scheme_id is None:
+                return None
+            status, grants = await self._security_read(
+                lambda ds: ds.get_permission_scheme_grants_v2(schemeId=scheme_id),
+                f"the permission grants of scheme {scheme_id}",
+            )
+            if status != HttpStatusCode.OK.value or grants is None:
+                return None
+            return browse_issue_holders(grants.get("permissions"))
+        except Exception as e:
+            self.logger.warning("Could not read the permission scheme of %s: %s", project_key, e)
+            return None
+
     async def _warn_unreadable_security(self) -> None:
         """One warning per reason for the projects whose issue security levels could not be
         applied this sync, and one notification for the connector's owner."""
@@ -3441,7 +3501,9 @@ class JiraDataCenterConnector(BaseConnector):
         # members of each level are fingerprinted in the checkpoint and only the issues in a level
         # whose members changed are read again, after the normal incremental pass. A project
         # synced before levels were applied has no digest, which reads every leveled issue again once.
-        security = self._security_with_roles(await self._load_issue_security(project_key))
+        security = await self._attach_browse_holders(
+            self._security_with_roles(await self._load_issue_security(project_key)), project_key
+        )
         self._issue_security[project_id] = security
         self._issue_build_failures = 0
         self._reread_whole_project = False
@@ -3457,6 +3519,19 @@ class JiraDataCenterConnector(BaseConnector):
         reread, changed_levels, levels_to_save = plan_level_reread(
             security, stored_levels, is_new_project=is_new_project, app_roles_mapping=self._app_roles_mapping,
         )
+        # A change of who the Browse holders name on each issue moves no issue's `updated`.
+        stored_browse = (project_sync_data or {}).get("browse_holders") or ""
+        if security.browse_holders is None and not stored_browse:
+            security.browse_holders = []  # nothing was granted this way before, so nothing is lost
+        browse = security.browse_fingerprint()
+        if not is_new_project and browse not in ("?", stored_browse):
+            reread, changed_levels = "project", None
+        browse_to_save = browse if browse != "?" or stored_browse else stored_browse
+        if browse == "?" and stored_browse not in ("", "?"):
+            # Saved before the walk, as the level marker is: issues written meanwhile keep their
+            # stored grants, and only this marker makes the next sync that reads them re-read.
+            await self._update_project_sync_checkpoint(project_key, browse_holders="?")
+            stored_browse = "?"
         if levels_to_save.get("*") == "held":
             self._never_tightened_security.add(project_key)  # hidden meanwhile, not kept as stored
         unreadable = not readable and security.knowledge != SchemeKnowledge.NONE
@@ -3573,6 +3648,8 @@ class JiraDataCenterConnector(BaseConnector):
                 reread = "project"
             if not self._issue_build_failures:
                 await self._update_project_sync_checkpoint(project_key, child_parents="{}")
+        if browse_to_save != stored_browse and not self._issue_build_failures:
+            await self._update_project_sync_checkpoint(project_key, browse_holders=browse_to_save)
         levels_to_save = levels_after_walk(levels_to_save, self._issue_build_failures)
         if is_new_project or levels_to_save != stored_levels:
             await self._record_security_levels(project_key, levels_to_save, force=security.defer_checkpoint)
@@ -3901,11 +3978,13 @@ class JiraDataCenterConnector(BaseConnector):
             start_at = next_start
 
     async def _keeps_stored_grants(self, record: Record) -> bool:
-        """An issue already stored whose access rule was set without its grants (a read that
-        may pass on a retry), so the grants it has stay."""
+        """An issue already stored whose access rule was set without its grants (a level or the
+        Browse holders not read, which may pass on a retry), so the grants it has stay."""
+        context = self._issue_security.get(record.external_record_group_id)
+        browse_unread = context is not None and context.browse_holders is None
         if (
             not isinstance(record, TicketRecord) or record.rewrite_permissions or record.is_placeholder
-            or record.access_rule != AccessRule.RESTRICTED
+            or not (record.access_rule == AccessRule.RESTRICTED or (record.access_rule == AccessRule.OPEN and browse_unread))
         ):
             return False
         stored = await self.data_entities_processor.get_record_by_external_id(
@@ -4724,6 +4803,7 @@ class JiraDataCenterConnector(BaseConnector):
 
     async def _files_under_parent(
         self, fields: dict[str, Any], parent_id: str, security: IssueSecurityContext | None,
+        *, stored_parent: str | None = None,
     ) -> bool:
         """Whether a story (any issue but a sub-task) is filed under its parent issue.
 
@@ -4733,9 +4813,15 @@ class JiraDataCenterConnector(BaseConnector):
         same people on every issue (``level_reads_alike``), and the epic is in its project.
         A parent in a project with no scheme, read from the same project, has no level to weigh
         and keeps filing as before; a parent in another project is read, since it may have one.
+        A story whose reporter or assignee may read it through a Browse holder, without the epic,
+        is not filed under it; while the holders are unread it stays where it was (``stored_parent``).
         """
         if security is None or not security.enforce:
             return True
+        if security.browse_holders is None:
+            return stored_parent == parent_id
+        if security.browse_holders:
+            return False
         if security.knowledge == SchemeKnowledge.NONE:
             parent_key = self._issue_id_to_key_cache.get(str(parent_id), "")
             if parent_key and parent_key.rsplit("-", 1)[0] == str((fields.get("project") or {}).get("key") or ""):
@@ -4888,7 +4974,10 @@ class JiraDataCenterConnector(BaseConnector):
                 # A record inherits the record it is filed under; a sub-task always follows its parent.
                 if (
                     parent_external_id and not issue_data["is_subtask"]
-                    and not await self._files_under_parent(fields, parent_external_id, security)
+                    and not await self._files_under_parent(
+                        fields, parent_external_id, security,
+                        stored_parent=existing_record.parent_external_record_id if existing_record else None,
+                    )
                 ):
                     parent_external_id = None
                 if parent_external_id:
@@ -6516,13 +6605,18 @@ class JiraDataCenterConnector(BaseConnector):
             project_ref = project.get("key") or project_id
             security = (security_by_project or {}).get(project_ref)
             if security is None:
-                security = self._security_with_roles(await self._load_issue_security(project_ref, cached=False))
+                security = await self._attach_browse_holders(
+                    self._security_with_roles(await self._load_issue_security(project_ref, cached=False)),
+                    project_ref, fresh=True,
+                )
                 if security_by_project is not None:
                     security_by_project[project_ref] = security
             if parent_external_id and not issue_data["is_subtask"]:
                 # The parent's level may have changed since the last sync read it.
                 self._parent_levels.pop(str(parent_external_id), None)
-                if not await self._files_under_parent(fields, str(parent_external_id), security):
+                if not await self._files_under_parent(
+                    fields, str(parent_external_id), security, stored_parent=record.parent_external_record_id,
+                ):
                     parent_external_id = None
 
             # Increment version
