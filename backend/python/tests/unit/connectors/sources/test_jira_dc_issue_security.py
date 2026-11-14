@@ -333,12 +333,44 @@ class TestWithdrawnAccounts:
             knowledge=SchemeKnowledge.PRESENT, members_readable=True,
             members_by_level={"1": [{"type": "user", "parameter": "bob-key", "user": {"key": "bob-key"}},
                                     {"type": "user", "parameter": "zed", "user": {"name": "zed"}}]})
+        c._save_levels_retry = AsyncMock()
         built = await c._build_issue_records([_issue("2", "P-2", level="1")], "10",
                                              [_user("alice-key", "alice@example.com")])
         grants = {p.email for r, perms in built if isinstance(r, TicketRecord) for p in perms}
         # Read in full, bob is gone from Jira (deactivated or removed) and is granted nothing.
         assert grants == (set() if complete or shown else {"bob@example.com"})
         assert c._holders_unresolved is (not complete)
+        assert c._save_levels_retry.await_count == (0 if complete else 1), "saved before the issue is written"
+
+    @pytest.mark.parametrize("flag", ["_user_bulk_incomplete", "_user_bulk_refused"])
+    async def test_a_list_that_is_never_complete_does_not_mark_a_re_read_every_sync(self, flag: str) -> None:
+        """The search fallback (capped on Jira 10+) and a refused list stay that way: a marker armed by them would
+        re-read every leveled issue on every sync and still not name the holder."""
+        c = _connector()
+        c._listed_user_keys = {"alice-key"}
+        c._stored_app_users = [_user("alice-key", "alice@example.com")]
+        setattr(c, flag, True)
+        c._issue_security["10"] = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [{"type": "user", "parameter": "zed", "user": {"name": "zed"}}]})
+        c._save_levels_retry = AsyncMock()
+        await c._build_issue_records([_issue("2", "P-2", level="1")], "10", [_user("alice-key", "alice@example.com")])
+        assert c._holders_unresolved is False
+        c._save_levels_retry.assert_not_awaited()
+
+    async def test_a_marker_that_cannot_be_saved_holds_the_issue_rather_than_write_it_short(self) -> None:
+        c = _connector()
+        c._listed_user_keys = {"alice-key"}
+        c._stored_app_users = [_user("alice-key", "alice@example.com")]
+        c._user_read_unfinished = True
+        c._issue_security["10"] = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [{"type": "user", "parameter": "zed", "user": {"name": "zed"}}]})
+        c._get_project_sync_checkpoint = AsyncMock(return_value={"security_levels": '{"1": "d"}'})
+        c._update_project_sync_checkpoint = AsyncMock(side_effect=ConnectionError("store unavailable"))
+        built = await c._build_issue_records([_issue("2", "P-2", level="1")], "10", [_user("alice-key", "alice@example.com")])
+        assert not [r for r, _ in built if isinstance(r, TicketRecord)], "the issue waits for a sync that can save it"
+        assert c._issue_build_failures == 1
 
     async def test_newly_listed_accounts_are_saved_before_they_are_linked(self) -> None:
         c = _connector()
@@ -371,3 +403,19 @@ class TestWithdrawnAccounts:
         c._sync_user_groups = AsyncMock()
         await c._link_users_and_groups()
         assert order == [("note", ["carol-key"]), ("link",)]
+
+
+class TestSweepAncestorReads:
+    """A stub whose ancestor could not be read (not "Jira has no such issue") is not swept: the sweep says so,
+    and an account listed again stays owed until a sweep reads it."""
+
+    @pytest.mark.parametrize(("status", "swept"), [(404, True), (503, False)], ids=["gone", "unavailable"])
+    async def test_a_failed_ancestor_read_reports_the_sweep_incomplete(self, status: int, swept: bool) -> None:
+        c = _connector()
+        stub = _ticket(is_placeholder=True, external_revision_id="1", record_group_type="PROJECT")
+        c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        c._search_ancestors_by_jql = AsyncMock(return_value=None)
+        c._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=status))
+        result = await c._sweep_placeholder_records({"10"}, {"10"})
+        assert (result is not None) is swept

@@ -390,11 +390,14 @@ def index_members(values: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]
     return by_level
 
 
-def custom_field_ids_from_members(members_by_level: dict[str, list[dict[str, Any]]]) -> list[str]:
+def custom_field_ids_from_members(
+    members_by_level: dict[str, list[dict[str, Any]]], kinds: tuple[str, ...] = _FIELD_HOLDERS,
+) -> list[str]:
+    """The custom fields the holders of ``kinds`` (user and group fields by default) read."""
     found: set[str] = set()
     for holders in members_by_level.values():
         for holder in holders:
-            if holder.get("type") not in _FIELD_HOLDERS:
+            if holder.get("type") not in kinds:
                 continue
             raw = holder.get("parameter") or holder.get("value")
             field_obj = holder.get("field")

@@ -1038,3 +1038,29 @@ class TestWithdrawnAccounts:
         await sync(connector, jql_search, recent=[])
         assert connector._sweep_placeholder_records.await_args.kwargs["full_sync_project_ids"] == {"10000"}
         assert json.loads(store.values_for("people_reread")["accounts"]) == []
+
+    async def test_a_short_user_list_that_shows_an_account_deactivated_withdraws_it(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """Absence from a list cut short says nothing, but a row marked inactive does: carol is withdrawn with her
+        grants, so neither the reindex nor the stub sweep, which read the linked accounts, can name her again."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("reporter")]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="carol"))
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert ("USER", "carol@example.com") in readers(db, "2")
+
+        carol_inactive = {**user("carol-key", "carol", "carol@example.com"), "active": False}
+
+        def short_list(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("cursor") == "abc":
+                return json_response({"errorMessages": ["expired"]}, status=401)
+            return json_response({"values": [user("alice-key", "alice", "alice@example.com"), carol_inactive],
+                                  "nextPage": f"{API}/user/list?cursor=abc", "isLast": False})
+
+        jira.on("GET", f"{API}/user/list", short_list)
+        await sync(connector, jql_search, recent=[])
+        assert connector._user_read_unfinished is True
+        assert [u.source_user_id for u in db.withdrawn_users] == ["carol-key"]
+        assert "carol-key" not in {u.source_user_id for u in await db.get_all_app_users("jira-dc-1")}
