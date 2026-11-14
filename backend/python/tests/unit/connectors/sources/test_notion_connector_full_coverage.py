@@ -66,6 +66,7 @@ def _make_connector():
     dsp = runs_in_its_transaction(MagicMock())
     mock_tx = MagicMock()
     mock_tx.get_record_group_by_external_id = AsyncMock(return_value=None)
+    mock_tx.get_nodes_by_filters = AsyncMock(return_value=[])
     tx_cm = AsyncMock()
     tx_cm.__aenter__ = AsyncMock(return_value=mock_tx)
     tx_cm.__aexit__ = AsyncMock(return_value=False)
@@ -2670,6 +2671,30 @@ class TestCreateWorkspaceRecordGroup:
         assert group.inherit_permissions is False
         assert group.permission_model is None
         assert permissions == []
+
+    @pytest.mark.asyncio
+    async def test_a_workspace_an_earlier_token_reached_is_closed_too(self) -> None:
+        """The token now belongs to another workspace; the one it reached before was stored by
+        an earlier version, inheriting the app, and must not keep opening its pages."""
+        conn = _make_connector()
+        conn.workspace_id = "ws-new"
+        conn.workspace_name = "New"
+        conn._mock_tx.get_nodes_by_filters = AsyncMock(return_value=[
+            {"id": "rg-old", "orgId": "org-1", "groupName": "Old", "externalGroupId": "ws-old",
+             "connectorId": "notion-conn-1", "connectorName": "NOTION", "groupType": "NOTION_WORKSPACE",
+             "permissionModel": "RECORD_GROUP_LEVEL"},
+            {"id": "rg-new", "orgId": "org-1", "groupName": "New", "externalGroupId": "ws-new",
+             "connectorId": "notion-conn-1", "connectorName": "NOTION", "groupType": "NOTION_WORKSPACE"},
+        ])
+        await conn._create_workspace_record_group()
+        written = conn.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert sorted(group.external_group_id for group, _ in written) == ["ws-new", "ws-old"]
+        for group, permissions in written:
+            assert group.inherit_permissions is False and group.permission_model is None and permissions == []
+        old = next(group for group, _ in written if group.external_group_id == "ws-old")
+        assert old.id == "rg-old", "the stored group is rewritten, not a new one"
+        filters = conn._mock_tx.get_nodes_by_filters.await_args.args[1]
+        assert filters == {"connectorId": "notion-conn-1", "groupType": "NOTION_WORKSPACE"}
 
     @pytest.mark.asyncio
     async def test_user_sync_never_opens_the_workspace(self):

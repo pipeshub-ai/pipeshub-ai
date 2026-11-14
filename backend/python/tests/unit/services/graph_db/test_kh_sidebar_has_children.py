@@ -70,9 +70,12 @@ def test_arango_decides_the_container_filter_on_real_children() -> None:
     # a flatten's sidebar keeps a record by the flatten's own arrow, the stricter rule no check settles
     assert "hasChildren: ((IS_SAME_COLLECTION(" in ArangoHTTPProvider._kh_v3_slim_aql(tuple(conditions), "name")
 
-    assert "LET kh_has = (kh_sd.hideChildren != true" in slim and "LET kh_probe = NOT kh_has AND" in slim
-    assert "hasChildren: (kh_has OR kh_probe)" in slim and "RETURN [kh_h, node.nodeType, sortKey, kh_probe]" in slim
+    # a browse's sidebar keeps a record that can have an arrow, and reads the arrow apart (`sidebar_rows`)
+    assert "LET kh_side = (LENGTH(FOR kh_kx" in slim and "LET kh_has" not in slim
+    assert "hasChildren: kh_side" in slim and 'RETURN [kh_h, node.nodeType, sortKey, false, kh_side AND node.nodeType == "record"]' in slim
     assert "hasChildren: false" not in slim
+    rows = ArangoHTTPProvider._kh_v3_listing_aql()["sidebar_rows"]
+    assert "LET kh_has = (kh_sd.hideChildren != true AND (kh_filed OR LENGTH(FOR kh_ch" in rows and "RETURN [kh_h, kh_has, NOT kh_has AND" in rows
 
 
 def test_arango_main_list_does_not_read_children_before_the_page_is_cut() -> None:
@@ -104,12 +107,39 @@ async def test_arango_keeps_a_row_for_its_frontier_only_where_the_check_admits_a
     assert page["total"] == 2 and provider._kh_v3_run.await_args.args[1]["kh_page"] == ["records/b", "records/c"]
 
 
+async def test_arango_keeps_a_sidebar_record_where_its_arrow_read_apart_is_on() -> None:
+    """A browse sidebar's record that can have an arrow is kept where `sidebar_rows` lights it, asks the check about its frontier where only the
+    check can light it, and is dropped otherwise or when it is gone; a folder is kept without asking."""
+    from app.services.graph_db.arango.arango_http_provider import _Visible
+    from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+    provider = _arango()
+    provider.http_client = MagicMock()
+    provider.http_client.execute_aql = AsyncMock(return_value=[
+        ["records/a", "record", "a", False, True], ["records/b", "record", "b", False, True], ["records/c", "record", "c", False, True],
+        ["records/d", "record", "d", False, True], ["records/f", "folder", "f", False, False]])
+    lit = {"sidebar_rows": [["records/a", True, False], ["records/b", False, True], ["records/c", False, False]]}
+    provider._kh_v3_run = AsyncMock(side_effect=lambda name, *_a, **_k: lit.get(name, []))
+    provider._kh_v3_frontiers = AsyncMock(return_value={"records/b": ["c2"]})
+    provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"c2"})))
+    page = await provider._kh_v3_page_rows(
+        _Visible(nodes=["records/a", "records/b", "records/c", "records/d", "records/f"]), "app1", "org1", limit=10, sort_field="name",
+        sort_dir="asc", after=None, direction="next", filters={"only_containers": True}, lists_placeholders=True, exact_arrows=True,
+        row_ctx={"granted": {}, "kh_scope": {}, "kh_from_app": True, "kh_seeded": []}, transaction=None, access={"grantee_ids": []})
+    sidebar = provider._kh_v3_run.await_args_list[0].args
+    assert sidebar[0] == "sidebar_rows" and sidebar[1]["kh_page"] == ["records/a", "records/b", "records/c", "records/d"]
+    assert provider._kh_v3_frontiers.await_args.args[0] == ["records/b"]
+    assert page["total"] == 3 and provider._kh_v3_run.await_args.args[1]["kh_page"] == ["records/a", "records/b", "records/f"]
+
+
 async def test_a_folder_in_the_sidebar_asks_the_check_nothing() -> None:
     """The container filter keeps a folder whatever lies below it, so only a record carries its frontier to the check: a folder dropped for a
     refused child would vanish once an unreadable child is added (both stores)."""
     conditions, _ = _arango()._kh_v2_filters_aql(only_containers=True)
     slim = ArangoHTTPProvider._kh_v3_slim_aql(tuple(conditions), "name", browse=True)
-    assert 'LET kh_probe = NOT kh_has AND (IS_SAME_COLLECTION("recordGroups", kh_sd) ? "recordGroup"' in slim and '== "record" AND' in slim
+    assert 'kh_side AND node.nodeType == "record"]' in slim
+    rows = ArangoHTTPProvider._kh_v3_listing_aql()["sidebar_rows"]
+    assert 'NOT kh_has AND (IS_SAME_COLLECTION("recordGroups", kh_sd) ? "recordGroup"' in rows and '== "record" AND' in rows
     statement = await _browse_statement({"only_containers": True})
     assert "(NOT khHas AND NOT node:RecordGroup AND NOT node:KhFolder AND EXISTS" in statement
 

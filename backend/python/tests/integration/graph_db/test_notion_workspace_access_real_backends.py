@@ -223,3 +223,20 @@ async def test_a_page_a_token_lists_opens_with_its_files_and_a_subpage_it_does_n
     env.connector._readers = {}
     await env.connector._apply_page_access()
     assert not await _found(env) & {top, child, file_id}, "Access stayed after the token stopped listing the page."
+
+
+async def test_a_workspace_an_earlier_token_reached_stops_granting_its_pages(env: _Env) -> None:
+    """The token moved to another workspace; the one it reached before was stored inheriting the app."""
+    await env.connector.data_entities_processor.on_new_record_groups([(RecordGroup(
+        org_id=env.org_id, name="IT workspace", external_group_id=WORKSPACE,
+        connector_name=Connectors.NOTION, connector_id=env.connector.connector_id,
+        group_type=RecordGroupType.NOTION_WORKSPACE, permission_model=PermissionModel.RECORD_GROUP_LEVEL,
+        inherit_permissions=True,
+    ), [])])
+    pages = await _sync_pages(env, inheriting=("page-top", "page-child"))
+    assert set(pages) <= await _found(env), "the earlier state must be visible for this test to mean anything"
+
+    env.connector.workspace_id, env.connector.workspace_name = "ws-other", "Other workspace"
+    await env.connector._create_workspace_record_group()
+
+    assert not await _found(env) & set(pages), "The workspace the token reached before still grants its pages."

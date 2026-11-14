@@ -130,3 +130,20 @@ async def test_a_page_a_token_lists_opens_with_its_files_and_a_subpage_it_does_n
     connector._readers = {}
     await connector._apply_page_access()
     assert await w.allowed("m", top, child, file_id) == set(), "access stayed after the token stopped listing the page"
+
+
+async def test_a_workspace_an_earlier_token_reached_stops_granting_its_pages(w: World) -> None:
+    connector = await _connector(w)
+    # The token moved to another workspace; the one it reached before was stored inheriting the app.
+    await connector.data_entities_processor.on_new_record_groups([(RecordGroup(
+        org_id=w.org, name="PG workspace", external_group_id=WORKSPACE, connector_name=Connectors.NOTION,
+        connector_id=APP, group_type=RecordGroupType.NOTION_WORKSPACE,
+        permission_model=PermissionModel.RECORD_GROUP_LEVEL, inherit_permissions=True,
+    ), [])])
+    pages = await _sync_pages(connector, inheriting=("page-top", "page-child"))
+    assert await w.allowed("m", *pages) == set(pages), "the earlier state must be visible for this test to mean anything"
+
+    connector.workspace_id, connector.workspace_name = "ws-other", "Other workspace"
+    await connector._create_workspace_record_group()
+
+    assert await w.allowed("m", *pages) == set(), "the workspace the token reached before still grants its pages"
