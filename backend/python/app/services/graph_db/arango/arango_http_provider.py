@@ -21360,8 +21360,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Below a seed only OPEN nodes pass: something above the seed is not
             # accessible.
             "step_open": children(open_parent, open_hop),
-            # The hierarchy alone, for how far a node lies from the App.
-            "step_hier": children("", "kh_c.isDeleted != true"),
+            # The hierarchy alone, for how far a node lies from the App: through any node, a deleted one too, as Neo4j's walk goes (a live record below a deleted folder
+            # is that many hops down).
+            "step_hier": children("", "true"),
             # Granted nodes that could be chain-tops, by own groups (``_kh_v3_chain_top_groups``).
             "chain_top_groups": f"""
             LET kh_app = DOCUMENT("{apps}", @app_id)

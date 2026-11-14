@@ -22,7 +22,7 @@ WORKFLOW = ROOT / ".github/workflows/permission-conformance.yml"
 PYTHON = ROOT / "backend/python"
 
 # Cases of each suite under `-m integration` (the junit classname prefix). Adding tests raises this and the cases of the shard that runs them.
-TOTALS = {"tests.integration.graph_permissions": 843, "tests.permissions": 313}
+TOTALS = {"tests.integration.graph_permissions": 843, "tests.permissions": 314}
 
 
 def _holds(expression: str, true: set[str]) -> bool:

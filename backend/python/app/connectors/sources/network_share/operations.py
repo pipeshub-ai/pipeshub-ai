@@ -20,9 +20,13 @@ from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
 from app.connectors.core.registry.filters import FilterCollection, IndexingFilterKey
-from app.connectors.core.registry.folder_scope import FolderScope, clean_up_scope
+from app.connectors.core.registry.folder_filter_action_item import (
+    unmatched_folder_patterns_item,
+)
+from app.connectors.core.registry.folder_scope import clean_up_scope
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.network_share.errors import NetworkShareAuthError
+from app.connectors.sources.network_share.filters import share_folder_scope
 from app.connectors.sources.network_share.permissions import app_level_permissions
 from app.connectors.sources.network_share.record_mapper import (
     RecordMapper,
@@ -44,6 +48,7 @@ if TYPE_CHECKING:
     from fastapi.responses import StreamingResponse
 
     from app.config.constants.arangodb import Connectors
+    from app.connectors.core.base.connector.connector_service import ActionItem
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
     )
@@ -204,10 +209,22 @@ class ShareWalkReport:
     unreadable: list[str] = field(default_factory=list)
     # Ids of the folders and files that failed to be read; what was stored under them was kept.
     unread: frozenset[str] = frozenset()
+    # The folder patterns of the filter, and those that matched a folder in some share.
+    patterns: frozenset[str] = frozenset()
+    matched: frozenset[str] = frozenset()
+    exclude: bool = False
 
     @property
     def complete(self) -> bool:
         return not self.unreadable and not self.unread
+
+    def unmatched_patterns_item(self) -> ActionItem | None:
+        """The card's note of folder patterns that matched nothing in any share.
+
+        Only a complete walk knows; call it only when ``complete``.
+        """
+        unmatched = self.patterns - self.matched
+        return unmatched_folder_patterns_item(unmatched, exclude=self.exclude) if unmatched else None
 
     def coverage(self) -> FullSyncCoverage:
         """For the full-sync unlink: a walk that skipped something must unlink nothing."""
@@ -251,7 +268,8 @@ async def walk_shares(
     seen: set[str] = set()
     unread: set[str] = set()
     unreadable: list[str] = []
-    folder_scope = FolderScope.from_filters(sync_filters)
+    matched: set[str] = set()
+    folder_scope = share_folder_scope(sync_filters)
     for share_name in shares:
         if not share_name:
             continue
@@ -261,6 +279,7 @@ async def walk_shares(
             )
             seen |= result.seen
             unread |= result.unread
+            matched |= result.matched
             if not result.complete and result.seen == {share_name}:
                 unreadable.append(share_name)
             if result.complete:
@@ -295,7 +314,13 @@ async def walk_shares(
         # A folder that failed to list keeps its own records only, so one
         # unreadable folder does not stop removals everywhere else on the share.
         await prune_unseen(processor, connector_id, seen, logger, unread)
-    return ShareWalkReport(unreadable=unreadable, unread=frozenset(unread))
+    return ShareWalkReport(
+        unreadable=unreadable,
+        unread=frozenset(unread),
+        patterns=frozenset(p.raw for p in folder_scope.patterns),
+        matched=frozenset(matched),
+        exclude=folder_scope.exclude,
+    )
 
 
 def io_share_and_path(record: Record) -> tuple[str, str] | None:
