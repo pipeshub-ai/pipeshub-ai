@@ -48,3 +48,23 @@ describe('ChatResponse for a run stopped on MCP servers', () => {
     expect(screen.getByText('The model is not responding.')).toBeTruthy();
   });
 });
+
+describe('ChatResponse for a failed reply', () => {
+  const FAILED = "The AI model's provider is limiting requests right now. Wait a minute, then try again.";
+
+  it('shows the reason as an error', () => {
+    renderInTheme(
+      <ChatResponse question="Q" answer={FAILED} streamError={{ code: 'answer_failed' }} isLastMessage />,
+    );
+
+    expect(screen.getByTestId('answer-failed')).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toContain(FAILED);
+  });
+
+  it('renders a normal answer without the error styling', () => {
+    renderInTheme(<ChatResponse question="Q" answer="Here is the answer." isLastMessage />);
+
+    expect(screen.queryByTestId('answer-failed')).toBeNull();
+    expect(screen.getByText('Here is the answer.')).toBeTruthy();
+  });
+});

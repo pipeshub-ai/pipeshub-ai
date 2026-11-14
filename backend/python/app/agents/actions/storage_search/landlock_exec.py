@@ -1,8 +1,8 @@
 """Run one command confined by Landlock, then exec it.
 
-    python -I -S landlock_exec.py <readable-dir> -- <argv...>
+    python -I -S landlock_exec.py <readable-dir>... -- <argv...>
 
-The command, and everything it starts, may read <readable-dir> and the system's
+The command, and everything it starts, may read the <readable-dir>s and the system's
 programs and libraries, write only /dev/null, and use no network (on kernels
 with Landlock ABI 4 or later). Each stage also gets at most 30 s of CPU and
 2 GiB of memory. The storage
@@ -62,7 +62,7 @@ def abi_version() -> int:
     return max(int(version), 0)
 
 
-def confine(readable_dir: str) -> None:
+def confine(*readable_dirs: str) -> None:
     """Restrict this process (and what it execs) as described above; raises OSError."""
     libc = _libc()
     abi = abi_version()
@@ -81,7 +81,7 @@ def confine(readable_dir: str) -> None:
     if ruleset < 0:
         raise OSError(ctypes.get_errno(), "landlock_create_ruleset failed")
     try:
-        rules = [(readable_dir, READ_FILE | READ_DIR)]
+        rules = [(d, READ_FILE | READ_DIR) for d in readable_dirs]
         rules += [(d, READ_FILE | READ_DIR | EXECUTE) for d in SYSTEM_DIRS]
         rules.append(("/dev/null", READ_FILE | WRITE_FILE))
         for path, wanted in rules:
@@ -114,16 +114,17 @@ def limit_resources() -> None:
 
 
 def main(argv: list[str]) -> None:
-    if len(argv) < 4 or argv[2] != "--":
-        sys.stderr.write("usage: landlock_exec.py <readable-dir> -- <argv...>\n")
+    sep = argv.index("--") if "--" in argv else 0
+    if sep < 2 or sep + 1 >= len(argv):
+        sys.stderr.write("usage: landlock_exec.py <readable-dir>... -- <argv...>\n")
         sys.exit(2)
     try:
         limit_resources()
-        confine(argv[1])
+        confine(*argv[1:sep])
     except (OSError, ValueError) as e:
         sys.stderr.write(f"landlock: refusing to run unconfined: {e}\n")
         sys.exit(126)
-    os.execvp(argv[3], argv[3:])
+    os.execvp(argv[sep + 1], argv[sep + 1:])
 
 
 if __name__ == "__main__":

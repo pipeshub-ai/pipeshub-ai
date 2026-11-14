@@ -91,7 +91,7 @@ class TestRetrievalCountsTheLinkedAccount:
 
     async def test_neo4j_query_iterates_the_principals_of_that_connector(self) -> None:
         provider = _neo4j()
-        provider.client.execute_query = AsyncMock(return_value=[{"virtualId": "v1", "recordId": "r1"}])
+        provider.client.execute_query = AsyncMock(return_value=[{"pairs": [["v1", "r1"]]}])
 
         result = await provider._get_virtual_ids_for_connector(CREATOR_ID, ORG, "jira-1", None)
 
