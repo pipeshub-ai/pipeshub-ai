@@ -4376,8 +4376,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                     if existing_record is not None:
                         if new_permissions:
                             await self.data_entities_processor.add_permission_to_record(existing_record, new_permissions)
-                        elif user_email and not (await self._restriction_filter(item_drive_id, is_drive=False))[1](user_email):
-                            # The drive's limits leave this reader out: their stored grant goes, everyone else's stays.
+                        elif user_email and (
+                            member_reads_through_drive
+                            or not (await self._restriction_filter(item_drive_id, is_drive=False))[1](user_email)
+                        ):
+                            # The drive's limits leave this reader out, or they reach it from the drive (a grant of
+                            # their own, from an earlier sync, would outlast a limited folder): their own stored grant
+                            # goes, everyone else's stays.
                             await self.data_entities_processor.delete_permission_from_record(
                                 existing_record.id, user_email, self.connector_id
                             )

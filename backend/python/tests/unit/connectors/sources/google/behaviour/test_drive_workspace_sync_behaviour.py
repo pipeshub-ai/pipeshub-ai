@@ -32,7 +32,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 )
 from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
 from app.models.entities import User
-from app.models.permission import EntityType, PermissionType
+from app.models.permission import EntityType, Permission, PermissionType
 
 CONNECTOR_ID = "drive-workspace-1"
 ADMIN = "admin@example.com"
@@ -3110,6 +3110,24 @@ async def test_a_drive_with_no_manager_gives_its_reading_members_no_grant_that_o
 
     assert not reaches(ws, BOB, "f") and not reaches(ws, ALICE, "f"), "the limit cuts both members out"
     assert not reaches(ws, BOB, "dir")
+
+
+async def test_a_reading_member_loses_a_grant_of_their_own_stored_by_an_earlier_sync_when_no_manager_can_list(
+    ws: Workspace,
+) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "reader", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f", "x.txt", parent="dir")
+    await ws.sync()
+    # As an earlier version stored it: Bob's own grant on the item, standing in for his membership.
+    ws.records.permissions["f"] = [Permission(email=BOB, type=PermissionType.READ, entity_type=EntityType.USER)]
+
+    ws.world.rename("f", "y.txt")
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+
+    assert BOB not in ws.records.perm_emails("f")
+    assert not reaches(ws, BOB, "f"), "the limit cuts him out"
 
 
 async def test_a_shared_drive_item_is_read_as_its_manager_once_for_all_its_reading_members(ws: Workspace) -> None:
