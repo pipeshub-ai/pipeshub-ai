@@ -22,6 +22,7 @@ import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { buildProxyHeaders } from '../controllers/connector.controllers';
 import { configuredLocalStorageReplicaProblem } from '../../storage/utils/replicas';
+import { precisionWaitWarningFromStore } from '../utils/precision-warning';
 
 /** What the health page calls the session cache: PostgreSQL, this process's memory or the Redis server. */
 function cacheDisplayName(redisMode: string): string {
@@ -283,24 +284,40 @@ export function createHealthRouter(
         }
       }
 
-      const warnings: string[] = [];
-      // Warning only: a stalled store must not hold the health answer.
-      let timer: NodeJS.Timeout | undefined;
-      try {
-        const replicaProblem = await Promise.race([
-          configuredLocalStorageReplicaProblem(keyValueStoreService),
-          new Promise<null>((resolve) => {
-            timer = setTimeout(() => resolve(null), STORAGE_WARNING_TIMEOUT_MS);
-          }),
-        ]);
-        if (replicaProblem) warnings.push(replicaProblem);
-      } catch (error) {
-        logger.warn(
-          'Could not read the storage configuration for the health warnings',
-          error,
-        );
-      }
-      clearTimeout(timer);
+      // Warnings only: a stalled store must not hold the health answer.
+      const warningWithin = async (
+        read: Promise<string | null>,
+        what: string,
+      ): Promise<string | null> => {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          return await Promise.race([
+            read,
+            new Promise<null>((resolve) => {
+              timer = setTimeout(() => {
+                resolve(null);
+              }, STORAGE_WARNING_TIMEOUT_MS);
+            }),
+          ]);
+        } catch (error) {
+          logger.warn(`Could not read ${what} for the health warnings`, error);
+          return null;
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+      const warnings = (
+        await Promise.all([
+          warningWithin(
+            configuredLocalStorageReplicaProblem(keyValueStoreService),
+            'the storage configuration',
+          ),
+          warningWithin(
+            precisionWaitWarningFromStore(keyValueStoreService),
+            'the weight-precision state',
+          ),
+        ])
+      ).filter((warning): warning is string => warning !== null);
 
       const health: HealthStatus = {
         status: overallHealthy ? 'healthy' : 'unhealthy',

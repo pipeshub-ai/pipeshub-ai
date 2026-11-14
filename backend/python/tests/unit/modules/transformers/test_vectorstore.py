@@ -26,14 +26,13 @@ def _make_vectorstore():
     mock_vdb.get_capabilities = MagicMock(return_value=VectorDBCapabilities())
     mock_vdb.get_service_name = MagicMock(return_value="mock")
 
-    vs = VectorStore(
+    return VectorStore(
         logger=MagicMock(),
         config_service=AsyncMock(),
         graph_provider=AsyncMock(),
         collection_registry=_make_collection_registry(),
         vector_db_service=mock_vdb,
     )
-    return vs
 
 
 # ===================================================================
@@ -2108,7 +2107,7 @@ class TestBuildImagePoints:
 
         assert len(points) == 1
         assert points[0].dense_vector == [0.1, 0.2, 0.3]
-        assert points[0].payload["metadata"] == {"orgId": "org1"}
+        assert points[0].payload["metadata"] == {"orgId": "org1", "embedPrecision": "image"}
 
     def test_error_result_is_skipped_and_logged(self):
         from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
@@ -2174,8 +2173,8 @@ class TestBuildImagePoints:
         points = vs._build_image_points(image_chunks, results)
 
         assert len(points) == 2
-        assert points[0].payload["metadata"] == {"i": 0}
-        assert points[1].payload["metadata"] == {"i": 2}
+        assert points[0].payload["metadata"] == {"i": 0, "embedPrecision": "image"}
+        assert points[1].payload["metadata"] == {"i": 2, "embedPrecision": "image"}
 
     def test_no_embedding_size_set_skips_validation(self):
         """When embedding_size hasn't been resolved yet (e.g. instance not
@@ -2212,7 +2211,7 @@ class TestBuildImagePoints:
         points = vs._build_image_points(image_chunks, results)
 
         assert len(points) == 1
-        assert points[0].payload["metadata"] == {"i": 0}
+        assert points[0].payload["metadata"] == {"i": 0, "embedPrecision": "image"}
         vs.logger.error.assert_called()
 
 

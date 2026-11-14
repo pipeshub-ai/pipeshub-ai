@@ -693,3 +693,34 @@ async def test_a_job_of_another_connector_runs_as_before() -> None:
     h.seed(job)
     await h.deliver(job)
     assert h.stage.runs == 1 and h.state(job).status is ProgressStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_the_stage_worker_pauses_not_fails_on_a_precision_flip() -> None:
+    from unittest.mock import AsyncMock
+
+    from app.exceptions.indexing_exceptions import IndexingError
+    from app.modules.pipeline.worker import StageWaitsForPrecision
+    from app.services.messaging.precision_flip import PrecisionFlip
+
+    inner = RuntimeError("Failed to store batch 0")
+    inner.__cause__ = PrecisionFlip("the index holds int8-w and the server now produces fp32", delay_s=60.0)
+    outer = IndexingError("Failed to store documents")
+    outer.__cause__ = inner
+    h, job = _Harness(), _job()
+    h.seed(job)
+    h.handler._handle = AsyncMock(side_effect=outer)
+    with pytest.raises(StageWaitsForPrecision) as caught:
+        await h.deliver(job)
+    assert caught.value.delay_s == 60.0 and caught.value.pauses_consumer is False and caught.value.counts_toward_backstop is False
+
+
+@pytest.mark.asyncio
+async def test_any_other_error_still_leaves_the_worker_as_it_did() -> None:
+    from unittest.mock import AsyncMock
+
+    h, job = _Harness(), _job()
+    h.seed(job)
+    h.handler._handle = AsyncMock(side_effect=ProcessingError("boom"))
+    with pytest.raises(ProcessingError):
+        await h.deliver(job)

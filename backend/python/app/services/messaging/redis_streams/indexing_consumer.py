@@ -64,6 +64,7 @@ from app.services.messaging.lanes.hash_router import RedisLaneRouter
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.membership import register_group
 from app.services.messaging.message_log import bound_message
+from app.services.messaging.precision_check import PrecisionHandBack, counted
 from app.services.messaging.redis_streams.backlog import read_stream_backlog_detail
 from app.services.messaging.redis_streams.retention import (
     DEFAULT_INTERVAL_SECONDS,
@@ -169,6 +170,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         disposition_sink: Optional[AbandonedMessageSink] = None,
         provider: "IRedisConnectionProvider | None" = None,
         connector_off_filter: ConnectorOffFilter | None = None,
+        precision_filter: PrecisionHandBack | None = None,
         stage_admission: "concurrency.StageAdmission | None" = None,
         priority_lane: "concurrency.PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
@@ -191,6 +193,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # Settles, as they are read, the events the handler would only skip
         # because their connector is off or gone -- see connector_off.py.
         self.connector_off_filter = connector_off_filter
+        self.precision_filter = precision_filter
         self.producer = producer
         self.concurrency_manager = concurrency_manager
         # When set, node-local parsing/indexing admission is delegated to the
@@ -1205,6 +1208,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     topic,
                     message_id,
                 )
+                # An entry that waited in the pending list is checked like a fresh read: while the embedding
+                # precision and the indexes disagree it goes back before anything is downloaded.
+                hand_back_delay = self.__precision_delay(parsed_message)
+                if hand_back_delay is not None and parsed_message is not None:
+                    return await self.__hand_back_entry(topic, message_id, parsed_message, hand_back_delay)
                 # Acknowledges an unparseable envelope, as a fresh read does;
                 # left pending it would sit at the head of this lane's recovery
                 # for good, since reclaiming never counts a delivery.
@@ -2305,10 +2313,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 parsed.append(None)
                 unparsed.add(position)
         settled = await self.__settle_connector_off(entries, parsed)
+        handed_back = self.__precision_hand_backs(parsed, settled | unparsed)
         for position, (stream_name, message_id, fields) in enumerate(entries):
             if not self.running:
                 return
             if position in settled or position in unparsed:
+                continue
+            if position in handed_back:
+                await self.__hand_back_entry(stream_name, message_id, parsed[position], handed_back[position])
                 continue
             try:
                 await self.__enqueue_parsed(
@@ -2320,6 +2332,48 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     message_id,
                     e,
                 )
+
+    def __precision_hand_backs(self, parsed: list[StreamMessage | None], skip: set[int] | frozenset[int]) -> dict[int, float]:
+        """Entries that would write vectors of the wrong precision, with how long to wait before they come back.
+
+        Run after the connector-off filter, so a turned-off connector's events are settled, not handed back.
+        """
+        if self.precision_filter is None:
+            return {}
+        considered = [None if position in skip else message for position, message in enumerate(parsed)]
+        try:
+            return dict(self.precision_filter.hand_back(considered))
+        except Exception:
+            self.logger.warning("Could not check this read against the embedding precision; it takes the normal path", exc_info=True)
+            return {}
+
+    def __precision_delay(self, parsed: StreamMessage | None) -> float | None:
+        """How long one message waits if the precision check hands it back now, else None. Never raises."""
+        if self.precision_filter is None or parsed is None:
+            return None
+        try:
+            return self.precision_filter.hand_back([parsed]).get(0)
+        except Exception:
+            self.logger.warning("Could not check a message against the embedding precision; it takes the normal path", exc_info=True)
+            return None
+
+    async def __hand_back_entry(self, stream_name: str, message_id: str, message: StreamMessage | None, delay: float) -> bool:
+        """Re-queue one entry with no attempt counted, then acknowledge it. A failed publish leaves it pending for recovery.
+
+        Returns whether the entry was handed back.
+        """
+        if message is None or self.redis is None:
+            return False
+        stable_id = str(message.payload.get("_retry_tracking_id") or f"{stream_name}-{message_id}")
+        try:
+            await self._requeue_message(
+                stream_name, message, stable_id, retry_count=0, delay_s=delay, extra_payload=counted(message.payload),
+            )
+            await self.redis.xack(stream_name, self.config.group_id, message_id)  # type: ignore[union-attr]
+        except Exception:
+            self.logger.warning("Could not hand back %s waiting for the embedding precision; it stays pending", message_id, exc_info=True)
+            return False
+        return True
 
     async def __settle_connector_off(
         self,
@@ -2433,6 +2487,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             key, (stream_name, message_id, fields, parsed, _buffered_at) = dispatched
             # Ownership passes to the in-flight set from here.
             self._held_entries.discard((stream_name, message_id))
+            # The verdict may have turned since this entry was buffered: hand it back now, before a handler
+            # starts and downloads anything. A publish that fails leaves it pending, and recovery reads it again.
+            hand_back_delay = self.__precision_delay(parsed)
+            if hand_back_delay is not None:
+                await self.__hand_back_entry(stream_name, message_id, parsed, hand_back_delay)
+                continue
             metrics.record_dispatch("redis", key[0] if key else "unknown")
             try:
                 await self._start_processing_task(
@@ -2820,6 +2880,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         stable_message_id: str,
         retry_count: int = 1,
         delay_s: float | None = None,
+        extra_payload: dict | None = None,
     ) -> None:
         """Re-publish a failed message for retry.
 
@@ -2849,6 +2910,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         try:
             payload = dict(message.payload)
+            payload.update(extra_payload or {})
             payload["_retry_tracking_id"] = stable_message_id
             backoff = delay_s if delay_s is not None else compute_retry_backoff_seconds(retry_count)
             payload["_retry_not_before"] = time.time() + backoff

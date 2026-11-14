@@ -4577,6 +4577,9 @@
           "description": "LLM-based document classification and metadata extraction"
         }
       },
+      "healthWarnings": {
+        "title": "Attention needed"
+      },
       "vectorDbMemory": {
         "title": "Search index doesn't fit in the vector database's memory",
         "message": "The search index needs about {{needed}} GB of memory to stay fast; the vector database has about {{available}} GB, so searches read from disk and slow down further when several run at once.",

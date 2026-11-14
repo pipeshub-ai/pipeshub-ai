@@ -93,6 +93,7 @@ from app.services.messaging.config import (
     messaging_env,
 )
 from app.services.messaging.error_classifier import is_expected_outcome
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider, UnsupportedFormatError
 from app.services.permissions.mode import scope_fields_enabled
@@ -1232,6 +1233,8 @@ class EventProcessor:
             # failed event.
             try:
                 await self.sink_orchestrator.sync_entities_for_duplicate(doc)
+            except PrecisionFlip:
+                raise
             except Exception as exc:
                 self.logger.warning(
                     "Entity vector sync failed for duplicate %s (non-fatal): %s",

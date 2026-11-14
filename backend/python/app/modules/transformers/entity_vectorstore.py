@@ -62,7 +62,13 @@ from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.config.constants.arangodb import QdrantCollectionNames
 from app.config.constants.service import config_node_constants
 from app.core import org_context
-from app.exceptions.indexing_exceptions import VectorStoreError
+from app.exceptions.indexing_exceptions import (
+    EmbeddingModelUnavailableError,
+    VectorStoreError,
+)
+from app.modules.indexing.embed_resume import POINT_PRECISION
+from app.services.messaging.precision_flip import PrecisionFlip
+from app.services.vector_db.collection_pin import STAMP_TAG, CollectionPinStore
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -74,6 +80,7 @@ from app.services.vector_db.models import (
     SearchResult,
     VectorPoint,
 )
+from app.services.vector_db.precision_guard import PrecisionGuard
 from app.services.vector_db.rebuild_state import (
     RebuildJobLock,
     redis_from_config_service,
@@ -89,6 +96,7 @@ from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
 )
+from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from app.utils.query_instruction import instruct_query
 
 if TYPE_CHECKING:
@@ -309,6 +317,7 @@ class EntityVectorStore:
     ) -> None:
         self.logger = logger
         self.config_service = config_service
+        self._entity_witness: dict[str, tuple[str, bool]] = {}
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
         # Only the indexing service sets this: it runs the rebuild that
@@ -550,7 +559,7 @@ class EntityVectorStore:
                 # No orgId and no entityType: no search, sweep or delete matches it.
                 points=[VectorPoint(
                     id=_STAMP_POINT_ID, dense_vector=unit, sparse_vector=None,
-                    payload={"page_content": "", "metadata": {_STAMP_FIELD: stamp}},
+                    payload={"page_content": "", "metadata": {_STAMP_FIELD: stamp, POINT_PRECISION: STAMP_TAG}},
                 )],
             )
         return stamp
@@ -696,6 +705,10 @@ class EntityVectorStore:
 
     async def _embedding_dimension(self) -> int:
         sample = await asyncio.to_thread(self._dense_embeddings.embed_query, "test")
+        embedder = self._dense_embeddings
+        if isinstance(embedder, EmbeddingServerEmbeddings) and not await embedder._read_precision_once():
+            # Never guess fp32: the fingerprint depends on what the setting asks for.
+            raise EmbeddingModelUnavailableError("The embedding server did not say what weight precision it is set to")
         return len(sample)
 
     async def _init_collection(
@@ -814,6 +827,8 @@ class EntityVectorStore:
         await self._create_collection(name)
 
     async def _create_collection(self, name: str) -> None:
+        pins = CollectionPinStore(self.config_service, self.logger)
+        absent_at = pins.now()
         try:
             await self.vector_db_service.create_collection(
                 collection_name=name,
@@ -829,6 +844,8 @@ class EntityVectorStore:
                 raise
         else:
             self.logger.info("Created entity vector collection '%s'", name)
+        # A pin left by a crash between the drop and the pin's removal; one claimed after the creation stays.
+        await pins.replace_stale_for_writer(name, getattr(self._dense_embeddings, "model", None), absent_at)
         await self._ensure_payload_indexes(name)
 
     async def _ensure_payload_indexes(self, name: str) -> None:
@@ -946,7 +963,21 @@ class EntityVectorStore:
         return self._fingerprint()
 
     def _fingerprint(self) -> str:
-        return f"{self._model_id}:{self._embedding_size}"
+        """``provider:model:dimension``, plus ``@int8-w`` when the setting asks for int8.
+
+        The setting's intent, not what happens to serve: a boot that falls back to fp32 must not change it and
+        make the whole entity index be rebuilt twice. fp32 adds nothing, so existing fingerprints are unchanged.
+        A provider with one space per org names the space by this text, so it keeps its identity unchanged.
+        """
+        base = f"{self._model_id}:{self._embedding_size}"
+        embedder = self._dense_embeddings
+        if (
+            isinstance(embedder, EmbeddingServerEmbeddings)
+            and embedder.intent == "int8-w"
+            and getattr(self._capabilities, "spaces_per_org", False) is not True
+        ):
+            return f"{base}@int8-w"
+        return base
 
     # ------------------------------------------------------------------
     # Deterministic point ID
@@ -970,6 +1001,20 @@ class EntityVectorStore:
     # (tracing) into the worker thread.
     async def _embed(self, texts: list[str]) -> list[list[float]]:
         return await asyncio.to_thread(self._dense_embeddings.embed_documents, texts)
+
+    async def _embed_witnessed(self, texts: list[str]) -> tuple[list[list[float]], tuple[str, bool] | None]:
+        """Vectors for entities and the precision the bundled server says made them (None for any other provider)."""
+        if isinstance(self._dense_embeddings, EmbeddingServerEmbeddings):
+            vectors, precision, fallback = await asyncio.to_thread(self._dense_embeddings.embed_documents_witnessed, texts)
+            return vectors, (precision, fallback)
+        return await self._embed(texts), None
+
+    def _guard(self) -> PrecisionGuard:
+        guard = getattr(self, "_precision_guard", None)
+        if guard is None:
+            guard = PrecisionGuard(CollectionPinStore(self.config_service, self.logger), self.vector_db_service, self.logger)
+            self._precision_guard = guard
+        return guard
 
     async def _embed_sparse(self, texts: list[str]) -> list[Any]:
         if not self._sparse_embedder:
@@ -1057,6 +1102,10 @@ class EntityVectorStore:
                 await self._upsert_batch(collection, named, outcome, settled, merge_membership=merge_membership)
             except _MembershipReadError as exc:
                 self.logger.warning("Skipping entity upsert batch, membership unknown: %s", exc)
+            except PrecisionFlip:
+                # Not a failed batch: the index holds the other precision, and the caller waits for that to end.
+                self._ready_collections.discard(collection)
+                raise
             except Exception as exc:
                 self.logger.error("Failed to upsert entity batch starting at %d: %s", start, exc)
             unwritten = [e for e in named if self._key_of(e) not in settled]
@@ -1154,17 +1203,28 @@ class EntityVectorStore:
                 vectors |= await self._embed_entities(late)
             self._raise_if_model_changed(generation)
 
+            # The weights that made each vector, as the server said; checked against the index before the write.
+            witnessed = {
+                self._point_id(e.org_id, e.entity_type.value, e.entity_id): self._entity_witness.pop(
+                    self._point_id(e.org_id, e.entity_type.value, e.entity_id), None,
+                )
+                for e, _, _ in pending
+            }
+            for precision, fallback in {w for w in witnessed.values() if w is not None}:
+                await self._guard().verify_batch(collection, None, precision, fallback=fallback, intent="int8-w", derive=False)
+
             points = []
             for entity, connector_ids, record_group_ids in pending:
                 point_id = self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
                 dense, sparse = vectors[point_id]
+                tag = {POINT_PRECISION: witnessed[point_id][0]} if witnessed.get(point_id) else {}
                 points.append(VectorPoint(
                     id=point_id,
                     dense_vector=dense,
                     sparse_vector=sparse,
                     payload={
                         "page_content": entity.embedding_text,
-                        "metadata": {**entity.to_vector_payload(), EMBEDDING_MODEL_FIELD: fingerprint},
+                        "metadata": {**entity.to_vector_payload(), EMBEDDING_MODEL_FIELD: fingerprint, **tag},
                         CONNECTOR_IDS_FIELD: connector_ids,
                         RECORD_GROUP_IDS_FIELD: record_group_ids,
                     },
@@ -1189,8 +1249,11 @@ class EntityVectorStore:
 
     async def _embed_entities(self, entities: list[EntityRecord]) -> dict[str, tuple[list[float], Any]]:
         texts = [e.embedding_text for e in entities]
-        dense = await self._embed(texts)
+        dense, witnessed = await self._embed_witnessed(texts)
         sparse = await self._embed_sparse(texts)
+        if witnessed is not None:
+            for e in entities:
+                self._entity_witness[self._point_id(e.org_id, e.entity_type.value, e.entity_id)] = witnessed
         return {
             self._point_id(e.org_id, e.entity_type.value, e.entity_id): (d, sp)
             for e, d, sp in zip(entities, dense, sparse)
@@ -1355,6 +1418,7 @@ class EntityVectorStore:
         if not existing.get("exists") or existing.get("page_content") != entity.embedding_text:
             return False
         metadata = dict(existing.get("metadata") or {})
+        metadata.pop(POINT_PRECISION, None)  # which weights made the vector is not content: the fingerprint carries the setting
         return (
             metadata.pop(EMBEDDING_MODEL_FIELD, None) == fingerprint
             and metadata == entity.to_vector_payload()

@@ -43,6 +43,7 @@ def _make_config_service(*, down: bool = False):
     svc = MagicMock()
     svc.get_config = AsyncMock(side_effect=get_config)
     svc.set_config = AsyncMock(side_effect=set_config)
+    svc.list_keys_in_directory = AsyncMock(return_value=[])  # no weight-precision pins to release
     return svc
 
 

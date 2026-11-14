@@ -181,6 +181,15 @@ extraSecretData: {}
 #       secretKeyRef:
 #         name: pipeshub-e2b
 #         key: api-key
+#   # Bundled embedding server weights: auto (default, same as unset, 32-bit fp32) or int8 (the large
+#   # weight matrices as 8-bit integers: about 0.85 GiB less memory for bge-large, about 12 percent
+#   # slower encoding, the top search result changes for about 3.5 percent of queries, accuracy
+#   # unchanged). An index remembers the precision it was built with: to switch, set the value,
+#   # restart the embedding server, then run "Clean up embeddings" and "Reindex embeddings" in
+#   # Workspace > Connectors. The cleanup deletes the whole search index; search finds nothing
+#   # until the reindex has finished.
+#   - name: EMBEDDING_SERVER_PRECISION
+#     value: "int8"
 extraEnv: []
 extraEnvFrom: []
 

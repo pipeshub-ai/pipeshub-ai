@@ -700,3 +700,25 @@ async def test_pg_ordered_claim_probes_the_key_index_on_a_cold_table(analysed) -
     finally:
         await con.execute("DROP SCHEMA IF EXISTS plan_test CASCADE")
         await con.close()
+
+
+async def test_pg_a_nack_with_a_refund_gives_back_the_attempt_the_claim_counted(pg) -> None:
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await send(pg, 1)
+    (first,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert first.attempts == 1
+    assert await pg.queue.nack("g", first, 0.0, "waiting", refund=True)
+    (again,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert again.attempts == 1  # the hand-back cost no attempt
+    assert await pg.queue.nack("g", again, 0.0, "failed")
+    (third,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert third.attempts == 2  # a failure is counted
+
+
+async def test_pg_a_message_handed_back_for_ever_is_never_dead_lettered(pg) -> None:
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await send(pg, 1)
+    for _ in range(8):  # more than MAX_DELIVERY_ATTEMPTS (3)
+        (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+        assert d.attempts == 1
+        assert await pg.queue.nack("g", d, 0.0, "waiting for the embedding precision", refund=True)

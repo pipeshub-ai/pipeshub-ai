@@ -77,6 +77,7 @@ from app.services.graph_db.common.record_visibility import (
     is_live_record,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.telemetry.modules.record_storage_metrics import (
     record_artifact_write,
@@ -448,6 +449,8 @@ class SinkOrchestrator(Transformer):
                     self.logger.warning(
                         "Entity points for record %s not written (%d of %d)", record.id, outcome.failed, len(entities),
                     )
+            except PrecisionFlip:
+                raise
             except Exception as exc:
                 self.logger.warning("Record entity sync failed for record %s (non-fatal): %s", record.id, exc)
         await self._sync_record_linked_entities(
@@ -507,6 +510,8 @@ class SinkOrchestrator(Transformer):
                 continue
             try:
                 outcome = await self.entity_vector_store.upsert_entities_batch(entities, merge_membership=True)
+            except PrecisionFlip:
+                raise
             except Exception as exc:
                 self.logger.warning("%s entity sync failed for record %s (non-fatal): %s", entity_type.value, record_id, exc)
                 failed += len(entities)
@@ -661,6 +666,9 @@ class SinkOrchestrator(Transformer):
                     record_key, failed,
                 )
             return not failed
+        except PrecisionFlip:
+            # Not a sync that failed: the index holds the other precision. The caller hands the event back.
+            raise
         except Exception as exc:
             self.logger.warning(
                 "Entity vector sync failed for deduplicated record %s (non-fatal): %s",
@@ -1031,6 +1039,8 @@ class SinkOrchestrator(Transformer):
             try:
                 with stage("entities.upsert", detail=f"{len(touched_entities)} entities"):
                     await self.entity_vector_store.upsert_entities_batch(touched_entities)
+            except PrecisionFlip:
+                raise
             except Exception as exc:
                 # Entity sync is best-effort; do not fail the record pipeline
                 self.logger.warning(
