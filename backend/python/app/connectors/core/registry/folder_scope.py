@@ -373,16 +373,25 @@ class FolderScope:
             kept.append(candidate)
         return sorted(kept)
 
-    def _parts(self, folder: str) -> list[str]:
-        """The folder names of a normalised folder path, for pattern matching.
+    # Folder names for pattern matching, from a normalised path. Leading slashes are
+    # trimmed, as for a literal. Every other slash separates two names, so an empty
+    # name is a folder level of its own: the key ``a//f`` is the file ``f`` in the
+    # empty-named folder inside ``a``, and ``*`` matches that name without reaching
+    # past it. A share path holds no empty name; its walk joins server names
+    # (``pathing.join_rel_path``).
 
-        Leading and trailing slashes are trimmed, as for a literal. An empty name
-        between two slashes is kept: an object key ``a//b/f`` is three folders deep,
-        so ``*`` there matches the empty name and never reaches past it. A share path
-        has no empty name; its walk joins server names (``pathing.join_rel_path``).
-        """
-        trimmed = folder.strip("/")
-        return trimmed.split("/") if trimmed else []
+    @staticmethod
+    def _folder_parts(folder: str) -> list[str]:
+        """The names of a folder path; one trailing slash only marks it as a folder."""
+        folder = folder.lstrip("/")
+        if folder.endswith("/"):
+            folder = folder[:-1]
+        return folder.split("/") if folder else []
+
+    @staticmethod
+    def _file_parts(path: str) -> list[str]:
+        """The names of the folders a file is in: every name of its path but the last."""
+        return path.lstrip("/").split("/")[:-1]
 
     def includes_file(self, path: str) -> bool:
         """Whether a file (its path within the store) is synced."""
@@ -391,14 +400,15 @@ class FolderScope:
         path = self.rules.normalise(path)
         inside = any(path.lstrip("/").startswith(f) for f in self._match_folders)
         if not inside and self.patterns:
-            parent = path.lstrip("/").rsplit("/", 1)[0] if "/" in path.lstrip("/") else ""
+            key = path.lstrip("/")
+            parent = key[:key.rfind("/") + 1]  # up to and with the last slash: one per folder
             # One tuple, read once and replaced whole, so a scope shared by threads
             # never answers for another parent.
             memo_parent, memo_inside = self._file_memo[0]
             if memo_parent == parent:
                 inside = memo_inside
             else:
-                parts = self._parts(parent)
+                parts = self._file_parts(key)
                 inside = any(p.full_at(parts) for p in self.patterns)
                 self._file_memo[0] = (parent, inside)
         return not inside if self.exclude else inside
@@ -414,7 +424,7 @@ class FolderScope:
         full = any(folder.startswith(f) for f in self._match_folders)
         leads_on = False
         if not full and self.patterns:
-            parts = self._parts(normal)
+            parts = self._folder_parts(normal)
             for pattern in self.patterns:
                 pattern_full, pattern_open = pattern.walk(parts)
                 if pattern_full:
@@ -520,22 +530,19 @@ class MatchTracker:
         self._scope = scope
         self._matched: set[str] = set()
 
-    def _note(self, normal_folder: str) -> None:
-        """``normal_folder`` is already normalised by the scope's rules."""
+    def _note(self, parts: list[str]) -> None:
         waiting = [p for p in self._scope.patterns if p.raw not in self._matched]
         if not waiting:
             return
-        parts = self._scope._parts(normal_folder)
         self._matched.update(p.raw for p in waiting if p.full_at(parts))
 
     def note_folder(self, path: str, role: FolderRole) -> None:
         if role is (FolderRole.SKIP if self._scope.exclude else FolderRole.KEEP):
-            self._note(self._scope.rules.normalise(path))
+            self._note(FolderScope._folder_parts(self._scope.rules.normalise(path)))
 
     def note_file(self, path: str) -> None:
-        # Normalised first: on a share `\` separates folders, so it decides the parent.
-        path = self._scope.rules.normalise(path).lstrip("/")
-        self._note(path.rsplit("/", 1)[0] if "/" in path else "")
+        # Normalised first: on a share `\` separates folders, so it decides the folders.
+        self._note(FolderScope._file_parts(self._scope.rules.normalise(path)))
 
     def matched(self) -> frozenset[str]:
         return frozenset(self._matched)

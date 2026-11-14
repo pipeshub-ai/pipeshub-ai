@@ -63,11 +63,33 @@ def _fnmatch_text(seg: str, escapes: bool) -> str:
                    for c, wild in _tokens(seg, escapes))
 
 
-def _names(folder: str) -> tuple[str, ...]:
-    """Folder names with the outer slashes trimmed; an empty name between two slashes stays."""
-    if not folder.strip("/"):
-        return ()
-    return tuple(folder.strip("/").split("/"))
+def _names_of_key(key: str) -> tuple[tuple[str, ...], str]:
+    """Read a key one character at a time: (the names of its folders, its last name).
+
+    Leading slashes are skipped. After that every slash closes one name, an empty
+    one included, so ``a//f`` is in the folders ``a`` and the empty name.
+    """
+    i = 0
+    while i < len(key) and key[i] == "/":
+        i += 1
+    names: list[str] = []
+    current: list[str] = []
+    for ch in key[i:]:
+        if ch == "/":
+            names.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    return tuple(names), "".join(current)
+
+
+def _folder_names(folder: str) -> tuple[str, ...]:
+    """A folder path names its folders; a trailing slash only marks it as one."""
+    names, last = _names_of_key(folder)
+    if last:
+        return (*names, last)
+    # "a/" ends a name with its slash; an empty path or "/" names the top.
+    return names
 
 
 class Reference:
@@ -119,7 +141,7 @@ class Reference:
         n = _n(p, self.share)
         cleaned = n.strip().strip("/")
         folder = f"{cleaned}/" if cleaned else ""
-        return folder, _names(n)
+        return folder, _folder_names(n)
 
     def role(self, p: str) -> FolderRole:
         folder, parts = self._folder(p)
@@ -135,7 +157,7 @@ class Reference:
     def includes_file(self, p: str) -> bool:
         n = _n(p, self.share).lstrip("/")
         inside = any(n.startswith(f) for f in self.literals)
-        parent = _names(n.rsplit("/", 1)[0] if "/" in n else "")
+        parent, _ = _names_of_key(n)
         inside = inside or any(self._full(s, parent) for s in self.patterns)
         return not inside if self.exclude else inside
 
@@ -201,6 +223,12 @@ def test_a_folder_and_the_files_in_it_agree(values: list[str], exclude: bool, sh
     live = FolderScope.from_filters(_filters(values, exclude), rules=rules, wildcards=True)
     if live.folders:
         return
-    for p in paths:
-        kept = live.folder_role(p) is not FolderRole.SKIP if exclude else live.folder_role(p) is FolderRole.KEEP
-        assert live.includes_file(f"{p}/f.txt" if p else "f.txt") == kept, p
+    for raw in paths:
+        # On a share a backslash is a slash; the file below is written with the slashes the store uses.
+        p = raw.replace("\\", "/") if share else raw
+        for folder in (p, p + "/", p + "//"):
+            kept = (live.folder_role(folder) is not FolderRole.SKIP if exclude
+                    else live.folder_role(folder) is FolderRole.KEEP)
+            # A file directly in the folder, whatever empty names are right above it.
+            file = folder + "f.txt" if folder.endswith("/") or not folder else folder + "/f.txt"
+            assert live.includes_file(file) == kept, (folder, file)
