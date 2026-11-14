@@ -451,8 +451,8 @@ async def test_a_user_withdrawn_with_their_grants_reads_nothing_even_through_the
 
 async def test_opening_the_app_to_the_org_team_first_takes_the_grants_left_on_unlinked_users(w: World) -> None:
     """``open_app_to_org_team``: an org user the connector does not link loses the grants still naming them before
-    the All team passes the gate (they would read through it otherwise); a linked user keeps theirs; a second
-    call finds the gate open and changes nothing."""
+    the All team passes the gate (they would read through it otherwise); a linked user keeps theirs; a grant left
+    on an unlinked user after the gate opened goes with the next call."""
     import logging
     from unittest.mock import AsyncMock, MagicMock
 
@@ -480,10 +480,12 @@ async def test_opening_the_app_to_the_org_team_first_takes_the_grants_left_on_un
     assert await w.p.get_edge(f"all_{w.org}", "teams", APP, "apps", "userAppRelation")
 
     await w.edge("permission", ("users", "s"), ("records", "left"), type="USER", role="READER")
-    await processor.open_app_to_org_team(APP)                                # already open: nothing is removed
-    assert await w.allowed("s", "left") == {"left"}
-    await processor.withdraw_team_app_edge(APP)
+    await processor.open_app_to_org_team(APP)                                # already open: the stale grant still goes
     assert await w.allowed("s", "left") == set()
+    assert await w.allowed("m", "hers") == {"hers"}
+    await processor.withdraw_team_app_edge(APP)
+    assert not await w.p.get_edge(f"all_{w.org}", "teams", APP, "apps", "userAppRelation")
+    assert await w.allowed("m", "hers") == {"hers"}
 
 
 async def test_a_link_written_in_an_open_transaction_is_read_inside_it(w: World) -> None:

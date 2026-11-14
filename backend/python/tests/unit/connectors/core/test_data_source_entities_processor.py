@@ -232,9 +232,9 @@ class TestPlaceholdersAreRestricted:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("open_already", [True, False])
     async def test_the_org_team_is_let_in_only_after_unlinked_users_lose_their_grants(self, open_already: bool) -> None:
+        """Every call removes the grants left on unlinked users, the gate open or not: a pass that missed some (a
+        user read that came back short) is made good by the next one."""
         from types import SimpleNamespace
-
-        from app.config.constants.arangodb import CollectionNames
 
         proc, tx_store = _make_processor(), _make_tx_store()
         proc.org_id = "org-1"
@@ -242,17 +242,39 @@ class TestPlaceholdersAreRestricted:
         tx_store.get_edge = AsyncMock(return_value={"_key": "e"} if open_already else None)
         tx_store.remove_user_access_to_connector = AsyncMock(side_effect=lambda c, u: calls.append(("drop", u)))
         tx_store.ensure_team_app_edge = AsyncMock(side_effect=lambda c, o: calls.append(("open", o)))
+        tx_store.get_users = AsyncMock(return_value=[SimpleNamespace(id="linked"), SimpleNamespace(id="stale")])
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
         proc.get_app_user_links = AsyncMock(return_value=[SimpleNamespace(id="linked", source_user_id="a")])
-        proc.get_all_active_users = AsyncMock(return_value=[SimpleNamespace(id="linked"), SimpleNamespace(id="stale")])
 
         await proc.open_app_to_org_team("conn-1")
 
-        tx_store.get_edge.assert_awaited_once_with(
-            "all_org-1", CollectionNames.TEAMS.value, "conn-1", CollectionNames.APPS.value,
-            CollectionNames.USER_APP_RELATION.value, raise_on_error=True,
-        )
-        assert calls == ([] if open_already else [("drop", "stale"), ("open", "org-1")])
+        tx_store.get_users.assert_awaited_once_with("org-1", active=True, raise_on_error=True)
+        assert calls == [("drop", "stale"), ("open", "org-1")]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_user_read_leaves_the_org_team_out(self) -> None:
+        """Every store answers a failed user read with no users unless asked to raise: read that way, nobody would
+        lose a grant left on them and the All team would then pass the gate to those grants."""
+        from types import SimpleNamespace
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        proc.org_id = "org-1"
+
+        async def get_users(org_id: str, active: bool = True, *, raise_on_error: bool = False) -> list:
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
+            return []
+
+        tx_store.get_users = AsyncMock(side_effect=get_users)
+        tx_store.get_edge = AsyncMock(return_value=None)
+        tx_store.remove_user_access_to_connector = AsyncMock()
+        tx_store.ensure_team_app_edge = AsyncMock()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc.get_app_user_links = AsyncMock(return_value=[SimpleNamespace(id="linked", source_user_id="a")])
+
+        with pytest.raises(ConnectionError):
+            await proc.open_app_to_org_team("conn-1")
+        tx_store.ensure_team_app_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_withdraw_drops_the_access_cache_when_a_later_delete_fails(self) -> None:
@@ -3812,7 +3834,7 @@ class TestGetUsers:
         result = await proc.get_all_active_users()
 
         assert result == mock_users
-        tx_store.get_users.assert_awaited_once_with("org-1", active=True)
+        tx_store.get_users.assert_awaited_once_with("org-1", active=True, raise_on_error=False)
 
     @pytest.mark.asyncio
     async def test_get_all_app_users(self):

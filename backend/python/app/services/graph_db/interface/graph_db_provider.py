@@ -3650,6 +3650,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         *,
         active: bool = True,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all users in an organization.
@@ -3657,6 +3658,7 @@ class IGraphDBProvider(ABC):
         Args:
             org_id (str): Organization ID
             active (bool): Filter by active status
+            raise_on_error (bool): Raise a failed query instead of returning ``[]``
 
         Returns:
             List[Dict]: List of users

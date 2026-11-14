@@ -314,7 +314,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_users(self, org_id: str, active: bool = True) -> list[User]:
+    async def get_users(self, org_id: str, active: bool = True, *, raise_on_error: bool = False) -> list[User]:
         pass
 
     @abstractmethod

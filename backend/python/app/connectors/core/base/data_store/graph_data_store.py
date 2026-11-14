@@ -846,8 +846,8 @@ class GraphTransactionStore(TransactionStore):
             connector_id, external_id, transaction=self.txn, raise_on_error=raise_on_error
         )
 
-    async def get_users(self, org_id: str, active: bool = True) -> list[User]:
-        users_dict = await self.graph_provider.get_users(org_id, active=active)
+    async def get_users(self, org_id: str, active: bool = True, *, raise_on_error: bool = False) -> list[User]:
+        users_dict = await self.graph_provider.get_users(org_id, active=active, raise_on_error=raise_on_error)
         return [User.from_arango_user(user_dict) for user_dict in users_dict if user_dict is not None]
 
     async def get_app_users(
