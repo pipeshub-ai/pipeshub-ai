@@ -1,4 +1,6 @@
 """Taking the kg writers away (a development downgrade to kg_0001) leaves a database the catalog check accepts, and an upgrade brings them back."""
+import pytest
+
 from .conftest import run_migrate
 from .test_integration import connect
 
@@ -138,21 +140,23 @@ def test_downgrading_the_listing_writer_removes_only_its_own_objects(db):
         assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = 'w_listing_set'").fetchone()[0] == 1
 
 
-def test_downgrading_the_long_names_revision_keeps_the_records_writer_and_an_upgrade_replaces_it(db):
-    """kg_0010 replaces the body of a writer kg_0002 owns: its downgrade keeps the writer, its registry row and its pin (kg_0002 runs the same generated file), and an upgrade from
-    there replaces it again with nothing left over."""
+@pytest.mark.parametrize("down, writer, old_check", [("kg_0009", "w_records_upsert", "%4000%"), ("kg_0011", "w_grants_set", "%p_roles has an item of the wrong length%")],
+                         ids=["kg_0010-long-names", "kg_0012-long-roles"])
+def test_downgrading_a_revision_that_relaxes_a_writer_keeps_the_writer_and_an_upgrade_replaces_it(db, down, writer, old_check):
+    """kg_0010 and kg_0012 replace the body of a writer kg_0002 owns: a downgrade keeps the writer, its registry row and its pin (kg_0002 runs the same generated file), and an
+    upgrade from there replaces it again with nothing left over."""
     cluster, name = db
     url = cluster.url(name, "pipeshub_migrate")
-    sig = "'kg.w_records_upsert'::regproc::regprocedure"
+    sig = f"'kg.{writer}'::regproc::regprocedure"
 
     def state(c) -> tuple:
-        return (c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = 'w_records_upsert'").fetchone()[0],
+        return (c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = %s", (writer,)).fetchone()[0],
                 c.execute(f"SELECT count(*) FROM kernel.function_registry WHERE proc = {sig}").fetchone()[0],
                 c.execute(f"SELECT count(*) FROM kernel.vetted_write_pins WHERE proc = {sig}").fetchone()[0],
-                c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = 'w_records_upsert' AND prosrc LIKE '%4000%'").fetchone()[0])
+                c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = %s AND prosrc LIKE %s", (writer, old_check)).fetchone()[0])
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
-    r = run_migrate(url, "downgrade", "kg_0009", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    r = run_migrate(url, "downgrade", down, PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         assert state(c) == (1, 1, 1, 0)
