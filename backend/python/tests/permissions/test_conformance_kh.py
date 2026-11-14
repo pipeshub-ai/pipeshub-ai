@@ -59,6 +59,7 @@ from .kh_worlds import (
     SIDESEED,
     STUBQ,
     STUBSEED,
+    STUBTOP,
     TWOWAY,
     UNPLACED,
     WIDE,
@@ -240,6 +241,27 @@ async def test_a_page_that_ends_where_the_check_was_last_asked_names_no_child_th
             assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)], layer.name
         finally:
             await layer.release([WIDE])
+
+
+async def test_a_chain_top_whose_group_is_a_placeholder_is_reached_from_the_app(graph_layers) -> None:
+    """STUBTOP: r is granted, belongs to the placeholder group s and hangs from nothing. Opening s lists r, so the folder f lists s with an arrow
+    (Neo4j left s out and f showed no arrow, so no browse reached r). A store that keeps no placeholder group places r under the App instead. On
+    every store a browse from the App reaches r, following the arrows."""
+    for layer in graph_layers:
+        await layer.preload([STUBTOP])
+        try:
+            reached, queue = {}, [("A", "app")]
+            while queue:
+                node, kind = queue.pop()
+                for row, arrow in (await children_of(layer, STUBTOP, "u", node, kind) or {}).items():
+                    reached[row] = arrow
+                    if arrow:
+                        queue.append((row, "recordGroup" if STUBTOP.node(row).kind == "group" else "record"))
+            assert "r" in reached, (layer.name, reached)
+            bad = _bad(await check_world(layer, STUBTOP, "stubtop"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([STUBTOP])
 
 
 async def test_the_declared_group_arm_lists_only_its_own_connectors_records(graph_layers) -> None:
