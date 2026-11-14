@@ -15,7 +15,13 @@ from .embedding_only import (
 )
 from .gemini import GeminiProvider
 from .litellm_proxy import LiteLLMProxyProvider
-from .llm_only import FireworksProvider, GroqProvider, MiniMaxProvider, XAIProvider
+from .llm_only import (
+    AtlasCloudProvider,
+    FireworksProvider,
+    GroqProvider,
+    MiniMaxProvider,
+    XAIProvider,
+)
 from .lm_studio import LMStudioProvider
 from .mistral import MistralProvider
 from .ollama import OllamaProvider
@@ -47,6 +53,7 @@ ALL_PROVIDER_CLASSES: list[type] = [
     GroqProvider,
     MiniMaxProvider,
     FireworksProvider,
+    AtlasCloudProvider,
     MistralProvider,
     DefaultEmbeddingProvider,
     SentenceTransformersProvider,
