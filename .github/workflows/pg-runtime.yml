@@ -33,6 +33,11 @@ on:
       - 'backend/python/tests/integration/graph_db/postgres/**'
       - 'backend/python/tests/integration/graph_db/test_code_graph_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
+      # tests/integration/graph_db/postgres/test_jira_issue_security_pg.py runs these worlds through the Jira connector and the processor
+      - 'backend/python/tests/integration/graph_db/test_jira_issue_security_real_backends.py'
+      - 'backend/python/app/connectors/sources/atlassian/core/jira_issue_security.py'
+      - 'backend/python/app/connectors/sources/atlassian/jira_cloud/connector.py'
+      - 'backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py'
       - 'backend/python/tests/integration/real_graph.py'
       - 'backend/python/tests/permissions/**'
       - 'backend/python/tests/integration/graph_permissions/loaders.py'
@@ -113,7 +118,7 @@ jobs:
               --ignore=tests/integration/graph_db/postgres/test_kh_listing_flat.py
               --ignore=tests/integration/graph_db/postgres/test_robustness.py
               --ignore=tests/integration/graph_db/postgres/test_role_batch.py
-            graph_cases: 1463
+            graph_cases: 1482
     services:
       redis:
         image: redis:7.4-bookworm
