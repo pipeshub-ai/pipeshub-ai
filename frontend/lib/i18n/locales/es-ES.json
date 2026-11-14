@@ -3235,7 +3235,28 @@
         "loadingOptions": "Cargando opciones…",
         "noResults": "No se han encontrado resultados",
         "optionsLoadFailed": "No se han podido cargar las opciones de este filtro. Cierre esta lista y vuelva a abrirla para reintentarlo.",
-        "loadingMore": "Cargando más…"
+        "loadingMore": "Cargando más…",
+        "folderPaths": {
+          "help": "Las rutas empiezan en el nivel superior. * coincide con cualquier carácter dentro de un nombre de carpeta, ** con cualquier número de carpetas y ? con un solo carácter. Se incluye todo lo que hay dentro de una carpeta que coincide. Un patrón que no coincide con nada se indica en la tarjeta del conector.",
+          "examples": {
+            "oneLevel": "customer/*/quotes: la carpeta quotes de cada cliente",
+            "anyDepth": "**/quotes: cada carpeta llamada quotes, a cualquier profundidad (lee todas las carpetas)",
+            "exclude": "archive con Excluir: todo excepto la carpeta archive"
+          },
+          "caseInsensitive": "Los nombres coinciden sin importar mayúsculas o minúsculas. \\ y / separan carpetas.",
+          "caseSensitive": "Los nombres distinguen mayúsculas de minúsculas. Escribe \\* o \\? para buscar esos caracteres en un nombre.",
+          "notFiles": "Los patrones eligen carpetas, no archivos. Para elegir tipos de archivo, usa File Extensions.",
+          "errors": {
+            "climbsOut": "La carpeta \"{{value}}\" debe ser una ruta desde el nivel superior, sin \"..\".",
+            "emptySegment": "La carpeta \"{{value}}\" tiene un nombre de carpeta vacío entre dos barras. Quita la \"/\" de más.",
+            "excludesEverything": "Excluir \"{{value}}\" no deja nada que sincronizar. Quítala o cambia a Incluir.",
+            "tooLong": "La carpeta \"{{value}}\" tiene más de 1024 caracteres.",
+            "uncPath": "La carpeta \"{{value}}\" parece una ruta de red. Empieza en el nivel superior del recurso compartido, sin \\\\server\\share.",
+            "doubleStarInName": "En la carpeta \"{{value}}\", \"**\" debe ser un nombre de carpeta completo, como en reports/**/2026. Usa \"*\" para parte de un nombre.",
+            "tooManyDoubleStars": "La carpeta \"{{value}}\" usa \"**\" más de 4 veces. Usa menos.",
+            "tooManyStars": "Un nombre de carpeta en \"{{value}}\" tiene más de 16 \"*\". Usa menos."
+          }
+        }
       },
       "syncStrategies": {
         "SCHEDULED": "Programada",
@@ -3387,6 +3408,16 @@
             "title": "Drupal Wiki rechaza las consultas de miembros y de estructura de páginas",
             "message": "Los espacios privados solo se sincronizan con el acceso confirmado en una sincronización anterior, y solo durante {{days}} días después de confirmarse. Los espacios privados nunca sincronizados, o confirmados hace más tiempo, se omiten y la jerarquía de páginas no está disponible. Los espacios abiertos no se ven afectados. Una sincronización completa, incluida la que se inicia al cambiar los filtros, pone fin a esto para los espacios privados hasta que Drupal Wiki vuelva a listar sus miembros.",
             "message_dated": "Los espacios privados solo se sincronizan con el acceso confirmado en una sincronización anterior, y solo durante {{days}} días después de confirmarse. Los espacios privados nunca sincronizados, o confirmados hace más tiempo, se omiten y la jerarquía de páginas no está disponible. Los espacios abiertos no se ven afectados. Una sincronización completa, incluida la que se inicia al cambiar los filtros, pone fin a esto para los espacios privados hasta que Drupal Wiki vuelva a listar sus miembros. El acceso más antiguo en uso se confirmó el {{confirmedOn}}."
+          },
+          "folder_filter_unmatched": {
+            "title": "El patrón de carpeta no coincidió con nada",
+            "message": "Ninguna carpeta que sincroniza este conector coincide con {{values}}, así que no se sincroniza nada por él. Revisa la ortografía en el filtro Folders.",
+            "title_several": "{{count}} patrones de carpeta no coincidieron con nada",
+            "message_several": "Ninguna carpeta que sincroniza este conector coincide con {{values}}, así que no se sincroniza nada por ellos. Revisa la ortografía en el filtro Folders.",
+            "title_exclude": "El patrón de carpeta no coincidió con nada",
+            "message_exclude": "Ninguna carpeta que sincroniza este conector coincide con {{values}}, así que no excluye nada. Revisa la ortografía en el filtro Folders.",
+            "title_several_exclude": "{{count}} patrones de carpeta no coincidieron con nada",
+            "message_several_exclude": "Ninguna carpeta que sincroniza este conector coincide con {{values}}, así que no excluyen nada. Revisa la ortografía en el filtro Folders."
           }
         }
       },

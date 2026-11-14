@@ -23,6 +23,7 @@ from app.exceptions.graph_db_exceptions import (
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase, _doc
 from app.services.graph_db.postgres.kg import listing as kgl
+from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.model import CODE_COLL
 from app.services.graph_db.postgres.kh_listing import (
     ADMIT_CHUNK,
@@ -476,7 +477,9 @@ class KhBrowseMixin(PgBase):
             app = await tx.fetchval("/* pipeshub:kg.chain_app */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = $2", org, app_id)
             if app is None or not chain_tops_apply(_doc(app)):
                 return []
+            was = await tx.fetchval(kg_read.SORTS_OFF)
             rows = await tx.fetch(kgl.CHAIN_GRANTED, org, sorted(set(granted_ids)), app_id)
+            await tx.fetchval(kg_read.SORTS_BACK, was)
             nodes = await _chain_nodes(tx, org, rows)
             by: dict[tuple[str, ...], list[str]] = {}
             for n in nodes.values():

@@ -146,6 +146,8 @@ on:
       - 'backend/python/tests/permissions/oracle.py'
       - 'backend/python/tests/permissions/scope_corpus.py'
       - 'backend/python/tests/permissions/serving_corpus.py'
+      - 'backend/python/tests/permissions/gen/**'
+      - 'backend/python/tests/permissions/test_scope_projector.py'
       - 'backend/python/tests/permissions/scope_layer.py'
       - 'backend/python/tests/permissions/stamp_world.py'
       - 'backend/python/tests/permissions/store_harness.py'

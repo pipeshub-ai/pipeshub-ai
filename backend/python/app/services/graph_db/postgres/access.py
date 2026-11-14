@@ -11,7 +11,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES
-from app.services.graph_db.postgres.base import NotImplementedInPostgres, _pgbool
+from app.services.graph_db.postgres.base import _pgbool
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -311,9 +311,24 @@ def _is_seed(doc: dict, coll: str, app_id: str, granted: set[str], node_id: str)
             and (rule is None or rule == "OPEN") and node_id in granted)
 
 
+async def probe_grants(tx: Tx, org: str, probe: dict[str, Any], cross: list[str] | dict[str, Any] | None) -> dict[str, list[str]]:
+    """``by_connector`` for an access whose grants are tested from the node (``probe``), as ``Neo4jProvider._kh_grants_by_probe`` tests them: a live record or group of the probe's
+    connector that one of its grantees holds a permission on (an organisation's when its type shares with the organisation), and the other connectors' grants of ``cross``: a list
+    of ids, or the holders to test on each node (``_kh_cross_by_probe``: ``common`` on any connector of ``probe``, ``scoped`` on its own)."""
+    out = {probe["connector_id"]: (await granted_targets(tx, org, list(probe["grantees"]), list(ORG_SHARE_PERMISSION_TYPES))).get(probe["connector_id"], [])}
+    if isinstance(cross, dict):
+        common = await granted_targets(tx, org, list(cross.get("common") or []), list(ORG_SHARE_PERMISSION_TYPES))
+        for cid in cross.get("probe") or []:
+            scoped = await granted_targets(tx, org, list((cross.get("scoped") or {}).get(cid) or []), list(ORG_SHARE_PERMISSION_TYPES))
+            out[cid] = [*out.get(cid, []), *common.get(cid, []), *scoped.get(cid, [])]
+    elif cross:
+        out[""] = list(cross)      # granted on nodes of other connectors: a grant counts on a node of any gated connector
+    return out
+
+
 async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str], access: dict[str, Any]) -> list[dict[str, Any]]:
-    if access.get("probe"):      # a browse that tests grants from the node: its grants are not in ``by_connector``, so it is not answered by guessing
-        raise NotImplementedInPostgres("an access check with a grant probe is not implemented")
+    if access.get("probe"):      # a browse that tests grants from the node: its grants are read here, by the test Neo4j makes on the node
+        access = {**access, "by_connector": await probe_grants(tx, org, access["probe"], access.get("cross"))}
     gated = set(access["gated_app_ids"])
     granted = {g for ids in access["by_connector"].values() for g in ids}
     granted_l = sorted(granted)

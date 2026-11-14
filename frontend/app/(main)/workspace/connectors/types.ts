@@ -282,6 +282,10 @@ export interface FilterSchemaField {
   operators?: string[];
   optionSourceType?: 'manual' | 'static' | 'dynamic';
   options?: { id: string; label: string }[];
+  /** Folder filter: how the store separates and compares folder names ("windows": `\` separates, case does not count). */
+  pathStyle?: 'posix' | 'windows';
+  /** Folder filter: values may be patterns (`*`, `?`, `**`). */
+  folderWildcards?: boolean;
 }
 
 /** Union field type for SchemaFormField component */

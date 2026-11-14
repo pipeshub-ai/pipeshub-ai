@@ -735,3 +735,80 @@ describe('FiltersSection — indexing filters and manual indexing', () => {
     expect((screen.getByRole('switch') as HTMLButtonElement).disabled).toBe(true);
   });
 });
+
+describe('FiltersSection — folder patterns', () => {
+  const shareFolders: FilterSchemaField = {
+    name: 'folder_paths',
+    displayName: 'Folders',
+    filterType: 'list',
+    operators: ['in', 'not_in'],
+    optionSourceType: 'manual',
+    required: true,
+    pathStyle: 'windows',
+    folderWildcards: true,
+  };
+
+  function type(value: string) {
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+  }
+
+  it('explains patterns, and that a share ignores case, on a field that takes them', () => {
+    setup({ sync: [shareFolders], syncValues: { folder_paths: { operator: 'in', value: [] } } });
+
+    expect(screen.getByTestId('folder-pattern-help')).toBeTruthy();
+    expect(screen.getByText(/\*\* matches any number of folders/)).toBeTruthy();
+    expect(screen.getByText('customer/*/quotes: the quotes folder of every customer')).toBeTruthy();
+    expect(screen.getByText(/Names match whatever their case/)).toBeTruthy();
+  });
+
+  it('says names are case-sensitive on an object store', () => {
+    setup({
+      sync: [{ ...shareFolders, pathStyle: 'posix' }],
+      syncValues: { folder_paths: { operator: 'in', value: [] } },
+    });
+
+    expect(screen.getByText(/Names are case-sensitive/)).toBeTruthy();
+  });
+
+  it('shows no pattern help on a field that takes none', () => {
+    setup({
+      sync: [{ ...shareFolders, folderWildcards: undefined }],
+      syncValues: { folder_paths: { operator: 'in', value: [] } },
+    });
+
+    expect(screen.queryByTestId('folder-pattern-help')).toBeNull();
+  });
+
+  it('says why a new folder with an empty name in it cannot be saved', () => {
+    setup({ sync: [shareFolders], syncValues: { folder_paths: { operator: 'in', value: [] } } });
+
+    type('reports//2026');
+
+    expect(screen.getByText('Folder "reports//2026" has an empty folder name between two slashes. Remove the extra "/".')).toBeTruthy();
+  });
+
+  it('says that excluding every folder leaves nothing to sync', () => {
+    setup({ sync: [shareFolders], syncValues: { folder_paths: { operator: 'not_in', value: [] } } });
+
+    type('**');
+
+    expect(screen.getByText('Excluding "**" leaves nothing to sync. Remove it, or switch to Include.')).toBeTruthy();
+  });
+
+  it('leaves a folder saved before alone, whatever the newer checks say', () => {
+    setup({ sync: [shareFolders], syncValues: { folder_paths: { operator: 'in', value: ['a//b'] } } });
+
+    expect(screen.queryByText(/empty folder name/)).toBeNull();
+    expect(screen.queryByText(/email/)).toBeNull();
+  });
+
+  it('points a file type typed as a folder to the extensions filter', () => {
+    setup({ sync: [shareFolders], syncValues: { folder_paths: { operator: 'in', value: [] } } });
+
+    type('reports/*.pdf');
+
+    expect(screen.getByText(/Patterns pick folders, not files/)).toBeTruthy();
+  });
+});

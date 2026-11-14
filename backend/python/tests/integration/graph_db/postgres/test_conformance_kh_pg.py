@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import zlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
 import pytest
@@ -14,9 +14,20 @@ import pytest
 from app.connectors.sources.localKB.handlers.kh_merge import key_for
 from app.core.org_context import OrgContext, bind
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
+from app.services.graph_db.postgres import kh_browse
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
-from tests.permissions.kh_layer import KhFinding, check_world, children_of, listing
+from tests.permissions.kh_layer import (
+    BIG_PAGE,
+    HIERARCHY,
+    KhFinding,
+    browse_pages,
+    check_world,
+    children_of,
+    cursor_in_the_clear,
+    listing,
+)
+from tests.permissions.kh_layer import _Config as _KhConfig
 from tests.permissions.kh_worlds import (
     APPCHAIN,
     CHAIN,
@@ -28,6 +39,7 @@ from tests.permissions.kh_worlds import (
     STUBREACH,
     STUBTOP,
     UNPLACED,
+    WIDE,
 )
 from tests.permissions.scenario import load_all
 
@@ -212,6 +224,24 @@ async def test_a_granted_strict_group_below_a_seed_the_app_does_not_reach_is_rea
         assert not _bad(await check(kh_layer, world, "opengrant")), kh_layer.name
 
 
+async def test_a_page_that_ends_at_a_scan_bound_names_no_child_the_viewer_may_not_open(kh_layer, monkeypatch) -> None:
+    """WIDE read a window at a time with no time to read past the first: a page of f holds fewer than a page of readable children, so it ends at the
+    last child it looked at, which is most likely one the viewer may not open, and the next page resumes there. The cursor carries that position
+    sealed: a client reading it finds no name or id of a child it may not open, and the pages still list all forty readable children once."""
+    monkeypatch.setattr(kh_browse, "UNDECIDED_MAX", -1)      # the children are read a window at a time, as for a connector kg does not serve
+    monkeypatch.setattr(kh_browse, "BUDGET_S", -1.0)
+    readable = [f"k{i:03d}" for i in (*range(10), *range(200, 230))]
+    denied = [f"k{i:03d}" for i in range(10, 200)]
+    await kh_layer.preload([WIDE])
+    ns, cursors = await kh_layer._ns(WIDE), []
+    with bind(OrgContext(ns.org, None, "job", "job:test", "t")):
+        items, _, _ = await browse_pages(kh_layer, WIDE, "u", "f", "recordGroup", 50, cursors=cursors)
+    listed = [ns.local(i.id) for i in items]
+    assert sorted(listed) == readable, kh_layer.name      # the order is the store's (these names sort by their stored keys), each row once
+    assert cursors, kh_layer.name
+    assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)], kh_layer.name
+
+
 async def test_a_browse_lists_the_chain_tops_the_stores_place_under_it_and_their_arrows(kh_layer) -> None:
     """A granted record with no hierarchy parent the viewer may open is listed under its own group, else under the App (the placement rule Neo4j and
     ArangoDB share). APPCHAIN: opening h lists r, and h's arrow is on in All Records and under the App. CHAIN, CHAINLINK and STUBHELD have the same shape."""
@@ -235,6 +265,111 @@ async def test_a_placeholder_group_whose_only_content_is_a_chain_top_is_listed_w
         assert {r["id"]: r["hasChildren"] for r in (await listing(kh_layer, STUBTOP, "u")).rows}["f"] is True, kh_layer.name
     bad = _bad(await check(kh_layer, STUBTOP, "stubtop"))
     assert not bad, _describe(bad)
+
+
+async def _flat_pages(layer: KhPgLayer, world, viewer: str, node: str, parent_type: str, depth: int | None) -> dict[str, Any] | None:
+    """Every row of ``get_nodes(flattened=True)`` below ``node`` (``depth``: its bound), {id: item}; None when the flatten does not open the node."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+    ns = await layer._ns(world)
+    service = KnowledgeHubService(logging.getLogger("kh-flat"), layer._provider, _KhConfig())
+    rows: dict[str, Any] = {}
+    cursor = None
+    for _ in range(100):
+        args = {"user_id": ns.id(viewer), "org_id": ns.org, "parent_id": ns.id(node), "parent_type": parent_type, "limit": 50, "sort_by": "name", "sort_order": "asc",
+                "flattened": True, "depth": depth}
+        page = await service.get_nodes(**args, **({"cursor": cursor} if cursor else {}))
+        if not page.success:
+            return None
+        rows |= {ns.local(i.id): i for i in page.items}
+        cursor = page.pagination.nextCursor
+        if not cursor:
+            return rows
+    raise AssertionError("the flatten did not end")
+
+
+def _hier_children(world, node: str) -> set[str]:
+    return {n.id for n in world.nodes if any(p.id == node and p.rel in HIERARCHY for p in n.parents)}
+
+
+async def _browsed_down(layer: KhPgLayer, world, viewer: str, node: str, parent_type: str, depth: int) -> dict[str, bool] | None:
+    """What browsing down from ``node`` reaches in ``depth`` hops, opening every hierarchy child a browse lists, {id: is a placeholder}; None when the browse does not open ``node``."""
+    first = await browse_pages(layer, world, viewer, node, parent_type, BIG_PAGE)
+    if first is None:
+        return None
+    got: dict[str, bool] = {}
+    frontier = {node: first[0]}
+    for _ in range(depth):
+        nxt = {}
+        for at, items in frontier.items():
+            for item in items:
+                i = (await layer._ns(world)).local(item.id)
+                if i in got or i not in _hier_children(world, at):      # a chain-top a browse places here is no hierarchy child: no flatten lists it (Neo4j, ArangoDB)
+                    continue
+                got[i] = bool(item.isPlaceholder)
+                kind = world.node(i).kind
+                below = await browse_pages(layer, world, viewer, i, "recordGroup" if kind == "group" else "record", BIG_PAGE)
+                nxt[i] = below[0] if below else []
+        frontier = nxt
+    return got
+
+
+def _within(world, app: str, depth: int) -> set[str]:
+    """The nodes within ``depth`` hierarchy hops of the App (through any node, a deleted one too, as Neo4j walks), and the records no hierarchy edge places that belong to it or to
+    a group fewer hops down."""
+    levels = [{app}]
+    for _ in range(depth):
+        levels.append({c for p in levels[-1] for c in _hier_children(world, p)} - set().union(*levels))
+    near = set().union(*levels[1:])
+    shorter = {app, *(i for i in set().union(*levels[:-1]) if world.node(i).kind == "group")}
+    placed = {n.id for n in world.nodes if any(p.rel in HIERARCHY and any(m.id == p.id for m in world.nodes) for p in n.parents)}
+    unplaced = {n.id for n in world.nodes if n.kind == "record" and n.id not in placed and set(n.belongs) & shorter}
+    return near | unplaced
+
+
+async def test_a_flatten_below_a_node_or_with_a_depth_lists_what_browsing_down_reaches(kh_layer) -> None:
+    """A flatten from a record group or a folder lists the rows browsing down from it reaches within the depth, each a hierarchy child the viewer may open (Neo4j's and
+    ArangoDB's walk from the start), and refuses a start the browse refuses. From the App, a depth keeps the flatten's rows within that many hops (and the records the hierarchy
+    does not place, one below their group). The same from kg and from the walk."""
+    worlds = [*KH_WORLDS, *dict.fromkeys(s.final_world() for s in load_all())][:40]
+    bad: list[str] = []
+    asked = opened = 0
+    for start in range(0, len(worlds), CHUNK):
+        chunk = worlds[start:start + CHUNK]
+        await kh_layer.preload(chunk)
+        for w_i, world in enumerate(chunk):
+            ns = await kh_layer._ns(world)
+            with bind(OrgContext(ns.org, None, "job", "job:test", "t")):
+                try:
+                    for viewer in world.users()[:2]:
+                        starts = [n for n in world.nodes if n.kind != "app" and _hier_children(world, n.id)][:6]
+                        for n in starts:
+                            ptype = "recordGroup" if n.kind == "group" else "record"
+                            for depth in (1, 2, 50):
+                                want = await _browsed_down(kh_layer, world, viewer, n.id, ptype, depth)
+                                got = await _flat_pages(kh_layer, world, viewer, n.id, ptype, depth)
+                                asked += 1
+                                opened += got is not None
+                                want_rows = None if want is None else {i for i, stub in want.items() if not stub}
+                                if (got is None) != (want is None) or (got is not None and set(got) != want_rows):
+                                    bad.append(f"{start + w_i} {viewer} below {n.id} depth {depth}: flatten {None if got is None else sorted(got)} browse {want_rows and sorted(want_rows)}")
+                        whole = {r["id"] for r in (await listing(kh_layer, world, viewer)).rows}
+                        for app in (n for n in world.nodes if n.kind == "app"):
+                            opens = await browse_pages(kh_layer, world, viewer, app.id, "app", BIG_PAGE) is not None      # the flatten opens exactly the Apps a browse opens
+                            for depth in (1, 2):
+                                got = await _flat_pages(kh_layer, world, viewer, app.id, "app", depth)
+                                want_rows = {i for i in whole if world.node(i).connector == app.id} & _within(world, app.id, depth)
+                                asked += 1
+                                opened += got is not None
+                                if (got is not None) != opens or (got is not None and set(got) != want_rows):
+                                    bad.append(f"{start + w_i} {viewer} app {app.id} depth {depth}: flatten {None if got is None else sorted(got)} want {sorted(want_rows) if opens else None}")
+                except KnowledgeHubListingNotReady:
+                    kh_layer.not_ready += 1
+        await kh_layer.release(chunk)
+    print(f"{kh_layer.name}: {asked} flattens asked, {opened} opened their start")
+    assert asked and not bad, f"{kh_layer.name}\n" + "\n".join(bad[:30])
+    assert opened * 2 >= asked, f"{kh_layer.name}: only {opened} of {asked} flattens opened their start: the comparison proves little"
 
 
 async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(kh_layer) -> None:

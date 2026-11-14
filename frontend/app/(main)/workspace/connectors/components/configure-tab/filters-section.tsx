@@ -28,6 +28,11 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import type { FilterSchemaField } from '../../types';
 import { isMeaningfulFilterRow } from '../../utils/sync-filter-save-guards';
+import {
+  FOLDER_PATH_PROBLEM_KEYS,
+  folderPathProblems,
+  looksLikeAFileType,
+} from '../../utils/folder-path-rules';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
@@ -944,13 +949,48 @@ function tagItemsFromIds(ids: string[]): TagItem[] {
 // Folder paths may contain spaces and commas, so they can't be split on them.
 const FREE_TEXT_FILTER_NAMES = new Set(['folder_paths']);
 
+const FOLDER_PATHS_FIELD = 'folder_paths';
+
+/** How the Folders filter of a connector that takes patterns reads them, under its field. */
+function FolderPatternHelp({ field }: { field: FilterSchemaField }) {
+  const { t } = useTranslation();
+  if (field.name !== FOLDER_PATHS_FIELD || !field.folderWildcards) return null;
+  const muted = { color: 'var(--gray-10)', lineHeight: 1.55 };
+  return (
+    <Flex direction="column" gap="1" data-testid="folder-pattern-help">
+      <Text size="1" style={muted}>
+        {t('workspace.connectors.filters.folderPaths.help')}
+      </Text>
+      <Box asChild style={{ margin: 0, paddingInlineStart: 18 }}>
+        <ul>
+          {(['oneLevel', 'anyDepth', 'exclude'] as const).map((example) => (
+            <li key={example}>
+              <Text size="1" style={muted}>
+                {t(`workspace.connectors.filters.folderPaths.examples.${example}`)}
+              </Text>
+            </li>
+          ))}
+        </ul>
+      </Box>
+      <Text size="1" style={muted}>
+        {field.pathStyle === 'windows'
+          ? t('workspace.connectors.filters.folderPaths.caseInsensitive')
+          : t('workspace.connectors.filters.folderPaths.caseSensitive')}
+      </Text>
+    </Flex>
+  );
+}
+
 function ConnectorFilterTagInput({
   field,
   value,
+  operator,
   onValueChange,
 }: {
   field: FilterSchemaField;
   value: unknown;
+  /** The row's operator, which some folder checks depend on (Exclude of the whole store). */
+  operator?: string;
   onValueChange: (v: unknown) => void;
 }) {
   const { t } = useTranslation();
@@ -980,13 +1020,39 @@ function ConnectorFilterTagInput({
     onValueChange(next.map((t) => t.value));
   };
 
+  // Only a value typed in this panel is checked: one saved before (its id is its value) keeps
+  // syncing as it did, and the server never refuses a save that keeps it.
+  const checksFolders = field.name === FOLDER_PATHS_FIELD;
+  const problemOf = (tag: TagItem) =>
+    checksFolders && tag.id !== tag.value
+      ? folderPathProblems(tag.value, {
+          exclude: operator === 'not_in',
+          pathStyle: field.pathStyle,
+          wildcards: field.folderWildcards,
+        })[0]
+      : undefined;
+  const shown = checksFolders ? tags.map((tag) => ({ ...tag, isValid: problemOf(tag) === undefined })) : tags;
+  const firstBad = shown.find((tag) => tag.isValid === false);
+  const firstProblem = firstBad ? problemOf(firstBad) : undefined;
+  const error = firstBad && firstProblem ? t(FOLDER_PATH_PROBLEM_KEYS[firstProblem], { value: firstBad.value }) : undefined;
+  const fileTypeHint =
+    checksFolders && field.folderWildcards && tags.some((tag) => tag.id !== tag.value && looksLikeAFileType(tag.value));
+
   return (
-    <TagInput
-      tags={tags}
-      onTagsChange={handleTagsChange}
-      placeholder={t('workspace.connectors.filters.addFieldValue', { field: field.displayName })}
-      freeText={FREE_TEXT_FILTER_NAMES.has(field.name)}
-    />
+    <Flex direction="column" gap="1">
+      <TagInput
+        tags={shown}
+        onTagsChange={handleTagsChange}
+        placeholder={t('workspace.connectors.filters.addFieldValue', { field: field.displayName })}
+        freeText={FREE_TEXT_FILTER_NAMES.has(field.name)}
+        error={error}
+      />
+      {fileTypeHint && !error ? (
+        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          {t('workspace.connectors.filters.folderPaths.notFiles')}
+        </Text>
+      ) : null}
+    </Flex>
   );
 }
 
@@ -1713,6 +1779,7 @@ function FilterFieldRow({
             {field.description}
           </Text>
         ) : null}
+        <FolderPatternHelp field={field} />
 
         <Box
           style={{
@@ -1798,6 +1865,7 @@ function FilterFieldRow({
               <ConnectorFilterTagInput
                 field={field}
                 value={row.value}
+                operator={row.operator}
                 onValueChange={(v) => commit({ ...row, value: v })}
               />
             ) : listLike ? (

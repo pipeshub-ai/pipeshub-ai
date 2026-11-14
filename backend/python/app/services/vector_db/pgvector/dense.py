@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from app.core.db import DbError, DbTimeout
+from app.core.db import DbError, DbTimeout, PoolTimeout
 from app.core.org_context import spawn_in_request
 from app.services.vector_db.pgvector.errors import PgVectorError
 from app.telemetry.modules import pgvector_search_metrics as telemetry
@@ -235,6 +235,10 @@ _UNCONNECTED = """/* pipeshub:pgvector.unconnected */
         SELECT EXISTS (SELECT 1 FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2
           AND NOT EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2
                             AND m.group_key = p.group_key AND m.kind = 1))"""
+# the connector check's own statement budget, lowered to it but never raised above the unit's (which carries the org's limit)
+_CHECK_BUDGET = """/* pipeshub:pgvector.connector_budget */
+        SELECT set_config('statement_timeout', least($1::bigint,
+          coalesce(nullif((extract(epoch FROM current_setting('statement_timeout')::interval) * 1000)::bigint, 0), $1::bigint))::text, true)"""
 _SLOT_BASE = {"h": 0, "e0": 10_000, "bg": 20_000}      # bg: the recall sampler and the quantisation check, a pool of their own
 
 
@@ -343,22 +347,29 @@ class Sizer:
 
         That is safe only when there is at least one connector, there are not more than ``_MAX_CONNECTORS`` (found by hopping
         through the index) and **every point's group has a connector row**: a point without one is admitted by no connector, so a
-        user's other arms (record groups, direct records) are the only way to it. The check is bounded by a short timeout; on a
-        timeout or any database error there is no elimination (the arms are applied). The answer is reused for a short time, so a
-        connector created inside the window is not yet in it: the arms are then dropped for a user who may not read it, for at most
+        user's other arms (record groups, direct records) are the only way to it. The check runs beside the searches, never in front
+        of them: until its answer is in, and while an expired one is checked again, the answer is None and the arms are applied. On
+        a timeout or any database error there is no elimination either. The answer is reused for a short time, so a connector
+        created inside the window is not yet in it: the arms are then dropped for a user who may not read it, for at most
         ``connector_ttl_s``."""
         key = (org, collection_id)
         hit = self._connectors.get(key)
-        if hit is None or hit[0] < time.monotonic():
-            task = self._connectors_inflight.get(key)
-            if task is None:          # one check for the callers that miss together; it can scan every point of the org
-                task = self._connectors_inflight[key] = spawn_in_request(self._check_connectors(org, collection_id), name="pgvector-connectors")
-                task.add_done_callback(lambda t: (self._connectors_inflight.pop(key, None), t.cancelled() or t.exception()))
-            return await asyncio.shield(task)
-        return hit[1]
+        if hit is not None and hit[0] >= time.monotonic():
+            return hit[1]
+        if key not in self._connectors_inflight:          # one check for the callers that miss together; it can scan every point of the org
+            task = self._connectors_inflight[key] = spawn_in_request(self._check_connectors(org, collection_id), name="pgvector-connectors")
+            task.add_done_callback(lambda t: (self._connectors_inflight.pop(key, None), t.cancelled() or t.exception()))
+        return None
+
+    def close(self) -> None:
+        for task in list(self._connectors_inflight.values()):
+            task.cancel()
 
     async def _check_connectors(self, org: str, collection_id: int) -> frozenset[str] | None:
         async def read(tx: Tx) -> frozenset[str] | None:
+            # The budget is the statements' own (never above the unit's, which carries the org's limit): a wait for a pooled connection
+            # says the database is busy, not that the org is too big to check.
+            await tx.fetchval(_CHECK_BUDGET, self._t.connector_check_ms)
             found = [r["member_id"] for r in await tx.fetch(_CONNECTORS, org, collection_id, _MAX_CONNECTORS + 1)]
             if not found or len(found) > _MAX_CONNECTORS:
                 return None
@@ -368,10 +379,12 @@ class Sizer:
 
         ttl = self._t.connector_ttl_s
         try:
-            value = await self._db.run(read, custom_plan=True, timeout_ms=self._t.connector_check_ms)
+            value = await self._db.run(read, custom_plan=True)
+        except PoolTimeout:
+            value = None                                       # busy, not big: ask again after connector_ttl_s, the arms apply meanwhile
         except DbError:
-            # Too big to check inside the budget (or the database is busy): keep the arms applied and do not look again soon, so a
-            # large org never pays for a scan of its points every connector_ttl_s.
+            # Too big to check inside the budget: keep the arms applied and do not look again soon, so a large org never pays for a
+            # scan of its points every connector_ttl_s.
             value, ttl = None, self._t.connector_fail_ttl_s
         self._connectors[(org, collection_id)] = (time.monotonic() + ttl, value)
         return value

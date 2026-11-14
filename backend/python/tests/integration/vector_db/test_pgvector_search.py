@@ -25,6 +25,7 @@ from app.services.vector_db.pgvector.errors import (
     SpaceMismatch,
 )
 from app.services.vector_db.pgvector.pgvector import PgVectorService
+from app.services.vector_db.pgvector.scope import org_scope
 from tests.integration.db.conftest import cluster, env  # noqa: F401  (fixtures)
 
 if TYPE_CHECKING:
@@ -106,6 +107,34 @@ async def test_membership_filters_select_and_an_empty_accessible_list_finds_noth
     kind = FilterExpression(must=[FieldCondition(key="metadata.orgId", value=A), FieldCondition(key="metadata.blockId", value="b2")])
     [hits] = await store.query_nearest_points("records", [HybridSearchRequest(dense_query=Q, filter=kind, limit=10)])
     assert [h.id for h in hits] == [pid(A, 2)]                                                           # a condition on a point column
+
+
+async def test_the_all_connectors_check_answers_beside_the_search_within_its_own_budget_and_under_the_orgs_limit(store) -> None:
+    """The check runs beside the searches: an all-connectors user is served with the arms until it answers, then without them, with
+    the same points. Its budget is set in the unit of work and never above the unit's own timeout (which carries the org's limit)."""
+    import asyncio
+
+    await store.upsert_points("records", [point(A, 1, conn=["c1"]), point(A, 2, conn=["c2"]), point(A, 3, conn=["c1", "c2"])])
+    every = {"connectorIds": ["c1", "c2"]}
+    [first] = await store.query_nearest_points("records", [req(A, should=every, limit=10)])
+    coll = (await store._catalog.require_collection("records")).collection_id
+    for _ in range(100):
+        with org_scope(A):
+            found = await store._sizer.connectors(A, coll)
+        if found is not None:
+            break
+        await asyncio.sleep(0.05)
+    assert found == frozenset({"c1", "c2"})                                              # the check finished: not timed out, not refused
+    [after] = await store.query_nearest_points("records", [req(A, should=every, limit=10)])
+    assert [h.id for h in first] == [h.id for h in after] == [pid(A, n) for n in (1, 2, 3)]
+
+    async def budget(tx) -> str:
+        await tx.fetchval(dense._CHECK_BUDGET, 150)
+        return await tx.fetchval("SELECT current_setting('statement_timeout')")
+    with org_scope(A):
+        assert await store._db.run(budget) == "150ms"
+        lower = await store._db.run(budget, timeout_ms=40)
+    assert lower.endswith("ms") and int(lower[:-2]) <= 40                                   # a unit's own lower limit is kept
 
 
 async def test_deleted_points_are_not_found_and_the_refusals(store) -> None:

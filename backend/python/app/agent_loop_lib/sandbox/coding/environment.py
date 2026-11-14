@@ -153,11 +153,11 @@ class EnvironmentManager:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr_bytes = await proc.communicate()
+        stdout_bytes, stderr_bytes = await proc.communicate()
         if proc.returncode != 0:
-            raise EnvironmentSetupError(
-                f"failed to create python venv: {stderr_bytes.decode(errors='replace')}"
-            )
+            # Debian's venv explains a missing ensurepip (python3-venv) on stdout, leaving stderr empty
+            detail = (stderr_bytes + stdout_bytes).decode(errors="replace").strip()
+            raise EnvironmentSetupError(f"failed to create python venv: {detail}")
         self._venv_initialized = True
 
     async def install_packages(
