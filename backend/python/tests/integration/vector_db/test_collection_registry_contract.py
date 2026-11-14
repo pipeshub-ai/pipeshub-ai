@@ -11,7 +11,7 @@ Requires: docker compose -f tests/integration/compose/vector-db.yml up -d
 Run: pytest tests/integration/vector_db/test_collection_registry_contract.py -m integration --timeout=120
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -22,29 +22,13 @@ from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import RecordContext
 from tests.integration.vector_db.conftest import make_collection
 from tests.integration.vector_db.helpers import DIM, make_dense, sample_points, wait_for
+from tests.support.vector_db import make_config_service
 
 # loop_scope matches the module-scoped provider fixtures in conftest.
 # Without it each test gets its own loop and the shared client raises
 # "Event loop is closed" on first use.
 # The OpenSearch search test waits up to 45s for an index refresh, past the 30s default.
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module"), pytest.mark.timeout(120)]
-
-
-def _make_config_service():
-    """In-memory fake ConfigurationService — the manifest just needs to
-    round-trip through get_config/set_config, not touch a real KV store."""
-    store: dict = {}
-
-    async def get_config(key, default=None, raise_on_error=False):
-        return store.get(key, default)
-
-    async def set_config(key, value):
-        store[key] = value
-
-    svc = MagicMock()
-    svc.get_config = AsyncMock(side_effect=get_config)
-    svc.set_config = AsyncMock(side_effect=set_config)
-    return svc
 
 
 def _make_registry(vector_db_service) -> CollectionRegistry:
@@ -54,7 +38,7 @@ def _make_registry(vector_db_service) -> CollectionRegistry:
         collection_config_factory=lambda size: CollectionConfig(
             embedding_size=size
         ),
-        manifest_store=CollectionManifestStore(_make_config_service(), MagicMock()),
+        manifest_store=CollectionManifestStore(make_config_service(), MagicMock()),
         logger=MagicMock(),
     )
 

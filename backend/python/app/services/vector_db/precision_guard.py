@@ -232,12 +232,11 @@ class PrecisionGuard:
             except Exception as exc:
                 raise PrecisionUnreadable(f"could not claim the precision of '{collection}': {type(exc).__name__}") from exc
             standing = Standing(pin.precision, "pin")
-        elif standing.source in ("derived", "legacy"):
-            if standing.source == "derived":
-                try:
-                    await self.restore(collection, org, standing.precision)
-                except Exception:
-                    self._logger.warning("could not restore the precision pin of '%s'", collection, exc_info=True)
+        elif standing.source == "derived":
+            try:
+                await self.restore(collection, org, standing.precision)
+            except Exception:
+                self._logger.warning("could not restore the precision pin of '%s'", collection, exc_info=True)
         if standing.precision != precision:
             raise PrecisionFlip(
                 f"collection '{collection}' holds {standing.precision} vectors and the embedding server now produces {precision}; "
