@@ -4776,18 +4776,26 @@ class JiraConnector(BaseConnector):
           ``on_new_records`` skips records ``_process_record`` left COMPLETED. Their edges
           are still rebuilt either way, because both call ``_process_record``.
         """
-        # Sort records: parentless issues (Initiative / Epic roots) before children, and files and
-        # comments after every issue, so each is written after the issue it belongs to.
+        # Sort records: parentless issues (Initiative / Epic roots) before children
         sorted_records = sorted(
             records_with_permissions,
-            key=lambda x: (isinstance(x[0], (FileRecord, CommentRecord)), x[0].parent_external_record_id is not None,
-                           x[0].parent_external_record_id or "")
+            key=lambda x: (x[0].parent_external_record_id is not None, x[0].parent_external_record_id or "")
         )
+        # Files and comments are written after every issue, in batches of their own: they name their
+        # issue's id, which writing the issue may change (to that of a stub another record left for it).
+        dependent = (FileRecord, CommentRecord)
+        issues = {r.external_record_id: r for r, _, _ in sorted_records if not isinstance(r, dependent)}
+        tickets = [x for x in sorted_records if not isinstance(x[0], dependent)]
+        dependents = [x for x in sorted_records if isinstance(x[0], dependent)]
 
         batch_size = BATCH_PROCESSING_SIZE
+        batches = [tickets[i:i + batch_size] for i in range(0, len(tickets), batch_size)]
+        batches += [dependents[i:i + batch_size] for i in range(0, len(dependents), batch_size)]
 
-        for i in range(0, len(sorted_records), batch_size):
-            batch = sorted_records[i:i + batch_size]
+        for batch_number, batch in enumerate(batches, 1):
+            for record, _, _ in batch:
+                if isinstance(record, dependent) and record.parent_external_record_id in issues:
+                    record.parent_node_id = issues[record.parent_external_record_id].id
 
             # Single pass so the parent-before-child sort above survives into the batch
             # handed to on_new_records.
@@ -4824,7 +4832,7 @@ class JiraConnector(BaseConnector):
             issues_count = sum(1 for r, _, _ in batch if isinstance(r, TicketRecord))
             files_count = sum(1 for r, _, _ in batch if isinstance(r, FileRecord))
             self.logger.info(
-                f"📦 Batch {i//batch_size + 1}: {issues_count} issues, "
+                f"📦 Batch {batch_number}: {issues_count} issues, "
                 f"{files_count} attachments ({new_count} new, "
                 f"{len(changed_records)} updated, {edge_rebuild_count} edge-rebuild)"
             )

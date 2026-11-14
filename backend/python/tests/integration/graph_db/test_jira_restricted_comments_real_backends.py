@@ -152,3 +152,4 @@ async def test_deleting_an_issue_deletes_its_comment_records(world: dict[str, An
     stored = await world["processor"].get_record_by_external_id(connector_id=world["connector_id"], external_record_id="1")
     await world["connector"]._delete_issue_record(stored, "PROJ-1")
     assert not await _comment_ids(world)
+

@@ -192,16 +192,25 @@ async def test_a_personal_connector_writes_no_comment_record() -> None:
     assert not [r for r, _, _ in records if isinstance(r, CommentRecord)]
 
 
-async def test_a_comment_record_is_written_after_its_issue_even_when_it_sorts_first() -> None:
+async def test_a_comment_record_names_the_id_its_issue_was_written_under() -> None:
+    """Writing an issue another record left a stub for keeps the stub's id; the comment written after
+    it names that id, not the one the issue was built with, even when it sorts before its issue."""
     connector = _connector()
-    connector.data_entities_processor.on_new_records = AsyncMock()
-    subtask = TicketRecord(id="t-9", org_id="org-1", record_name="s", record_type=RecordType.TICKET, external_record_id="9",
-                           version=0, connector_id="conn-1", mime_type="text/html", parent_external_record_id="500", **SOURCE)
+    calls: list[list[tuple[str, str | None]]] = []
+
+    async def write(pairs: list) -> None:
+        calls.append([(r.id, getattr(r, "parent_node_id", None)) for r, _ in pairs])
+        for r, _ in pairs:
+            if isinstance(r, TicketRecord):
+                r.id = f"stored-{r.external_record_id}"
+
+    connector.data_entities_processor.on_new_records = AsyncMock(side_effect=write)
+    issue = TicketRecord(id="built-9", org_id="org-1", record_name="i", record_type=RecordType.TICKET, external_record_id="9",
+                         version=0, connector_id="conn-1", mime_type="text/html", parent_external_record_id="500", **SOURCE)
     comment = _stored_comment("1", "c-1", 1)
-    comment.parent_external_record_id, comment.version, comment.is_dependent_node = "100", 0, True
-    await connector._process_new_records([(subtask, [], True), (comment, [], True)], "PROJ", {"new_count": 0, "updated_count": 0})
-    written = [r.id for r, _ in connector.data_entities_processor.on_new_records.await_args.args[0]]
-    assert written == ["t-9", "c-1"]
+    comment.parent_external_record_id, comment.version, comment.parent_node_id = "9", 0, "built-9"
+    await connector._process_new_records([(comment, [], True), (issue, [], True)], "PROJ", {"new_count": 0, "updated_count": 0})
+    assert calls == [[("built-9", None)], [("c-1", "stored-9")]]
 
 
 async def test_deleting_an_issue_deletes_its_comment_records() -> None:
