@@ -228,7 +228,7 @@ async def test_each_good_file_passes_the_handler_without_failing(ext: str) -> No
     assert (_MSG_TEXT if ext == "msg" else SENTINEL) in _text(captured)
 
 
-# --------------------------------------------------------------------------- D-16: what main indexed stays
+# --------------------------------------------------------------------------- what main indexed stays
 
 
 @pytest.mark.parametrize("ext", ["log", "cfg"])

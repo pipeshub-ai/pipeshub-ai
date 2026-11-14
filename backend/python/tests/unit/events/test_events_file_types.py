@@ -68,7 +68,7 @@ async def test_the_extension_decides_the_handler_whatever_the_stored_mime(
     ext: str, content: bytes, handler: str, mime: str, record_type: str
 ) -> None:
     if ext in ("log", "cfg") and mime == "text/plain" and record_type == "FILE":
-        handler = "process_txt_document"  # D-16: main read these whole, as text; they still are
+        handler = "process_txt_document"  # main read these whole, as text; they still are
     _, routed = await _dispatch(ext, mime, content, record_type=record_type)
     assert routed == [handler]
 
@@ -76,7 +76,7 @@ async def test_the_extension_decides_the_handler_whatever_the_stored_mime(
 @pytest.mark.parametrize(
     ("ext", "mime", "handler"),
     [
-        # Cells main already read keep main's parser (D-15, D-16).
+        # Cells main already read keep main's parser.
         ("log", "application/json", "process_structured_document"),
         ("docm", "application/pdf", "_dispatch_pdf_binary"),
         ("xlsm", "application/vnd.ms-excel", "process_xls_document"),

@@ -196,7 +196,7 @@ def build_cases() -> list[tuple[str | None, str | None, str, str]]:
     return unique
 
 
-# Extensions whose cells against every mime main already read are pinned too (QA-3): a type the
+# Extensions whose cells against every mime main already read are pinned too: a type the
 # extension decides must not take over a cell main indexed under its mime.
 NEW_EXTENSIONS = ("msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx")
 

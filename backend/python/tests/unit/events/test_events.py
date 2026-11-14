@@ -125,7 +125,7 @@ def _rewrapped(error: Exception) -> Exception:
         return wrapped
 
 
-# Types no dispatch branch routes. The F23 repros (image/pjpeg, application/x-pdf, htm) route
+# Types no dispatch branch routes. The repros of the gate passing what the dispatch refused (image/pjpeg, application/x-pdf, htm) route
 # now that every spelling of an indexable type does; HEIC has a parser but no branch.
 _GATE_ACCEPTS_DISPATCH_REFUSES = [
     (None, "image/heic"),

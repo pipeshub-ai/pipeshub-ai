@@ -1,5 +1,5 @@
 """A new .log/.cfg is stored under a mime the old text path never read, so it takes the capped
-plain-text route; a row already stored as text/plain keeps the text path it had (D-16)."""
+plain-text route; a row already stored as text/plain keeps the text path it had."""
 from __future__ import annotations
 
 from types import SimpleNamespace

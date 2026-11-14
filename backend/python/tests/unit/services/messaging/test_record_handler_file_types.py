@@ -137,7 +137,7 @@ async def test_capped_text_past_the_ceiling_is_refused_before_the_download(ext: 
 
 @pytest.mark.parametrize("ext", ["log", "cfg"])
 async def test_a_text_plain_log_main_indexed_has_no_new_ceiling(ext: str) -> None:
-    """D-16: main took a .log stored as text/plain whatever its size; it still does."""
+    """Main took a .log stored as text/plain whatever its size; it still does."""
     record = _record(ext, sizeInBytes=file_types.TEXT_MAX_DOWNLOAD_BYTES + 1)
     assert await _gate_with(gen._gate_handler(record), record, ext, "text/plain") == "ok"
 

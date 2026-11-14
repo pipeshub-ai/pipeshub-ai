@@ -41,7 +41,7 @@ _NEW_MIMES = (
 )
 _TEMPLATE_MIMES = _NEW_MIMES[-2:]
 _TEXT_MIMES = ("text/x-log", "text/x-cfg")
-# What each list gains: the new types (D1, D7), the code grammars (D5), the xlsm hint (D8).
+# What each list gains: the new types, the code grammars, the xlsm hint.
 _ADDED: dict[str, object] = {
     "gate_mimes": (*_NEW_MIMES, *_TEXT_MIMES),
     "gate_extensions": (*_NEW, *_GRAMMARS),
@@ -107,7 +107,7 @@ def test_a_derived_list_equals_the_list_it_replaced(pinned: str, derived: Callab
 
 
 def _main_value_for_spelling(table: dict[str, str], mime: str) -> str | None:
-    """Main's value for *mime*, or for the canonical spelling of the type it spells (D2, D3)."""
+    """Main's value for *mime*, or for the canonical spelling of the type it spells."""
     ft = file_types._ROUTED_MIMES.get(mime)
     return table.get(mime) or (table.get(ft.mimes[0].lower()) if ft is not None else None)
 

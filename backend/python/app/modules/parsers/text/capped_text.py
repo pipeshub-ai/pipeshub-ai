@@ -18,9 +18,8 @@ TEXT_LOG_MAX_BYTES = env_int("TEXT_LOG_MAX_BYTES", 5 * 1024 * 1024)
 _SNIFF_BYTES = 8 * 1024
 _CHARSET_SAMPLE_BYTES = 64 * 1024
 _NEWLINE_SEARCH_BYTES = 64 * 1024
-_UTF16_NUL_SHARE = 0.9
-_UTF16_MIXED_NUL_SHARE = 0.3
 _UTF16_PRINTABLE_SHARE = 0.95
+_UTF16_MAX_LINE = 400
 _CHARDET_MIN_CONFIDENCE = 0.8
 _CHARDET_FALLBACK_CONFIDENCE = 0.5
 _BOMS = (
@@ -60,30 +59,20 @@ def _decodes(sample: bytes, codec: str) -> bool:
 
 
 def _utf16_without_bom(sample: bytes) -> str | None:
-    """'utf-16-le' or 'utf-16-be' when the sample reads as UTF-16 text without a byte-order mark.
+    """'utf-16-le' or 'utf-16-be' when a sample holding NUL bytes reads as UTF-16 text.
 
-    Nearly every byte of one parity is NUL (ASCII-range characters) and nearly none of the other
-    is, and the whole sample decodes. A NUL-padded binary has NULs at both parities.
+    Decoded, not guessed from where its NULs sit: text of any script (Cyrillic, CJK, emoji) decodes
+    strictly and is almost all printable, a binary does neither. The byte order whose NULs fall on
+    the high bytes of ASCII is tried first.
     """
     pairs = len(sample) // 2
-    if pairs == 0:
+    if pairs == 0 or b"\x00" not in sample:
         return None
-    odd_nul = sample[1:pairs * 2:2].count(0)
-    even_nul = sample[0:pairs * 2:2].count(0)
     sample = sample[:pairs * 2]
-    if odd_nul >= _UTF16_NUL_SHARE * pairs and even_nul <= (1 - _UTF16_NUL_SHARE) * pairs:
-        return "utf-16-le" if _decodes(sample, "utf-16-le") else None
-    if even_nul >= _UTF16_NUL_SHARE * pairs and odd_nul <= (1 - _UTF16_NUL_SHARE) * pairs:
-        return "utf-16-be" if _decodes(sample, "utf-16-be") else None
-    # Text with letters outside ASCII (CJK, Cyrillic) leaves NULs only where its ASCII is: fewer
-    # at one parity, still almost none at the other. It must then read as printable text.
-    if odd_nul >= _UTF16_MIXED_NUL_SHARE * pairs and even_nul <= (1 - _UTF16_NUL_SHARE) * pairs:
-        codec = "utf-16-le"
-    elif even_nul >= _UTF16_MIXED_NUL_SHARE * pairs and odd_nul <= (1 - _UTF16_NUL_SHARE) * pairs:
-        codec = "utf-16-be"
-    else:
-        return None
-    return codec if _reads_as_text(sample, codec) else None
+    odd_nul = sample[1::2].count(0)
+    even_nul = sample[0::2].count(0)
+    order = ("utf-16-le", "utf-16-be") if odd_nul >= even_nul else ("utf-16-be", "utf-16-le")
+    return next((codec for codec in order if _reads_as_text(sample, codec)), None)
 
 
 def _reads_as_text(sample: bytes, codec: str) -> bool:
@@ -94,7 +83,9 @@ def _reads_as_text(sample: bytes, codec: str) -> bool:
     if not text:
         return False
     printable = sum(1 for c in text if c.isprintable() or c in "\r\n\t")
-    return printable >= _UTF16_PRINTABLE_SHARE * len(text)
+    # ASCII-heavy binary read as UTF-16 also looks printable (as CJK); text has lines.
+    breaks = sum(1 for c in text if c in "\n\r")
+    return printable >= _UTF16_PRINTABLE_SHARE * len(text) and breaks >= max(1, len(text) // _UTF16_MAX_LINE)
 
 
 def _codec(content: bytes) -> tuple[str | None, int]:

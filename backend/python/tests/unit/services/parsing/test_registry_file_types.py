@@ -41,7 +41,7 @@ _EXPECTED = {
 @pytest.mark.parametrize("ext", sorted(_EXPECTED))
 def test_each_extension_resolves_whatever_mime_comes_with_it(registry, ext: str, provider) -> None:  # type: ignore[no-untyped-def]
     cls, _ = _EXPECTED[ext]
-    # A .log/.cfg stored as text/plain keeps main's text parser (D-16), pinned below.
+    # A .log/.cfg stored as text/plain keeps main's text parser (pinned below).
     mimes = ("application/octet-stream", "", None) if ext in ("log", "cfg") else (
         "application/octet-stream", "text/plain", "", None)
     for mime in mimes:

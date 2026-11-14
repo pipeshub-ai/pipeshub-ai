@@ -2815,7 +2815,9 @@ class DataSourceEntitiesProcessor:
             stored_mime = (
                 same_id.get("mimeType") if isinstance(same_id, dict) else getattr(same_id, "mime_type", None)
             )
-            record.mime_type = file_types.mime_to_store(record.mime_type, record.record_name, stored_mime)
+            record.mime_type = file_types.mime_to_store(
+                record.mime_type, record.record_name, stored_mime, existing=same_id is not None
+            )
         restored_from_trash = reindex_restored = False
         if existing_record is not None and not is_live_record(existing_record):
             # A user's delete holds until the purge even though the source still
@@ -3532,13 +3534,14 @@ class DataSourceEntitiesProcessor:
     def _keep_the_stored_text_mime(new_record: Record, old_record: Record) -> None:
         """The mime to save for a file already stored (file_types.mime_to_store).
 
-        A .log/.cfg stored as text/plain keeps it and the text reader it had (D-16); one stored
+        A .log/.cfg stored as text/plain keeps it and the text reader it had; one stored
         under its own mime keeps that when its connector sends text/plain again.
         """
         new_record.mime_type = file_types.mime_to_store(
             getattr(new_record, "mime_type", None),
             getattr(new_record, "record_name", None),
             getattr(old_record, "mime_type", None),
+            existing=True,
         )
 
     @staticmethod

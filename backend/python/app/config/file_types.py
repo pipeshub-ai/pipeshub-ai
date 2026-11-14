@@ -888,6 +888,14 @@ def _new_type_wins(ft: FileType, mime_type: object, *, is_code_file_record: bool
 _KIND_BY_EXTENSION_BEFORE: Final = frozenset({"xlsm"})
 
 
+def reads_as_source(mime_type: object, extension: object) -> bool:
+    """Whether the dispatch reads a file as source code from its mime or extension (the record
+    type adds more: a repository's text/plain files)."""
+    return (isinstance(mime_type, str) and mime_type in CODE_MIMES) or (
+        isinstance(extension, str) and normalize_extension(extension) in GRAMMAR_EXTENSIONS
+    )
+
+
 def _extension_decides(ft: FileType, mime_type: object) -> bool:
     return not ft.ext_wins or _new_type_wins(ft, mime_type)
 
@@ -1142,7 +1150,8 @@ def gate_decision(
         supported = ext_ok or by_mime is not None
         # The refusals below are for the reader the dispatch will pick, not for either label alone.
         dispatch = legacy_route(
-            mime, extension, code_extension=extension, reads_as_code_file=False,  # type: ignore[arg-type]
+            mime, extension, code_extension=extension,  # type: ignore[arg-type]
+            reads_as_code_file=reads_as_source(mime, extension),
         )
         if dispatch is not None and dispatch.file_type is not None:
             decisive = dispatch.file_type
@@ -1200,10 +1209,22 @@ def stored_mime_for_new_file(mime_type: str | None, name: str | None) -> str | N
     return mime_type
 
 
-def mime_to_store(incoming: str | None, name: str | None, stored: str | None) -> str | None:
-    """The mime a save writes: the new-file rule, except that a legacy text/plain row keeps it."""
+def mime_to_store(incoming: str | None, name: str | None, stored: str | None, *, existing: bool) -> str | None:
+    """The mime a save writes.
+
+    A new file gets the new-file rule. A stored row keeps the mime its connector sends, as it always
+    did, with two exceptions: a row already under its type's own mime keeps it when the connector
+    sends text/plain or no mime again, and a .log/.cfg stored as text/plain keeps text/plain. So a
+    row that was not indexed before keeps its mime, and only the re-queue migration brings it back.
+    """
     own = stored_mime_for_new_file(incoming, name)
-    return stored if stored is not None and keeps_stored_mime(stored, own, name) else own
+    if not existing:
+        return own
+    if stored is not None and own != incoming and stored == own:
+        return stored
+    if keeps_stored_mime(stored, own, name):
+        return stored
+    return incoming
 
 
 def keeps_stored_mime(stored_mime: str | None, new_mime: str | None, name: str | None) -> bool:

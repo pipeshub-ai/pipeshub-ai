@@ -1,6 +1,6 @@
 """Every connector's new .log/.cfg is saved under its own mime, whatever mime the connector sent
 (a desktop stamp, a guess_type text/plain, octet-stream), so it is read as capped text; a row
-already stored as text/plain keeps it (D-16)."""
+already stored as text/plain keeps it."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
@@ -98,3 +98,21 @@ def test_the_move_path_keeps_the_mime_a_row_already_has() -> None:
     new = SimpleNamespace(mime_type="text/plain", record_name="b.log")
     DataSourceEntitiesProcessor._keep_the_stored_text_mime(new, SimpleNamespace(mime_type="text/x-log"))
     assert new.mime_type == "text/x-log"
+
+
+@pytest.mark.parametrize("ext", ["log", "cfg"])
+@pytest.mark.parametrize("stored", ["application/octet-stream", None])
+def test_a_row_stored_before_without_its_own_mime_keeps_what_its_connector_sends(ext: str, stored: str | None) -> None:
+    """Such a row was not indexed (unsupported); an ordinary sync must not re-queue it by changing
+    its mime: only the re-queue migration, with its own controls, brings it back."""
+    from types import SimpleNamespace
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+
+    new = SimpleNamespace(mime_type=stored, record_name=f"a.{ext}", external_revision_id="r1", is_file=True)
+    old = SimpleNamespace(mime_type=stored, record_name=f"a.{ext}", external_revision_id="r1", is_file=True)
+    DataSourceEntitiesProcessor._keep_the_stored_text_mime(new, old)
+    assert new.mime_type == stored
+    assert not DataSourceEntitiesProcessor._content_changed(new, old)  # type: ignore[arg-type]

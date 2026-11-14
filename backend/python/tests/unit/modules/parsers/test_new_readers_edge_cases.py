@@ -1,4 +1,4 @@
-"""Review round 1 on the new parsers: surrogate pairs and font code pages in mail RTF, damaged
+"""The new readers on edge input: surrogate pairs and font code pages in mail RTF, damaged
 DEFLATE data in zip members, UTF-16 text outside ASCII, and long unbroken lines."""
 from __future__ import annotations
 
@@ -143,3 +143,30 @@ def test_a_long_unbroken_line_is_split_in_linear_time() -> None:
     assert time.perf_counter() - started < 1.0
     assert sum(len(p) for p in parts) == size
     assert sum(len(b.data) for b in plain_text_to_blocks("x" * 100_000).blocks) == 100_000
+
+
+@pytest.mark.parametrize("text", ["имя=Иван\n" * 100, "日本語のログ行\n" * 200, "x=\U0001f600\n" * 100])
+@pytest.mark.parametrize("codec", ["utf-16-le", "utf-16-be"])
+def test_utf16_text_in_any_script_is_text(text: str, codec: str) -> None:
+    from app.modules.parsers.text.capped_text import CappedText, prepare_capped_text
+
+    result = prepare_capped_text(text.encode(codec))
+    assert isinstance(result, CappedText)
+    assert result.text == text
+
+
+def test_no_binary_on_this_host_reads_as_text() -> None:
+    from pathlib import Path
+
+    from app.modules.parsers.text.capped_text import BinaryFile, prepare_capped_text
+
+    paths = [p for d in ("/bin", "/usr/bin", "/usr/lib") for p in sorted(Path(d).glob("*"))[:150] if p.is_file()]
+    misread = []
+    for path in paths:
+        try:
+            head = path.read_bytes()[:64 * 1024]
+        except OSError:
+            continue
+        if b"\x00" in head[:8192] and not isinstance(prepare_capped_text(head), BinaryFile):
+            misread.append(str(path))
+    assert misread == []

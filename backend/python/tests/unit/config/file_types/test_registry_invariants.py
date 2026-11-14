@@ -16,7 +16,7 @@ from tests.unit.config.file_types.allowed_deltas import ALLOWED_DELTAS
 _APP = Path(__file__).resolve().parents[4] / "app"
 _TYPES = file_types.FILE_TYPES
 
-# Indexable types the legacy dispatch has no branch for (once htm, F23).
+# Indexable types the legacy dispatch has no branch for (htm had none once).
 _INDEXABLE_WITHOUT_ROUTE: set[str] = set()
 
 # The legacy handler each route reaches, as the black-box snapshot records it.
