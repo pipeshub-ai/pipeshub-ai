@@ -57,6 +57,35 @@
 
 PipesHub는 문서, 대화, 정형 데이터, 위키, 티켓, 코드를 아우르는 **통합 컨텍스트 레이어**를 구축합니다. 커넥터는 각 소스를 권한 정보와 함께 동기화합니다. 인덱싱 파이프라인은 콘텐츠를 파싱하고 청크로 나누어 임베딩하며, 레코드·사람·엔터티를 지식 그래프로 연결합니다.
 
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
 질문에 대한 답은 한 번의 "검색 후 생성"이 아니라 **에이전트 루프**가 만듭니다. 에이전트는 계획을 세우고, 도구를 호출하고, 결과를 읽으며, 근거를 확보할 때까지 계속합니다:
 
 - **하이브리드 검색** — 시맨틱 검색과 키워드 검색을 결합해 의미와 정확한 용어를 모두 찾습니다.
@@ -66,6 +95,14 @@ PipesHub는 문서, 대화, 정형 데이터, 위키, 티켓, 코드를 아우�
 
 모든 도구 호출은 질문한 사용자의 권한으로 필터링되며, 모든 답변은 근거가 된 블록을 인용합니다.
 
+
+| | Top-k 청크 RAG | PipesHub |
+| --- | --- | --- |
+| **에이전트가 먼저 보는 것** | 텍스트 청크 몇 개 | 각 레코드의 이름, 위치, 메타데이터, 요약, 그리고 일치한 블록 |
+| **더 깊이 파고드는 방법** | 불가능: 질문당 검색 한 번 | 하이브리드 검색, 레코드 대상 `grep`/`find`, 폴더 탐색, 지식 그래프 조회를 반복 실행 |
+| **구조** | 청킹 과정에서 손실 | 모든 소스가 Blocks로 변환: 섹션, 행과 셀이 있는 표, 스레드, 코드, 스키마를 포함한 SQL 테이블 |
+| **권한** | 인덱싱 시점에 근사치로 처리되는 경우가 많음 | 모든 도구 호출마다 요청한 사용자에 대해 소스 시스템의 권한으로 확인 |
+| **인용** | 청크 단위 (있다면) | 블록 단위: 페이지, 표 셀, 행, 슬라이드, 줄. 지어낸 인용은 제거 |
 
 ## 주요 기능
 
