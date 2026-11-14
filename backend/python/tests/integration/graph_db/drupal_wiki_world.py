@@ -27,7 +27,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 logger = logging.getLogger("drupal-wiki-access-it")
 
 ALICE, BOB, CAROL = "alice@wiki.test", "bob@wiki.test", "carol@wiki.test"
-OPEN_SPACE, PRIVATE_SPACE = 1, 2
+OPEN_SPACE, PRIVATE_SPACE, OTHER_PRIVATE_SPACE = 1, 2, 3
 OPEN_PAGE, PRIVATE_PAGE, SUB_PAGE = 20, 10, 11
 
 
@@ -54,8 +54,9 @@ class FakeWiki:
     spaces: dict[int, dict[str, Any]] = field(default_factory=lambda: {
         OPEN_SPACE: {"id": OPEN_SPACE, "name": "Open", "accessStatus": "AUTHENTICATED"},
         PRIVATE_SPACE: {"id": PRIVATE_SPACE, "name": "Private", "accessStatus": "PRIVATE"},
+        OTHER_PRIVATE_SPACE: {"id": OTHER_PRIVATE_SPACE, "name": "Other private", "accessStatus": "PRIVATE"},
     })
-    members: dict[int, list[str]] = field(default_factory=lambda: {PRIVATE_SPACE: [ALICE]})
+    members: dict[int, list[str]] = field(default_factory=lambda: {PRIVATE_SPACE: [ALICE], OTHER_PRIVATE_SPACE: [CAROL]})
     pages: dict[int, dict[str, Any]] = field(default_factory=lambda: {
         PRIVATE_PAGE: {"space": PRIVATE_SPACE, "parent": None, "modified": 1000},
         SUB_PAGE: {"space": PRIVATE_SPACE, "parent": PRIVATE_PAGE, "modified": 1000},
@@ -66,7 +67,7 @@ class FakeWiki:
     # another page is deleted between two of its windows
     skipped_once: set[int] = field(default_factory=set)
     # the wiki refuses to list the members of private spaces (as Drupal Wiki 8.44 does for tokens)
-    members_refused: bool = False
+    members_refused: set[int] = field(default_factory=set)
 
     def readable(self) -> dict[str, set[str]]:
         enabled = {u["email"] for u in self.users.values() if u["status"] == "ENABLED"}
@@ -115,7 +116,7 @@ class FakeWiki:
     # ---- the GraphQL data source
 
     async def get_space_members(self, space_id: int) -> dict[str, Any]:
-        if self.members_refused:
+        if space_id in self.members_refused:
             raise DrupalWikiGraphQLRefusedError("QueryNotAllowed")
         return {"users": [{"email": e} for e in self.members.get(space_id, [])], "groups": []}
 
@@ -232,11 +233,33 @@ async def a_shared_page_reaches_the_other_spaces_readers_and_its_sub_page_does_n
     world.wiki.members[PRIVATE_SPACE] = [ALICE, CAROL]
     await world.sync()
     await world.check("carol joins the private space")
-    world.wiki.members_refused = True
+    world.wiki.members_refused = {PRIVATE_SPACE}
     world.wiki.pages[PRIVATE_PAGE]["modified"] = 3000
     await world.sync()
     await world.check("members refused, so the private space keeps its stored access, and the shared page is edited")
-    world.wiki.members_refused = False
+    world.wiki.members_refused = set()
+    world.wiki.shares.clear()
+    await world.sync()
+    await world.check("share removed")
+
+
+async def a_page_shared_into_a_private_space_follows_both_member_lists(world: DrupalWorld) -> None:
+    await world.sync()
+    await world.sync()  # the private space has its checkpoint: every page is STRICT
+    world.wiki.shares[PRIVATE_PAGE] = {OTHER_PRIVATE_SPACE}
+    await world.sync()
+    await world.check("private page shared into another private space")
+    assert f"page:{SUB_PAGE}" not in (await world.observed())[CAROL], "the share must not reach the sub-page"
+    world.wiki.members[OTHER_PRIVATE_SPACE] = [CAROL, BOB]
+    await world.sync()
+    await world.check("bob joins the space the page is shared into")
+    # The other space's members are refused (kept access); alice leaves the home space,
+    # which is read in full: she loses the page although the other space is unknown.
+    world.wiki.members_refused = {OTHER_PRIVATE_SPACE}
+    world.wiki.members[PRIVATE_SPACE] = []
+    await world.sync()
+    await world.check("alice leaves the home space while the other space's members are refused")
+    world.wiki.members_refused = set()
     world.wiki.shares.clear()
     await world.sync()
     await world.check("share removed")

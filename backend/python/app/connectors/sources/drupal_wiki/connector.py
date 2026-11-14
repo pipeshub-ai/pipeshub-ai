@@ -15,8 +15,10 @@ Sync model (see the design page for the full rationale):
   permission phase is written in full once it is reachable again
 * a page shared into other spaces is readable by the readers of each (handbook node
   461), its sub-pages are not: pages are ``STRICT``, so only a page's own grants open
-  it outside its space, and a shared page carries as its own grants the readers of
-  its home space and of every space it is shared into
+  it outside its space. A shared page is granted to each of its spaces: ``ORG`` when one
+  is open, else each private space's reader group (its people and the members of its
+  groups), so a change of members needs no page write and an unreadable member list
+  keeps the group's stored members
 * a stored page its space no longer lists is looked up on its own and removed, with
   its attachments, when the wiki no longer has it in that space
 * a person the directory does not show enabled (disabled, removed, or now under
@@ -201,9 +203,17 @@ RECORD_BATCH_SIZE = 100
 # Stored pages a run looks up one by one because their space no longer lists them. The
 # rest wait for the next run, which finds them again.
 GONE_PAGE_CHECKS_PER_RUN = 500
-# _page_access's answer when a page was written shared and the readers of one of its spaces
-# cannot be confirmed this run: its stored access stays as it is.
+# _page_access's answer when a page was written shared and its home space cannot be
+# granted this run (its pages not all STRICT yet, or its reader group never written): its
+# stored access stays as it is.
 KEEP_STORED_ACCESS = "keep stored access"
+# A private space's readers, as a user group a shared page is granted to: the people with a
+# role on the space and the members of the wiki groups with one. Wiki group ids are numbers.
+SPACE_READERS_GROUP_PREFIX = "space-readers:"
+
+
+def space_readers_group_id(space_id: int) -> str:
+    return f"{SPACE_READERS_GROUP_PREFIX}{space_id}"
 STORED_PAGE_READ_SIZE = 1000
 
 
@@ -253,6 +263,8 @@ class PageListing:
     # space -> page id -> ids of the records stored for it (the page and its attachments)
     # when the space's listing began
     stored: dict[int, dict[int, list[str]]] = field(default_factory=dict)
+    # pages stored with grants of their own (written shared): the graph's record of shares
+    stored_shared: set[int] = field(default_factory=set)
     # pages written this run, and the grants digest each page record was written with
     written: set[int] = field(default_factory=set)
     written_as: dict[int, str] = field(default_factory=dict)
@@ -386,6 +398,15 @@ def _grants_digest(permissions: list[Permission] | None) -> str:
     return "shared:" + hashlib.sha256("\n".join(keys).encode()).hexdigest()
 
 
+def _granted_groups(permissions: list[Permission] | None) -> set[int]:
+    """The private spaces whose reader group a shared page is granted to."""
+    return {
+        int(p.external_id.removeprefix(SPACE_READERS_GROUP_PREFIX))
+        for p in permissions or []
+        if p.entity_type == EntityType.GROUP and (p.external_id or "").startswith(SPACE_READERS_GROUP_PREFIX)
+    }
+
+
 @ConnectorBuilder("Drupal Wiki")\
     .in_group("Drupal Wiki")\
     .with_description("Sync spaces and pages from your Drupal Wiki instance")\
@@ -504,8 +525,15 @@ class DrupalWikiConnector(BaseConnector):
         # Emails the user directory marks DISABLED, or None when it could not be
         # read this run. Private spaces are then left as they were.
         self._disabled_emails: set[str] | None = None
-        # The grants written this run for each space; a shared page carries them too.
-        self._space_readers: dict[int, list[Permission]] = {}
+        # Access status of each selected space, from this run's listing.
+        self._space_status: dict[int, str] = {}
+        # Enabled people by email, and the members of each wiki group read in full, this run.
+        self._app_users_by_email: dict[str, AppUser] = {}
+        self._group_members: dict[str, list[AppUser]] = {}
+        # Private spaces whose reader group was written this run.
+        self._reader_groups: set[int] = set()
+        # Removal candidates this run left unchecked: a full sync must not unlink them.
+        self._removals_unchecked = False
         # Emails of the wiki's enabled users, and the ids of the groups whose members were
         # read, both this run; None when that phase did not finish in full. Stored grants
         # stand in for a refused member list only if every one names a principal in these.
@@ -693,7 +721,11 @@ class DrupalWikiConnector(BaseConnector):
             self._space_problems = {}
             self._graphql_refused = None
             self._disabled_emails = None
-            self._space_readers = {}
+            self._space_status = {}
+            self._app_users_by_email = {}
+            self._group_members = {}
+            self._reader_groups = set()
+            self._removals_unchecked = False
             self._enabled_emails = None
             self._groups_read = None
             self._kept_confirmed_ms = []
@@ -781,6 +813,7 @@ class DrupalWikiConnector(BaseConnector):
         not write may be unlinked after it."""
         return FullSyncCoverage(
             complete=not self._failures
+            and not self._removals_unchecked
             and not any(problem.incomplete for problem in self._space_problems)
         )
 
@@ -866,6 +899,9 @@ class DrupalWikiConnector(BaseConnector):
         self._enabled_emails = {
             user.email.lower() for user in users_by_id.values() if user.is_active
         }
+        self._app_users_by_email = {
+            user.email.lower(): user for user in users_by_id.values() if user.is_active
+        }
         self.logger.info("Synced %d Drupal Wiki user(s)", len(users_by_id))
         if skipped_without_email:
             # Nobody without an email can be granted anything, so a large count here
@@ -938,7 +974,7 @@ class DrupalWikiConnector(BaseConnector):
                     continue
 
                 read.add(str(group_id))
-                members = [
+                members = self._group_members[str(group_id)] = [
                     users_by_id[str(member.get("id"))]
                     for member in (detail.get("members") or [])
                     if str(member.get("id")) in users_by_id
@@ -988,6 +1024,7 @@ class DrupalWikiConnector(BaseConnector):
             )
             content = payload.get("content") or []
             groups_with_permissions: list[tuple[RecordGroup, list[Permission]]] = []
+            reader_groups: list[tuple[AppUserGroup, list[AppUser]]] = []
             confirmed: list[int] = []
             for space in content:
                 space_id = _as_int(space.get("id"))
@@ -1001,6 +1038,7 @@ class DrupalWikiConnector(BaseConnector):
                     continue
                 if exclude_ids and str(space_id) in exclude_ids:
                     continue
+                self._space_status[space_id] = (space.get("accessStatus") or "").upper()
 
                 members = None
                 if (space.get("accessStatus") or "").upper() == SPACE_ACCESS_PRIVATE:
@@ -1038,7 +1076,10 @@ class DrupalWikiConnector(BaseConnector):
                     confirmed.append(space_id)
 
                 permissions = self._build_space_permissions(space, members)
-                self._space_readers[space_id] = permissions
+                if members is not None:
+                    readers = self._space_readers_group(space_id, space_name, members)
+                    if readers is not None:
+                        reader_groups.append(readers)
                 if not permissions:
                     # Synced anyway, with no grants: the pages still need a group to
                     # belong to, and giving someone the read right later then only has
@@ -1067,6 +1108,12 @@ class DrupalWikiConnector(BaseConnector):
 
             if groups_with_permissions:
                 await self.data_entities_processor.on_new_record_groups(groups_with_permissions)
+            if reader_groups:
+                await self.data_entities_processor.on_new_user_groups(reader_groups)
+                self._reader_groups.update(
+                    int(group.source_user_group_id.removeprefix(SPACE_READERS_GROUP_PREFIX))
+                    for group, _ in reader_groups
+                )
             # Only once the grants read from the member list are written.
             for space_id in confirmed:
                 await self._confirm_space_access(space_id)
@@ -1246,6 +1293,37 @@ class DrupalWikiConnector(BaseConnector):
 
         return list(permissions.values())
 
+    def _space_readers_group(
+        self, space_id: int, space_name: str, members: dict[str, Any]
+    ) -> tuple[AppUserGroup, list[AppUser]] | None:
+        """The reader group of a private space whose member list was read: the enabled people
+        with a role on it and the members of each wiki group with one. None when a wiki group
+        with a role was not read in full this run, so the stored members stay."""
+        people: dict[str, AppUser] = {}
+        for user in members.get("users") or []:
+            person = self._app_users_by_email.get((user.get("email") or "").strip().lower())
+            if person is not None:
+                people.setdefault(person.email.lower(), person)
+        for group in members.get("groups") or []:
+            group_id = str(group.get("id"))
+            if group_id not in self._group_members:
+                if self._groups_read is None:
+                    return None  # unknown, not empty
+                continue  # read in full and gone: no members
+            for person in self._group_members[group_id]:
+                people.setdefault(person.email.lower(), person)
+        return (
+            AppUserGroup(
+                app_name=Connectors.DRUPAL_WIKI,
+                connector_id=self.connector_id,
+                org_id=self.data_entities_processor.org_id,
+                source_user_group_id=space_readers_group_id(space_id),
+                name=f"Readers of {space_name}",
+                description="Everyone who may read this Drupal Wiki space",
+            ),
+            list(people.values()),
+        )
+
     # ------------------------------------------------------------------
     # Pages and attachments
     # ------------------------------------------------------------------
@@ -1303,7 +1381,7 @@ class DrupalWikiConnector(BaseConnector):
         checkpoint = await self._get_checkpoint(self.record_sync_point, key)
         modified_after = _as_int(checkpoint.get("last_modified"))
         failures_before = len(self._failures)
-        stored = await self._stored_pages(space_id)
+        stored = await self._stored_pages(space_id, listing)
         if modified_after is not None:
             # Every page was written STRICT by the clean pass that set the checkpoint.
             listing.settled.add(space_id)
@@ -1389,9 +1467,11 @@ class DrupalWikiConnector(BaseConnector):
         # it. Without one, every page is written once more and takes its space's readers.
         return generate_record_sync_point_key(RecordType.WEBPAGE.value, "space_pages", str(space_id))
 
-    async def _stored_pages(self, space_id: int) -> dict[int, list[str]]:
+    async def _stored_pages(self, space_id: int, listing: PageListing) -> dict[int, list[str]]:
         """``{page id: ids of its stored records}`` for the pages stored under a space: the
-        page's own record and those of its attachments."""
+        page's own record and those of its attachments. Pages stored with grants of their
+        own (``OPEN``: written shared) are noted in ``listing.stored_shared``, so the share
+        pass finds them whatever its memory says."""
         pages: dict[int, list[str]] = {}
         attachments: dict[int, list[str]] = {}
         after: str | None = None
@@ -1402,6 +1482,8 @@ class DrupalWikiConnector(BaseConnector):
             for record in records:
                 if (page_id := source_id_from_external(record.external_record_id, PAGE_ID_PREFIX)) is not None:
                     pages.setdefault(page_id, []).append(record.id)
+                    if record.access_rule == AccessRule.OPEN:
+                        listing.stored_shared.add(page_id)
                 elif (page_id := source_id_from_external(record.parent_external_record_id or "", PAGE_ID_PREFIX)) is not None:
                     attachments.setdefault(page_id, []).append(record.id)
             if len(records) < STORED_PAGE_READ_SIZE:
@@ -1452,7 +1534,7 @@ class DrupalWikiConnector(BaseConnector):
         """
         before = listing.shares_before
         now: dict[str, dict[str, Any]] = {}
-        for page_id in sorted({int(p) for p in before} | set(listing.shared)):
+        for page_id in sorted({int(p) for p in before} | set(listing.shared) | listing.stored_shared):
             had = before.get(str(page_id)) or {}
             try:
                 record = None
@@ -1465,8 +1547,8 @@ class DrupalWikiConnector(BaseConnector):
                     home = _as_int(record.external_record_group_id)
                 shares, permissions = self._page_access(page_id, home, listing)
                 if permissions == KEEP_STORED_ACCESS:
-                    # Who reads one of its spaces is not known this run: as it was written.
-                    now[str(page_id)] = {"home": home, "spaces": sorted(shares), "grants": had.get("grants", "")}
+                    # Its home space cannot be granted this run: as it was written.
+                    now[str(page_id)] = {**had, "home": home, "spaces": sorted(shares)}
                     continue
                 written = _grants_digest(permissions)
                 if written != listing.written_as.get(page_id, had.get("grants")):
@@ -1486,7 +1568,10 @@ class DrupalWikiConnector(BaseConnector):
                     now[str(page_id)] = had
                 continue
             if shares:
-                now[str(page_id)] = {"home": home, "spaces": sorted(shares), "grants": written}
+                now[str(page_id)] = {
+                    "home": home, "spaces": sorted(shares), "grants": written,
+                    "groups": sorted(_granted_groups(permissions)),
+                }
         await self.record_sync_point.update_sync_point(
             self._shares_sync_point_key(), {"pages": json.dumps(now, sort_keys=True)}
         )
@@ -1496,31 +1581,43 @@ class DrupalWikiConnector(BaseConnector):
     ) -> tuple[set[int], list[Permission] | str | None]:
         """The spaces a page is shared into, as far as this run knows them, and the grants
         it carries of its own: None for a plain page, ``KEEP_STORED_ACCESS`` for a page
-        written shared whose readers cannot all be confirmed this run.
+        written shared whose home space cannot be granted this run.
 
         Every page write takes its access from here, so a later write never undoes a
-        share. A space this run did not list (yet, or in full) keeps the shares the page
-        had into it. Unknown is not empty: a page stays as it was written until every
-        reader of its spaces is read and every page of its home space is ``STRICT``, so
-        nothing is opened to new readers and nobody loses a read on a guess.
+        share. A shared page is granted to its spaces, not to their people: ``ORG`` when one
+        of them is open, else the reader group of each private one. A change of members
+        reaches it through the group, with no page write; a space whose members cannot be
+        read keeps its group's stored members. A space this run did not list (yet, or in
+        full) keeps the shares the page had into it; one no longer selected or gone loses
+        them.
         """
         had = listing.shares_before.get(str(page_id)) or {}
         shares = {
             space for space in (_as_int(s) for s in had.get("spaces") or [])
-            if space is not None and space not in listing.home
+            if space in self._space_status and space not in listing.home
         } | listing.shared.get(page_id, set())
         shares.discard(home)
         if not shares:
             return shares, None
-        permissions = self._shared_page_permissions(home, shares, listing)
-        if permissions is None and had:
-            if not {s for s in (_as_int(x) for x in had.get("spaces") or []) if s is not None} - shares - {home}:
-                return shares, KEEP_STORED_ACCESS
-            # A space confirmed to no longer hold the page: its readers go now, even while
-            # another space's readers are unknown. What is left is only readers confirmed
-            # this run, which may be short of the unknown space's until they are read.
-            return shares, self._shared_page_permissions(home, shares, listing, known_only=True)
-        return shares, permissions
+        # A reader group exists once written; one granted before was written then.
+        groups = self._reader_groups | {_as_int(g) for g in had.get("groups") or []}
+        home_private = self._space_status.get(home) == SPACE_ACCESS_PRIVATE
+        if home not in listing.settled or (home_private and home not in groups):
+            # Its sub-pages may not all be STRICT, or its own readers cannot be named: no
+            # new readers, and nobody loses a read on a guess.
+            return shares, KEEP_STORED_ACCESS if had else None
+        spaces = {home, *shares}
+        if any(self._space_status.get(space) in OPEN_SPACE_ACCESS_STATUSES for space in spaces):
+            return shares, [Permission(external_id=None, email=None, type=PermissionType.READ, entity_type=EntityType.ORG)]
+        # A share space whose group was never written grants nothing yet; it is added once
+        # its members are read.
+        return shares, [
+            Permission(
+                external_id=space_readers_group_id(space), email=None,
+                type=PermissionType.READ, entity_type=EntityType.GROUP,
+            )
+            for space in sorted(spaces) if space in groups
+        ]
 
     @staticmethod
     def _apply_page_access(record: Record, permissions: list[Permission] | None) -> list[Permission]:
@@ -1535,31 +1632,6 @@ class DrupalWikiConnector(BaseConnector):
         return await self.data_entities_processor.get_record_by_external_id(
             self.connector_id, page_external_id(page_id)
         )
-
-    def _shared_page_permissions(
-        self, home: int | None, shares: set[int], listing: PageListing, *, known_only: bool = False
-    ) -> list[Permission] | None:
-        """The readers of the home space and of every space the page is shared into, or
-        None when they cannot be given: not shared, its home space's pages not all
-        ``STRICT`` yet, or the readers of one of those spaces not read this run.
-
-        ``known_only``: the readers of the home space and of those share spaces whose
-        readers were read, leaving out the rest; None when that is none of the share
-        spaces, or the home space's readers are not known either."""
-        known = {s for s in shares if s in self._space_readers}
-        if (
-            not shares or home not in listing.settled or home not in self._space_readers
-            or (not known if known_only else known != shares)
-        ):
-            return None
-        spaces = {home, *known}
-        unique: dict[tuple, Permission] = {}
-        for space in sorted(spaces):
-            for permission in self._space_readers[space]:
-                unique.setdefault(
-                    (permission.entity_type, (permission.email or "").lower(), permission.external_id), permission
-                )
-        return list(unique.values())
 
     async def _current_page(self, page_id: int) -> dict[str, Any] | None:
         """The page as the wiki has it now; None when it no longer has it, or the token can
@@ -1610,6 +1682,8 @@ class DrupalWikiConnector(BaseConnector):
                     f"it stays until the next sync: {describe_exception(e)}"
                 )
         if len(turn) < len(candidates):
+            # Their absence is not confirmed, so a full sync must not unlink them.
+            self._removals_unchecked = True
             self.logger.info(
                 "Drupal Wiki: %d of %d stored pages no space lists were checked; the rest are "
                 "checked on the next sync", len(turn), len(candidates),
