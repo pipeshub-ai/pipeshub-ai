@@ -588,6 +588,11 @@ class TestATrimmedEntryOfAStoppedConsumer:
     async def test_it_does_not_stay_pending_under_the_live_consumer(
         self, redis_available, redis_client, base_stream, unique_suffix
     ) -> None:
+        """Taken over while reading, a stopped consumer's trimmed entry must not
+        stay pending under this live consumer, and the entries beside it in the
+        same claim are processed. Before Redis 7.0 the claim answers a trimmed
+        entry with an empty slot and moves its id to the claimer. The claim
+        window is long here so that only the read-time reclaim takes them."""
         host, port = redis_available
         group = f"it-trimmed-{unique_suffix}"
         topics = RedisLaneRouter(_LANES).lane_topics(base_stream)
@@ -596,10 +601,19 @@ class TestATrimmedEntryOfAStoppedConsumer:
         await _leave_pending(redis_client, lane, group, _connector_on_lane(0, "old"), per_consumer=2)
         first = (await redis_client.xpending_range(lane, group, min="-", max="+", count=1))[0]["message_id"]
         await redis_client.xdel(lane, first)
-        await asyncio.sleep(_CLAIM_MS * 10 / 1000 + 0.5)
+        await asyncio.sleep(2.5)
 
+        config = RedisStreamsConfig(
+            host=host, port=port, client_id=f"{group}-client", group_id=group, topics=topics,
+            batch_size=10, block_ms=500, claim_min_idle_ms=60_000, stopped_consumer_after_ms=2_000,
+        )
         done: list[str] = []
-        consumer = _consumer(host, port, base_stream, group)
+        consumer = IndexingRedisStreamsConsumer(
+            logging.getLogger("it-trimmed"), config, fair_scheduler_config=FairSchedulerConfig(
+                enabled=True, key_fields=("orgId", "connectorId"), max_buffered_messages=40,
+                max_per_entity_messages=40,
+            ),
+        )
         await consumer.start(_handler(done, seconds=0.0))
         try:
             await _until(lambda: _done(done, [f"old-{lane}-{i}" for i in range(1, 6)]), "the rest")
@@ -610,3 +624,111 @@ class TestATrimmedEntryOfAStoppedConsumer:
 
 async def _nothing_pending(client: Redis, stream: str, group: str) -> bool:
     return int((await client.xpending(stream, group))["pending"]) == 0
+
+
+class TestAnEntryRecoveryCouldNotHandOn:
+    async def test_it_is_processed_beside_another_live_consumer_under_traffic(
+        self, redis_available, redis_client, base_stream, unique_suffix
+    ) -> None:
+        """Two live consumers, new events arriving all the time, and the check
+        before a reclaimed entry is buffered fails once for each. The entries
+        are left pending under the consumer that claimed them, which nothing
+        else takes back while the other consumer is alive and traffic flows."""
+        host, port = redis_available
+        group = f"it-unhanded-{unique_suffix}"
+        topics = RedisLaneRouter(_LANES).lane_topics(base_stream)
+        await _create_groups(redis_client, topics, group)
+        lane = f"{base_stream}.0"
+        stranded = await _leave_pending(redis_client, lane, group, _connector_on_lane(0, "old"), per_consumer=3)
+        await asyncio.sleep(2.5)
+
+        # A long claim window, as in production, so the idle drain's XAUTOCLAIM
+        # cannot be what brings them back; and the production read block.
+        config = RedisStreamsConfig(
+            host=host, port=port, client_id=f"{group}-client", group_id=group, topics=topics,
+            batch_size=10, block_ms=2000, claim_min_idle_ms=60_000, stopped_consumer_after_ms=2_000,
+        )
+        done: list[str] = []
+        failed: set[str] = set()
+        consumers = [
+            IndexingRedisStreamsConsumer(
+                logging.getLogger(f"it-unhanded-{n}"), config.model_copy(),
+                fair_scheduler_config=FairSchedulerConfig(
+                    enabled=True, key_fields=("orgId", "connectorId"), max_buffered_messages=40,
+                    max_per_entity_messages=40,
+                ),
+            )
+            for n in range(2)
+        ]
+        for consumer in consumers:
+            real_check = consumer._should_dead_letter
+
+            async def fails_once(topic, message_id, *args, _real=real_check, **kwargs):  # noqa: ANN202
+                if topic == lane and message_id not in failed:
+                    failed.add(message_id)
+                    raise ConnectionError("retry store unreachable")
+                return await _real(topic, message_id, *args, **kwargs)
+
+            consumer._should_dead_letter = fails_once
+            await consumer.start(_handler(done, seconds=0.0))
+        stop = asyncio.Event()
+
+        async def keep_arriving() -> None:
+            n = 0
+            while not stop.is_set():
+                await redis_client.xadd(f"{base_stream}.1", _event("fresh", f"new-{n}"))
+                n += 1
+                await asyncio.sleep(0.3)
+
+        trickle = asyncio.create_task(keep_arriving())
+        try:
+            await _until(lambda: _done(done, stranded), "every stranded entry", timeout=30)
+        finally:
+            stop.set()
+            await trickle
+            for consumer in consumers:
+                await consumer.stop()
+        assert failed
+
+
+class TestTheFifoPathWithFullGates:
+    async def test_a_consumer_held_back_by_full_gates_keeps_its_running_entry_fresh(
+        self, redis_available, redis_client, base_stream, unique_suffix, monkeypatch
+    ) -> None:
+        """Without fair scheduling, full index gates sent the loop round again
+        before anything touched Redis, so a long record's entry went idle and a
+        peer could take it while its handler still ran."""
+        from app.services.messaging import consumer_concurrency
+
+        host, port = redis_available
+        group = f"it-fifo-{unique_suffix}"
+        topics = RedisLaneRouter(_LANES).lane_topics(base_stream)
+        await _create_groups(redis_client, topics, group)
+        lane = f"{base_stream}.0"
+        await redis_client.xadd(lane, _event(_connector_on_lane(0, "long"), "long"))
+        config = RedisStreamsConfig(
+            host=host, port=port, client_id=f"{group}-client", group_id=group, topics=topics,
+            batch_size=1, block_ms=500, claim_min_idle_ms=1500,
+        )
+        consumer = IndexingRedisStreamsConsumer(logging.getLogger("it-fifo"), config)
+        started = threading.Event()
+        gate = threading.Event()
+
+        async def hold(parsed_message: StreamMessage) -> AsyncIterator[PipelineEvent]:
+            yield PipelineEvent(event=IndexingEvent.START_PARSING, data=PipelineEventData(tier=ParseTier.LIGHT))
+            started.set()
+            await asyncio.to_thread(gate.wait, DRAIN_TIMEOUT_SECONDS)
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
+
+        await consumer.start(hold)
+        try:
+            await asyncio.to_thread(started.wait, 10)
+            monkeypatch.setattr(consumer_concurrency, "index_gates_saturated", lambda _host: True)
+            await asyncio.sleep(4)
+            entry = (await redis_client.xpending_range(lane, group, min="-", max="+", count=1))[0]
+        finally:
+            gate.set()
+            await consumer.stop()
+
+        assert entry["time_since_delivered"] < 1500
+        assert entry["times_delivered"] == 1

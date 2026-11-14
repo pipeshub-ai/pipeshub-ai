@@ -145,6 +145,8 @@ _XAUTOCLAIM_SCAN_FACTOR = 10
 # reading, at most this many per look (see __reclaim_while_reading).
 _RECLAIM_PER_LOOK = 500
 _RECLAIM_PAGE = 100
+# Entries recovery failed to hand on, remembered for another try.
+_UNHANDED_LIMIT = 1000
 _RECLAIM_LOG_EVERY_SECONDS = 60.0
 # Recovery leaves 1/N of the buffer free for new events (__buffer_headroom).
 _RECLAIM_HEADROOM_DIVISOR = 4
@@ -361,6 +363,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self._reclaim_lane_offset = 0
         self._reclaimed_unlogged = 0
         self._reclaim_logged_at = 0.0
+        # Entries recovery failed to hand on, left pending under this consumer
+        # (see __remember_unhanded); insertion-ordered, oldest first.
+        self._unhanded: dict[tuple[str, str], None] = {}
+        self._last_unhanded_retry = 0.0
         # Per lane, the stopped owners last logged as no longer holding back
         # the stranded-record sweep, so the line is written once per change.
         self._stale_pending_logged: dict[str, frozenset[str]] = {}
@@ -1322,7 +1328,53 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.logger.error(
                 "Error recovering %spending message %s: %s", prefix, message_id, e
             )
+            self.__remember_unhanded(topic, message_id)
             return False
+
+    def __remember_unhanded(self, topic: str, message_id: str) -> None:
+        """Keep an entry that recovery may have left pending under this consumer
+        without holding it, for ``__retry_unhanded``. Beside another live
+        consumer nothing else would take it back while traffic flows: read-time
+        own-pending recovery runs only when this consumer is alone, peers take
+        only from stopped consumers, and the idle drain needs quiet lanes."""
+        self._unhanded.pop((topic, message_id), None)
+        self._unhanded[(topic, message_id)] = None
+        while len(self._unhanded) > _UNHANDED_LIMIT:
+            self._unhanded.pop(next(iter(self._unhanded)))
+
+    async def __retry_unhanded(self) -> None:
+        """Offer remembered entries again, oldest first, while there is room.
+
+        Each is first confirmed pending under this consumer (else it was
+        acknowledged or taken, and is forgotten) and its payload re-read with
+        XRANGE; ``__recover_entry(owned=True)`` reasserts ownership with
+        ``XCLAIM JUSTID``, so no delivery is counted. An entry trimmed from the
+        stream meanwhile is acknowledged.
+        """
+        for topic, message_id in list(self._unhanded)[:_RECOVERY_BATCH]:
+            if not self.running or (self._scheduler is not None and not self.__buffer_has_room()):
+                return
+            key = (topic, message_id)
+            try:
+                if self.__already_held(message_id, topic):
+                    del self._unhanded[key]
+                    continue
+                mine = await self.redis.xpending_range(  # type: ignore[union-attr]
+                    topic, self.config.group_id, min=message_id, max=message_id,
+                    count=1, consumername=self.consumer_name,
+                )
+                if not mine:
+                    del self._unhanded[key]
+                    continue
+                found = await self.redis.xrange(topic, min=message_id, max=message_id, count=1)  # type: ignore[union-attr]
+                if not found:
+                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore[union-attr]
+                    del self._unhanded[key]
+                    continue
+                self._unhanded.pop(key, None)
+                await self.__recover_entry(topic, message_id, found[0][1], owned=True)
+            except Exception as e:
+                self.logger.warning("Could not retry pending entry %s on %s: %s", message_id, topic, e)
 
     async def __autoclaim(
         self, topic: str, start_id: str, count: int
@@ -1726,6 +1778,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """
         if self.redis is None or not self.config.topics or self._dispatch_budget().blocked:
             return
+        now = time.monotonic()
+        if self._unhanded and now - self._last_unhanded_retry >= _RECOVERY_INTERVAL_SECONDS:
+            self._last_unhanded_retry = now
+            await self.__retry_unhanded()
         interval = (
             _RECOVERY_INTERVAL_SECONDS
             if self._reclaim_found
@@ -1813,19 +1869,41 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             except Exception as e:
                 self.logger.warning("Could not reclaim %s's entries on %s: %s", owner, topic, e)
                 return taken
-            bodies = [(_text(m), f) for m, f in claimed or [] if f is not None]
-            # Before Redis 7.0 XCLAIM returns a trimmed or deleted entry without
-            # its body and keeps it pending, now under this consumer: acked here,
-            # or it would sit at the head of the lane, held by a live consumer.
-            gone = [_text(m) for m, f in claimed or [] if f is None]
-            if gone:
-                await self.redis.xack(topic, self.config.group_id, *gone)  # type: ignore[union-attr]
+            bodies = [
+                (_text(m), f) for m, f in claimed or [] if m is not None and f is not None
+            ]
             for message_id, fields in bodies:
                 await self.__recover_entry(topic, message_id, fields, owned=False)
             taken += len(bodies)
-            if len(claimed or []) < len(ids):
+            returned = {message_id for message_id, _fields in bodies}
+            await self.__ack_claimed_without_body(topic, [i for i in ids if i not in returned])
+            if len(bodies) < len(ids):
                 return taken
         return taken
+
+    async def __ack_claimed_without_body(self, topic: str, candidates: list[str]) -> None:
+        """Acknowledge requested ids the claim left pending under this consumer
+        with no entry to hand on.
+
+        Before Redis 7.0, XCLAIM of a trimmed or deleted entry moves its id to
+        the claimer and replies with an empty slot (no id), so it would sit at
+        the head of the lane held by a live consumer. An id that is absent for
+        another reason (its owner refreshed it, so the claim refused it) is
+        still that owner's and is left alone: only ids now pending under this
+        consumer are acknowledged.
+        """
+        for message_id in candidates:
+            try:
+                mine = await self.redis.xpending_range(  # type: ignore[union-attr]
+                    topic, self.config.group_id, min=message_id, max=message_id,
+                    count=1, consumername=self.consumer_name,
+                )
+                if mine:
+                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore[union-attr]
+            except Exception as e:
+                self.logger.warning(
+                    "Could not acknowledge trimmed entry %s on %s: %s", message_id, topic, e
+                )
 
     async def __remove_if_stopped(self, topic: str, name: str) -> None:
         """Remove a stopped consumer that holds nothing, checked and removed in
@@ -2755,6 +2833,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         self.__publish_scheduler_metrics()
                         continue
 
+                    # First, so a consumer held back by full gates still keeps
+                    # its running entries fresh and is not taken for stopped.
+                    await self.__refresh_held_ownership()
                     budget = self._dispatch_budget()
                     # Saturation matters as much as queue depth: with both
                     # index pools full and nothing queued behind them, the
@@ -2779,7 +2860,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         )
                         self._backpressure_active = False
 
-                    await self.__refresh_held_ownership()
                     await self.__reclaim_while_reading()
                     budget = self._dispatch_budget()
                     if budget.remaining <= 0:

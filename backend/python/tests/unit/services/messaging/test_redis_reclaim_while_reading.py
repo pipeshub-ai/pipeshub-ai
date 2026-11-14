@@ -17,6 +17,8 @@ import pytest
 
 pytest.importorskip("fakeredis.aioredis")
 
+from fakeredis.model import _stream as fake_stream
+
 from app.services.messaging.config import RedisStreamsConfig
 from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
@@ -175,19 +177,21 @@ class TestReclaimWhileReading:
         assert consumer._scheduler.pending_count == 0
 
     async def test_this_consumers_entries_in_processing_stay_fresh_without_a_delivery(
-        self, consumer
+        self, consumer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        clock = {"ms": 1_000_000}
+        monkeypatch.setattr(fake_stream, "current_time", lambda: clock["ms"])
         await consumer.redis.xadd(LANE, _fields("long-parse"))
         read = await consumer.redis.xreadgroup(GROUP, consumer.consumer_name, {LANE: ">"})
         message_id = read[0][1][0][0]
         consumer._mark_in_flight(message_id, LANE)
-        await asyncio.sleep(CLAIM_MS * 3 / 1000)
+        clock["ms"] += CLAIM_MS * 3
         consumer._last_ownership_refresh = 0.0
 
         await consumer._IndexingRedisStreamsConsumer__refresh_held_ownership()
 
         entry = (await _owned(consumer, consumer.consumer_name))[0]
-        assert entry["time_since_delivered"] < CLAIM_MS
+        assert entry["time_since_delivered"] == 0
         assert entry["times_delivered"] == 1
         claimed = await consumer.redis.xautoclaim(
             LANE, GROUP, "other", min_idle_time=CLAIM_MS, start_id="0-0", count=10
@@ -270,17 +274,19 @@ class TestOwnRecoveryBesideAnEmptyCrashedConsumer:
 
 class TestTrimmedEntriesOfAStoppedConsumer:
     async def test_a_claim_returned_without_a_body_is_acknowledged_not_kept(self, consumer) -> None:
-        """Before Redis 7.0, XCLAIM returns a trimmed entry with no body and
-        leaves it pending under the claiming consumer. Kept, it would stay at
-        the lane's head under a live owner and hold the sweep back."""
+        """Before Redis 7.0, XCLAIM replies to a trimmed entry with an empty
+        slot (no id, no body) and leaves it pending under the claimer. Kept, it
+        would stay at the lane's head under a live owner; and the entries with
+        a body in the same page must still be handed on."""
         await _left_by_a_stopped_consumer(consumer, 2)
         listed = await _owned(consumer, "replaced")
         trimmed, kept = listed[0]["message_id"], listed[1]["message_id"]
         real_xclaim = consumer.redis.xclaim
 
         async def pre_7_xclaim(*args, **kwargs):  # noqa: ANN202
+            # What redis-py makes of Redis 6.2's empty slot for a trimmed entry.
             reply = await real_xclaim(*args, **kwargs)
-            return [(m, None if m == trimmed else f) for m, f in reply]
+            return [(None, None) if m == trimmed else (m, f) for m, f in reply]
 
         consumer.redis.xclaim = pre_7_xclaim
 
@@ -289,3 +295,30 @@ class TestTrimmedEntriesOfAStoppedConsumer:
         mine = [e["message_id"] for e in await _owned(consumer, consumer.consumer_name)]
         assert mine == [kept]
         assert consumer._scheduler.pending_count == 1
+
+
+class TestAnEntryRecoveryCouldNotHandOn:
+    async def test_it_is_offered_again_without_another_delivery(self, consumer) -> None:
+        """Claimed from a stopped consumer, then the check before buffering it
+        failed: the entry is pending under this consumer and held by no one.
+        Beside another live consumer nothing else would take it back."""
+        await _left_by_a_stopped_consumer(consumer, 2)
+        real_check = consumer._should_dead_letter
+        failed: set[str] = set()
+
+        async def fails_once(topic, message_id, *args, **kwargs):  # noqa: ANN202
+            if message_id not in failed:
+                failed.add(message_id)
+                raise ConnectionError("retry store unreachable")
+            return await real_check(topic, message_id, *args, **kwargs)
+
+        consumer._should_dead_letter = fails_once
+
+        await _look(consumer)
+        assert consumer._scheduler.pending_count == 0
+        consumer._last_unhanded_retry = 0.0
+        await _look(consumer)
+
+        assert consumer._scheduler.pending_count == 2
+        mine = await _owned(consumer, consumer.consumer_name)
+        assert {entry["times_delivered"] for entry in mine} == {2}
