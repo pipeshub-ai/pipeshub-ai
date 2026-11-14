@@ -27,13 +27,19 @@ Start order: `postgres` healthy, `pgbouncer` healthy, `pipeshub-migrate` exits 0
 
 ## PipesHub on PostgreSQL alone (`docker-compose.postgres-only.yml`)
 
-For a **new** install that should run on one database: documents (`DOC_STORE=postgres`), the graph (`DATA_STORE=postgres`), vectors (`VECTOR_DB_TYPE=pgvector`), configuration (`KV_STORE_TYPE=postgres`), the message queue (`MESSAGE_BROKER=postgres`), the crawl scheduler (`CRAWL_SCHEDULER=postgres`) and what Redis would hold across processes (`REDIS_MODE=postgres`) all live in this PostgreSQL. No MongoDB, Qdrant, Redis, Neo4j, ArangoDB, etcd or Kafka container starts, even when `COMPOSE_PROFILES` names their profiles. An install that already runs those stores keeps them: this override copies no data. Run from a repository checkout with Docker Compose v2.24.4 or later. Put the nine `PG_*_PASSWORD` values in `.env` (see `env.template`) and leave `graph-neo4j` out of `COMPOSE_PROFILES` (for example `COMPOSE_PROFILES=sandbox`); `postgres`, `pgbouncer` and `pipeshub-migrate` start without their profiles:
+For a **new** install that should run on one database: documents (`DOC_STORE=postgres`), the graph (`DATA_STORE=postgres`), vectors (`VECTOR_DB_TYPE=pgvector`), configuration (`KV_STORE_TYPE=postgres`), the message queue (`MESSAGE_BROKER=postgres`), the crawl scheduler (`CRAWL_SCHEDULER=postgres`) and what Redis would hold across processes (`REDIS_MODE=postgres`) all live in this PostgreSQL. The MongoDB, Qdrant, Redis, Neo4j, ArangoDB, etcd and Kafka services are removed from the project, so no profile selection (`--profile "*"` included) starts them. An install that already runs those stores keeps them: this override copies no data. Run from a repository checkout with Docker Compose v2.24.4 or later. The simplest way is the installer, which generates the passwords and keeps the override for later runs (`--stop`, `--upgrade`, `--uninstall`); its summary then lists `postgres` for the graph, key-value store and broker:
+
+```bash
+PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml ./install.sh
+```
+
+By hand, put the nine `PG_*_PASSWORD` values in `.env` (see `env.template`) (`COMPOSE_PROFILES` needs no store profile, for example `COMPOSE_PROFILES=sandbox`; a store profile left in it starts nothing); `postgres`, `pgbouncer` and `pipeshub-migrate` start without their profiles:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.postgres-only.yml -p pipeshub-ai up -d --build
 ```
 
-Start order: `postgres` healthy, `pgbouncer` healthy, `pipeshub-migrate` exits 0, then `pipeshub-placement` (creates each organisation's vector partition before its first vector write; see `backend/db/README.md`), `pipeshub-fold` (keeps the vector point counts) and the app. Query, indexing and connectors each use their own login through PgBouncer; the other processes read configuration as the key-value login, which is also the one that listens for change notifications on a direct connection to `postgres`. A failed migration stops the app from starting, as above. `tests/postgres_only_test.sh` (run by the `postgres-image` workflow) checks that no other store renders or runs and that the app selects PostgreSQL for every store. The Helm chart has no equivalent yet.
+Start order: `postgres` healthy, `pgbouncer` healthy, `pipeshub-migrate` exits 0, then `pipeshub-placement` (creates each organisation's vector partition before its first vector write; see `backend/db/README.md`), `pipeshub-fold` (keeps the vector point counts) and the app. Query, indexing and connectors each use their own login through PgBouncer; the other processes read configuration as the key-value login, which is also the one that listens for change notifications on a direct connection to `postgres`. A failed migration stops the app from starting, as above. `tests/postgres_only_test.sh` (run by the `postgres-image` workflow) checks on PostgreSQL 17 and 18, with every profile switched on, that no other store renders or runs and that the app selects PostgreSQL for every store. The Helm chart has no equivalent yet.
 
 ## Data volume
 

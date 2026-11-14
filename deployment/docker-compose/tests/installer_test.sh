@@ -220,7 +220,7 @@ check "unset DATA_STORE reuses arango volume" "$inner" "reusing the existing Ara
 check "unset DATA_STORE reuses neo4j volume" "$inner" "reusing the existing Neo4j data volume"
 check "ambiguous both-volumes still errors" "$inner" "data volumes for BOTH graph"
 check "lost graph password guidance" "$inner" "cannot be recovered"
-check "summary graph DB fallback is honest" "$inner" '"${DATA_STORE:-(unset)}"'
+check "summary graph DB fallback is honest" "$inner" '${DATA_STORE:-(unset)}}"'
 check ".env locked to owner-only" "$inner" 'chmod 600 "$ENV_FILE"'
 check ".env chmod failure is fatal" "$inner" "Could not restrict permissions"
 check ".env chmod is guarded" "$inner" '&& ! chmod 600 "$ENV_FILE"; then'
@@ -577,6 +577,28 @@ check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=
   printf 'IMAGE_TAG=0.6.0-slim\nSECRET_KEY=abc\nAPP_PORT=3000\nPROJECT_NAME=testproj\nDATA_STORE=neo4j\nCOMPOSE_PROFILES=graph-neo4j\nPIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml\n' >"$work/.env"
   (cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
   check "the override alone brings both profiles" ",$(grep '^COMPOSE_PROFILES=' "$work/.env" | cut -d= -f2-)," ",postgres,postgres-migrate,"
+)
+
+# docker-compose.postgres-only.yml as the override: the installer writes every PostgreSQL password, the project renders with no other
+# store, and the summary names PostgreSQL rather than the graph, KV and broker selections the override replaces.
+(
+  work="$TMP_ROOT/pg-only"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  cp "$COMPOSE_DIR/docker-compose.yml" "$COMPOSE_DIR/docker-compose.postgres-only.yml" "$COMPOSE_DIR/env.template" "$work/"
+  mkdir -p "$work/postgres"
+  printf 'IMAGE_TAG=0.6.0-slim\nSECRET_KEY=abc\nAPP_PORT=3000\nPROJECT_NAME=testproj\nDATA_STORE=neo4j\nCOMPOSE_PROFILES=graph-neo4j,sandbox\nPIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml\n' >"$work/.env"
+  out="$(cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only 2>&1)" && pass "--reconfigure with the PostgreSQL-only override exits 0" || fail "--reconfigure with the PostgreSQL-only override exits 0"
+  summary="$(printf '%s\n' "$out" | grep -E '^  (Graph DB|KV store|Broker):' | tr -s ' ')"
+  check_exact "the summary names PostgreSQL for every store" "$summary" "$(printf ' Graph DB: postgres (docker-compose.postgres-only.yml)\n KV store: postgres (docker-compose.postgres-only.yml)\n Broker: postgres (docker-compose.postgres-only.yml)')"
+  check "the printed command lists the PostgreSQL-only override" "$out" "docker-compose.postgres-only.yml"
+  check ".env has all nine PG passwords" "$(grep -cE '^PG_(ADMIN|NODE|CONNECTORS|INDEXING|QUERY|JOBS|MIGRATE|BACKUP|KV)_PASSWORD=.+' "$work/.env")" "9"
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    services="$(cd "$work" && docker compose --env-file .env -f docker-compose.yml -f docker-compose.postgres-only.yml config --services 2>&1)"
+    check_exact "the project renders with no other store" "$(printf '%s\n' "$services" | grep -cE '^(mongodb|qdrant|redis|neo4j|arango|etcd|zookeeper|kafka-1)$')" "0"
+    check "the project renders the PostgreSQL stack" "$services" "pipeshub-placement"
+  else
+    pass "the project renders with no other store (skipped: no docker compose here)"
+  fi
 )
 
 # --uninstall keeps the PostgreSQL volume unless --delete-postgres is given, also with --yes (checked with a recording docker).

@@ -1,32 +1,25 @@
 # PipesHub on PostgreSQL alone, for a NEW install: documents, graph (DATA_STORE=postgres), vectors (pgvector), configuration (KV),
 # the message queue and the crawl scheduler all live in the one PostgreSQL of the `postgres` profile. No MongoDB, Qdrant, Redis,
-# Neo4j, ArangoDB, etcd or Kafka container starts, whatever COMPOSE_PROFILES says. It does not copy data from an install that
+# Neo4j, ArangoDB, etcd or Kafka service exists in the project, whatever profiles are active. It does not copy data from an install that
 # already runs those stores; keep such an install on its stores.
 #
+#   PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-only.yml ./install.sh      (generates the passwords), or by hand:
 #   docker compose -f docker-compose.yml -f docker-compose.postgres-only.yml -p pipeshub-ai up -d --build
 #
 # Needs Docker Compose v2.24.4 or later (!override, !reset), a repository checkout (the PostgreSQL and migration images are built
-# from ./postgres and backend/db/Dockerfile) and in .env the nine PG_*_PASSWORD values (see env.template) plus COMPOSE_PROFILES
-# without graph-neo4j, for example COMPOSE_PROFILES=sandbox. The postgres, pgbouncer and pipeshub-migrate services start without
+# from ./postgres and backend/db/Dockerfile) and, by hand, the nine PG_*_PASSWORD values in .env (see env.template). The postgres, pgbouncer and pipeshub-migrate services start without
 # their profiles. Start order: postgres healthy, pgbouncer healthy, pipeshub-migrate exits 0, then the placement and fold workers
 # and the app; if the migration fails the app never starts (see postgres/README.md).
 services:
-  mongodb:
-    profiles: !override ["postgres-only-unused"]
-  qdrant:
-    profiles: !override ["postgres-only-unused"]
-  redis:
-    profiles: !override ["postgres-only-unused"]
-  neo4j:
-    profiles: !override ["postgres-only-unused"]
-  arango:
-    profiles: !override ["postgres-only-unused"]
-  etcd:
-    profiles: !override ["postgres-only-unused"]
-  zookeeper:
-    profiles: !override ["postgres-only-unused"]
-  kafka-1:
-    profiles: !override ["postgres-only-unused"]
+  # Removed from the project, not moved to a profile: `--profile "*"` would start a profiled service again.
+  mongodb: !reset null
+  qdrant: !reset null
+  redis: !reset null
+  neo4j: !reset null
+  arango: !reset null
+  etcd: !reset null
+  zookeeper: !reset null
+  kafka-1: !reset null
 
   postgres:
     profiles: !reset []
@@ -101,12 +94,13 @@ services:
       # LISTEN needs a session, so this one bypasses the transaction pooler; the login only listens.
       - PG_LISTEN_URL=postgresql://pipeshub_kv_login:${PG_KV_PASSWORD:?PG_KV_PASSWORD is empty or unset in .env}@postgres:5432/pipeshub
     depends_on:
-      mongodb:
-        required: false
-      qdrant:
-        required: false
-      redis:
-        required: false
+      mongodb: !reset null
+      qdrant: !reset null
+      redis: !reset null
+      neo4j: !reset null
+      arango: !reset null
+      etcd: !reset null
+      kafka-1: !reset null
       pgbouncer:
         condition: service_healthy
       pipeshub-migrate:
