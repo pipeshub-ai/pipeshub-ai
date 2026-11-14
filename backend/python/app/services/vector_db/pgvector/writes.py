@@ -257,7 +257,7 @@ _LOCK_GROUPS = """/* pipeshub:pgvector.lock_groups */
         ORDER BY group_key FOR KEY SHARE"""
 
 
-async def upsert(tx: Tx, collection_id: int, space_id: int, b: Prepared, computed_at: datetime, *, safe_mode: bool) -> None:
+async def upsert(tx: Tx, collection_id: int, space_id: int, b: Prepared, computed_at: datetime | None, *, safe_mode: bool) -> None:
     """Points, their text, payload and postings, and their groups' membership, in this transaction. New points are inserted; points
     that exist are locked and updated in place (``point_sk`` is kept: the generated bit column and the indexes follow). A point
     deleted between the two steps is inserted by the next round. The rows of the points' groups are locked first (see ``_LOCK_GROUPS``)."""
@@ -289,7 +289,8 @@ _GROUP_ROWS = """/* pipeshub:pgvector.write_groups */
         INSERT INTO retrieval.point_groups AS pg (org_id, collection_id, group_key, connector_ids, record_group_ids,
                                                   root_record_group_ids, path_ids, acl_scope, scope_stamp, scope_version, scope_generation,
                                                   computed_at)
-        SELECT $1, $2, g.k, coalesce(g.c, '{}'), coalesce(g.r, '{}'), coalesce(g.x, '{}'), g.p, g.a, g.s, g.v, g.n, $4::timestamptz FROM g
+        SELECT $1, $2, g.k, coalesce(g.c, '{}'), coalesce(g.r, '{}'), coalesce(g.x, '{}'), g.p, g.a, g.s, g.v, g.n,
+               coalesce($4::timestamptz, clock_timestamp()) FROM g
         ORDER BY g.k         -- one order for every writer, so two writers of overlapping groups cannot deadlock
         ON CONFLICT (org_id, collection_id, group_key) DO UPDATE
           SET connector_ids = coalesce((SELECT g.c FROM g WHERE g.k = EXCLUDED.group_key), pg.connector_ids),
@@ -301,7 +302,8 @@ _GROUP_ROWS = """/* pipeshub:pgvector.write_groups */
               scope_version = coalesce((SELECT g.v FROM g WHERE g.k = EXCLUDED.group_key), pg.scope_version),
               scope_generation = coalesce((SELECT g.n FROM g WHERE g.k = EXCLUDED.group_key), pg.scope_generation),
               computed_at = EXCLUDED.computed_at
-          WHERE pg.computed_at < EXCLUDED.computed_at
+          -- a row more than 30 s ahead of the database's clock (written by a host whose clock was ahead) orders against nothing: any writer replaces it
+          WHERE (pg.computed_at < EXCLUDED.computed_at OR pg.computed_at > clock_timestamp() + interval '30 seconds')
             AND ($5::boolean OR cardinality(EXCLUDED.connector_ids) + cardinality(EXCLUDED.record_group_ids)
                                 + cardinality(EXCLUDED.root_record_group_ids) > 0)
         RETURNING pg.group_key, pg.connector_ids, pg.record_group_ids, pg.root_record_group_ids, pg.path_ids, pg.acl_scope"""
@@ -325,11 +327,12 @@ _ROW_COLUMNS = ((CONNECTOR_IDS_FIELD, "c"), (RECORD_GROUP_IDS_FIELD, "r"), (ROOT
                 (ACL_SCOPE_FIELD, "a"), (SCOPE_STAMP_FIELD, "s"), (SCOPE_VERSION_FIELD, "v"), (SCOPE_GENERATION_FIELD, "n"))
 
 
-async def write_groups(tx: Tx, org: str, collection_id: int, groups: dict[str, dict[str, Any]], computed_at: datetime,
+async def write_groups(tx: Tx, org: str, collection_id: int, groups: dict[str, dict[str, Any]], computed_at: datetime | None,
                        *, allow_empty: bool) -> int:
     """Membership and scope fields of groups, behind the compare-and-set fence: a row is replaced only by a writer with a later
-    ``computed_at``, so of two concurrent writers the one that read the graph later wins whatever the order they commit in. A group
-    row that does not exist yet is created. Only the keys a group carries are replaced (a caller that supplies ``connectorIds`` alone
+    ``computed_at`` (None: the database's clock now, never a host's), so of two concurrent writers the one that read the graph later wins whatever
+    the order they commit in, while the stored time is at most 30 s ahead of the database's clock. A row further ahead was timed by a clock that was
+    wrong and orders against nothing: any writer replaces it. A group row that does not exist yet is created. Only the keys a group carries are replaced (a caller that supplies ``connectorIds`` alone
     leaves the rest as it is, as a payload merge does on the other providers). ``allow_empty=False`` (indexing) never replaces arrays
     with empty ones: an upsert that carries no membership must not erase what the membership sync wrote. The rows of ``group_members``
     (kinds 1-3 membership, 4 path, 5 override scope) are made to match the arrays that result."""
