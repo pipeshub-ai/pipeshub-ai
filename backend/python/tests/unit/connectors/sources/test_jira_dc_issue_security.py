@@ -270,8 +270,35 @@ class TestWithdrawnAccounts:
         await c._withdraw_unlisted_app_users([])
         c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
 
+    async def test_an_empty_list_when_accounts_were_linked_withdraws_nobody(self) -> None:
+        c = _connector()
+        self._stored(c)
+        c._listed_user_keys = set()
+        await c._withdraw_unlisted_app_users([])
+        c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+
+    @pytest.mark.parametrize("flag", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_refused",
+                                      "_user_bulk_incomplete"])
+    def test_a_directory_not_read_in_full_keeps_every_level_grant(self, flag: str) -> None:
+        c = _connector()
+        c._listed_user_keys = {"alice-key"}
+        c._issue_security["10"] = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [
+                {"type": "user", "parameter": "alice-key", "user": {"key": "alice-key"}},
+                {"type": "user", "parameter": "gone", "user": {"key": "gone", "emailAddress": "unresolved@x.com"}},
+            ]},
+        )
+        issue = {"id": "9", "key": "P-9", "fields": {
+            "project": {"id": "10", "key": "P"}, "security": {"id": "1"}, "issuetype": {"name": "Epic"}}}
+        setattr(c, flag, True)
+        grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue,
+                                         {"alice-key": _user("alice-key", "alice@example.com")})
+        assert sorted(g.email for g in grants) == ["alice@example.com", "unresolved@x.com"]
+
     def test_a_level_member_outside_the_directory_is_not_granted(self) -> None:
         c = _connector()
+        c._listed_user_keys = {"alice-key"}
         c._issue_security["10"] = IssueSecurityContext(
             knowledge=SchemeKnowledge.PRESENT, members_readable=True,
             members_by_level={"1": [
@@ -284,7 +311,3 @@ class TestWithdrawnAccounts:
         grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue,
                                          {"alice-key": _user("alice-key", "alice@example.com")})
         assert [g.email for g in grants] == ["alice@example.com"]
-        c._user_read_unfinished = True  # a directory read cut short is not the whole directory
-        grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue,
-                                         {"alice-key": _user("alice-key", "alice@example.com")})
-        assert sorted(g.email for g in grants) == ["alice@example.com", "former@x.com"]

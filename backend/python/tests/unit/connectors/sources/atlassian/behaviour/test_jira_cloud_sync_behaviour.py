@@ -1055,6 +1055,8 @@ class TestUnfinishedUserRead:
         await connector.run_sync()
 
         assert saved_members(site_db, "grp-dev") == []
+        # A refused list says nothing about who left Jira: nobody is withdrawn, nor loses their own grants.
+        assert site_db.withdrawn_users == []
 
     async def test_a_first_sync_with_a_short_user_read_saves_what_was_read(self, api, site_db, checkpoints, search) -> None:
         self._stub_bo_everywhere(api)

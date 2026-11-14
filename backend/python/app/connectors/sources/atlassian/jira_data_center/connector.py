@@ -4706,7 +4706,7 @@ class JiraDataCenterConnector(BaseConnector):
         """Take the connector and their own grants from stored users the complete active-user list no
         longer shows (deactivated or removed), unless another listed account has their email. A list
         cut short, refused or read through the search fallback is not complete."""
-        if self._user_read_unfinished or self._user_bulk_forbidden or self._user_bulk_incomplete:
+        if not self._directory_read_complete():
             return
         kept_emails = {u.email.lower() for u in jira_users if u.email}
         gone = [
@@ -4717,10 +4717,19 @@ class JiraDataCenterConnector(BaseConnector):
         if gone:
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)
 
+    def _directory_read_complete(self) -> bool:
+        """The active-user list was read in full through ``/user/list``: not cut short, refused, or read through
+        the search fallback (incomplete on Jira 10+), and not empty when accounts were linked before. Only then
+        may an account missing from it lose access."""
+        if (self._user_read_unfinished or self._user_bulk_forbidden or self._user_bulk_refused
+                or self._user_bulk_incomplete):
+            return False
+        return bool(self._listed_user_keys) or not self._stored_app_users
+
     def _directory_grants(self, permissions: list[Permission], users: dict[str, AppUser]) -> list[Permission]:
         """An issue's own grants (reporter, assignee, level members) name only accounts in the synced
-        directory; nothing is dropped when the directory read was cut short."""
-        if self._user_read_unfinished:
+        directory; nothing is dropped when the directory was not read in full."""
+        if not self._directory_read_complete():
             return permissions
         listed = {u.email.lower() for u in users.values() if u.email}
         return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed]

@@ -381,16 +381,21 @@ async def test_a_story_stored_under_its_project_moves_under_its_epic_when_read_a
     assert by_key["PROJ-10"] in await _listed_under(world, "bob", by_key["PROJ-6"])
 
 
-async def _reindex(world: dict[str, Any], issue: dict) -> None:
-    """Re-index the stored copy of ``issue`` against the source's current state of it."""
+async def _reindex(world: dict[str, Any], issue: dict, *, context: IssueSecurityContext | None = None) -> None:
+    """Re-index the stored copy of ``issue`` against the source's current state of it. With
+    ``context``, the project's security and Browse holders are read as a fresh read reads them."""
     connector = world["connector"]
     ds = MagicMock()
     ds.get_issue = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value=issue)))
     parents = [i for i, _ in ISSUES.values() if i["id"] == (issue["fields"]["parent"] or {}).get("id")]
     ds.bulk_fetch_issues = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value={"issues": parents})))
+    grants = [{"permission": "BROWSE_PROJECTS", "holder": h} for h in (context.browse_holders or [])] if context else []
+    ds.get_assigned_permission_scheme = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value={"id": 7})))
+    ds.get_permission_scheme_grants = AsyncMock(
+        return_value=MagicMock(status=200, json=MagicMock(return_value={"permissions": grants})))
     connector._get_fresh_datasource = AsyncMock(return_value=ds)
     connector.data_source = ds
-    connector._load_issue_security = AsyncMock(return_value=connector._issue_security[PROJECT_ID])
+    connector._load_issue_security = AsyncMock(return_value=context or connector._issue_security[PROJECT_ID])
     connector.indexing_filters = MagicMock()
     stored = await world["processor"].get_record_by_external_id(
         connector_id=world["connector_id"], external_record_id=issue["id"])
@@ -554,3 +559,29 @@ async def test_a_withdrawn_reporter_reads_nothing_of_theirs_through_the_org_team
     await processor.on_new_app_users(_users(world))  # reactivated
     await _write(world, [_edited("plain task", "2024-06-18T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})])
     assert not await _mismatches(world, {**readers, "PROJ-1": PROJECT_READERS | {"dave"}}, by_key)
+
+
+async def test_a_reindex_does_not_grant_a_withdrawn_reporter_whose_email_is_in_the_payload(world: dict[str, Any]) -> None:
+    """The reindex resolves the issue's own people from its payload too; the grants it writes must still name only
+    the synced directory, or a withdrawn reporter named there with an email would get the issue back."""
+    await _sync_project(world)
+    connector, processor = world["connector"], world["processor"]
+    context = connector._issue_security[PROJECT_ID]
+    context.browse_holders = [{"type": "reporter"}]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    dave = {"accountId": PEOPLE["dave"], "emailAddress": _email("dave", world["run"]), "displayName": "dave"}
+    await _write(world, [_edited("plain task", "2024-06-16T10:00:00.000+0000", reporter=dave)])
+    assert not await _mismatches(world, {**readers, "PROJ-1": PROJECT_READERS | {"dave"}}, by_key)
+
+    for key in world["user_keys"]:  # the org's All team passes the gate (as a public project makes it)
+        await world["graph"].add_user_to_all_team(world["org_id"], key)
+    await processor.ensure_team_app_edge(world["connector_id"])
+    connector._stored_app_users = await processor.get_all_app_users(world["connector_id"])
+    listed = [u for u in _users(world) if u.source_user_id != PEOPLE["dave"]]
+    connector._listed_account_ids = {u.source_user_id for u in listed}
+    await connector._withdraw_ineligible_app_users(listed, {PEOPLE["dave"]})
+    assert not await _mismatches(world, readers, by_key)
+
+    await _reindex(world, _edited("plain task", "2024-06-17T10:00:00.000+0000", reporter=dave), context=context)
+    assert not await _mismatches(world, readers, by_key)

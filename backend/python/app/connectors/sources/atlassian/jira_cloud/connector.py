@@ -562,6 +562,7 @@ class JiraConnector(BaseConnector):
         self._stored_app_users: list[AppUser] = []
         self._deactivated_account_ids: set[str] = set()
         self._newly_listed_account_ids: list[str] = []
+        self._listed_account_ids: set[str] = set()
         self._app_roles_mapping: Optional[dict[str, list[dict[str, str]]]] = None
         # Selected project key -> the key Jira gives that project now, as of the last listing.
         self._renamed_project_keys: dict[str, str] = {}
@@ -983,7 +984,7 @@ class JiraConnector(BaseConnector):
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
-            if not self._user_read_unfinished:
+            if self._directory_read_complete():
                 await self._withdraw_ineligible_app_users(
                     jira_users, unlicensed_ids | self._deactivated_account_ids
                 )
@@ -2291,6 +2292,7 @@ class JiraConnector(BaseConnector):
             u["accountId"] for u in raw_jira_users
             if u.get("accountType") == "atlassian" and u.get("active", True) and u.get("accountId")
         }
+        self._listed_account_ids = listed_active
         # Deactivated, or gone from the directory: neither can sign in. Only acted on after a complete read.
         self._deactivated_account_ids = {
             u["accountId"] for u in raw_jira_users
@@ -2717,11 +2719,19 @@ class JiraConnector(BaseConnector):
             # Their own grants go too: the org's All team may still pass them through the gate.
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)
 
+    def _directory_read_complete(self) -> bool:
+        """The user list was read in full: not cut short, not refused, and not empty when accounts were linked
+        before. Only then may an account missing from it lose access."""
+        if self._user_read_unfinished or self._user_bulk_forbidden or self._user_bulk_refused:
+            return False
+        return bool(self._listed_account_ids) or not self._stored_app_users
+
     def _directory_grants(self, permissions: list[Permission], user_by_account_id: dict[str, AppUser]) -> list[Permission]:
         """An issue's own grants (reporter, assignee, user fields, level members) name only accounts in the
-        synced directory: Jira treats an account without product access, or a deactivated one, as anonymous.
-        A directory read cut short is not the whole directory, so nothing is dropped then."""
-        if self._user_read_unfinished:
+        synced directory (``user_by_account_id``, never one widened with the issue's own people): Jira treats an
+        account without product access, or a deactivated one, as anonymous. A directory not read in full is not
+        the whole directory, so nothing is dropped then."""
+        if not self._directory_read_complete():
             return permissions
         listed = {u.email.lower() for u in user_by_account_id.values() if u.email}
         return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed]
@@ -7312,7 +7322,8 @@ class JiraConnector(BaseConnector):
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
             )
-            permissions = self._directory_grants(permissions, user_by_account_id)
+            # The synced directory, not the copy widened with the issue's own creator, reporter and assignee.
+            permissions = self._directory_grants(permissions, synced_user_by_account_id or {})
             if not settled or skipped_holders:
                 # The level could not be read in full (a null level always can), or a holder
                 # did not resolve (application roles are read by the sync): writing would

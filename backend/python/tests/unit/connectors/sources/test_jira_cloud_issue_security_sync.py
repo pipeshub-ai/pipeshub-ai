@@ -1729,12 +1729,19 @@ class TestIssueGrantsNameListedAccountsOnly:
         _, perms, _ = await _build(_connector(), _issue({"id": "10102"}), _present(holders))
         assert {p.email for p in perms} == {"asg@x.com"}
 
-    def test_a_directory_read_cut_short_drops_nothing(self) -> None:
+    @pytest.mark.parametrize("not_in_full", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_refused", "empty"])
+    def test_a_directory_not_read_in_full_drops_nothing(self, not_in_full: str) -> None:
         c = _connector()
+        c._stored_app_users = [AppUser(app_name="JIRA", connector_id="c", source_user_id="acc-l", org_id="org-1",
+                                       email="linked@x.com", full_name="L", is_active=True)]
+        c._listed_account_ids = {"acc-l"}
         perms = [Permission(entity_type=EntityType.USER, email="former@x.com", type=PermissionType.READ),
                  Permission(entity_type=EntityType.GROUP, external_id="g", type=PermissionType.READ)]
         assert c._directory_grants(perms, {}) == perms[1:]
-        c._user_read_unfinished = True
+        if not_in_full == "empty":
+            c._listed_account_ids = set()  # no one listed, though accounts were linked: not a read of the whole list
+        else:
+            setattr(c, not_in_full, True)
         assert c._directory_grants(perms, {}) == perms
 
     @staticmethod
