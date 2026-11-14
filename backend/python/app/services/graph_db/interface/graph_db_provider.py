@@ -8200,7 +8200,7 @@ class IGraphDBProvider(ABC):
         grants_by_connector: dict[str, list[str]],
         transaction: str | None,
         probe: dict[str, Any] | None = None,
-        cross: dict[str, Any] | None = None,
+        cross: list[str] | None = None,
     ) -> tuple[bool, list[str], list[str]]:
         """What the batch check says about a browse start: whether it admits the
         start, which of its ancestors it admits (the breadcrumb of a start the
@@ -8236,7 +8236,7 @@ class IGraphDBProvider(ABC):
 
     async def _kh_v3_declared_scope(
         self, declared: list[str], app_id: str, granted: list[str], probe: dict[str, Any] | None, transaction: str | None,
-        cross: dict[str, Any] | None = None,
+        cross: list[str] | None = None,
     ) -> list[str]:
         """The scope of these declared groups the check admits, as the check's declared arm reads it: those the viewer is granted or the walk
         from the App reaches (where a group is admitted some other way, below a seed, what hangs under it is not readable through it), and the
