@@ -49,12 +49,19 @@ class _MemoryConfigService:
 
 
 def _graph(**connectors_by_type: list[str]) -> AsyncMock:
-    graph = AsyncMock()
+    graph = _orgs_graph()
     graph.get_nodes_by_filters = AsyncMock(
         side_effect=lambda collection, filters, **_: [
             {"_key": c, "orgId": ORG} for c in connectors_by_type.get(filters["type"], [])
         ]
     )
+    return graph
+
+
+def _orgs_graph() -> AsyncMock:
+    """Two orgs; like Arango and Neo4j, the app reads below answer for every org."""
+    graph = AsyncMock()
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": ORG}, {"_key": "org-2"}])
     return graph
 
 
@@ -138,7 +145,7 @@ async def test_each_connector_is_migrated_inside_its_org() -> None:
 async def test_an_app_saved_without_its_org_takes_it_from_the_org_edge() -> None:
     store = {_path("s3-1"): _config({"created": _date("is_after", FEB)})}
     config = _MemoryConfigService(store)
-    graph = AsyncMock()
+    graph = _orgs_graph()
     graph.get_nodes_by_filters = AsyncMock(
         side_effect=lambda collection, filters, **_: [{"_key": "s3-1"}] if filters["type"] == "S3" else []
     )
@@ -154,7 +161,7 @@ async def test_an_app_saved_without_its_org_takes_it_from_the_org_edge() -> None
 async def test_an_app_with_no_org_is_skipped_and_the_flag_is_still_set() -> None:
     store = {_path("s3-1"): _config({"created": _date("is_after", FEB)})}
     config = _MemoryConfigService(store)
-    graph = AsyncMock()
+    graph = _orgs_graph()
     graph.get_nodes_by_filters = AsyncMock(
         side_effect=lambda collection, filters, **_: [{"_key": "s3-1"}] if filters["type"] == "S3" else []
     )
@@ -171,7 +178,7 @@ async def test_an_app_with_no_org_is_skipped_and_the_flag_is_still_set() -> None
 async def test_an_unreadable_org_edge_is_a_failure_and_the_flag_stays_unset() -> None:
     store = {_path("s3-1"): _config({"created": _date("is_after", FEB)})}
     config = _MemoryConfigService(store)
-    graph = AsyncMock()
+    graph = _orgs_graph()
     graph.get_nodes_by_filters = AsyncMock(
         side_effect=lambda collection, filters, **_: [{"_key": "s3-1"}] if filters["type"] == "S3" else []
     )
@@ -185,6 +192,19 @@ async def test_an_unreadable_org_edge_is_a_failure_and_the_flag_stays_unset() ->
 
     result = await run_s3_created_date_filter_migration(config, graph, LOGGER)
 
-    assert result == {"success": False, "skipped": False, "migrated": 0, "failures": 1}
+    # One failure per org's pass: the app names no org, so each org's pass looks for it.
+    assert result == {"success": False, "skipped": False, "migrated": 0, "failures": 2}
     assert MIGRATION_FLAG_KEY not in store
     assert "created" in _values(store, "s3-1")
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_org_list_leaves_the_flag_unset() -> None:
+    store = {_path("s3-1"): _config({"created": _date("is_after", FEB)})}
+    graph = _graph(S3=["s3-1"])
+    graph.get_all_orgs = AsyncMock(side_effect=ConnectionError("graph did not answer"))
+
+    result = await run_s3_created_date_filter_migration(_MemoryConfigService(store), graph, LOGGER)
+
+    assert result == {"success": False, "skipped": False, "migrated": 0, "failures": 1}
+    assert MIGRATION_FLAG_KEY not in store

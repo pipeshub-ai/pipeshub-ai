@@ -8,7 +8,7 @@ import logging
 import pytest
 
 from app.core import org_context
-from app.core.org_jobs import for_each_org
+from app.core.org_jobs import for_each_org, of_org
 
 _LOG = logging.getLogger("test-org-jobs")
 
@@ -47,7 +47,7 @@ async def _detached(graph: _Orgs, raising: frozenset[str] = frozenset()) -> tupl
 async def test_lists_once_under_system_every_internal_org_active_or_not() -> None:
     graph = _Orgs([{"_key": "a"}])
     await _detached(graph)
-    assert graph.calls == [("system", "system:demo_job", {"active": False})]
+    assert graph.calls == [("system", "system:demo_job", {"active": False, "raise_on_error": True})]
 
 
 async def test_active_lists_only_active_orgs() -> None:
@@ -56,7 +56,7 @@ async def test_active_lists_only_active_orgs() -> None:
     async def work(_org_id: str) -> None: ...
 
     await asyncio.get_running_loop().create_task(for_each_org(graph, "demo_job", work, _LOG, active=True), context=contextvars.Context())
-    assert graph.calls == [("system", "system:demo_job", {"active": True})]
+    assert graph.calls == [("system", "system:demo_job", {"active": True, "raise_on_error": True})]
 
 
 async def test_runs_work_once_per_org_under_that_org() -> None:
@@ -75,6 +75,22 @@ async def test_one_orgs_failure_is_one_warning_without_its_text_and_the_next_org
         "demo_job failed org=a error=RuntimeError"]
     assert [s[0] for s in seen] == ["a", "b"]
     assert after is None
+
+
+async def test_returns_the_orgs_whose_work_failed() -> None:
+    async def work(org_id: str) -> None:
+        if org_id == "b":
+            raise RuntimeError("boom")
+
+    graph = _Orgs([{"_key": "a"}, {"_key": "b"}, {"_key": "c"}])
+    failed = await asyncio.get_running_loop().create_task(for_each_org(graph, "demo_job", work, _LOG), context=contextvars.Context())
+    assert failed == ["b"]
+
+
+def test_of_org_keeps_the_bound_orgs_docs_and_those_without_an_org() -> None:
+    docs = [{"id": 1, "orgId": "a"}, {"id": 2, "orgId": "b"}, {"id": 3}, {"id": 4, "orgId": None}]
+    assert [d["id"] for d in of_org(docs, "a")] == [1, 3, 4]
+    assert of_org(None, "a") == []
 
 
 async def test_an_org_list_failure_propagates_to_the_caller() -> None:

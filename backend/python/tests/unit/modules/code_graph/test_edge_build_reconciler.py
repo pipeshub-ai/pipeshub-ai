@@ -27,8 +27,15 @@ def _row(record_group_id: str, requested_at: int | None, org_id: str = "org-1") 
 
 
 def _graph_provider(rows: list[dict]) -> MagicMock:
+    """The rows' orgs, and each org's rows read under that org, as PostgreSQL serves them."""
     provider = MagicMock()
-    provider.get_nodes_by_filters = AsyncMock(return_value=rows)
+    orgs = sorted({r["orgId"] for r in rows if r.get("orgId")})
+    provider.get_all_orgs = AsyncMock(return_value=[{"_key": o} for o in orgs])
+
+    async def by_filters(*, collection, filters, **_) -> list[dict]:
+        assert filters["orgId"] == org_context.current_org_id()
+        return [r for r in rows if r.get("orgId") == filters["orgId"]]
+    provider.get_nodes_by_filters = AsyncMock(side_effect=by_filters)
     return provider
 
 
@@ -56,6 +63,7 @@ async def test_stale_pending_repo_is_handed_to_the_event_service() -> None:
     assert query["collection"] == CollectionNames.SYNC_POINTS.value
     assert query["filters"] == {
         "syncDataPointType": "codeEdgeBuild",
+        "orgId": "org-1",
         "edgeBuildPending": True,
     }
 

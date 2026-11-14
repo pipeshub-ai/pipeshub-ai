@@ -52,6 +52,10 @@ class _Graph:
         self.edge_org = edge_org
         self.edge_read_fails = edge_read_fails
 
+    async def get_all_orgs(self, **_: object) -> list[dict]:
+        # Like Arango and Neo4j, the app read below answers for every org.
+        return [{"_key": "org-1"}, {"_key": "org-2"}]
+
     async def get_nodes_by_field_in(self, collection: str, field: str, values: list, fields: list, *,
                                     raise_on_error: bool = False) -> list[dict]:
         assert (field, values) == ("type", ["Web"])
@@ -124,7 +128,8 @@ async def test_an_unreadable_org_edge_is_a_failure_and_the_flag_stays_unset() ->
         _container(config), _Graph(["old"], org_id=None, edge_read_fails=True), LOGGER,
     )
 
-    assert result == {"success": False, "skipped": False, "connectors_updated": 0, "failures": 1}
+    # One failure per org's pass: the app names no org, so each org's pass looks for it.
+    assert result == {"success": False, "skipped": False, "connectors_updated": 0, "failures": 2}
     assert MIGRATION_FLAG_KEY not in config.store
 
 

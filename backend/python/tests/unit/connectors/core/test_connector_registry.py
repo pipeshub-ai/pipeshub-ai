@@ -55,8 +55,10 @@ def _make_connector_class(
 
 
 def _make_graph_provider():
-    """Create an AsyncMock graph provider."""
-    return AsyncMock()
+    """Create an AsyncMock graph provider with one org."""
+    gp = AsyncMock()
+    gp.get_all_orgs.return_value = [{"_key": "org-1"}]
+    return gp
 
 
 # ===========================================================================

@@ -68,7 +68,9 @@ def _make_connector_class(
 
 
 def _make_graph_provider():
-    return AsyncMock()
+    gp = AsyncMock()
+    gp.get_all_orgs.return_value = [{"_key": "org-1"}]
+    return gp
 
 
 # ===========================================================================
