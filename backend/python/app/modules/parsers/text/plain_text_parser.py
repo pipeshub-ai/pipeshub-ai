@@ -17,13 +17,16 @@ WINDOW_CHARS = 4_000
 def _split_line(line: str) -> list[str]:
     """A line longer than a window, cut at the last space before each window's end when there is one."""
     parts: list[str] = []
-    while len(line) > WINDOW_CHARS:
-        cut = line.rfind(" ", 0, WINDOW_CHARS)
-        cut = cut + 1 if cut > 0 else WINDOW_CHARS
-        parts.append(line[:cut])
-        line = line[cut:]
-    if line:
-        parts.append(line)
+    start, end = 0, len(line)
+    # Offsets into the line, not a shrinking copy of it: a 5 MiB line with no spaces would
+    # otherwise copy gigabytes.
+    while end - start > WINDOW_CHARS:
+        cut = line.rfind(" ", start, start + WINDOW_CHARS)
+        cut = cut + 1 if cut > start else start + WINDOW_CHARS
+        parts.append(line[start:cut])
+        start = cut
+    if start < end:
+        parts.append(line[start:])
     return parts
 
 

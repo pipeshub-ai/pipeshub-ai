@@ -19,6 +19,8 @@ _SNIFF_BYTES = 8 * 1024
 _CHARSET_SAMPLE_BYTES = 64 * 1024
 _NEWLINE_SEARCH_BYTES = 64 * 1024
 _UTF16_NUL_SHARE = 0.9
+_UTF16_MIXED_NUL_SHARE = 0.3
+_UTF16_PRINTABLE_SHARE = 0.95
 _CHARDET_MIN_CONFIDENCE = 0.8
 _CHARDET_FALLBACK_CONFIDENCE = 0.5
 _BOMS = (
@@ -68,13 +70,31 @@ def _utf16_without_bom(sample: bytes) -> str | None:
         return None
     odd_nul = sample[1:pairs * 2:2].count(0)
     even_nul = sample[0:pairs * 2:2].count(0)
+    sample = sample[:pairs * 2]
     if odd_nul >= _UTF16_NUL_SHARE * pairs and even_nul <= (1 - _UTF16_NUL_SHARE) * pairs:
+        return "utf-16-le" if _decodes(sample, "utf-16-le") else None
+    if even_nul >= _UTF16_NUL_SHARE * pairs and odd_nul <= (1 - _UTF16_NUL_SHARE) * pairs:
+        return "utf-16-be" if _decodes(sample, "utf-16-be") else None
+    # Text with letters outside ASCII (CJK, Cyrillic) leaves NULs only where its ASCII is: fewer
+    # at one parity, still almost none at the other. It must then read as printable text.
+    if odd_nul >= _UTF16_MIXED_NUL_SHARE * pairs and even_nul <= (1 - _UTF16_NUL_SHARE) * pairs:
         codec = "utf-16-le"
-    elif even_nul >= _UTF16_NUL_SHARE * pairs and odd_nul <= (1 - _UTF16_NUL_SHARE) * pairs:
+    elif even_nul >= _UTF16_MIXED_NUL_SHARE * pairs and odd_nul <= (1 - _UTF16_NUL_SHARE) * pairs:
         codec = "utf-16-be"
     else:
         return None
-    return codec if _decodes(sample[:pairs * 2], codec) else None
+    return codec if _reads_as_text(sample, codec) else None
+
+
+def _reads_as_text(sample: bytes, codec: str) -> bool:
+    try:
+        text = codecs.getincrementaldecoder(codec)("strict").decode(sample, final=False)
+    except UnicodeDecodeError:
+        return False
+    if not text:
+        return False
+    printable = sum(1 for c in text if c.isprintable() or c in "\r\n\t")
+    return printable >= _UTF16_PRINTABLE_SHARE * len(text)
 
 
 def _codec(content: bytes) -> tuple[str | None, int]:
@@ -167,9 +187,8 @@ def prepare_capped_text(content: bytes, *, max_bytes: int = TEXT_LOG_MAX_BYTES) 
         return BinaryFile()
     codec, bom_length = _codec(content)
     total = len(content)
-    body = content[bom_length:]
     if total <= max_bytes:
-        return CappedText(_decode(body, codec), total, None)
+        return CappedText(_decode(content[bom_length:], codec), total, None)
 
     newline = _line_break(codec)
     half = max(1, max_bytes // 2)

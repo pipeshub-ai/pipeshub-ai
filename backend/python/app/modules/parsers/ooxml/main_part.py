@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import posixpath
 import zipfile
+import zlib
 from typing import TYPE_CHECKING, Literal
 
 from lxml import etree
@@ -98,7 +99,7 @@ def _read_xml(archive: zipfile.ZipFile, name: str, damaged: UnreadableFileError)
     try:
         data = read_member(archive, name, _XML_PART_MAX_BYTES)
         return etree.fromstring(data, _parser())
-    except (KeyError, ArchiveLimitError, etree.XMLSyntaxError, zipfile.BadZipFile, ValueError) as exc:
+    except (KeyError, ArchiveLimitError, etree.XMLSyntaxError, zipfile.BadZipFile, ValueError, zlib.error) as exc:
         raise damaged from exc
 
 
@@ -180,7 +181,7 @@ def as_plain_package(content: bytes, family: Family, *, label: str) -> bytes:
                         rewritten.writestr(info, _serialize(main_rels))
                     else:
                         rewritten.writestr(info, archive.read(info))
-        except (zipfile.BadZipFile, OSError, EOFError, ValueError) as exc:
-            # A member whose data does not match its directory entry (bad CRC, truncated).
+        except (zipfile.BadZipFile, OSError, EOFError, ValueError, zlib.error) as exc:
+            # A member whose data does not match its directory entry (bad CRC, truncated, bad DEFLATE).
             raise damaged from exc
     return out.getvalue()

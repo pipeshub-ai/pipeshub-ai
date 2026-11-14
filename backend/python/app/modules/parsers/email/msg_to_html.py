@@ -163,7 +163,10 @@ def _page(message: Message) -> str:
     if attachments:
         parts += ["<h2>Attachments</h2><ul>", *attachments, "</ul>"]
     parts.append("</body></html>")
-    return "".join(parts)
+    from app.modules.parsers.email.rtf_deencapsulate import fix_surrogates
+
+    # striprtf hands back a \uN pair as two surrogate halves; a page must encode as UTF-8.
+    return fix_surrogates("".join(parts))
 
 
 def msg_to_html(content: bytes) -> str:

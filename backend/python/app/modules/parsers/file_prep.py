@@ -57,5 +57,9 @@ async def prepare_file(
             return None
         # The bytes are now the capped text only the log/cfg reader reads; no stored mime may
         # send them to another parser.
+        # With no extension of its own (the event's "unknown"), the parsing service still has to
+        # find the log/cfg reader.
+        if not extension or extension == "unknown":
+            extension = label
         return PreparedFile(prepared.text.encode("utf-8"), extension, _OCTET)
     return PreparedFile(content, extension, mime_type)

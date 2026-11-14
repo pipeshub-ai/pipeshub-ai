@@ -99,6 +99,7 @@ def raise_if_odf_encrypted(content: bytes) -> None:
     """
     import io
     import zipfile
+    import zlib
 
     from lxml import etree
 
@@ -110,7 +111,7 @@ def raise_if_odf_encrypted(content: bytes) -> None:
             data = archive.read(info)
         parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False)
         manifest = etree.fromstring(data, parser)
-    except (zipfile.BadZipFile, KeyError, OSError, ValueError, EOFError, etree.XMLSyntaxError):
+    except (zipfile.BadZipFile, KeyError, OSError, ValueError, EOFError, zlib.error, etree.XMLSyntaxError):
         return
     if next(manifest.iter(f"{{{_ODF_MANIFEST_NS}}}encryption-data"), None) is not None:
         raise PasswordProtectedError(PASSWORD_PROTECTED_MESSAGE, details={"format": "odt"})
