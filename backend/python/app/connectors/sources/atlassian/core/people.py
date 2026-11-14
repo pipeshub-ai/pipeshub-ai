@@ -90,3 +90,15 @@ def confluence_people(content: Any) -> dict[str, SourcePerson | None]:  # noqa: 
 
 def _by_id(account_id: Any) -> SourcePerson | None:  # noqa: ANN401
     return SourcePerson(source_id=account_id) if isinstance(account_id, str) and account_id else None
+
+
+# One sync withdraws at most this share of the linked accounts, or WITHDRAW_FLOOR of them when that is more.
+WITHDRAW_SHARE: float = 0.1
+WITHDRAW_FLOOR: int = 10
+
+
+def withdrawals_held(withdrawing: int, linked: int) -> bool:
+    """More accounts leaving in one sync than a directory loses at once is more likely a user list read wrong (an
+    end marker the docs do not promise, rows Atlassian fills in during an outage) than people leaving: the
+    withdrawals wait, and the connector's owner is told."""
+    return withdrawing > max(WITHDRAW_FLOOR, int(linked * WITHDRAW_SHARE))

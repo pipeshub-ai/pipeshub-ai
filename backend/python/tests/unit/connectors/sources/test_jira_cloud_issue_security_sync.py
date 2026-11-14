@@ -1781,18 +1781,52 @@ class TestIssueGrantsNameListedAccountsOnly:
 
     @pytest.mark.asyncio
     async def test_newly_listed_accounts_have_their_issues_read_again_and_are_then_cleared(self) -> None:
+        """Reporter, assignee and level: the JQL fields the docs say take an account id or a level id."""
         c = _connector()
         saved, naming = self._pass(c)
-        c._newly_listed_account_ids = ["acc-1", 'bad"id']
+        c._newly_listed_account_ids = ["acc-1"]
         ctx = self._ctx(levels={"10102": [{"type": "user", "parameter": "acc-1"}], "10103": [{"type": "group", "value": "g"}],
-                                "10104": [{"type": "groupCustomField", "parameter": "customfield_10050"}]},
-                        holders=[{"type": "reporter"}, {"type": "userCustomField", "parameter": "customfield_10040"}])
-        ctx.custom_field_ids = ["customfield_10040", "customfield_10050"]
+                                "10104": [{"type": "groupCustomField", "parameter": "customfield_10050"}]})
+        ctx.custom_field_ids = ["customfield_10050"]
         await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, ctx, {"people_reread": '["acc-0"]'}, covered=False)
-        assert saved == ['["acc-0", "acc-1", "bad\\"id"]', "[]"]  # saved before the pass, cleared after it
-        # Not cf[10050]: a group field holds group names, and an account id there makes Jira refuse the whole query.
-        assert naming == ['reporter in ("acc-0", "acc-1") OR assignee in ("acc-0", "acc-1") '
-                          'OR cf[10040] in ("acc-0", "acc-1") OR level in (10102)']
+        assert saved == ['["acc-0", "acc-1"]', "[]"]  # saved before the pass, cleared after it
+        assert naming == ['reporter in ("acc-0", "acc-1") OR assignee in ("acc-0", "acc-1") OR level in (10102)']
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("why", ["user_field", "unquotable_id", "query_refused"])
+    async def test_what_the_naming_search_cannot_cover_has_every_stored_issue_read_again(self, why: str) -> None:
+        """A user-picker field searched by account id is not documented, an id JQL cannot carry is not searched, and
+        a refused query (400) names nothing: none is skipped, every stored issue of the project is read instead."""
+        c = _connector()
+        saved, naming = self._pass(c)
+        c._newly_listed_account_ids = ['bad"id'] if why == "unquotable_id" else ["acc-1"]
+        holders = [{"type": "reporter"}, {"type": "userCustomField", "parameter": "customfield_10040"}] \
+            if why == "user_field" else None
+        ctx = self._ctx(holders=holders)
+        if why == "query_refused":
+            async def refused(*_a: object, **_kw: object) -> AsyncIterator:
+                raise JiraReadError(400, "JQL refused")
+                yield
+            c._fetch_issues_batched = refused
+        c._reread_leveled_issues = AsyncMock()
+        await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, ctx, None, covered=False)
+        c._reread_leveled_issues.assert_awaited_once_with("PROJ", PROJECT_ID, [], {}, None, every_issue=True)
+        assert saved[-1] == "[]"
+        assert not any(n and "cf[" in n for n in naming)
+
+    @pytest.mark.asyncio
+    async def test_a_search_answer_with_warnings_counts_as_unfinished(self) -> None:
+        """warnings: "e.g. when a JQL clause exceeded its argument limit or when the result set was truncated due
+        to an ingestion limit": the pass may be partial, so it is repeated."""
+        c = _connector()
+        c.data_source = MagicMock()
+        c._search_issues_with_retry = AsyncMock(return_value=MagicMock(
+            status=200, json=MagicMock(return_value={"issues": [], "warnings": ["The JQL argument limit was exceeded"]})))
+        async for _batch, _more, _ts in c._fetch_issues_batched(
+            "PROJ", PROJECT_ID, [], None, None, is_new_project=True, stored_only=True, naming='reporter in ("acc-1")',
+        ):
+            pass
+        assert c._issue_build_failures == 1
 
     @pytest.mark.asyncio
     async def test_a_pass_that_skipped_an_issue_keeps_the_accounts_for_the_next_sync(self) -> None:
@@ -1909,13 +1943,16 @@ class TestSweepAncestorReads:
     an account listed again stays owed until a sweep reads it."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("status", "swept"), [(200, True), (503, False)], ids=["read", "unavailable"])
-    async def test_a_failed_ancestor_read_reports_the_sweep_incomplete(self, status: int, swept: bool) -> None:
+    @pytest.mark.parametrize(("status", "errors", "swept"), [(200, [], True), (503, [], False), (200, ["77"], False)],
+                             ids=["read", "unavailable", "issue_errors"])
+    async def test_a_failed_ancestor_read_reports_the_sweep_incomplete(self, status: int, errors: list, swept: bool) -> None:
+        """issueErrors: "When Jira can't return an issue enumerated in a request due to a retriable error or payload
+        constraint, we'll return the respective issue ID with a corresponding error message": not an answer."""
         c = _connector()
         stub = MagicMock(record_type=RecordType.TICKET, external_record_group_id=PROJECT_ID, external_record_id="77",
                          external_revision_id="1", parent_external_record_id=None)
         c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
         c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
-        response = MagicMock(status=status, json=MagicMock(return_value={"issues": []}))
+        response = MagicMock(status=status, json=MagicMock(return_value={"issues": [], "issueErrors": errors}))
         c._call_with_retry = AsyncMock(return_value=response)
         assert await c._sweep_placeholder_records({PROJECT_ID}, {PROJECT_ID}) is swept

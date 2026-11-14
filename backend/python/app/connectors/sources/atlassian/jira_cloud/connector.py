@@ -117,7 +117,7 @@ from app.connectors.sources.atlassian.core.oauth import (
     OAUTH_JIRA_CONFIG_PATH,
     AtlassianScope,
 )
-from app.connectors.sources.atlassian.core.people import atlassian_person, jira_user, ticket_people
+from app.connectors.sources.atlassian.core.people import atlassian_person, jira_user, ticket_people, withdrawals_held
 from app.connectors.sources.atlassian.core.read_outcome import (
     JiraReadError,
     StoredAccessReadError,
@@ -279,7 +279,7 @@ ISSUE_PLACEMENT: str = "stories-under-readable-epic"
 # Parents named in one ``parent in (...)`` clause when their children are re-read.
 SUBTASK_REREAD_CHUNK: int = 50
 # Accounts per JQL when re-reading the issues that name newly listed accounts.
-PEOPLE_REREAD_CHUNK: int = 50
+PEOPLE_REREAD_CHUNK: int = 20  # kept small: a clause's argument limit is not published
 # The connector's sync point holding newly listed accounts not yet handed to every project.
 PEOPLE_REREAD_KEY: str = "people_reread"
 # An Atlassian account id ("557058:f58131cb-...", "5b10ac8d82e05b22cc7d4ef5"), safe to quote in JQL.
@@ -1316,6 +1316,12 @@ class JiraConnector(BaseConnector):
             if not payload:
                 self._ancestor_read_failed = True
                 return {}
+            if isinstance(payload.get("issueErrors"), list) and payload["issueErrors"]:
+                # BulkIssueResults.issueErrors: "When Jira can't return an issue enumerated in a request due to a
+                # retriable error or payload constraint, we'll return the respective issue ID with a corresponding
+                # error message." Not an answer about those issues: the sweep is not complete.
+                # (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/)
+                self._ancestor_read_failed = True
             return {
                 issue["id"]: issue
                 for issue in payload.get("issues") or []
@@ -2502,12 +2508,17 @@ class JiraConnector(BaseConnector):
                 break
 
             users.extend(batch_users)
+            # The response is a bare array with no end marker, maxResults "limited to 1000": nothing says a page is
+            # full until the last one, so only an empty page ends the list, and the next starts after these rows.
+            # (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-users/)
+            start_at += len(batch_users)
 
-            if len(batch_users) < max_results_per_request:
-                break
-
-            start_at += max_results_per_request
-
+        if any(u.get("accountId") == "unknown" or u.get("accountType") == "unknown" for u in users if isinstance(u, dict)):
+            # User schema: "User record unavailable: This usually occurs due to an internal service outage. In this case,
+            # all parameters have fallback values" ("accountId returns unknown" for a corrupted record). The list read
+            # then is not the directory, so nobody is withdrawn for missing from it.
+            self.logger.warning("/users/search returned fallback rows (an outage at Atlassian); the user list is not complete")
+            self._user_read_unfinished = True
         return users
 
     async def _resolve_private_email_users(
@@ -2767,6 +2778,22 @@ class JiraConnector(BaseConnector):
             u for u in self._stored_app_users
             if u.source_user_id in ineligible_ids and (u.email or "").lower() not in kept_emails
         ]
+        if withdrawals_held(len(gone), len(self._stored_app_users)):
+            self.logger.warning(
+                "%s of %s linked Jira accounts would lose the connector this sync; held until a later sync agrees",
+                len(gone), len(self._stored_app_users),
+            )
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title("held back removing many users"),
+                message=(
+                    f"{len(gone)} of {len(self._stored_app_users)} linked Jira users are no longer listed as active. "
+                    "Their access is kept until the user list confirms it: check the connector's Jira account can "
+                    "browse users, and run the sync again."
+                ),
+            )
+            return
         if gone:
             # Their own grants go too: the org's All team may still pass them through the gate.
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)
@@ -4751,31 +4778,46 @@ class JiraConnector(BaseConnector):
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
         account_ids: list[str], security: IssueSecurityContext,
     ) -> None:
-        """Rebuild the stored issues that name these accounts where an issue's own grants come from:
-        reporter, assignee, a user field a holder reads, or a level that names them."""
+        """Rebuild the stored issues that name these accounts where an issue's own grants come from: reporter,
+        assignee, or a level that names them (JQL fields reference: Reporter and Assignee "You can search by the
+        user's full name, ID, or email address"; Level "by work-level security name or work item level security
+        ID", https://support.atlassian.com/jira-software-cloud/docs/jql-fields/). Searching a user-picker field by
+        account id is not documented, an id that cannot be quoted safely is not searched, and a refused query (400)
+        names nothing: then every stored issue of the project is read again instead."""
         ids = [a for a in account_ids if JIRA_ACCOUNT_ID.fullmatch(a)]
-        # A group field holds group names: an account id in its clause would make Jira refuse the whole query.
         user_fields = custom_field_ids_from_members(
             {**security.members_by_level, "browse": security.browse_holders or []}, kinds=(HOLDER_USER_FIELD,))
-        fields = ["reporter", "assignee", *(f"cf[{f.removeprefix('customfield_')}]" for f in user_fields)]
-        for start in range(0, len(ids), PEOPLE_REREAD_CHUNK):
-            chunk = ids[start:start + PEOPLE_REREAD_CHUNK]
-            quoted = ", ".join(f'"{a}"' for a in chunk)
-            clauses = [f"{f} in ({quoted})" for f in fields]
-            levels = sorted(
-                lid for lid, holders in security.members_by_level.items() if str(lid).isdigit() and any(
-                    isinstance(h, dict) and (h.get("parameter") in chunk or ((h.get("user") or {}).get("accountId") in chunk))
-                    for h in holders
-                )
+        if user_fields or len(ids) < len(account_ids):
+            self.logger.info(
+                "Reading every stored issue of %s again for newly listed accounts: %s", project_key,
+                "a user field names people" if user_fields else "an account id that JQL cannot carry",
             )
-            if levels:
-                clauses.append(f"level in ({', '.join(levels)})")
-            async for batch, _more, _ts in self._fetch_issues_batched(
-                project_key, project_id, users, None, None, is_new_project=True, stored_only=True,
-                naming=" OR ".join(clauses),
-            ):
-                if batch:
-                    await self._process_new_records(batch, project_key, stats)
+            await self._reread_leveled_issues(project_key, project_id, users, stats, None, every_issue=True)
+            return
+        try:
+            for start in range(0, len(ids), PEOPLE_REREAD_CHUNK):
+                chunk = ids[start:start + PEOPLE_REREAD_CHUNK]
+                quoted = ", ".join(f'"{a}"' for a in chunk)
+                clauses = [f"{f} in ({quoted})" for f in ("reporter", "assignee")]
+                levels = sorted(
+                    lid for lid, holders in security.members_by_level.items() if str(lid).isdigit() and any(
+                        isinstance(h, dict) and (h.get("parameter") in chunk or ((h.get("user") or {}).get("accountId") in chunk))
+                        for h in holders
+                    )
+                )
+                if levels:
+                    clauses.append(f"level in ({', '.join(levels)})")
+                async for batch, _more, _ts in self._fetch_issues_batched(
+                    project_key, project_id, users, None, None, is_new_project=True, stored_only=True,
+                    naming=" OR ".join(clauses),
+                ):
+                    if batch:
+                        await self._process_new_records(batch, project_key, stats)
+        except JiraReadError as e:
+            if e.status != HttpStatusCode.BAD_REQUEST.value:
+                raise
+            self.logger.warning("Jira refused the search naming newly listed accounts in %s; reading every stored issue", project_key)
+            await self._reread_leveled_issues(project_key, project_id, users, stats, None, every_issue=True)
 
     async def _fetch_issues_batched(
         self,
@@ -4888,6 +4930,14 @@ class JiraConnector(BaseConnector):
             except Exception as e:
                 self.logger.error(f"❌ Failed to fetch issues for project {project_key}: {e}")
                 raise
+
+            if isinstance(issues_batch_response.get("warnings"), list) and issues_batch_response["warnings"]:
+                # SearchAndReconcileResults.warnings: "Warnings generated during the search, e.g. when a JQL clause
+                # exceeded its argument limit or when the result set was truncated due to an ingestion limit." The
+                # answer may be partial, so the pass counts as unfinished and is repeated.
+                # (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/)
+                self.logger.warning("Jira warned about the search for %s: %s", project_key, issues_batch_response["warnings"])
+                self._issue_build_failures += 1
 
             batch_issues = issues_batch_response.get("issues", [])
             new_page_token = issues_batch_response.get("nextPageToken")

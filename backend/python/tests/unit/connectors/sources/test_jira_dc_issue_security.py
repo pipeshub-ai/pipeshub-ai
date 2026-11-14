@@ -263,6 +263,16 @@ class TestWithdrawnAccounts:
         c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [stored[0]], drop_grants=True)
         assert c._stored_app_users == stored[1:], "the withdrawn no longer count as linked this sync"
 
+    async def test_too_many_withdrawals_in_one_sync_are_held(self) -> None:
+        c = _connector()
+        c.notify = AsyncMock()
+        c.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        c._stored_app_users = [_user(f"k{i}", f"u{i}@x.com") for i in range(40)]
+        c._listed_user_keys = {f"k{i}" for i in range(11, 40)}
+        await c._withdraw_unlisted_app_users([])
+        c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+        c.notify.assert_awaited_once()
+
     @pytest.mark.parametrize("flag", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_incomplete"])
     async def test_a_list_that_is_not_complete_withdraws_nobody(self, flag: str) -> None:
         c = _connector()
@@ -426,7 +436,7 @@ class TestSweepAncestorReads:
     """A stub whose ancestor could not be read (not "Jira has no such issue") is not swept: the sweep says so,
     and an account listed again stays owed until a sweep reads it."""
 
-    @pytest.mark.parametrize(("status", "swept"), [(404, True), (503, False)], ids=["gone", "unavailable"])
+    @pytest.mark.parametrize(("status", "swept"), [(404, True), (403, False), (503, False)], ids=["gone", "403_undocumented", "unavailable"])
     async def test_a_failed_ancestor_read_reports_the_sweep_incomplete(self, status: int, swept: bool) -> None:
         c = _connector()
         stub = _ticket(is_placeholder=True, external_revision_id="1", record_group_type="PROJECT")

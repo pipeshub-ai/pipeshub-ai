@@ -95,7 +95,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     unreadable_security_notices,
 )
 from app.connectors.sources.atlassian.core.oauth import OAUTH_JIRA_CONFIG_PATH
-from app.connectors.sources.atlassian.core.people import atlassian_person, jira_user, ticket_people
+from app.connectors.sources.atlassian.core.people import atlassian_person, jira_user, ticket_people, withdrawals_held
 from app.connectors.sources.atlassian.core.read_outcome import (
     JiraReadError,
     StoredAccessReadError,
@@ -4452,8 +4452,11 @@ class JiraDataCenterConnector(BaseConnector):
                 try:
                     response = await self._get_issue_with_retry(issue_id, fields)
                     if response.status != HttpStatusCode.OK.value:
-                        # Not found or hidden is an answer; any other status is a read that may pass next time.
-                        if response.status not in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.FORBIDDEN.value):
+                        # GET /rest/api/2/issue: "404 Returned if the requested issue is not found, or the user does not
+                        # have permission to view it" is the only answer documented; any other status (403 included) is
+                        # a read that may pass next time.
+                        # (https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-issue/)
+                        if response.status != HttpStatusCode.NOT_FOUND.value:
                             self._ancestor_read_failed = True
                         return
                     issue = self._safe_json_parse(response, f"placeholder ancestor {issue_id}")
@@ -4768,6 +4771,22 @@ class JiraDataCenterConnector(BaseConnector):
             and (complete or u.source_user_id in self._seen_user_keys)
             and (u.email or "").lower() not in kept_emails
         ]
+        if withdrawals_held(len(gone), len(self._stored_app_users)):
+            self.logger.warning(
+                "%s of %s linked Jira accounts would lose the connector this sync; held until a later sync agrees",
+                len(gone), len(self._stored_app_users),
+            )
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title("held back removing many users"),
+                message=(
+                    f"{len(gone)} of {len(self._stored_app_users)} linked Jira users are no longer listed as active. "
+                    "Their access is kept until the user list confirms it: check the connector's Jira account can "
+                    "browse users, and run the sync again."
+                ),
+            )
+            return
         if gone:
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)
             # No longer linked: the rest of this sync must not count them as linked accounts.
