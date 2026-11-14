@@ -1780,6 +1780,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         can_list_children: bool = False,
         can_share: bool = False,
         item_drive_id: str | None = None,
+        stored: bool = False,
     ) -> Tuple[List[Permission], bool, List[str]]:
         """
         Fetch all permissions for a Google Drive resource (file or shared drive) with pagination.
@@ -1979,9 +1980,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         # answered with no entries is not a list: failing the item keeps the grants stored and reads it again next
         # run. Entries the connector left out itself (a suspended owner, a link share) are an answer, not this case.
         # A My Drive item's list always names its owner, so an empty one is not a list either: only a shared drive
-        # item answers its readers with no entries. Taken as the fallback, it kept a just-removed grant.
+        # item answers its readers with no entries. Taken as the fallback for a stored item, it kept a just-removed
+        # grant; a new item has nothing stored to keep, so it still gets the reader's grant.
         # shortcut: a refusal (403) from such a user is still taken as ordinary, upgrade if one is seen to hide a revoke.
-        if not permissions and not source_entries and (can_share or not (is_drive or item_drive_id)):
+        if not permissions and not source_entries and (can_share or (stored and not (is_drive or item_drive_id))):
             raise RuntimeError(f"Empty permission list for {resource_id}, which is not an answer for this item")
         if not permissions and inherited_permissions_disabled and not can_list_children:
             return ([], True, [])
@@ -4236,6 +4238,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     can_list_children=bool((metadata.get("capabilities") or {}).get("canListChildren")),
                     can_share=bool((metadata.get("capabilities") or {}).get("canShare")),
                     item_drive_id=item_drive_id,
+                    stored=existing_record is not None,
                 )
 
                 if is_fallback_permissions:
