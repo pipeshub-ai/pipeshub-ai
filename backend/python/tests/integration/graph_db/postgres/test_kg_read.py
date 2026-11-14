@@ -514,22 +514,26 @@ async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer
 
 
 async def test_a_chunk_of_asked_ids_is_read_without_compiling_the_statement(layer, pg_provider, pg_db) -> None:
-    """A full chunk of ids (``CHUNK``) puts the estimate of the reader's seeks past ``jit_above_cost``; under the reader's profile the statement is not compiled (JIT costs more
-    than the read: about 25 ms of 160 ms measured at 10,000 ids)."""
+    """The reader's statements are seeks, never worth compiling: under the reader's profile a full chunk of ids (``CHUNK``) is read without JIT, even with ``jit_above_cost``
+    at 0 (whatever the version's cost model makes of the estimate: on PostgreSQL 17 it passes the default threshold at a full chunk, on 18 it does not). Without the profile
+    the same statement is compiled, when the server has JIT at all."""
     c = await _case(layer, pg_provider, pg_db)
     await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, leaf) SELECT $1, 80000000 + g, 3, 'jit-r' || g, 3, $2, true FROM generate_series(1, $3) g",
                  c.org, c.app_sk, kg_read.CHUNK)
     await _admin("ANALYZE kg.records")
     ids = [f"jit-r{j}" for j in range(1, kg_read.CHUNK + 1)]
 
-    async def go(tx) -> dict[str, Any]:
-        await tx.fetchval(kg_read.PROFILE)
+    async def plan(tx, *, profiled: bool) -> tuple[bool, dict[str, Any]]:
+        await tx.fetchval("/* pipeshub:test.jit_always */ SELECT set_config('jit_above_cost', '0', true), set_config('jit_inline_above_cost', '0', true)")
+        if profiled:
+            await tx.fetchval(kg_read.PROFILE)
         ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + kg_read.BY_ID, c.org, ids)
-        return (json.loads(ran) if isinstance(ran, str) else ran)[0]
+        return await tx.fetchval("SELECT pg_jit_available()"), (json.loads(ran) if isinstance(ran, str) else ran)[0]
     with _bound(c.org):
-        plan = await pg_db.run(go, custom_plan=True)
-    assert plan["Plan"]["Total Cost"] > 100_000, plan["Plan"]["Total Cost"]      # past the default jit_above_cost: the case the profile must cover
-    assert "JIT" not in plan, plan["JIT"]
+        available, bare = await pg_db.run(lambda tx: plan(tx, profiled=False), custom_plan=True)
+        _, read = await pg_db.run(lambda tx: plan(tx, profiled=True), custom_plan=True)
+    assert "JIT" not in read, read["JIT"]
+    assert ("JIT" in bare) == available, bare.get("JIT")      # the forcing works: the profile is what keeps it off
 
 
 async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(monkeypatch) -> None:
