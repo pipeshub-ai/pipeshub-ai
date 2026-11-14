@@ -403,10 +403,11 @@ class KhListingMixin(PgBase):
         return False, used
 
     async def _kh_arrows_read(self, tx: Tx, org: str, page: list[Any], hidden: list[int], sets: dict[str, Any] | None, gset: set[str], access: dict[str, Any], *,
-                              tops: bool) -> tuple[set[int], list[Any], set[str], set[int]]:
+                              tops: bool, bound: int | None = None, cut: set[int] | None = None) -> tuple[set[int], list[Any], set[str], set[int]]:
         """The read behind the arrows of a page's rows, in the caller's unit: the rows a statement over the classes finds a child for (a connector kg serves: exact), and for the
         others a sample of their children with the ones the viewer may open (the classes, then the live check for what they do not decide). Last, with ``tops``, the groups that
-        hold a granted record that may be a chain-top listed under them (``kgl.HELD``)."""
+        hold a granted record that may be a chain-top listed under them (``kgl.HELD``). ``bound``: the sample reads at most that many rows in all, the rows in the order asked;
+        the rows whose sample it cut or did not reach go into ``cut`` (their arrow is unknown unless a child read lights it)."""
         asked = [c["sk"] for c in page if not c["hide_children"]]
         lists: set[int] = set()
         if not asked:
@@ -422,7 +423,12 @@ class KhListingMixin(PgBase):
             lists = {r["sk"] for r in found if r["lists"]}
             rest = [r["sk"] for r in found if not r["lists"] and r["undecided"]]
         # the sample: a row's first children (never a pass over all of them), the classes deciding what they can and the live check the rest
-        kids = list(await tx.fetch(kgl.children_of_sql(), org, rest, ARROW_CHILDREN, hidden)) if rest else []
+        if bound is None or not rest:
+            kids = list(await tx.fetch(kgl.children_of_sql(), org, rest, ARROW_CHILDREN, hidden)) if rest else []
+        else:
+            kids = list(await tx.fetch(kgl.children_of_sql(total=True), org, rest, ARROW_CHILDREN, hidden, bound)) if bound > 0 else []
+            if len(kids) >= bound and cut is not None:      # the last row read may be partial, the ones after it unread
+                cut |= set(rest[rest.index(kids[-1]["parent"]) if kids else 0:])
         ok, left = self._kh_class_split(kids, sets, gset)
         for i in range(0, len(left), ADMIT_CHUNK):
             ok |= {r["id"] for r in await access_sql.accessible_rows(tx, org, [r["id"] for r in left[i:i + ADMIT_CHUNK]], [], access)}

@@ -937,3 +937,54 @@ async def test_a_sidebar_head_record_with_many_deep_placeholders_reads_at_most_t
         assert seen == ["h", "m", "z"], (size, seen)
         assert first["totalCapped"] is True and {r["id"]: r["hasChildren"] for r in first["rows"]}.get("h") is False, first
     assert max(requests) <= 2 * 20, requests
+
+
+async def test_a_sidebar_samples_about_as_many_records_children_as_it_lists_and_pages_through_every_record_once(pg_db, monkeypatch) -> None:
+    """A folder held whole with 5,000 records the classes admit, each holding a child the classes cannot decide (a pending restamp), so every record's arrow samples its
+    children and asks the live check. A sidebar page of one samples the children of about that many records, not of all 5,000; a total is read within the request's sampling
+    bound and capped past it; and paging through lists every record once, each page moving on."""
+    p, org = prov(pg_db), new_org()
+    recs = [f"r{i:04d}" for i in range(5000)]
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "G", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+        await p.batch_upsert_nodes([{"_key": i, "recordName": i, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", **extra}
+                                    for i, extra in [("fold", {"mimeType": "application/vnd.folder"}), ("kid", {}), *((r, {}) for r in recs)]], "records")
+        await p.batch_create_edges([*(edge("fold", "records", r, "records", relationshipType="PARENT_CHILD") for r in recs),
+                                    *(edge(r, "records", "kid", "records", relationshipType="PARENT_CHILD") for r in recs)], "nodeRelations")
+        await p.batch_create_edges([edge(i, "records", "g1", "recordGroups") for i in ["fold", "kid", *recs]], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        granted = ["fold", "kid", *recs]
+        await p.batch_create_edges([edge("u1", "users", i, "records", type="USER", role="READER") for i in granted], "permission")
+    await flip(pg_db, org)
+    await _admin("UPDATE kg.records SET r13 = true WHERE org_id = $1 AND coll = 3 AND id = 'kid'", org)      # the classes no longer decide it: the live check does
+    sampled: list[int] = []
+    real = kh_listing.KhListingMixin._kh_arrows_read
+
+    async def counted(self, *a, **kw) -> object:
+        got = await real(self, *a, **kw)
+        sampled[-1] += len(got[1])
+        return got
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_arrows_read", counted)
+
+    async def request(**kw) -> dict:
+        sampled.append(0)
+        return await browse(p, org, "fold", granted, filters={"only_containers": True}, **kw)
+    page = await request(limit=1, include_total=False)
+    assert [r["id"] for r in page["rows"]] == ["r0000"] and page["hasMore"] and sampled[-1] <= 10, sampled
+    monkeypatch.setattr(kh_browse, "SIDEBAR_SCAN_MAX", 300)
+    page = await request(limit=1)
+    assert page["totalCapped"] is True and 0 < page["total"] < 5000 and sampled[-1] <= 300 + 10, (page["total"], sampled)
+    seen, after = [], None
+    for _ in range(100):
+        page = await request(limit=500, after=after, include_total=False)
+        seen += [r["id"] for r in page["rows"]]
+        assert sampled[-1] <= 300 + 501, sampled
+        if not page["hasMore"]:
+            break
+        last = page["rows"][-1]
+        nxt = page.get("resume") or {"nullRank": last["nullRank"], "sortKey": last["sortKey"], "id": last["id"]}
+        assert nxt != after
+        after = nxt
+    assert seen == recs, (len(seen), len(set(seen)))
