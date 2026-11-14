@@ -261,6 +261,7 @@ class TestWithdrawnAccounts:
         stored = self._stored(c)
         await c._withdraw_unlisted_app_users([_user("kept", "k@x.com"), _user("moved-new", "m@x.com")])
         c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [stored[0]], drop_grants=True)
+        assert c._stored_app_users == stored[1:], "the withdrawn no longer count as linked this sync"
 
     @pytest.mark.parametrize("flag", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_incomplete"])
     async def test_a_list_that_is_not_complete_withdraws_nobody(self, flag: str) -> None:

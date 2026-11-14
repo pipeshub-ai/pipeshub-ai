@@ -4760,6 +4760,8 @@ class JiraDataCenterConnector(BaseConnector):
         ]
         if gone:
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)
+            # No longer linked: the rest of this sync must not count them as linked accounts.
+            self._stored_app_users = [u for u in self._stored_app_users if u not in gone]
 
     def _directory_read_complete(self) -> bool:
         """The active-user list was read in full through ``/user/list``: not cut short, refused, or read through

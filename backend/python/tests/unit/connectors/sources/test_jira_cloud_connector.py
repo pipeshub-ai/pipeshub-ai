@@ -1296,6 +1296,7 @@ class TestFetchUsersPhases:
         connector.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with(
             "conn-jira-cov", [stored[0], stored[1]], drop_grants=True
         )
+        assert connector._stored_app_users == stored[2:], "the withdrawn no longer count as linked this sync"
 
     @pytest.mark.asyncio
     async def test_a_stored_account_gone_from_the_directory_is_ineligible(self) -> None:

@@ -2734,6 +2734,8 @@ class JiraConnector(BaseConnector):
         if gone:
             # Their own grants go too: the org's All team may still pass them through the gate.
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)
+            # No longer linked: the rest of this sync must not count them as linked accounts.
+            self._stored_app_users = [u for u in self._stored_app_users if u not in gone]
 
     def _directory_read_complete(self) -> bool:
         """The user list was read in full: not cut short, not refused, and not empty when accounts were linked
