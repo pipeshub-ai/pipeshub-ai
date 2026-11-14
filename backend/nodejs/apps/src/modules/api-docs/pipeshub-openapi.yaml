@@ -8530,7 +8530,8 @@ components:
                 - the readable items among the first 500 candidates, for a connector it does
                   not decide that way, for a browse with more than 200 items it cannot decide,
                   and for the sidebar.
-                A total is also capped when a listed item's arrow is still undecided.
+                A total is also capped when the request's budget ran out before it decided a
+                listed item's `hasChildren`.
                 Search and filters across connectors add up each connector's count, so
                 `totalItems` can exceed 10,000 while `totalCapped` is `true`.
                 `totalPages` is still `ceil(totalItems / limit)`, so a client that pages by
