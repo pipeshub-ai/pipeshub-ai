@@ -42,6 +42,8 @@ _T = TypeVar("_T")
 
 # Set once `stamp_kh_listing_state` has covered every node written before.
 KH_LISTING_STATE_FLAG = "/migrations/kh_listing_state_v1"
+# Set once user email normalization backfill has covered every user.
+USER_EMAIL_NORMALIZATION_FLAG = "/migrations/user_email_normalization_v1"
 
 # Hierarchy hops the access check walks. Whatever lists what the check may admit
 # has to follow inheritance at least this far, or deeper records drop out unseen.

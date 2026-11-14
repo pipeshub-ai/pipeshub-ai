@@ -612,7 +612,7 @@ class GraphTransactionStore(TransactionStore):
         self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
     ) -> dict[str, User]:
         """The members for ``emails`` (lowercased keys), one provider call for the addresses the memo lacks."""
-        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        wanted = list(dict.fromkeys(e.strip().lower() for e in emails if e and e.strip()))
         keys = {e: ("user_email", e, org_id) for e in wanted}
         found = {e: self._memo[k] for e, k in keys.items() if k in self._memo}
         missing = [e for e in wanted if e not in found]

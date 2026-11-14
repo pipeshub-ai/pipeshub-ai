@@ -5482,6 +5482,11 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning("on_new_app_users received an empty list; skipping processing.")
                 return
 
+            if self.org_id:
+                for u in users:
+                    if not getattr(u, "org_id", None):
+                        u.org_id = self.org_id
+
             async with self.data_store_provider.transaction() as tx_store:
                 await tx_store.batch_upsert_app_users(users)
 

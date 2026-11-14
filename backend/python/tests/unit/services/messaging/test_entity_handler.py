@@ -404,6 +404,39 @@ class TestUserAdded:
         result = await svc.process_event("userAdded", payload)
         assert result is False
 
+    @pytest.mark.asyncio
+    async def test_padded_email_is_trimmed_for_lookup(self) -> None:
+        """Surrounding whitespace in email is stripped before querying get_user_by_email."""
+        existing_user = MagicMock()
+        existing_user.id = "existing-key"
+
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_email = AsyncMock(return_value=existing_user)
+        graph_provider.get_document = AsyncMock(
+            return_value={"_key": "org-1", "accountType": "enterprise"}
+        )
+        graph_provider.batch_upsert_nodes = AsyncMock()
+        graph_provider.batch_create_edges = AsyncMock()
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+        svc._get_or_create_knowledge_base = AsyncMock(return_value={})
+        svc._create_user_kb_app_relation = AsyncMock()
+
+        payload = {
+            "orgId": "org-1",
+            "userId": "u-1",
+            "email": "  Alice@Test.COM  \t",
+            "syncAction": "none",
+        }
+        result = await svc.process_event("userAdded", payload)
+        assert result is True
+
+        graph_provider.get_user_by_email.assert_awaited_once_with(
+            "Alice@Test.COM", raise_on_error=True, org_id="org-1"
+        )
+
+
 
 # ===================================================================
 # userUpdated
@@ -603,9 +636,10 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_success(self):
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(
-            return_value="user-key-1"
-        )
+        mock_user = MagicMock()
+        mock_user.id = "user-key-1"
+        mock_user.org_id = "org-1"
+        graph_provider.get_user_by_email = AsyncMock(return_value=mock_user)
         graph_provider.batch_upsert_nodes = AsyncMock()
 
         svc = _make_entity_service(graph_provider=graph_provider)
@@ -621,10 +655,34 @@ class TestUserDeleted:
         user_data = call_args[0][0][0]
         assert user_data["isActive"] is False
         assert user_data["id"] == "user-key-1"
+        assert user_data["email"] == "alice@test.com"
+
+    @pytest.mark.asyncio
+    async def test_user_deleted_normalizes_email(self) -> None:
+        graph_provider = AsyncMock()
+        mock_user = MagicMock()
+        mock_user.id = "user-key-1"
+        mock_user.org_id = "org-1"
+        graph_provider.get_user_by_email = AsyncMock(return_value=mock_user)
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+
+        payload = {
+            "orgId": "org-1",
+            "email": "  Alice@Test.COM  \t",
+        }
+        result = await svc.process_event("userDeleted", payload)
+        assert result is True
+
+        call_args = graph_provider.batch_upsert_nodes.call_args
+        user_data = call_args[0][0][0]
+        assert user_data["email"] == "alice@test.com"
 
     @pytest.mark.asyncio
     async def test_user_not_found_returns_false(self):
         graph_provider = AsyncMock()
+        graph_provider.get_user_by_email = AsyncMock(return_value=None)
         graph_provider.get_entity_id_by_email = AsyncMock(return_value=None)
 
         svc = _make_entity_service(graph_provider=graph_provider)
@@ -639,7 +697,7 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_db_error_raises(self):
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(
+        graph_provider.get_user_by_email = AsyncMock(
             side_effect=Exception("DB fail")
         )
         svc = _make_entity_service(graph_provider=graph_provider)
@@ -648,6 +706,45 @@ class TestUserDeleted:
             await svc.process_event(
                 "userDeleted", {"orgId": "org-1", "email": "a@b.com"}
             )
+
+    @pytest.mark.asyncio
+    async def test_user_deleted_with_get_user_by_email_scoped(self) -> None:
+        graph_provider = AsyncMock()
+        mock_user = MagicMock()
+        mock_user.id = "user-org1-key"
+        mock_user.org_id = "org-1"
+        graph_provider.get_user_by_email = AsyncMock(return_value=mock_user)
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+        payload = {"orgId": "org-1", "email": "alice@example.com"}
+        result = await svc.process_event("userDeleted", payload)
+
+        assert result is True
+        graph_provider.get_user_by_email.assert_awaited_once_with(
+            "alice@example.com", org_id="org-1", raise_on_error=True
+        )
+        user_data = graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert user_data["id"] == "user-org1-key"
+        assert user_data["isActive"] is False
+
+    @pytest.mark.asyncio
+    async def test_user_deleted_does_not_deactivate_user_from_different_org(self) -> None:
+        graph_provider = AsyncMock()
+        mock_user_other_org = MagicMock()
+        mock_user_other_org.id = "user-org2-key"
+        mock_user_other_org.org_id = "org-2"
+        # get_user_by_email returns a user belonging to org-2
+        graph_provider.get_user_by_email = AsyncMock(return_value=mock_user_other_org)
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+        # Event is for org-1
+        payload = {"orgId": "org-1", "email": "alice@example.com"}
+        result = await svc.process_event("userDeleted", payload)
+
+        assert result is False
+        graph_provider.batch_upsert_nodes.assert_not_called()
 
 
 # ===================================================================
@@ -1012,13 +1109,13 @@ class _KbGraph:
         self.lookup_fails = lookup_fails
         self.user_lookup_fails = user_lookup_fails
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> SimpleNamespace | None:
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False, org_id: str | None = None, **_: object) -> SimpleNamespace | None:
         if self.user_lookup_fails:  # As both providers do: raise only when asked, else answer "nobody".
             if raise_on_error:
                 raise RuntimeError("LockAcquisitionTimeout")
             return None
         found = next((u for u in self.users.values() if u.get("email") == email), None)
-        return SimpleNamespace(id=found["id"]) if found else None
+        return SimpleNamespace(id=found["id"], org_id=found.get("orgId")) if found else None
 
     async def get_document(self, key: str, collection: str, **_: object) -> dict | None:
         return {"_key": key, "accountType": "enterprise"}

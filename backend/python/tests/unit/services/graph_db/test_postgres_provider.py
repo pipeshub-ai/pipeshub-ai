@@ -215,7 +215,7 @@ async def test_get_user_by_email_reads_only_the_ambient_org(org_id: str | None, 
         got = await p.get_user_by_email("A@x.io", org_id=org_id)
     assert got is (user if found else None)
     if found:
-        assert p._principals_by_email.await_args.args[:2] == (["users"], ["A@x.io"])
+        assert p._principals_by_email.await_args.args[:2] == (["users"], ["A@x.io", "a@x.io"])
     else:
         p._principals_by_email.assert_not_awaited()
 

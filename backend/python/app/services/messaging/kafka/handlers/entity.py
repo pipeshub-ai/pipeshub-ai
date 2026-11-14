@@ -306,21 +306,52 @@ class EntityEventService(BaseEventService):
         """Handle user creation event"""
         try:
             self.logger.debug("Processing user added event for user %s", payload.get("userId"))
+            org_id = payload["orgId"]
+            ctx = org_context.peek()
+            trusted_org = ctx.org_id if ctx and ctx.org_id else None
+            if trusted_org and trusted_org != org_id:
+                self.logger.warning(
+                    "Event payload org %s does not match ambient org %s; rejecting event",
+                    org_id,
+                    trusted_org,
+                )
+                return False
+
             # raise_on_error: the providers answer None to a failed read too, and
             # "nobody" here would mint a second user for someone who is there.
+            lookup_email = payload["email"].strip() if payload.get("email") else ""
             existing_user = await self.graph_provider.get_user_by_email(
-                payload["email"], raise_on_error=True
+                lookup_email, raise_on_error=True, org_id=org_id
             )
 
             current_timestamp = get_epoch_timestamp_in_ms()
 
+            reusable_user_id = None
             if existing_user:
-                # existing_user is a User object, get id from it
-                user_key = existing_user.id
+                user_org = (
+                    getattr(existing_user, "org_id", None)
+                    or (existing_user.get("orgId") or existing_user.get("org_id") if isinstance(existing_user, dict) else None)
+                )
+                if isinstance(user_org, str) and user_org != org_id:
+                    self.logger.warning(
+                        "Found user belongs to organization %s, not event org %s; not reusing ID",
+                        user_org,
+                        org_id,
+                    )
+                else:
+                    cand_id = getattr(existing_user, "id", None) or (
+                        existing_user.get("id") or existing_user.get("_key") if isinstance(existing_user, dict) else None
+                    )
+                    if isinstance(cand_id, str) and cand_id:
+                        reusable_user_id = cand_id
+
+            if reusable_user_id:
+                user_key = reusable_user_id
                 user_data = {
                     "id": user_key,
                     "userId": payload["userId"],
-                    "orgId": payload["orgId"],
+                    "orgId": org_id,
+                    "email": payload["email"].strip().lower() if payload.get("email") else "",
                     "isActive": True,
                     "updatedAtTimestamp": current_timestamp,
                 }
@@ -342,8 +373,8 @@ class EntityEventService(BaseEventService):
                 user_data = {
                     "id": user_key,
                     "userId": payload["userId"],
-                    "orgId": payload["orgId"],
-                    "email": payload["email"],
+                    "orgId": org_id,
+                    "email": payload["email"].strip().lower() if payload.get("email") else "",
                     "fullName": payload.get("fullName", ""),
                     "firstName": payload.get("firstName", ""),
                     "middleName": payload.get("middleName", ""),
@@ -366,9 +397,8 @@ class EntityEventService(BaseEventService):
                 }
 
             # Get org details to check account type
-            org_id = payload["orgId"]
             org = await self.graph_provider.get_document(
-                org_id, CollectionNames.ORGS.value
+                org_id, CollectionNames.ORGS.value, raise_on_error=True
             )
             if not org:
                 self.logger.error(f"Organization not found: {org_id}")
@@ -383,7 +413,7 @@ class EntityEventService(BaseEventService):
             edge_data = {
                 "from_id": user_data["id"],
                 "from_collection": CollectionNames.USERS.value,
-                "to_id": payload["orgId"],
+                "to_id": org_id,
                 "to_collection": CollectionNames.ORGS.value,
                 "entityType": "ORGANIZATION",
                 "createdAtTimestamp": current_timestamp,
@@ -397,17 +427,18 @@ class EntityEventService(BaseEventService):
             # collaborator. Never fatal: the account itself is what this event is for, and
             # letting a failed adoption bubble up would make Kafka redeliver forever while
             # the person still has no user.
-            await self._adopt_existing_person(payload["email"], user_key, payload["orgId"])
+            normalized_email = payload["email"].strip().lower() if payload.get("email") else ""
+            await self._adopt_existing_person(normalized_email, user_key, org_id)
 
             # Get or create knowledge base for the user (creates app + all edges)
             kb_name = self._kb_name_from_user_added_payload(payload)
-            await self._get_or_create_knowledge_base(user_key, payload["userId"], payload["orgId"], name=kb_name)
+            await self._get_or_create_knowledge_base(user_key, payload["userId"], org_id, name=kb_name)
 
             # Get or create "All" team for org and add user with PERMISSION edge
-            await self._get_or_create_all_team_and_add_user(payload["orgId"], user_key)
+            await self._get_or_create_all_team_and_add_user(org_id, user_key)
 
             self.logger.info("Created or updated user %s", payload["userId"])
-            self._schedule_connector_link(payload["orgId"])
+            self._schedule_connector_link(org_id)
             return True
 
         except SchemaValidationError:
@@ -497,7 +528,7 @@ class EntityEventService(BaseEventService):
                 "id": user_id,
                 "userId": payload["userId"],
                 "orgId": payload["orgId"],
-                "email": payload["email"],
+                "email": payload["email"].strip().lower() if payload.get("email") else "",
                 "fullName": payload.get("fullName", ""),
                 "firstName": payload.get("firstName", ""),
                 "middleName": payload.get("middleName", ""),
@@ -533,7 +564,6 @@ class EntityEventService(BaseEventService):
                 "firstName",
                 "middleName",
                 "lastName",
-                "email",
             ]
             user_data.update(
                 {
@@ -576,19 +606,80 @@ class EntityEventService(BaseEventService):
         """Handle user deletion event"""
         try:
             self.logger.debug("Processing user deleted event for user %s", payload.get("userId"))
-            # Find existing user by email
-            existing_user_id = await self.graph_provider.get_entity_id_by_email(
-                payload["email"]
-            )
+            org_id = payload["orgId"]
+            ctx = org_context.peek()
+            trusted_org = ctx.org_id if ctx and ctx.org_id else None
+            if trusted_org and trusted_org != org_id:
+                self.logger.warning(
+                    "Event payload org %s does not match ambient org %s; rejecting event",
+                    org_id,
+                    trusted_org,
+                )
+                return False
+
+            email = payload.get("email") or ""
+            norm_email = email.strip().lower()
+
+            # Find existing user scoped to the event's organization
+            existing_user_id = None
+            if hasattr(self.graph_provider, "get_user_by_email"):
+                existing_user = await self.graph_provider.get_user_by_email(
+                    norm_email,
+                    org_id=org_id,
+                    raise_on_error=True,
+                )
+                if existing_user:
+                    user_org = (
+                        getattr(existing_user, "org_id", None)
+                        or (existing_user.get("orgId") or existing_user.get("org_id") if isinstance(existing_user, dict) else None)
+                    )
+                    if isinstance(user_org, str) and user_org != org_id:
+                        self.logger.warning(
+                            "Found user belongs to organization %s, not event org %s; skipping deletion",
+                            user_org,
+                            org_id,
+                        )
+                        return False
+                    cand_id = getattr(existing_user, "id", None) or (
+                        existing_user.get("id") or existing_user.get("_key") if isinstance(existing_user, dict) else None
+                    )
+                    if isinstance(cand_id, str) and cand_id:
+                        existing_user_id = cand_id
+
+            if not existing_user_id and hasattr(self.graph_provider, "get_entity_id_by_email"):
+                candidate_id = await self.graph_provider.get_entity_id_by_email(email)
+                if candidate_id:
+                    # Validate that the returned user belongs to the event's organization before deactivating
+                    if hasattr(self.graph_provider, "get_document"):
+                        doc = await self.graph_provider.get_document(
+                            candidate_id, CollectionNames.USERS.value, raise_on_error=True
+                        )
+                        if not doc:
+                            self.logger.warning(
+                                "User %s document not found during deletion ownership verification; skipping deletion",
+                                candidate_id,
+                            )
+                            return False
+                        user_org = doc.get("orgId") or doc.get("org_id")
+                        if isinstance(user_org, str) and user_org != org_id:
+                            self.logger.warning(
+                                "Found user belongs to organization %s, not event org %s; skipping deletion",
+                                user_org,
+                                org_id,
+                            )
+                            return False
+                        existing_user_id = candidate_id
+                    else:
+                        return False
+
             if not existing_user_id:
                 self.logger.error("No graph user has the deleted user's email (user %s)", payload.get("userId"))
                 return False
 
-            org_id = payload["orgId"]
             user_data = {
                 "id": existing_user_id,
                 "orgId": org_id,
-                "email": payload["email"],
+                "email": norm_email,
                 "isActive": False,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
@@ -601,9 +692,9 @@ class EntityEventService(BaseEventService):
             await notify_principals_changed(org_id)
             self.logger.info("Soft-deleted graph user %s", existing_user_id)
             if payload.get("userId"):
-                await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
-                await self._remove_personal_toolsets("user", payload["orgId"], payload["userId"])
-                await self._remove_api_toolset_data(payload["orgId"], payload["userId"])
+                await self._remove_mcp_data("user", org_id, payload["userId"])
+                await self._remove_personal_toolsets("user", org_id, payload["userId"])
+                await self._remove_api_toolset_data(org_id, payload["userId"])
             return True
 
         except SchemaValidationError:

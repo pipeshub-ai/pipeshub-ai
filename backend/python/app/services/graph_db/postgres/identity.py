@@ -198,30 +198,49 @@ class IdentityMixin(PgBase):
                                 org_id: str | None = None) -> User | None:
         if not self._mine(org_id):
             return None
-        rows = await self._principals_by_email(["users"], [email], transaction)
-        if rows is not None:
-            d = _doc(rows[0]["doc"]) if rows else None
+        norm_email = email.strip().lower() if email else ""
+        if not norm_email:
+            return None
+        lookup_emails = list(dict.fromkeys([e for e in (email, norm_email) if e]))
+        rows = await self._principals_by_email(["users"], lookup_emails, transaction)
+        if rows:
+            d = _doc(rows[0]["doc"])
         else:
-            d = await self._one("/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = lower($2) LIMIT 1",
-                                current_org_id(), email, transaction=transaction)
+            d = await self._one("/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND (lower(doc->>'email') = lower($2) OR lower(btrim(doc->>'email', E' \\t\\r\\n')) = $3) LIMIT 1",
+                                current_org_id(), email, norm_email, transaction=transaction)
         return User.from_arango_user(_arango(d, "users")) if d else None
 
     @_soft(dict, flag=True)
     async def get_users_by_emails(self, emails: list[str], transaction: str | None = None, *, raise_on_error: bool = False,
                                   org_id: str | None = None) -> dict[str, User]:
         org = current_org_id()
-        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
-        if not wanted or not self._mine(org_id):
+        raw_wanted = list(dict.fromkeys(e.strip().lower() for e in emails if e and e.strip()))
+        if not raw_wanted or not self._mine(org_id):
             return {}
         # lower(doc->>'email') is the expression index nodes_user_email (org_id, lower(doc->>'email')), which the vetted read reaches.
-        rows = await self._principals_by_email(["users"], wanted, transaction)
-        if rows is None:
-            rows = await self._id_rows("/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[])",
-                                       [org, wanted], transaction)
+        vetted_emails = list(dict.fromkeys([*raw_wanted, *[e.lower() for e in emails if e]]))
+        rows = await self._principals_by_email(["users"], vetted_emails, transaction)
+        found_docs = list(rows) if rows is not None else []
+        found_norms = {(_doc(r["doc"]).get("email") or "").strip().lower() for r in found_docs}
+        missing = [w for w in raw_wanted if w not in found_norms]
+
+        if missing or rows is None:
+            fallback_wanted = missing if rows is not None else raw_wanted
+            fb_rows = await self._id_rows(
+                "/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND (lower(doc->>'email') = ANY($2::text[]) OR lower(btrim(doc->>'email', E' \\t\\r\\n')) = ANY($2::text[]))",
+                [org, fallback_wanted], transaction
+            )
+            found_docs.extend(fb_rows or [])
+
         out: dict[str, User] = {}
-        for r in rows:
+        for r in found_docs:
             d = _arango(_doc(r["doc"]), "users")
-            out.setdefault(d["email"].lower(), User.from_arango_user(d))
+            raw_email = d.get("email") or ""
+            norm_key = raw_email.strip().lower()
+            if norm_key:
+                out.setdefault(norm_key, User.from_arango_user(d))
+            if raw_email:
+                out.setdefault(raw_email.lower(), User.from_arango_user(d))
         return out
 
     async def get_all_orgs(self, *, active: bool = True, is_external: bool = False, transaction: str | None = None, raise_on_error: bool = False) -> list[dict]:
@@ -442,9 +461,12 @@ class IdentityMixin(PgBase):
         async with self._atomic(transaction) as tx:
             await self._q(lambda t: t.execute("""/* pipeshub:graph.ensure_minimal_app */ INSERT INTO graph.nodes (org_id, coll, id, doc)
                 VALUES ($1, 'apps', $2, $3::jsonb) ON CONFLICT DO NOTHING""", org, connector_id, _j(stub)), tx, write=True)
-            # the database lowers an address, as it lowers the stored ones: Python's lower() may disagree on non-ASCII letters
-            low = {r["raw"]: r["low"] for r in await self._id_rows("/* pipeshub:graph.lower_emails */ SELECT e AS raw, lower(e) AS low FROM unnest($1::text[]) e",
+            # the database lowers and trims an address, as it lowers the stored ones: Python's lower() may disagree on non-ASCII letters
+            low = {r["raw"]: r["low"] for r in await self._id_rows("/* pipeshub:graph.lower_emails */ SELECT e AS raw, lower(btrim(e, E' \t\r\n')) AS low FROM unnest($1::text[]) e",
                                                                    [list({u.email for u in users})], tx)}
+            def _canon(u: AppUser) -> str:
+                return low.get(u.email, (u.email or "").strip().lower())
+
             have: dict[str, tuple[str, bool]] = {}
             shared: dict[str, list[tuple[str, bool]]] = {}
             for r in await self._users_by_email_rows(org, sorted(set(low.values())), tx):      # by id, either read: users sharing an address resolve to the first
@@ -462,8 +484,9 @@ class IdentityMixin(PgBase):
                         linked.setdefault((r["sid"], r["id"]), (r["id"], active[r["id"]]))
             new: dict[str, Any] = {}
             for u in users:
-                if low[u.email] not in have and low[u.email] not in new:
-                    new[low[u.email]] = u
+                k = _canon(u)
+                if k not in have and k not in new:
+                    new[k] = u
             if new:
                 nodes = []
                 for u in new.values():
@@ -472,8 +495,8 @@ class IdentityMixin(PgBase):
                     d.pop("_key", None)
                     nodes.append(d)
                 await self.batch_upsert_nodes(nodes, CollectionNames.USERS.value, tx)
-                for u in new.values():
-                    have[low[u.email]] = (u.id, False)
+                for k, u in new.items():
+                    have[k] = (u.id, False)
                     try:  # the address may already be a Person from an external share; one contact must not fail a sync
                         await self.migrate_person_to_user(u.email, u.id, org_node, transaction=tx)
                     except NotImplementedInPostgres:
@@ -484,10 +507,11 @@ class IdentityMixin(PgBase):
                                  "updatedAtTimestamp": u.updated_at, "entityType": "ORGANIZATION"} for u in new.values() if not u.is_guest]
                 await self.batch_create_edges(member_edges, CollectionNames.BELONGS_TO.value, tx)
             def pick(u: AppUser) -> tuple[str, bool]:      # the user a source account resolves to: its existing link, else the first by id
-                return next((linked[(u.source_user_id, i)] for i, _ in shared.get(low[u.email], []) if (u.source_user_id, i) in linked), have[low[u.email]])
+                k = _canon(u)
+                return next((linked[(u.source_user_id, i)] for i, _ in shared.get(k, []) if (u.source_user_id, i) in linked), have[k])
 
             # a guest an earlier sync made an org member loses it, unless an admin invite made them active
-            heal = list({pick(u)[0] for u in users if u.is_guest and low[u.email] not in new and not pick(u)[1]})
+            heal = list({pick(u)[0] for u in users if u.is_guest and _canon(u) not in new and not pick(u)[1]})
             if heal:
                 await self._q(lambda t: t.execute("""/* pipeshub:graph.guest_org_edge_heal */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'belongsTo'
                     AND from_coll = 'users' AND from_id = ANY($2::text[]) AND to_coll = 'organizations' AND to_id = $3""", org, heal, org_node), tx, write=True)
