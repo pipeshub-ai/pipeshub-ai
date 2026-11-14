@@ -162,8 +162,8 @@ def _stream_for_indexing(client: PipeshubClient, record_id: str) -> requests.Res
     (TC-ACCESS-001). What the connector streams is still what indexing reads, through the
     connector service's internal route and a service token of the org.
     """
-    from app.config.constants.service import TokenScopes  # noqa: PLC0415 - backend path is set above
-    from app.utils.jwt import mint_service_token  # noqa: PLC0415
+    from app.config.constants.service import TokenScopes
+    from app.utils.jwt import mint_service_token
 
     secret = os.getenv("SCOPED_JWT_SECRET", "").strip()
     if not secret:
