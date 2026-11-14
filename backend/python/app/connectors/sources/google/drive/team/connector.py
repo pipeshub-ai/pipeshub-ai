@@ -93,6 +93,8 @@ from app.connectors.sources.google.drive.utils import drive_full_sync_reconciler
 from app.connectors.sources.google.drive.utils.drive_full_sync_reconciler import (
     FullSyncLedger,
     delete_shared_drive_records,
+    incomplete_run_error,
+    keep_failed_items_linked,
     reconcile_unseen_records,
 )
 from app.connectors.sources.google.drive.utils.drive_pagination import DrivePageWalk
@@ -112,7 +114,6 @@ from app.connectors.sources.google.drive.utils.drive_shortcuts import (
     shortcut_target,
 )
 from app.connectors.sources.google.common.connector_google_exceptions import (
-    DriveSyncIncomplete,
     GoogleDriveError,
 )
 from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS, hold_again, released
@@ -712,6 +713,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._run_report = self._new_run_report()
         try:
             await self._run_sync_steps()
+            await keep_failed_items_linked(
+                self.data_entities_processor, self.connector_id, self._sync_ledger, self.logger
+            )
         except Exception as e:
             self._run_report.note_failure(e)
             self._run_report.note_unreadable_folders(sorted(self._blocked_folder_ids | self._unseen_folder_ids))
@@ -721,13 +725,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         complete = not self._sync_ledger.has_gaps
         await self._run_report.finish(complete=complete)
         if not complete:
-            raise DriveSyncIncomplete(
-                "Part of Google Drive could not be read in this run; it is read again on the next run"
-            )
+            raise incomplete_run_error(self._sync_ledger)
 
     def full_sync_coverage(self) -> FullSyncCoverage:
-        """A run that left part of Drive unread must not have the links of what it did not see removed."""
-        return FullSyncCoverage(complete=not self._sync_ledger.has_gaps)
+        """A run that left part of Drive unread must not have the links of what it did not see removed. Items it
+        failed to read are kept as stored instead (keep_failed_items_linked)."""
+        return FullSyncCoverage(complete=self._sync_ledger.unlink_safe)
 
     def _service_account_client_id(self) -> str | None:
         """The service account's client ID from the saved key, the one an admin authorizes for delegation."""
@@ -2256,7 +2259,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     f"Reading a failed item again by id failed (HTTP {e.resp.status}: {reasons}); it is read again "
                     "next run"
                 )
-                self._sync_ledger.fail_item()
+                self._sync_ledger.fail_item(file_id)
                 if (failed := _failed_items.get()) is not None:
                     failed.add(file_id)
                 continue
@@ -4310,7 +4313,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         except Exception as ex:
             self.logger.error(f"Error processing Google Drive file {metadata.get('id', 'unknown')}: {ex}", exc_info=True)
-            self._sync_ledger.fail_item()
+            self._sync_ledger.fail_item(metadata.get("id"))
             if (failed := _failed_items.get()) is not None and metadata.get("id"):
                 failed.add(str(metadata["id"]))
             await self._stop_inheriting_of_unreadable_limited_item(metadata)
@@ -4633,15 +4636,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                 record.is_placeholder = False
                 backfills.append((record, permissions))
 
-            for stub in frontier:
-                if stub.external_record_id in metadata_by_id or not stub.is_placeholder:
-                    continue
-                # Source fetch failed (inaccessible/deleted). Re-submit the persisted
-                # stub anyway so its structural edges — record group (BELONGS_TO) and
-                # parent (PARENT_CHILD) — which a full sync deletes are still restored.
-                # Keeps it a stub; access fails closed (inherits the record group's perms).
-                stub.is_placeholder = True
-                backfills.append((stub, []))
+            # Source fetch failed (inaccessible/deleted): the stored stub stays as it is, noted kept so a full sync's
+            # unlink leaves its record group and parent edges. Not rewritten: an ancestor read back by external id is
+            # a plain Record, which no graph store writes as a file.
+            self.data_entities_processor.note_kept_records(self.connector_id, [
+                stub.id for stub in frontier
+                if stub.external_record_id not in metadata_by_id and stub.is_placeholder and stub.id
+            ])
 
             if backfills:
                 # Creates/updates the ancestors and, via _handle_parent_record, materializes
@@ -5017,8 +5018,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             if walk.incomplete or hold is not None:
                 # Files a partial listing left out are not changes, so the changes feed
                 # would never return them; only another full listing can. An item that
-                # failed is the same: nothing would bring it back.
-                self._sync_ledger.note_incomplete()
+                # failed is the same: nothing would bring it back. The ledger already names it.
+                if walk.incomplete:
+                    self._sync_ledger.note_incomplete()
                 if holds.changes() or hold:
                     await self.drive_delta_sync_point.update_sync_point(
                         sync_point_key, {**holds.changes(), **(hold or {})}
@@ -5758,7 +5760,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                             if hold is None and not await self._keep_failed_items(sync_point_key, drive_failed):
                                 hold = {}  # too many to keep by id: the drive is listed in full again
                             if not listing_finished or search_incomplete or hold is not None:
-                                self._sync_ledger.note_skipped_drive()
+                                if not listing_finished or search_incomplete:
+                                    self._sync_ledger.note_skipped_drive()
                                 self.logger.warning(
                                     f"Full listing of shared drive '{drive_name}' was incomplete for user "
                                     f"{user.email}; it will be listed again on the next run"

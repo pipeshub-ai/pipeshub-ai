@@ -63,7 +63,6 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.google.common.apps import GoogleDriveApp
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.google.common.connector_google_exceptions import (
-    DriveSyncIncomplete,
     GoogleDriveError,
 )
 from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS, hold_again, released
@@ -96,6 +95,8 @@ from app.connectors.sources.google.drive.utils.drive_filters import (
 from app.connectors.sources.google.drive.utils.drive_full_sync_reconciler import (
     FullSyncLedger,
     delete_shared_drive_records,
+    incomplete_run_error,
+    keep_failed_items_linked,
     reconcile_unseen_records,
 )
 from app.connectors.sources.google.drive.utils.drive_mime import (
@@ -630,7 +631,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
         except Exception as ex:
             self.logger.error(f"Error processing Google Drive file {metadata.get('id', 'unknown')}: {ex}", exc_info=True)
-            self._sync_ledger.fail_item()
+            self._sync_ledger.fail_item(metadata.get("id"))
             return None
 
     async def _content_changed(self, existing: Record, metadata: dict, source: GoogleDriveDataSource) -> bool:
@@ -1243,8 +1244,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
             hold = hold_again(stored_point) if self._sync_ledger.item_failures > failures_before else None
             if walk.incomplete or hold is not None:
                 # Files a partial listing left out are not changes, so the changes feed
-                # would never return them; only another full listing can. A failed item too.
-                self._sync_ledger.note_incomplete()
+                # would never return them; only another full listing can. A failed item too;
+                # the ledger already names it.
+                if walk.incomplete:
+                    self._sync_ledger.note_incomplete()
                 if holds.changes() or hold:
                     await self.drive_delta_sync_point.update_sync_point(
                         sync_point_key, {**holds.changes(), **(hold or {})}
@@ -2138,7 +2141,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
         stored_point = await self.drive_delta_sync_point.read_sync_point(sync_key)
         hold = hold_again(stored_point) if self._sync_ledger.item_failures > failures_before else None
         if walk.incomplete or hold is not None:
-            self._sync_ledger.note_incomplete()
+            if walk.incomplete:  # a failed item is already in the ledger by id
+                self._sync_ledger.note_incomplete()
             if hold:
                 await self.drive_delta_sync_point.update_sync_point(sync_key, hold)
             self.logger.warning(
@@ -2282,6 +2286,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
                                 sync_point=self.drive_delta_sync_point, logger=self.logger)
         try:
             await self._run_sync_steps()
+            await keep_failed_items_linked(
+                self.data_entities_processor, self.connector_id, self._sync_ledger, self.logger
+            )
         except Exception as e:
             report.note_failure(e)
             report.note_unreadable_folders(sorted(self._blocked_folder_ids | self._unseen_folder_ids))
@@ -2291,13 +2298,12 @@ class GoogleDriveIndividualConnector(BaseConnector):
         complete = not self._sync_ledger.has_gaps
         await report.finish(complete=complete)
         if not complete:
-            raise DriveSyncIncomplete(
-                "Part of Google Drive could not be read in this run; it is read again on the next run"
-            )
+            raise incomplete_run_error(self._sync_ledger)
 
     def full_sync_coverage(self) -> FullSyncCoverage:
-        """A run that left part of Drive unread must not have the links of what it did not see removed."""
-        return FullSyncCoverage(complete=not self._sync_ledger.has_gaps)
+        """A run that left part of Drive unread must not have the links of what it did not see removed. Items it
+        failed to read are kept as stored instead (keep_failed_items_linked)."""
+        return FullSyncCoverage(complete=self._sync_ledger.unlink_safe)
 
     async def _run_sync_steps(self) -> None:
 

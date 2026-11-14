@@ -26,6 +26,7 @@ from google_behaviour_fakes import (
 )
 from googleapiclient.errors import HttpError
 
+from app.connectors.core.base.connector.connector_service import IncompleteSyncError
 from app.connectors.sources.google.common.connector_google_exceptions import (
     DriveSyncIncomplete,
     GoogleDriveError,
@@ -4406,6 +4407,67 @@ async def test_a_runner_full_sync_keeps_an_audience_file_no_listing_shows_linked
     unlinked = await _runner_full_sync(ws, delete_sync_points=True)
     assert ws.records.records["g1"].id not in unlinked
     assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+
+
+async def _runner_full_sync_with_failures(ws: Workspace) -> set[str]:
+    """A full sync the runner starts from no sync points, ended as the runner ends it: a run that returns, or fails
+    with IncompleteSyncError, has what it did not see unlinked when its coverage is complete; any other failure
+    unlinks nothing. Returns the records it unlinked."""
+    ws.sync_points.sync_points.clear()
+    ws.records.begin_full_sync_run(CONNECTOR_ID)
+    connector = await ws.connector_()
+    try:
+        await connector.run_sync()
+        ws.incomplete = False
+    except IncompleteSyncError:
+        ws.incomplete = True
+    except DriveSyncIncomplete:
+        ws.incomplete = True
+        ws.records.full_sync_seen = None
+        return set()
+    if not connector.full_sync_coverage().complete:
+        ws.records.full_sync_seen = None
+        return set()
+    return ws.records.unlink_missed_by_full_sync()
+
+
+async def test_a_full_sync_with_one_unreadable_item_still_unlinks_what_is_gone(ws: Workspace) -> None:
+    ws.world.add_item("a1", "good.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    ws.world.add_item("a2", "bad.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    ws.world.add_item("a3", "gone.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    await ws.sync()
+    assert (BOB, "USER", "READ") in ws.grants("a3")
+    ws.world.delete("a3")
+    ws.world.files["a2"].meta["modifiedTime"] = "garbage"
+
+    unlinked = await _runner_full_sync_with_failures(ws)
+
+    assert ws.incomplete, "the item it could not read is reported and read again"
+    assert ws.records.records["a3"].id in unlinked, "a file no listing shows any more loses its grants"
+    assert ws.grants("a3") == set()
+    assert ws.records.records["a2"].id not in unlinked, "the unreadable item keeps its stored grants"
+    assert (BOB, "USER", "READ") in ws.grants("a2")
+
+
+async def test_a_full_sync_whose_failed_item_cannot_be_looked_up_unlinks_nothing(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws.world.add_item("a2", "bad.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    ws.world.add_item("a3", "gone.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    await ws.sync()
+    ws.world.delete("a3")
+    ws.world.files["a2"].meta["modifiedTime"] = "garbage"
+    lookup = ws.records.get_record_by_external_id
+
+    async def a2_lookup_fails(connector_id: str, external_record_id: str, **kwargs: object) -> object:
+        if external_record_id == "a2" and kwargs.get("raise_on_error"):
+            raise RuntimeError("database unavailable")
+        return await lookup(connector_id, external_record_id, **kwargs)
+
+    monkeypatch.setattr(ws.records, "get_record_by_external_id", a2_lookup_fails)
+
+    assert await _runner_full_sync_with_failures(ws) == set()
+    assert (BOB, "USER", "READ") in ws.grants("a3"), "which records to keep is unknown, so nothing is unlinked"
 
 
 async def test_a_runner_full_sync_keeps_a_file_on_an_undecided_list_linked(ws: Workspace) -> None:
