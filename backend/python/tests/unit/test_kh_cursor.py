@@ -7,8 +7,10 @@ turns a bug or an attack into a result the user cannot tell from a real one.
 """
 
 import base64
+import hmac
 import json
 import time
+from hashlib import sha256
 
 import pytest
 
@@ -260,3 +262,44 @@ def test_a_missing_shared_secret_is_a_server_fault_not_a_bad_cursor() -> None:
     with pytest.raises(ValueError) as caught:
         derive_cursor_secret("")
     assert not isinstance(caught.value, CursorError)
+
+
+def _read_as_a_client(token: str) -> dict:
+    payload = token.partition(".")[0]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+
+
+def test_a_signed_cursor_seals_its_boundary_so_a_client_cannot_read_where_a_page_stopped() -> None:
+    """A page can end where a scan stopped, at a row the viewer may not open: the boundary's sort key (often a name) and id are sealed, not only
+    signed, and the cursor still resumes there."""
+    hidden = _cursor(boundary=_boundary(sort_key="salaries-2026.xlsx", last_id="denied-rec-7"))
+    token = encode(hidden, SECRET)
+    wire = _read_as_a_client(token)
+    assert set(wire["b"]) == {"x"}
+    assert "salaries-2026.xlsx" not in json.dumps(wire) and "denied-rec-7" not in json.dumps(wire)
+    assert decode(token, SECRET) == hidden
+    # sealed afresh each time: two cursors at the same place do not show that they are
+    assert _read_as_a_client(encode(hidden, SECRET))["b"] != wire["b"]
+
+
+def test_a_sealed_boundary_that_does_not_open_is_refused() -> None:
+    """Signed but not sealed by this server's key (or cut short): refused as a bad cursor, never read as the first page."""
+    token = encode(_cursor(), SECRET)
+    with pytest.raises(CursorError, match="boundary cannot be opened"):
+        decode(_resign(_tamper(token, lambda w: w.__setitem__("b", {"x": "AAAA"}))), SECRET)
+    foreign = _read_as_a_client(encode(_cursor(), "another-secret"))["b"]
+    with pytest.raises(CursorError, match="boundary cannot be opened"):
+        decode(_resign(_tamper(token, lambda w: w.__setitem__("b", foreign))), SECRET)
+
+
+def _resign(token: str) -> str:
+    """The token signed again with the server's key, as only the server can."""
+    payload = token.partition(".")[0]
+    mac = hmac.new(SECRET.encode(), payload.encode("ascii"), sha256).digest()
+    return f"{payload}.{base64.urlsafe_b64encode(mac).decode().rstrip('=')}"
+
+
+def test_a_cursor_issued_before_boundaries_were_sealed_still_resumes() -> None:
+    original = _cursor()
+    legacy = _resign(_tamper(encode(original, SECRET), lambda w: w.__setitem__("b", original.boundary.to_wire())))
+    assert decode(legacy, SECRET) == original

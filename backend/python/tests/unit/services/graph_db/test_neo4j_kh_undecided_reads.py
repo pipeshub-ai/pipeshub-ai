@@ -11,8 +11,8 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 
 def _payload(undecided: list[str], probes: list | None = None) -> list[dict]:
-    return [{"rows": [], "total": 0, "nRecord": 0, "nFolder": 0, "nGroup": 0, "crumbNodes": [], "crumbEdges": [], "khUndecided": undecided,
-             "khProbes": probes or []}]
+    return [{"rows": [], "total": 0, "nRecord": 0, "nFolder": 0, "nGroup": 0, "crumbNodes": [], "crumbEdges": [],
+             "khUndecided": [{"id": i, "sortKey": i, "nullRank": 0} for i in undecided], "khProbes": probes or []}]
 
 
 def _provider(*answers: list[dict], admits: set[str]) -> Neo4jProvider:
@@ -65,12 +65,24 @@ async def test_the_app_reads_its_undecided_children_in_its_own_page_statement() 
     assert second.args[0] == first.args[0] and second.kwargs["parameters"]["kh_placed"] == ["k1"]
 
 
-async def test_past_the_cap_the_browse_asks_about_the_first_children_and_logs_it() -> None:
+async def test_past_the_first_window_the_browse_asks_about_the_next_children_in_the_page_s_order() -> None:
+    """More undecided children than one window asks about: the next window asks about those past the last one asked, so a child the check
+    admits past the first window is listed (it was left out when the browse asked about the first ones by id alone)."""
     cap = Neo4jProvider._KH_UNDECIDED_MAX
-    provider = _provider(_payload([f"k{i:04d}" for i in range(cap + 1)]), admits=set())
+    kids = [f"k{i:04d}" for i in range(cap + 1)]
+    provider = _provider(admits={kids[cap]})
+    answers, reads = [_payload(kids), _payload([])], []
+
+    async def query(_q: str, parameters: dict, **_: object) -> list[dict]:
+        reads.append(dict(parameters))      # the statement's parameters as each read had them
+        return answers.pop(0)
+    provider._kh_query = query
     await _browse(provider, "g1")
-    assert len(provider.check_access.await_args_list[0].kwargs["node_ids"]) == cap
-    assert any("more than %d children" in c.args[0] for c in provider.logger.warning.call_args_list)
+    first, second = reads
+    assert first["kh_uread"] == Neo4jProvider._KH_UNDECIDED_WINDOW_MAX + 1 and first["ku_id"] is None
+    assert [len(c.kwargs["node_ids"]) for c in provider.check_access.await_args_list] == [cap, 1]
+    # the second read lists the one the check admits, and reads no more undecided ones
+    assert second["kh_placed"] == [kids[cap]] and second["kh_uread"] == 0
 
 
 async def test_a_browse_walks_below_a_child_for_the_stub_test_only_when_the_child_is_a_stub() -> None:

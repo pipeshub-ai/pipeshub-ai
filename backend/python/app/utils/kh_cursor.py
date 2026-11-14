@@ -41,10 +41,14 @@ import base64
 import binascii
 import hmac
 import json
+import os
 import time
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Sequence
@@ -61,6 +65,10 @@ _VERSION = 2
 _B_SORT_KEY, _B_NULL_RANK, _B_LAST_ID = "sk", "nr", "id"
 
 _CURSOR_KEY_LABEL = b"kh-cursor-v1"
+# The boundary is sealed, not only signed: a page that ends where a scan stopped (``resume``) has a child the viewer may not open as its boundary,
+# and a signed payload is still readable, so its sort key (often a name) and id would reach the client.
+_BOUNDARY_KEY_LABEL = b"kh-cursor-boundary-v1"
+_B_SEALED = "x"
 
 
 class CursorError(ValueError):
@@ -290,10 +298,38 @@ def _strings(raw: object, what: str) -> list[str] | None:
     return raw
 
 
+def _boundary_key(secret: str | bytes) -> bytes:
+    key = secret.encode("utf-8") if isinstance(secret, str) else secret
+    return hmac.new(key, _BOUNDARY_KEY_LABEL, sha256).digest()
+
+
+def _seal(boundary: dict, secret: str | bytes) -> dict:
+    nonce = os.urandom(12)
+    plain = json.dumps(boundary, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
+    return {_B_SEALED: _b64e(nonce + AESGCM(_boundary_key(secret)).encrypt(nonce, plain, None))}
+
+
+def _unseal(raw: object, secret: str | bytes | None) -> object:
+    """The boundary of a signed cursor, opened when it is sealed (a cursor issued before boundaries were sealed carries it in the clear)."""
+    if not isinstance(raw, dict) or _B_SEALED not in raw:
+        return raw
+    sealed = raw[_B_SEALED]
+    if secret is None or not isinstance(sealed, str):
+        raise CursorError("cursor boundary cannot be opened")
+    blob = _b64d(sealed)
+    try:
+        return json.loads(AESGCM(_boundary_key(secret)).decrypt(blob[:12], blob[12:], None))
+    except (InvalidTag, ValueError) as exc:
+        raise CursorError("cursor boundary cannot be opened") from exc
+
+
 def encode(cursor: KnowledgeHubCursor, secret: str | bytes | None = None) -> str:
-    """Serialise to the wire form ``payload`` or ``payload.signature``."""
+    """Serialise to the wire form ``payload`` or ``payload.signature``; with a secret the boundary is sealed too."""
+    wire = cursor.to_wire()
+    if secret is not None:
+        wire["b"] = _seal(wire["b"], secret)
     raw = json.dumps(
-        cursor.to_wire(), separators=(",", ":"), sort_keys=True, default=str
+        wire, separators=(",", ":"), sort_keys=True, default=str
     ).encode("utf-8")
     payload = _b64e(raw)
     if secret is None:
@@ -336,6 +372,8 @@ def decode(
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CursorError(f"cursor payload is not valid JSON: {exc}") from exc
 
+    if isinstance(wire, dict) and "b" in wire:
+        wire["b"] = _unseal(wire["b"], secret)
     cursor = KnowledgeHubCursor.from_wire(wire)
 
     # Binding: a cursor names partitions the issuing user could reach, so

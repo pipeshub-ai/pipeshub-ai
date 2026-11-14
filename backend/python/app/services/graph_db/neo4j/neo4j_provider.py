@@ -19914,12 +19914,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"{item}.id {id_dir}")
 
     def _kh_v2_keyset_cypher(
-        self, sort_order: str, direction: str = "next", node_var: str = "node"
+        self, sort_order: str, direction: str = "next", node_var: str = "node", param: str = "ks",
     ) -> str:
         """Resume after (or before) a cursor's boundary row.
 
         The lexicographic comparison the page order implies, against the
-        boundary supplied as ``$ks_null_rank``, ``$ks_sort_key`` and ``$ks_id``.
+        boundary supplied as ``$ks_null_rank``, ``$ks_sort_key`` and ``$ks_id``
+        (``param`` names another prefix).
 
         The null bucket is compared by id alone: every row with ``nullRank = 1``
         has a null sort key, and in Cypher ``null = null`` is null rather than
@@ -19935,13 +19936,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         value_cmp = (">" if ascending else "<") if forward else ("<" if ascending else ">")
         edge_cmp = ">" if forward else "<"
         return f"""
-            ( nullRank {edge_cmp} $ks_null_rank
-              OR ( nullRank = $ks_null_rank AND $ks_null_rank = 1
-                   AND {node_var}.id {edge_cmp} $ks_id )
-              OR ( nullRank = $ks_null_rank AND $ks_null_rank = 0
-                   AND ( sortKey {value_cmp} $ks_sort_key
-                         OR ( sortKey = $ks_sort_key
-                              AND {node_var}.id {edge_cmp} $ks_id ) ) ) )
+            ( nullRank {edge_cmp} ${param}_null_rank
+              OR ( nullRank = ${param}_null_rank AND ${param}_null_rank = 1
+                   AND {node_var}.id {edge_cmp} ${param}_id )
+              OR ( nullRank = ${param}_null_rank AND ${param}_null_rank = 0
+                   AND ( sortKey {value_cmp} ${param}_sort_key
+                         OR ( sortKey = ${param}_sort_key
+                              AND {node_var}.id {edge_cmp} ${param}_id ) ) ) )
         """
 
     def _kh_v2_filters_cypher(
@@ -20996,12 +20997,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return ([a for a in row.get("ancestors") or [] if a],
                 [d for d in row.get("declared") or [] if d])
 
-    def _kh_v3_undecided(self, v: str, *, decided: str | None = None) -> str:
+    def _kh_v3_undecided(self, v: str, *, decided: str | None = None, order: str | None = None) -> str:
         """The children of ``v`` a browse of it asks the batch check about: hierarchy children of this App, live, of the organisation, no stub, in
-        no group that hides its children, none when one lies above ``v``, and not ``decided`` (what the browse's rules already select); the first
-        ``_KH_UNDECIDED_MAX`` by id, and one more for a browse (``decided`` given), which tells it the cap left some out (`_kh_v3_capped`). The
-        browse of ``v`` and ``v``'s arrow read the same list (a group that hides its children is a display flag: it hides everything below it,
-        whatever the check says)."""
+        no group that hides its children, none when one lies above ``v``, and not ``decided`` (what the browse's rules already select). For an
+        arrow, the first ``_KH_UNDECIDED_MAX`` ids. For a browse, ``order`` (the page's sort over ``node``, past ``$ku_*`` when ``$ku_id`` is set)
+        and ``$kh_uread`` of them as ``{id, sortKey, nullRank}`` (`_kh_v3_browse_undecided`). A group that hides its children is a display flag:
+        it hides everything below it, whatever the check says."""
         # The walk up for a hiding group runs only for a node with a child to ask about.
         return f"""CASE WHEN NOT EXISTS {{ ({v})-[kh_ue:NODE_RELATION]->(kh_ux:Record|RecordGroup)
               WHERE kh_ue.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND NOT coalesce(kh_ux.isPlaceholder, false) }} THEN []
@@ -21012,8 +21013,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               {f"AND NOT coalesce(({decided}), false)" if decided else ""} AND NOT {self._kh_v3_in_hidden_group("kh_u", "kv")}
               // a child a browse of it would refuse takes no place under the cap
               AND {self._kh_v3_opens_below_hidden("kh_u", v)}
-            WITH DISTINCT kh_u.id AS kh_uid ORDER BY kh_uid LIMIT {self._KH_UNDECIDED_MAX + (1 if decided else 0)}
-            RETURN kh_uid }} END"""
+            {f"WITH DISTINCT kh_u AS node, app {order} LIMIT $kh_uread RETURN {{id: node.id, sortKey: sortKey, nullRank: nullRank}}" if order else
+             f"WITH DISTINCT kh_u.id AS kh_uid ORDER BY kh_uid LIMIT {self._KH_UNDECIDED_MAX} RETURN kh_uid"} }} END"""
 
     # Reads of one page at most: each asks the check about the rows the last one kept for their frontier, and drops those it refuses. A page
     # without a total reads only its own rows, so a refused row lets the next one in. shortcut: past this many a row still unasked is listed as
@@ -21048,7 +21049,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def _kh_v3_frontier(self, v: str, from_app: str, *, state: bool, grant_once: bool) -> str:
         """The children of ``v`` whose listing the batch check decides when ``v`` is opened: those a browse of ``v`` asks it about
-        (`_kh_v3_undecided`: the first ``_KH_UNDECIDED_MAX`` by id, as the browse reads them), and those a browse of each stub it lists on the way down
+        (`_kh_v3_undecided`: the first ``_KH_UNDECIDED_MAX`` by id), and those a browse of each stub it lists on the way down
         asks about (a stub below ``v`` by hops through stubs alone, each passing the browse rule read from ``from_app``). Opening ``v`` lists
         something where the check admits one of them and its own rules list nothing, so an arrow, the sidebar and a stub's listing ask the check
         about these and nothing else. A stub child of ``v`` its own walk from the App reaches is listed whatever the hop from ``v`` says, so what lies
@@ -22269,6 +22270,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         slim = "{ " + ", ".join(
             f"{key}: {expr}" for key, expr in slim_fields.items() if key in needed
         ) + " }"
+        # The browse's undecided children in the page's order, past the last one asked (`_kh_v3_browse_undecided`).
+        prop = self._kh_v2_sort_property(sort_field)
+        undecided_order = (f"WITH {{id: node.id, {prop}: {slim_fields[prop]}}} AS node" + self._kh_v2_sort_cypher(
+            sort_field, sort_dir, where=f"($ku_id IS NULL OR {self._kh_v2_keyset_cypher(sort_dir, direction, param='ku')})",
+            reverse=direction == "prev", lowered=state))
         row = self._kh_v2_projection_cypher(
             node_var="node",
             parent_var="parent",
@@ -22436,8 +22442,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return self._kh_v3_child_rule(c, p, from_app="fromApp", opens="appOpensEverything", state=state, grant_once=grant_once)
 
             # Beside what the rules select, a browse lists every child of the start the batch check admits: the statement hands back the
-            # children the rules leave undecided, and the page is read again with those the check admits (`_kh_v3_undecided`).
-            undecided = "[]" if flatten else by_probe(self._kh_v3_undecided("start", decided="kh_u IN rawNodes"))
+            # children the rules leave undecided, and the page is read again with those the check admits (`_kh_v3_browse_undecided`).
+            undecided = "[]" if flatten else by_probe(self._kh_v3_undecided("start", decided="kh_u IN rawNodes", order=undecided_order))
             # An admitted start with no children must still return one row, or
             # the breadcrumb scope disappears with the empty unwind.
             # The walk runs inside the CALL and hands on nodes: an id list imported
@@ -22543,7 +22549,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
         elif not flatten:
             # As below a start, the browse of the App lists every child of it the batch check admits: the statement hands back the children its
-            # rules leave undecided beside the page, and the page is read again with those the check admits (`_kh_v3_undecided`).
+            # rules leave undecided beside the page, and the page is read again with those the check admits (`_kh_v3_browse_undecided`).
             query = f"""
         MATCH (app:App {{id: $app_id}})
         WHERE app.orgId = $org_id AND app.id IN $gatedAppIds
@@ -22551,7 +22557,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
              (coalesce(app.permissionModel, '') = 'APP_LEVEL'
               OR app.type = 'KB') AS appOpensEverything
         {scope}
-        WITH app, allNodes, {by_probe(self._kh_v3_undecided("app", decided="kh_u IN allNodes"))} AS khUndecided
+        WITH app, allNodes, {by_probe(self._kh_v3_undecided("app", decided="kh_u IN allNodes", order=undecided_order))} AS khUndecided
         CALL (app, allNodes) {{
         {listing}
         }}
@@ -22583,6 +22589,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "kh_asked": [],
             "kh_kept": [],
             "kh_cross": cross,
+            # the first undecided children past the page's boundary (`_kh_v3_browse_undecided`)
+            "ku_null_rank": (after or {}).get("nullRank"), "ku_sort_key": (after or {}).get("sortKey"), "ku_id": (after or {}).get("id"),
+            "kh_uread": self._KH_UNDECIDED_WINDOW_MAX + 1,
         })
         if probe:
             params.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})
@@ -22663,17 +22672,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise
         payload = rows[0] if rows else {}
         access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted_ids}, "probe": probe, "cross": cross}
-        undecided_asked = False
+        reads = [payload]      # the read above, which holds the first undecided children
+
+        async def read(admitted: list[str], edge: dict[str, Any] | None, n: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+            """The page with ``admitted`` listed beside what the rules select, and ``n`` undecided children past ``edge``."""
+            if reads:
+                got = reads.pop()
+            else:
+                e = edge or after or {}
+                params.update(kh_placed=[*placed_ids, *admitted], ku_null_rank=e.get("nullRank"), ku_sort_key=e.get("sortKey"), ku_id=e.get("id"),
+                              kh_uread=n)
+                got = (await self._kh_query(query, parameters=params, txn_id=transaction) or [{}])[0]
+            return got, got.pop("khUndecided", None) or []
+        descending = self._kh_v2_sort_direction(sort_dir) == "DESC"
+        payload, cut = await self._kh_v3_browse_undecided(
+            read, after=after, limit=limit, descending=descending, direction=direction, org_id=org_id, access=access, transaction=transaction)
+        params["kh_uread"] = 0
         for _ in range(self._KH_PROBE_ROUNDS):
             again = False
-            if payload.get("khUndecided") and not undecided_asked:
-                # The next read lists them beside what the rules select; nothing the check refuses is listed.
-                undecided_asked = True
-                undecided = self._kh_v3_capped(payload["khUndecided"], start_id)
-                admitted = await self._kh_v3_admitted(undecided, org_id=org_id, transaction=transaction, access=access)
-                if admitted:
-                    params["kh_placed"] = [*placed_ids, *(i for i in undecided if i in admitted)]
-                    again = True
             # The rows the statement kept for their frontier (`khProbe`): the next read keeps only those whose frontier the check admits a child of.
             asked = [i for i in payload.get("khProbes") or [] if i not in params["kh_asked"]]
             probes = await self._kh_v3_frontiers(asked, params, probe=probe, state=state, grant_once=grant_once,
@@ -22694,6 +22710,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.warning("kh browse of %s: rows still unasked after %d reads of the page", start_id, self._KH_PROBE_ROUNDS)
         payload.pop("khUndecided", None)
         payload.pop("khProbes", None)
+        resume = self._kh_v3_end_at(payload, cut, limit=limit, descending=descending, direction=direction)
         # A row whose rules list nothing, with a child (`khAsk`), asks the check about its frontier where the page settles its arrow
         # (`_kh_v3_settle_held_arrows`), read apart for those rows alone.
         rows_ = payload.get("rows") or []
@@ -22718,7 +22735,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "kh v3 page app=%s start=%s flatten=%s (grantees=%d, granted=%d)",
             app_id, start_id, flatten, len(grantee_ids), len(granted_ids),
         )
-        return await self._kh_v3_page_result(
+        result = await self._kh_v3_page_result(
             payload, limit=limit, direction=direction, include_total=include_total,
             include_scope=include_scope, scoped_start=scoped_start, start_id=start_id,
             app_id=app_id, via_parent_id=via_parent_id, transaction=transaction,
@@ -22727,6 +22744,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "by_connector": {app_id: granted_ids}, "probe": probe, "cross": cross},
             name_parents=name_parents,
         )
+        return self._kh_v3_with_cut(result, cut, resume, include_total=include_total)
 
     async def _kh_v3_name_matches(
         self, org_id: str, search: str, *, state: bool, transaction: str | None,
