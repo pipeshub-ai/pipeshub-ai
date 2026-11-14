@@ -15,7 +15,6 @@ from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingTooLarge,
 )
 from app.services.graph_db.postgres import kh_listing
-from app.services.graph_db.postgres.base import NotImplementedInPostgres
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import net
 from app.services.graph_db.postgres.kg import read as kg_read
@@ -75,18 +74,57 @@ async def test_a_connector_listed_while_kg_does_not_serve_it_lists_the_same_rows
     assert served == walked == [f"r{i:04d}" for i in range(7)] and first["total"] == again["total"] == 7
 
 
-async def test_a_connector_with_no_copy_is_refused_and_a_shape_not_served_here_is_the_providers_own_error(pg_db) -> None:
+async def test_a_connector_with_no_copy_is_refused(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await seed(p, pg_db, org, 3, promote=False)
     with ctx(org):
         with pytest.raises(KnowledgeHubListingNotReady):
             await p.get_knowledge_hub_connector_page_v3(**asks(org), limit=5)
-        with pytest.raises(NotImplementedInPostgres):
-            await p.get_knowledge_hub_connector_page_v3(**asks(org), limit=5, start_id="g1", start_type="recordGroup")      # a flatten below a node
         with pytest.raises(KnowledgeHubListingNotReady):
             await p.get_knowledge_hub_connector_page_v3(**asks(org), limit=5, flatten=False)      # a browse of the connector itself
-        with pytest.raises(NotImplementedInPostgres):
+        with pytest.raises(KnowledgeHubListingNotReady):
             await p.get_knowledge_hub_connector_page_v3(**asks(org), limit=5, max_depth=3)
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(org), limit=5, start_id="g1", start_type="recordGroup")      # a start kg does not hold: not opened, as by a browse
+    assert page["rows"] == [] and page["total"] == 0
+
+
+async def _tree(p, db, org: str) -> None:
+    """app1 > g1 (group) > f1 (folder) > f2 (folder) > r3; f1 > r2; g1 > r1; r9 belongs to g1 with no hierarchy parent; u1 may read everything but r2."""
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "G", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, "connectorId": "app1", "orgId": org, "recordType": "FILE" if k[0] == "r" else "FOLDER", "origin": "CONNECTOR"}
+                                    for k in ("f1", "f2", "r1", "r2", "r3", "r9")], "records")
+        await p.batch_create_edges([edge("app1", "apps", "g1", "recordGroups", relationshipType="PARENT_CHILD")]
+                                   + [edge(a, ac, b, "records", relationshipType="PARENT_CHILD") for a, ac, b in (("g1", "recordGroups", "f1"), ("g1", "recordGroups", "r1"),
+                                      ("f1", "records", "f2"), ("f1", "records", "r2"), ("f2", "records", "r3"))], "nodeRelations")
+        await p.batch_create_edges([edge("r9", "records", "g1", "recordGroups"), edge("g1", "recordGroups", "app1", "apps")], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        await p.batch_create_edges([edge("u1", "users", k, kc, type="USER", role="READER") for k, kc in (("g1", "recordGroups"), ("f1", "records"), ("f2", "records"),
+                                                                                                        ("r1", "records"), ("r3", "records"), ("r9", "records"))], "permission")
+    await flip(db, org)
+
+
+@pytest.mark.parametrize("served", [True, False], ids=["kg", "walk"])
+async def test_a_flatten_below_a_node_and_a_depth_bound_list_what_browsing_down_reaches(pg_db, served: bool) -> None:
+    p, org = prov(pg_db), new_org()
+    await _tree(p, pg_db, org)
+    if not served:
+        await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+    every = ["g1", "f1", "f2", "r1", "r3", "r9"]
+
+    async def ids(**kw) -> list[str] | None:
+        with ctx(org):
+            page = await p.get_knowledge_hub_connector_page_v3(**{**asks(org, granted_ids=every), **kw}, limit=50, include_scope=True)
+        return [r["id"] for r in page["rows"]] if page["scope"] is None or page["scope"].get("admitted", True) else None
+    assert await ids(app_id="", start_id="g1", start_type="recordGroup") == ["f1", "f2", "r1", "r3"]        # r2 is not readable; r9 is no hierarchy child
+    assert await ids(app_id="", start_id="g1", start_type="recordGroup", max_depth=1) == ["f1", "r1"]
+    assert await ids(app_id="", start_id="f1", start_type="record", max_depth=2) == ["f2", "r3"]
+    assert await ids(app_id="", start_id="r2", start_type="record") is None                                # a start the viewer may not open
+    assert await ids(max_depth=1) == ["g1"]
+    assert await ids(max_depth=2) == ["f1", "g1", "r1", "r9"]                                              # r9 is one below its group
+    assert await ids() == ["f1", "f2", "g1", "r1", "r3", "r9"]
 
 
 async def test_another_organisations_connector_is_never_read(pg_db) -> None:
@@ -249,7 +287,8 @@ async def test_every_listing_statement_reads_the_connector_by_an_index_and_never
         arrows = kgl.Params([org, [app_sk], []])
         statements += [("arrows", kgl.arrows_sql(kgl.class_admit("c", arrows, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()})), arrows.values)]
         statements += [("scan", kgl.scan_sql("", "$4"), [org, app_sk, 501, 0]), ("hiders", kgl.HAS_HIDER, [org, app_sk]), ("hidden", kgl.HIDDEN, [org, app_sk]),
-                       ("children", kgl.children_of_sql(""), [org, [app_sk], 20, []]), ("links", kh_listing.LINKS, [org, [app_sk]]), ("state", kgl.STATE, [org, "app1"])]
+                       ("children", kgl.children_of_sql(""), [org, [app_sk], 20, []]), ("links", kh_listing.LINKS, [org, [app_sk]]), ("state", kgl.STATE, [org, "app1"]),
+                       ("unplaced", kgl.UNPLACED, [org, [app_sk], "app1", 20])]
         for name, sql, args in statements:
             await con.execute("SET enable_seqscan = off")      # a statement with an index it can use has a plan without a scan, whatever the size of the tables the planner is guessing at
             plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args))

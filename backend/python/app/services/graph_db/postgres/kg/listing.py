@@ -317,3 +317,11 @@ HELD = """/* pipeshub:kg.listing_held */ SELECT DISTINCT g.sk FROM kg.records c
     CROSS JOIN LATERAL (SELECT c.group_sk AS sk UNION ALL SELECT l.parent_sk FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = c.sk AND l.kind = 2) g
     WHERE c.org_id = $1 AND c.coll = 3 AND c.id = ANY($3::text[]) AND NOT c.deleted AND NOT c.placeholder AND NOT c.alien
       AND g.sk = ANY($2::bigint[])"""
+# The records the hierarchy does not place (no hierarchy parent) that belong to one of the groups $2 (sks) or to the App $3 (a belongs-to edge, which kg does not copy): $4 at most.
+UNPLACED = """/* pipeshub:kg.listing_unplaced */ SELECT r.sk FROM (
+    SELECT m.sk FROM unnest($2::bigint[]) g(sk) CROSS JOIN LATERAL (SELECT c.sk FROM kg.records c WHERE c.org_id = $1 AND c.group_sk = g.sk AND c.kind = 3 OFFSET 0) m
+    UNION SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.kind = 2 AND l.parent_sk = ANY($2::bigint[])
+    UNION SELECT k.sk FROM graph.edges e JOIN kg.records k ON k.org_id = e.org_id AND k.coll = 3 AND k.id = e.from_id
+      WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.to_id = $3 AND e.to_coll = 'apps' AND e.from_coll = 'records') c
+  JOIN kg.records r ON r.org_id = $1 AND r.sk = c.sk
+  WHERE r.kind = 3 AND r.parent_sk IS NULL AND NOT EXISTS (SELECT 1 FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = r.sk AND l.kind = 1) LIMIT $4"""

@@ -24,7 +24,7 @@ from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingTooLarge,
 )
 from app.services.graph_db.postgres import access as access_sql
-from app.services.graph_db.postgres.base import NotImplementedInPostgres, PgBase, _doc
+from app.services.graph_db.postgres.base import PgBase, _doc
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.model import CODE_COLL, CODE_EPOCH
@@ -37,6 +37,9 @@ if TYPE_CHECKING:
 BUDGET_S = 1.0               # how long one request keeps scanning for rows before it hands back the position it reached
 MAX_SCANNED = 50_000         # candidates one request looks at, at most
 HIDDEN_MAX = 100_000        # rows hidden by groups that hide their children that one listing carries to its statements; more is a view too wide to list (measured at 20,000 of 20,050 rows: about 100 ms)
+# shortcut: a flatten below a start, or with a depth bound, carries the rows it may list to its statements: past this many it is refused as a view too wide. Upgrade to a
+# statement over the hierarchy if a folder that large must be searched whole.
+SCOPE_MAX = 100_000
 COUNT_CAP = 10_000          # a count of what kg decides is exact up to this many rows; a listing with more reports the cap
 UNDECIDED_MAX = 200         # rows kg does not decide that a count may hand to the walk
 CLASS_MAX = 50_000          # classes of a connector a count evaluates
@@ -140,8 +143,8 @@ class KhListingMixin(PgBase):
         start_id: str | None = None, start_type: str = "app", grants_by_connector: dict[str, list[str]] | None = None, include_scope: bool = False, via_parent_id: str | None = None,
         transaction: str | None = None, name_parents: bool = True, user_key: str | None = None, grants_out: dict[str, list[str]] | None = None, max_depth: int = 50,
     ) -> dict[str, Any]:
-        """One page of the flat listing of a connector (``flatten`` from the app), or the browse of a record group or a record (``kh_browse``). A browse of the connector itself and a depth
-        bound are not served here yet."""
+        """One page of the flat listing of a connector (``flatten`` from the app), of what lies below a record group or a record (``flatten`` from it), or the browse of a node
+        (``kh_browse``). ``max_depth`` bounds the flatten in hierarchy hops from its start, as on Neo4j and ArangoDB."""
         if direction not in ("next", "prev"):
             raise ValueError(f"Unsupported page direction: {direction!r}.")
         order = (sort_dir or "").strip().upper()
@@ -150,10 +153,14 @@ class KhListingMixin(PgBase):
         if sort_field not in kgl.SORTS:
             raise ValueError(f"Unsupported sort field: {sort_field!r}. Allowed: {sorted(kgl.SORTS)}")
         start_id = start_id or app_id
-        if flatten and (max_depth != 50 or not (start_type in ("app", "kb") or start_id == app_id)):
-            raise NotImplementedInPostgres("PostgresGraphProvider.get_knowledge_hub_connector_page_v3 flattens a whole connector only")
+        scoped = flatten and not (start_type in ("app", "kb") or start_id == app_id)
         org = current_org_id()
         filters = filters or {}
+        start = None
+        if scoped:      # a flatten below the connector lists the start's connector, as a browse of the start resolves it (``_kh_browse``)
+            found = await self._kq(lambda tx: tx.fetch(kgl.BROWSE_START, org, start_id), transaction) if org_id == org else []
+            start = found[0] if len(found) == 1 else None
+            app_id = (start["app_id"] if start else None) or ""
         if flatten and (org_id != org or app_id not in set(gated_app_ids)):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=False)
         if flatten:      # a browse resolves its App from its start first (``_kh_browse``)
@@ -190,10 +197,25 @@ class KhListingMixin(PgBase):
         app_sk, app_doc, hidden, served, sets = await self._kq(lambda tx: head(tx, org, app_id, held, by_class=snapshot), transaction)
         if app_sk is None:
             raise KnowledgeHubListingNotReady
+        admit = self._kh_admitter(org, access, transaction, served=served)
+        scope: list[int] | None = None
+        crumbs: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None = None
+        if scoped:
+            # a start of this connector that is live, not hidden by a group above it and that the viewer may open (else the flatten's 404, as the browse's)
+            if start["app_sk"] != app_sk or start["deleted"] or start["alien"] or start["sk"] in set(hidden) or start_id not in await admit([start_id]):
+                return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=False)
+            scope = await self._kh_flat_below(org, start["sk"], app_sk, hidden, admit, max_depth, transaction)
+            if include_scope:
+                trail = await self._kq(lambda tx: self._kh_browse_trail(tx, org, start), transaction)
+                opened = await admit([r["id"] for sk, r in trail[4].items() if sk != start["sk"] and r["kind"] != 1]) | {start_id}
+                crumbs = self._kh_browse_scope(app_id, app_doc, start["sk"], trail, opened, set(gated_app_ids))
+        elif max_depth < 50:
+            scope = await self._kh_flat_within(org, app_id, app_sk, max_depth, transaction)
         if filtered_out(app_id, app_doc, filters):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=True)
         base, where = where_of(org, app_sk, app_doc, filters, hidden)
-        admit = self._kh_admitter(org, access, transaction, served=served)
+        if scope is not None:
+            where += f" AND r.sk = ANY({base.add(scope)}::bigint[])"
         gset = set(granted)
         admitted_of = self._kh_admitted_of(sets, gset, admit)
         viewer = await self._kh_flat_viewer(sets, where, base, admit, granted, transaction)
@@ -236,8 +258,10 @@ class KhListingMixin(PgBase):
         for row, c in zip(rows, kept[:need], strict=True):
             row["hasChildren"] = c["sk"] in lists
         payload = {"rows": rows, "total": total, "nRecord": (counts or {}).get("record", 0), "nFolder": (counts or {}).get("folder", 0), "nGroup": (counts or {}).get("recordGroup", 0)}
+        if crumbs is not None:
+            payload["crumbNodes"], payload["crumbEdges"] = crumbs
         page = await self._kh_v3_page_result(
-            payload, limit=limit, direction=direction, include_total=include_total, include_scope=include_scope, scoped_start=False, start_id=start_id, app_id=app_id,
+            payload, limit=limit, direction=direction, include_total=include_total, include_scope=include_scope, scoped_start=scoped, start_id=start_id, app_id=app_id,
             via_parent_id=via_parent_id, transaction=transaction, org_id=org_id, access=access, listed_under=None, name_parents=name_parents)
         if capped:
             page["totalCapped"] = True
@@ -245,6 +269,46 @@ class KhListingMixin(PgBase):
             page["hasMore"] = True
             page["resume"] = resume
         return page
+
+    async def _kh_flat_below(self, org: str, start_sk: int, app_sk: int, hidden: list[int], admit: Callable[[list[str]], Awaitable[set[str]]], depth: int,
+                             transaction: str | None) -> list[int]:
+        """What a flatten below a start lists before its filters: the rows of the connector that browsing down from the start reaches in ``depth`` hops, each one a hierarchy child
+        the viewer may open (the walk of Neo4j's and ArangoDB's flatten from a start, by the browse's rule: ``_kh_browse``). Not hidden by a group that hides its children."""
+        seen, frontier, out = {start_sk}, [start_sk], []
+        for _ in range(depth):
+            if not frontier:
+                break
+            rows = await self._kq(lambda tx, f=frontier: tx.fetch(kgl.children_of_sql(""), org, f, SCOPE_MAX + 1, hidden), transaction)
+            fresh = {r["sk"]: r["id"] for r in rows if r["sk"] not in seen and r["app_sk"] == app_sk}
+            seen |= set(fresh)
+            if len(rows) > SCOPE_MAX or len(seen) > SCOPE_MAX:
+                raise KnowledgeHubListingTooLarge
+            opened = await admit(list(fresh.values())) if fresh else set()
+            frontier = [sk for sk, i in fresh.items() if i in opened]      # whether the viewer may open a row does not depend on the way to it: a row it may not is passed once
+            out += frontier
+        return out
+
+    async def _kh_flat_within(self, org: str, app_id: str, app_sk: int, depth: int, transaction: str | None) -> list[int]:
+        """The rows within ``depth`` hierarchy hops of the connector, and the records the hierarchy does not place that belong to it or to a group less than ``depth`` hops down
+        (Neo4j's and ArangoDB's bound on the flatten of a connector: a placed record counts by its hops, an unplaced one as one below its group)."""
+        levels: list[list[int]] = [[app_sk]]
+        seen = {app_sk}
+        groups: list[int] = []
+        for k in range(depth):
+            rows = await self._kq(lambda tx, f=levels[-1]: tx.fetch(kgl.children_of_sql(""), org, f, SCOPE_MAX + 1, []), transaction)
+            fresh = [r for r in rows if r["sk"] not in seen]
+            seen |= {r["sk"] for r in fresh}
+            if len(rows) > SCOPE_MAX or len(seen) > SCOPE_MAX:
+                raise KnowledgeHubListingTooLarge
+            if k < depth - 1:
+                groups += [r["sk"] for r in fresh if r["kind"] == 2]
+            levels.append(list(dict.fromkeys(r["sk"] for r in fresh)))
+            if not levels[-1]:
+                break
+        unplaced = await self._kq(lambda tx: tx.fetch(kgl.UNPLACED, org, groups, app_id, SCOPE_MAX + 1), transaction)
+        if len(seen) + len(unplaced) > SCOPE_MAX:
+            raise KnowledgeHubListingTooLarge
+        return sorted((seen - {app_sk}) | {r["sk"] for r in unplaced})
 
     def _kh_admitter(self, org: str, access: dict[str, Any], transaction: str | None, *, served: bool) -> Callable[[list[str]], Awaitable[set[str]]]:
         """The access check for a list of ids: kg first for a connector it serves, the live walk otherwise."""
