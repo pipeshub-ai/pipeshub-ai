@@ -132,13 +132,13 @@ def _make_mock_response(status=200, data=None):
     return resp
 
 
-def _empty_user_page():
+def _empty_user_page() -> MagicMock:
     resp = _make_mock_response(200)
     resp.json = MagicMock(return_value=[])
     return resp
 
 
-def _then_empty(first):
+def _then_empty(first: MagicMock) -> AsyncMock:
     """``/users/search`` answers ``first``, then an empty page: the list ends only on an empty page."""
     return AsyncMock(side_effect=[first, _empty_user_page()])
 

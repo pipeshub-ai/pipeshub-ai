@@ -4773,7 +4773,7 @@ class JiraDataCenterConnector(BaseConnector):
         ]
         if withdrawals_held(len(gone), len(self._stored_app_users)):
             self.logger.warning(
-                "⚠️ %s of %s linked Jira accounts would lose the connector this sync; held until a later sync agrees",
+                "%s of %s linked Jira accounts would lose the connector this sync; held until a later sync agrees",
                 len(gone), len(self._stored_app_users),
             )
             await self.notify(

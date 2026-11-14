@@ -2514,7 +2514,7 @@ class JiraConnector(BaseConnector):
             # User schema: "User record unavailable: This usually occurs due to an internal service outage. In this case,
             # all parameters have fallback values" ("accountId returns unknown" for a corrupted record). The list read
             # then is not the directory, so nobody is withdrawn for missing from it.
-            self.logger.warning("⚠️ /users/search returned fallback rows (an outage at Atlassian); the user list is not complete")
+            self.logger.warning("/users/search returned fallback rows (an outage at Atlassian); the user list is not complete")
             self._user_read_unfinished = True
         return users
 
@@ -2762,7 +2762,7 @@ class JiraConnector(BaseConnector):
         ]
         if withdrawals_held(len(gone), len(self._stored_app_users)):
             self.logger.warning(
-                "⚠️ %s of %s linked Jira accounts would lose the connector this sync; held until a later sync agrees",
+                "%s of %s linked Jira accounts would lose the connector this sync; held until a later sync agrees",
                 len(gone), len(self._stored_app_users),
             )
             await self.notify(
