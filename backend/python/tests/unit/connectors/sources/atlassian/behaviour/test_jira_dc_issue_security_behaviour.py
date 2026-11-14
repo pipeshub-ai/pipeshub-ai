@@ -1014,6 +1014,9 @@ class TestProductAccessRegained:
         assert "2" not in {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}, (
             "read again once"
         )
+        assert store.values_for("project_ENG").get("people_handed") == "[]", (
+            "the hand-out ended with the sync that cleared the saved accounts, so a later listing starts a new one"
+        )
 
     async def test_an_account_withdrawn_and_linked_again_gets_its_level_grants_again(self, jira, db, store, jql_search) -> None:
         """The first hand-out of carol ends once every project had her; linked again after a withdrawal, she starts
