@@ -184,14 +184,19 @@ def test_a_member_declared_past_the_size_limits_is_refused(monkeypatch: pytest.M
         as_plain_package(make_docm("Sentinel"), "word", label="docm")
 
 
-def test_an_external_entity_is_not_resolved() -> None:
+def test_an_external_entity_is_not_resolved(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    secret = tmp_path / "secret.txt"
+    secret.write_text("SECRET-MARKER-7f3a")
     members = dict(_members(make_dotx("Sentinel")))
     members["[Content_Types].xml"] = (
-        b'<?xml version="1.0"?><!DOCTYPE t [<!ENTITY x SYSTEM "file:///etc/passwd">]>'
-        + members["[Content_Types].xml"].split(b"?>", 1)[1].replace(b"</Types>", b"<!-- &x; --></Types>")
+        f'<?xml version="1.0"?><!DOCTYPE t [<!ENTITY x SYSTEM "{secret.as_uri()}">]>'.encode()
+        + members["[Content_Types].xml"].split(b"?>", 1)[1].replace(b"</Types>", b"<Marker>&x;</Marker></Types>")
     )
-    rewritten = as_plain_package(_zip(list(members.items())), "word", label="dotx")
-    assert b"root:" not in zipfile.ZipFile(io.BytesIO(rewritten)).read("[Content_Types].xml")
+    try:
+        rewritten = as_plain_package(_zip(list(members.items())), "word", label="dotx")
+    except UnreadableFileError:
+        return  # refusing the part is as safe as leaving the entity unexpanded
+    assert b"SECRET-MARKER-7f3a" not in zipfile.ZipFile(io.BytesIO(rewritten)).read("[Content_Types].xml")
 
 
 def test_a_package_without_its_main_part_s_override_is_damaged() -> None:

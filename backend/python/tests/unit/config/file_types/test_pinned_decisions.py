@@ -61,6 +61,19 @@ def test_per_extension_and_per_mime_decisions_are_unchanged() -> None:
     assert [[m, *gen.per_mime(m)] for m, *_ in _PINNED["mimes"]] == expected
 
 
+async def test_docling_names_are_unchanged() -> None:
+    actual = [[e, await gen.docling_name(e)] for e, _ in _PINNED["docling_names"]]
+    assert actual == _PINNED["docling_names"]
+
+
+def test_the_lists_offered_and_matched_are_unchanged() -> None:
+    """The running lists (filter options, enums, probes, ...) are main's plus the reviewed changes."""
+    expected = {**_PINNED["globals"], **ALLOWED_GLOBAL_DELTAS}
+    actual = gen.global_lists()
+    assert {k: v for k, v in actual.items() if v != expected.get(k)} == {}
+    assert actual.keys() == expected.keys()
+
+
 def test_every_allowed_delta_follows_its_reviewed_rule() -> None:
     """Each delta is explained by a reviewed reason, checked against main's own decisions where
     the reason says the new decision is main's decision for another spelling."""

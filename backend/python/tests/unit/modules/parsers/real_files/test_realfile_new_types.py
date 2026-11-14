@@ -211,17 +211,21 @@ async def test_a_log_past_the_download_ceiling_is_not_downloaded() -> None:
 
 
 async def test_a_log_under_the_ceiling_is_read() -> None:
-    record, downloaded = await handler_run("log", None, _GOOD["log"], size=len(_GOOD["log"]))
+    captured: list = []
+    record, downloaded = await handler_run("log", None, _GOOD["log"], size=len(_GOOD["log"]), captured=captured)
     assert downloaded
-    assert record["indexingStatus"] not in ("FILE_TYPE_NOT_SUPPORTED", "FAILED")
+    assert record["indexingStatus"] == "COMPLETED"
+    assert SENTINEL in _text(captured)
 
 
 @pytest.mark.parametrize("ext", sorted([*_GOOD, "msg"]))
 async def test_each_good_file_passes_the_handler_without_failing(ext: str) -> None:
     content = samples.msg_with_html_body() if ext == "msg" else _GOOD[ext]
-    record, downloaded = await handler_run(ext, "application/octet-stream", content)
+    captured: list = []
+    record, downloaded = await handler_run(ext, "application/octet-stream", content, captured=captured)
     assert downloaded
-    assert record["indexingStatus"] not in ("FILE_TYPE_NOT_SUPPORTED", "FAILED", "PASSWORD_PROTECTED")
+    assert record["indexingStatus"] == "COMPLETED"
+    assert (_MSG_TEXT if ext == "msg" else SENTINEL) in _text(captured)
 
 
 # --------------------------------------------------------------------------- D-16: what main indexed stays
