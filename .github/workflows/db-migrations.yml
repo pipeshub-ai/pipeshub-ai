@@ -20,8 +20,8 @@ jobs:
     name: migrations (${{ matrix.pg }}, ${{ matrix.shard }})
     runs-on: ubuntu-latest
     # The tests run in shards, each with its own PostgreSQL (the tests drop and recreate the cluster's roles, so two runs must not share a
-    # cluster). tests/test_unit.py::test_every_test_file_is_in_exactly_one_shard keeps the lists complete.
-    # min_tests are the case counts of the files, so the shards sum to the total; a suite that did not run fails its shard.
+    # cluster). tests/test_unit.py::test_every_test_file_is_in_exactly_one_shard keeps the lists complete. Each shard checks its run
+    # against its own collection, so no count is written here.
     strategy:
       fail-fast: false
       matrix:
@@ -30,40 +30,22 @@ jobs:
         include:
           - shard: rls
             files: tests/test_rls.py tests/test_roles.py tests/test_unit.py tests/test_wait_schema.py
-            min_tests: 450
-            suites: ''
           - shard: integration
             files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py
-            min_tests: 56
-            suites: ''
           - shard: graph
             files: tests/test_graph.py tests/test_retrieval.py
-            min_tests: 170
-            suites: '--expect-suite tests.test_graph=144 --expect-suite tests.test_retrieval=26'
           - shard: vetted
             files: tests/test_vetted.py tests/test_vetted_kernel.py tests/test_change_log.py
-            min_tests: 534
-            suites: ''
           - shard: pins
             files: tests/test_vetted_pins.py tests/test_vetted_pins_k2.py tests/test_vetted_pins_k3.py tests/test_vetted_org_policy.py
-            min_tests: 351
-            suites: ''
           - shard: placement
             files: tests/test_placement.py
-            min_tests: 16
-            suites: '--expect-suite tests.test_placement=16'
           - shard: upkeep
             files: tests/test_upkeep.py
-            min_tests: 36
-            suites: '--expect-suite tests.test_upkeep=36'
           - shard: upgrade
             files: tests/test_pins_upgrade.py
-            min_tests: 8
-            suites: ''
           - shard: kg
             files: tests/test_kg_schema.py tests/test_kg_writers.py tests/test_kg_downgrade.py
-            min_tests: 384
-            suites: '--expect-suite tests.test_kg_schema=8 --expect-suite tests.test_kg_writers=364 --expect-suite tests.test_kg_downgrade=12'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -131,18 +113,19 @@ jobs:
           MIGRATE_TEST_PG_EXTERNAL: 127.0.0.1:5432
           MIGRATE_TEST_PGBOUNCER: /usr/sbin/pgbouncer
           FILES: ${{ matrix.files }}
-        run: python -m pytest -q --durations=25 --junitxml="$RUNNER_TEMP/db-junit.xml" $FILES
+        run: |
+          # shellcheck disable=SC2086
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/db.collected" $FILES
+          # shellcheck disable=SC2086
+          python -m pytest -q --durations=25 --junitxml="$RUNNER_TEMP/db-junit.xml" $FILES
 
       - name: No unexpected skips
         # The generated vetted-function suite skips the checks that do not apply to a function by design (a function with no organisation
-        # argument has no foreign-organisation case); those are listed by function. Anything else skipped, or fewer cases than
-        # expected, or a graph suite that did not run, fails the job.
+        # argument has no foreign-organisation case); those are listed by function. Anything else skipped, or a collected case that did
+        # not run, or a file that collected nothing, fails the job.
         if: ${{ always() }}
-        env:
-          SUITES: ${{ matrix.suites }}
         run: |
-          # shellcheck disable=SC2086
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/db-junit.xml" --min-tests ${{ matrix.min_tests }} $SUITES \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/db-junit.xml" --collected "$RUNNER_TEMP/db.collected" \
             --allow='-kernel.org_parent_ids]' --allow='-kernel.org_lineage]' --allow='-platform.job_start]' --allow='-platform.job_finish]' \
             --allow='-platform.job_checkpoint]' --allow='-identity.oldest_org]' --allow='-identity.org_count]' \
             --allow='-identity.gauge_user_counts]' --allow='-identity.gauge_live_orgs]' --allow='-identity.gauge_auth_configs]' \
