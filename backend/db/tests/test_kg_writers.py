@@ -171,7 +171,7 @@ BAD = {
     "kg.w_records_delete": [([None],), (None,), ([1] * 5001,)],
     "kg.w_links_set": [([1], [3], [2]), ([1, 2], [1], [2]), ([None], [1], [2])],
     "kg.w_links_delete": [([1], [3], [2]), ([1, 2], [1], [2])],
-    "kg.w_grants_set": [([1], [2], [""], [None], [None], [False]), ([1], [2], ["USER"], ["x" * 65], [None], [False]), ([1, 2], [2], ["USER"], [None], [None], [False]),
+    "kg.w_grants_set": [([1], [2], [""], [None], [None], [False]), ([1], [2], ["x" * 65], [None], [None], [False]), ([1, 2], [2], ["USER"], [None], [None], [False]),
                         ([1], [2], ["USER"], [None], [None], [None])],
     "kg.w_grants_delete": [([1], [2], [""]), ([1], [2, 3], ["USER"])],
     "kg.w_closure_set": [([1], [2], [0], [""]), ([1], [2], [None], ["self"])],
@@ -527,6 +527,17 @@ def test_a_record_name_of_any_length_is_stored_whole(pdb, length):
         clean(c)
         assert call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values(name=name, name_key=name.lower())))) == [(1,)]
         assert tuple(c.execute("SELECT name, name_key FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (name, name.lower())
+        clean(c)
+
+
+@pytest.mark.parametrize("length", [64, 65, 100_000])
+def test_a_grant_role_of_any_length_is_stored_whole(pdb, length):
+    """The role is no key and is stored whole (kg_0012): the 64 characters the writer once took, one more, and far more, all outside the BMP. The type, a key, takes 64 such characters."""
+    role, gtype = "".join(chr(0x20000 + i % 0xA6DF) for i in range(length)), "\U00020000" * 64
+    with conn(pdb) as c:
+        clean(c)
+        assert call(c, "kg.w_grants_set", ORG_A, ([1], [2], [gtype], [role], [None], [False])) == [(1,)]
+        assert tuple(c.execute("SELECT gtype, role FROM kg.scope_members WHERE org_id = %s AND principal_sk = 1 AND node_sk = 2", (ORG_A,)).fetchone()) == (gtype, role)
         clean(c)
 
 
