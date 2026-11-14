@@ -100,7 +100,7 @@ jobs:
               tests/integration/graph_db/postgres/test_kh_listing_flat.py
               tests/integration/graph_db/postgres/test_robustness.py
               tests/integration/graph_db/postgres/test_role_batch.py
-            graph_cases: 244
+            graph_cases: 254
           - shard: 5
             graph_tests: >-
               tests/integration/graph_db/postgres
