@@ -8,7 +8,7 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null })
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/lib/store/toast-store', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/api', () => ({ apiClient: { post: vi.fn() }, isProcessedError: () => false }));
-vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCallout: () => null }));
+vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCallout: () => null, McpManageAccess: () => null }));
 vi.mock('../../../api', () => ({
   McpServersApi: { discoverOAuthMetadata: vi.fn(), getOAuthConfig: vi.fn() },
 }));

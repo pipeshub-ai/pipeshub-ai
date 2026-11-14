@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { apiClient } from '@/lib/api';
-import { AgentsApi } from '../api';
+import { AgentsApi, buildAgentChatMcpGroups, extractAgentToolFullNames } from '../api';
+import type { AgentDetail, AgentMcpServer } from '../types';
 
 vi.mock('@/lib/api', () => ({
   apiClient: {
@@ -123,5 +124,37 @@ describe('AgentsApi.getAgent', () => {
     await AgentsApi.getAgent('agent-7', { quiet: true });
 
     expect(mockedGet).toHaveBeenCalledWith('/api/v1/agents/agent-7', { suppressErrorToast: true });
+  });
+});
+
+describe('agent chat MCP servers', () => {
+  function server(instanceId: string, extra: Partial<AgentMcpServer> = {}): AgentMcpServer {
+    return {
+      _key: instanceId,
+      name: instanceId,
+      instanceId,
+      tools: [{ name: 'search', fullName: `mcp_${instanceId}_search` }],
+      ...extra,
+    } as AgentMcpServer;
+  }
+  const agent = {
+    mcpServers: [server('exa'), server('github', { usableByViewer: false }), server('rovo')],
+  } as AgentDetail;
+
+  it('leaves out a server the viewer may not use, from the MCP tab and the tool catalog', () => {
+    expect(buildAgentChatMcpGroups(agent).map((g) => g.instanceId)).toEqual(['exa', 'rovo']);
+    expect(extractAgentToolFullNames(agent)).toEqual(['mcp_exa_search', 'mcp_rovo_search']);
+  });
+
+  it('keeps every server when none is marked', () => {
+    const unmarked = { mcpServers: [server('exa'), server('github')] } as AgentDetail;
+    expect(buildAgentChatMcpGroups(unmarked).map((g) => g.instanceId)).toEqual(['exa', 'github']);
+    expect(extractAgentToolFullNames(unmarked)).toEqual(['mcp_exa_search', 'mcp_github_search']);
+  });
+
+  it('has nothing to show when the only server is one the viewer may not use', () => {
+    const only = { mcpServers: [server('github', { usableByViewer: false })] } as AgentDetail;
+    expect(buildAgentChatMcpGroups(only)).toEqual([]);
+    expect(extractAgentToolFullNames(only)).toEqual([]);
   });
 });

@@ -19,6 +19,7 @@ vi.mock('@/config', () => ({
   isMcpInstanceReadOnly: () => readOnly.value,
   McpInheritedBadge: () => null,
   McpInheritedCallout: () => null,
+  McpManageAccess: () => null,
 }));
 vi.mock('@radix-ui/themes', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@radix-ui/themes')>()),

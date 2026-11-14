@@ -32,7 +32,9 @@ export { AgentChatHeader } from '@/app/(main)/chat/components/agent-chat-header'
 export { OAuthAppSelector } from '@/app/(main)/workspace/connectors/components/authenticate-tab/oauth-app-selector';
 // Users page header — Requests + Blocked Users (Admin Org) between search and Invite
 export { UsersPageHeaderActions } from '@/app/(main)/workspace/users/components/users-page-header-actions';
+export { useUserRowExtras } from '@/app/(main)/workspace/users/components/user-row-extras';
 export { isMcpInstanceReadOnly, McpInheritedBadge, McpInheritedCallout } from '@/app/(main)/workspace/mcp-servers/team/components/mcp-inheritance-guards';
+export { McpManageAccess } from '@/app/(main)/workspace/mcp-servers/team/components/mcp-manage-access';
 export { useUserPermission } from '@/lib/hooks/use-user-permission';
 export { PermissionLockIcon } from '@/app/components/ui/permission-lock-icon';
 export { PermissionDeniedDialog, usePermissionDeniedDialog } from '@/app/components/ui/permission-denied-dialog';
