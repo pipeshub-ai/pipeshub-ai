@@ -131,8 +131,8 @@ class PaginationInfo(BaseModel):
     by number.
     """
     limit: int = Field(..., description="Items per page")
-    totalItems: int = Field(..., description="Total number of items; a lower bound when `totalCapped` is true")
-    totalCapped: bool = Field(False, description="True when `totalItems` stopped at the provider's cap and more items exist; `hasNext` and `nextCursor` stay authoritative")
+    totalItems: int = Field(..., description="Total number of items; not exact when `totalCapped` is true")
+    totalCapped: bool = Field(False, description="True when `totalItems` is not exact (usually lower, see the API spec); `hasNext` and `nextCursor` stay authoritative")
     hasNext: bool = Field(..., description="Whether there is a next page")
     hasPrev: bool = Field(..., description="Whether there is a previous page")
     startIndex: Optional[int] = Field(None, description="1-based index of the first item on this page")

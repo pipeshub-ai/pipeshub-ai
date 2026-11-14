@@ -8519,20 +8519,26 @@ components:
                 Items in the whole result. For a search by a connected app
                 limited to spaces, folders or files, the matches found so far: it can
                 grow from page to page and is final once `hasNext` is false.
-                A lower bound when `totalCapped` is `true`, and never counts an item
-                the caller cannot read.
+                Otherwise exact unless `totalCapped` is `true`. Never counts an item the
+                caller cannot read.
             totalCapped:
               type: boolean
               description: |
-                `true` when `totalItems` is a lower bound. Only the PostgreSQL graph store
-                (`DATA_STORE=postgres`) stops counting, at one of two limits per connector:
-                - 10,000 items, for a connector whose access the graph store decides by class;
-                - the readable items among the first 500 candidates, for a connector it does
-                  not decide that way, for a listing or browse with more than 200 items it
-                  cannot decide, and for a sidebar folder or group with more children than one
-                  browse holds in memory (5,000). Any other sidebar node is counted in full.
-                A total is also capped when the request's budget ran out before it decided a
-                listed item's `hasChildren`.
+                `true` when `totalItems` is not exact. Only the PostgreSQL graph store
+                (`DATA_STORE=postgres`) sets it. `totalItems` is then lower than the true
+                count when:
+                - it stopped at 10,000, for a connector whose access the graph store decides
+                  by class;
+                - it counted only the readable items among the first 500 candidates: for a
+                  connector the store does not decide by class, for a listing or browse with
+                  more than 200 items it cannot decide, and for a sidebar (`onlyContainers`)
+                  folder or group with more than 5,000 children;
+                - the request's budget ran out before it decided every child (a placeholder
+                  it could not follow to the end or, in the sidebar, the children it samples
+                  for records' `hasChildren`): the children after that point are not counted.
+                It can be higher than the true count in one case: in the sidebar
+                (`onlyContainers`), a record whose `hasChildren` the budget left undecided is
+                listed and counted, though once decided it may not belong in the sidebar.
                 Search and filters across connectors add up each connector's count, so
                 `totalItems` can exceed 10,000 while `totalCapped` is `true`.
                 `totalPages` is still `ceil(totalItems / limit)`, so a client that pages by
@@ -8727,10 +8733,10 @@ components:
                     type: integer
             total:
               type: integer
-              description: Total number of nodes; a lower bound when `capped` is `true`.
+              description: Total number of nodes; not exact when `capped` is `true`.
             capped:
               type: boolean
-              description: '`true` when `total` and the counts stopped at the store''s cap. Treat a missing value as `false`.'
+              description: '`true` when `total` and the counts are not exact, for the reasons `pagination.totalCapped` lists. Treat a missing value as `false`.'
         permissions:
           type: object
           nullable: true
