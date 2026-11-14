@@ -140,11 +140,24 @@ async def stop_process(process: asyncio.subprocess.Process) -> None:
     already exited. A process without its own group is killed only if it
     outlives the grace period.
 
-    Callers run this while handling a cancellation. Another cancel must not
-    abort it between TERM and KILL, so the stop finishes even if the caller
-    stops waiting for it.
+    Callers run this while handling a cancellation, then release the
+    conversion slot and remove the temp dir. A further cancel must neither
+    abort the stop between TERM and KILL nor let the caller move on before
+    it ends, so it is waited out (bounded by two grace periods) and the
+    cancellation is raised afterwards.
     """
-    await asyncio.shield(_stop_process(process))
+    stop = asyncio.ensure_future(_stop_process(process))
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            await asyncio.shield(stop)
+            break
+        except asyncio.CancelledError as exc:
+            if stop.done():
+                raise
+            cancelled = exc
+    if cancelled is not None:
+        raise cancelled
 
 
 async def _stop_process(process: asyncio.subprocess.Process) -> None:

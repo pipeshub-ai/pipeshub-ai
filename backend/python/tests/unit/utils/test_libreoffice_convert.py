@@ -202,14 +202,27 @@ async def test_no_process_of_the_conversion_survives_a_timeout_or_cancel(
     monkeypatch.setattr(
         libreoffice_convert, "LIBREOFFICE_CONVERT_TIMEOUT_SECONDS", 1.0 if how == "timeout" else 60
     )
+    slots = CrossLoopSemaphore(1)
+    monkeypatch.setattr(libreoffice_convert, "conversion_slots", slots)
+    signals: list[signal.Signals] = []
     terminated = asyncio.Event()
     real_signal = libreoffice_convert._signal
 
-    def signal_and_note(*args: object, **kwargs: object) -> None:
-        real_signal(*args, **kwargs)
+    def signal_and_note(process: object, sig: signal.Signals, **kwargs: object) -> None:
+        real_signal(process, sig, **kwargs)
+        signals.append(sig)
         terminated.set()
 
     monkeypatch.setattr(libreoffice_convert, "_signal", signal_and_note)
+    outdirs: list[Path] = []
+    fake_exec = libreoffice_convert.asyncio.create_subprocess_exec
+
+    async def note_outdir(*args: str, **kwargs: object) -> asyncio.subprocess.Process:
+        if "--outdir" in args:
+            outdirs.append(Path(args[args.index("--outdir") + 1]))
+        return await fake_exec(*args, **kwargs)
+
+    monkeypatch.setattr(libreoffice_convert.asyncio, "create_subprocess_exec", note_outdir)
 
     task = asyncio.create_task(convert_with_libreoffice(b"doc data", "doc", "docx"))
     await asyncio.wait_for(running.wait(), timeout=10)
@@ -221,19 +234,25 @@ async def test_no_process_of_the_conversion_survives_a_timeout_or_cancel(
             # The second cancel lands while the stop waits out the grace period after TERM.
             await asyncio.wait_for(terminated.wait(), timeout=5)
             task.cancel()
+            # The worker ignores TERM: until the stop ends, its slot and temp dir stay taken.
+            while not task.done():
+                assert slots.in_use == 1
+                assert outdirs[0].is_dir()
+                await asyncio.sleep(0.01)
         with pytest.raises(asyncio.CancelledError):
             await task
     else:
         with pytest.raises(DocumentProcessingError, match="timed out"):
             await task
 
-    if how != "cancel-twice":  # a second cancel stops waiting; the shielded stop finishes on its own
-        assert started[0].returncode is not None  # reaped, not a zombie
+    assert signal.SIGKILL in signals  # the whole group was killed before the conversion returned
+    assert started[0].returncode is not None  # reaped, not a zombie
+    assert slots.in_use == 0
+    assert not outdirs[0].exists()
     for _ in range(100):  # the kernel reaps the killed worker asynchronously
-        if not _alive(worker) and started[0].returncode is not None:
+        if not _alive(worker):
             break
         await asyncio.sleep(0.05)
-    assert started[0].returncode is not None
     assert not _alive(worker)
 
 
