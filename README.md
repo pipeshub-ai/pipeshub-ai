@@ -50,7 +50,7 @@
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> is an open-source platform for connecting AI applications to the knowledge stored across your company's business systems.
 
-Connect about 35 sources, among them Slack, Google Drive, GitHub, Microsoft 365 and Notion, and let agents take actions in about 35 apps. Search across them and get answers with citations, filtered by what each person is allowed to see — or give that same context to your own agents, workflows and MCP clients.
+Connect about 35 sources, among them Slack, Google Drive, GitHub, Microsoft 365 and Notion, and let agents act in about 35 apps through built-in integrations and in any app with an MCP server: 38 are in the [catalog](https://docs.pipeshub.com/agent-guide/mcp-servers), including Zapier's, which reaches thousands of apps. Search across them and get answers with citations, filtered by what each person is allowed to see — or give that same context to your own agents, workflows and MCP clients.
 
 > [!TIP]
 > Deploy with a single command:
@@ -131,7 +131,7 @@ Want the same retrieval inside your own code, or behind a search box for your te
 
 **Connected to your systems**
 
-- 🔌 **Enterprise Connectors:** About 35 indexed sources with scheduled incremental sync, plus file upload to knowledge bases; agent actions in about 35 apps.
+- 🔌 **Enterprise Connectors:** About 35 indexed sources with scheduled incremental sync, plus file upload to knowledge bases; agent actions in about 35 apps, plus any app with an MCP server ([38 in the catalog](https://docs.pipeshub.com/agent-guide/mcp-servers), including Zapier).
 - 🕸️ **Knowledge Graph Retrieval:** Graph-backed retrieval that captures relationships across enterprise data.
 - 🎙️ **Multimodal Support:** Image, diagram, and scanned-file understanding plus voice-based interaction.
 
@@ -323,7 +323,7 @@ Answers come from an agent loop that combines hybrid search, grep, knowledge-gra
 
 ### What connectors does PipesHub support?
 
-PipesHub indexes about 35 sources with scheduled incremental sync, plus files you upload, and its agents can take actions in about 35 apps. See the [connectors overview](https://docs.pipeshub.com/connectors/overview) and [permissions by connector](https://docs.pipeshub.com/connectors/permissions-matrix).
+PipesHub indexes about 35 sources with scheduled incremental sync, plus files you upload, and its agents can act in about 35 apps through built-in integrations and in any app with an MCP server, including thousands through Zapier's. See the [connectors overview](https://docs.pipeshub.com/connectors/overview) and [permissions by connector](https://docs.pipeshub.com/connectors/permissions-matrix).
 
 ### What file formats can PipesHub index?
 
