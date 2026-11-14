@@ -224,9 +224,9 @@ async def test_a_granted_strict_group_below_a_seed_the_app_does_not_reach_is_rea
 
 
 async def test_a_page_that_ends_at_a_scan_bound_names_no_child_the_viewer_may_not_open(kh_layer, monkeypatch) -> None:
-    """WIDE read a window at a time with no time to read past the first: the first page of f ends at the last child it looked at, k199, which the
-    viewer may not open, and the next page resumes there. The cursor carries that position sealed: a client reading it finds no name or id of a
-    child it may not open, and the pages still list all forty readable children in order."""
+    """WIDE read a window at a time with no time to read past the first: a page of f holds fewer than a page of readable children, so it ends at the
+    last child it looked at, which is most likely one the viewer may not open, and the next page resumes there. The cursor carries that position
+    sealed: a client reading it finds no name or id of a child it may not open, and the pages still list all forty readable children once."""
     monkeypatch.setattr(kh_browse, "UNDECIDED_MAX", -1)      # the children are read a window at a time, as for a connector kg does not serve
     monkeypatch.setattr(kh_browse, "BUDGET_S", -1.0)
     readable = [f"k{i:03d}" for i in (*range(10), *range(200, 230))]
@@ -235,7 +235,8 @@ async def test_a_page_that_ends_at_a_scan_bound_names_no_child_the_viewer_may_no
     ns, cursors = await kh_layer._ns(WIDE), []
     with bind(OrgContext(ns.org, None, "job", "job:test", "t")):
         items, _, _ = await browse_pages(kh_layer, WIDE, "u", "f", "recordGroup", 50, cursors=cursors)
-    assert [ns.local(i.id) for i in items] == readable, kh_layer.name
+    listed = [ns.local(i.id) for i in items]
+    assert sorted(listed) == readable, kh_layer.name      # the order is the store's (these names sort by their stored keys), each row once
     assert cursors, kh_layer.name
     assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)], kh_layer.name
 
