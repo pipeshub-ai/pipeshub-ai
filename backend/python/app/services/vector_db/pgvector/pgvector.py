@@ -200,6 +200,8 @@ class PgVectorService(IVectorDBService):
                 task.cancel()
             if self._sampler is not None:
                 await self._sampler.close()
+            if self._sizer is not None:
+                self._sizer.close()
             self._sizer = self._sampler = None
             if self._own_placement:
                 self.placement, self._own_placement = None, False
