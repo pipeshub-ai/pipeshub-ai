@@ -477,14 +477,19 @@ async def test_a_shared_drive_page_quota_error_is_retried(ws: Workspace, backoff
 
 
 def reaches(ws: Workspace, email: str, external_id: str) -> bool:
-    """Whether a user grant on the item, or on a record it inherits from (up its parents), names the person."""
+    """Whether a user grant on the item, or on what it inherits from (its parents up to the top, then the top's
+    record group, as a shared drive's members), names the person."""
     record = ws.records.records.get(external_id)
     while record is not None:
         if email in ws.records.perm_emails(record.external_record_id):
             return True
-        if not record.inherit_permissions or not record.parent_external_record_id:
+        if not record.inherit_permissions:
             return False
-        record = ws.records.records.get(record.parent_external_record_id)
+        parent = ws.records.records.get(record.parent_external_record_id or "")
+        if parent is None:
+            members = ws.records.record_group_permissions.get(record.external_record_group_id or "", [])
+            return any(getattr(p, "email", None) == email for p in members)
+        record = parent
     return False
 
 
@@ -3088,6 +3093,19 @@ async def test_a_reader_cut_out_by_a_limited_folder_keeps_no_grant_below_it(ws: 
     assert ws.records.records["dir"].inherit_permissions is False
     assert BOB not in ws.records.perm_emails("dir")
     assert BOB not in ws.records.perm_emails("f"), "only the folder's own grants and its Managers reach below a limit"
+
+
+async def test_a_link_shared_item_gives_a_drive_member_no_grant_that_outlasts_a_limited_folder(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f", "x.txt", parent="dir", perms=[{"type": "anyone", "role": "reader", "allowFileDiscovery": False}])
+    await ws.sync()
+    assert reaches(ws, BOB, "f"), "as a member of the drive"
+
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+
+    assert not reaches(ws, BOB, "f"), "the limit cuts his membership, and a link share names nobody"
 
 
 async def test_a_direct_grant_removed_from_a_shared_drive_item_goes_though_only_readers_sync_it(ws: Workspace) -> None:

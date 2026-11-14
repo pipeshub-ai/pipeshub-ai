@@ -2013,9 +2013,14 @@ class GoogleDriveTeamConnector(BaseConnector):
             inherits_from_drive=inherits_from_drive,
         )
         # The syncing user may reach the item only through the link (or a group), so add
-        # their grant to the list that was read rather than replacing it.
+        # their grant to the list that was read rather than replacing it. Not for a member of the
+        # item's drive, whose access comes from the drive through the folders above: a grant of
+        # their own would outlast a limited folder that cuts them out.
         if anyone_with_link_permission_type is not None and user_email and not any(
             (perm.email or "").lower() == user_email.lower() for perm in stored
+        ) and not (
+            item_drive_id and inherits_from_drive and not is_drive
+            and user_email.lower() in (await self._drive_member_principals(item_drive_id))[0]
         ):
             stored = [*stored, Permission(
                 email=user_email,
