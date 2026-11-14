@@ -605,6 +605,8 @@ class JiraConnector(BaseConnector):
         self._parents_to_retry: set[str] = set()
         # Sub-tasks among the issues just built, which have no children to read again.
         self._subtask_ids: set[str] = set()
+        # Issues written with their stored access held (a parent that could not be read): never a first write.
+        self._held_access_ids: set[str] = set()
 
     def _cache_authenticated_jira_profile(self, response: Any) -> None:
         """Cache the account email and timezone from GET /rest/api/3/myself.
@@ -2930,6 +2932,8 @@ class JiraConnector(BaseConnector):
             return None
 
     def _keeps_stored_grants(self, record: Record) -> bool:
+        if getattr(record, "external_record_id", None) in self._held_access_ids:
+            return True
         context = self._issue_security.get(getattr(record, "external_record_group_id", None))
         return (
             context is not None and context.enforce and context.browse_holders is None
@@ -5019,19 +5023,24 @@ class JiraConnector(BaseConnector):
             self._remember_parent_levels(found, security)
 
     @staticmethod
-    def _kept_placement(issue_data: dict[str, Any], stored: Record | None, parent_external_id: str | None) -> str | None:
-        """Where an issue whose parent could not be read is filed: where the last read filed it. A sub-task the
-        last read filed off its parent stays off it, its own grants written for that place; one with nothing
-        stored stays under it, since the parent edge may carry a level its payload lacks."""
+    def _kept_placement(
+        issue_data: dict[str, Any], stored: Record | None, parent_external_id: str | None,
+    ) -> tuple[str | None, bool]:
+        """Where an issue whose parent could not be read is filed, and whether its stored access is held as it is.
+
+        It stays under this parent when that is where the last read filed it. A sub-task stored with no parent (filed
+        off it by a read that found the parent unleveled, or a story until now) keeps its place and its stored
+        access, neither rewritten nor widened, until the parent is read: nothing stored says which it was, and the
+        parent may carry a level its payload lacks. Any other issue (a new one among them) goes under its parent."""
         unread = issue_data["parent_unread"]
         if not unread or stored is None:
-            return parent_external_id
+            return parent_external_id, False
         stored_parent = getattr(stored, "parent_external_record_id", None)
         if stored_parent == unread:
-            return unread
+            return unread, False
         if issue_data["is_subtask"] and not stored_parent:
-            return None
-        return parent_external_id
+            return None, True
+        return parent_external_id, False
 
     def _files_under_parent(
         self, fields: dict[str, Any], parent_id: str, security: IssueSecurityContext | None,
@@ -5321,10 +5330,11 @@ class JiraConnector(BaseConnector):
         if not is_issue_changed and not is_new_project:
             return records, delete_ids, True
 
+        hold_access = False
         if issue_data["parent_unread"]:
             # Kept where the last sync filed it until its parent is read again.
             self._parents_to_retry.add(issue_data["parent_unread"])
-            parent_external_id = self._kept_placement(issue_data, existing_record, parent_external_id)
+            parent_external_id, hold_access = self._kept_placement(issue_data, existing_record, parent_external_id)
 
         # Record group is always the project. The parent ticket link follows Jira's parent
         # field where _extract_issue_data files the issue under its parent.
@@ -5405,6 +5415,14 @@ class JiraConnector(BaseConnector):
                 self.logger.warning(
                     f"Issue {issue_key} and the others in its security level: holders of type {skipped_holders} were not granted"
                 )
+            if hold_access:
+                # Its stored access stays until its parent is read again (the retry is queued).
+                issue_record.access_rule = existing_record.access_rule
+                issue_record.rewrite_permissions = False
+                permissions = []
+                self._held_access_ids.add(str(issue_id))
+            else:
+                self._held_access_ids.discard(str(issue_id))
 
         records.append((issue_record, permissions, is_issue_changed))
         if issue_data["is_subtask"] and not is_new_project:  # only an incremental batch names parents
@@ -7211,7 +7229,10 @@ class JiraConnector(BaseConnector):
             issue_data = self._extract_issue_data(issue, user_by_account_id, security=security)
 
             parent_external_id = issue_data.get("parent_external_id")
-            parent_external_id = self._kept_placement(issue_data, record, parent_external_id)
+            parent_external_id, hold_access = self._kept_placement(issue_data, record, parent_external_id)
+            if hold_access:
+                self.logger.info(f"Issue {issue_id}: its parent could not be read; leaving the stored record for the next sync")
+                return None
             parent_key = str((fields.get("parent") or {}).get("key") or "")
             if (
                 parent_external_id and not getattr(record, "parent_external_record_id", None)

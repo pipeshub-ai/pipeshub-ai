@@ -542,6 +542,36 @@ async def test_a_reindex_that_cannot_read_the_parent_keeps_the_sub_task_where_th
     assert not await _mismatches(world, expected, by_key)
 
 
+async def test_a_story_that_becomes_a_sub_task_of_a_leveled_parent_that_cannot_be_read_gains_no_one(
+    world: dict[str, Any],
+) -> None:
+    """PROJ-20 was a story on its own, read by the project. It becomes a sub-task of PROJ-7, whose level only
+    alice holds, now reported by dave; its payload does not carry the level yet and PROJ-7 cannot be read. Its
+    stored access is held: dave, its new reporter, is not granted it and no one else gains it. Once PROJ-7 is
+    read, it goes under PROJ-7 and takes its level."""
+    await _sync_project(world)
+    connector = world["connector"]
+    connector._issue_security[PROJECT_ID].browse_holders = [{"type": "reporter"}]
+    by_key_before = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    await _write(world, [_issue("20", "PROJ-20", "Story")])
+    by_key = await _ticket_ids(world)
+    assert set(by_key) - set(by_key_before) == {"PROJ-20"}
+    assert not await _mismatches(world, {**readers, "PROJ-20": PROJECT_READERS}, by_key)
+
+    connector._parent_levels.clear()  # PROJ-7 is not in the batch, and reading it fails (no source here)
+    sub = _issue("20", "PROJ-20", "Sub-task", parent="7", reporter="dave")
+    sub["fields"]["updated"] = "2024-07-01T10:00:00.000+0000"
+    await _write(world, [sub])
+    assert not await _mismatches(world, {**readers, "PROJ-20": PROJECT_READERS}, by_key)
+
+    leveled_parent, _ = ISSUES["leveled story under the unleveled epic"]  # PROJ-7, read in the same batch now
+    sub["fields"]["updated"] = "2024-07-02T10:00:00.000+0000"
+    await _write(world, [leveled_parent, sub], again=True)
+    assert not await _mismatches(world, {**readers, "PROJ-20": {"alice"}}, by_key)
+    assert by_key["PROJ-20"] in await _listed_under(world, "alice", by_key["PROJ-7"])
+
+
 async def test_an_unread_scheme_keeps_the_reporter_of_a_stored_issue_and_the_story_where_it_was_filed(
     world: dict[str, Any],
 ) -> None:
