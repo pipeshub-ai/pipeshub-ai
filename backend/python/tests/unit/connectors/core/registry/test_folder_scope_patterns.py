@@ -105,6 +105,11 @@ TRUTH_TABLE = [
     (36, OS, "in", ["*/quotes"], [("file", ".hidden/quotes/x", True)], False),
     (36, FS, "in", ["*/quotes"], [("file", ".hidden/quotes/x", True)], False),
     (38, OS, "in", ["quotes"], [("file", "quotes\n/x", False)], True),
+    (45, OS, "in", ["report?"],
+     [("file", "report /q.pdf", True), ("role", "report ", KEEP), ("role", "report /2026", KEEP)], False),
+    (45, FS, "in", ["*/ quotes"],
+     [("file", "a/ quotes/q.pdf", True), ("role", "a/ quotes", KEEP), ("role", "a", PASS)], False),
+    (45, OS, "not_in", ["tmp?"], [("file", "tmp /x", False), ("role", "tmp ", SKIP)], False),
     (38, OS, "in", ["quote?"], [("file", "quotes\n/x", False), ("file", "quotes/x", True)], False),
 ]
 
@@ -406,6 +411,24 @@ class TestMatchTracker:
         tracker.note_folder("archive", live.folder_role("archive"))
         assert tracker.matched() == frozenset({"archive/**"})
 
+    def test_a_file_path_on_a_share_is_read_with_backslashes_as_separators(self) -> None:
+        live = scope(["customer/*/quotes"], "in", FS)
+        tracker = live.tracker()
+        tracker.note_file("customer\\acme\\quotes\\q.pdf")
+        assert tracker.matched() == frozenset({"customer/*/quotes"})
+
+    def test_a_backslash_stays_a_character_on_an_object_store(self) -> None:
+        live = scope(["customer/*/quotes"])
+        tracker = live.tracker()
+        tracker.note_file("customer\\acme\\quotes\\q.pdf")
+        assert tracker.matched() == frozenset()
+
+    def test_a_folder_name_with_a_trailing_blank_is_matched_as_listed(self) -> None:
+        live = scope(["report?"])
+        tracker = live.tracker()
+        tracker.note_folder("report ", live.folder_role("report "))
+        assert tracker.matched() == frozenset({"report?"})
+
     def test_a_share_matches_whatever_the_case(self) -> None:
         live = scope(["Customer/*/Quotes"], "in", FS)
         tracker = live.tracker()
@@ -441,7 +464,10 @@ VALIDATION_TABLE = [
     ("a/\\*", "in", "posix", True, []),
     ("/", "not_in", "posix", False, ["excludes_everything"]),
     ("", "not_in", "windows", False, ["excludes_everything"]),
-    ("**", "not_in", "posix", False, ["excludes_everything"]),
+    ("**", "not_in", "posix", False, []),
+    ("**", "not_in", "posix", True, ["excludes_everything"]),
+    ("**/**", "not_in", "windows", False, []),
+    ("/**/", "not_in", "posix", True, ["excludes_everything"]),
     ("**/**", "not_in", "windows", True, ["excludes_everything"]),
     ("\\", "not_in", "windows", False, ["excludes_everything"]),
     ("\\", "not_in", "posix", False, []),

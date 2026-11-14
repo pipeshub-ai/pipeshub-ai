@@ -399,11 +399,14 @@ class FolderScope:
         """KEEP, PASS_THROUGH (it may lead to a synced folder) or SKIP, for a folder path."""
         if self.is_everything:
             return FolderRole.KEEP
-        folder = _as_folder(self.rules.normalise(path))
+        normal = self.rules.normalise(path)
+        # Literal folders compare as they always did, trimmed; a pattern sees each name
+        # as listed, blanks included, as includes_file does.
+        folder = _as_folder(normal)
         full = any(folder.startswith(f) for f in self._match_folders)
         leads_on = False
         if not full and self.patterns:
-            parts = self._parts(folder)
+            parts = self._parts(normal)
             for pattern in self.patterns:
                 pattern_full, pattern_open = pattern.walk(parts)
                 if pattern_full:
@@ -509,19 +512,21 @@ class MatchTracker:
         self._scope = scope
         self._matched: set[str] = set()
 
-    def _note(self, folder: str) -> None:
+    def _note(self, normal_folder: str) -> None:
+        """``normal_folder`` is already normalised by the scope's rules."""
         waiting = [p for p in self._scope.patterns if p.raw not in self._matched]
         if not waiting:
             return
-        parts = self._scope._parts(_as_folder(self._scope.rules.normalise(folder)))
+        parts = self._scope._parts(normal_folder)
         self._matched.update(p.raw for p in waiting if p.full_at(parts))
 
     def note_folder(self, path: str, role: FolderRole) -> None:
         if role is (FolderRole.SKIP if self._scope.exclude else FolderRole.KEEP):
-            self._note(path)
+            self._note(self._scope.rules.normalise(path))
 
     def note_file(self, path: str) -> None:
-        path = path.lstrip("/")
+        # Normalised first: on a share `\` separates folders, so it decides the parent.
+        path = self._scope.rules.normalise(path).lstrip("/")
         self._note(path.rsplit("/", 1)[0] if "/" in path else "")
 
     def matched(self) -> frozenset[str]:
@@ -589,7 +594,8 @@ def folder_value_problems(value: str, *, exclude: bool, path_style: str = "posix
     names = body.split("/")
     if "//" in body:
         codes.append("empty_segment")
-    if exclude and all(n in ("", "**") for n in names):
+    # "**" names the top only where the connector reads wildcards; otherwise it is a folder.
+    if exclude and all(n == "" or (wildcards and n == "**") for n in names):
         codes.append("excludes_everything")
     if len(value) > _MAX_FOLDER_VALUE_LENGTH:
         codes.append("too_long")

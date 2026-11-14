@@ -191,6 +191,87 @@ class TestSaveRoutes:
         assert "without \"..\"" in exc.value.detail
 
 
+    async def test_excluding_a_folder_named_double_star_saves_without_wildcards(self, save) -> None:
+        assert (await save(_stored({}), _folders("not_in", "**")))["success"] is True
+
+    async def test_excluding_everything_with_double_star_is_refused_with_wildcards(self, save) -> None:
+        with pytest.raises(HTTPException) as exc:
+            await save(_stored({}), _folders("not_in", "**"), wildcards=True)
+        assert "leaves nothing to sync" in exc.value.detail
+
+    async def test_excluding_the_top_is_refused_either_way(self, save) -> None:
+        for wildcards in (False, True):
+            with pytest.raises(HTTPException):
+                await save(_stored({}), _folders("not_in", "/"), wildcards=wildcards)
+
+
+class TestARefusedSaveLeavesTheCachedConfigAlone:
+    """The config service hands out its cached object; a refused save must not have written into it."""
+
+    @staticmethod
+    def _service(stored: dict[str, Any]) -> object:
+        import threading
+
+        from cachetools import LRUCache
+
+        from app.config.configuration_service import ConfigurationService
+
+        store = AsyncMock()
+        store.get_key = AsyncMock(side_effect=lambda key, **kw: copy.deepcopy(stored))
+        store.set_key = AsyncMock(return_value=True)
+        service = ConfigurationService.__new__(ConfigurationService)
+        service.logger = logging.getLogger("test")
+        service.cache = LRUCache(maxsize=10)
+        service._cache_lock = threading.Lock()
+        service._cached_at = {}
+        service.store = store
+        return service
+
+    @pytest.mark.parametrize("save", ["filters", "config"])
+    async def test_a_refused_save_leaves_the_cached_value(self, save) -> None:
+        from app.connectors.api.router import (
+            update_connector_instance_config,
+            update_connector_instance_filters_sync_config,
+        )
+
+        stored = _stored(_folders("in", "reports"))
+        service = self._service(stored)
+        path = "/services/connectors/c1/config"
+        before = copy.deepcopy(await service.get_config(path))
+
+        body = {"filters": {"sync": {"values": _folders("in", "a//b")}}}
+        req = _request(stored, body, _metadata())
+        req.app.container.config_service.return_value = service
+        with patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock, return_value=_instance()), \
+             patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock), \
+             patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=1000), \
+             pytest.raises(HTTPException) as exc:
+            if save == "filters":
+                await update_connector_instance_filters_sync_config("c1", req, graph_provider=AsyncMock())
+            else:
+                await update_connector_instance_config("c1", req)
+        assert exc.value.status_code == 400
+        assert await service.get_config(path, use_cache=True) == before
+
+
+    async def test_a_failed_filter_selection_save_leaves_the_cached_value(self) -> None:
+        from app.connectors.api.router import save_connector_instance_filters
+
+        stored = _stored(_folders("in", "reports"))
+        service = self._service(stored)
+        service.store.create_key = AsyncMock(return_value=False)  # the write does not land
+        path = "/services/connectors/c1/config"
+        before = copy.deepcopy(await service.get_config(path))
+
+        req = _request(stored, {"filters": {"folder_paths": {"operator": "in", "value": ["legal"]}}}, _metadata())
+        req.app.container.config_service.return_value = service
+        with patch(f"{_ROUTER}._get_and_validate_connector_instance", new_callable=AsyncMock,
+                   return_value=_instance()), \
+             patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock), \
+             patch(f"{_ROUTER}._validate_connector_permissions"):
+            await save_connector_instance_filters("c1", req)
+        assert await service.get_config(path, use_cache=True) == before
+
 class TestEnable:
     async def test_a_stored_exclude_of_the_root_enables(self) -> None:
         assert (await _enable(_stored(_folders("not_in", "/"))))["success"] is True

@@ -76,7 +76,7 @@ SAVE_DELTAS: list[dict[str, object]] = [
      "reason": "An empty name between two slashes names no folder anyone can create."},
     {"id": "excludes_everything", "path_style": "posix", "wildcards": False, "operator": "not_in", "value": "/",
      "reason": "Excluding the top leaves nothing to sync."},
-    {"id": "excludes_everything", "path_style": "windows", "wildcards": False, "operator": "not_in", "value": "**",
+    {"id": "excludes_everything", "path_style": "windows", "wildcards": True, "operator": "not_in", "value": "**",
      "reason": "Excluding the top leaves nothing to sync."},
     {"id": "too_long", "path_style": "posix", "wildcards": False, "operator": "in", "value": "a" * 1025,
      "reason": "No store takes a folder path that long."},
@@ -95,4 +95,7 @@ SAVE_UNCHANGED: list[dict[str, object]] = [
     {"path_style": "posix", "operator": "in", "value": "/reports/"},
     {"path_style": "posix", "operator": "not_in", "value": "archive"},
     {"path_style": "windows", "operator": "in", "value": "a**b"},
+    # Without wildcards "**" is a folder of that name, so excluding it leaves the rest.
+    {"path_style": "posix", "operator": "not_in", "value": "**"},
+    {"path_style": "windows", "operator": "not_in", "value": "**/**"},
 ]

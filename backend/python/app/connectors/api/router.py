@@ -5358,7 +5358,9 @@ async def update_connector_instance_auth_config(
 
         # Merge new auth configuration with existing config
         # Filter out OAuth credential fields - only store reference ID
-        new_config = existing_config.copy() if existing_config else {}
+        # A deep copy: the config service hands out its cached object, and a save that is
+        # refused below must leave it as it was.
+        new_config = copy.deepcopy(existing_config) if existing_config else {}
         secret_auth_fields = await _secret_auth_field_names(connector_registry, connector_type)
         auth_config_raw = _without_masked_secrets(
             _without_server_set_auth_fields(body.get(OAuthConfigKeys.AUTH, {})), secret_auth_fields
@@ -5700,7 +5702,9 @@ async def update_connector_instance_filters_sync_config(
 
         # Merge new configuration with existing config
         # Only update sections that are provided in the request
-        new_config = existing_config.copy() if existing_config else {}
+        # A deep copy: the config service hands out its cached object, and a save that is
+        # refused below must leave it as it was.
+        new_config = copy.deepcopy(existing_config) if existing_config else {}
 
         # Snapshot old sync filters before merge
         old_sync_filters = existing_config.get("filters", {}).get("sync", {})
@@ -5870,12 +5874,14 @@ async def update_connector_instance_config(
         existing_config = await config_service.get_config(config_path)
         if not existing_config:
             existing_config = {}
-        # Read before the merge below, which writes into this config's filters dict.
+        # The values saved before this request, for the folder checks below.
         stored_sync_values = _saved_sync_values(existing_config)
 
         # Merge new configuration with existing config
         # Only update sections that are provided in the request
-        new_config = existing_config.copy() if existing_config else {}
+        # A deep copy: the config service hands out its cached object, and a save that is
+        # refused below must leave it as it was.
+        new_config = copy.deepcopy(existing_config) if existing_config else {}
 
         # Determine which sections are being updated
         auth_updated = "auth" in body
@@ -7892,7 +7898,9 @@ async def save_connector_instance_filters(
         # Get current config
         config_service = resolve_config_service(container, user_context["org_id"])
         config_path = _get_config_path_for_instance(connector_id)
-        config = await config_service.get_config(config_path)
+        # A copy: the config service hands out its cached object, which must change only
+        # once the new config is stored.
+        config = copy.deepcopy(await config_service.get_config(config_path))
 
         if not config:
             logger.error("Configuration not found. Please configure first.")

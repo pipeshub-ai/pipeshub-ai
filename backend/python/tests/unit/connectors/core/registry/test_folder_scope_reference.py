@@ -28,8 +28,8 @@ from app.connectors.core.registry.folder_scope import (
     FolderScope,
 )
 
-NAME_PIECES = ("a", "A", "b", "é", "é", ".", "[", "]", "!", "\\", "\n", "*", "?", "\\*", "\\?")
-PATH_PIECES = ("a", "A", "b", "ab", "é", "é", ".", "[", "]", "!", "\\", "\n", "*", "?")
+NAME_PIECES = ("a", "A", "b", " ", "é", "é", ".", "[", "]", "!", "\\", "\n", "*", "?", "\\*", "\\?")
+PATH_PIECES = ("a", "A", "b", "ab", " ", "é", "é", ".", "[", "]", "!", "\\", "\n", "*", "?")
 segment = st.one_of(st.just("**"), st.lists(st.sampled_from(NAME_PIECES), min_size=1, max_size=4).map("".join))
 value = st.lists(segment, min_size=1, max_size=4).map("/".join)
 name = st.lists(st.sampled_from(PATH_PIECES), min_size=1, max_size=3).map("".join)
@@ -108,9 +108,11 @@ class Reference:
         return go(0, 0)
 
     def _folder(self, p: str) -> tuple[str, tuple[str, ...]]:
-        cleaned = _n(p, self.share).strip().strip("/")
+        # Literal folders are compared as main trims them; pattern names keep their blanks.
+        n = _n(p, self.share)
+        cleaned = n.strip().strip("/")
         folder = f"{cleaned}/" if cleaned else ""
-        return folder, tuple(x for x in folder.split("/") if x)
+        return folder, tuple(x for x in n.split("/") if x)
 
     def role(self, p: str) -> FolderRole:
         folder, parts = self._folder(p)
@@ -182,3 +184,16 @@ def test_no_listing_prefix_lies_inside_another(values: list[str], share: bool) -
         if first and "*" not in first and "?" not in first and "\\" not in first:
             assert any(_n(first + "/", share).startswith(p) or p.startswith(_n(first + "/", share))
                        for p in prefixes), v
+
+
+@settings(max_examples=2000, deadline=None)
+@given(st.lists(value, min_size=1, max_size=3), st.booleans(), st.booleans(), st.lists(path, min_size=1, max_size=6))
+def test_a_folder_and_the_files_in_it_agree(values: list[str], exclude: bool, share: bool, paths: list[str]) -> None:
+    """With patterns only, a file is synced exactly when its folder is kept, blanks in names included."""
+    rules = FILE_SHARE_PATHS if share else OBJECT_STORE_PATHS
+    live = FolderScope.from_filters(_filters(values, exclude), rules=rules, wildcards=True)
+    if live.folders:
+        return
+    for p in paths:
+        kept = live.folder_role(p) is not FolderRole.SKIP if exclude else live.folder_role(p) is FolderRole.KEEP
+        assert live.includes_file(f"{p}/f.txt" if p else "f.txt") == kept, p
