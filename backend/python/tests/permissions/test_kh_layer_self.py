@@ -264,6 +264,11 @@ async def test_a_release_cancelled_midway_keeps_the_world_for_a_later_release() 
     assert layer._prefix == {} and unloads == [["w0-"], ["w0-"]]
 
 
+def test_the_parts_hold_each_generated_world_once() -> None:
+    for count in (0, 1, 7, 49, 50, 51, 600):
+        assert sorted(i for part in range(kh_layer.PARTS) for i in kh_layer.world_part(count, part)) == list(range(count)), count
+
+
 STORED = world_from_data(yaml.safe_load("""
 principals: [{id: u}]
 nodes:
