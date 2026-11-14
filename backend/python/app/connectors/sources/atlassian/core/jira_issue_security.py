@@ -71,6 +71,9 @@ _SAME_ON_EVERY_ISSUE = frozenset({
     HOLDER_USER, HOLDER_GROUP, HOLDER_PROJECT_ROLE, HOLDER_PROJECT_LEAD,
     HOLDER_APPLICATION_ROLE, HOLDER_ANYONE,
 })
+def level_group_external_id(project_id: str, level_id: str) -> str:
+    """The external id of the record group that holds a level's holders (one per project and level)."""
+    return f"level:{project_id}:{level_id}"
 
 
 class SchemeKnowledge(str, Enum):
@@ -102,6 +105,8 @@ class IssueSecurityContext:
     # Browse Projects holders that name people on each issue (reporter, assignee, user or group
     # field). None when the project's permission scheme could not be read.
     browse_holders: list[dict[str, Any]] | None = field(default_factory=list)
+    # Level id -> its name, from the scheme read, to name the level's record group.
+    level_names: dict[str, str] = field(default_factory=dict)
 
     def browse_fingerprint(self) -> str:
         """"?" when the holders are unknown, "" when there are none, else a digest of them."""
@@ -113,19 +118,29 @@ class IssueSecurityContext:
         )).encode()).hexdigest()[:16] if self.browse_holders else ""
 
     def level_fingerprints(
-        self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
+        self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None, *, split: bool = False,
     ) -> dict[str, str]:
         """Level id -> a digest of its holders, so a change names the levels it touched.
 
         An application-role holder is granted as that role's groups, so the groups are part
-        of its digest: a group leaving the role re-reads the level's issues.
+        of its digest: a group leaving the role re-reads the level's issues. ``split`` gives
+        ``"<same on every issue>.<per issue>"``, so a change can tell a level whose record
+        group alone changed (see ``level_group_grants``) from one whose issues did.
         """
-        return {
-            level_id: hashlib.sha256(",".join(sorted(
-                _holder_fingerprint(holder, app_roles_mapping) for holder in holders if isinstance(holder, dict)
+        def digest(holders: list[dict[str, Any]]) -> str:
+            return hashlib.sha256(",".join(sorted(
+                _holder_fingerprint(holder, app_roles_mapping) for holder in holders
             )).encode()).hexdigest()[:16]
-            for level_id, holders in self.members_by_level.items()
-        }
+
+        out: dict[str, str] = {}
+        for level_id, listed in self.members_by_level.items():
+            holders = [h for h in listed if isinstance(h, dict)]
+            if not split:
+                out[level_id] = digest(holders)
+                continue
+            static = [h for h in holders if h.get("type") in _SAME_ON_EVERY_ISSUE]
+            out[level_id] = f"{digest(static)}.{digest([h for h in holders if h not in static])}"
+        return out
 
     def fingerprint(self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None) -> str:
         if self.knowledge == SchemeKnowledge.NONE:
@@ -653,6 +668,23 @@ def level_grants(
     return grants, False, skipped
 
 
+def level_group_grants(
+    holders: list[dict[str, Any]],
+    *,
+    project_key: str,
+    user_by_id: dict[str, Any],
+    app_roles_mapping: dict[str, list[dict[str, Any]]] | None,
+) -> tuple[list[Permission], list[str]]:
+    """The grants a level's record group holds once: its holders that name the same people on
+    every issue. Returns ``(grants, skipped holder types)``."""
+    grants, _, skipped = level_grants(
+        [h for h in holders if isinstance(h, dict) and h.get("type") in _SAME_ON_EVERY_ISSUE],
+        project_key=project_key, fields={}, user_by_id=user_by_id, app_roles_mapping=app_roles_mapping,
+        reporter_email=None, assignee_email=None,
+    )
+    return grants, skipped
+
+
 def apply_issue_access_settled(
     record: Record,
     fields: dict[str, Any] | None,
@@ -664,6 +696,7 @@ def apply_issue_access_settled(
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
     reporter_email: str | None = None,
     assignee_email: str | None = None,
+    project_id: str | None = None,
 ) -> tuple[list[Permission], list[str], bool]:
     """Set the issue's access rule and return the grants to write, the holder types
     skipped, and whether the result is settled. Settled means the level (or its
@@ -675,7 +708,20 @@ def apply_issue_access_settled(
     reads the story reads the epic; any other issue under its project. A parent in another
     project is handled by the processor, which keeps the child on its own project.
     Attachments are handled separately and stay empty.
+
+    With ``project_id``, a leveled issue, a sub-task too, takes its access from its
+    level's record group (``level_group_external_id``), which holds the holders that name
+    the same people on every issue once (``level_group_grants``): the issue is STRICT,
+    inherits that group and nothing it is filed under, and carries as its own grants only
+    the holders it names itself (reporter, assignee, a field); OPEN when each of those is
+    someone who reads it without the project (``_reads_alone``). It stays filed where it
+    was; placement grants nothing. Every other issue names no group, so an earlier one is
+    removed. Without ``project_id`` no group is managed: a leveled issue holds a copy of
+    its level's holders, and a sub-task inherits its parent.
     """
+    # None: no group is managed (or a stored one is kept); "": this issue has none. A personal
+    # account has no levels, so no group.
+    record.access_group_external_id = None if project_id is None or not context.enforce else ""
     if not context.enforce:
         # A personal account has no issue security. A nested issue inherits its
         # parent issue. One with no parent inherits the project, which inherits the app.
@@ -692,6 +738,8 @@ def apply_issue_access_settled(
     def close() -> tuple[list[Permission], list[str], bool]:
         # RESTRICTED with no grant hides the issue. A transient failure is
         # retried, so the grants already stored stay until that retry.
+        if context.defer_checkpoint:
+            record.access_group_external_id = None  # and so does its level's group, with its stored rule
         record.access_rule = AccessRule.RESTRICTED
         record.rewrite_permissions = not context.defer_checkpoint
         return [], [], False
@@ -700,6 +748,9 @@ def apply_issue_access_settled(
         # An issue filed under another one, or a stub, only follows it. A top-level issue is
         # also read by the people the project's Browse holders name on it (its reporter, say),
         # who need not read the project, so a direct grant must be enough: OPEN, not STRICT.
+        # shortcut: Jira judges a sub-task by its own Browse, so its own reporter may read it alone; an OPEN sub-task would
+        # also be read by everyone its parent admits by a grant of the parent's own (below a seed), which Jira does not show
+        # it to. Give a sub-task its own way to the project (an access-only group) if a sync shows such a reporter missing.
         top_level = not (record.parent_external_record_id or getattr(record, "is_placeholder", False))
         if top_level and context.browse_holders is None and not present:
             # Holders unread and the level not returned: keep the stored grants and stay OPEN so a stored
@@ -740,6 +791,10 @@ def apply_issue_access_settled(
         return close()
 
     holders = context.members_by_level.get(level_id, [])
+    # A sub-task too: Jira judges it by its own Browse and its own level (it copies its parent's when created), not by its parent.
+    grouped = project_id is not None and level_id in context.members_by_level
+    if grouped:
+        holders = [h for h in holders if isinstance(h, dict) and h.get("type") not in _SAME_ON_EVERY_ISSUE]
     grants, unreadable, skipped = level_grants(
         holders,
         project_key=project_key,
@@ -751,9 +806,45 @@ def apply_issue_access_settled(
     )
     if unreadable:
         return close()
-    record.access_rule = AccessRule.RESTRICTED
     record.rewrite_permissions = True
+    if grouped:
+        record.access_group_external_id = level_group_external_id(project_id, level_id)
+        alone = _reads_alone(context, level_id, grants, project_key=project_key, fields=fields or {}, users=users,
+                             app_roles_mapping=app_roles_mapping, reporter_email=reporter_email, assignee_email=assignee_email)
+        # A grant of an OPEN record admits on its own (a seed), so the issue is OPEN only when every grant it holds is to someone
+        # Jira shows it to without the project: Browse named on this issue, and named by its level.
+        alone_keys = {_grant_key(g) for g in alone}
+        if alone and all(_grant_key(g) in alone_keys for g in grants):
+            record.access_rule = AccessRule.OPEN
+            return alone, skipped, True
+        record.access_rule = AccessRule.STRICT
+        return grants, skipped, True
+    record.access_rule = AccessRule.RESTRICTED
     return grants, skipped, True
+
+
+def _grant_key(grant: Permission) -> tuple[str, str]:
+    return (str(grant.entity_type), (grant.email or "").lower() if grant.email else str(grant.external_id))
+
+
+def _reads_alone(
+    context: IssueSecurityContext, level_id: str, dynamic: list[Permission], *, project_key: str, fields: dict[str, Any],
+    users: dict[str, Any], app_roles_mapping: dict[str, list[dict[str, Any]]] | None, reporter_email: str | None,
+    assignee_email: str | None,
+) -> list[Permission]:
+    """Who reads a leveled issue without browsing its project: a person the project's Browse holders name on this issue (its
+    reporter, say) whom the level names too, on this issue or as a user holder of the level.
+
+    shortcut: a person in the level only through a group or role holder is not matched (its members are not known here), and
+    reads the issue only through the project; match memberships if a sync shows such a person missing."""
+    if not context.browse_holders:
+        return []
+    browse = browse_holder_grants(context.browse_holders, project_key=project_key, fields=fields, user_by_id=users,
+                                  reporter_email=reporter_email, assignee_email=assignee_email)
+    static, _ = level_group_grants(context.members_by_level.get(level_id, []), project_key=project_key,
+                                   user_by_id=users, app_roles_mapping=app_roles_mapping)
+    named = {_grant_key(g) for g in dynamic} | {_grant_key(g) for g in static if g.entity_type == EntityType.USER}
+    return [g for g in browse if _grant_key(g) in named]
 
 
 def apply_issue_access(
@@ -767,13 +858,14 @@ def apply_issue_access(
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
     reporter_email: str | None = None,
     assignee_email: str | None = None,
+    project_id: str | None = None,
 ) -> tuple[list[Permission], list[str]]:
     """``apply_issue_access_settled`` without the settled flag: the grants to write
     and the holder types skipped."""
     grants, skipped, _settled = apply_issue_access_settled(
         record, fields, is_subtask=is_subtask, project_key=project_key, context=context,
         user_by_account_id=user_by_account_id, app_roles_mapping=app_roles_mapping,
-        reporter_email=reporter_email, assignee_email=assignee_email,
+        reporter_email=reporter_email, assignee_email=assignee_email, project_id=project_id,
     )
     return grants, skipped
 
@@ -807,6 +899,7 @@ def plan_level_reread(
     *,
     is_new_project: bool,
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None,
+    split: bool = False,
 ) -> tuple[str | None, list[str] | None, dict[str, str]]:
     """Decide the second pass over already-stored issues, and the level map saved after it.
 
@@ -839,7 +932,7 @@ def plan_level_reread(
         # Close every leveled issue once; a lasting failure does not repeat the walk.
         closed = is_new_project or marker == "unreadable"
         return (None if closed else "leveled"), None, {**stored_real, "*": "unreadable"}
-    current = security.level_fingerprints(app_roles_mapping)
+    current = security.level_fingerprints(app_roles_mapping, split=split)
     if is_new_project:
         return None, None, current
     if stored is None:
@@ -853,6 +946,25 @@ def plan_level_reread(
         return "leveled", None, current
     changed = sorted(lid for lid in current if stored_real.get(lid) != current[lid])
     return ("levels" if changed else None), changed or None, current
+
+
+def group_held_levels(stored: dict[str, str] | None, current: dict[str, str]) -> set[str]:
+    """Of the levels whose split digests (``level_fingerprints(split=True)``) changed, those whose
+    holders that depend on the issue did not: the change is one write of the level's record group,
+    which every issue of the level inherits, and no issue is read again. A digest stored before the
+    groups existed is never one."""
+    held = set()
+    for level_id, now in current.items():
+        before = (stored or {}).get(level_id) or ""
+        if "." in before and "." in now and before != now and before.split(".", 1)[1] == now.split(".", 1)[1]:
+            held.add(level_id)
+    return held
+
+
+def closed_level_groups(stored: dict[str, str] | None, current: dict[str, str]) -> list[str]:
+    """Levels whose record group was written by an earlier sync and that the scheme no longer
+    lists: their groups are written with no holder, so their issues close at once."""
+    return sorted(k for k, v in (stored or {}).items() if k != "*" and "." in v and k not in current)
 
 
 def pre_walk_marker(stored: dict[str, str] | None) -> dict[str, str]:

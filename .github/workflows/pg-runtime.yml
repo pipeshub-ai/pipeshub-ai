@@ -50,6 +50,11 @@ on:
       - 'scripts/ensure_pg_cluster.sh'
       - 'scripts/assert_no_skips.py'
       - 'scripts/test_pg_runtime_shards.py'
+      # tests/integration/graph_db/postgres/test_jira_issue_security_pg.py runs these worlds through the Jira connector and the processor
+      - 'backend/python/tests/integration/graph_db/test_jira_issue_security_real_backends.py'
+      - 'backend/python/app/connectors/sources/atlassian/core/jira_issue_security.py'
+      - 'backend/python/app/connectors/sources/atlassian/jira_cloud/connector.py'
+      - 'backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py'
       - '.github/workflows/pg-runtime.yml'
   workflow_dispatch:
 

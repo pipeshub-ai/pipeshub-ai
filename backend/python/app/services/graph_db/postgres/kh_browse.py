@@ -523,11 +523,13 @@ async def _chain_nodes(tx: Tx, org: str, rows: list[Any]) -> dict[int, dict[str,
         (hier if lk["kind"] == 1 else groups)[lk["child_sk"]].append(lk["parent_sk"])
     refs = sorted({s for d in (hier, groups) for v in d.values() for s in v})
     keys = {r["sk"]: (r["coll"], r["id"]) for r in await tx.fetch(KEYS, org, refs)} if refs else {}
-    deleted = {r["sk"]: r["deleted"] for r in await tx.fetch(kgl.CHAIN_BY_SK, org, [s for s in refs if keys.get(s, (0,))[0] == 2])} if refs else {}
+    group_rows = await tx.fetch(kgl.CHAIN_BY_SK, org, [s for s in refs if keys.get(s, (0,))[0] == 2]) if refs else []
+    deleted = {r["sk"]: r["deleted"] for r in group_rows}
+    unlisted = {r["sk"] for r in group_rows if r["alien"]}      # a group that carries access only is no parent a browse opens
     out = {}
     for r in rows:
         own = hier[r["sk"]] if r["kind"] == 2 else groups[r["sk"]]
-        out[r["sk"]] = {"sk": r["sk"], "id": r["id"], "kind": r["kind"], "parents": [keys[s][1] for s in hier[r["sk"]] if s in keys],
+        out[r["sk"]] = {"sk": r["sk"], "id": r["id"], "kind": r["kind"], "parents": [keys[s][1] for s in hier[r["sk"]] if s in keys and s not in unlisted],
                         "own": [(keys[s][1], bool(deleted.get(s))) for s in dict.fromkeys(own) if s in keys and keys[s][0] == 2 and s != r["sk"]]}
     return out
 

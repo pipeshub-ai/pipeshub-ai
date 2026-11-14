@@ -73,7 +73,9 @@ async def test_projected_fields_equal_the_oracle(name: str) -> None:
         if p.fields.stamp is Stamp.CONTAINER and node.stamp in ("union", "intersection", "override"):
             raise AssertionError(f"{name}: {rid} is container but the corpus stamps it {node.stamp}")
         if p.fields.stamp is Stamp.INTERSECTION:
-            assert set(p.fields.path_ids) == path_of(world, rid), (name, rid)
+            # the record and every ancestor, but for a parent that adds nothing to who may read it (a route that is dead for
+            # everyone, or one that runs through another parent): see `ScopeProjector._without_dead_routes`
+            assert inherit_chain(world, rid) <= set(p.fields.path_ids) <= path_of(world, rid), (name, rid)
         if p.fields.stamp is Stamp.UNION:
             assert set(p.fields.path_ids) == inherit_chain(world, rid), (name, rid)
     for viewer in world.users():
@@ -93,7 +95,9 @@ async def test_projected_fields_equal_the_oracle(name: str) -> None:
 
 
 def _filter(world, scopes, rid, fields) -> bool | None:
-    return reference_filter(world, scopes, rid)
+    """The filter over the fields the projector wrote (the reference filter reads the world's own paths, which are the same
+    except where the projector leaves out a parent that adds nothing)."""
+    return fields_filter(world, scopes, rid, fields)
 
 
 def override_filter(world, scopes, rid, fields) -> bool:
@@ -163,7 +167,7 @@ async def generated_findings(seed: int, worlds: int) -> tuple[list[tuple], Count
                         continue
                     if world.node(rid).connector in scopes.legacy_apps:  # the resolver leaves that app to the legacy filter
                         continue
-                    got = reference_filter(stamped, scopes, rid)
+                    got = fields_filter(stamped, scopes, rid, p.fields)
                     if got is None:
                         continue
                     stamps[p.fields.stamp.value] += 1
@@ -468,3 +472,22 @@ async def test_a_stamp_graph_that_leaves_the_app_out_of_nodes_gets_the_record_re
     refused = {r for r, p in cut.items() if p.refused}
     assert refused and refused == {r for r in recs if r.startswith("reply:")}  # the records that reach the app through a parent
     assert all(cut[r].fields == whole[r].fields for r in recs if r not in refused)  # the others are stamped as before
+
+
+async def test_an_issue_under_its_security_level_is_stamped_exactly() -> None:
+    """LEVELS: a Jira issue hangs under its project or epic and under its level's group, and inherits the level only. The route it does not
+    inherit admits only its own grant (the stamp's own-id arm), so every issue is stamped (none left to the legacy filter), and the filter over
+    the fields the projector wrote gives every viewer the oracle's verdict."""
+    from .kh_worlds import LEVELS
+
+    projected = await project(LEVELS)
+    # o is no Jira shape (an OPEN record under two parents): it stays on the legacy filter, which is exact
+    assert sorted(rid for rid, p in projected.items() if p.refused) == ["o"], "an issue was left to the legacy filter"
+    stamped = as_stamped(LEVELS, projected)
+    layer, oracle = OracleScopeLayer(), OracleLayer()
+    for viewer in LEVELS.users():
+        scopes = await layer.viewer_scopes(stamped, viewer)
+        truth = oracle.explain(stamped, viewer, list(projected))
+        for rid, p in projected.items():
+            if not p.skipped and not p.refused:
+                assert fields_filter(stamped, scopes, rid, p.fields) == truth[rid].admitted, (viewer, rid, p.fields)

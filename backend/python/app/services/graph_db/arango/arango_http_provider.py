@@ -509,8 +509,9 @@ def _aql_open_hop(c: str, p: str, tag: str) -> str:
 def _aql_read_by_app(v: str) -> str:
     """Whether ``v`` is read by this App's rules (``@app_id``). A record or group of another connector that a
     group edge, a hierarchy edge or an app-level filing joins to this App is read by its own connector's
-    rules (the batch check decides a node in its own App), so every listing arm ends in this test, once."""
-    return f"({v}.connectorId == @app_id)"
+    rules (the batch check decides a node in its own App), so every listing arm ends in this test, once. A group that carries
+    access only (``accessOnly``) is never a row: what hangs under it is listed under its other parents."""
+    return f"({v}.connectorId == @app_id AND {v}.accessOnly != true)"
 
 
 def _aql_in_scope(c: str, p: str) -> str:
@@ -648,7 +649,7 @@ def _aql_undecided(v: str, *, decided: str | None = None, hiding: bool = True) -
         FOR kh_uc, kh_ue IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}
             FILTER kh_ue.relationshipType IN {_HIERARCHY_AQL}
             FILTER IS_SAME_COLLECTION("{records}", kh_uc) OR IS_SAME_COLLECTION("{groups}", kh_uc)
-            FILTER kh_uc.orgId == @org_id AND kh_uc.connectorId == @app_id AND kh_uc.isDeleted != true AND kh_uc.isPlaceholder != true
+            FILTER kh_uc.orgId == @org_id AND {_aql_read_by_app("kh_uc")} AND kh_uc.isDeleted != true AND kh_uc.isPlaceholder != true
             {f"FILTER kh_uc._id NOT IN {decided}" if decided else ""}
             FILTER NOT {_aql_in_hidden_group("kh_uc", "kv")}
             // a child a browse of it would refuse takes no place under the cap
@@ -21387,6 +21388,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             FILTER kh_pe.relationshipType IN {hierarchy}
                             FILTER IS_SAME_COLLECTION("{apps}", kh_p) OR IS_SAME_COLLECTION("{groups}", kh_p)
                                 OR IS_SAME_COLLECTION("{records}", kh_p)
+                            FILTER kh_p.accessOnly != true
                             RETURN kh_p._key
                     ),
                     ownGroups: (FOR kh_g IN {owns("kh_c")} RETURN {{id: kh_g._key, deleted: kh_g.isDeleted == true}})
