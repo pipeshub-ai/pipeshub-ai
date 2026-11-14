@@ -1046,7 +1046,6 @@ class TestNotionSyncUsersWorkspace:
         mock_ds.retrieve_user = AsyncMock(return_value=retrieve_response)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._create_workspace_record_group = AsyncMock()
-        connector._add_users_to_workspace_permissions = AsyncMock()
         connector._transform_to_app_user = MagicMock(return_value=MagicMock(email="alice@example.com"))
 
         await connector._sync_users()
@@ -1058,45 +1057,6 @@ class TestNotionSyncUsersWorkspace:
         assert connector._bot_ids_complete is True
         connector._create_workspace_record_group.assert_awaited_once()
         connector.data_entities_processor.on_new_app_users.assert_awaited()
-        connector._add_users_to_workspace_permissions.assert_awaited_once_with(
-            ["alice@example.com"]
-        )
-
-    @pytest.mark.asyncio
-    async def test_sync_users_grants_workspace_perms_after_bot_page(self):
-        connector = _make_connector()
-        person_page = _make_api_response(success=True, data={
-            "results": [{"id": "person-1", "type": "person", "name": "Alice"}],
-            "has_more": True,
-            "next_cursor": "bot-page",
-        })
-        bot_page = _make_api_response(success=True, data={
-            "results": [{
-                "id": "bot-1", "type": "bot",
-                "bot": {"workspace_id": "ws-1", "workspace_name": "My Workspace"},
-            }],
-            "has_more": False,
-            "next_cursor": None,
-        })
-        retrieve_response = _make_api_response(success=True, data={
-            "id": "person-1",
-            "type": "person",
-            "name": "Alice",
-            "person": {"email": "alice@example.com"},
-        })
-        mock_ds = MagicMock()
-        mock_ds.list_users = AsyncMock(side_effect=[person_page, bot_page])
-        mock_ds.retrieve_user = AsyncMock(return_value=retrieve_response)
-        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        connector._create_workspace_record_group = AsyncMock()
-        connector._add_users_to_workspace_permissions = AsyncMock()
-        connector._transform_to_app_user = MagicMock(return_value=MagicMock(email="alice@example.com"))
-
-        await connector._sync_users()
-
-        connector._add_users_to_workspace_permissions.assert_awaited_once_with(
-            ["alice@example.com"]
-        )
 
     @pytest.mark.asyncio
     async def test_sync_users_api_failure_raises(self):
@@ -1391,34 +1351,6 @@ class TestNotionFetchDataSource:
         with pytest.raises(HTTPException) as exc_info:
             await connector._fetch_data_source_as_blocks("ds-1", parser)
         assert exc_info.value.status_code == 409
-
-
-class TestNotionAddWorkspacePermissions:
-    @pytest.mark.asyncio
-    async def test_add_workspace_permissions_no_workspace(self):
-        """Does nothing if workspace_id is not set."""
-        connector = _make_connector()
-        connector.workspace_id = None
-        await connector._add_users_to_workspace_permissions(["user@example.com"])
-        connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_add_workspace_permissions_empty_emails(self):
-        """Does nothing if no emails provided."""
-        connector = _make_connector()
-        connector.workspace_id = "ws-1"
-        await connector._add_users_to_workspace_permissions([])
-        connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_add_workspace_permissions_creates_group_and_permissions(self):
-        """Creates record group with permissions for all provided emails."""
-        connector = _make_connector()
-        connector.workspace_id = "ws-1"
-        connector.workspace_name = "My Workspace"
-
-        await connector._add_users_to_workspace_permissions(["a@example.com", "b@example.com"])
-        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
 
 class TestNotionExtractBlockText:
@@ -3289,7 +3221,6 @@ class TestSyncUsers:
         }))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         conn._create_workspace_record_group = AsyncMock()
-        conn._add_users_to_workspace_permissions = AsyncMock()
         await conn._sync_users()
         assert conn.workspace_id == "ws-1"
         assert conn.workspace_name == "My WS"
@@ -3357,58 +3288,6 @@ class TestSyncUsers:
         await conn._sync_users()
         assert conn.workspace_id is None
         assert ds.list_users.await_count == 1
-
-
-# ===================================================================
-# _add_users_to_workspace_permissions
-# ===================================================================
-
-class TestAddUsersToWorkspacePermissions:
-    @pytest.mark.asyncio
-    async def test_no_workspace_id_returns(self):
-        conn = _make_connector_fullcov()
-        conn.workspace_id = None
-        await conn._add_users_to_workspace_permissions(["a@b.com"])
-        conn.data_entities_processor.on_new_record_groups.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_no_emails_returns(self):
-        conn = _make_connector_fullcov()
-        conn.workspace_id = "ws-1"
-        await conn._add_users_to_workspace_permissions([])
-        conn.data_entities_processor.on_new_record_groups.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_creates_new_record_group_if_not_exists(self):
-        conn = _make_connector_fullcov()
-        conn.workspace_id = "ws-1"
-        conn.workspace_name = "My Workspace"
-        conn.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
-        await conn._add_users_to_workspace_permissions(["alice@ex.com"])
-        conn.data_entities_processor.on_new_record_groups.assert_awaited_once()
-        args = conn.data_entities_processor.on_new_record_groups.call_args[0][0]
-        rg, perms = args[0]
-        assert perms == []
-        assert rg.inherit_permissions is True
-
-    @pytest.mark.asyncio
-    async def test_uses_existing_record_group(self):
-        conn = _make_connector_fullcov()
-        conn.workspace_id = "ws-1"
-        conn.workspace_name = "My Workspace"
-        existing_rg = MagicMock()
-        conn.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=existing_rg)
-        await conn._add_users_to_workspace_permissions(["bob@ex.com"])
-        conn.data_entities_processor.on_new_record_groups.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_exception_is_raised(self):
-        conn = _make_connector_fullcov()
-        conn.workspace_id = "ws-1"
-        conn.workspace_name = "W"
-        conn.data_entities_processor.on_new_record_groups = AsyncMock(side_effect=Exception("db error"))
-        with pytest.raises(Exception, match="db error"):
-            await conn._add_users_to_workspace_permissions(["x@y.com"])
 
 
 # ===================================================================
@@ -5352,13 +5231,15 @@ class TestCreateWorkspaceRecordGroup:
         conn.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_existing_record_group_is_left_alone(self):
+    async def test_existing_record_group_is_rewritten_without_inheritance(self):
         conn = _make_connector_fullcov()
         conn.workspace_id = "ws-1"
         conn.workspace_name = "My Workspace"
-        conn._mock_tx.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())
+        stored = MagicMock(inherit_permissions=True)
+        conn._mock_tx.get_record_group_by_external_id = AsyncMock(return_value=stored)
         await conn._create_workspace_record_group()
-        conn.data_entities_processor.on_new_record_groups.assert_not_awaited()
+        conn.data_entities_processor.on_new_record_groups.assert_awaited_once_with([(stored, [])])
+        assert stored.inherit_permissions is False
 
     @pytest.mark.asyncio
     async def test_exception_is_raised(self):

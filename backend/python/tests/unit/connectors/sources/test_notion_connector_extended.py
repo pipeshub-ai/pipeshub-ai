@@ -14,7 +14,6 @@ Covers methods and branches not exercised by existing test suites:
 - create_connector
 - _sync_users
 - _create_workspace_record_group
-- _add_users_to_workspace_permissions
 - _transform_to_app_user
 - _transform_to_webpage_record
 - _transform_to_file_record
@@ -1335,44 +1334,6 @@ class TestCreateWorkspaceRecordGroup:
         c.workspace_name = None
         await c._create_workspace_record_group()
         c.data_entities_processor.on_new_record_groups.assert_not_called()
-
-
-# ===========================================================================
-# _add_users_to_workspace_permissions
-# ===========================================================================
-
-class TestAddUsersToWorkspacePermissions:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        c = _make_connector()
-        c.workspace_id = "ws-1"
-        c.workspace_name = "Test WS"
-        await c._add_users_to_workspace_permissions(["user1@test.com", "user2@test.com"])
-        c.data_entities_processor.on_new_record_groups.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_no_workspace(self):
-        c = _make_connector()
-        c.workspace_id = None
-        await c._add_users_to_workspace_permissions(["user@test.com"])
-        c.data_entities_processor.on_new_record_groups.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_empty_emails(self):
-        c = _make_connector()
-        c.workspace_id = "ws-1"
-        await c._add_users_to_workspace_permissions([])
-        c.data_entities_processor.on_new_record_groups.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_existing_record_group(self):
-        c = _make_connector()
-        c.workspace_id = "ws-1"
-        c.workspace_name = "Test WS"
-        existing = MagicMock()
-        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=existing)
-        await c._add_users_to_workspace_permissions(["user@test.com"])
-        c.data_entities_processor.on_new_record_groups.assert_called_once()
 
 
 # ===========================================================================

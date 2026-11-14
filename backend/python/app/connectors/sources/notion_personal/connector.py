@@ -135,10 +135,10 @@ class NotionPersonalConnector(NotionConnector):
         Records are created with empty ACLs and ``inherit_permissions=True``, so the
         creator is the whole audience.
 
-    The team connector inherits the workspace from the app, because Notion's API
-    exposes no per-page sharing and the user sync is the whole audience. Here the
-    token is one user's own OAuth grant covering only the pages they picked
-    during authorization, so the creator alone is the audience.
+    The team connector grants its workspace to nobody, because Notion's API
+    exposes no per-page sharing. Here the token is one user's own OAuth grant
+    covering only the pages they picked during authorization, so the creator
+    alone is the audience.
     """
 
     def __init__(

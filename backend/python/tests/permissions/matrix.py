@@ -123,7 +123,9 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("github", "container", CONTAINER, "github/connector.py:178"),
     Connector("gitlab", "container", CONTAINER, "gitlab/projects.py:538"),
     Connector("gitlab_personal", "container", CONTAINER, "gitlab_personal/connector.py:107"),
-    Connector("notion", "container", CONTAINER, "notion/connector.py:2325", "workspace/team groups RECORD_GROUP_LEVEL, inherit"),
+    Connector("notion", "container", CONTAINER, "notion/connector.py:4605",
+              "records inherit the workspace group, which grants nobody (no inheritance from the app, no grant) and carries no "
+              "permission model: Notion's API does not say who may open a page"),
     Connector("notion_personal", "container", CONTAINER, "notion_personal/connector.py:55"),
     Connector("localKB", "container", CONTAINER, "localKB/connector.py:57", "knowledge bases"),
     Connector("local_fs", "container", CONTAINER, "local_fs/connector.py:467"),
@@ -172,7 +174,7 @@ CONTAINER_WHERE: dict[str, str] = {
     "microsoft/outlook": "mailboxes",
     "github_teams": "repositories and projects",
     "gitlab": "projects",
-    "notion": "workspace and team groups",
+    "notion": "the workspace group, which grants nobody",
     "google/drive/team": "shared drives whose items are neither shared nor limited",
 }
 
@@ -206,7 +208,7 @@ ANCHORS: dict[str, str] = {
     'github': '.with_permission_model(PermissionModel.APP_LEVEL)',
     'gitlab': 'permission_model=PermissionModel.RECORD_GROUP_LEVE',
     'gitlab_personal': '.with_permission_model(PermissionModel.APP_LEVEL)',
-    'notion': 'permission_model=PermissionModel.RECORD_GROUP_LEVE',
+    'notion': 'record_group.inherit_permissions = False',
     'notion_personal': '.with_permission_model(PermissionModel.APP_LEVEL)',
     'localKB': '.with_permission_model(PermissionModel.APP_LEVEL)',
     'local_fs': '.with_permission_model(PermissionModel.APP_LEVEL)',

@@ -24,7 +24,6 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
-    PermissionModel,
     CollectionNames,
     Connectors,
     MimeTypes,
@@ -2251,8 +2250,6 @@ class NotionConnector(BaseConnector):
                     "then sync again."
                 )
             self._bot_ids_complete = listing_complete
-            if self.workspace_id and workspace_emails:
-                await self._add_users_to_workspace_permissions(workspace_emails)
             if user_details_complete:
                 await self._remove_departed_workspace_users(workspace_emails, members_without_email)
             else:
@@ -2296,52 +2293,6 @@ class NotionConnector(BaseConnector):
         removed = await self.data_entities_processor.data_store_provider.execute_in_transaction(remove_leavers)
         if removed:
             self.logger.info("Removed %s Notion user(s) who are no longer in the workspace", removed)
-
-    async def _add_users_to_workspace_permissions(self, user_emails: list[str]) -> None:
-        """Point the workspace at the app and drop per-user grants.
-
-        The user sync is the gate. An inherit edge from the workspace to the app
-        reaches those people. A read grant on the workspace would only repeat it.
-        ``user_emails`` is still required so a run that synced nobody does not
-        rewrite the workspace.
-        """
-        try:
-            if not self.workspace_id or not user_emails:
-                return
-
-            record_group = await self.data_entities_processor.get_record_group_by_external_id(
-                connector_id=self.connector_id,
-                external_id=self.workspace_id
-            )
-
-            if not record_group:
-                record_group = RecordGroup(
-                    org_id=self.data_entities_processor.org_id,
-                    name=self.workspace_name,
-                    external_group_id=self.workspace_id,
-                    connector_name=self.connector_name,
-                    connector_id=self.connector_id,
-                    group_type=RecordGroupType.NOTION_WORKSPACE,
-                    permission_model=PermissionModel.RECORD_GROUP_LEVEL,
-                    inherit_permissions=True,
-                    created_at=get_epoch_timestamp_in_ms(),
-                    updated_at=get_epoch_timestamp_in_ms(),
-                )
-            else:
-                record_group.inherit_permissions = True
-
-            # [] clears a per-user grant written before the workspace inherited.
-            await self.data_entities_processor.on_new_record_groups([(record_group, [])])
-
-            self.logger.info(
-                "Workspace %s inherits from the app (%d synced users)",
-                self.workspace_id,
-                len(user_emails),
-            )
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to add workspace permissions: {e}", exc_info=True)
-            raise
 
     async def _sync_objects_by_type(self, object_type: str) -> None:
         """
@@ -4618,10 +4569,16 @@ class NotionConnector(BaseConnector):
             self.logger.warning("Could not load Notion workspace from bot user: %s", e)
 
     async def _create_workspace_record_group(self) -> None:
-        """
-        Create a RecordGroup for the Notion workspace.
+        """Write the Notion workspace RecordGroup, granting it to nobody.
 
-        This should be called once when workspace info is first extracted from bot owner.
+        Notion's API does not say who may open a page: a page object carries no
+        sharing, teamspace pages show a plain workspace parent, and ``/v1/users``
+        lists no guests. Workspace membership therefore proves nothing about a page,
+        so the workspace neither inherits the app nor carries a grant, and nothing
+        synced here is readable through it. It is not RECORD_GROUP_LEVEL either:
+        reaching it must never stand in for checking a record. Written on every run,
+        so a workspace stored while it still inherited the app loses that edge and
+        that declaration.
         """
         try:
             if not self.workspace_id:
@@ -4630,34 +4587,26 @@ class NotionConnector(BaseConnector):
             self.workspace_name = self.workspace_name or self._DEFAULT_WORKSPACE_NAME
 
             async with self.data_store_provider.transaction() as tx_store:
-                existing = await tx_store.get_record_group_by_external_id(
+                record_group = await tx_store.get_record_group_by_external_id(
                     connector_id=self.connector_id,
                     external_id=self.workspace_id,
                 )
-            if existing:
-                self.logger.info(
-                    "Workspace record group already exists: %s", self.workspace_id
+            if not record_group:
+                record_group = RecordGroup(
+                    org_id=self.data_entities_processor.org_id,
+                    name=self.workspace_name,
+                    external_group_id=self.workspace_id,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    group_type=RecordGroupType.NOTION_WORKSPACE,
+                    created_at=get_epoch_timestamp_in_ms(),
+                    updated_at=get_epoch_timestamp_in_ms(),
                 )
-                return
+            record_group.inherit_permissions = False
+            record_group.permission_model = None
 
-            record_group = RecordGroup(
-                org_id=self.data_entities_processor.org_id,
-                name=self.workspace_name,
-                external_group_id=self.workspace_id,
-                connector_name=self.connector_name,
-                connector_id=self.connector_id,
-                group_type=RecordGroupType.NOTION_WORKSPACE,
-                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
-                inherit_permissions=True,
-                created_at=get_epoch_timestamp_in_ms(),
-                updated_at=get_epoch_timestamp_in_ms(),
-            )
-
+            # [] clears any grant an earlier version wrote on the workspace.
             await self.data_entities_processor.on_new_record_groups([(record_group, [])])
-
-            self.logger.info(
-                f"✅ Created workspace record group: {self.workspace_name} (ID: {self.workspace_id})"
-            )
 
         except Exception as e:
             self.logger.error(f"❌ Failed to create workspace record group: {e}", exc_info=True)

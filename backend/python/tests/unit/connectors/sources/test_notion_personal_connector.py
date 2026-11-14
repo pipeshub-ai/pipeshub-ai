@@ -129,14 +129,15 @@ class TestNotionPersonalIdentity:
 
 
 class TestNotionTeamWarning:
-    """The team connector's callout is the only place a user is told about the
-    workspace-wide visibility, so both halves of it are pinned here."""
+    """The team connector's callout is the only place a user is told that its
+    pages are not searchable, so both halves of it are pinned here."""
 
-    def test_team_connector_warns_about_workspace_wide_visibility(self):
+    def test_team_connector_says_its_pages_are_not_searchable(self):
         from app.connectors.sources.notion.connector import NotionConnector
 
         info = NotionConnector._connector_metadata["connectorInfo"]
-        assert "everyone in your Notion workspace" in info
+        assert "not searchable by anyone" in info
+        assert "everyone in your Notion workspace" not in info
         assert "Notion Personal" in info
         # The shared per-user-ACL copy is false for Notion: the API exposes no
         # per-page sharing, so it must not come back.
