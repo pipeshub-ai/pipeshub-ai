@@ -694,6 +694,19 @@ grants: [[u, f], [u, q]]
 gates: [[u, A]]
 """))
 
+# DEPTHDEL: a readable record r three hierarchy hops below the App, through a deleted folder x. A flatten from the App bounded to three hops lists r (the
+# bound counts hops through any node, as Neo4j's walk does); bounded to two it does not.
+DEPTHDEL = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: G, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: x, kind: record, connector: A, rule: OPEN, deleted: true, parents: [G], inherits: [G]}
+  - {id: r, kind: record, connector: A, rule: OPEN, parents: [x]}
+grants: [[u, G], [u, r]]
+gates: [[u, A]]
+"""))
+
 # SCOPEDSIDE: FLATSIDE's twin below a folder. R under a granted group G holds a strict child c that inherits from it. A flatten of G reads its rows'
 # arrows from G's reach (the walk reaches G), so R shows an arrow there, and that flatten's sidebar keeps R.
 SCOPEDSIDE = world_from_data(yaml.safe_load("""
