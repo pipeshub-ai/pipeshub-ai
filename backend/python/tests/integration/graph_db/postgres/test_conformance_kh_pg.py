@@ -27,6 +27,7 @@ from tests.permissions.kh_worlds import (
     STUBHELD,
     STUBREACH,
     STUBTOP,
+    UNPLACED,
 )
 from tests.permissions.scenario import load_all
 
@@ -232,4 +233,15 @@ async def test_a_placeholder_group_whose_only_content_is_a_chain_top_is_listed_w
         assert await children_of(kh_layer, STUBTOP, "u", "f", "recordGroup") == {"s": True}, kh_layer.name
         assert {r["id"]: r["hasChildren"] for r in (await listing(kh_layer, STUBTOP, "u")).rows}["f"] is True, kh_layer.name
     bad = _bad(await check(kh_layer, STUBTOP, "stubtop"))
+    assert not bad, _describe(bad)
+
+
+async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(kh_layer) -> None:
+    """UNPLACED: r1's parent and own group are closed, so the App lists it; r2's own group opens, so it is listed there and not under the App; r3
+    is granted but the check denies it, so it is listed nowhere."""
+    await kh_layer.preload([UNPLACED])
+    with bind(OrgContext((await kh_layer._ns(UNPLACED)).org, None, "job", "job:test", "t")):
+        assert await children_of(kh_layer, UNPLACED, "u", "A", "app") == {"open": True, "r1": False}, kh_layer.name
+        assert await children_of(kh_layer, UNPLACED, "u", "open", "recordGroup") == {"r2": False}, kh_layer.name
+    bad = _bad(await check(kh_layer, UNPLACED, "unplaced"))
     assert not bad, _describe(bad)
