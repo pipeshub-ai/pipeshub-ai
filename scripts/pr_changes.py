@@ -160,6 +160,8 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/permissions/oracle.py",
     f"{PYTHON}/tests/permissions/scope_corpus.py",
     f"{PYTHON}/tests/permissions/serving_corpus.py",
+    f"{PYTHON}/tests/permissions/gen/**",
+    f"{PYTHON}/tests/permissions/test_scope_projector.py",
     f"{PYTHON}/tests/permissions/scope_layer.py",
     f"{PYTHON}/tests/permissions/stamp_world.py",
     f"{PYTHON}/tests/permissions/store_harness.py",
