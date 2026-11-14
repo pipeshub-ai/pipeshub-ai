@@ -1684,10 +1684,12 @@ class JiraDataCenterConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
 
         while True:
+            # Its parameters are `cursor` and `maxResults` only (Jira DC REST 10.3 and 11.2,
+            # https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-user/); inactive users are
+            # left out by _fetch_users from each row's `active`.
             response = await datasource.get_user_list_v2(
                 cursor=cursor,
                 maxResults=USER_LIST_PAGE_SIZE,
-                includeInactive=False,
             )
 
             if response.status in (
@@ -2065,6 +2067,7 @@ class JiraDataCenterConnector(BaseConnector):
                 self._app_roles_unread = True
                 return {}
 
+            defined_roles = 0
             for role in roles_data:
                 role_key = role.get("key") if isinstance(role, dict) else None
                 groups = role.get("groups") if isinstance(role, dict) else None
@@ -2075,6 +2078,12 @@ class JiraDataCenterConnector(BaseConnector):
                     # missing from this mapping are unknown, not "no groups".
                     self._app_roles_unread = True
                     continue
+                if role.get("defined") is False:
+                    # `defined` has no description in ApplicationRoleBean (Jira DC REST 11.2,
+                    # https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-applicationrole/),
+                    # so a role marked not defined is not taken to grant access.
+                    continue
+                defined_roles += 1
 
                 normalized = _application_role_groups_from_dc_role(role)
                 if normalized:
@@ -2085,8 +2094,9 @@ class JiraDataCenterConnector(BaseConnector):
 
             if self._app_roles_unread:
                 self.logger.warning("⚠️ Application roles response has an entry that is not a readable role")
-            # Only an administrator reads the roles, so a list of readable roles is the whole picture.
-            self._app_roles_read = bool(roles_data) and not self._app_roles_unread
+            # Only an administrator reads the roles ("403 Returned if the current user is not an administrator",
+            # Jira DC REST 11.2 GET /rest/api/2/applicationrole), so a list of readable roles is the whole picture.
+            self._app_roles_read = defined_roles > 0 and not self._app_roles_unread
             self.logger.info(f"🔐 Fetched {len(mapping)} application roles with group mappings")
 
         except Exception as e:
@@ -3407,7 +3417,11 @@ class JiraDataCenterConnector(BaseConnector):
 
             members_status, values = await collect_paged_values(fetch_page)
             if values is None:
-                context.defer_checkpoint = http_status_is_transient(members_status)
+                # This route is not in Data Center's documented REST API (10.3 and 11.2 document only
+                # /issuesecurityschemes, /issuesecurityschemes/{id}, /project/{key}/issuesecuritylevelscheme,
+                # /project/{key}/securitylevel and /securitylevel/{id}; https://developer.atlassian.com/server/jira/platform/rest/v11002/),
+                # so no answer of it is lasting: stored grants are kept and the read is retried.
+                context.defer_checkpoint = True
                 context.read_status = members_status
                 return context  # members_readable stays False: leveled issues are closed
             members = (True, index_members(self._groups_by_name(values)))
@@ -4794,7 +4808,10 @@ class JiraDataCenterConnector(BaseConnector):
         retry, so the story is held and read again rather than filed on a guess."""
         if parent_id not in self._parent_levels:
             response = await self._get_issue_with_retry(parent_id, PARENT_LEVEL_FIELDS)
-            if response.status in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.FORBIDDEN.value):
+            # 404 is the documented answer for an issue that is missing or hidden from the caller; 403 is not
+            # documented (Jira DC REST 11.2 GET /rest/api/2/issue/{issueIdOrKey},
+            # https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-issue/), so it is a failed read.
+            if response.status == HttpStatusCode.NOT_FOUND.value:
                 self._parent_levels[parent_id] = None
             elif response.status != HttpStatusCode.OK.value:
                 raise JiraReadError(response.status, f"Failed to read the level of parent issue {parent_id}")

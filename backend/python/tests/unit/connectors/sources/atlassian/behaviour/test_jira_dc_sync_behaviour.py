@@ -958,6 +958,53 @@ class TestProductAccess:
 
         assert db.app_users == [] and db.groups_saved == {} and db.withdrawn_users == []
 
+    async def test_the_groups_of_a_role_marked_not_defined_give_no_product_access(self, jira, db, store, search) -> None:
+        """`defined` has no description in the Data Center REST API (ApplicationRoleBean,
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-applicationrole/), so a role
+        marked `defined: false` is not taken to grant anything."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response([
+            {"key": "jira-software", "groups": ["jira-software-users"], "defined": True},
+            {"key": "jira-core", "groups": ["jira-core-users"], "defined": False},
+        ]))
+
+        def members(request: httpx.Request) -> httpx.Response:
+            name = AtlassianApiStub.query(request)["groupname"]
+            keys = {"jira-software-users": ["alice-key", "bob-key", "carol-key"], "jira-core-users": ["dave-key"]}.get(
+                name, ["alice-key"])
+            return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"alice@example.com", "bob@example.com", "carol@example.com"}
+
+    async def test_roles_all_marked_not_defined_leave_product_access_unknown(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response([
+            {"key": "jira-software", "groups": ["jira-software-users"], "defined": False}]))
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"} and db.withdrawn_users == []
+
+    async def test_the_user_list_is_read_with_its_documented_parameters_only(self, jira, db, store, search) -> None:
+        """GET /rest/api/2/user/list takes `cursor` and `maxResults` only (Jira DC REST 10.3 and 11.2,
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-user/); the connector keeps the
+        active users itself."""
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        calls = jira.calls("GET", f"{API}/user/list")
+        assert calls and all(set(c.url.params) <= {"cursor", "maxResults"} for c in calls)
+
     async def test_roles_read_in_full_with_no_groups_give_no_account_product_access(self, jira, db, store, search) -> None:
         """Only an administrator can read the roles, so the answer is the whole picture: access comes only through
         a role's groups, and no role has one."""

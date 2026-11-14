@@ -407,6 +407,27 @@ class TestFailClosed:
         warning = next(n for n in notes.sent if "issue security levels" in n["title"])
         assert "does not list who holds" in warning["message"] and "ENG" in warning["message"]
 
+    @pytest.mark.parametrize("status", [404, 403, 401])
+    async def test_level_holders_that_cannot_be_read_keep_a_stored_issues_grants(
+        self, jira, db, store, jql_search, status,
+    ) -> None:
+        """The level-members route is not in Data Center's documented REST API (10.3 and 11.2 list only
+        /issuesecurityschemes, /issuesecurityschemes/{id}, /project/{key}/issuesecuritylevelscheme,
+        /project/{key}/securitylevel and /securitylevel/{id}, https://developer.atlassian.com/server/jira/platform/rest/v11002/),
+        so any answer other than the members is a failed read: an unchanged issue keeps what it was granted."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [ALICE]})
+        secured = sec_issue("2", "ENG-2", level=SECRET)
+        jql_search.put(secured)
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=[secured])
+        assert readers(db, "2") == {("USER", "alice@example.com")}
+
+        jira.on("GET", f"{API}/issuesecurityschemes/{SCHEME}/members", json_response({"message": "no"}, status=status))
+        await sync(connector, jql_search, recent=[secured])
+
+        assert readers(db, "2") == {("USER", "alice@example.com")}
+
     async def test_an_account_refused_the_scheme_hides_secured_issues_and_names_the_permission(
         self, jira, db, store, jql_search,
     ) -> None:

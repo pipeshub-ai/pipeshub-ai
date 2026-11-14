@@ -169,6 +169,15 @@ class TestParentGate:
         with pytest.raises(Exception, match="parent issue 5"):
             await connector._files_under_parent({"project": {"id": "10"}}, "5", security)
 
+    async def test_a_parent_read_refused_with_403_is_a_failed_read_not_a_hidden_parent(self) -> None:
+        """GET /rest/api/2/issue/{id} documents 404 for an issue that is missing or hidden from the caller, and no
+        403 (https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-issue/)."""
+        connector = _connector()
+        connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=403))
+        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True)
+        with pytest.raises(Exception, match="parent issue 5"):
+            await connector._files_under_parent({"project": {"id": "10"}}, "5", security)
+
     async def test_a_parent_the_account_cannot_see_is_not_a_parent(self) -> None:
         connector = _connector()
         connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=404))
