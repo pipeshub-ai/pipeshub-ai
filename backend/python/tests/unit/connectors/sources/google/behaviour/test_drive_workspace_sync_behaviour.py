@@ -3270,6 +3270,50 @@ async def test_the_first_sync_after_the_upgrade_replaces_old_style_grants(ws: Wo
     assert BOB in ws.records.perm_emails("f"), "once per drive: the next run does not list it again"
 
 
+async def test_a_reader_whose_membership_a_member_group_hides_gets_no_grant_of_their_own(ws: Workspace) -> None:
+    ws.world.add_group("eng@example.com", [BOB])
+    ws.world.add_drive("sd-1", "Team", {"eng@example.com": "reader"})  # no Manager: the reader's own read decides
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f", "x.txt", parent="dir")
+    ws.world.unlistable_groups["eng@example.com"] = 403
+    await ws.sync()
+
+    # Bob may be a member through eng@, which cannot be listed: neither a grant of his own nor none is safe yet.
+    assert BOB not in ws.records.perm_emails("f")
+    assert ws.incomplete
+
+    del ws.world.unlistable_groups["eng@example.com"]
+    await ws.sync()
+    assert not ws.incomplete
+    # A member through eng@: he reaches it from the drive (its record group grants eng@), not a grant of his own.
+    assert "f" in ws.records.records and BOB not in ws.records.perm_emails("f")
+    assert ws.records.records["f"].inherit_permissions and ws.records.records["dir"].inherit_permissions
+
+
+async def test_a_folder_turning_limited_is_noted_before_the_feed_moves_on(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f", "x.txt", parent="dir")
+    await ws.sync()
+    _old_style_grant(ws, "f", BOB)
+    connector = await ws.connector_()
+    stop = RuntimeError("the run stops after the feeds")
+
+    async def stopped() -> None:
+        raise stop
+
+    real_check = connector._clear_cut_out_grants_below_limited_folders
+    connector._clear_cut_out_grants_below_limited_folders = stopped
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    with pytest.raises(RuntimeError):
+        await ws.sync()
+    assert BOB in ws.records.perm_emails("f"), "the run stopped before the check"
+
+    connector._clear_cut_out_grants_below_limited_folders = real_check
+    await ws.sync()  # the feeds have moved on and report nothing; the folder was noted on the checkpoint
+    assert not reaches(ws, BOB, "f")
+
+
 async def test_a_shared_drive_item_is_read_as_its_manager_once_for_all_its_reading_members(ws: Workspace) -> None:
     dana = "dana@example.com"
     ws.world.add_user(dana)
