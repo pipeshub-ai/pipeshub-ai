@@ -641,8 +641,8 @@ def _aql_in_hidden_group(v: str, tag: str) -> str:
 def _aql_undecided(v: str, *, decided: str | None = None, hiding: bool = True) -> str:
     """The handles of the children of ``v`` a browse of it asks the batch check about, as Neo4j's ``_kh_v3_undecided``: hierarchy children of
     this App, live, of the organisation, no stub, in no group that hides its children, none when one lies above ``v``, and not ``decided`` (a
-    list of handles the browse's rules already select); the first ``_KH_UNDECIDED_MAX`` by key, and one more for a browse (``decided`` given), which
-    tells it the cap left some out (`_kh_v3_capped`)."""
+    list of handles the browse's rules already select). For an arrow the first ``_KH_UNDECIDED_MAX`` by key; for a browse (``decided`` given)
+    every one, which it asks about in the page's order (`_kh_v3_browse_undecided`)."""
     records, groups = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
     return f"""({_aql_hidden_above(v, "ku", from_depth=0)} ? [] : (
         FOR kh_uc, kh_ue IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}
@@ -654,8 +654,7 @@ def _aql_undecided(v: str, *, decided: str | None = None, hiding: bool = True) -
             // a child a browse of it would refuse takes no place under the cap
             FILTER {_aql_opens_below_hidden("kh_uc", v, "kw") if hiding else "true"}
             COLLECT kh_uk = kh_uc._key, kh_uh = kh_uc._id
-            SORT kh_uk
-            LIMIT {IGraphDBProvider._KH_UNDECIDED_MAX + (1 if decided else 0)}
+            {"" if decided else f"SORT kh_uk LIMIT {IGraphDBProvider._KH_UNDECIDED_MAX}"}
             RETURN kh_uh))"""
 
 
@@ -782,7 +781,7 @@ def _aql_has_child(v: str) -> str:
 
 def _aql_frontier(v: str, from_app: str, *, hiding: bool = True) -> str:
     """The children of ``v`` whose listing the batch check decides when ``v`` is opened, as keys: those a browse of ``v`` asks it about
-    (`_aql_undecided`: the first ``_KH_UNDECIDED_MAX`` by key, as the browse reads them), and those a browse of each stub it lists on the way down
+    (`_aql_undecided`: the first ``_KH_UNDECIDED_MAX`` by key), and those a browse of each stub it lists on the way down
     asks about: a stub below ``v`` by hops through stubs alone, each passing the browse rule read from ``from_app``, or below a stub child of ``v``
     its own walk from the App reaches (the browse lists it whatever the hop from ``v`` says), read from that stub's reach. Opening ``v`` lists
     something where the check admits one of them and its own rules list nothing, so an arrow, the sidebar and a stub's listing ask the check
@@ -20494,6 +20493,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "granted": {g: True for ids in every.values() for g in ids},
         }
         payload: dict[str, Any] = {}
+        undecided: list[str] = []      # a browse's children its rules leave to the check
         access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": every}
         # Browse lists the user's chain-tops beside the start's own children: under
         # their own record group, else under the App.
@@ -20535,8 +20535,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 visible = _Visible(nodes=list(dict.fromkeys([
                     *await self._kh_v3_walk([start_handle], "step_browse", step_bind, max_depth, transaction), *placed])))
             else:
-                visible = _Visible(nodes=await self._kh_v3_with_admitted(
-                    "step_browse", step_bind, start_handle, placed, app_id, org_id, access, transaction, hiding=hiding))
+                nodes, undecided = await self._kh_v3_with_undecided("step_browse", step_bind, start_handle, placed, org_id, transaction, hiding=hiding)
+                visible = _Visible(nodes=nodes)
         elif flatten:
             matches = None
             # The name-restricted walks find a match's ancestors at most 50 hops up, so a
@@ -20554,40 +20554,80 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 app, bind, granted_ids, transaction, matches=matches, max_depth=max_depth,
             )
         else:
-            visible = _Visible(nodes=await self._kh_v3_with_admitted(
-                "step_app", {**bind, "kh_declared_stop": False}, app["handle"], placed, app_id, org_id, access, transaction, hiding=hiding))
-        payload.update(await self._kh_v3_page_rows(
-            visible, app_id, org_id, limit=limit, sort_field=sort_field, sort_dir=sort_dir,
-            after=after, direction=direction, filters=filters or {},
-            lists_placeholders=self._kh_lists_placeholders(flatten=flatten, filters=filters),
-            exact_arrows=not flatten,
-            row_ctx=row_ctx, start_handle=start_handle, transaction=transaction, access=access, hiding=hiding,
-        ))
+            nodes, undecided = await self._kh_v3_with_undecided(
+                "step_app", {**bind, "kh_declared_stop": False}, app["handle"], placed, org_id, transaction, hiding=hiding)
+            visible = _Visible(nodes=nodes)
+
+        def page_rows(seen: _Visible) -> Awaitable[dict[str, Any]]:
+            return self._kh_v3_page_rows(
+                seen, app_id, org_id, limit=limit, sort_field=sort_field, sort_dir=sort_dir,
+                after=after, direction=direction, filters=filters or {},
+                lists_placeholders=self._kh_lists_placeholders(flatten=flatten, filters=filters),
+                exact_arrows=not flatten,
+                row_ctx=row_ctx, start_handle=start_handle, transaction=transaction, access=access, hiding=hiding,
+            )
+        descending = self._kh_v2_sort_direction(sort_dir) == "DESC"
+        cut = resume = None
+        if undecided:
+            ordered = await self._kh_v3_undecided_order(undecided, app_id, org_id, sort_field=sort_field, descending=descending, after=after,
+                                                        direction=direction, transaction=transaction, hiding=hiding)
+            at = {u["id"]: i for i, u in enumerate(ordered)}
+            handle = {u["id"]: u["h"] for u in ordered}
+            pages: dict[int, dict[str, Any]] = {}
+
+            async def read(admitted: list[str], edge: dict[str, Any] | None, n: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+                """The page with ``admitted`` listed beside what the rules select (read again only when that grew), and ``n`` undecided
+                children past ``edge``."""
+                if len(admitted) not in pages:
+                    pages[len(admitted)] = await page_rows(_Visible(nodes=[*visible.nodes, *(handle[a] for a in admitted)]))
+                i = at[edge["id"]] + 1 if edge is not None and edge["id"] in at else 0
+                return pages[len(admitted)], ordered[i:i + n]
+            rows, cut = await self._kh_v3_browse_undecided(
+                read, after=after, limit=limit, descending=descending, direction=direction, org_id=org_id, access=access, transaction=transaction)
+            resume = self._kh_v3_end_at(rows, cut, limit=limit, descending=descending, direction=direction)
+            payload.update(rows)
+        else:
+            payload.update(await page_rows(visible))
         self.logger.debug(
             "kh v3 page app=%s start=%s flatten=%s: %s visible (granted=%d)",
             app_id, start_id, flatten, payload.get("total"), len(granted_ids),
         )
-        return await self._kh_v3_page_result(
+        result = await self._kh_v3_page_result(
             payload, limit=limit, direction=direction, include_total=include_total,
             include_scope=include_scope, scoped_start=not start_is_app, start_id=start_id,
             app_id=app_id, via_parent_id=via_parent_id, transaction=transaction,
             org_id=org_id, listed_under=None if flatten else start_id,
             access=access, name_parents=name_parents,
         )
+        return self._kh_v3_with_cut(result, cut, resume, include_total=include_total)
 
-    async def _kh_v3_with_admitted(
-        self, step: str, bind: dict[str, Any], start: str, placed: list[str], app_id: str, org_id: str, access: dict[str, Any], transaction: str | None,
-        *, hiding: bool = True,
-    ) -> list[str]:
-        """The children of ``start`` a browse lists: those its rules select (``step``, one hop), the chain-tops ``placed`` under it, and, beside
-        them, every child they leave undecided that the batch check admits, so a browse lists every child the viewer may open, by whatever arm of
-        the check. The rules and the undecided children are read in one statement."""
+    async def _kh_v3_with_undecided(
+        self, step: str, bind: dict[str, Any], start: str, placed: list[str], org_id: str, transaction: str | None, *, hiding: bool = True,
+    ) -> tuple[list[str], list[str]]:
+        """The children of ``start`` a browse lists whatever the check says: those its rules select (``step``, one hop) and the chain-tops
+        ``placed`` under it; and every child they leave undecided, which the page lists where the batch check admits it
+        (`_kh_v3_browse_undecided`), so a browse lists every child the viewer may open, by whatever arm of the check. Read in one statement."""
         found = (await self._kh_v3_run(f"{step}_undecided", {**bind, "kh_frontier": [start], "kh_placed": placed, "org_id": org_id}, transaction,
                                        hiding=hiding)
                  or [{"walked": [], "undecided": []}])[0]
-        undecided = self._kh_v3_capped(found["undecided"], start.split("/", 1)[1])
-        admitted = await self._kh_v3_admitted([h.split("/", 1)[1] for h in undecided], org_id=org_id, access=access, transaction=transaction)
-        return list(dict.fromkeys([*(h for h in found["walked"] if h != start), *placed, *(h for h in undecided if h.split("/", 1)[1] in admitted)]))
+        return list(dict.fromkeys([*(h for h in found["walked"] if h != start), *placed])), found["undecided"]
+
+    async def _kh_v3_undecided_order(
+        self, handles: list[str], app_id: str, org_id: str, *, sort_field: str, descending: bool, after: dict[str, Any] | None, direction: str,
+        transaction: str | None, hiding: bool,
+    ) -> list[dict[str, Any]]:
+        """The undecided children ``handles`` past ``after`` in the page's order, nearest the boundary first, as ``{id, sortKey, nullRank, h}``:
+        their sort keys read as the page reads its rows' (`_kh_v3_slim_aql`)."""
+        slim = await self.http_client.execute_aql(
+            self._kh_v3_slim_aql((), sort_field, hiding=hiding),
+            bind_vars={"kh_nodes": handles, "kh_member_groups": [], "kh_collection": False, "org_id": org_id, "app_id": app_id,
+                       "kh_unplaced_only": False, "kh_placed": [], "kh_placed_groups": []},
+            txn_id=transaction, batch_size=_KH_V3_BATCH, options=_KH_V3_QUERY_OPTIONS,
+        ) or []
+        rows = [{"id": i, "sortKey": k, "nullRank": 1 if k is None else 0, "h": h} for i, h, _, k in _kh_v3_ordered(slim, descending=descending)]
+        if after is not None:
+            rows = [r for r in rows if self._kh_v3_past(r, after, descending=descending, direction=direction)]
+        return rows[::-1] if direction == "prev" else rows
 
     async def _kh_v3_name_matches(self, org_id: str, search: str, transaction: str | None) -> list[str] | None:
         """The org's live records and groups whose name holds ``search``, read as
@@ -21592,7 +21632,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """,
         }
         for step in ("step_browse", "step_app"):
-            # One hop of the rules from a browse's start, and the children they leave undecided (`_kh_v3_with_admitted`).
+            # One hop of the rules from a browse's start, and the children they leave undecided (`_kh_v3_with_undecided`).
             # The undecided children read the App and the grants as the step does (`_aql_opens_below_hidden`).
             step_body = queries[step].removeprefix("LET kh_opens = @kh_opens")
             queries[f"{step}_undecided"] = (f'LET kh_app = DOCUMENT("{apps}", @app_id) LET kh_opens = @kh_opens LET kh_walked = ({step_body})\n'

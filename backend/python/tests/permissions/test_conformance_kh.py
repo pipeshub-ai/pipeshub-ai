@@ -55,6 +55,7 @@ from .kh_worlds import (
     STUBQ,
     STUBSEED,
     TWOWAY,
+    WIDE,
     XBADGE,
     XDECL,
     XGRANT,
@@ -75,8 +76,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(0)]  # sized by the s
 # run out of memory on them.
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 # `gap` is reported, never failed: the shapes the oracle cannot decide (an upload, which has its own surface, and a node under a group that hides its
-# children), and a row a browse lists that the oracle refuses only for its hop cap (`refused_by_cap`). A readable node the flatten listing or a browse
-# leaves out is `under` or `browse_gap` and fails, however deep it lies. `truncated` counts the rows a viewer's whole-tree browse did not open
+# children), a row a browse lists that the oracle refuses only for its hop cap (`refused_by_cap`), and a stub left out whose listing lies past the
+# children its listing asks the check about. A readable node the flatten listing or a browse leaves out is `under` or `browse_gap` and fails, however
+# deep it lies and however many children sort ahead of it. `truncated` counts the rows a viewer's whole-tree browse did not open
 # past `MAX_OPENS`.
 GAPS = {"gap", "truncated"}
 
@@ -194,6 +196,24 @@ async def test_a_node_the_oracle_admits_past_the_cap_is_listed_under_its_parent(
                 await layer.release([world])
 
 
+async def test_a_browse_lists_every_child_the_check_admits_however_many_sort_ahead_of_it(graph_layers) -> None:
+    """WIDE: f's 230 children are all left to the check, which admits the first ten and the last thirty (past the first 200 by id). Every page
+    of f lists them in order, the later pages from the cursor of the earlier, with a total that is exact or says it is a lower bound."""
+    readable = [f"k{i:03d}" for i in (*range(10), *range(200, 230))]
+    for layer in graph_layers:
+        await layer.preload([WIDE])
+        try:
+            assert list(await children_of(layer, WIDE, "u", "f", "recordGroup")) == readable[:7], layer.name
+            items, totals, counted = await browse_pages(layer, WIDE, "u", "f", "recordGroup")
+            ns = await layer._ns(WIDE)
+            assert [ns.local(i.id) for i in items] == readable, layer.name
+            assert set(totals) == set(counted) == {len(readable)}, (layer.name, totals, counted)
+            bad = _bad(await check_world(layer, WIDE, "wide"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([WIDE])
+
+
 async def test_the_declared_group_arm_lists_only_its_own_connectors_records(graph_layers) -> None:
     """The worlds with a record of another connector inside a declared group (node `m4`): no row the oracle denies, no count that includes one."""
     worlds = [w for w in [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS] if "m4" in {n.id for n in w.nodes}]
@@ -278,9 +298,9 @@ async def test_a_child_the_check_admits_by_its_own_reach_keeps_its_row_and_its_s
 async def test_a_child_the_check_admits_by_any_arm_keeps_its_row_and_its_stub(graph_layers) -> None:
     """Where a node's rules list nothing under it, opening it lists what the check admits of its frontier: the children its browse asks the check
     about, and those of the stubs it lists on the way down. The sidebar keeps a record whose child the check admits below a seed (SIDESEED), a
-    stub is listed over such a child (STUBSEED) and over a stub that holds a child the check admits by another parent (NESTSTUB), and a stub
-    whose readable child is past the children its browse asks about is not listed, as opening it lists nothing (CAPSTUB). A stub child the walk
-    from the App reaches by another parent counts with what lies below it (REACHSTUB)."""
+    stub is listed over such a child (STUBSEED) and over a stub that holds a child the check admits by another parent (NESTSTUB). A stub whose
+    readable child lies past the children its listing asks the check about is not listed, though opening it lists that child (CAPSTUB). A stub
+    child the walk from the App reaches by another parent counts with what lies below it (REACHSTUB)."""
     for layer in graph_layers:
         worlds = [SIDESEED, STUBSEED, NESTSTUB, CAPSTUB, REACHSTUB]
         await layer.preload(worlds)
@@ -290,7 +310,7 @@ async def test_a_child_the_check_admits_by_any_arm_keeps_its_row_and_its_stub(gr
             assert await children_of(layer, NESTSTUB, "u", "h", "recordGroup") == {"S": True}, layer.name
             assert await children_of(layer, NESTSTUB, "u", "S", "record") == {"T": True}, layer.name
             assert await children_of(layer, CAPSTUB, "u", "h", "recordGroup") == {}, layer.name
-            assert await children_of(layer, CAPSTUB, "u", "S", "record") == {}, layer.name
+            assert await children_of(layer, CAPSTUB, "u", "S", "record") == {"k200": False}, layer.name
             assert await children_of(layer, REACHSTUB, "u", "R", "record") == {"S": True}, layer.name
             assert await children_of(layer, REACHSTUB, "u", "f", "recordGroup") == {"R": True}, layer.name
             assert await children_of(layer, REACHSTUB, "u", "f", "recordGroup", only_containers=True) == {"R": True}, layer.name

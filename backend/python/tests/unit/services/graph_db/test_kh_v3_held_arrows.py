@@ -129,20 +129,77 @@ async def test_the_check_of_undecided_children_reads_the_viewers_access_as_given
     assert provider.check_access.await_count == 1
 
 
-def test_past_the_cap_a_browse_asks_about_the_first_children_and_logs_that_it_left_some_out() -> None:
+def _child(i: int) -> dict:
+    """An undecided child in sort order: the check admits the ones named ``open``."""
+    return {"id": f"{'open' if i % 400 == 399 else 'shut'}{i:04d}", "sortKey": f"n{i:04d}", "nullRank": 0}
+
+
+def _reader(children: list[dict], selected: list[dict], limit: int) -> tuple[list, object]:
+    """A browse's ``read``: the page (what the rules select, and the children admitted so far, in order) and ``n`` children past ``edge``."""
+    calls: list = []
+
+    async def read(admitted: list[str], edge: dict | None, n: int) -> tuple[dict, list[dict]]:
+        calls.append((len(admitted), edge and edge["id"], n))
+        listed = sorted([*selected, *(c for c in children if c["id"] in admitted)], key=lambda r: r["sortKey"])
+        i = next((k + 1 for k, c in enumerate(children) if edge and c["id"] == edge["id"]), 0)
+        return {"rows": listed[:limit + 1], "total": len(listed)}, children[i:i + n]
+    return calls, read
+
+
+async def _undecided(provider: Neo4jProvider, read, limit: int) -> tuple[dict, dict | None, dict | None]:
+    payload, cut = await provider._kh_v3_browse_undecided(read, after=None, limit=limit, descending=False, direction="next", org_id="org",
+                                                          access=ACCESS, transaction=None)
+    return payload, cut, provider._kh_v3_end_at(payload, cut, limit=limit, descending=False, direction="next")
+
+
+async def test_a_browse_asks_about_its_undecided_children_a_window_at_a_time_until_the_page_is_decided() -> None:
+    """1,000 children the rules leave undecided, the check admitting every 400th: the first 200 are asked, then the next ones, until every one
+    is asked, so the children it admits past the first 200 are listed (they were left out when only the first 200 by id were asked)."""
     provider = _provider({})
-    cap = provider._KH_UNDECIDED_MAX
-    assert provider._kh_v3_capped([f"k{i}" for i in range(cap)], "n") == [f"k{i}" for i in range(cap)]
-    provider.logger.warning.assert_not_called()
-    assert provider._kh_v3_capped([f"k{i:04d}" for i in range(cap + 1)], "n") == [f"k{i:04d}" for i in range(cap)]
-    provider.logger.warning.assert_called_once()
-    assert provider.logger.warning.call_args.args[1:] == ("n", cap, cap)
+    children = [_child(i) for i in range(1000)]
+    calls, read = _reader(children, [], limit=50)
+    payload, cut, resume = await _undecided(provider, read, 50)
+    assert [r["id"] for r in payload["rows"]] == ["open0399", "open0799"] and cut is None and resume is None
+    assert [len(c.kwargs["node_ids"]) for c in provider.check_access.await_args_list] == [200, 800]
+    assert calls == [(0, None, 201), (0, "shut0199", 1601), (2, None, 0)]
+
+
+async def test_a_page_decided_before_its_undecided_children_run_out_stands_with_a_lower_bound_total() -> None:
+    """Enough rows sort before the last child asked: the page is exact and stops asking, and its total says it is a lower bound."""
+    provider = _provider({})
+    children = [_child(i) for i in range(1000)]
+    selected = [{"id": f"rule{i}", "sortKey": f"a{i:04d}", "nullRank": 0} for i in range(3)]
+    calls, read = _reader(children, selected, limit=2)
+    payload, cut, resume = await _undecided(provider, read, 2)
+    assert [r["id"] for r in payload["rows"]] == ["rule0", "rule1", "rule2"] and cut["id"] == "shut0199" and resume is None
+    assert len(calls) == 1 and provider.check_access.await_count == 1
+    assert Neo4jProvider._kh_v3_with_cut({"hasMore": True}, cut, resume, include_total=True) == {"hasMore": True, "totalCapped": True}
+
+
+async def test_past_the_budget_the_page_ends_at_the_last_child_asked_and_the_next_one_resumes_there(monkeypatch) -> None:
+    provider = _provider({})
+    monkeypatch.setattr(Neo4jProvider, "_KH_UNDECIDED_BUDGET_S", -1.0)
+    children = [_child(i) for i in range(1000)]
+    selected = [{"id": "rule", "sortKey": "n0300", "nullRank": 0}]
+    _, read = _reader(children, selected, limit=50)
+    payload, cut, resume = await _undecided(provider, read, 50)
+    # the rule's row lies past the last child asked (shut0199): the children between them are not asked yet, so it waits for the next page
+    assert payload["rows"] == [] and resume == {"nullRank": 0, "sortKey": "n0199", "id": "shut0199"}
+    assert Neo4jProvider._kh_v3_with_cut({"hasMore": False}, cut, resume, include_total=False) == {"hasMore": True, "resume": resume}
+
+
+def test_a_row_past_an_edge_is_read_in_the_page_s_direction() -> None:
+    edge, before, after = ({"id": i, "sortKey": k, "nullRank": 0} for i, k in (("e", "m"), ("b", "a"), ("a", "z")))
+    past = Neo4jProvider._kh_v3_past
+    assert past(after, edge, descending=False, direction="next") and not past(before, edge, descending=False, direction="next")
+    assert past(before, edge, descending=False, direction="prev") and past(before, edge, descending=True, direction="next")
+    assert not past(edge, edge, descending=False, direction="next")
 
 
 def test_a_browse_and_a_row_s_arrow_ask_about_the_same_children() -> None:
     """The undecided children of a node, read by its browse (beside what its rules select) and by its arrow (when its rules select none, as its
-    frontier: its own and those of the stubs it lists on the way down): one expression on each backend, the first ones by id, so the arrow is on
-    exactly when the browse of the row lists one. A browse reads one more, to tell when the cap leaves some out."""
+    frontier: its own and those of the stubs it lists on the way down): one expression on each backend. The arrow asks about the first ones by
+    id; the browse reads every one, in the page's order a window at a time (`_kh_v3_browse_undecided`)."""
     from app.services.graph_db.arango.arango_http_provider import (
         ArangoHTTPProvider,
         _aql_frontier,
@@ -152,12 +209,15 @@ def test_a_browse_and_a_row_s_arrow_ask_about_the_same_children() -> None:
     neo = Neo4jProvider.__new__(Neo4jProvider)
     kids = neo._kh_v3_undecided("node")
     assert "ORDER BY kh_uid LIMIT 200" in kids and "isPlaceholder" in kids and "kh_hidku" in kids
-    browse = neo._kh_v3_undecided("start", decided="RULE")
-    assert "LIMIT 201" in browse
-    assert browse.replace("start", "node").replace("AND NOT coalesce((RULE), false)", "").replace("LIMIT 201", "LIMIT 200") == kids
+    tail = "WITH DISTINCT kh_u.id AS kh_uid ORDER BY kh_uid LIMIT 200 RETURN kh_uid"
+    browse = neo._kh_v3_undecided("start", decided="RULE", order="ORDER")
+    assert "WITH DISTINCT kh_u AS node, app ORDER LIMIT $kh_uread RETURN {id: node.id, sortKey: sortKey, nullRank: nullRank}" in browse
+    assert browse.replace("start", "node").replace("AND NOT coalesce((RULE), false)", "").split("WITH DISTINCT")[0] == kids.split(tail)[0]
     aql = _aql_undecided("node")
-    assert "SORT kh_uk" in aql and "LIMIT 200" in aql
-    assert _aql_undecided("node", decided="@d").replace("FILTER kh_uc._id NOT IN @d", "").replace("LIMIT 201", "LIMIT 200") == aql
+    assert "SORT kh_uk LIMIT 200" in aql
+    every = _aql_undecided("node", decided="@d")
+    assert "SORT kh_uk" not in every and "FILTER kh_uc._id NOT IN @d" in every
+    assert every.replace("FILTER kh_uc._id NOT IN @d", "").split() == aql.replace("SORT kh_uk LIMIT 200", "").split()
     queries = ArangoHTTPProvider._kh_v3_listing_aql()
     assert _aql_undecided("kh_fy") in _aql_frontier("node", "kh_row_from_app") and "0..50 OUTBOUND kh_fz.n" in _aql_frontier("node", "kh_row_from_app")
     # a row's frontier is read apart, for the rows that ask (`khAsk`), from each row's own reach

@@ -8,6 +8,7 @@ All methods support optional transaction parameter for atomic operations.
 """
 
 import asyncio
+import time
 import unicodedata
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
@@ -22,6 +23,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.connectors.sources.localKB.handlers.kh_merge import key_for
 from app.core.org_context import instrument_org_methods
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import Person
@@ -8345,22 +8347,86 @@ class IGraphDBProvider(ABC):
         of ``app_id`` among the start and them."""
         raise NotImplementedError
 
-    # A browse asks the batch check about the children of a node its rules do not select (``undecided``), at most this many per node: the first by id,
-    # read the same way for the browse of the node and for the node's arrow, so the two agree. A browse reads one more, to tell when the cap
-    # leaves some out (`_kh_v3_capped` logs it).
-    # shortcut: past this many undecided children of one node the rest are not listed (never one the check refuses); page them with the browse's
-    # own sort and cursor (as the flat listing windows a connector) once the log shows a node past the cap.
+    # A browse asks the batch check about the children of a node its rules do not select (``undecided``) in the page's order from its boundary:
+    # this many in the first read (all of them when there are no more), then more each read, up to ``_KH_UNDECIDED_WINDOW_MAX``
+    # (`_kh_v3_browse_undecided`). A node's arrow and a stub's listing ask about this many, the first by id.
+    # shortcut: a row whose only child the check admits lies past the first ``_KH_UNDECIDED_MAX`` by id shows no arrow (PostgreSQL samples
+    # ``ARROW_CHILDREN`` the same way); read the frontier in windows too if that shows up.
     _KH_UNDECIDED_MAX = 200
+    _KH_UNDECIDED_WINDOW_MAX = 2_000
+    # How long a browse keeps asking before it ends the page at the last child it asked about (the next page resumes there), as PostgreSQL's BUDGET_S.
+    _KH_UNDECIDED_BUDGET_S = 1.0
 
-    def _kh_v3_capped(self, undecided: list[str], node_id: str) -> list[str]:
-        """The undecided children a browse of ``node_id`` asks about, read with one past the cap: the first ``_KH_UNDECIDED_MAX``, and a log line
-        when there were more (the rest are not listed)."""
-        if len(undecided) <= self._KH_UNDECIDED_MAX:
-            return undecided
-        self.logger.warning(
-            "kh browse of %s: more than %d children its rules leave to the access check; only the first %d by id are asked about and listed",
-            node_id, self._KH_UNDECIDED_MAX, self._KH_UNDECIDED_MAX)
-        return undecided[:self._KH_UNDECIDED_MAX]
+    async def _kh_v3_browse_undecided(
+        self,
+        read: Callable[[list[str], dict[str, Any] | None, int], Awaitable[tuple[dict[str, Any], list[dict[str, Any]]]]],
+        *,
+        after: dict[str, Any] | None,
+        limit: int,
+        descending: bool,
+        direction: str,
+        org_id: str,
+        access: dict[str, Any],
+        transaction: str | None,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """A browse page that lists, beside what its rules select, every child they leave undecided that the batch check admits.
+
+        ``read(admitted, edge, n)`` reads the page (``rows``: up to ``limit + 1``, nearest the boundary first) with the ids ``admitted`` listed,
+        and the first ``n`` children the rules leave undecided past ``edge`` (``after`` when None) in the page's order, as
+        ``{id, sortKey, nullRank}``. Every undecided child up to the last one asked is decided, so the page is exact once its last row lies there;
+        the children are asked in windows until it does, or every one is asked, or the budget is spent. Returns the payload and the last child
+        asked when some were left unasked (None when none was), which `_kh_v3_end_at` ends the page at."""
+        def decided(cut: dict[str, Any]) -> bool:
+            rows = payload.get("rows") or []
+            return len(rows) > limit and not self._kh_v3_past(rows[limit], cut, descending=descending, direction=direction)
+
+        admitted: list[str] = []
+        window, t0 = self._KH_UNDECIDED_MAX, time.monotonic()
+        payload, left = await read(admitted, after, window + 1)
+        while left:
+            ask = left[:window]
+            ok = await self._kh_v3_admitted([u["id"] for u in ask], org_id=org_id, access=access, transaction=transaction)
+            admitted += [u["id"] for u in ask if u["id"] in ok]
+            cut = ask[-1] if len(left) > window else None
+            if cut is not None and not ok and decided(cut):
+                return payload, cut
+            window = min(self._KH_UNDECIDED_WINDOW_MAX, window * 8)
+            if cut is None or time.monotonic() - t0 > self._KH_UNDECIDED_BUDGET_S:
+                if ok:
+                    payload, _ = await read(admitted, None, 0)
+                return payload, cut
+            payload, left = await read(admitted, cut, window + 1)
+            if decided(cut):
+                return payload, cut
+        return payload, None
+
+    @staticmethod
+    def _kh_v3_past(row: dict[str, Any], edge: dict[str, Any], *, descending: bool, direction: str) -> bool:
+        """Whether ``row`` lies past ``edge`` in a page's order (away from its boundary)."""
+        a, b = key_for(row, descending=descending), key_for(edge, descending=descending)
+        return b < a if direction == "next" else a < b
+
+    def _kh_v3_end_at(
+        self, payload: dict[str, Any], cut: dict[str, Any] | None, *, limit: int, descending: bool, direction: str,
+    ) -> dict[str, Any] | None:
+        """Where a browse page ends when the undecided children past ``cut`` were not asked about (`_kh_v3_browse_undecided`): nowhere new when
+        its ``limit + 1`` rows lie up to ``cut``; else its rows past ``cut`` are dropped and the edge returned, where the next page resumes."""
+        rows = payload.get("rows") or []
+        if cut is None or (len(rows) > limit and not self._kh_v3_past(rows[limit], cut, descending=descending, direction=direction)):
+            return None
+        payload["rows"] = [r for r in rows if not self._kh_v3_past(r, cut, descending=descending, direction=direction)]
+        return {"nullRank": cut["nullRank"], "sortKey": cut["sortKey"], "id": cut["id"]}
+
+    @staticmethod
+    def _kh_v3_with_cut(result: dict[str, Any], cut: dict[str, Any] | None, resume: dict[str, Any] | None, *, include_total: bool) -> dict[str, Any]:
+        """A browse page whose undecided children past ``cut`` were not asked about: its total and counts are a lower bound, and a page that ends
+        at ``resume`` has more past it."""
+        if cut is not None and include_total:
+            result["totalCapped"] = True
+        if resume is not None:
+            result["hasMore"] = True
+            result["resume"] = resume
+        return result
 
     async def _kh_v3_admitted(
         self, ids: Iterable[str], *, org_id: str, access: dict[str, Any], transaction: str | None,

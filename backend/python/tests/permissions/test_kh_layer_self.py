@@ -124,28 +124,24 @@ async def test_an_app_past_the_budget_is_counted_not_opened(monkeypatch) -> None
     assert [(f.kind, f.detail) for f in found] == [("truncated", "opened 2 nodes (the cap); 2 listed rows and 0 stubs left out not opened")]
 
 
-def _capped_world(listed_first: bool, hidden_first: bool = False) -> object:
-    """f holds 201 children, each readable (it inherits from f). ``listed_first``: the browse lists the first 200 (so its rules may select them).
-    ``hidden_first``: the first 200 belong to a group that hides its children (the browse leaves them out before the cap)."""
-    belongs = ", belongs: [H]" if hidden_first else ""
-    kids = "".join(f"  - {{id: k{i:03d}, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]{belongs if i < 200 else ''}}}\n"
-                   for i in range(201))
+def _wide_world() -> object:
+    """f holds 201 children, each readable (it inherits from f)."""
+    kids = "".join(f"  - {{id: k{i:03d}, kind: record, connector: A, rule: OPEN, parents: [f], inherits: [f]}}\n" for i in range(201))
     return world_from_data(yaml.safe_load(f"""
 principals: [{{id: u}}]
 nodes:
   - {{id: A, kind: app, app_type: DRIVE}}
   - {{id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}}
-  - {{id: H, kind: group, connector: A, rule: OPEN, hide_children: true, parents: [A], belongs: [A]}}
 {kids}grants: [[u, f]]
 gates: [[u, A]]
 """))
 
 
-@pytest.mark.parametrize("listed_first, kind", [(True, "browse_gap"), (False, "gap")])
-async def test_a_child_left_out_is_excused_by_the_cap_only_behind_two_hundred_unlisted_ones(monkeypatch, listed_first: bool, kind: str) -> None:
-    """k200 is left out of f. When the browse lists k000..k199 (its rules may select them, so they are no candidates of the cap), k200 is a
-    real under-admit; when it lists none of them, k200 is past the 200 the check is asked about, and the cap is reported."""
-    world = _capped_world(listed_first)
+@pytest.mark.parametrize("listed_first", [True, False])
+async def test_a_child_left_out_is_an_under_admit_however_many_children_lie_ahead_of_it(monkeypatch, listed_first: bool) -> None:
+    """k200 is left out of f, behind 200 children listed or not: a browse lists every child the viewer may open, so it is an under-admit (it was
+    excused when a browse asked the check about the first 200 children by id alone)."""
+    world = _wide_world()
     rows = [_item(f"k{i:03d}") for i in range(200)] if listed_first else []
 
     async def browse_pages(_layer, _world, _viewer, node, _parent_type, _page_size=kh_layer.PAGE, *, only_containers=False) -> tuple | None:
@@ -153,20 +149,39 @@ async def test_a_child_left_out_is_excused_by_the_cap_only_behind_two_hundred_un
     monkeypatch.setattr(kh_layer, "browse_pages", browse_pages)
     reference = OracleLayer()
     found = await kh_layer._browse(_Layer(), reference, world, "u", kh_layer.visible(reference, world, "u"), "self")
-    assert (kind, "f: the browse leaves out k200, which the viewer may open") in {(f.kind, f.detail) for f in found}
+    assert ("browse_gap", "f: the browse leaves out k200, which the viewer may open") in {(f.kind, f.detail) for f in found}
 
 
-async def test_children_a_hiding_group_holds_are_no_candidates_of_the_cap(monkeypatch) -> None:
-    """The first 200 children of f belong to a group that hides its children: the browse leaves them out before the cap, so k200 left out is a
-    real under-admit, not the cap's."""
-    world = _capped_world(False, hidden_first=True)
+def _stub_world(readable: int) -> object:
+    """A stub S under h with 201 children; only ``k<readable>`` is readable (through q)."""
+    kids = "".join(f"  - {{id: k{i:03d}, kind: record, connector: A, rule: STRICT, parents: [S{', q], inherits: [q' if i == readable else ''}]}}\n"
+                   for i in range(201))
+    return world_from_data(yaml.safe_load(f"""
+principals: [{{id: u}}]
+nodes:
+  - {{id: A, kind: app, app_type: DRIVE}}
+  - {{id: h, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}}
+  - {{id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}}
+  - {{id: S, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [h], inherits: [h]}}
+{kids}grants: [[u, h], [u, q]]
+gates: [[u, A]]
+"""))
+
+
+@pytest.mark.parametrize("readable, kind", [(200, "gap"), (100, "browse_gap")])
+async def test_a_stub_left_out_is_excused_only_when_what_it_lists_lies_past_the_sample(monkeypatch, readable: int, kind: str) -> None:
+    """h leaves the stub S out, and opening S lists its one readable child: reported when that child lies past the first 200 children of S by id
+    (the sample a stub's listing asks the check about), an under-admit when it lies within them."""
+    world = _stub_world(readable)
+    kid = f"k{readable:03d}"
 
     async def browse_pages(_layer, _world, _viewer, node, _parent_type, _page_size=kh_layer.PAGE, *, only_containers=False) -> tuple | None:
-        return {"A": ([_item("f", "recordGroup", arrow=True)], [1], [1]), "f": ([], [0], [0])}.get(node, ([], [0], [0]))
+        return {"A": ([_item("h", "recordGroup"), _item("q", "recordGroup", arrow=True)], [2], [2]), "q": ([_item(kid)], [1], [1]),
+                "S": ([_item(kid)], [1], [1])}.get(node, ([], [0], [0]))
     monkeypatch.setattr(kh_layer, "browse_pages", browse_pages)
     reference = OracleLayer()
     found = await kh_layer._browse(_Layer(), reference, world, "u", kh_layer.visible(reference, world, "u"), "self")
-    assert ("browse_gap", "f: the browse leaves out k200, which the viewer may open") in {(f.kind, f.detail) for f in found}
+    assert (kind, "h: the browse leaves out the stub S, and opening it lists something") in {(f.kind, f.detail) for f in found}
 
 
 class _Store:

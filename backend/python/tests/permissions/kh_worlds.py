@@ -613,9 +613,9 @@ grants: [[u, h], [u, q]]
 gates: [[u, A]]
 """))
 
-# CAPSTUB: a stub S with one child more than the check is asked about per node (`_KH_UNDECIDED_MAX`, the first by id): none of the first is
-# readable, and the last, k200, is (through q). Opening S asks about the first ones only and lists nothing, so S is not listed (and k200, left out
-# under S by the cap, is reported); it is listed under q.
+# CAPSTUB: a stub S with one child more than an arrow asks the check about (`_KH_UNDECIDED_MAX`, the first by id): none of the first is readable,
+# and the last, k200, is (through q). Opening S lists k200 (a browse asks about every undecided child), but S's listing under h asks about the
+# first ones only, so S is not listed there (reported, as the arrow's sample); k200 is listed under q too.
 CAP_KIDS = 201
 CAPSTUB = world_from_data(yaml.safe_load("""
 principals: [{id: u}]
@@ -627,6 +627,22 @@ nodes:
 """ + "".join(f"  - {{id: k{i:03d}, kind: record, connector: A, rule: STRICT, parents: [S]}}\n" for i in range(CAP_KIDS - 1)) + f"""\
   - {{id: k{CAP_KIDS - 1:03d}, kind: record, connector: A, rule: STRICT, parents: [S, q], inherits: [q]}}
 grants: [[u, h], [u, q]]
+gates: [[u, A]]
+"""))
+
+# WIDE: a group f with more children its rules leave to the check than one read asks it about (`_KH_UNDECIDED_MAX`): each is readable only
+# through q, the first ten and the last thirty (past the first 200 by id) are, the rest are not. A browse of f lists all forty in order, over
+# pages whose first ones are decided before every child is asked about (a total that says it is a lower bound).
+WIDE_KIDS = 230
+WIDE = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+""" + "".join(f"  - {{id: k{i:03d}, kind: record, connector: A, rule: STRICT, parents: [f, q], inherits: [q]}}\n" if i < 10 or i >= 200 else
+              f"  - {{id: k{i:03d}, kind: record, connector: A, rule: STRICT, parents: [f]}}\n" for i in range(WIDE_KIDS)) + """\
+grants: [[u, f], [u, q]]
 gates: [[u, A]]
 """))
 
@@ -815,5 +831,5 @@ links: [[u, s, B]]
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
              SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ, OPENGRANT, OPENGRANTTEAM, SIDESEED,
-             STUBSEED, NESTSTUB, CAPSTUB, HIDESEED, FLATSIDE, REACHSTUB,
+             STUBSEED, NESTSTUB, CAPSTUB, WIDE, HIDESEED, FLATSIDE, REACHSTUB,
              SCOPEDSIDE, XHOP, XLINK, DECLHIDE, XBADGE, XLINKBADGE]
