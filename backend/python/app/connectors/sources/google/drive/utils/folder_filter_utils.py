@@ -747,6 +747,39 @@ async def fetch_folder_children(
                 break
 
 
+async def settle_ancestor_level(
+    processor: DataSourceEntitiesProcessor,
+    connector_id: str,
+    frontier: List[Record],
+    written: List[Record],
+    visited: set,
+    needs_backfill: Callable[[Record], bool],
+) -> List[Record]:
+    """Settle one level of the placeholder sweep and return the next.
+
+    Every ancestor the walk touched is written or kept: the ones of ``frontier`` not in ``written``
+    (call after writing them), whatever the reason (a failed fetch, a failed read of their
+    permissions), are noted kept, so a full sync's unlink leaves their record group and parent
+    edges. They are kept as stored, never rewritten: read back by external id they are plain
+    records, which no graph store writes as a file. The walk then goes on to the parent of every
+    one of them, by parent id alone (the store does not keep the parent's type); a record at the
+    drive root has none.
+    """
+    written_ids = {record.external_record_id for record in written}
+    kept = [record for record in frontier if record.external_record_id not in written_ids]
+    processor.note_kept_records(connector_id, [record.id for record in kept if record.id])
+    next_level: List[Record] = []
+    for record in [*written, *kept]:
+        parent_ext_id = record.parent_external_record_id
+        if not parent_ext_id or parent_ext_id in visited:
+            continue
+        visited.add(parent_ext_id)
+        parent = await processor.get_record_by_external_id(connector_id, parent_ext_id)
+        if parent is not None and needs_backfill(parent):
+            next_level.append(parent)
+    return next_level
+
+
 async def fetch_ancestor_metadata(
     frontier: List[Record],
     get_data_source: DriveDataSourceProvider,

@@ -136,6 +136,7 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     is_retryable_403,
     is_unrecognised_403,
     pass_folder_filter,
+    settle_ancestor_level,
     adopt_shortcut_seed_target,
     probe_can_list_children,
     seeds_with_new_parent,
@@ -1018,39 +1019,24 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 record.is_placeholder = False
                 backfills.append((record, permissions))
 
-            # Source fetch failed (inaccessible/deleted): the stored stub stays as it is, noted kept so a full sync's
-            # unlink leaves its record group and parent edges, and its parent is walked like a backfill's. Not
-            # rewritten: an ancestor read back by external id is a plain Record, which no graph store writes as a file.
-            kept = [stub for stub in frontier if stub.external_record_id not in metadata_by_id and stub.is_placeholder]
-            self.data_entities_processor.note_kept_records(self.connector_id, [stub.id for stub in kept if stub.id])
-
             if backfills:
                 # Creates/updates the ancestors and, via _handle_parent_record, materializes
                 # the next level's parent stubs so we can pick them up below.
                 await self.data_entities_processor.on_new_records(backfills)
 
-            next_frontier: List[Record] = []
-            for record in [*(r for r, _ in backfills), *kept]:
-                parent_ext_id = record.parent_external_record_id
-                # Not parent_record_type: the store does not keep it, so a stub read back from it has none.
-                if not parent_ext_id:
-                    continue  # boundary: drive root
-                if parent_ext_id in visited:
-                    continue
-                visited.add(parent_ext_id)
-                parent_record = await self.data_entities_processor.get_record_by_external_id(
-                    self.connector_id, parent_ext_id
-                )
-                if parent_record is None:
-                    continue  # stub should exist after on_new_records; skip defensively
-                if not needs_backfill(parent_record):
-                    continue  # boundary: parent already synced this run — nothing to backfill
-                next_frontier.append(parent_record)
+            next_frontier = await settle_ancestor_level(
+                self.data_entities_processor, self.connector_id, frontier,
+                [record for record, _ in backfills], visited, needs_backfill,
+            )
 
             total += len(frontier)
             if total > PLACEHOLDER_SWEEP_SAFETY_MAX:
                 self.logger.error(
                     f"Placeholder sweep exceeded safety bound ({PLACEHOLDER_SWEEP_SAFETY_MAX}); aborting"
+                )
+                # Touched but not read: kept as stored, so a full sync's unlink leaves their edges.
+                self.data_entities_processor.note_kept_records(
+                    self.connector_id, [record.id for record in next_frontier if record.id]
                 )
                 break
             frontier = next_frontier
