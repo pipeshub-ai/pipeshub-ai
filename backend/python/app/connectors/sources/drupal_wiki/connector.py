@@ -1514,7 +1514,12 @@ class DrupalWikiConnector(BaseConnector):
             return shares, None
         permissions = self._shared_page_permissions(home, shares, listing)
         if permissions is None and had:
-            return shares, KEEP_STORED_ACCESS
+            if not {s for s in (_as_int(x) for x in had.get("spaces") or []) if s is not None} - shares - {home}:
+                return shares, KEEP_STORED_ACCESS
+            # A space confirmed to no longer hold the page: its readers go now, even while
+            # another space's readers are unknown. What is left is only readers confirmed
+            # this run, which may be short of the unknown space's until they are read.
+            return shares, self._shared_page_permissions(home, shares, listing, known_only=True)
         return shares, permissions
 
     @staticmethod
@@ -1532,14 +1537,22 @@ class DrupalWikiConnector(BaseConnector):
         )
 
     def _shared_page_permissions(
-        self, home: int | None, shares: set[int], listing: PageListing
+        self, home: int | None, shares: set[int], listing: PageListing, *, known_only: bool = False
     ) -> list[Permission] | None:
         """The readers of the home space and of every space the page is shared into, or
         None when they cannot be given: not shared, its home space's pages not all
-        ``STRICT`` yet, or the readers of one of those spaces not read this run."""
-        spaces = {home, *shares}
-        if not shares or home not in listing.settled or any(s not in self._space_readers for s in spaces):
+        ``STRICT`` yet, or the readers of one of those spaces not read this run.
+
+        ``known_only``: the readers of the home space and of those share spaces whose
+        readers were read, leaving out the rest; None when that is none of the share
+        spaces, or the home space's readers are not known either."""
+        known = {s for s in shares if s in self._space_readers}
+        if (
+            not shares or home not in listing.settled or home not in self._space_readers
+            or (not known if known_only else known != shares)
+        ):
             return None
+        spaces = {home, *known}
         unique: dict[tuple, Permission] = {}
         for space in sorted(spaces):
             for permission in self._space_readers[space]:

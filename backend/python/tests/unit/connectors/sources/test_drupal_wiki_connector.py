@@ -2964,6 +2964,36 @@ class TestSharedPages:
         assert json.loads(checkpoints["shares/space/all"]["pages"]) == {"1": had}
 
     @pytest.mark.asyncio
+    async def test_an_unshare_takes_that_spaces_readers_away_while_another_spaces_are_unknown(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Shared into 13, 14 and 15; 13 now lists it no more. 15's members were refused,
+        # so its readers are unknown. 13's readers must go anyway: the page keeps only
+        # readers confirmed this run (its home's and 14's), never 13's.
+        fourteen = [read_permission("fourteen@example.com")]
+        had = {"home": 12, "spaces": [13, 14, 15], "grants": "shared:x"}
+        checkpoints = self.wiki(
+            connector, processor, {12: [self.PAGE], 13: [], 14: [self.PAGE], 15: [self.PAGE]}, shares={"1": had},
+        )
+        connector._space_readers = {12: self.HOME, 13: self.OTHER, 14: fourteen}
+
+        await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}, 14: {"id": 14}, 15: {"id": 15}})
+
+        assert self.rewrites(processor) == [("page:1", "OPEN", False, self.HOME + fourteen)]
+        assert json.loads(checkpoints["shares/space/all"]["pages"])["1"]["spaces"] == [14, 15]
+
+    @pytest.mark.asyncio
+    async def test_an_unshare_with_no_other_known_readers_leaves_the_page_plain(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        had = {"home": 12, "spaces": [13, 15], "grants": "shared:x"}
+        self.wiki(connector, processor, {12: [self.PAGE], 13: [], 15: [self.PAGE]}, shares={"1": had})
+
+        await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}, 15: {"id": 15}})
+
+        assert self.rewrites(processor) == [("page:1", "STRICT", True, [])]
+
+    @pytest.mark.asyncio
     async def test_a_shared_page_whose_readers_are_unknown_keeps_its_grants_when_edited(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
