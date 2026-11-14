@@ -100,8 +100,15 @@ def after(field_: str, sort_dir: str, direction: str, boundary: dict[str, Any], 
     return branches
 
 
-def filters_sql(filters: dict[str, Any], p: Params) -> str:
-    """The content filters of a listing as conditions on a row ``r``. ``connector_ids`` and ``origins`` are the connector's, decided by the caller."""
+# A browse's sidebar: the groups, the folders and the records with a live hierarchy child, each looked up by the row's own key (the children index, the key of kg.links; OFFSET 0 keeps
+# the planner from joining the test against the organisation's rows). Of those records the browse keeps the ones whose arrow is on (``_kh_browse``): a child is no promise the viewer may open it.
+WITH_CHILDREN = ("(r.kind = 2 OR r.folder OR EXISTS (SELECT 1 FROM kg.records k WHERE k.org_id = r.org_id AND k.parent_sk = r.sk AND k.kind IN (2, 3) AND NOT k.deleted AND NOT k.alien OFFSET 0) "
+                 "OR EXISTS (SELECT 1 FROM kg.links k WHERE k.org_id = r.org_id AND k.parent_sk = r.sk AND k.kind = 1 OFFSET 0))")
+
+
+def filters_sql(filters: dict[str, Any], p: Params, *, browse: bool = False) -> str:
+    """The content filters of a listing as conditions on a row ``r``. ``connector_ids`` and ``origins`` are the connector's, decided by the caller. ``browse``: a browse's, whose
+    sidebar (``only_containers``) also reads the records that have a hierarchy child, for the browse to keep those whose arrow is on (``_kh_browse``)."""
     out: list[str] = []
     if q := filters.get("search_query"):
         name = "r.name_key"
@@ -131,8 +138,8 @@ def filters_sql(filters: dict[str, Any], p: Params) -> str:
             out.append(f"r.size_bytes >= {p.add(int(sz['gte']))}::bigint")
         if sz.get("lte") is not None:
             out.append(f"r.size_bytes <= {p.add(int(sz['lte']))}::bigint")
-    if filters.get("only_containers"):
-        out.append("(r.kind = 2 OR r.folder)")
+    if filters.get("only_containers"):      # a flat listing gives a record no arrow, so its sidebar is the groups and the folders
+        out.append(WITH_CHILDREN if browse else "(r.kind = 2 OR r.folder)")
     return "".join(f" AND {c}" for c in out)
 
 
