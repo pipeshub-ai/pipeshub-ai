@@ -35,6 +35,13 @@ def _registration() -> dict:
     return json.loads(PREREGISTRATION.read_text())
 
 
+def _t4_threshold() -> float:
+    """The batch-invariance cosine as registered, for the production assertion and its control alike."""
+    threshold = _registration()["thresholds"]["t4_batch_invariance_cosine"]
+    assert threshold is not None, "the T4 threshold is not registered"
+    return float(threshold)
+
+
 class TestPreregistration:
     def test_seeds_are_distinct_so_the_pilot_subset_is_never_reused(self) -> None:
         seeds = _registration()["seeds"]
@@ -59,6 +66,24 @@ class TestPreregistration:
         pilot = _registration()["pilot"]
         assert sum(pilot[k] for k in ("prose_chunks", "number_heavy_chunks", "long_chunks", "near_duplicate_chunks")) == 500
         assert pilot["queries"] == 200
+
+    def test_the_batch_invariance_threshold_is_the_registered_one(self) -> None:
+        assert _t4_threshold() == 0.9999999
+
+    @pytest.mark.parametrize(
+        ("requested", "reported", "ok"),
+        [("int8", "int8-w", True), ("int8", "fp32", False), ("fp32", "fp32", True), ("fp32", "int8-w", False), ("int8", None, False)],
+    )
+    def test_a_path_that_runs_another_precision_than_asked_is_refused(self, requested, reported, ok) -> None:
+        from tests.support.embedding_equivalence_path import ServerPath
+
+        path = ServerPath("m", requested)
+        path.info = {"reported_precision": reported, "reason": "no int8 file"}
+        if ok:
+            path.require_requested_precision()
+        else:
+            with pytest.raises(RuntimeError, match="nothing was measured"):
+                path.require_requested_precision()
 
     def test_controls_are_registered(self) -> None:
         assert _registration()["controls"]["dynamic_activation_variant_must_fail_t4"] is True
@@ -121,16 +146,17 @@ class TestRealWeights:
 
         reg = _registration()
         model = reg["model"]
+        t4 = _t4_threshold()
         async with ServerPath(model, "int8").running() as path:
             assert path.info["reported_precision"] == "int8-w"
             one, many = await batch_dependence(path)
             vector = (await path.queries(["unit norm check"]))[0]
-        assert min(one, many) >= 0.99999
+        assert min(one, many) >= t4
         assert abs(np.linalg.norm(vector) - 1) < 1e-3 and vector.shape == (1024,) and np.isfinite(vector).all()
         with dynamic_activation_variant():
             async with ServerPath(model, "int8").running() as control:
                 c_one, c_many = await batch_dependence(control)
-        assert min(c_one, c_many) < 0.99999, "the batch-dependence test cannot see a dynamic-activation encoder"
+        assert min(c_one, c_many) < t4, "the batch-dependence test cannot see a dynamic-activation encoder"
 
     async def test_pilot_or_full_retrieval(self) -> None:
         from tests.support.embedding_equivalence_report import run_report

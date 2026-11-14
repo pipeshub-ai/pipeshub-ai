@@ -25,7 +25,7 @@ from app.config.constants.ai_models import (
     EMBEDDING_PRIORITY_HEADER,
     EMBEDDING_PRIORITY_QUERY,
 )
-from app.utils.embedding_precision import QUANTIZER_VERSION, PrecisionSelector
+from app.utils.embedding_precision import FP32, INT8, QUANTIZER_VERSION, PrecisionSelector
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Sequence
@@ -86,10 +86,25 @@ class ServerPath:
                         "reason": health.get("precision_reason"),
                         "quantizer_version": health.get("quantizer_version"),
                     }
+                    self.require_requested_precision()
                     yield self
                 finally:
                     await http.aclose()
                     manager._models.clear()
+
+    def require_requested_precision(self) -> None:
+        """Refuse a server that is not running the precision this path was asked for.
+
+        An int8 request that fell back to fp32 would encode a second fp32 corpus, and every comparison of it
+        with the fp32 pass would hold. The calibration variant runs fp32 weights cast down, so it is checked as fp32.
+        """
+        expected = {"int8": INT8, "fp32": FP32}.get(self.precision, self.precision)
+        reported = self.info.get("reported_precision")
+        if reported != expected:
+            raise RuntimeError(
+                f"asked for {self.precision} weights but the server reports {reported!r}"
+                f" ({self.info.get('reason')}); nothing was measured",
+            )
 
     async def documents(self, texts: Sequence[str], *, workers: int = WORKERS) -> np.ndarray:
         """Embed *texts* in the indexer's batches (up to 20 texts / 40,000 characters), *workers* at a time."""

@@ -215,3 +215,44 @@ class TestDispatchAndRecovery:
         consumer._should_dead_letter = AsyncMock(return_value=False)
         assert await consumer._IndexingRedisStreamsConsumer__recover_entry(TOPIC, message_id, fields, owned=False) is False
         assert int((await harness.client.xpending(TOPIC, GROUP))["pending"]) == 1
+
+
+class TestFailedHandBack:
+    """An entry whose hand-back cannot be published stays owned by this consumer, not stranded in the pending list."""
+
+    async def test_a_failed_publish_at_dispatch_buffers_the_entry_again_with_a_delay(self, harness) -> None:
+        await harness.produce(_envelope("n1", ON))
+        verdict = _verdict(False)
+        consumer, producer = _build(harness, verdict)
+        consumer.running = True
+        consumer.redis = harness.client
+        await harness.client.xgroup_create(TOPIC, GROUP, id="0", mkstream=True)
+        (_, messages), = await harness.client.xreadgroup(GROUP, "indexing-1", {TOPIC: ">"}, count=10)
+        message_id, fields = messages[0]
+        await consumer._IndexingRedisStreamsConsumer__enqueue_message(TOPIC, message_id, fields)
+        started = AsyncMock()
+        consumer._start_processing_task = started
+        verdict._verdict = Verdict(True, ["flip"])
+        producer.send_event = AsyncMock(side_effect=RuntimeError("broker down"))
+
+        await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
+
+        started.assert_not_awaited()
+        assert consumer._scheduler.pending_count == 1  # buffered again, not dispatched, not lost
+        assert (TOPIC, message_id) in consumer._held_entries
+        assert int((await harness.client.xpending(TOPIC, GROUP))["pending"]) == 1  # never acknowledged
+        # it is offered again once its delay has passed, not on the next spin
+        await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
+        assert producer.send_event.await_count == 1
+
+    async def test_a_failed_publish_at_read_keeps_the_entry_in_the_buffer(self, harness) -> None:
+        await harness.produce(_envelope("n1", ON))
+        consumer, producer = _build(harness, _verdict(True))
+        producer.send_event = AsyncMock(side_effect=RuntimeError("broker down"))
+        handler = Handler()
+        await consumer.start(handler)
+        await _until(lambda: producer.send_event.await_count >= 1)
+        await asyncio.sleep(0.2)
+        assert handler.seen == []
+        assert len(consumer._held_entries) == 1 and consumer._scheduler.pending_count == 1
+        assert producer.send_event.await_count == 1  # waiting out its delay, not retried in a loop

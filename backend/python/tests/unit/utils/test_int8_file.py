@@ -1,5 +1,6 @@
 """The int8 weight file: format, atomic write, rebuild on a stale or damaged file, fallback."""
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -216,6 +217,46 @@ class TestReuseAndRebuild:
         rebuilt = _ensure(snap, model, cache, build_fn=lambda *a: (calls.append(1), build(*a))[1])
         assert calls == [1]
         verify(rebuilt, file_identity(snap / "model.safetensors", "org/model", "rev1"))
+
+    @pytest.mark.parametrize(
+        "damage",
+        [
+            lambda e: e.pop("data_offsets"),
+            lambda e: e.update(data_offsets=[0]),
+            lambda e: e.update(data_offsets=["0", "4"]),
+            lambda e: e.update(data_offsets=[8, 4]),
+            lambda e: e.update(data_offsets=[-4, 4]),
+            lambda e: e.pop("shape"),
+            lambda e: e.update(shape=[-1]),
+        ],
+    )
+    def test_a_header_entry_that_is_malformed_is_rebuilt(self, model, tmp_path, damage) -> None:
+        snap, cache = _snapshot(tmp_path, model), tmp_path / "cache"
+        path = _ensure(snap, model, cache)
+        raw = path.read_bytes()
+        length = int.from_bytes(raw[:8], "little")
+        header = json.loads(raw[8:8 + length])
+        damage(header[next(k for k in header if k != "__metadata__")])
+        damaged = json.dumps(header).encode()
+        path.write_bytes(len(damaged).to_bytes(8, "little") + damaged + raw[8 + length:])
+        with pytest.raises(Int8FileError):
+            read_header(path)
+        calls: list[int] = []
+        rebuilt = _ensure(snap, model, cache, build_fn=lambda *a: (calls.append(1), build(*a))[1])
+        assert calls == [1]
+        verify(rebuilt, file_identity(snap / "model.safetensors", "org/model", "rev1"))
+
+    def test_an_entry_that_is_not_an_object_is_rebuilt(self, model, tmp_path) -> None:
+        snap, cache = _snapshot(tmp_path, model), tmp_path / "cache"
+        path = _ensure(snap, model, cache)
+        raw = path.read_bytes()
+        length = int.from_bytes(raw[:8], "little")
+        header = json.loads(raw[8:8 + length])
+        header[next(k for k in header if k != "__metadata__")] = 7
+        damaged = json.dumps(header).encode()
+        path.write_bytes(len(damaged).to_bytes(8, "little") + damaged + raw[8 + length:])
+        with pytest.raises(Int8FileError):
+            verify(path, file_identity(snap / "model.safetensors", "org/model", "rev1"))
 
     def test_bytes_appended_to_the_file_are_rebuilt(self, model, tmp_path) -> None:
         snap, cache = _snapshot(tmp_path, model), tmp_path / "cache"

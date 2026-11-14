@@ -2879,7 +2879,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if position in settled or position in unparsed:
                 continue
             if position in handed_back:
-                await self.__hand_back_entry(stream_name, message_id, parsed[position], handed_back[position])
+                if not await self.__hand_back_entry(stream_name, message_id, parsed[position], handed_back[position]):
+                    self.__rebuffer_failed_hand_back(
+                        stream_name, message_id, fields, parsed[position], handed_back[position]
+                    )
                 continue
             try:
                 await self.__enqueue_parsed(
@@ -2933,6 +2936,31 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.logger.warning("Could not hand back %s waiting for the embedding precision; it stays pending", message_id, exc_info=True)
             return False
         return True
+
+    def __rebuffer_failed_hand_back(
+        self,
+        stream_name: str,
+        message_id: str,
+        fields: dict[str, str],
+        parsed: StreamMessage | None,
+        delay: float,
+    ) -> None:
+        """Keep an entry whose hand-back failed: back in the buffer, not before ``delay``, still pending.
+
+        It is offered again at dispatch, where the precision check hands it back or lets it through. Not
+        buffered when a hand-back never started (no message, no connection): there is nothing to wait for.
+        """
+        if parsed is None or self.redis is None or self._scheduler is None:
+            return
+        parsed.payload["_retry_not_before"] = time.time() + delay
+        if self.__try_enqueue(stream_name, message_id, fields, parsed):
+            return
+        # No room: parked, and re-offered at the top of the next read iteration, as an entry that found
+        # the buffer full.
+        self._held_entries.add((stream_name, message_id))
+        self._deferred_entries.append(
+            (stream_name, message_id, fields, parsed, self.key_extractor.extract(parsed), time.monotonic())
+        )
 
     async def __settle_connector_off(
         self,
@@ -3051,10 +3079,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # Ownership passes to the in-flight set from here.
             self._held_entries.discard((stream_name, message_id))
             # The verdict may have turned since this entry was buffered: hand it back now, before a handler
-            # starts and downloads anything. A publish that fails leaves it pending, and recovery reads it again.
+            # starts and downloads anything. A publish that fails puts the entry back in the buffer, to be
+            # handed back again after a delay: recovery from the pending list does not run while fresh
+            # traffic keeps arriving, or while peer consumers share the group.
             hand_back_delay = self.__precision_delay(parsed)
             if hand_back_delay is not None:
-                await self.__hand_back_entry(stream_name, message_id, parsed, hand_back_delay)
+                if not await self.__hand_back_entry(stream_name, message_id, parsed, hand_back_delay):
+                    self.__rebuffer_failed_hand_back(stream_name, message_id, fields, parsed, hand_back_delay)
                 continue
             metrics.record_dispatch("redis", key[0] if key else "unknown")
             try:

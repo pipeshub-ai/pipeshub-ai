@@ -19,6 +19,21 @@ from app.services.vector_db.models import (
 DIM = 8  # small fixed dimension for tests
 
 
+def strict_service(request, backend: str):  # noqa: ANN001, ANN201
+    """The service fixture of a backend a job selected; one that cannot be reached fails instead of skipping.
+
+    The shared service fixtures skip when their server is down, which is right for a developer running the
+    whole directory. A job that selects one backend by name asked for that backend, and a skip would let it
+    pass without running the scenario.
+    """
+    import pytest
+
+    try:
+        return request.getfixturevalue(f"{backend}_service")
+    except pytest.skip.Exception as skipped:
+        pytest.fail(f"the {backend} service was selected but is unavailable: {skipped}", pytrace=False)
+
+
 def point_id(name: str) -> str:
     """A stable UUID for a readable test name: Qdrant accepts only UUIDs or
     integers as point ids, and the other backends take any string."""

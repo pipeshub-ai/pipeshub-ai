@@ -9,7 +9,7 @@ import pytest
 from app.services.vector_db.const.const import PAYLOAD_KEYWORD_INDEXES
 from app.services.vector_db.models import CollectionConfig
 from tests.integration.vector_db.conftest import make_collection
-from tests.integration.vector_db.helpers import DIM
+from tests.integration.vector_db.helpers import DIM, strict_service
 from tests.integration.vector_db.precision_pin_scenario import (
     run_legacy_scenario,
     run_pin_scenario,
@@ -22,7 +22,7 @@ ORG = "org-precision-pin"
 @pytest.fixture(params=["qdrant", "opensearch", "redis"])
 def backend(request):  # noqa: ANN201
     """The service of the backend this case is for (indirect: only that backend is connected)."""
-    return request.getfixturevalue(f"{request.param}_service"), request.param
+    return strict_service(request, request.param), request.param
 
 
 async def _collection(service, prefix: str) -> str:

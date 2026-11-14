@@ -24,7 +24,8 @@ export function HealthWarnings({ warnings }: { warnings: string[] }) {
 
   return (
     <Flex
-      role="alert"
+      // A standing advisory, not an event that needs interrupting: announced politely.
+      role="status"
       align="start"
       gap="3"
       data-testid="health-warnings"

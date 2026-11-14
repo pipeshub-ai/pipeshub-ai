@@ -95,10 +95,27 @@ def read_header(path: Path) -> tuple[dict, int]:
     if not isinstance(header, dict):
         raise Int8FileError("header is not an object")
     start = 8 + length
-    end = max((e["data_offsets"][1] for k, e in header.items() if k != "__metadata__"), default=0)
+    end = 0
+    for name, entry in header.items():
+        if name != "__metadata__":
+            end = max(end, _entry_end(name, entry))
     if start + end != size:
         raise Int8FileError("file size does not match its header")
     return header, start
+
+
+def _entry_end(name: str, entry: object) -> int:
+    """Where this tensor's bytes end; the entry's structure is checked first, so a damaged header is Int8FileError."""
+    if not isinstance(entry, dict):
+        raise Int8FileError(f"tensor {name} has no description")
+    offsets, shape = entry.get("data_offsets"), entry.get("shape")
+    if not (isinstance(offsets, list) and len(offsets) == 2 and all(type(o) is int for o in offsets)):
+        raise Int8FileError(f"tensor {name} has no valid data_offsets")
+    if not 0 <= offsets[0] <= offsets[1]:
+        raise Int8FileError(f"tensor {name} has data_offsets out of order")
+    if not (isinstance(shape, list) and all(type(d) is int and d >= 0 for d in shape)):
+        raise Int8FileError(f"tensor {name} has no valid shape")
+    return offsets[1]
 
 
 def _tensor_hash(path: Path, header: dict, start: int) -> str:

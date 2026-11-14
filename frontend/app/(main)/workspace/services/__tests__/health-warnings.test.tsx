@@ -55,15 +55,37 @@ describe('readHealthWarnings', () => {
 describe('HealthWarnings', () => {
   it('shows the precision warning with both remedies', () => {
     renderWarnings([PRECISION_WARNING]);
-    const alert = screen.getByRole('alert');
+    const alert = screen.getByRole('status');
     expect(alert.textContent).toContain('Indexing is waiting');
     expect(alert.textContent).toContain('EMBEDDING_SERVER_PRECISION');
     expect(alert.textContent).toContain('vector-store cleanup');
     expect(screen.getByText('Attention needed')).toBeTruthy();
   });
 
+  it('is announced politely, not as an alert', () => {
+    renderWarnings([PRECISION_WARNING]);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByTestId('health-warnings').getAttribute('role')).toBe('status');
+  });
+
   it('shows nothing when the API sent no warning', () => {
     renderWarnings([]);
+    expect(screen.queryByRole('status')).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+describe('the warning title in every locale', () => {
+  const english = new Set(['en-US', 'en-IN']);
+  const locales = ['cs-CZ', 'de-DE', 'en-IN', 'es-ES', 'hi-IN', 'ko-KR', 'zh-CN', 'zh-SG', 'zh-TW'];
+
+  it.each(locales)('%s has a title', async (name) => {
+    const { default: base } = await import('@/lib/i18n/locales/en-US.json');
+    const { default: locale } = await import(`@/lib/i18n/locales/${name}.json`);
+    const title = locale.workspace.services.healthWarnings.title as string;
+    expect(title.trim().length).toBeGreaterThan(0);
+    if (!english.has(name)) {
+      expect(title).not.toBe(base.workspace.services.healthWarnings.title);
+    }
   });
 });

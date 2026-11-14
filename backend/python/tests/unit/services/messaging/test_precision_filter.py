@@ -33,6 +33,9 @@ def _message(event="newRecord", **payload):  # noqa: ANN202
     return SimpleNamespace(eventType=event, payload=dict(payload))
 
 
+from app.services.messaging.scheduling.offset_tracker import PartitionOffsetTracker  # noqa: E402
+
+
 class TestKafka:
     def _consumer(self, delays):  # noqa: ANN202
         consumer = object.__new__(IndexingKafkaConsumer)
@@ -40,6 +43,9 @@ class TestKafka:
         consumer.precision_filter = _Filter(delays)
         consumer.consumer = MagicMock()
         consumer._requeue_message = AsyncMock()
+        consumer._offset_tracker = PartitionOffsetTracker(logger=log)
+        consumer._partition_epoch = {}
+        consumer._revoked_since_poll = set()
         return consumer
 
     def test_the_connector_off_settled_messages_are_not_offered_to_the_filter(self) -> None:
@@ -76,7 +82,8 @@ class TestKafka:
         tp = TopicPartition("t", 0)
         handed = {(tp, 1): (_message(), 60.0), (tp, 2): (_message(), 60.0)}
         resolvable = await consumer._IndexingKafkaConsumer__publish_hand_backs([(tp, 1), (tp, 2)], handed)
-        assert resolvable == [(tp, 2)]
+        assert resolvable == []  # nothing behind the failure is published or resolved: it is read again
+        consumer._requeue_message.assert_awaited_once()
         consumer.consumer.seek.assert_called_once_with(tp, 1)
 
     @pytest.mark.asyncio

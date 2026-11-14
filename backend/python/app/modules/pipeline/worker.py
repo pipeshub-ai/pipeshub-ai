@@ -90,8 +90,8 @@ class StageHeldForDelete(StagePaused):
 class StageWaitsForPrecision(StagePaused):
     """A write of the stage met an index that holds another weight precision than the server serves.
 
-    Handed back with no attempt counted, nothing settled: the claim stays IN_PROGRESS and the redelivery takes
-    it over like a crashed run's. Only this message waits; the read-time check holds back new work.
+    Handed back to the queue with no delivery attempt counted. The run's claim is settled as QUEUED, so the
+    redelivery claims it again. Only this message waits; the read-time check holds back new work.
     """
 
     pauses_consumer = False

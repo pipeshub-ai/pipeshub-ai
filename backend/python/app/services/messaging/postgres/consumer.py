@@ -71,6 +71,7 @@ _SWEEP_EVERY_S = 60.0
 _INDEX_POOL = "pg-queue-indexing"
 _SAFETY_NET_S = 300.0  # longest an idle consumer with a LISTEN connection sleeps
 _HANDBACK_CAP_S = 60.0   # longest the per-message back-off of hand-backs grows to
+_HANDBACK_TABLE_MAX = 10_000   # hand-back counts kept in memory
 
 
 def _handback_base_s() -> float:
@@ -403,9 +404,7 @@ class PgMessagingConsumer(IMessagingConsumer):
             # Queue time, not a failure (a stage whose dependency is paused, a record whose lease stayed held): visible again after the
             # delay with the attempt this claim counted given back, so waiting never dead-letters it.
             key = (d.topic, d.message_id)
-            n = self._handbacks[key] = self._handbacks.get(key, 0) + 1
-            if len(self._handbacks) > 10_000:      # a bounded table: the oldest entries go first
-                self._handbacks.pop(next(iter(self._handbacks)))
+            n = self._count_handback(key)
             delay = max(
                 e.delay_s if e.delay_s is not None else compute_retry_backoff_seconds(1),
                 min(_handback_base_s() * 2 ** min(n - 1, 10), _HANDBACK_CAP_S),     # grows with every hand-back of this message
@@ -449,6 +448,13 @@ class PgMessagingConsumer(IMessagingConsumer):
                 delay,
             )
 
+    def _count_handback(self, key: tuple[str, int]) -> int:
+        """One more hand-back of this message, and how many it has had. The table is bounded: the oldest entries go first."""
+        n = self._handbacks[key] = self._handbacks.get(key, 0) + 1
+        if len(self._handbacks) > _HANDBACK_TABLE_MAX:
+            self._handbacks.pop(next(iter(self._handbacks)))
+        return n
+
     async def _hand_back_for_precision(self, d: Delivery) -> bool:
         """Before anything runs: an event that would write vectors of the wrong precision goes back.
 
@@ -466,7 +472,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if 0 not in delays:
             return False
         key = (d.topic, d.message_id)
-        n = self._handbacks[key] = self._handbacks.get(key, 0) + 1
+        n = self._count_handback(key)
         delay = delays[0] if n == 1 else delays[0] * 10
         self._handback_log["precision"] = self._handback_log.get("precision", 0) + 1
         await self.queue.nack(self.config.group_id, d, delay, "waiting for the embedding precision", refund=True)

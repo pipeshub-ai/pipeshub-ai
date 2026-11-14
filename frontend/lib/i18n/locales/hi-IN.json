@@ -4294,7 +4294,7 @@
         }
       },
       "healthWarnings": {
-        "title": "Attention needed"
+        "title": "ध्यान देने की आवश्यकता है"
       },
       "vectorDbMemory": {
         "title": "सर्च इंडेक्स वेक्टर डेटाबेस की मेमोरी में नहीं समाता",

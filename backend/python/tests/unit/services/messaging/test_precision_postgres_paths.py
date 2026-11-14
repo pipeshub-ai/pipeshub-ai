@@ -105,3 +105,12 @@ async def test_without_a_filter_nothing_is_handed_back() -> None:
     consumer = _consumer(True, with_filter=False)
     await consumer._run_one(_delivery())
     assert consumer.message_handler.seen == ["newRecord"]
+
+
+@pytest.mark.asyncio
+async def test_a_long_wait_does_not_grow_the_hand_back_table_without_bound() -> None:
+    consumer = _consumer(True)
+    for message_id in range(10_050):
+        await consumer._run_one(_delivery(message_id=message_id))
+    assert consumer.queue.nack.await_count == 10_050  # every one went back
+    assert len(consumer._handbacks) <= 10_000

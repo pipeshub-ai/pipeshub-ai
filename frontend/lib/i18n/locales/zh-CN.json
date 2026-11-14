@@ -4590,7 +4590,7 @@
         }
       },
       "healthWarnings": {
-        "title": "Attention needed"
+        "title": "需要注意"
       },
       "vectorDbMemory": {
         "title": "搜索索引超出了向量数据库的内存",

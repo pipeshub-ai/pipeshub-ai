@@ -14,14 +14,19 @@ from app.utils.precision_witness import PrecisionWitness, set_precision_witness
 
 
 class _Server:
-    def __init__(self, headers_for: Callable[[list[str]], dict[str, str]], announces: bool = True) -> None:
+    def __init__(
+        self,
+        headers_for: Callable[[list[str]], dict[str, str]],
+        announces: bool = True,
+        status_for: Callable[[int], int] | None = None,
+    ) -> None:
         outer = self
         self.posts = 0
 
         class Handler(BaseHTTPRequestHandler):
-            def _send(self, body: dict, headers: dict[str, str] | None = None) -> None:
+            def _send(self, body: dict, headers: dict[str, str] | None = None, status: int = 200) -> None:
                 data = json.dumps(body).encode()
-                self.send_response(200)
+                self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 for key, value in (headers or {}).items():
@@ -39,6 +44,10 @@ class _Server:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 texts = body["input"] if isinstance(body["input"], list) else [body["input"]]
                 outer.posts += 1
+                status = status_for(outer.posts) if status_for is not None else 200
+                if status != 200:  # an error answer carries no precision header: a proxy or a restarting server
+                    self._send({"error": {"message": "unavailable", "type": "server_error"}}, status=status)
+                    return
                 self._send(
                     {"object": "list", "model": "m", "usage": {"prompt_tokens": 1, "total_tokens": 1},
                      "data": [{"object": "embedding", "index": i, "embedding": [0.1, 0.2]} for i in range(len(texts))]},
@@ -57,8 +66,8 @@ class _Server:
 def server(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., _Server]]:
     started: list[_Server] = []
 
-    def start(headers_for, announces: bool = True) -> _Server:
-        made = _Server(headers_for, announces)
+    def start(headers_for, announces: bool = True, status_for=None) -> _Server:
+        made = _Server(headers_for, announces, status_for)
         started.append(made)
         monkeypatch.setenv("EMBEDDING_SERVER_URL", made.url)
         return made
@@ -106,6 +115,29 @@ class TestWitness:
             await client.aembed_documents_witnessed(["a", "b"])
 
     @pytest.mark.asyncio
+    async def test_a_retried_error_response_is_not_part_of_the_witness(self, server) -> None:
+        made = server(lambda _t: {"X-Embedding-Precision": "int8-w"}, announces=True, status_for=lambda n: 503 if n == 1 else 200)
+        vectors, precision, _ = await EmbeddingServerEmbeddings(model="m", max_retries=2).aembed_documents_witnessed(["a"])
+        assert made.posts == 2 and vectors == [[0.1, 0.2]] and precision == "int8-w"
+
+    def test_a_retried_error_response_is_not_part_of_the_sync_witness(self, server) -> None:
+        made = server(lambda _t: {"X-Embedding-Precision": "int8-w"}, announces=True, status_for=lambda n: 503 if n == 1 else 200)
+        _, precision, _ = EmbeddingServerEmbeddings(model="m", max_retries=2).embed_documents_witnessed(["a"])
+        assert made.posts == 2 and precision == "int8-w"
+
+    @pytest.mark.asyncio
+    async def test_responses_of_a_discarded_attempt_are_not_part_of_the_witness(self, server) -> None:
+        """The first attempt got one good answer (fp32) and then a 503; the retry answered int8-w throughout."""
+        def headers(texts: list[str]) -> dict[str, str]:
+            return {"X-Embedding-Precision": "int8-w" if made.posts > 2 else "fp32"}
+
+        made = server(headers, status_for=lambda n: 503 if n == 2 else 200)
+        client = EmbeddingServerEmbeddings(model="m", max_retries=2)
+        client._inner.chunk_size = 1
+        _, precision, _ = await client.aembed_documents_witnessed(["a", "b"])
+        assert precision == "int8-w"
+
+    @pytest.mark.asyncio
     async def test_concurrent_calls_each_get_their_own_precision(self, server) -> None:
         server(lambda texts: {"X-Embedding-Precision": "int8-w" if texts == ["b"] else "fp32"})
         client = _client()
@@ -121,6 +153,15 @@ class TestWitness:
 
 
 class TestLegacyServer:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("announces", [False, True])
+    async def test_a_call_with_named_and_unnamed_responses_is_refused_not_defaulted(self, server, announces) -> None:
+        server(lambda texts: {"X-Embedding-Precision": "int8-w"} if texts == ["b"] else {}, announces=announces)
+        client = _client()
+        client._inner.chunk_size = 1
+        with pytest.raises(EmbeddingPrecisionUnknownError, match="some did not"):
+            await client.aembed_documents_witnessed(["a", "b"])
+
     @pytest.mark.asyncio
     async def test_a_header_less_response_from_an_older_server_is_fp32(self, server) -> None:
         server(lambda _t: {}, announces=False)

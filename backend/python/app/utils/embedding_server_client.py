@@ -75,6 +75,10 @@ _responses: ContextVar[list[tuple[str | None, bool]] | None] = ContextVar("embed
 
 
 def _note_response(response: httpx.Response) -> None:
+    # Hooks run for error responses too. Only a response that carries vectors can say what made them; a 503 from
+    # a proxy or a restarting server names nothing, and the retry that follows is the call's real answer.
+    if not response.is_success:
+        return
     seen = _responses.get()
     if seen is not None:
         seen.append((response.headers.get(PRECISION_HEADER), response.headers.get(PRECISION_FALLBACK_HEADER) == "1"))
@@ -82,6 +86,13 @@ def _note_response(response: httpx.Response) -> None:
 
 async def _note_response_async(response: httpx.Response) -> None:
     _note_response(response)
+
+
+def _begin_attempt() -> None:
+    """A new attempt of the call being made: what earlier attempts saw produced vectors that were thrown away."""
+    seen = _responses.get()
+    if seen is not None:
+        seen.clear()
 
 
 class EmbeddingServerEmbeddings(Embeddings):
@@ -238,7 +249,14 @@ class EmbeddingServerEmbeddings(Embeddings):
 
     def _settle_witness(self, seen: list[tuple[str | None, bool]], announced: bool) -> tuple[str, bool]:  # noqa: FBT001
         """The one precision (and fallback flag) of a call, from the headers of its responses."""
-        if not seen or any(precision is None for precision, _ in seen):
+        unnamed = [precision is None for precision, _ in seen]
+        if any(unnamed) and not all(unnamed):
+            # One call is split into several requests: some answered with a precision and some without (a rolling
+            # upgrade). Whichever the writer is told, part of the vectors are of the other kind.
+            raise EmbeddingPrecisionUnknownError(
+                "Some responses of one call named their weight precision and some did not",
+            )
+        if not seen or all(unnamed):
             if announced:
                 raise EmbeddingPrecisionUnknownError(
                     "The embedding server announces its weight precision but did not name it on a response",
@@ -301,9 +319,13 @@ class EmbeddingServerEmbeddings(Embeddings):
         finally:
             client.close()
 
+    def _embed_documents_attempt(self, texts: list[str]) -> list[list[float]]:
+        _begin_attempt()
+        return self._documents_inner().embed_documents(texts)
+
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return call_with_retry(
-            lambda: self._documents_inner().embed_documents(texts),
+            lambda: self._embed_documents_attempt(texts),
             max_retries=self.max_retries,
             operation="embed_documents",
             service_name=_EMBEDDING_SERVER_SERVICE_NAME,
@@ -320,6 +342,7 @@ class EmbeddingServerEmbeddings(Embeddings):
         )
 
     async def _aembed_noting_lost_connection(self, texts: list[str]) -> list[list[float]]:
+        _begin_attempt()
         try:
             return await self._documents_inner().aembed_documents(texts)
         except openai.APIConnectionError:

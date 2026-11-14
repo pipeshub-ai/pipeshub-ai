@@ -4299,7 +4299,7 @@
         }
       },
       "healthWarnings": {
-        "title": "Attention needed"
+        "title": "Aufmerksamkeit erforderlich"
       },
       "vectorDbMemory": {
         "title": "Der Suchindex passt nicht in den Arbeitsspeicher der Vektordatenbank",

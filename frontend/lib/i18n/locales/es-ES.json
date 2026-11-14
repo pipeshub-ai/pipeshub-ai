@@ -4340,7 +4340,7 @@
         }
       },
       "healthWarnings": {
-        "title": "Attention needed"
+        "title": "Requiere atención"
       },
       "vectorDbMemory": {
         "title": "El índice de búsqueda no cabe en la memoria de la base de datos vectorial",

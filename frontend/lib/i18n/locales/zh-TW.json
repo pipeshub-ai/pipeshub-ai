@@ -4590,7 +4590,7 @@
         }
       },
       "healthWarnings": {
-        "title": "Attention needed"
+        "title": "需要注意"
       },
       "vectorDbMemory": {
         "title": "搜尋索引超出了向量資料庫的記憶體",

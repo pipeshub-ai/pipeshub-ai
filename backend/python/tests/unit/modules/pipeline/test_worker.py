@@ -1242,10 +1242,18 @@ async def test_the_stage_worker_pauses_not_fails_on_a_precision_flip() -> None:
     outer.__cause__ = inner
     h, job = _Harness(), _job()
     h.seed(job)
-    h.handler._handle = AsyncMock(side_effect=outer)
+    h.stage.result = outer  # raised by the stage itself, so the worker's claim and settle code runs
     with pytest.raises(StageWaitsForPrecision) as caught:
         await h.deliver(job)
     assert caught.value.delay_s == 60.0 and caught.value.pauses_consumer is False and caught.value.counts_toward_backstop is False
+    # Settled as queued, not failed or paused: the redelivery claims it again and the job finishes.
+    waiting = h.state(job)
+    assert waiting.status is ProgressStatus.QUEUED and waiting.attempt == 1
+    assert h.headlines.writes == [] and h.stage.runs == 1
+
+    h.stage.result = StageResult(outcome=StageOutcome.COMPLETED)
+    await h.deliver(job)
+    assert h.state(job).status is ProgressStatus.COMPLETED and h.state(job).attempt == 2
 
 
 @pytest.mark.asyncio

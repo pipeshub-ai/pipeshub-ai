@@ -2174,18 +2174,34 @@ class IndexingKafkaConsumer(IMessagingConsumer):
     ) -> list[tuple[TopicPartition, int]]:
         """Re-queue the handed-back messages the read reached; return the positions that may now be resolved.
 
-        A failed publish leaves its position unresolved and seeks back to it, so the message is read and
-        handed back again on the next pass instead of being lost.
+        Each offset is tracked before its publish, so a failed publish leaves a floor under the commit
+        watermark and a later offset that did publish cannot commit past it. A partition whose publish failed
+        publishes nothing more and is rewound once, to its lowest failed offset: everything behind it is read
+        again, not published twice. A partition revoked while a publish was awaited is left alone, since its
+        next owner reads from the last commit.
         """
+        tracker = self._offset_tracker
+        epochs = {tp: self._partition_epoch.get(tp, 0) for tp, _ in reached}
+
+        def owned(tp: TopicPartition) -> bool:
+            return epochs[tp] == self._partition_epoch.get(tp, 0) and tp not in self._revoked_since_poll
+
         resolvable: list[tuple[TopicPartition, int]] = []
+        failed_at: dict[TopicPartition, int] = {}
         failed = 0
         for position in reached:
+            tp, offset = position
+            if not owned(tp):
+                continue
+            if tp in failed_at:
+                continue
             entry = handed_back.get(position)
             if entry is None:
                 resolvable.append(position)
                 continue
-            tp, offset = position
             message, delay = entry
+            if tracker is not None:
+                tracker.track(tp, offset)
             stable_id = str(message.payload.get("_retry_tracking_id") or f"{tp.topic}-{tp.partition}-{offset}")
             try:
                 await self._requeue_message(
@@ -2193,13 +2209,22 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 )
             except Exception:
                 failed += 1
-                self.__seek_back(tp, offset)
+                failed_at[tp] = min(offset, failed_at.get(tp, offset))
+                if owned(tp) and tracker is not None:
+                    # Read again within this process: a floor, with no dwell clock. Nothing to commit for it;
+                    # the next offset that resolves carries the watermark.
+                    tracker.mark_redeliver(tp, offset, awaiting_reread=True)
                 continue
             resolvable.append(position)
+        for tp, offset in failed_at.items():
+            if owned(tp):
+                self.__seek_back(tp, offset)
         if failed:
             self.logger.warning(
                 "Could not hand back %d event(s) waiting for the embedding precision; they are read again", failed,
             )
+        # A rebalance during any publish above: what it touched is no longer ours to resolve.
+        resolvable = [p for p in resolvable if owned(p[0])]
         sent = len(resolvable) - sum(1 for p in resolvable if p not in handed_back)
         if sent:
             self.logger.info(

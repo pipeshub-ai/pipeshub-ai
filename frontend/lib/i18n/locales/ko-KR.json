@@ -4590,7 +4590,7 @@
         }
       },
       "healthWarnings": {
-        "title": "Attention needed"
+        "title": "확인이 필요합니다"
       },
       "vectorDbMemory": {
         "title": "검색 인덱스가 벡터 데이터베이스 메모리에 들어가지 않습니다",

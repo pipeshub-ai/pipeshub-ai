@@ -210,3 +210,70 @@ class TestResolveStep:
         await consumer._IndexingKafkaConsumer__read_phase()
         consumer.consumer.seek.assert_called_with(tp, 0)
         consumer.consumer.commit.assert_not_awaited()
+
+
+class TestHandBackOffsets:
+    """A hand-back that cannot be published must keep the commit watermark below its offset."""
+
+    @staticmethod
+    def _fail_on(consumer, offsets: set[int]) -> None:
+        async def requeue(_topic, message, *_a, **_k):  # noqa: ANN202
+            if int(message.payload["recordId"].split("-")[1]) in offsets:
+                raise RuntimeError("broker down")
+
+        consumer._requeue_message = AsyncMock(side_effect=requeue)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_hand_back_floors_the_watermark_below_it(self) -> None:
+        consumer = _consumer(_verdict(True), scheduler=True)
+        tp = TopicPartition(TOPIC, 0)
+        self._fail_on(consumer, {3})
+        consumer.consumer.getmany = AsyncMock(return_value={tp: [_record(3)]})
+        await consumer._IndexingKafkaConsumer__read_phase()
+        consumer.consumer.seek.assert_called_with(tp, 3)
+
+        # later offsets of the partition finish before the rewound read comes back to 3
+        tracker = consumer._offset_tracker
+        tracker.track(tp, 4)
+        assert tracker.mark_done(tp, 4) is None  # not 5: offset 3 still has to be read again
+        consumer.consumer.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_two_failures_on_a_partition_rewind_it_once_to_the_lowest(self) -> None:
+        consumer = _consumer(_verdict(True), scheduler=True)
+        tp = TopicPartition(TOPIC, 0)
+        self._fail_on(consumer, {1, 2})
+        consumer.consumer.getmany = AsyncMock(return_value={tp: [_record(0), _record(1), _record(2)]})
+        await consumer._IndexingKafkaConsumer__read_phase()
+
+        assert [c.args for c in consumer.consumer.seek.call_args_list] == [(tp, 1)]
+        published = [c.args[1].payload["recordId"] for c in consumer._requeue_message.await_args_list]
+        assert published == ["rec-0", "rec-1"]  # nothing is published behind the failure: it is read again
+        assert consumer.consumer.commit.await_args.args[0] == {tp: 1}  # only offset 0 is committed past
+
+    @pytest.mark.asyncio
+    async def test_a_failure_on_one_partition_does_not_hold_another(self) -> None:
+        consumer = _consumer(_verdict(True), scheduler=True)
+        a, b = TopicPartition(TOPIC, 0), TopicPartition(TOPIC, 1)
+        self._fail_on(consumer, {5})
+        consumer.consumer.getmany = AsyncMock(return_value={a: [_record(5)], b: [_record(7, partition=1)]})
+        await consumer._IndexingKafkaConsumer__read_phase()
+        assert [c.args for c in consumer.consumer.seek.call_args_list] == [(a, 5)]
+        assert consumer.consumer.commit.await_args.args[0] == {b: 8}
+
+    @pytest.mark.asyncio
+    async def test_a_rebalance_during_the_publish_commits_nothing_for_the_partition(self) -> None:
+        consumer = _consumer(_verdict(True), scheduler=True)
+        tp = TopicPartition(TOPIC, 0)
+
+        async def revoked_and_assigned_again(*_a, **_k) -> None:
+            await consumer._on_partitions_revoked([tp])
+            consumer._revoked_since_poll.clear()  # the next poll has already cleared the flag
+
+        consumer._requeue_message = AsyncMock(side_effect=revoked_and_assigned_again)
+        consumer.consumer.getmany = AsyncMock(return_value={tp: [_record(0), _record(1)]})
+        await consumer._IndexingKafkaConsumer__read_phase()
+
+        consumer.consumer.commit.assert_not_awaited()
+        assert consumer._requeue_message.await_count == 1  # the rest of the stale batch is not published
+        assert not consumer._offset_tracker._outstanding.get(tp) and tp not in consumer._offset_tracker._committed
