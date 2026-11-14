@@ -4637,12 +4637,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                 backfills.append((record, permissions))
 
             # Source fetch failed (inaccessible/deleted): the stored stub stays as it is, noted kept so a full sync's
-            # unlink leaves its record group and parent edges. Not rewritten: an ancestor read back by external id is
-            # a plain Record, which no graph store writes as a file.
-            self.data_entities_processor.note_kept_records(self.connector_id, [
-                stub.id for stub in frontier
-                if stub.external_record_id not in metadata_by_id and stub.is_placeholder and stub.id
-            ])
+            # unlink leaves its record group and parent edges, and its parent is walked like a backfill's. Not
+            # rewritten: an ancestor read back by external id is a plain Record, which no graph store writes as a file.
+            kept = [stub for stub in frontier if stub.external_record_id not in metadata_by_id and stub.is_placeholder]
+            self.data_entities_processor.note_kept_records(self.connector_id, [stub.id for stub in kept if stub.id])
 
             if backfills:
                 # Creates/updates the ancestors and, via _handle_parent_record, materializes
@@ -4650,7 +4648,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 await self.data_entities_processor.on_new_records(backfills)
 
             next_frontier: List[Record] = []
-            for record, _permissions in backfills:
+            for record in [*(r for r, _ in backfills), *kept]:
                 parent_ext_id = record.parent_external_record_id
                 if not parent_ext_id or not record.parent_record_type:
                     continue  # boundary: drive root

@@ -2930,8 +2930,10 @@ class TestSweepPlaceholderRecords:
 
     @pytest.mark.asyncio
     async def test_inaccessible_ancestor_stays_a_stub_and_walk_continues(self, connector):
-        """A 403 (shared item's unreadable parent) re-submits the stub so its structural
-        edges are restored, and the walk still climbs to the next ancestor."""
+        """A 403 (shared item's unreadable parent) keeps the stored stub as it is, noted kept so a full sync's
+        unlink leaves its edges, and the walk still climbs to the next ancestor, which is kept the same way. The
+        stub read back by external id is a plain Record, as every graph store returns it: never written, since no
+        store writes a plain Record as a file."""
         connector._get_fresh_datasource = AsyncMock()
         connector.data_entities_processor.get_placeholder_records = AsyncMock(
             return_value=[_make_folder_stub("B", parent="A")]
@@ -2942,18 +2944,22 @@ class TestSweepPlaceholderRecords:
         connector.drive_data_source.files_get = AsyncMock(
             side_effect=HttpError(resp, b"forbidden")
         )
+        stub_a = _make_folder_stub("A", parent=None)
+        plain_a = Record.model_validate(stub_a.model_dump(include=set(Record.model_fields)))
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(
-            side_effect=lambda connector_id, ext_id: _make_folder_stub("A", parent=None)
-            if ext_id == "A"
-            else None
+            side_effect=lambda connector_id, ext_id: plain_a if ext_id == "A" else None
         )
+        kept: list[str] = []
+        connector.data_entities_processor.note_kept_records = MagicMock(
+            side_effect=lambda connector_id, ids: kept.extend(ids)
+        )
+        stub_b_id = connector.data_entities_processor.get_placeholder_records.return_value[0].id
 
         await connector._sweep_placeholder_records("u1", "u@t.com", "drive-1")
 
         assert _fetched_ids(connector) == ["A", "B"]
-        submitted = _submitted_records(connector)
-        assert sorted(submitted) == ["A", "B"]
-        assert all(r.is_placeholder is True for r in submitted.values())
+        assert _submitted_records(connector) == {}
+        assert kept == [stub_b_id, plain_a.id]
 
     @pytest.mark.asyncio
     async def test_cyclic_source_terminates(self, connector):

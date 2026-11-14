@@ -5158,6 +5158,35 @@ class TestSweepPlaceholderRecords:
         conn.data_entities_processor.note_kept_records.assert_any_call(conn.connector_id, ["rec-a"])
 
     @pytest.mark.asyncio
+    async def test_the_walk_climbs_past_an_unreadable_stub_and_keeps_its_unreadable_parent(self) -> None:
+        """B and its parent A, both stubs, cannot be read. Both are noted kept, so a full sync's unlink leaves the
+        A -> B parent edge and A's own edges: a walk that stopped at B left A unseen and its edges were removed."""
+        conn = _make_connector()
+        stub_b = _make_existing_record(
+            record_id="rec-b", external_record_id="B", external_record_group_id="my-drive", parent_external_record_id="A",
+        )
+        stub_b.is_placeholder = True
+        stub_b.parent_record_type = RecordType.FILE
+        stub_a = _make_existing_record(record_id="rec-a", external_record_id="A", parent_external_record_id=None)
+        stub_a.is_placeholder = True
+        stub_a.parent_record_type = None
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: stub_a if ext_id == "A" else None
+        )
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=_make_http_error(404))
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1", user_email="u@example.com", drive_data_source=ds, drive_id="my-drive",
+            is_shared_drive=False, seeds=[stub_b],
+        )
+
+        assert sorted(c.kwargs["fileId"] for c in ds.files_get.await_args_list) == ["A", "B"]
+        kept = [i for c in conn.data_entities_processor.note_kept_records.call_args_list for i in c.args[1]]
+        assert kept == ["rec-b", "rec-a"]
+        conn.data_entities_processor.on_new_records.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_unreadable_ancestor_is_kept_as_a_stub(self):
         """Noted kept, so a full sync's unlink leaves its record-group and parent edges; not rewritten, since a stub
         read back by external id is a plain Record that no graph store writes as a file."""

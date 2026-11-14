@@ -1018,15 +1018,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 record.is_placeholder = False
                 backfills.append((record, permissions))
 
-            for stub in frontier:
-                if stub.external_record_id in metadata_by_id or not stub.is_placeholder:
-                    continue
-                # Source fetch failed (inaccessible/deleted). Re-submit the persisted
-                # stub anyway so its structural edges — record group (BELONGS_TO) and
-                # parent (PARENT_CHILD) — which a full sync deletes are still restored.
-                # Keeps it a stub; access fails closed (inherits the record group's perms).
-                stub.is_placeholder = True
-                backfills.append((stub, []))
+            # Source fetch failed (inaccessible/deleted): the stored stub stays as it is, noted kept so a full sync's
+            # unlink leaves its record group and parent edges, and its parent is walked like a backfill's. Not
+            # rewritten: an ancestor read back by external id is a plain Record, which no graph store writes as a file.
+            kept = [stub for stub in frontier if stub.external_record_id not in metadata_by_id and stub.is_placeholder]
+            self.data_entities_processor.note_kept_records(self.connector_id, [stub.id for stub in kept if stub.id])
 
             if backfills:
                 # Creates/updates the ancestors and, via _handle_parent_record, materializes
@@ -1034,7 +1030,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 await self.data_entities_processor.on_new_records(backfills)
 
             next_frontier: List[Record] = []
-            for record, _permissions in backfills:
+            for record in [*(r for r, _ in backfills), *kept]:
                 parent_ext_id = record.parent_external_record_id
                 if not parent_ext_id or not record.parent_record_type:
                     continue  # boundary: drive root
