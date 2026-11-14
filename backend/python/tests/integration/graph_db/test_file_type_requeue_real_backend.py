@@ -74,12 +74,12 @@ class _Seed:
 
     async def record(self, name: str, file_name: str, connector: str, *, connector_name: Connectors = Connectors.GOOGLE_DRIVE,
                      origin: OriginTypes = OriginTypes.CONNECTOR, record_type: RecordType = RecordType.FILE,
-                     **fields: Any) -> str:  # noqa: ANN401
+                     mime_type: str = OCTET, **fields: Any) -> str:  # noqa: ANN401
         key = self.key(name)
         record = FileRecord(
             id=key, org_id=self.org, record_name=file_name, record_type=record_type, external_record_id=f"ext-{key}",
             external_record_group_id="docs", version=0, origin=origin, connector_name=connector_name, connector_id=connector,
-            mime_type=OCTET, is_file=True, extension=file_name.rsplit(".", 1)[-1], path=file_name, size_in_bytes=100,
+            mime_type=mime_type, is_file=True, extension=file_name.rsplit(".", 1)[-1], path=file_name, size_in_bytes=100,
             indexing_status=FTNS, reason="PipesHub can't read this type of file yet.", **fields,
         )
         assert await self.graph.batch_upsert_nodes([record.to_arango_base_record()], RECORDS)
@@ -417,3 +417,19 @@ async def test_a_failed_read_during_the_drain_keeps_the_outbox_and_the_next_star
     assert _mine(after, s) == {
         "drive.reindex": [s.key("docm")], "kb.reindex": [s.key("kb-upload")], "smb.reindex": [s.key("share")],
     }
+
+
+async def test_logs_and_configs_under_their_own_mime_are_queued_and_text_plain_ones_left(seed: _Seed) -> None:
+    s = seed
+    with for_org(s.org, job="test"):
+        keys = {
+            "x-log": await s.record("x-log", "app.log", s.drive, mime_type="text/x-log"),
+            "x-cfg": await s.record("x-cfg", "app.cfg", s.drive, mime_type="text/x-cfg"),
+            "plain-log": await s.record("plain-log", "old.log", s.drive, mime_type="text/plain"),
+        }
+
+    sent = _mine(await _run(s, _Config(_manual(s.manual))), s)
+
+    assert sorted(sent["drive.reindex"]) == sorted([s.key("docm"), keys["x-log"], keys["x-cfg"]])
+    assert (await s.doc(keys["x-log"]))["indexingStatus"] == ProgressStatus.QUEUED.value
+    assert (await s.doc(keys["plain-log"]))["indexingStatus"] == FTNS
