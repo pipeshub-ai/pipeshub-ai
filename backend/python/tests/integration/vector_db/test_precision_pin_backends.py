@@ -2,7 +2,7 @@
 
 Run: pytest tests/integration/vector_db/test_precision_pin_backends.py -m integration -k qdrant (or opensearch, redis)
 The backend is a parameter, so a job that runs one backend deselects the others; a backend that cannot be reached
-makes the test fail in the jobs that run it.
+makes the test fail when the run selects integration tests (-m integration), and skips otherwise.
 """
 import pytest
 
