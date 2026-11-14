@@ -8519,20 +8519,26 @@ components:
                 Items in the whole result. For a search by a connected app
                 limited to spaces, folders or files, the matches found so far: it can
                 grow from page to page and is final once `hasNext` is false.
-                On a store that stops counting at a cap (10,000), a lower bound
-                when `totalCapped` is `true`.
+                Otherwise exact unless `totalCapped` is `true`. Never counts an item the
+                caller cannot read.
             totalCapped:
               type: boolean
               description: |
-                `true` when `totalItems` stopped at the store's cap and the listing
-                holds more. `totalPages` is still `ceil(totalItems / limit)`, so a client
-                that pages by number reaches the same items as before; `hasNext` and
-                `nextCursor` say whether another page exists. Absent on older servers,
-                which count exactly: treat a missing value as `false`.
+                `true` when `totalItems` may not be exact. Only the PostgreSQL graph store
+                sets it. Usually `totalItems` is then lower than the real number: the count
+                stops at 10,000, or covers only part of a very large or slow-to-check
+                connector, folder or group. In the sidebar (`onlyContainers`) it can rarely
+                include an item that a finished check would leave out. Page with `hasNext`
+                and `nextCursor`; don't use `totalItems` or `totalPages` to detect the end.
+                Totals across connectors are added, so they can exceed 10,000 while capped.
+                Absent on older servers, which count exactly: treat a missing value as
+                `false`.
             totalPages:
               type: integer
               nullable: true
-              description: Number of pages. `null` when the request pages by `cursor`.
+              description: |
+                `ceil(totalItems / limit)` (0 when `totalItems` is 0). `null` when the request
+                pages by `cursor`.
             hasNext:
               type: boolean
             hasPrev:
@@ -8715,10 +8721,10 @@ components:
                     type: integer
             total:
               type: integer
-              description: Total number of nodes; a lower bound when `capped` is `true`.
+              description: Total number of nodes; may not be exact when `capped` is `true`.
             capped:
               type: boolean
-              description: '`true` when `total` and the counts stopped at the store''s cap. Treat a missing value as `false`.'
+              description: '`true` when `total` and the counts may not be exact, as for `pagination.totalCapped`. Treat a missing value as `false`.'
         permissions:
           type: object
           nullable: true
@@ -24810,8 +24816,16 @@ components:
               description: What was missed, in plain words.
     EntityType:
       type: string
-      description: Kind of knowledge-graph entity.
+      description: >-
+        Kind of knowledge-graph entity a request can name. `person` and `organization`, which
+        `POST /search/entities` also returns, are not accepted in a request (400).
       enum: [department, category, subcategory, topic, language, record_group, record, named_entity]
+    EntitySearchResultType:
+      type: string
+      description: >-
+        Kind of entity a search result is: one of the `EntityType` values, or `person` (a member of the
+        organisation named by records) or `organization` (an external organisation, such as a CRM account).
+      enum: [department, category, subcategory, topic, language, record_group, record, named_entity, person, organization]
     EntityRecordDate:
       type: object
       description: >-
@@ -24845,13 +24859,18 @@ components:
         entityTypes:
           type: array
           maxItems: 10
-          description: Only these kinds. Leave out for all.
+          description: >-
+            Only these kinds. Omitted or empty means all, which is the only way to get `person`
+            and `organization` results: neither is accepted here (400).
           items:
             $ref: '#/components/schemas/EntityType'
         namedEntityKinds:
           type: array
           maxItems: 10
-          description: For `named_entity`, only these kinds, such as `person` or `organization`.
+          description: >-
+            For `named_entity`, only these kinds, such as `person` or `organization`. Needs
+            named-entity extraction: with it off, a request that asks for nothing else is
+            refused (400), and otherwise these are ignored.
           items:
             type: string
         limit:
@@ -24878,12 +24897,17 @@ components:
               entityId:
                 type: string
               entityType:
-                $ref: '#/components/schemas/EntityType'
+                $ref: '#/components/schemas/EntitySearchResultType'
               name:
                 type: string
-              kind:
+              indexingStatus:
                 type: string
-                description: Named-entity kind, for `named_entity` results.
+                description: >-
+                  On a `record` result whose content is not indexed yet: its indexing status,
+                  such as `QUEUED` or `FAILED`. Absent once the record is searchable.
+              note:
+                type: string
+                description: On a `record` result that carries `indexingStatus`, what that means for reading it.
               apps:
                 type: array
                 description: Connectors whose records carry the entity.
@@ -24907,19 +24931,6 @@ components:
                           type: string
               moreRecords:
                 type: boolean
-        scopeNote:
-          type: string
-          description: Set when the caller's access covers only part of some connectors' records, so matches can be missing.
-        ignoredEntityTypes:
-          type: array
-          description: Requested `entityTypes` this search does not cover; they were left out.
-          items:
-            type: string
-        kindNotes:
-          type: array
-          description: Why some requested `namedEntityKinds` were not searched.
-          items:
-            type: string
     EntityNeighborsRequest:
       type: object
       description: Request body for `POST /search/entities/neighbors`.
@@ -24933,7 +24944,12 @@ components:
           maxLength: 256
           description: "`entityId` from `POST /search/entities`."
         entityType:
-          $ref: '#/components/schemas/EntityType'
+          type: string
+          allOf:
+            - $ref: '#/components/schemas/EntityType'
+          description: >-
+            `entityType` from `POST /search/entities`. A `person` or `organization` result cannot be
+            expanded here (400), nor a `named_entity` while named-entity extraction is off.
         recordTypes:
           type: array
           maxItems: 20
@@ -75332,15 +75348,19 @@ paths:
       description: |
         Find entities in the organisation's knowledge graph by name or meaning:
         departments, categories, subcategories, topics, languages, record
-        groups (a drive, a space, a project), record titles and, where
-        named-entity extraction is on, people, organisations and other named
-        entities.
+        groups (a drive, a space, a project), record titles, people
+        (`person`: members of the organisation named by records) and
+        organisations (`organization`, such as CRM accounts) and, where
+        named-entity extraction is on, other named entities (`named_entity`).
+        People and organisations are returned only when `entityTypes` is
+        omitted or empty.
 
         Only entities connected to records the caller can read are returned,
         decided by the same access check as the assistant's entity tools. Each
         result carries an `entityId` and `entityType`; pass both to
         `POST /search/entities/neighbors` to see the records and related
-        entities around it.
+        entities around it (not for `person` or `organization` results, which
+        that call refuses).
       operationId: searchEntities
       x-pipeshub-sdk: true
       security:
@@ -75367,7 +75387,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/EntitySearchResponse'
         '400':
-          description: The request is invalid, for example an unsupported entity type or named-entity lookup turned off.
+          description: The request is invalid, for example an `entityTypes` value outside `EntityType` (such as `person` or `organization`), or only named entities asked for while named-entity extraction is off.
           content:
             application/json:
               schema:
@@ -75425,7 +75445,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/EntityNeighborsResponse'
         '400':
-          description: The request is invalid, for example an unsupported `entityType`.
+          description: The request is invalid, for example an `entityType` outside `EntityType` (such as `person` or `organization`), or `named_entity` while named-entity extraction is off.
           content:
             application/json:
               schema:
