@@ -37,13 +37,7 @@ def test_a_name_that_is_a_prefix_of_another_is_not_taken_for_it() -> None:
     assert Neo4jProvider._kh_lists_read("RETURN $granteeIds", ("grant", "granteeIds")) == ("granteeIds",)
 
 
-_CROSS_CA = (
-    " OR (ca.connectorId IN $kh_x.probe AND (ca:Record OR ca:RecordGroup) AND NOT coalesce(ca.isDeleted, false)"
-    " AND (ca.id IN $kh_x.held OR EXISTS { (ca)<-[kh_xp_ca:PERMISSION]-(kh_xg_ca)"
-    " WHERE (kh_xg_ca:User OR kh_xg_ca:Group OR kh_xg_ca:Role OR kh_xg_ca:Teams"
-    " OR (kh_xg_ca:Organization AND kh_xp_ca.type IN ['ORG', 'ORGANIZATION']))"
-    " AND (kh_xg_ca.id IN $kh_x.common OR kh_xg_ca.id IN coalesce($kh_x.scoped[ca.connectorId], [])) }))"
-)
+_CROSS_CA = " OR ca.id IN $kh_cross"
 
 
 def test_a_grant_test_is_read_from_the_node() -> None:
@@ -64,6 +58,22 @@ def test_a_grant_on_a_node_of_another_connector_is_tested_on_that_node_once() ->
     once = Neo4jProvider._kh_grants_cross("MATCH (ca) WHERE ca.id IN $grantedIds RETURN ca")
     assert once == "MATCH (ca) WHERE (ca.id IN $grantedIds" + _CROSS_CA + ") RETURN ca"
     assert Neo4jProvider._kh_grants_cross(once) == once
+
+
+def test_the_cross_connector_grant_is_one_list_membership_per_test_never_a_pattern() -> None:
+    """The cross-connector half of a grant test is a list membership. A subquery or a pattern per test (one per hop of every walk a
+    statement holds) made the browse statements too costly for the planner. Pinned on the real browse rule, in both forms: each
+    test adds one membership and no pattern, so the probe form holds one PERMISSION pattern per test, its own."""
+    provider = Neo4jProvider.__new__(Neo4jProvider)
+    rule = provider._kh_v3_child_rule("c", "p", from_app="FROM", opens="OPENS", state=True, grant_once=True)
+    tests = rule.count("$grantedIds")
+    assert tests > 3
+    listed = Neo4jProvider._kh_grants_cross(rule)
+    assert listed.count("$kh_cross") == tests
+    assert listed.count("EXISTS") == rule.count("EXISTS") and ":PERMISSION]" not in listed
+    assert len(listed) - len(rule) <= tests * len("( OR c.id IN $kh_cross)")
+    probed = Neo4jProvider._kh_grants_by_probe(rule)
+    assert probed.count(":PERMISSION]") == tests and probed.count("$kh_cross") == tests
 
 
 def test_each_grant_test_takes_its_own_grantee_variable() -> None:
@@ -110,9 +120,9 @@ def test_the_grantees_of_the_probe_are_the_grantees_of_the_grant_list() -> None:
     import inspect
 
     grants = Neo4jProvider._kh_v3_connector_grants_cypher()
-    grantees = inspect.getsource(Neo4jProvider._kh_v3_connector_grantees)
-    mine = "(kh_b.connectorId IS NULL OR kh_b.connectorId = $connector_id)"
-    assert mine in grants and mine in grantees
+    grantees = inspect.getsource(Neo4jProvider._kh_v3_connector_grantees).replace("{{", "{").replace("}}", "}")
+    # Every principal the user holds counts, whatever connector it came from, as in the batch check and get_knowledge_hub_access_v3.
+    assert "kh_b.connectorId IS NULL" not in grants and "kh_b.connectorId IS NULL" not in grantees
     for fragment in (
         "(u)-[:PERMISSION {{type: 'USER'}}]->(kh_b:Group|Role|Teams)",
         "(u)-[:BELONGS_TO]->(kh_org:Organization)",
@@ -120,7 +130,7 @@ def test_the_grantees_of_the_probe_are_the_grantees_of_the_grant_list() -> None:
         "WHERE kh_link.connectorId = $connector_id",
         "(kh_src)-[kh_e:PERMISSION]->(kh_b)",
     ):
-        assert fragment in grantees, fragment
+        assert fragment.replace("{{", "{").replace("}}", "}") in grantees, fragment
         assert fragment.replace("{{", "{").replace("}}", "}") in grants, fragment
     # The source account's organization grants nothing in either.
     assert "(kh_src)-[:BELONGS_TO]" not in grants and "(kh_src)-[:BELONGS_TO]" not in grantees
