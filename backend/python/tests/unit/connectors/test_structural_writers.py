@@ -1143,6 +1143,51 @@ async def test_a_long_block_renews_its_leases_before_each_unclassified_write(mon
     assert apps.docs["c1"]["scopeProjectionClosed"] == 1 and apps.docs["c1"]["scopeProjectionOpenWrites"] is None
 
 
+async def test_a_renewal_that_gives_up_twice_is_tried_again_at_the_next_write_so_the_lease_never_runs_out(monkeypatch) -> None:
+    """A renewal that cannot be written (the document is too contended) returns the old token and leaves the old deadline. If the timer moved anyway,
+    two give-ups in a row would let the writes that follow skip renewal past the deadline and its grace, and the sweep would close a live block."""
+    from app.connectors.core.base.data_store import graph_data_store as gds
+    from app.core import org_context
+    from app.services.permissions import structure_generation as sg
+
+    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
+    monkeypatch.setattr(sg, "_backoff", AsyncMock())
+    apps = _AppDocs(provider, ["c1"])
+    now = {"store": 1_000_000.0, "host": 0.0, "contended": False}
+    provider.store_time = AsyncMock(side_effect=lambda: now["store"])
+    monkeypatch.setattr(gds, "monotonic", lambda: now["host"])
+    swap = provider.update_node_fields_if_match.side_effect
+
+    async def contended(key, collection, updates, *args, **kwargs) -> bool:
+        if now["contended"] and set(updates) == {"scopeProjectionOpenWrites"}:      # every renewal loses its compare-and-set
+            return False
+        return await swap(key, collection, updates, *args, **kwargs)
+    provider.update_node_fields_if_match = AsyncMock(side_effect=contended)
+
+    def later(seconds: float) -> None:
+        now["store"] += seconds
+        now["host"] += seconds
+
+    def deadline() -> int:
+        [lease] = sg.parse_open_writes(apps.docs["c1"]["scopeProjectionOpenWrites"]).values()
+        return lease["u"]
+
+    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")):
+        async with store_provider.transaction() as tx:
+            await _Scratch.via_local_alias(tx, "r1")
+            first = deadline()
+            now["contended"] = True
+            for _ in range(2):                                                        # two give-ups in a row
+                later(sg.OPEN_WRITE_SECONDS / 2 + 1)
+                await _Scratch.via_local_alias(tx, "r1")
+                assert deadline() == first
+            now["contended"] = False
+            later(10)                                                                  # well inside half a lease since the last give-up
+            await _Scratch.via_local_alias(tx, "r1")
+            assert deadline() == int(now["store"]) + sg.OPEN_WRITE_SECONDS             # renewed at once, not half a lease later
+            assert await sg.recover_expired_writes(provider, "c1") == 0
+
+
 async def test_a_connector_is_not_closed_when_its_mark_did_not_land(monkeypatch) -> None:
     from app.core import org_context
 

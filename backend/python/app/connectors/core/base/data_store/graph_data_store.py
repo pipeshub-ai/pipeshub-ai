@@ -47,11 +47,14 @@ from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import (
     OPEN_WRITE_SECONDS,
+    OPEN_WRITES_KEY,
     UNSAFE_KEY,
+    OpenWritesUnreadable,
     ScopeGenerationConflict,
     close_write,
     new_unsafe_mark,
     open_write,
+    parse_open_writes,
     renew_write,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -326,6 +329,17 @@ class StructuralMarks(set):
         return None if connector in self.whole or not self.roots.get(connector) else set(self.roots[connector])
 
 
+async def _lease_until(provider: IGraphDBProvider, connector_id: str, token: str | None) -> int | None:
+    """The deadline the connector's lease ``token`` holds now; None when there is none or the list does not read."""
+    if token is None:
+        return None
+    app = await provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
+    try:
+        return parse_open_writes(app.get(OPEN_WRITES_KEY) or None).get(token, {}).get("u")
+    except OpenWritesUnreadable:
+        return None
+
+
 class GraphTransactionStore(TransactionStore):
     """
     Graph database transaction-aware data store using IGraphDBProvider.
@@ -378,9 +392,16 @@ class GraphTransactionStore(TransactionStore):
         if self._org_marked_for_unclassified:
             # a long block renews its leases before a write, so the sweep never reads it as dead and closes it while it still writes
             if monotonic() - self._renewed_at > OPEN_WRITE_SECONDS / 2:
+                renewed = True
                 for connector_id in sorted(self.opened):
-                    self.opened[connector_id] = await renew_write(provider, connector_id, self.opened[connector_id])
-                self._renewed_at = monotonic()
+                    old = self.opened[connector_id]
+                    before = await _lease_until(provider, connector_id, old)
+                    new = self.opened[connector_id] = await renew_write(provider, connector_id, old)
+                    # A renewal that gave up returns the old token and leaves the old deadline: the timer stays, so the next write tries again
+                    # (moving it would let two give-ups in a row skip renewal past the deadline and its grace).
+                    renewed &= new is None or new != old or (await _lease_until(provider, connector_id, new) or 0) > (before or 0)
+                if renewed:
+                    self._renewed_at = monotonic()
             return
         org_id = org_context.current().org_id
         apps = await provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
