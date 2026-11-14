@@ -285,18 +285,27 @@ export const createPlaceholderDocument = async (
  */
 export const uploadFileToSignedUrl = async (
   buffer: Buffer,
-  _mimetype: string,
+  mimetype: string,
   redirectUrl: string,
   documentId: string,
   documentName: string,
 ): Promise<void> => {
   try {
+    const headers: Record<string, string> = {
+      'Content-Length': buffer.length.toString(),
+    };
+    // Azure Put Blob rejects a request without the blob type. S3's direct-upload
+    // URL is signed without ContentType, so only Azure gets that header too.
+    const query = new URL(redirectUrl).searchParams;
+    if (query.has('sv') && query.has('sig')) {
+      headers['x-ms-blob-type'] = 'BlockBlob';
+      headers['Content-Type'] =
+        mimetype !== '' ? mimetype : 'application/octet-stream';
+    }
     const response = await fetch(redirectUrl, {
       method: 'PUT',
       body: new Uint8Array(buffer),
-      headers: {
-        'Content-Length': buffer.length.toString(),
-      },
+      headers,
     });
 
     if (response.ok) {
