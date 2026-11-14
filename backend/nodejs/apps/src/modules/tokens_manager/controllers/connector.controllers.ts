@@ -1762,7 +1762,9 @@ export const proxyNotionPersonalToken =
         `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(req.params.connectorId as string)}/notion/${path}`,
         method,
         buildProxyHeaders(req),
-        method === HttpMethod.PUT ? { token: req.body.token } : undefined,
+        method === HttpMethod.PUT
+          ? { token: (req.body as { token: string }).token }
+          : undefined,
       );
       handleConnectorResponse(
         response,

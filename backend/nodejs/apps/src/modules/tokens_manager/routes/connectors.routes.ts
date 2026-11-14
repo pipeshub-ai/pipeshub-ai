@@ -175,7 +175,10 @@ const linkNotionPersonalTokenSchema = connectorIdParamSchema.extend({
       .string()
       .min(1)
       .max(512)
-      .regex(/^\S+$/, 'Paste the personal access token as it is, without spaces.'),
+      .regex(
+        /^\S+$/,
+        'Paste the personal access token as it is, without spaces.',
+      ),
   }),
 });
 
