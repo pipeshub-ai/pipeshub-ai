@@ -425,3 +425,16 @@ async def test_existing_code_or_a_backfill_under_way_is_left_to_the_backfill() -
     done = Config({"done": True})
     graph = AnyCode(["r1"])
     assert await backfill.mark_done_without_code(graph, done, _LOG, ["org-1"]) is True and graph.asked == []
+
+
+async def test_a_precision_flip_stops_the_pass_without_counting_failures_or_setting_the_flag() -> None:
+    from app.services.messaging.precision_flip import PrecisionFlip
+
+    graph = Graph({"a": (WITH_CLASSES, "COMPLETED"), "b": (WITH_CLASSES, "COMPLETED")})
+    config, blobs = Config(), Blobs({"vr-a": WITH_CLASSES, "vr-b": WITH_CLASSES})
+    vs = _store(have_units=set())
+    vs.index_class_units = AsyncMock(side_effect=PrecisionFlip("the index holds int8-w"))
+    counts = await _run(graph, vs, blobs, config)
+    assert counts.failed == 0
+    assert vs.index_class_units.await_count == 1  # the pass stopped at the first flip, it did not go on to record b
+    assert FLAG not in config.values  # the next pass starts again from the last finished page

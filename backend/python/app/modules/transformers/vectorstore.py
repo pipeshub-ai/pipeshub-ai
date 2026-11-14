@@ -64,6 +64,7 @@ from app.modules.indexing.embed_resume import (
     EMBED_UNCOUNTED,
     EMBED_VRID,
     POINT_KEY,
+    POINT_PRECISION,
     POINT_REV,
     EmbedAttempt,
     current_attempt,
@@ -87,12 +88,14 @@ from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.messaging.error_classifier import format_exception_chain
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
+from app.services.vector_db.collection_pin import IMAGE_TAG, CollectionPinStore
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD
-from app.services.vector_db.filters import org_for_filter
+from app.services.vector_db.filters import OrgRequired, org_for_filter
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     STALE_SCOPE,
@@ -107,6 +110,7 @@ from app.services.vector_db.membership import (
     vector_point_payload,
 )
 from app.services.vector_db.models import SparseVector, VectorChunkPayload, VectorPoint
+from app.services.vector_db.precision_guard import PrecisionGuard
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.services.vector_db.strategy import RecordContext
 from app.utils.aimodels import (
@@ -127,6 +131,7 @@ from app.utils.image_utils import normalize_image_to_base64
 from app.utils.indexing_timing import stage
 from app.utils.llm import load_ai_models
 from app.utils.openai_hosts import is_openai_api_url
+from app.utils.precision_witness import get_precision_witness
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 CODE_RESIDUE_BLOCK_ID_SUFFIX = "_code_residue"
@@ -1137,6 +1142,18 @@ def _unknown_clock_seconds() -> float:
     return messaging_env.embed_record_ceiling_seconds
 
 
+_WITNESS_MAX_AGE_SECONDS = 5.0
+INT8_INTENT = "int8-w"
+
+
+def _bound_org() -> str | None:
+    """The org bound for this write, or None when none is (the guard keeps it only for a store with one space per org)."""
+    try:
+        return org_for_filter()
+    except OrgRequired:
+        return None
+
+
 class VectorStore(Transformer):
     # The embedding model's input window, once known; None until then and under policy A.
     model_window: _Window | None = None
@@ -1401,6 +1418,7 @@ class VectorStore(Transformer):
                 reset_membership_context(tokens)
             # The membership and the stamp were read before the embedding: what changed meanwhile is applied now, as for the other points
             await self._resync_membership_after_write(virtual_record_id, record_id)
+            await self._check_for_leaks(collection_name, org_id, virtual_record_id)
         self.logger.debug("✅ Indexed record summary for record %s", record_id)
 
     async def _collection_with_model(self, org_id: str, record: Optional["Record"]) -> str:
@@ -1456,6 +1474,7 @@ class VectorStore(Transformer):
             reset_membership_context(tokens)
         # What changed in the membership while the units were embedded is applied now, as for the other points.
         await self._resync_membership_after_write(virtual_record_id, record_id)
+        await self._check_for_leaks(collection_name, org_id, virtual_record_id)
         return sum(d.metadata["blockId"] not in stale for d in documents)
 
     async def _drop_superseded_units(
@@ -1807,6 +1826,9 @@ class VectorStore(Transformer):
 
         await self._ensure_sparse_embeddings()
 
+        read_precision = getattr(dense_embeddings, "read_precision", None)
+        if inspect.iscoroutinefunction(read_precision):
+            await read_precision()
         self.model_window = await _model_window(dense_embeddings)
         self.dense_embeddings = dense_embeddings
         self.embedding_provider = provider
@@ -1896,12 +1918,48 @@ class VectorStore(Transformer):
             self.logger,
         )
 
+    def _precision_guard(self) -> PrecisionGuard:
+        guard = getattr(self, "_guard", None)
+        if guard is None:
+            guard = PrecisionGuard(CollectionPinStore(self.config_service, self.logger), self.vector_db_service, self.logger)
+            self._guard = guard
+        return guard
+
+    async def require_matching_precision_before_delete(
+        self, collection_name: str | None, org_id: str | None, *, build_model: bool = False,
+    ) -> None:
+        """Refuse, before a delete that is followed by a write, when the server no longer serves the index's precision.
+
+        A delete in front of a write that cannot succeed would take the record's old vectors out for nothing.
+        The witness is the freshest one this process has (a probe embedding when it is older than a few
+        seconds); a restart inside that window is caught by the check in front of the batch itself.
+        """
+        embedder = self.dense_embeddings
+        if embedder is None and build_model:
+            await self.get_embedding_model_instance()
+            embedder = self.dense_embeddings
+        if not isinstance(embedder, EmbeddingServerEmbeddings):
+            return
+
+        async def probe() -> tuple[str, bool]:
+            _, precision, fallback = await embedder.aembed_documents_witnessed(["."], single_attempt=True)
+            return precision, fallback
+
+        witness = await get_precision_witness().fresh(embedder.model, _WITNESS_MAX_AGE_SECONDS, probe)
+        org = org_for_filter(org_id, match_bound=True)
+        names = [collection_name] if collection_name else [m.name for m in await self.collection_registry.list_managed_collections()]
+        for name in names:
+            await self._precision_guard().verify_batch(
+                name, org, witness.precision, fallback=witness.fallback, intent=INT8_INTENT, claim=False,
+            )
+
     async def delete_blocks_by_ids(
         self, block_ids: set, virtual_record_id: str, collection_name: str, *, org_id: str | None = None,
     ) -> None:
         """Delete embeddings for specific block IDs scoped to a virtual record."""
         if not block_ids:
             return
+        await self.require_matching_precision_before_delete(collection_name, org_id)
         org_id = org_for_filter(org_id, match_bound=True)
         try:
             filter_dict = await self.vector_db_service.filter_collection(
@@ -2007,7 +2065,7 @@ class VectorStore(Transformer):
                     ),
                     dense_vector=result.embedding,
                     payload=vector_point_payload(
-                        chunk.get("metadata", {}),
+                        {**chunk.get("metadata", {}), POINT_PRECISION: IMAGE_TAG},
                         chunk.get("description", ""),
                     ),
                 )
@@ -2105,7 +2163,7 @@ class VectorStore(Transformer):
         return await embedder.embed_documents(texts)
 
     async def _embed_documents_with_retry(
-        self, texts: List[str], record_id: str
+        self, texts: list[str], record_id: str, witness_out: list[tuple[str, bool]] | None = None,
     ) -> List[List[float]]:
         """Dense-embed one batch, retrying transient provider failures.
 
@@ -2145,6 +2203,16 @@ class VectorStore(Transformer):
                 ):
                     # Gated: the client must not sleep through its own backoff while holding the permit;
                     # this loop retries, and sleeps below with the permit released.
+                    if isinstance(embedder, EmbeddingServerEmbeddings):
+                        # The bundled server names the weights on every response; that is the precision
+                        # these vectors have, whatever this client read earlier.
+                        vectors, precision, fallback = await asyncio.wait_for(
+                            embedder.aembed_documents_witnessed(texts, single_attempt=gate is not None),
+                            timeout=attempt_timeout,
+                        )
+                        if witness_out is not None:
+                            witness_out.append((precision, fallback))
+                        return vectors
                     return await asyncio.wait_for(
                         embedder.aembed_documents(texts, single_attempt=True)
                         if gate is not None
@@ -2226,7 +2294,18 @@ class VectorStore(Transformer):
             "embed.dense",
             detail=f"batch of {len(texts)} texts / {sum(len(t) for t in texts)} chars",
         ):
-            dense_embeddings = await self._embed_documents_with_retry(texts, record_id)
+            witnessed: list[tuple[str, bool]] = []
+            dense_embeddings = await self._embed_documents_with_retry(texts, record_id, witnessed)
+
+        # The precision of this batch is compared with the index's, right before anything is written.
+        batch_precision: str | None = None
+        if witnessed:
+            batch_precision, batch_fallback = witnessed[-1]
+            self._last_precision = batch_precision
+            await self._precision_guard().verify_batch(
+                collection_name, _bound_org(), batch_precision,
+                fallback=batch_fallback, intent=INT8_INTENT,
+            )
 
         # Sparse embeddings (provider-dependent). Code adds its subtokens here only.
         with stage("embed.sparse", detail=f"batch of {len(texts)} texts"):
@@ -2239,13 +2318,15 @@ class VectorStore(Transformer):
         # Added after the id is derived from the metadata, so it never changes an id.
         attempt = current_attempt()
         stamp = (attempt.stamp if attempt is not None else None) or {}
+        # The weights that made this batch, as its own response said: every point carries it, fp32 too.
+        precision_stamp = {POINT_PRECISION: batch_precision} if batch_precision else {}
         points: List[VectorPoint] = [
             VectorPoint(
                 id=deterministic_point_id(doc.metadata, doc.page_content),
                 dense_vector=dense,
                 sparse_vector=sparse,
                 payload=vector_point_payload(
-                    {**{k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA}, **stamp},
+                    {**{k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA}, **stamp, **precision_stamp},
                     doc.page_content,
                 ),
             )
@@ -2306,7 +2387,7 @@ class VectorStore(Transformer):
             for idx, (start, batch) in enumerate(batches):
                 try:
                     await process_batch(start, batch)
-                except NonRetryableError:
+                except (NonRetryableError, PrecisionFlip):
                     raise
                 except Exception as e:
                     raise VectorStoreError(
@@ -2324,7 +2405,7 @@ class VectorStore(Transformer):
                 *[limited(s, b) for s, b in batches], return_exceptions=True
             )
             for idx, result in enumerate(results):
-                if isinstance(result, NonRetryableError):
+                if isinstance(result, (NonRetryableError, PrecisionFlip)):
                     raise result
                 if isinstance(result, Exception):
                     raise VectorStoreError(
@@ -2347,6 +2428,8 @@ class VectorStore(Transformer):
             _point_policy(),
             str(_rows_per_point()),
             str(_max_row_points_per_table()),
+            # The weights of the last batch; absent for every provider that does not name them, so keys do not change there.
+            *((self._last_precision,) if getattr(self, "_last_precision", None) else ()),
         )
         return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:16]
 
@@ -2411,6 +2494,7 @@ class VectorStore(Transformer):
         progress = current_progress()
 
         if not resuming:
+            await self.require_matching_precision_before_delete(collection_name, org_id)
             await self._write_embed_marker(record_id, {
                 EMBED_VRID: virtual_record_id,
                 EMBED_REV: attempt.rev,
@@ -2445,6 +2529,7 @@ class VectorStore(Transformer):
         if progress is not None:
             progress.finish()
 
+        await self._check_for_leaks(collection_name, org_id, virtual_record_id)
         if not resuming:
             return
         await self._fence_and_verify(
@@ -2536,6 +2621,7 @@ class VectorStore(Transformer):
             return
 
         # Delete existing embeddings first (full replace, non-reconciliation path)
+        await self.require_matching_precision_before_delete(collection_name, org_id)
         with stage("vector.delete"):
             await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
 
@@ -2561,7 +2647,28 @@ class VectorStore(Transformer):
                     details={"error": str(e)},
                 ) from e
 
+        await self._check_for_leaks(collection_name, org_id, virtual_record_id)
         self.logger.info(f"✅ Embeddings created and stored for record '{record_id}'")
+
+    async def _check_for_leaks(self, collection_name: str, org_id: str | None, virtual_record_id: str) -> None:
+        """End of a record: no point of the record may carry the other precision's tag.
+
+        A claim race or a pin released under a writer can leave one. Only those points are removed (the
+        record's other points may be unchanged blocks of a reconciled record), and the message goes back.
+        """
+        if not isinstance(self.dense_embeddings, EmbeddingServerEmbeddings):
+            return
+        guard = self._precision_guard()
+        org = org_for_filter(org_id, match_bound=True)
+        standing = await guard.standing(collection_name, org, fresh=True)
+        if standing.precision is None:
+            return
+        if await guard.leaked(collection_name, org, virtual_record_id, standing.precision):
+            await guard.delete_leaked(collection_name, org, virtual_record_id, standing.precision)
+            raise PrecisionFlip(
+                f"points of the other precision were found in '{collection_name}' for this record and removed; "
+                f"the index holds {standing.precision}",
+            )
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -3000,6 +3107,7 @@ class VectorStore(Transformer):
                         image_chunks, image_base64s, record_id
                     )
                     await self._store_image_points(points, collection_name)
+                await self._check_for_leaks(collection_name, org_id, virtual_record_id)
             else:
                 await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name, org_id=org_id)
 

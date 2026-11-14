@@ -93,6 +93,7 @@ from app.services.messaging.config import (
     messaging_env,
 )
 from app.services.messaging.error_classifier import is_expected_outcome
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider, UnsupportedFormatError
 from app.services.permissions.mode import scope_fields_enabled
@@ -1219,25 +1220,6 @@ class EventProcessor:
                     doc,
                 )
             await self._copy_twin_edges(match.record, doc)
-        if match.same_collection and self.sink_orchestrator is not None:
-            # The copy above only touched the graph — this record still
-            # has no `record`/`record_group` point, and the taxonomy
-            # points it now shares carry only the other record's
-            # connectorId/recordGroupId. Different-collection duplicates
-            # skip this: they continue to full indexing and get entity
-            # sync from SinkOrchestrator.index()/enrich() there instead.
-            # sync_entities_for_duplicate is already best-effort
-            # internally; caught again here so a mock/mis-wired sink in
-            # a caller can never turn dedup's own bookkeeping into a
-            # failed event.
-            try:
-                await self.sink_orchestrator.sync_entities_for_duplicate(doc)
-            except Exception as exc:
-                self.logger.warning(
-                    "Entity vector sync failed for duplicate %s (non-fatal): %s",
-                    _record_key(doc),
-                    exc,
-                )
         self.logger.debug(
             "✅ Duplicate record %s resolved (same_collection=%s)",
             _record_key(match.record),
@@ -1324,6 +1306,10 @@ class EventProcessor:
                 # have written some of the points.
                 sync_attempted = True
                 await self.sync_vector_membership(vrid)
+            # Before the status: the copy has no `record`/`record_group` point yet, and the taxonomy points it now
+            # shares carry only the twin's connectorId/recordGroupId. The handler acknowledges a redelivered event
+            # for a COMPLETED record, so a flip handed back after the status was written would never run this again.
+            await self._sync_entities_for_attached_copy(doc)
             self._require_persisted(
                 await self.update_record_fields(
                     doc,
@@ -1360,6 +1346,26 @@ class EventProcessor:
                 target_key, prior_identity, vrid if sync_attempted else None
             )
             raise
+
+    async def _sync_entities_for_attached_copy(self, doc: dict[str, Any]) -> None:
+        """Project the copy's taxonomy and its own record points into the entity index.
+
+        ``sync_entities_for_duplicate`` is already best-effort internally; caught again here so a mock/mis-wired sink
+        can never turn dedup's own bookkeeping into a failed event. A flip of the weight precision is the exception:
+        it goes up, with the record still not COMPLETED, so its redelivery attaches and syncs again.
+        """
+        if self.sink_orchestrator is None:
+            return
+        try:
+            await self.sink_orchestrator.sync_entities_for_duplicate(doc)
+        except PrecisionFlip:
+            raise
+        except Exception as exc:
+            self.logger.warning(
+                "Entity vector sync failed for duplicate %s (non-fatal): %s",
+                _record_key(doc),
+                exc,
+            )
 
     async def _restore_identity_after_failed_attach(
         self,

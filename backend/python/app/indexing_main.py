@@ -104,6 +104,7 @@ from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.lanes.assignment import lane_assignments_in_use
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.precision_runtime import start_precision_check
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
 from app.services.redis.connection_provider_factory import uses_pg_state
@@ -2318,6 +2319,10 @@ async def start_kafka_consumers(
             app_container, producer=retry_producer
         )
         connector_off_filter = await app_container.connector_off_filter()
+        # Hands back, as they are read, the events that would write vectors of another precision than the
+        # indexes hold; its verdict is recomputed in the background.
+        precision_filter, precision_task = await start_precision_check(app_container, logger)
+        app_container.precision_task = precision_task
         # Kept on the container so shutdown can release its Redis client.
         app_container.record_event_handler = record_event_handler
 
@@ -2338,6 +2343,7 @@ async def start_kafka_consumers(
             backpressure_coordinator=get_default_backpressure_coordinator(),
             disposition_sink=record_event_handler,
             connector_off_filter=connector_off_filter,
+            precision_filter=precision_filter,
             worker=worker,
         )
         consumers.append(("record", record_kafka_consumer, retry_producer))
@@ -2376,6 +2382,7 @@ async def start_kafka_consumers(
                 backpressure_coordinator=get_default_backpressure_coordinator(),
                 disposition_sink=record_event_handler,
                 connector_off_filter=connector_off_filter,
+                precision_filter=precision_filter,
                 priority_lane=PriorityLane(
                     heavy_limit=messaging_env.priority_lane_heavy_limit,
                     light_limit=messaging_env.priority_lane_light_limit,
@@ -2546,6 +2553,10 @@ async def stop_kafka_consumers(container: IndexingAppContainer, *, close_worker_
     # after the clients bound to it.
     if close_worker_loop:
         await _close_worker_loop(container)
+
+    precision_task = getattr(container, "precision_task", None)
+    if precision_task is not None:
+        precision_task.cancel()
 
     handler = getattr(container, "record_event_handler", None)
     aclose = getattr(handler, "aclose", None)

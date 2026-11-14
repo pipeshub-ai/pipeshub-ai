@@ -119,6 +119,9 @@ class FakeServer(EmbeddingServerEmbeddings):
             finally:
                 self.oldest_started = None
 
+    async def aembed_documents_witnessed(self, texts: list[str], **kwargs: Any) -> tuple[list[list[float]], str, bool]:
+        return await self.aembed_documents(texts, **kwargs), "fp32", False
+
     async def aembed_documents(self, texts: list[str], **_kwargs: Any) -> list[list[float]]:
         # The real server cannot cancel an encode that is running: the slot is held until it ends,
         # whatever the client does.
@@ -187,6 +190,7 @@ class TestWhatIsGated:
             openai_cls.return_value = inner
             client = Client(max_retries=3)
         client.bulk_gate = lambda: gate  # type: ignore[method-assign]
+        client.announces_precision = AsyncMock(return_value=False)  # an older server: fp32, no header to read
         # asyncio.sleep is one object for both loops, so tell them apart by the delay: 7.7 is the client's.
         with (
             patch("app.utils.embedding_retry.retry_delay_seconds", return_value=7.7),

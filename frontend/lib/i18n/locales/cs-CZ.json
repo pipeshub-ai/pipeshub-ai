@@ -4697,6 +4697,9 @@
           "description": "Klasifikace dokumentů a extrakce metadat pomocí LLM"
         }
       },
+      "healthWarnings": {
+        "title": "Attention needed"
+      },
       "vectorDbMemory": {
         "title": "Vyhledávací index se nevejde do paměti vektorové databáze",
         "message": "Vyhledávací index potřebuje asi {{needed}} GB paměti, aby zůstal rychlý; vektorová databáze má asi {{available}} GB, takže vyhledávání čte z disku a při více souběžných dotazech se dál zpomaluje.",

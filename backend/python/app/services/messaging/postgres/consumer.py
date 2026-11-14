@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from app.services.distributed.interface import IDistributedLeaseManager
     from app.services.messaging.consumer_concurrency import PriorityLane, StageAdmission
     from app.services.messaging.disposition import AbandonedMessageSink
+    from app.services.messaging.precision_check import PrecisionHandBack
     from app.services.messaging.worker_loop import WorkerLoop
 
 _SWEEP_EVERY_S = 60.0
@@ -102,7 +103,9 @@ class PgMessagingConsumer(IMessagingConsumer):
         stage_admission: "StageAdmission | None" = None,
         priority_lane: "PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
+        precision_filter: "PrecisionHandBack | None" = None,
     ) -> None:
+        self.precision_filter = precision_filter  # hands back events that would write vectors of the wrong precision
         self._worker = worker  # the loop the indexing handler runs on; claims, heartbeats and settling stay on this one
         self.stage_admission = stage_admission  # a pipeline-stage consumer: its own permits and lease pool, no record lease
         self.priority_lane = priority_lane  # the consumer of the priority topic: its own handler cap and lease pool
@@ -380,6 +383,8 @@ class PgMessagingConsumer(IMessagingConsumer):
             # The sink needs the message to find its record: without it the record stays IN_PROGRESS and recovery hands it back for ever.
             await self._abandon(d, await self._parse_for_sink(d), "delivery attempts exhausted")
             return
+        if await self._hand_back_for_precision(d):
+            return
         final = d.attempts >= max_attempts
         try:
             success, terminal, parsed, err = await self._process(d, final=final)
@@ -426,6 +431,29 @@ class PgMessagingConsumer(IMessagingConsumer):
                 max_attempts,
                 delay,
             )
+
+    async def _hand_back_for_precision(self, d: Delivery) -> bool:
+        """Before anything runs: an event that would write vectors of the wrong precision goes back.
+
+        ``nack`` with a refund returns the attempt the claim counted, so nothing is spent and nothing is
+        downloaded. The first hand-back of a message waits about a minute, later ones ten.
+        """
+        if not self.indexing or self.precision_filter is None:
+            return False
+        try:
+            message = await self._parse_for_sink(d)
+            delays = self.precision_filter.hand_back([message]) if message is not None else {}
+        except Exception:
+            self.logger.warning("Could not check %s against the embedding precision; it takes the normal path", d.message_id, exc_info=True)
+            return False
+        if 0 not in delays:
+            return False
+        key = (d.topic, d.message_id)
+        n = self._handbacks[key] = self._handbacks.get(key, 0) + 1
+        delay = delays[0] if n == 1 else delays[0] * 10
+        self._handback_log["precision"] = self._handback_log.get("precision", 0) + 1
+        await self.queue.nack(self.config.group_id, d, delay, "waiting for the embedding precision", refund=True)
+        return True
 
     async def _parse_for_sink(self, d: Delivery) -> StreamMessage | None:
         """The message of a delivery that will not be processed, for the disposition sink; None when it cannot be read."""

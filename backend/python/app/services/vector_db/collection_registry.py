@@ -30,6 +30,7 @@ from app.services.vector_db.collection_manifest import (
     CollectionManifestStore,
     ManagedCollection,
 )
+from app.services.vector_db.collection_pin import CollectionPinStore
 from app.services.vector_db.collections import CollectionType, sanitize_collection_name
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -136,6 +137,9 @@ class CollectionRegistry:
         # no other reason to know what the provider supports.
         self._max_collections_advisory = max_collections_advisory
         self._existence = _ExistenceCache()
+        listen = getattr(type(vector_db_service), "add_space_replaced_listener", None)
+        if callable(listen):
+            listen(vector_db_service, self.replace_stale_org_pin)
         # Collections whose lexical scoring this process has already brought up
         # to date, so the write path asks the vector DB once, not every TTL.
         self._lexically_reconciled: set[str] = set()
@@ -295,6 +299,7 @@ class CollectionRegistry:
 
         await self._warn_if_over_advisory_ceiling(name)
 
+        absent_at = self._pins().now()
         config = self._collection_config_factory(embedding_size)
         try:
             await self._vector_db_service.create_collection(
@@ -318,6 +323,9 @@ class CollectionRegistry:
             await self._ensure_payload_indexes(name)
             await self._reconcile_lexical(name, embedding_size)
 
+        # A pin left over by a crash between a drop and the pin's removal; one claimed after the
+        # collection came to exist is the writer's and stays.
+        await self._pins().replace_stale_for_writer(name, ctx.embedding_model, absent_at)
         # Manifest first, for the same reason as the branch above.
         await self._record_in_manifest(name, ctx, embedding_size)
         self._existence.mark(name, dimension=embedding_size)
@@ -558,6 +566,22 @@ class CollectionRegistry:
             return ctx
         return replace(ctx, is_last_writer_to_collection=is_last)
 
+    def _pins(self) -> CollectionPinStore:
+        # The pin lives in the same configuration store as the manifest, and the registry has no other use for it.
+        return CollectionPinStore(self._manifest_store.config_service, self._logger)
+
+    async def replace_stale_org_pin(self, org: str, model: str | None, observed_at: float) -> list[str]:
+        """After a store with one space per org replaced an org's empty space: replace that org's stale pins.
+
+        Only this event, never an empty space on its own: an empty space is not re-pinned on a count.
+        """
+        replaced: list[str] = []
+        for entry in await self.list_managed_collections():
+            did = await self._pins().replace_stale_for_writer(entry.name, entry.embedding_model or model, observed_at, org)
+            if did:
+                replaced.append(entry.name)
+        return replaced
+
     async def delete_collection(self, name: str) -> None:
         """Idempotent drop: a missing collection is treated as success."""
         await self._drop(name)
@@ -571,6 +595,10 @@ class CollectionRegistry:
                 raise
             self._logger.info("Collection %s already absent", name)
         self._existence.invalidate(name)
+        # After the vectors, never before: a crash in between leaves a pin over nothing, which the next
+        # creator of the collection replaces; the other order would leave vectors with no pin. A pin the
+        # store cannot confirm gone fails the drop, so the cleanup fails visibly and can be run again.
+        await self._pins().release_collection(name)
 
     # ------------------------------------------------------------------
     # Model-change rebuild
@@ -615,11 +643,13 @@ class CollectionRegistry:
                 )
                 continue
             await self._drop(entry.name)
+            absent_at = self._pins().now()
             await self._vector_db_service.create_collection(
                 collection_name=entry.name,
                 config=self._collection_config_factory(records_dimension),
             )
             await self._ensure_payload_indexes(entry.name)
+            await self._pins().replace_stale_for_writer(entry.name, entry.embedding_model, absent_at)
             await self._manifest_store.record(
                 ManagedCollection(
                     name=entry.name,

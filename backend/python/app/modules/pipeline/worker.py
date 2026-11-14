@@ -46,6 +46,7 @@ from app.services.messaging.config import (
     compute_retry_backoff_seconds,
 )
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
+from app.services.messaging.precision_flip import precision_flip_in
 from app.utils.indexing_timing import ADMITTED, begin_record, end_record
 
 # Called once a stage's headline is final on the records it updated, e.g. to release the
@@ -72,6 +73,16 @@ class StageHeldForDelete(StagePaused):
     IN_PROGRESS, which the redelivery takes over like a crashed run's.
 
     Only this message waits: the other connectors' jobs on the stage keep running.
+    """
+
+    pauses_consumer = False
+
+
+class StageWaitsForPrecision(StagePaused):
+    """A write of the stage met an index that holds another weight precision than the server serves.
+
+    Handed back with no attempt counted, nothing settled: the claim stays IN_PROGRESS and the redelivery takes
+    it over like a crashed run's. Only this message waits; the read-time check holds back new work.
     """
 
     pauses_consumer = False
@@ -149,6 +160,13 @@ class StageJobHandler:
         except StageRetry:
             outcome = "retry"
             raise
+        except Exception as exc:
+            # A flip of the weight precision may sit under any wrapper the stage put around it.
+            flip = precision_flip_in(exc)
+            if flip is None:
+                raise
+            outcome = "paused"
+            raise StageWaitsForPrecision(str(flip), delay_s=flip.delay_s) from exc
         finally:
             end_record(timeline, token, outcome=outcome, logger=self._logger)
         # The consumer releases the job's permit on INDEXING_COMPLETE; nothing held a parse slot.

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from logging import Logger
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -14,10 +13,9 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.sync.sync_coordinator import get_coordinator
 from app.connectors.core.sync.task_manager import reindex_task_manager
-from app.connectors.services.kafka_service import KafkaService
 from app.exceptions.graph_db_exceptions import GraphQueryError
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import Topic
+from app.services.messaging.precision_check import VERDICT_KEY
 from app.services.vector_db.rebuild_state import (
     JOB_LOCK_RENEW_INTERVAL_SECONDS,
     JOB_LOCK_TTL_SECONDS,
@@ -32,6 +30,10 @@ from app.services.vector_db.rebuild_state import (
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
+    from logging import Logger
+
+    from app.connectors.services.kafka_service import KafkaService
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.services.redis.connection_provider import RedisClient as Redis
 
 TASK_KEY = "vector-store-rebuild"
@@ -156,9 +158,20 @@ def _is_folder_record(record: Any) -> bool:
     return getattr(record, "mime_type", None) in FOLDER_MIME_TYPES
 
 
+async def precision_wait_in_force(config_service: Any) -> bool:  # noqa: ANN401
+    """Whether indexing is, right now, handing back the events that write vectors because the embedding
+    server's weight precision and the index disagree (the key expires on its own, so a stopped service is not "waiting")."""
+    try:
+        state = await config_service.get_config(VERDICT_KEY, use_cache=False, keep_in_cache=False)
+    except Exception:
+        return False
+    return isinstance(state, dict) and state.get("mismatch") is True
+
+
 async def find_busy_connectors(
     graph_provider: IGraphDBProvider,
     apps: list[tuple[str, str]],
+    statuses: tuple[str, ...] = PENDING_INDEXING_STATUSES,
 ) -> list[str]:
     """Connector ids with real indexing work still queued or running.
 
@@ -175,7 +188,7 @@ async def find_busy_connectors(
             records = await graph_provider.get_records_by_status(
                 org_id=org_id,
                 connector_id=connector_id,
-                status_filters=list(PENDING_INDEXING_STATUSES),
+                status_filters=list(statuses),
                 limit=BUSY_SCAN_PAGE_SIZE,
                 after_key=after_key,
             )
@@ -194,6 +207,8 @@ async def find_busy_connectors(
 async def assert_no_indexing_in_flight(
     graph_provider: IGraphDBProvider,
     apps: list[tuple[str, str]],
+    *,
+    waiting_for_precision: bool = False,
 ) -> None:
     """Refuse a rebuild while indexing or a sync is still in flight.
 
@@ -212,7 +227,13 @@ async def assert_no_indexing_in_flight(
         )
 
     try:
-        busy = await find_busy_connectors(graph_provider, apps)
+        # While indexing waits for the embedding precision no text vector can be written (each batch is
+        # checked against the index first), so a QUEUED record has not written anything this attempt and
+        # runs after the drop. A record already IN_PROGRESS may have written some points and is still counted.
+        busy = await find_busy_connectors(
+            graph_provider, apps,
+            (ProgressStatus.IN_PROGRESS.value,) if waiting_for_precision else PENDING_INDEXING_STATUSES,
+        )
     except GraphQueryError as exc:
         # Fail closed: an unreadable listing is not evidence that nothing is
         # running, and a rebuild started on that assumption wipes points a live
@@ -279,12 +300,13 @@ async def start_vector_store_cleanup(
     org_id: str | None,
     user_id: str | None,
     apps: list[tuple[str, str]],
+    waiting_for_precision: bool = False,
 ) -> None:
     renewal = asyncio.create_task(_renew_lock_until_cancelled(lock, logger))
     try:
         # Re-check immediately before the destructive step: the route's gate ran
         # before this job was scheduled, and a sync can start in between.
-        await assert_no_indexing_in_flight(graph_provider, apps)
+        await assert_no_indexing_in_flight(graph_provider, apps, waiting_for_precision=waiting_for_precision)
         await set_cleanup_phase(redis, PHASE_DROPPING)
         await _reset_apps(graph_provider, apps)
         published = await kafka_service.publish_event(

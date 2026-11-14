@@ -4306,6 +4306,9 @@
           "description": "Clasificación de documentos y extracción de metadatos basada en LLM"
         }
       },
+      "healthWarnings": {
+        "title": "Attention needed"
+      },
       "vectorDbMemory": {
         "title": "El índice de búsqueda no cabe en la memoria de la base de datos vectorial",
         "message": "El índice de búsqueda necesita unos {{needed}} GB de memoria para ser rápido; la base de datos vectorial tiene unos {{available}} GB, así que las búsquedas leen del disco y van aún más lentas cuando se ejecutan varias a la vez.",

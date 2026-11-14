@@ -31,6 +31,7 @@ from app.core.org_context import for_org, spawn_detached
 from app.models.entities import EntityRecord, EntityType
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.config import messaging_env
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.messaging.record_titles import (
     DELETE,
     UPSERT,
@@ -159,6 +160,35 @@ class RecordTitleWriter:
         while self._pending:
             if not await self.flush(attempts=1):
                 break
+        await self._hand_back_pending()
+
+    async def _hand_back_pending(self) -> None:
+        """What a closing writer still holds goes back on the topic as it is, with no attempt counted.
+
+        These were accepted by ``handle``, so nothing else would write them: a final flush that waits for the weight
+        precision (or fails) leaves them here.
+        """
+        if not self._pending:
+            return
+        events = list(self._pending.values())
+        sent = False
+        if self._requeue is not None:
+            try:
+                sent = await self._requeue([self._message_of(e, e.attempt) for e in events])
+            except Exception:
+                sent = False
+        if sent:
+            self._pending.clear()
+        else:
+            self.logger.error("Could not put %d record title event(s) back on the topic at shutdown; dropped", len(events))
+
+    @staticmethod
+    def _message_of(event: TitleEvent, attempt: int) -> dict[str, Any]:
+        return build_record_title_message(
+            org_id=event.org_id, record_id=event.record_id, record_name=None, connector_id=None,
+            record_group_id=None, event_type=DELETE if event.delete else UPSERT, timestamp=event.timestamp,
+            attempt=attempt,
+        )
 
     async def _flush_when_idle(self) -> None:
         while True:
@@ -192,6 +222,17 @@ class RecordTitleWriter:
                 reason = await self._on_worker(lambda: self._write(batch)) or ""
             except asyncio.CancelledError:
                 raise
+            except PrecisionFlip as flip:
+                # Not a failure: the entity index holds another weight precision than the server serves.
+                # The batch goes back to be written on a later flush, with no attempt counted and nothing dropped.
+                for event in batch:
+                    key = (event.org_id, event.record_id)
+                    held = self._pending.get(key)
+                    if held is None or event.rank >= held.rank:
+                        self._pending[key] = event
+                self.logger.warning("Record title batch of %d waits for the embedding precision: %s", len(batch), flip)
+                await asyncio.sleep(max(self._retry_first_seconds, 1.0))  # the idle flush loop must not spin on it
+                return False
             except Exception as exc:
                 reason = f"{type(exc).__name__}"
                 self.logger.warning(
@@ -210,14 +251,7 @@ class RecordTitleWriter:
         )
         if again and self._requeue is not None:
             try:
-                sent = await self._requeue([
-                    build_record_title_message(
-                        org_id=e.org_id, record_id=e.record_id, record_name=None, connector_id=None,
-                        record_group_id=None, event_type=DELETE if e.delete else UPSERT, timestamp=e.timestamp,
-                        attempt=e.attempt + 1,
-                    )
-                    for e in again
-                ])
+                sent = await self._requeue([self._message_of(e, e.attempt + 1) for e in again])
             except Exception:
                 sent = False
             if not sent:

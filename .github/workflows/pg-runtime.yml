@@ -13,6 +13,7 @@ on:
     paths:
       - 'backend/db/**'
       - 'backend/python/app/core/**'
+      - 'backend/python/app/services/vector_db/collection_pin.py'
       - 'backend/python/app/services/pg_*.py'
       - 'backend/python/app/services/messaging/**'
       - 'backend/python/app/services/redis/**'

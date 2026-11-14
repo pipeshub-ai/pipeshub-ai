@@ -101,6 +101,12 @@ class EmbeddingModelUnavailableError(IndexingError):
     pass
 
 
+class EmbeddingPrecisionUnknownError(EmbeddingModelUnavailableError):
+    """The embedding server did not say which weights computed a response, or two responses of one call disagreed."""
+
+    pass
+
+
 class EmbeddingNotConfiguredError(EmbeddingModelUnavailableError):
     """No embedding model is configured and the local fallback is unavailable."""
 

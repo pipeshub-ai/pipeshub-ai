@@ -25,6 +25,7 @@ import {
   type AppServices,
 } from '@/lib/store/services-health-store';
 import { apiClient } from '@/lib/api';
+import { HealthWarnings, readHealthWarnings } from './health-warnings';
 import { VectorDbMemoryWarning } from './vector-db-memory';
 import { getVectorDbMemoryReport, type VectorDbMemoryReport } from './api';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
@@ -241,6 +242,7 @@ export default function ServicesPage() {
   const [localServiceNames, setLocalServiceNames] = useState<Record<string, string> | null>(null);
   const [localDeployment, setLocalDeployment] = useState<Deployment | null>(null);
   const [localLastChecked, setLocalLastChecked] = useState(lastChecked);
+  const [localWarnings, setLocalWarnings] = useState<string[]>([]);
   const [vectorDbMemory, setVectorDbMemory] = useState<VectorDbMemoryReport | null>(null);
   // Each refresh starts a new memory request; only the latest may set the state.
   const memoryRequest = useRef(0);
@@ -277,6 +279,7 @@ export default function ServicesPage() {
       setLocalApp(servicesData?.services ?? null);
       setLocalServiceNames(infraData?.serviceNames ?? null);
       setLocalDeployment(infraData?.deployment ?? null);
+      setLocalWarnings(readHealthWarnings(infraData?.warnings));
       setLocalLastChecked(Date.now());
 
       if (showToast) {
@@ -364,6 +367,8 @@ export default function ServicesPage() {
             </Button>
           </Flex>
         </Flex>
+
+        <HealthWarnings warnings={localWarnings} />
 
         {/* ── Infrastructure Services section ── */}
         <Flex

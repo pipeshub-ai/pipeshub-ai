@@ -215,6 +215,49 @@ describe('tokens_manager/routes/health.routes', () => {
       })
     })
 
+    describe('weight-precision warning', () => {
+      const PRECISION_KEY = '/services/indexing/precision_verdict'
+      let savedReplicas: string | undefined
+      beforeEach(() => {
+        savedReplicas = process.env.PIPESHUB_APP_MAX_REPLICAS
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '1'
+      })
+      afterEach(() => {
+        if (savedReplicas === undefined) delete process.env.PIPESHUB_APP_MAX_REPLICAS
+        else process.env.PIPESHUB_APP_MAX_REPLICAS = savedReplicas
+      })
+
+      it('warns, naming the setting to restore, while indexing waits for the precision to match', async () => {
+        mockKV.get = sinon.stub().callsFake(async (key: string) =>
+          key === PRECISION_KEY ? { mismatch: true, holds: ['fp32'] } : null)
+        sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+        const res = mockRes()
+        await findHandler('/', 'get')({}, res, sinon.stub())
+        const body = res.json.firstCall.args[0]
+        expect(body.status).to.equal('healthy')
+        expect(body.warnings).to.have.length(1)
+        expect(body.warnings[0]).to.contain('EMBEDDING_SERVER_PRECISION=fp32')
+      })
+
+      it('answers without the warning when the precision read stalls', async () => {
+        const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        try {
+          mockKV.get = sinon.stub().callsFake((key: string) =>
+            key === PRECISION_KEY ? new Promise(() => undefined) : Promise.resolve(null))
+          sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+          const res = mockRes()
+          const answered = findHandler('/', 'get')({}, res, sinon.stub())
+          await clock.tickAsync(2000)
+          await answered
+          const body = res.json.firstCall.args[0]
+          expect(body.status).to.equal('healthy')
+          expect(body.warnings).to.equal(undefined)
+        } finally {
+          clock.restore()
+        }
+      })
+    })
+
     it('should include deployment info in response', async () => {
       const handler = findHandler('/', 'get')
       const res = mockRes()
