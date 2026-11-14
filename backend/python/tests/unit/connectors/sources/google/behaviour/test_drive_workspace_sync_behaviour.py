@@ -3079,17 +3079,67 @@ async def test_a_my_drive_item_that_keeps_failing_is_read_again_by_id_after_its_
     await ws.sync()
 
     ws.world.unshare("f", carol)
-    ws.world.files["f"].perm_access = "empty"
+    # Every permission read fails until the fault clears (an empty list is cut down after MAX_HELD_RUNS instead).
+    ws.http.fail("GET", "/drive/v3/files/f/permissions", 500, "backendError")
     for _ in range(MAX_HELD_RUNS + 1):  # the feeds hold, then move on past the change
         await ws.sync()
     assert (carol, "USER", "READ") in ws.grants("f"), "kept as stored while it cannot be read"
 
-    ws.world.files["f"].perm_access = None
+    ws.http.clear_faults()
     await ws.sync()
     assert (carol, "USER", "READ") not in ws.grants("f"), "read again by id once the feed moved on"
     assert (BOB, "USER", "READ") in ws.grants("f")
     await ws.sync()
     assert not ws.incomplete
+
+
+def _empty_list_for(ws: Workspace, file_id: str, *readers: str) -> None:
+    """These readers' permission reads of the item answer a 200 with no entries; anyone else's are as usual."""
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern == r"^/drive/v3/files/([^/]+)/permissions$")
+
+    def answer(req: ApiRequest) -> object:
+        if req.identity in readers and req.path == f"/drive/v3/files/{file_id}/permissions":
+            return {"permissions": []}
+        return real(req)
+
+    ws.http.route("GET", r"/drive/v3/files/([^/]+)/permissions", answer)  # the latest route matching wins
+
+
+async def test_an_empty_list_for_a_my_drive_item_is_read_again_as_its_owner(ws: Workspace) -> None:
+    carol, dana = "carol@example.com", "dana@example.com"
+    ws.world.add_user(carol)  # the owner: in the Workspace, not synced here
+    ws.world.add_user(dana)
+    ws.world.add_item("f", "x.txt", parent=f"root-{carol.split('@')[0]}", owner=carol, perms=[reader(BOB), reader(dana)])
+    await ws.sync()
+    assert (dana, "USER", "READ") in ws.grants("f")
+
+    ws.world.unshare("f", dana)
+    _empty_list_for(ws, "f", BOB)
+    await ws.sync()
+
+    assert (dana, "USER", "READ") not in ws.grants("f"), "the owner's list says she is gone"
+    assert (BOB, "USER", "READ") in ws.grants("f")
+    assert not ws.incomplete
+
+
+async def test_an_empty_list_no_one_can_read_again_cuts_the_grants_to_what_is_proven(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    dana = "dana@example.com"
+    ws.world.add_user(dana)
+    ws.world.add_item("f", "x.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE), reader(dana)])
+    await ws.sync()
+    assert (dana, "USER", "READ") in ws.grants("f")
+
+    ws.world.unshare("f", dana)
+    _empty_list_for(ws, "f", BOB, ALICE)  # even the owner's read comes back empty
+    for _ in range(MAX_HELD_RUNS - 1):
+        await ws.sync()
+    assert (dana, "USER", "READ") in ws.grants("f"), "kept as stored while it may still be read"
+    await ws.sync()
+
+    assert (dana, "USER", "READ") not in ws.grants("f"), "a grant no list can show is not kept for good"
+    assert {ALICE, BOB} <= ws.records.perm_emails("f"), "its owner and the reader who opened it keep it"
 
 
 async def test_an_empty_permission_list_for_a_new_my_drive_item_still_grants_its_reader(ws: Workspace) -> None:
@@ -3114,7 +3164,9 @@ async def test_a_limited_item_whose_permission_list_comes_back_empty_stops_inher
     ws.world.add_user(carol)
     ws.world.add_drive("sd-1", "Team", {BOB: "reader"})
     ws.world.folder("dir", "Plans", parent="sd-1", perms=[reader(carol)])
-    ws.world.add_item("f", "x.txt", parent="dir")
+    # A folder: "limited access isn't available for files"
+    # (https://developers.google.com/workspace/drive/api/guides/limited-expansive-access).
+    ws.world.folder("f", "Sub", parent="dir")
     ws.world.files["f"].perm_access = "all"
     await ws.sync()
     assert ws.records.records["f"].inherit_permissions is True
@@ -3131,7 +3183,9 @@ async def test_a_limited_item_whose_permission_list_comes_back_empty_stops_inher
 async def test_a_limited_shared_drive_item_answered_with_an_empty_list_keeps_its_own_audience_share(ws: Workspace) -> None:
     ws.world.add_drive("sd-1", "Team", {BOB: "reader"})
     ws.world.folder("dir", "Plans", parent="sd-1", perms=[discoverable("anyone")])
-    ws.world.add_item("f", "x.txt", parent="dir", perms=[discoverable("anyone")])
+    # A folder: "limited access isn't available for files"
+    # (https://developers.google.com/workspace/drive/api/guides/limited-expansive-access).
+    ws.world.folder("f", "Sub", parent="dir", perms=[discoverable("anyone")])
     ws.world.files["f"].perm_access = "all"
     await ws.sync()
     assert ("workspace-members", "GROUP", "READ") in ws.grants("f")
