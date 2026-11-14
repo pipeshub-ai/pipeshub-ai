@@ -114,7 +114,7 @@ class _Lock:
 
 
 @pytest.fixture
-def world(monkeypatch):
+def world(monkeypatch):  # noqa: ANN201
     config = ConfigurationService(log, InMemoryKeyValueStore(log))
     vdb = _World()
     pins = CollectionPinStore(config, log)
@@ -180,7 +180,7 @@ async def _seed_int8_index(w) -> None:
     await w.pins.claim(ENTITIES, INT8)
 
 
-def _handler(w, monkeypatch, *, entity_store=True):
+def _handler(w, monkeypatch, *, entity_store=True):  # noqa: ANN202
     phases: list[str] = []
 
     async def mark(_config, phase, **_k):  # noqa: ANN202
