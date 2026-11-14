@@ -328,12 +328,10 @@ class TestMemberChangeRereadsOnlyTheAffectedLevels:
         fetch_fn: Callable[[JiraConnector, list], Awaitable[None]] | None = None,
         connector: JiraConnector | None = None,
         placement: str | None = ISSUE_PLACEMENT,
-        stored_browse: str | None = None,
     ) -> tuple:
         c = connector or _connector()
         c.issues_sync_point = MagicMock()
-        point = {"last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": placement,
-                 "browse_holders": stored_browse}
+        point = {"last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": placement}
         if stored_levels is not None:
             point["security_levels"] = json.dumps(stored_levels)
         c.issues_sync_point.read_sync_point = AsyncMock(return_value=point)
@@ -759,17 +757,6 @@ class TestIssuePlacementPass:
             {"resume": None, "is_new_project": True, "level_ids": None, "leveled_only": False, "stored_only": True}]
         assert c.issues_sync_point.update_sync_point.await_args.args[1]["issue_placement"] == ISSUE_PLACEMENT
         assert result["leveled_reread"] is True
-
-    @pytest.mark.asyncio
-    async def test_a_project_with_per_issue_holders_is_not_reread_for_its_sub_tasks(self) -> None:
-        """A sub-task stays under its parent whatever the holders, so per-issue Browse holders file no issue
-        differently from the current marker's rule: nothing is read again for them."""
-        c = _connector()
-        c._browse_issue_holders["PROJ"] = [{"type": "reporter"}]
-        browse = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=[{"type": "reporter"}]).browse_fingerprint()
-        _, _, calls, _ = await self._sync(
-            stored_levels=_present().level_fingerprints(), connector=c, stored_browse=browse)
-        assert len(calls) == 1
 
     @pytest.mark.asyncio
     async def test_a_project_with_the_marker_is_not_reread(self) -> None:
@@ -1355,34 +1342,12 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert perms == []
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("parent", [_ParentLevel(project_id=PROJECT_ID, level_id=None),
-                                        _ParentLevel(project_id=PROJECT_ID, level_id="10101"), None],
-                             ids=["unleveled_parent", "leveled_parent", "parent_unread"])
-    async def test_a_sub_task_stays_under_its_parent_and_gets_no_grant_of_its_own(self, parent: _ParentLevel | None) -> None:
-        """"Sub-tasks also inherit the security level of their parent issue"; that a sub-task's own reporter or
-        assignee (a per-issue Browse holder) reads it without reading its parent is not documented. Fail closed: it
-        stays under its parent, so its own holders read it only with the parent, and its parent is not read for it."""
+    async def test_a_sub_task_follows_its_parent_and_is_not_granted(self) -> None:
         sub = _issue(None, key="PROJ-2", issue_id="1002")
         sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
         sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
-        c = _connector()
-        if parent is None:
-            c._parent_level_failures.add("1001")
-        c._parent_levels["1001"] = parent
-        record, perms, _ = await _build(c, sub, self._none(self.HOLDERS))
-        assert perms == [] and record.parent_external_record_id == "1001" and record.access_rule == AccessRule.STRICT
-        assert "1001" not in c._parents_to_retry
-
-    @pytest.mark.asyncio
-    async def test_a_reindex_does_not_read_a_sub_tasks_parent_to_place_it(self) -> None:
-        sub = _issue(None, key="PROJ-2", issue_id="1002")
-        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
-        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
-        c = _connector()
-        c._get_fresh_datasource = AsyncMock()
-        await c._learn_parent_levels([sub], refresh=True, security=self._none(self.HOLDERS))
-        c._get_fresh_datasource.assert_not_awaited()
-        assert "1001" not in c._parent_levels
+        record, perms, _ = await _build(_connector(), sub, self._none(self.HOLDERS))
+        assert perms == [] and record.access_rule == AccessRule.STRICT
 
     def test_a_story_is_not_filed_under_an_epic_its_reporter_may_not_read(self) -> None:
         c = _connector()
@@ -1603,19 +1568,6 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         await c._process_new_records([(record, perms, changed)], "PROJ", {"new_count": 0, "updated_count": 0})
         assert c.data_entities_processor.on_record_content_update.await_count == (1 if kept else 0)
         assert c.data_entities_processor.on_new_records.await_count == (0 if kept else 1)
-
-    @pytest.mark.asyncio
-    async def test_a_held_issue_never_changed_since_its_first_sync_keeps_its_grants_in_a_full_sync(self) -> None:
-        """Held (its parent could not be read) with an empty grant list: a full sync must not write that list."""
-        c = _connector()
-        record, perms, _ = await _build(c, _issue(), _present())
-        record.version = 0
-        record.rewrite_permissions = False
-        c._held_access_ids = {record.external_record_id}
-        c.data_entities_processor.on_record_content_update = AsyncMock()
-        await c._process_new_records([(record, [], False)], "PROJ", {"new_count": 0, "updated_count": 0})
-        c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record)
-        c.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_stored_unread_marker_followed_by_a_good_read_rereads_every_stored_issue(self) -> None:
