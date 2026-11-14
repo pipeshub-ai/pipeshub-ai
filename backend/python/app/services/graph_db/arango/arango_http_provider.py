@@ -8464,7 +8464,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def _list_graph_users_by_email(self, email: str, org_id: str) -> list[dict]:
         query = f"""
             FOR user IN {CollectionNames.USERS.value}
-                FILTER LOWER(user.email) == LOWER(@email)
+                FILTER LOWER(TRIM(user.email)) == LOWER(TRIM(@email))
                 FILTER user.orgId == @org_id
                 RETURN user
         """
@@ -11112,18 +11112,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     # Non-fatal: one CRM contact must not fail a whole sync.
                     try:
                         await self.migrate_person_to_user(
-                            user.email, user.id, target_org_id, transaction=transaction
+                            user.email, user_record.id, target_org_id, transaction=transaction
                         )
                     except Exception as migrate_err:
                         self.logger.error(
-                            "Person adoption failed for user %s in org %s: %s", user.id, target_org_id, migrate_err
+                            "Person adoption failed for user %s in org %s: %s", user_record.id, target_org_id, migrate_err
                         )
 
                     # A guest is saved so grants to them resolve, but org membership
                     # would hand them every org-wide grant.
                     if not user.is_guest:
                         user_org_relation = {
-                            "_from": f"{CollectionNames.USERS.value}/{user.id}",
+                            "_from": f"{CollectionNames.USERS.value}/{user_record.id}",
                             "_to": f"{CollectionNames.ORGS.value}/{target_org_id}",
                             "createdAtTimestamp": user.created_at,
                             "updatedAtTimestamp": user.updated_at,

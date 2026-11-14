@@ -10531,15 +10531,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Get or create app
             app = await self.get_document(connector_id, CollectionNames.APPS.value, transaction)
             if not org_id:
-                orgs = await self.get_all_orgs(transaction=transaction)
-                if not orgs:
-                    raise Exception("No organizations found in the database")
-                if len(orgs) == 1:
-                    org_id = orgs[0].get("id") or orgs[0].get("_key")
+                app_org = app.get("".join(["org", "Id"])) if isinstance(app, dict) else None
+                if isinstance(app_org, str) and app_org.strip():
+                    org_id = app_org.strip()
                 else:
-                    raise ValueError(
-                        f"Cannot resolve organization for batch_upsert_app_users (connector: {connector_id})"
-                    )
+                    orgs = await self.get_all_orgs(transaction=transaction)
+                    if not orgs:
+                        raise Exception("No organizations found in the database")
+                    if len(orgs) == 1:
+                        org_id = orgs[0].get("id") or orgs[0].get("_key")
+                    else:
+                        raise ValueError(
+                            f"Cannot resolve organization for batch_upsert_app_users (connector: {connector_id})"
+                        )
             if not app:
                 # Create a minimal app node that still satisfies the apps schema
                 now = get_epoch_timestamp_in_ms()
@@ -11086,13 +11090,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             norm_to_orig: dict[str, list[str]] = {}
             lookup_emails: list[str] = []
             for e in unique_emails:
-                if e:
-                    norm = e.strip().lower()
-                    norm_to_orig.setdefault(norm, []).append(e)
-                    lookup_emails.append(e)
-                    lookup_emails.append(norm)
+                if not e:
+                    continue
+                norm = e.strip().lower()
+                if not norm:
+                    continue
+                norm_to_orig.setdefault(norm, []).append(e)
+                lookup_emails.append(e)
+                lookup_emails.append(norm)
 
             lookup_emails = list(dict.fromkeys(lookup_emails))
+            if not lookup_emails:
+                return {}
 
             query = """
             MATCH (n)
@@ -11148,7 +11157,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     if email:
                         norm = email.strip().lower()
                         existing_list = by_norm.setdefault(norm, [])
-                        if not any(x.get("id") == r.get("id") for x in existing_list):
+                        r_key = (r.get("id"), frozenset(r.get("labels") or []))
+                        if not any((x.get("id"), frozenset(x.get("labels") or [])) == r_key for x in existing_list):
                             existing_list.append(r)
 
             def _priority(r: dict) -> tuple[int, bool]:
@@ -11182,9 +11192,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if collection_name:
                     val = (best_r["id"], collection_name, permission_type)
                     for r in r_list:
-                        result_map[r["email"]] = val
+                        email_key = r.get("email")
+                        if email_key and email_key.strip():
+                            result_map[email_key] = val
                     for orig in norm_to_orig.get(norm, []):
-                        result_map[orig] = val
+                        if orig and orig.strip():
+                            result_map[orig] = val
 
             return result_map
 

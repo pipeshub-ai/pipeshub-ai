@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.org_context import for_org
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.postgres import core
@@ -218,6 +219,30 @@ async def test_get_user_by_email_reads_only_the_ambient_org(org_id: str | None, 
         assert p._principals_by_email.await_args.args[:2] == (["users"], ["A@x.io", "a@x.io"])
     else:
         p._principals_by_email.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_user_by_email_prefers_active_legacy_user_over_inactive_exact() -> None:
+    p = PostgresGraphProvider.__new__(PostgresGraphProvider)
+    p.logger = logging.getLogger("t")
+    p._principals_by_email = AsyncMock(return_value=[{"doc": {"id": "u-inactive", "_key": "u-inactive", "email": "a@x.io", "isActive": False}}])
+    p._id_rows = AsyncMock(return_value=[{"doc": {"id": "u-active", "_key": "u-active", "email": " a@x.io ", "isActive": True}}])
+    with for_org("o1", job="t"):
+        got = await p.get_user_by_email("a@x.io", org_id="o1")
+    assert got is not None
+    assert got.id == "u-active"
+
+
+@pytest.mark.asyncio
+async def test_get_users_by_emails_prefers_active_legacy_user_over_inactive_exact() -> None:
+    p = PostgresGraphProvider.__new__(PostgresGraphProvider)
+    p.logger = logging.getLogger("t")
+    p._principals_by_email = AsyncMock(return_value=[{"doc": {"id": "u-inactive", "_key": "u-inactive", "email": "a@x.io", "isActive": False}}])
+    p._id_rows = AsyncMock(return_value=[{"doc": {"id": "u-active", "_key": "u-active", "email": " a@x.io ", "isActive": True}}])
+    with for_org("o1", job="t"):
+        got = await p.get_users_by_emails(["a@x.io"], org_id="o1")
+    assert "a@x.io" in got
+    assert got["a@x.io"].id == "u-active"
 
 
 class TestReplaceRecordEntityRelations:

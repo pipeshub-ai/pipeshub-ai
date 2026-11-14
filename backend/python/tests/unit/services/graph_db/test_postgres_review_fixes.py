@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -203,3 +203,49 @@ async def test_get_users_by_emails_matches_and_normalizes_padded_stored_email() 
     res = await h.call("get_users_by_emails", ["alice@example.com"])
     assert "alice@example.com" in res
     assert res["alice@example.com"].id == "u1"
+
+
+async def test_users_by_email_rows_falls_back_when_vetted_misses_padded_email() -> None:
+    h = Harness()
+    # Vetted query returns empty because stored email is padded
+    # Statement query finds padded email and returns trimmed lowercase email
+    h.p._id_rows = AsyncMock(side_effect=[
+        [],  # vetted read
+        [{"email": "alice@example.com", "id": "u1", "active": True}],  # statement fallback
+    ])
+    rows = await h.call("_users_by_email_rows", "org-1", ["alice@example.com"], None)
+    assert len(rows) == 1
+    assert rows[0]["email"] == "alice@example.com"
+    assert rows[0]["id"] == "u1"
+
+
+async def test_batch_upsert_app_users_uses_ambient_org_as_org_node() -> None:
+    from app.config.constants.arangodb import Connectors
+    from app.models.entities import AppUser
+
+    h = Harness()
+    h.p.get_all_orgs = AsyncMock(return_value=[{"_key": "first-org", "id": "first-org"}])
+    h.p._atomic = MagicMock()
+    h.p.batch_upsert_nodes = AsyncMock()
+    h.p.migrate_person_to_user = AsyncMock()
+    h.p.batch_create_edges = AsyncMock()
+    h.p._id_rows = AsyncMock(return_value=[{"raw": "user@example.com", "low": "user@example.com"}])
+    h.p._users_by_email_rows = AsyncMock(return_value=[])
+    h.p._q = AsyncMock()
+
+    user = AppUser(
+        app_name=Connectors.GOOGLE_DRIVE,
+        connector_id="c1",
+        id="u1",
+        source_user_id="s1",
+        email="user@example.com",
+        full_name="User One",
+    )
+
+    await h.call("batch_upsert_app_users", [user])
+    # Upserted user document has orgId set to ambient org ORG, not "first-org"
+    upserted_node = h.p.batch_upsert_nodes.await_args.args[0][0]
+    assert upserted_node["orgId"] == ORG
+    # Membership edge has to_id set to ambient org ORG
+    member_edge = h.p.batch_create_edges.await_args_list[0].args[0][0]
+    assert member_edge["to_id"] == ORG

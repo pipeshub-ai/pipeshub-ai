@@ -746,6 +746,38 @@ class TestUserDeleted:
         assert result is False
         graph_provider.batch_upsert_nodes.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_user_deleted_does_not_deactivate_user_with_missing_org(self) -> None:
+        graph_provider = AsyncMock()
+        mock_user = MagicMock()
+        mock_user.id = "user-no-org"
+        mock_user.org_id = None
+        graph_provider.get_user_by_email = AsyncMock(return_value=mock_user)
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+        payload = {"orgId": "org-1", "email": "alice@example.com"}
+        result = await svc.process_event("userDeleted", payload)
+
+        assert result is False
+        graph_provider.batch_upsert_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_user_deleted_unscoped_fallback_missing_org_fails_closed(self) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_email = AsyncMock(return_value=None)
+        graph_provider.get_entity_id_by_email = AsyncMock(return_value="candidate-1")
+        # Document exists but has no orgId
+        graph_provider.get_document = AsyncMock(return_value={"id": "candidate-1"})
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+        payload = {"orgId": "org-1", "email": "alice@example.com"}
+        result = await svc.process_event("userDeleted", payload)
+
+        assert result is False
+        graph_provider.batch_upsert_nodes.assert_not_called()
+
 
 # ===================================================================
 # appEnabled — deeper tests
@@ -1467,6 +1499,7 @@ class TestHandleUserDeletedExtended:
     @pytest.mark.asyncio
     async def test_user_deleted_exception(self):
         svc = _make_service()
+        svc.graph_provider.get_user_by_email = AsyncMock(return_value=None)
         svc.graph_provider.get_entity_id_by_email = AsyncMock(
             side_effect=Exception("DB error")
         )

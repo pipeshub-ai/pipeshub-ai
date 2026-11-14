@@ -139,13 +139,27 @@ class IdentityMixin(PgBase):
         """``(email, id, active)`` of the users whose lower-cased email is one of the lower-cased ``emails``: the vetted read of graph_0006 for up to its bound of
         addresses, or the statement for more, for an address out of its bounds or a page that may not be all of the matches. One read either way: chunks would each
         see their own snapshot, and a login moving between two of them would be missed by both (the batch would then create a duplicate user)."""
+        found: list = []
+        missing = emails
         if emails and len(emails) <= 1000 and all(0 < len(e) <= 1000 for e in emails):
-            rows = await self._id_rows("""/* pipeshub:graph.users_by_email_vetted */ SELECT lower(p.doc->>'email') AS email, p.node_id AS id,
-                   coalesce((p.doc->>'isActive')::boolean, false) AS active FROM graph.principals_by_email(ARRAY['users'], $1::text[]) p ORDER BY p.node_id""", [emails], transaction)
-            if len(rows) < _PRINCIPALS_PAGE:
-                return rows
-        return await self._id_rows("""/* pipeshub:graph.users_by_email */ SELECT lower(doc->>'email') AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
-                   FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[]) ORDER BY id""", [org, emails], transaction)
+            rows = await self._id_rows("""/* pipeshub:graph.users_by_email_vetted */ SELECT lower(btrim(p.doc->>'email', E' \t\r\n')) AS email, p.node_id AS id,
+                   coalesce((p.doc->>'isActive')::boolean, false) AS active FROM graph.principals_by_email(ARRAY['users'], $1::text[]) p
+                   WHERE lower(btrim(p.doc->>'email', E' \t\r\n')) = ANY($1::text[]) ORDER BY p.node_id""", [emails], transaction)
+            if rows is not None and len(rows) < _PRINCIPALS_PAGE:
+                found = list(rows)
+                found_emails = {r["email"] for r in found}
+                missing = [e for e in emails if e not in found_emails]
+                if not missing:
+                    return found
+            else:
+                missing = emails
+
+        if missing:
+            fb_rows = await self._id_rows("""/* pipeshub:graph.users_by_email */ SELECT lower(btrim(doc->>'email', E' \t\r\n')) AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
+                   FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', E' \t\r\n')) = ANY($2::text[]) ORDER BY id""", [org, missing], transaction)
+            if fb_rows:
+                found.extend(fb_rows)
+        return found
 
     async def _verified_email_peers(self, org: str, email: str, transaction: str | None) -> list:
         """The users whose lower-cased email is ``email``'s, by id: the vetted read of graph_0006, or the statement for an address out of its bounds."""
@@ -203,12 +217,23 @@ class IdentityMixin(PgBase):
             return None
         lookup_emails = list(dict.fromkeys([e for e in (email, norm_email) if e]))
         rows = await self._principals_by_email(["users"], lookup_emails, transaction)
-        if rows:
-            d = _doc(rows[0]["doc"])
-        else:
-            d = await self._one("/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND (lower(doc->>'email') = lower($2) OR lower(btrim(doc->>'email', E' \\t\\r\\n')) = $3) LIMIT 1",
-                                current_org_id(), email, norm_email, transaction=transaction)
-        return User.from_arango_user(_arango(d, "users")) if d else None
+        cands = [_doc(r["doc"]) for r in (rows or [])]
+        if not any(d.get("isActive") is not False for d in cands):
+            fb_rows = await self._id_rows(
+                "/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', E' \t\r\n')) = $2",
+                [current_org_id(), norm_email], transaction
+            )
+            cands.extend([_doc(r["doc"]) for r in (fb_rows or [])])
+        if not cands:
+            return None
+
+        def _sort_key(d: dict) -> tuple[int, str]:
+            is_active = d.get("isActive") is not False
+            uid = str(d.get("id") or d.get("_key") or "")
+            return (0 if is_active else 1, uid)
+
+        best = min(cands, key=_sort_key)
+        return User.from_arango_user(_arango(best, "users"))
 
     @_soft(dict, flag=True)
     async def get_users_by_emails(self, emails: list[str], transaction: str | None = None, *, raise_on_error: bool = False,
@@ -220,27 +245,41 @@ class IdentityMixin(PgBase):
         # lower(doc->>'email') is the expression index nodes_user_email (org_id, lower(doc->>'email')), which the vetted read reaches.
         vetted_emails = list(dict.fromkeys([*raw_wanted, *[e.lower() for e in emails if e]]))
         rows = await self._principals_by_email(["users"], vetted_emails, transaction)
-        found_docs = list(rows) if rows is not None else []
-        found_norms = {(_doc(r["doc"]).get("email") or "").strip().lower() for r in found_docs}
-        missing = [w for w in raw_wanted if w not in found_norms]
 
-        if missing or rows is None:
-            fallback_wanted = missing if rows is not None else raw_wanted
+        cands_by_norm: dict[str, list[dict]] = {w: [] for w in raw_wanted}
+        for r in (rows or []):
+            d = _doc(r["doc"])
+            norm = (d.get("email") or "").strip().lower()
+            if norm in cands_by_norm:
+                cands_by_norm[norm].append(d)
+
+        missing_active = [w for w in raw_wanted if not any(d.get("isActive") is not False for d in cands_by_norm[w])]
+        if missing_active:
             fb_rows = await self._id_rows(
-                "/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND (lower(doc->>'email') = ANY($2::text[]) OR lower(btrim(doc->>'email', E' \\t\\r\\n')) = ANY($2::text[]))",
-                [org, fallback_wanted], transaction
+                "/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', E' \t\r\n')) = ANY($2::text[])",
+                [org, missing_active], transaction
             )
-            found_docs.extend(fb_rows or [])
+            for r in (fb_rows or []):
+                d = _doc(r["doc"])
+                norm = (d.get("email") or "").strip().lower()
+                if norm in cands_by_norm:
+                    cands_by_norm[norm].append(d)
+
+        def _sort_key(d: dict) -> tuple[int, str]:
+            is_active = d.get("isActive") is not False
+            uid = str(d.get("id") or d.get("_key") or "")
+            return (0 if is_active else 1, uid)
 
         out: dict[str, User] = {}
-        for r in found_docs:
-            d = _arango(_doc(r["doc"]), "users")
-            raw_email = d.get("email") or ""
-            norm_key = raw_email.strip().lower()
-            if norm_key:
-                out.setdefault(norm_key, User.from_arango_user(d))
+        for norm, cands in cands_by_norm.items():
+            if not cands:
+                continue
+            best = min(cands, key=_sort_key)
+            u = User.from_arango_user(_arango(best, "users"))
+            out[norm] = u
+            raw_email = (best.get("email") or "").strip()
             if raw_email:
-                out.setdefault(raw_email.lower(), User.from_arango_user(d))
+                out.setdefault(raw_email.lower(), u)
         return out
 
     async def get_all_orgs(self, *, active: bool = True, is_external: bool = False, transaction: str | None = None, raise_on_error: bool = False) -> list[dict]:
@@ -457,7 +496,7 @@ class IdentityMixin(PgBase):
         orgs = await self.get_all_orgs(transaction=transaction)
         if not orgs:
             raise Exception("No organizations found in the database")
-        org_node = orgs[0].get("id") or orgs[0].get("_key")
+        org_node = org
         async with self._atomic(transaction) as tx:
             await self._q(lambda t: t.execute("""/* pipeshub:graph.ensure_minimal_app */ INSERT INTO graph.nodes (org_id, coll, id, doc)
                 VALUES ($1, 'apps', $2, $3::jsonb) ON CONFLICT DO NOTHING""", org, connector_id, _j(stub)), tx, write=True)

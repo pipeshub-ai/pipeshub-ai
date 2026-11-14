@@ -429,3 +429,21 @@ async def test_get_users_by_emails_with_padded_input_returns_matching_user(w: Wo
     assert "padded@x.com" in res
     assert res["padded@x.com"].id == "p"
 
+
+async def test_get_user_by_email_prefers_active_padded_match_over_inactive_exact(w: World) -> None:
+    await member(w, "inact", userId="uinact", email="ann@example.com", isActive=False)
+    await member(w, "act", userId="uact", email="  ann@example.com  ", isActive=True)
+    got = await w.p.get_user_by_email("ann@example.com")
+    assert got is not None
+    assert got.id == "act"
+    assert got.is_active is True
+
+
+async def test_get_users_by_emails_prefers_active_padded_match_over_inactive_exact(w: World) -> None:
+    await member(w, "inact", userId="uinact", email="bob@example.com", isActive=False)
+    await member(w, "act", userId="uact", email="  bob@example.com  ", isActive=True)
+    res = await w.p.get_users_by_emails(["bob@example.com"])
+    assert "bob@example.com" in res
+    assert res["bob@example.com"].id == "act"
+    assert res["bob@example.com"].is_active is True
+

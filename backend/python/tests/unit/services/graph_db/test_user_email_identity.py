@@ -206,7 +206,7 @@ class TestEmailLookupStaysInsideTheOrg:
             query = provider.http_client.execute_aql.await_args.args[0]
             bind_vars = provider.http_client.execute_aql.await_args.kwargs["bind_vars"]
             assert "user.orgId == @org_id" in query
-            assert "LOWER(user.email) == LOWER(@email)" in query
+            assert "LOWER(TRIM(user.email)) == LOWER(TRIM(@email))" in query
             assert bind_vars == {"email": "new@email.com", "org_id": "org-1"}
 
         asyncio.run(_run())

@@ -308,12 +308,10 @@ class EntityEventService(BaseEventService):
             self.logger.debug("Processing user added event for user %s", payload.get("userId"))
             org_id = payload["orgId"]
             ctx = org_context.peek()
-            trusted_org = ctx.org_id if ctx and ctx.org_id else None
-            if trusted_org and trusted_org != org_id:
+            ambient_org = ctx.org_id if ctx and ctx.org_id else None
+            if ambient_org and ambient_org != org_id:
                 self.logger.warning(
-                    "Event payload org %s does not match ambient org %s; rejecting event",
-                    org_id,
-                    trusted_org,
+                    "Event payload organization does not match ambient organization; rejecting event"
                 )
                 return False
 
@@ -608,12 +606,10 @@ class EntityEventService(BaseEventService):
             self.logger.debug("Processing user deleted event for user %s", payload.get("userId"))
             org_id = payload["orgId"]
             ctx = org_context.peek()
-            trusted_org = ctx.org_id if ctx and ctx.org_id else None
-            if trusted_org and trusted_org != org_id:
+            ambient_org = ctx.org_id if ctx and ctx.org_id else None
+            if ambient_org and ambient_org != org_id:
                 self.logger.warning(
-                    "Event payload org %s does not match ambient org %s; rejecting event",
-                    org_id,
-                    trusted_org,
+                    "Event payload organization does not match ambient organization; rejecting event"
                 )
                 return False
 
@@ -633,11 +629,9 @@ class EntityEventService(BaseEventService):
                         getattr(existing_user, "org_id", None)
                         or (existing_user.get("orgId") or existing_user.get("org_id") if isinstance(existing_user, dict) else None)
                     )
-                    if isinstance(user_org, str) and user_org != org_id:
+                    if not isinstance(user_org, str) or user_org != org_id:
                         self.logger.warning(
-                            "Found user belongs to organization %s, not event org %s; skipping deletion",
-                            user_org,
-                            org_id,
+                            "Found user organization does not match event organization; skipping deletion"
                         )
                         return False
                     cand_id = getattr(existing_user, "id", None) or (
@@ -656,16 +650,13 @@ class EntityEventService(BaseEventService):
                         )
                         if not doc:
                             self.logger.warning(
-                                "User %s document not found during deletion ownership verification; skipping deletion",
-                                candidate_id,
+                                "User document not found during deletion ownership verification; skipping deletion"
                             )
                             return False
                         user_org = doc.get("orgId") or doc.get("org_id")
-                        if isinstance(user_org, str) and user_org != org_id:
+                        if not isinstance(user_org, str) or user_org != org_id:
                             self.logger.warning(
-                                "Found user belongs to organization %s, not event org %s; skipping deletion",
-                                user_org,
-                                org_id,
+                                "Found user organization does not match event organization; skipping deletion"
                             )
                             return False
                         existing_user_id = candidate_id

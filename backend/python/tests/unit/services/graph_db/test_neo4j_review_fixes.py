@@ -386,3 +386,53 @@ async def test_batch_upsert_app_users_raises_on_get_user_error() -> None:
     )
     p.batch_upsert_nodes.assert_not_awaited()
 
+
+async def test_bulk_get_entity_ids_by_email_preserves_same_id_different_entity_type() -> None:
+    p = _provider()
+    # First exact query returns a Person with id "ent-1"; fallback query returns a User with id "ent-1"
+    p.client.execute_query = AsyncMock(side_effect=[
+        [{"email": "contact@example.com", "id": "ent-1", "labels": ["Person"], "isActive": True}],
+        [{"email": "Contact@Example.COM", "id": "ent-1", "labels": ["User"], "isActive": True}],
+    ])
+    res = await p.bulk_get_entity_ids_by_email(["contact@example.com"])
+    # Both candidates preserved in candidate list, priority prefers User over Person
+    assert res["contact@example.com"] == ("ent-1", "users", "USER")
+
+
+async def test_bulk_get_entity_ids_by_email_skips_blank_addresses() -> None:
+    p = _provider()
+    res = await p.bulk_get_entity_ids_by_email(["", "   ", "   \t\n  "])
+    assert res == {}
+    p.client.execute_query.assert_not_awaited()
+
+
+async def test_batch_upsert_app_users_uses_app_org_id_before_get_all_orgs() -> None:
+    from app.config.constants.arangodb import Connectors
+    from app.models.entities import AppUser, User
+
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = logging.getLogger("test")
+    p.get_all_orgs = AsyncMock()
+    p.get_document = AsyncMock(return_value={"id": "c1", "orgId": "org-app-override"})
+    p.get_user_by_email = AsyncMock(side_effect=[None, User(id="u1", email="user@example.com", is_active=True)])
+    p.batch_upsert_nodes = AsyncMock()
+    p.migrate_person_to_user = AsyncMock()
+    p.batch_create_edges = AsyncMock()
+
+    user = AppUser(
+        app_name=Connectors.GOOGLE_DRIVE,
+        connector_id="c1",
+        id="u1",
+        source_user_id="s1",
+        email="user@example.com",
+        full_name="User One",
+    )
+
+    await p.batch_upsert_app_users([user])
+    p.get_all_orgs.assert_not_awaited()
+    assert p.get_user_by_email.await_count == 2
+    assert all(
+        call.kwargs.get("org_id") == "org-app-override"
+        for call in p.get_user_by_email.await_args_list
+    )
+
