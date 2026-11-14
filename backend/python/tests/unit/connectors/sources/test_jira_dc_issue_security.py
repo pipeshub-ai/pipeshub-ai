@@ -263,6 +263,26 @@ class TestWithdrawnAccounts:
         c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [stored[0]], drop_grants=True)
         assert c._stored_app_users == stored[1:], "the withdrawn no longer count as linked this sync"
 
+    @pytest.mark.parametrize("flag", ["_user_bulk_incomplete", "_user_bulk_refused"])
+    async def test_a_deactivated_row_from_the_search_fallback_or_a_refused_list_withdraws_nobody(self, flag: str) -> None:
+        """A release without /user/list reads users through the search fallback; neither it nor a refused list is
+        the user list the withdrawal is checked against."""
+        c = _connector()
+        self._stored(c)
+        c._seen_user_keys = {"gone"}  # shown deactivated
+        setattr(c, flag, True)
+        await c._withdraw_unlisted_app_users([])
+        c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+
+    async def test_the_user_list_is_asked_only_for_documented_parameters(self) -> None:
+        """GET /rest/api/2/user/list documents cursor and maxResults only."""
+        c = _connector()
+        ds = MagicMock(get_user_list_v2=AsyncMock(return_value=MagicMock(
+            status=200, json=MagicMock(return_value={"values": [], "isLast": True}))))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        await c._fetch_users_via_list()
+        assert set(ds.get_user_list_v2.await_args.kwargs) == {"cursor", "maxResults"}
+
     async def test_too_many_withdrawals_in_one_sync_are_held(self) -> None:
         c = _connector()
         c.notify = AsyncMock()
