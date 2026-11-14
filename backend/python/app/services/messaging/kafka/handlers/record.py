@@ -120,7 +120,7 @@ from app.services.vector_db.rebuild_state import (
 from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
 from app.telemetry.modules.record_storage_metrics import record_rejected_too_large
-from app.utils.api_call import make_api_call
+from app.utils.api_call import ResponseTooLargeError, make_api_call
 from app.utils.indexing_timing import stage
 from app.utils.jwt import generate_jwt
 from app.utils.loop_bridge import run_on_loop
@@ -242,6 +242,14 @@ class RecordEventHandler(BaseEventService):
             )
         except RuntimeError:
             self._producer_loop = None
+
+    async def _refuse_too_large(self, record_id: str, extension: object) -> None:
+        await self.__update_document_status(
+            record_id=record_id,
+            indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+            extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+            reason=file_too_large_to_read(extension),  # type: ignore[arg-type]
+        )
 
     async def _disabled_file_types(self) -> frozenset[str]:
         """The file types turned off in the KV store (or by FILE_TYPES_DISABLED when it has none)."""
@@ -2249,6 +2257,14 @@ class RecordEventHandler(BaseEventService):
                 ),
             )
 
+            # A capped-text file whose size the record does not say is held to the ceiling as it
+            # downloads (the gate refused the ones that say it).
+            download_limit = (
+                file_types.TEXT_MAX_DOWNLOAD_BYTES
+                if decision.file_type is not None and decision.file_type.prep is file_types.Prep.CAPPED_TEXT
+                else None
+            )
+
             # Try signed URL first if available, fallback to connector streaming if it fails
             signed_url_success = False
 
@@ -2258,9 +2274,16 @@ class RecordEventHandler(BaseEventService):
                     with stage("download"):
                         response = await self._download_from_signed_url(
                             signed_url=payload["signedUrl"], record_id=record_id, doc=doc,
+                            max_bytes=download_limit,
                         )
                     if not response:
                         raise Exception("Failed to download file from signed URL")
+                except ResponseTooLargeError:
+                    # Refused for its size: the connector stream would only fetch the same bytes.
+                    await self._refuse_too_large(record_id, decision.judged_extension)
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
                 except Exception as e:
                     self.logger.warning(
                         f"⚠️ Failed to download from signed URL for record {record_id}: {str(e)}. "
@@ -2311,7 +2334,13 @@ class RecordEventHandler(BaseEventService):
                         with stage("download"):
                             response = await make_api_call(
                                 route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token,
+                                max_bytes=download_limit,
                             )
+                    except ResponseTooLargeError:
+                        await self._refuse_too_large(record_id, decision.judged_extension)
+                        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                        return
                     except Exception as fetch_exc:
                         # A reader is waiting: a deferral of hours is the ordinary retry's job to refuse.
                         if resuming_enrichment or parse_now or not await self._defer_rate_limited_record(
@@ -2681,6 +2710,7 @@ class RecordEventHandler(BaseEventService):
 
     async def _download_from_signed_url(
         self, signed_url: str, record_id: str, doc: dict, from_route: bool = False,
+        max_bytes: int | None = None,
     ) -> bytes|None:
         """
         Download file from signed URL with exponential backoff retry
@@ -2716,6 +2746,11 @@ class RecordEventHandler(BaseEventService):
                                 )
 
                             content_length = response.headers.get("Content-Length")
+                            if (
+                                max_bytes is not None and content_length and content_length.isdigit()
+                                and int(content_length) > max_bytes
+                            ):
+                                raise ResponseTooLargeError(max_bytes)
                             if content_length:
                                 self.logger.info(
                                     f"Expected file size: {int(content_length) / (1024*1024):.2f} MB"
@@ -2732,6 +2767,8 @@ class RecordEventHandler(BaseEventService):
                                 ):
                                     file_buffer.extend(chunk)
                                     total_size += len(chunk)
+                                    if max_bytes is not None and total_size > max_bytes:
+                                        raise ResponseTooLargeError(max_bytes)
                                     if total_size - last_logged_size >= log_interval:
                                         self.logger.debug(
                                             f"Total size so far: {total_size / (1024*1024):.2f} MB"

@@ -76,7 +76,12 @@ def processor(store: _Store, captured: list[BlocksContainer], docling_inputs: li
     p._convert_record = lambda _record: SimpleNamespace()
     p._create_transform_context = lambda record, *_a: record
     sink = MagicMock()
-    sink.apply = AsyncMock(side_effect=lambda ctx: captured.append(ctx.block_containers))
+    def sink_apply(ctx: object) -> None:
+        # What the real sink does at the end of a successful index: blocks stored, record COMPLETED.
+        captured.append(ctx.block_containers)  # type: ignore[attr-defined]
+        store.record["indexingStatus"] = "COMPLETED"
+
+    sink.apply = AsyncMock(side_effect=sink_apply)
     p._pipeline = lambda: sink
     return p
 
@@ -160,6 +165,8 @@ async def service(ext: str, content: bytes, mime: str | None = None) -> BlocksCo
 async def handler_run(
     ext: str | None, mime: str | None, content: bytes, *, name: str | None = None,
     size: int | None = None, attempt_final: bool = False, real_worker: bool = False,
+    too_large: bool = False, download_kwargs: dict[str, object] | None = None,
+    captured: list[BlocksContainer] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """The record after one delivery through the real record handler, and whether it was downloaded."""
     from tests.unit.services.messaging.test_record_handler import _make_handler
@@ -169,7 +176,7 @@ async def handler_run(
     if size is not None:
         record["sizeInBytes"] = size
     store = _Store(record)
-    captured: list[BlocksContainer] = []
+    captured = [] if captured is None else captured
     ep = EventProcessor(LOGGER, processor(store, captured, []), store.provider, MagicMock())
     ep.sink_orchestrator = None
     ep.stage_ingress = None
@@ -177,8 +184,15 @@ async def handler_run(
     handler.event_processor.graph_provider = store.provider
     downloads: list[str] = []
 
-    async def download(**_k: object) -> bytes:
+    async def download(**kwargs: object) -> bytes:
         downloads.append(name)
+        if download_kwargs is not None:
+            download_kwargs.clear()
+            download_kwargs.update(kwargs)
+        if too_large:
+            from app.utils.api_call import ResponseTooLargeError
+
+            raise ResponseTooLargeError(int(kwargs.get("max_bytes") or 0))
         return content
 
     payload = {
