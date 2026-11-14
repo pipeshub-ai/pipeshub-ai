@@ -165,6 +165,10 @@ _IMAGE_MAX_BYTES = 20 * 1024 * 1024
 _IMAGE_FETCH_CONCURRENCY = 4
 # Bounds the per-block fan-out of comment and row lookups at stream time.
 _STREAM_FETCH_CONCURRENCY = 5
+# Indexing outcomes after which a record's chunks are its current content (or it has none).
+_REINDEX_DONE = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
+# A reindex not done this long after it was asked for is asked for again.
+_REINDEX_RETRY_MS = 6 * 60 * 60 * 1000
 
 # Notion answers 404 object_not_found both for "deleted" and for "not shared with this
 # integration". Either way the integration can no longer read it, so with a token Notion just
@@ -1211,28 +1215,54 @@ class NotionConnector(BaseConnector):
 
     async def _reindex_without_linked_content(self) -> None:
         """Before the walk: have every page and data source stored before content dropped other
-        pages' titles indexed again, once, and put them in ``_withheld``, granted to nobody this
-        sync while that indexing runs. Records this code writes need none of it.
+        pages' titles indexed again, once, and put in ``_withheld`` (granted to nobody) each one whose
+        new index is not confirmed. Records this code writes need none of it.
 
-        shortcut: the next sync grants them, assuming indexing finished within one sync interval;
-        wait for each record's indexing to report back if it ever takes longer.
+        ``notionContent`` keeps, per record still waiting, when its reindex was asked for. A record
+        counts as done once indexing finished it after that (``lastIndexTimestamp``, with a status
+        that is an outcome); one that failed, was never sent, or is still not done after
+        ``_REINDEX_RETRY_MS`` is asked for again and stays withheld.
         """
         key = personal_tokens.content_state_path(self.connector_id)
         state = await self.config_service.get_config(key, use_cache=False, raise_on_error=True) or {}
-        pending = set(state.get("pending") or ())
-        if state.get("done") and not pending:
-            self._withheld = set()
+        raw = state.get("pending") or {}
+        pending: dict[str, int] = dict(raw) if isinstance(raw, dict) else dict.fromkeys(raw, 0)
+        if not state.get("done"):
+            pending = {
+                r.id: 0 for record_type in (RecordType.WEBPAGE, RecordType.DATASOURCE)
+                for r in await self.data_entities_processor.get_records_by_record_type(self.connector_id, record_type)
+                if not r.is_placeholder
+            }
+        self._withheld = set(pending)
+        if not pending:
+            if not state.get("done"):
+                await self._save_content_state(key, pending)
             return
-        stored = [
-            r for record_type in (RecordType.WEBPAGE, RecordType.DATASOURCE)
-            for r in await self.data_entities_processor.get_records_by_record_type(self.connector_id, record_type)
-            if not r.is_placeholder and (not state.get("done") or r.id in pending)
-        ]
-        self._withheld = {r.id for r in stored}
-        published = set(await self.data_entities_processor.reindex_existing_records(stored)) if stored else set()
-        if not await self.config_service.set_config(
-            key, {"done": True, "pending": [r.id for r in stored if r.id not in published]},
-        ):
+        now = get_epoch_timestamp_in_ms()
+
+        async def stored(record_id: str) -> tuple[str, dict[str, Any] | None]:
+            async with self.data_store_provider.transaction() as tx_store:
+                return record_id, await tx_store.get_record_by_key(record_id, raise_on_error=True)
+
+        resend: list[Record] = []
+        for record_id, doc in await gather_with_concurrency(_STREAM_FETCH_CONCURRENCY, *[stored(i) for i in pending]):
+            asked = pending[record_id]
+            if doc is None or doc.get("isDeleted"):
+                del pending[record_id]  # gone, and its index with it
+                continue
+            status, indexed = doc.get("indexingStatus"), doc.get("lastIndexTimestamp") or 0
+            if asked and indexed >= asked and status in _REINDEX_DONE:
+                del pending[record_id]
+            elif not asked or status == ProgressStatus.FAILED.value or now - asked > _REINDEX_RETRY_MS:
+                resend.append(Record.from_arango_base_record(doc))
+        if resend:
+            published = set(await self.data_entities_processor.reindex_existing_records(resend))
+            pending.update({r.id: now for r in resend if r.id in published})
+        self._withheld = set(pending)
+        await self._save_content_state(key, pending)
+
+    async def _save_content_state(self, key: str, pending: dict[str, int]) -> None:
+        if not await self.config_service.set_config(key, {"done": True, "pending": pending}):
             raise RuntimeError("the configuration store did not keep the reindex state")
 
     def _readers_of(self, object_id: str) -> set[str]:

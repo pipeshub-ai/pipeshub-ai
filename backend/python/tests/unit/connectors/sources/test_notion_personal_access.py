@@ -1,6 +1,8 @@
 """Notion team connector: who may open each page, from the personal access tokens users link and from
 pages published to the web; never from workspace membership alone."""
 
+import contextlib
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -419,32 +421,74 @@ async def test_a_relation_without_a_title_shows_its_target_id() -> None:
     assert value == "page-9"
 
 
+class _Store:
+    """The graph's record documents, as the reindex check reads them."""
+
+    def __init__(self) -> None:
+        self.docs: dict[str, dict[str, Any]] = {}
+
+    @contextlib.asynccontextmanager
+    async def transaction(self) -> AsyncIterator[MagicMock]:
+        yield MagicMock(get_record_by_key=AsyncMock(side_effect=lambda key, **_: self.docs.get(key)))
+
+
+def _doc(ext: str, status: str, indexed: int = 0) -> dict[str, Any]:
+    return {"id": f"rid-{ext}", "orgId": "org-1", "externalRecordId": ext, "recordName": ext, "recordType": "WEBPAGE",
+            "connectorName": "NOTION", "connectorId": "notion-conn-1", "origin": "CONNECTOR", "version": 1,
+            "createdAtTimestamp": 1, "updatedAtTimestamp": 1, "indexingStatus": status, "lastIndexTimestamp": indexed}
+
+
 @pytest.mark.asyncio
-async def test_content_indexed_with_other_pages_titles_is_indexed_again_once_and_granted_after() -> None:
+async def test_a_record_indexed_before_is_granted_only_once_its_new_index_is_confirmed() -> None:
     conn = _connector()
     conn._readers = {"a": {ALICE}, "b": {ALICE}}
     key = personal_tokens.content_state_path(conn.connector_id)
     del conn.config_service.values[key]  # stored by an earlier version
-    reindex = conn.data_entities_processor.reindex_existing_records = AsyncMock(return_value=["rid-a"])
+    store = conn.data_store_provider = _Store()
+    store.docs = {"rid-a": _doc("a", "COMPLETED", 1), "rid-b": _doc("b", "COMPLETED", 1)}
+    reindex = conn.data_entities_processor.reindex_existing_records = AsyncMock(
+        side_effect=lambda records: [r.id for r in records if r.id == "rid-a"])
     records = (_record("a"), _record("b"))
+    clock = {"now": 1_000}
 
     async def sync() -> dict[str, list[str]]:
-        by_type = {RecordType.WEBPAGE: list(records)}
-        conn.data_entities_processor.get_records_by_record_type = AsyncMock(side_effect=lambda _c, t: by_type.get(t, []))
+        conn.data_entities_processor.get_records_by_record_type = AsyncMock(
+            side_effect=lambda _c, t: list(records) if t == RecordType.WEBPAGE else [])
         conn._withheld = None  # as each sync starts
-        await conn._reindex_without_linked_content()
+        with patch("app.connectors.sources.notion.connector.get_epoch_timestamp_in_ms", return_value=clock["now"]):
+            await conn._reindex_without_linked_content()
         conn.data_entities_processor.on_updated_record_permissions.reset_mock()
         return await _applied(conn, *records)
 
     assert await sync() == {"a": [], "b": []}, "nobody while it is indexed again"
-    assert [r.id for r in reindex.await_args.args[0]] == ["rid-a", "rid-b"]
-    assert conn.config_service.values[key] == {"done": True, "pending": ["rid-b"]}
-    assert await sync() == {"a": [ALICE], "b": []}, "b's reindex did not go out: it waits"
-    reindex.return_value = ["rid-b"]
-    await sync()
+    assert conn.config_service.values[key]["pending"] == {"rid-a": 1_000, "rid-b": 0}, "b's reindex did not go out"
+
+    clock["now"] = 2_000
+    store.docs["rid-a"] = _doc("a", "QUEUED", 1)
+    assert await sync() == {"a": [], "b": []}, "a's new index has not finished"
+    assert [r.id for r in reindex.await_args.args[0]] == ["rid-b"], "b is asked for again; a waits"
+
+    store.docs["rid-a"] = _doc("a", "COMPLETED", 1_500)
+    assert (await sync())["a"] == [ALICE], "a's index finished after it was asked for"
+
+    store.docs["rid-a"] = _doc("a", "COMPLETED", 1_500)
+    reindex.side_effect = lambda records: [r.id for r in records]
+    clock["now"] = 3_000
+    await sync()  # b asked for again, and goes out this time
+    store.docs["rid-b"] = _doc("b", "FAILED", 3_500)
     reindex.reset_mock()
+    assert (await sync())["b"] == [], "a failed reindex keeps it withheld"
+    assert [r.id for r in reindex.await_args.args[0]] == ["rid-b"], "and asks again"
+
+    clock["now"] = 3_000 + 7 * 60 * 60 * 1000
+    store.docs["rid-b"] = _doc("b", "IN_PROGRESS", 3_500)
+    reindex.reset_mock()
+    await sync()
+    assert reindex.await_count == 1, "stuck past the bound: asked again"
+
+    store.docs["rid-b"] = _doc("b", "COMPLETED", clock["now"] + 1)
     assert await sync() == {"a": [ALICE], "b": [ALICE]}
-    reindex.assert_not_awaited()
+    assert conn.config_service.values[key]["pending"] == {}
 
 
 @pytest.mark.asyncio
@@ -454,7 +498,7 @@ async def test_a_connector_with_nothing_stored_yet_needs_no_reindex() -> None:
     del conn.config_service.values[key]
     conn.data_entities_processor.reindex_existing_records = AsyncMock(return_value=[])
     await conn._reindex_without_linked_content()
-    assert conn._withheld == set() and conn.config_service.values[key] == {"done": True, "pending": []}
+    assert conn._withheld == set() and conn.config_service.values[key] == {"done": True, "pending": {}}
     conn.data_entities_processor.reindex_existing_records.assert_not_awaited()
 
 
