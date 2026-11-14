@@ -201,6 +201,9 @@ RECORD_BATCH_SIZE = 100
 # Stored pages a run looks up one by one because their space no longer lists them. The
 # rest wait for the next run, which finds them again.
 GONE_PAGE_CHECKS_PER_RUN = 500
+# _page_access's answer when a page was written shared and the readers of one of its spaces
+# cannot be confirmed this run: its stored access stays as it is.
+KEEP_STORED_ACCESS = "keep stored access"
 STORED_PAGE_READ_SIZE = 1000
 
 
@@ -247,8 +250,9 @@ class PageListing:
 
     # space -> ids of the pages it is home to; only spaces listed in full
     home: dict[int, set[int]] = field(default_factory=dict)
-    # space -> ids of the pages stored under it when its listing began
-    stored: dict[int, set[int]] = field(default_factory=dict)
+    # space -> page id -> ids of the records stored for it (the page and its attachments)
+    # when the space's listing began
+    stored: dict[int, dict[int, list[str]]] = field(default_factory=dict)
     # pages written this run, and the grants digest each page record was written with
     written: set[int] = field(default_factory=set)
     written_as: dict[int, str] = field(default_factory=dict)
@@ -1299,7 +1303,7 @@ class DrupalWikiConnector(BaseConnector):
         checkpoint = await self._get_checkpoint(self.record_sync_point, key)
         modified_after = _as_int(checkpoint.get("last_modified"))
         failures_before = len(self._failures)
-        stored = await self._stored_page_ids(space_id)
+        stored = await self._stored_pages(space_id)
         if modified_after is not None:
             # Every page was written STRICT by the clean pass that set the checkpoint.
             listing.settled.add(space_id)
@@ -1324,6 +1328,9 @@ class DrupalWikiConnector(BaseConnector):
                 page_id in stored and modified_after is not None
                 and last_modified is not None and last_modified <= modified_after
             ):
+                # Kept as stored: a full sync that kept its checkpoints (their deletion
+                # failed) must not unlink it.
+                self.data_entities_processor.note_kept_records(self.connector_id, stored[page_id])
                 continue
             try:
                 records = await self._build_page_records(page, parents, listing)
@@ -1361,6 +1368,15 @@ class DrupalWikiConnector(BaseConnector):
         # must not move past it.
         if len(self._failures) != failures_before or newest_seen is None:
             return
+        if modified_after is None and stored.keys() - home:
+            # A first pass settles the space only once every stored page has been written
+            # STRICT: one the listing left out (skipped by the offset paging, or gone) may
+            # still inherit from the page above it the way pages did before.
+            self.logger.info(
+                "Drupal Wiki: %d stored page(s) of '%s' were not listed; its pages are written "
+                "in full again next time", len(stored.keys() - home), space_name,
+            )
+            return
         listing.settled.add(space_id)
         # A page stamped in the same second as the newest one but saved just after the
         # listing read it would never count as changed again. Standing one second back
@@ -1373,21 +1389,27 @@ class DrupalWikiConnector(BaseConnector):
         # it. Without one, every page is written once more and takes its space's readers.
         return generate_record_sync_point_key(RecordType.WEBPAGE.value, "space_pages", str(space_id))
 
-    async def _stored_page_ids(self, space_id: int) -> set[int]:
-        """Ids of the pages stored under a space."""
-        ids: set[int] = set()
+    async def _stored_pages(self, space_id: int) -> dict[int, list[str]]:
+        """``{page id: ids of its stored records}`` for the pages stored under a space: the
+        page's own record and those of its attachments."""
+        pages: dict[int, list[str]] = {}
+        attachments: dict[int, list[str]] = {}
         after: str | None = None
         while True:
             records = await self.data_entities_processor.get_records_in_record_group(
                 self.connector_id, str(space_id), STORED_PAGE_READ_SIZE, after
             )
-            ids.update(
-                page_id for record in records
-                if (page_id := source_id_from_external(record.external_record_id, PAGE_ID_PREFIX)) is not None
-            )
+            for record in records:
+                if (page_id := source_id_from_external(record.external_record_id, PAGE_ID_PREFIX)) is not None:
+                    pages.setdefault(page_id, []).append(record.id)
+                elif (page_id := source_id_from_external(record.parent_external_record_id or "", PAGE_ID_PREFIX)) is not None:
+                    attachments.setdefault(page_id, []).append(record.id)
             if len(records) < STORED_PAGE_READ_SIZE:
-                return ids
+                break
             after = records[-1].id
+        for page_id, ids in pages.items():
+            ids.extend(attachments.get(page_id, []))
+        return pages
 
     async def _fetch_pages(self, space_id: int) -> AsyncGenerator[dict[str, Any], None]:
         """Yield every page of one space: those whose home it is and those shared into it.
@@ -1442,6 +1464,10 @@ class DrupalWikiConnector(BaseConnector):
                         continue  # not written yet, or removed; decided when it is
                     home = _as_int(record.external_record_group_id)
                 shares, permissions = self._page_access(page_id, home, listing)
+                if permissions == KEEP_STORED_ACCESS:
+                    # Who reads one of its spaces is not known this run: as it was written.
+                    now[str(page_id)] = {"home": home, "spaces": sorted(shares), "grants": had.get("grants", "")}
+                    continue
                 written = _grants_digest(permissions)
                 if written != listing.written_as.get(page_id, had.get("grants")):
                     record = record or await self._stored_page(page_id)
@@ -1467,13 +1493,16 @@ class DrupalWikiConnector(BaseConnector):
 
     def _page_access(
         self, page_id: int, home: int | None, listing: PageListing
-    ) -> tuple[set[int], list[Permission] | None]:
+    ) -> tuple[set[int], list[Permission] | str | None]:
         """The spaces a page is shared into, as far as this run knows them, and the grants
-        it carries of its own: None for a plain page.
+        it carries of its own: None for a plain page, ``KEEP_STORED_ACCESS`` for a page
+        written shared whose readers cannot all be confirmed this run.
 
         Every page write takes its access from here, so a later write never undoes a
         share. A space this run did not list (yet, or in full) keeps the shares the page
-        had into it.
+        had into it. Unknown is not empty: a page stays as it was written until every
+        reader of its spaces is read and every page of its home space is ``STRICT``, so
+        nothing is opened to new readers and nobody loses a read on a guess.
         """
         had = listing.shares_before.get(str(page_id)) or {}
         shares = {
@@ -1481,7 +1510,12 @@ class DrupalWikiConnector(BaseConnector):
             if space is not None and space not in listing.home
         } | listing.shared.get(page_id, set())
         shares.discard(home)
-        return shares, self._shared_page_permissions(home, shares, listing)
+        if not shares:
+            return shares, None
+        permissions = self._shared_page_permissions(home, shares, listing)
+        if permissions is None and had:
+            return shares, KEEP_STORED_ACCESS
+        return shares, permissions
 
     @staticmethod
     def _apply_page_access(record: Record, permissions: list[Permission] | None) -> list[Permission]:
@@ -1501,7 +1535,7 @@ class DrupalWikiConnector(BaseConnector):
         self, home: int | None, shares: set[int], listing: PageListing
     ) -> list[Permission] | None:
         """The readers of the home space and of every space the page is shared into, or
-        None when it is to be written plain: not shared, its home space's pages not all
+        None when they cannot be given: not shared, its home space's pages not all
         ``STRICT`` yet, or the readers of one of those spaces not read this run."""
         spaces = {home, *shares}
         if not shares or home not in listing.settled or any(s not in self._space_readers for s in spaces):
@@ -1531,36 +1565,45 @@ class DrupalWikiConnector(BaseConnector):
 
         The listing pages by offset, so a page can slip between two windows when another
         is deleted meanwhile; each one is looked up before it goes. At most
-        ``GONE_PAGE_CHECKS_PER_RUN`` are looked up; the rest are found again next run.
+        ``GONE_PAGE_CHECKS_PER_RUN`` are looked up a run, in page id order from where the
+        last run stopped, so lookups that keep failing never hold back the ones after them.
         """
-        checks = 0
-        for space_id, home in listing.home.items():
-            for page_id in sorted(listing.stored[space_id] - home - listing.written):
-                if checks == GONE_PAGE_CHECKS_PER_RUN:
-                    self.logger.info(
-                        "Drupal Wiki: %d stored pages were checked against the wiki; the rest "
-                        "are checked on the next sync", checks,
-                    )
-                    return
-                checks += 1
-                try:
-                    page = await self._current_page(page_id)
-                    if page is not None and _as_int(page.get("homeSpace")) == space_id:
-                        # Still there: the listing skipped it.
-                        await self.data_entities_processor.on_new_records(
-                            await self._build_page_records(page, None, listing)
-                        )
-                        continue
-                    await self.data_entities_processor.delete_record_by_external_id(
-                        self.connector_id, page_external_id(page_id)
-                    )
-                except DrupalWikiAuthError:
-                    raise
-                except Exception as e:
-                    self._fail(
-                        f"Could not check whether the Drupal Wiki page {page_id} still exists, so "
-                        f"it stays until the next sync: {describe_exception(e)}"
-                    )
+        candidates = sorted(
+            (page_id, space_id)
+            for space_id, home in listing.home.items()
+            for page_id in listing.stored[space_id].keys() - home - listing.written
+        )
+        key = generate_record_sync_point_key("removals", "space", "all")
+        after = _as_int((await self._get_checkpoint(self.record_sync_point, key)).get("after")) or 0
+        start = next((i for i, (page_id, _) in enumerate(candidates) if page_id > after), 0)
+        turn = (candidates[start:] + candidates[:start])[:GONE_PAGE_CHECKS_PER_RUN]
+        for page_id, space_id in turn:
+            try:
+                page = await self._current_page(page_id)
+                if page is not None and _as_int(page.get("homeSpace")) == space_id:
+                    # Still there: the listing skipped it.
+                    records = await self._build_page_records(page, None, listing)
+                    if records:
+                        await self.data_entities_processor.on_new_records(records)
+                    continue
+                await self.data_entities_processor.delete_record_by_external_id(
+                    self.connector_id, page_external_id(page_id)
+                )
+            except DrupalWikiAuthError:
+                raise
+            except Exception as e:
+                self._fail(
+                    f"Could not check whether the Drupal Wiki page {page_id} still exists, so "
+                    f"it stays until the next sync: {describe_exception(e)}"
+                )
+        if len(turn) < len(candidates):
+            self.logger.info(
+                "Drupal Wiki: %d of %d stored pages no space lists were checked; the rest are "
+                "checked on the next sync", len(turn), len(candidates),
+            )
+        await self.record_sync_point.update_sync_point(
+            key, {"after": turn[-1][0] if len(turn) < len(candidates) else 0}
+        )
 
     async def _build_page_records(
         self,
@@ -1569,7 +1612,8 @@ class DrupalWikiConnector(BaseConnector):
         listing: PageListing,
     ) -> list[tuple[Record, list[Permission]]]:
         """Build the page record, with the access ``_page_access`` decides, plus its
-        attachments."""
+        attachments. A page whose stored access is kept is written here, without grants,
+        and left out of what is returned."""
         page_id = _as_int(page.get("id"))
         pages_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGES.value)
         attachments_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS.value)
@@ -1618,8 +1662,19 @@ class DrupalWikiConnector(BaseConnector):
             record.parent_record_type = RecordType.WEBPAGE
 
         _, permissions = self._page_access(page_id, _as_int(page.get("homeSpace")), listing)
-        listing.written_as[page_id] = _grants_digest(permissions)
-        records: list[tuple[Record, list[Permission]]] = [(record, self._apply_page_access(record, permissions))]
+        records: list[tuple[Record, list[Permission]]] = []
+        if permissions == KEEP_STORED_ACCESS:
+            # Written in the form it was last written in, its grants left as stored, even
+            # by a full sync, which would otherwise replace them.
+            written = (listing.shares_before.get(str(page_id)) or {}).get("grants", "")
+            shared = written.startswith("shared:")
+            record.access_rule = AccessRule.OPEN if shared else AccessRule.STRICT
+            record.inherit_permissions = not shared
+            await self.data_entities_processor.on_record_content_update(record)
+            listing.written_as[page_id] = written
+        else:
+            listing.written_as[page_id] = _grants_digest(permissions)
+            records.append((record, self._apply_page_access(record, permissions)))
         # Search annotates a dependent hit with its parent, so an attachment has to
         # name the page's *stored* node id -- the id it was built with is discarded
         # when the processor matches an existing page.

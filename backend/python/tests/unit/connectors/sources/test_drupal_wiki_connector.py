@@ -133,6 +133,8 @@ def processor() -> MagicMock:
     proc.on_record_group_deleted = AsyncMock()
     proc.on_user_group_deleted = AsyncMock()
     proc.reindex_existing_records = AsyncMock()
+    proc.on_record_content_update = AsyncMock()
+    proc.note_kept_records = MagicMock()
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_records_in_record_group = AsyncMock(return_value=[])
     proc.get_all_app_users = AsyncMock(return_value=[])
@@ -773,6 +775,47 @@ class TestMovesAndDeletions:
         assert [c.args[1] for c in processor.delete_record_by_external_id.await_args_list] == [
             "page:1", "page:2", "page:3",
         ]
+
+    @pytest.mark.asyncio
+    async def test_lookups_that_keep_failing_do_not_hold_back_the_ones_after_them(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        self.wiki(connector, processor, {12: []}, {12: list(range(1, 8))})
+        checkpoints: dict[str, dict] = {}
+        connector.record_sync_point.read_sync_point = AsyncMock(side_effect=lambda key: dict(checkpoints.get(key, {})))
+        connector.record_sync_point.update_sync_point = AsyncMock(
+            side_effect=lambda key, payload: checkpoints.__setitem__(key, dict(payload))
+        )
+        connector.data_source.get_page = AsyncMock(return_value=response(status=500))
+
+        with patch("app.connectors.sources.drupal_wiki.connector.GONE_PAGE_CHECKS_PER_RUN", 3):
+            await connector._sync_pages({12: {"id": 12}})
+            first = [c.args[0] for c in connector.data_source.get_page.await_args_list]
+            connector.data_source.get_page.reset_mock()
+            connector.data_source.get_page.return_value = response(status=404)
+            await connector._sync_pages({12: {"id": 12}})
+
+        assert first == [1, 2, 3]
+        assert [c.args[1] for c in processor.delete_record_by_external_id.await_args_list] == [
+            "page:4", "page:5", "page:6",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_stored_page_is_kept_through_a_full_sync(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # A full sync whose checkpoint deletion failed still skips unchanged pages; they
+        # and their attachments are noted as kept so the unlink after it leaves them.
+        connector.record_sync_point.read_sync_point = AsyncMock(
+            side_effect=lambda key: {"last_modified": 5000} if key.startswith("WEBPAGE/") else {}
+        )
+        self.wiki(connector, processor, {12: [page_payload(1, last_modified=1000)]}, {12: [1]})
+        processor.get_records_in_record_group = AsyncMock(return_value=[stored_record(1), attachment_record(88, page_id=1)])
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        processor.note_kept_records.assert_called_once_with("conn-1", ["internal-1", "internal-att-88"])
+        processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_reindex_keeps_a_record_the_source_no_longer_returns(
@@ -2915,10 +2958,51 @@ class TestSharedPages:
 
         await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}})
 
-        # 13's readers were not read this run, so the page is written plain, never with
-        # an old copy of them, and the share is remembered for the next run.
-        assert self.rewrites(processor) == [("page:1", "STRICT", True, [])]
-        assert json.loads(checkpoints["shares/space/all"]["pages"]) == {"1": {"home": 12, "spaces": [13], "grants": ""}}
+        # 13's readers were not read this run: unknown is not empty, so the page keeps the
+        # grants it was written with, and the share is remembered for the next run.
+        assert self.rewrites(processor) == []
+        assert json.loads(checkpoints["shares/space/all"]["pages"]) == {"1": had}
+
+    @pytest.mark.asyncio
+    async def test_a_shared_page_whose_readers_are_unknown_keeps_its_grants_when_edited(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Space 13's members were refused (kept access): it is listed but its readers are
+        # not read. The edited page is written without touching its grants, even by a full
+        # sync, and keeps the form it was written in.
+        had = {"home": 12, "spaces": [13], "grants": "shared:x"}
+        changed = page_payload(1, space_id=12, last_modified=9000)
+        checkpoints = self.wiki(connector, processor, {12: [changed], 13: [changed]}, shares={"1": had})
+        connector._space_readers.pop(13)
+
+        await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}})
+
+        [written] = [c.args[0] for c in processor.on_record_content_update.await_args_list]
+        assert (written.external_record_id, written.access_rule.value, written.inherit_permissions) == (
+            "page:1", "OPEN", False,
+        )
+        assert self.page_writes(processor, "page:1") == []
+        assert self.rewrites(processor) == []
+        assert json.loads(checkpoints["shares/space/all"]["pages"]) == {"1": had}
+
+    @pytest.mark.asyncio
+    async def test_a_first_pass_that_misses_a_stored_page_does_not_settle_its_space(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # The first pass after upgrade: page 2 (stored, maybe still inheriting from the
+        # page above it) slips out of the offset listing. The space gets no checkpoint and
+        # page 1 no shared grants, which page 2 could otherwise reach.
+        self.wiki(connector, processor, {12: [self.PAGE], 13: [self.PAGE]}, settled=())
+        processor.get_records_in_record_group = AsyncMock(
+            side_effect=lambda _c, space, *_a, **_k: [stored_record(1), stored_record(2)] if space == "12" else []
+        )
+        connector.data_source.get_page = AsyncMock(return_value=response(page_payload(2, space_id=12)))
+
+        await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}})
+
+        assert "WEBPAGE/space_pages/12" not in [key for key, _ in page_checkpoint_writes(connector)]
+        assert [w for w in self.page_writes(processor, "page:1") if w[0] == "OPEN"] == []
+        assert self.rewrites(processor) == []
 
     @pytest.mark.asyncio
     async def test_a_share_waits_until_every_home_space_page_has_access_rule_strict(

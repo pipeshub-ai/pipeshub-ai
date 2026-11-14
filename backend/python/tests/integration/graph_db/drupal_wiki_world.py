@@ -21,6 +21,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.drupal_wiki.connector import DrupalWikiConnector
+from app.sources.external.drupal_wiki.graphql import DrupalWikiGraphQLRefusedError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = logging.getLogger("drupal-wiki-access-it")
@@ -64,6 +65,8 @@ class FakeWiki:
     # pages the next listing of their home space leaves out, as an offset listing does when
     # another page is deleted between two of its windows
     skipped_once: set[int] = field(default_factory=set)
+    # the wiki refuses to list the members of private spaces (as Drupal Wiki 8.44 does for tokens)
+    members_refused: bool = False
 
     def readable(self) -> dict[str, set[str]]:
         enabled = {u["email"] for u in self.users.values() if u["status"] == "ENABLED"}
@@ -112,6 +115,8 @@ class FakeWiki:
     # ---- the GraphQL data source
 
     async def get_space_members(self, space_id: int) -> dict[str, Any]:
+        if self.members_refused:
+            raise DrupalWikiGraphQLRefusedError("QueryNotAllowed")
         return {"users": [{"email": e} for e in self.members.get(space_id, [])], "groups": []}
 
     async def get_space_tree(self, space_id: int) -> list[dict[str, Any]]:
@@ -227,6 +232,11 @@ async def a_shared_page_reaches_the_other_spaces_readers_and_its_sub_page_does_n
     world.wiki.members[PRIVATE_SPACE] = [ALICE, CAROL]
     await world.sync()
     await world.check("carol joins the private space")
+    world.wiki.members_refused = True
+    world.wiki.pages[PRIVATE_PAGE]["modified"] = 3000
+    await world.sync()
+    await world.check("members refused, so the private space keeps its stored access, and the shared page is edited")
+    world.wiki.members_refused = False
     world.wiki.shares.clear()
     await world.sync()
     await world.check("share removed")
