@@ -5010,6 +5010,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         updates: dict[str, Any],
         expected: dict[str, Any],
         transaction: str | None = None,
+        *,
+        clock_at_most: float | None = None,
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if_match`."""
         if not expected:
@@ -5020,6 +5022,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         neo4j_updates = self._arango_to_neo4j_node(updates, collection)
         parameters: dict[str, Any] = {"key": key, "updates": neo4j_updates}
         conditions = []
+        if clock_at_most is not None:
+            # the clock as the statement runs, after the lock (timestamp() is the statement's start, before any wait for it)
+            parameters["clock_at_most"] = clock_at_most
+            conditions.append("datetime.realtime().epochMillis <= $clock_at_most * 1000")
         for i, (field, value) in enumerate(expected.items()):
             parameters[f"f{i}"] = field
             if value is None:
