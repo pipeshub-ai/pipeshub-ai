@@ -14,6 +14,7 @@ import type {
   ConnectorStatsResponse,
   ConnectionCheckResponse,
   PermissionStatus,
+  NotionPersonalTokenState,
   ReindexStage,
   CodeGraphRepo,
   AccessExplanation,
@@ -542,6 +543,41 @@ export const ConnectorsApi = {
       { suppressErrorToast: true }
     );
     return data;
+  },
+
+  /** The caller's own Notion personal access token state for a Notion team connector. */
+  async getNotionPersonalToken(connectorId: string): Promise<NotionPersonalTokenState> {
+    const { data } = await apiClient.get<NotionPersonalTokenState>(
+      `${BASE_URL}/${connectorId}/notion/personal-token`,
+      { suppressErrorToast: true }
+    );
+    return data;
+  },
+
+  async linkNotionPersonalToken(connectorId: string, token: string): Promise<NotionPersonalTokenState> {
+    const { data } = await apiClient.put<NotionPersonalTokenState>(
+      `${BASE_URL}/${connectorId}/notion/personal-token`,
+      { token }
+    );
+    return data;
+  },
+
+  async unlinkNotionPersonalToken(connectorId: string): Promise<NotionPersonalTokenState> {
+    const { data } = await apiClient.delete<NotionPersonalTokenState>(
+      `${BASE_URL}/${connectorId}/notion/personal-token`
+    );
+    return data;
+  },
+
+  /** Admin only: who linked a Notion personal access token to the connector, never a token. */
+  async listNotionPersonalTokens(
+    connectorId: string
+  ): Promise<Array<NotionPersonalTokenState & { userId: string }>> {
+    const { data } = await apiClient.get<{ users?: Array<NotionPersonalTokenState & { userId: string }> }>(
+      `${BASE_URL}/${connectorId}/notion/personal-tokens`,
+      { suppressErrorToast: true }
+    );
+    return data.users ?? [];
   },
 
   /** Code repositories the caller can read, with each one's code-graph status. */

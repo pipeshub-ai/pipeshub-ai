@@ -3758,6 +3758,27 @@
           "other": "Na oprávnění tohoto konektoru se musí někdo podívat.",
           "unreadable": "Seznam složek čekajících na aktualizaci nelze přečíst. Požádejte provozovatele PipesHub o opětovné vytvoření indexu oprávnění tohoto konektoru. Vyhledávání mezitím kontroluje každý výsledek."
         }
+      },
+      "notionAccess": {
+        "title": "Váš přístup k Notion",
+        "titleFor": "Váš přístup k Notion: {{connector}}",
+        "intro": "Notion neuvádí, kdo smí stránku otevřít, proto vám PipesHub ukazuje stránky, které otevře váš vlastní osobní přístupový token Notion.",
+        "guide": "Jak vytvořit osobní přístupový token",
+        "loadError": "Váš přístup k Notion se nepodařilo načíst.",
+        "tokenLabel": "Osobní přístupový token Notion",
+        "link": "Propojit",
+        "replace": "Nahradit",
+        "remove": "Odebrat",
+        "nextSync": "Změny se projeví při příští synchronizaci konektoru.",
+        "linkedUsers": "Kdo propojil token",
+        "nobodyLinked": "Token zatím nikdo nepropojil.",
+        "status": {
+          "notLinked": "Nepropojeno. Propojte svůj token, abyste viděli stránky Notion, které můžete otevřít.",
+          "linked": "Propojeno.",
+          "linkedOn": "Propojeno {{when}}.",
+          "failed": "Přestal fungovat. Propojte nový token.",
+          "failedReason": "Přestal fungovat: {{reason}}. Propojte nový token."
+        }
       }
     },
     "mcpServers": {

@@ -3529,6 +3529,27 @@
           "other": "Algo en los permisos de este conector requiere que una persona lo revise.",
           "unreadable": "No se puede leer la lista de carpetas que esperan una actualización. Pida a quien administra PipesHub que reconstruya el índice de permisos de este conector. Mientras tanto, la búsqueda comprueba cada resultado."
         }
+      },
+      "notionAccess": {
+        "title": "Tu acceso a Notion",
+        "titleFor": "Tu acceso a Notion: {{connector}}",
+        "intro": "Notion no indica quién puede abrir una página, así que PipesHub te muestra las páginas que puede abrir tu propio token de acceso personal de Notion.",
+        "guide": "Cómo crear un token de acceso personal",
+        "loadError": "No se pudo cargar tu acceso a Notion.",
+        "tokenLabel": "Token de acceso personal de Notion",
+        "link": "Vincular",
+        "replace": "Reemplazar",
+        "remove": "Quitar",
+        "nextSync": "Los cambios se aplican en la próxima sincronización del conector.",
+        "linkedUsers": "Quién vinculó un token",
+        "nobodyLinked": "Nadie ha vinculado un token todavía.",
+        "status": {
+          "notLinked": "Sin vincular. Vincula tu token para ver las páginas de Notion que puedes abrir.",
+          "linked": "Vinculado.",
+          "linkedOn": "Vinculado el {{when}}.",
+          "failed": "Dejó de funcionar. Vincula un token nuevo.",
+          "failedReason": "Dejó de funcionar: {{reason}}. Vincula un token nuevo."
+        }
       }
     },
     "mcpServers": {
