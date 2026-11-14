@@ -415,8 +415,8 @@ async def test_the_neighbors_answer_matches_the_published_schema_and_dates_a_rec
     assert {k: v for k, v in preview.items() if k in dates} == dates
 
 
-async def _search_answer(hits: list, **body) -> tuple[dict, AsyncMock]:
-    """What the route answers for ``hits`` (as the access check kept them), extraction off, and the search it ran.
+async def _search_answer(hits: list, *, named: bool = False, **body) -> tuple[dict, AsyncMock]:
+    """What the route answers for ``hits`` (as the access check kept them), with named-entity extraction ``named``, and the search it ran.
 
     The route's own state and access context are built for real, so whatever the route leaves out of them (a turn's
     selection or bound) is left out here too; only the graph's answer about the caller's access is stubbed."""
@@ -429,7 +429,7 @@ async def _search_answer(hits: list, **body) -> tuple[dict, AsyncMock]:
          patch(f"{ep}._load_access_context", AsyncMock(return_value=_context())), \
          patch(f"{ep}._row_scopes", AsyncMock(return_value=(SelectionScope(),))), \
          patch(f"{ed}.search_entities_for_user", search), \
-         patch(f"{ed}._named_entities_enabled", AsyncMock(return_value=False)):
+         patch(f"{ed}._named_entities_enabled", AsyncMock(return_value=named)):
         response = await ks.search_entities(_request(), ks.EntitySearchQuery(query="acme", **body), MagicMock())
     return json.loads(response.body), search
 
@@ -461,6 +461,14 @@ async def test_the_search_answer_is_exactly_what_the_published_schema_documents(
 async def test_no_entity_types_or_an_empty_list_searches_every_type(types) -> None:
     _, search = await _search_answer([], entityTypes=types)
     assert search.await_args.kwargs["entity_types"] is None
+
+
+async def test_named_entity_alone_is_a_400_while_extraction_is_off_and_searched_while_it_is_on() -> None:
+    with pytest.raises(HTTPException) as err:
+        await _search_answer([], entityTypes=["named_entity"])
+    assert err.value.status_code == 400 and "not enabled" in err.value.detail
+    _, search = await _search_answer([], named=True, entityTypes=["named_entity"])
+    assert search.await_args.kwargs["entity_types"] == ["named_entity"]
 
 
 @pytest.mark.parametrize("failing", ["get_record_taxonomy_links", "get_named_entities_for_record"])
