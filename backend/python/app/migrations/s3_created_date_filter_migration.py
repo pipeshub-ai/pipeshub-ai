@@ -121,7 +121,9 @@ async def run_s3_created_date_filter_migration(
                     logger.error(f"S3 created date filter migration: connector {connector_id} failed: {e}")
 
     try:
-        failed_orgs = await for_each_org(graph_provider, "s3_created_date_filter_migration", migrate_org, logger)
+        failed_orgs = await for_each_org(
+            graph_provider, "s3_created_date_filter_migration", migrate_org, logger, raise_on_error=True,
+        )
         failures += len(failed_orgs)
     except Exception as e:
         failures += 1

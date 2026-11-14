@@ -208,3 +208,21 @@ async def test_an_unreadable_org_list_leaves_the_flag_unset() -> None:
 
     assert result == {"success": False, "skipped": False, "migrated": 0, "failures": 1}
     assert MIGRATION_FLAG_KEY not in store
+
+
+@pytest.mark.asyncio
+async def test_an_org_list_that_fails_quietly_still_leaves_the_flag_unset() -> None:
+    """Arango and Neo4j log a failed org list and answer no orgs unless asked to raise."""
+    store = {_path("s3-1"): _config({"created": _date("is_after", FEB)})}
+    graph = _graph(S3=["s3-1"])
+
+    async def orgs(**kwargs: object) -> list[dict]:
+        if kwargs.get("raise_on_error"):
+            raise ConnectionError("graph did not answer")
+        return []
+    graph.get_all_orgs = AsyncMock(side_effect=orgs)
+
+    result = await run_s3_created_date_filter_migration(_MemoryConfigService(store), graph, LOGGER)
+
+    assert result["success"] is False
+    assert MIGRATION_FLAG_KEY not in store

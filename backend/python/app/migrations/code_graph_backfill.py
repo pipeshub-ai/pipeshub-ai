@@ -136,7 +136,7 @@ async def run_code_graph_backfill(
             logger.info("Code graph backfill: re-indexing %s (%d of %d blocks at %s)",
                         repo.record_group_id, repo.current_blocks, repo.blocks, PARSER_VERSION)
 
-    if await for_each_org(graph_provider, "code_graph_backfill", backfill_org, logger):
+    if await for_each_org(graph_provider, "code_graph_backfill", backfill_org, logger, raise_on_error=True):
         logger.warning("Code graph backfill did not finish for every org; it will look again on the next start")
         return asked
     try:

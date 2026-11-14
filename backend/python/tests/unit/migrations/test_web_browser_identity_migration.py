@@ -244,3 +244,19 @@ def test_the_backfill_never_changes_what_the_crawler_uses(raw: object, name: str
 
     assert _crawled(sync[name], default, high) == _crawled(raw, default, high)
     assert _crawled(sync[name], default, high) == sync[name] or isinstance(sync[name], str)
+
+
+async def test_an_org_list_that_fails_quietly_still_leaves_the_flag_unset() -> None:
+    """Arango and Neo4j log a failed org list and answer no orgs unless asked to raise."""
+    config = _MemoryConfigService({_path("old"): _web_config()})
+    graph = _Graph(["old"])
+
+    async def orgs(**kwargs: object) -> list[dict]:
+        if kwargs.get("raise_on_error"):
+            raise ConnectionError("graph did not answer")
+        return []
+    graph.get_all_orgs = orgs
+
+    with pytest.raises(ConnectionError):
+        await run_web_browser_identity_backfill(_container(config), graph, LOGGER)
+    assert MIGRATION_FLAG_KEY not in config.store

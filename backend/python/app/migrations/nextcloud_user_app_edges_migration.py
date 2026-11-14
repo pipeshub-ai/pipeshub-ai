@@ -81,7 +81,9 @@ class NextcloudUserAppEdgesMigrationService:
                         removed += 1
 
         try:
-            failed = await for_each_org(self.graph_provider, "nextcloud_user_app_edges_migration", migrate_org, self.logger)
+            failed = await for_each_org(
+                self.graph_provider, "nextcloud_user_app_edges_migration", migrate_org, self.logger, raise_on_error=True,
+            )
         except Exception as e:
             self.logger.error(f"❌ Nextcloud user-app edges migration failed: {e}", exc_info=True)
             return {"success": False, "removed": removed, "error": str(e)}

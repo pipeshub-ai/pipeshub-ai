@@ -146,7 +146,9 @@ class WebBrowserIdentityBackfill:
                     self.logger.error(f"Web settings backfill: could not update connector {connector_id}: {e}")
 
         # A failed org list raises to the caller, which logs it; the flag stays unset.
-        failed_orgs = await for_each_org(self.graph_provider, "web_browser_identity_backfill", backfill_org, self.logger)
+        failed_orgs = await for_each_org(
+            self.graph_provider, "web_browser_identity_backfill", backfill_org, self.logger, raise_on_error=True,
+        )
         failures += len(failed_orgs)
 
         # Leave the flag unset after a failure so the next start retries; updated connectors are skipped then.

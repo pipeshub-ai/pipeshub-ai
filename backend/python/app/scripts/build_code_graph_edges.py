@@ -225,7 +225,7 @@ async def _list(provider: object, org_id: str | None) -> int:
             await read(org_id)
         failed: list[str] = []
     else:
-        failed = await for_each_org(provider, _JOB, read, logger)
+        failed = await for_each_org(provider, _JOB, read, logger, raise_on_error=True)
     print(f"{'record group':40} {'org':24} {'status':20} {'last build':>14} {'tries':>5}  error")
     for b in sorted(rows, key=lambda b: (b.org_id, b.record_group_id)):
         s = b.state
