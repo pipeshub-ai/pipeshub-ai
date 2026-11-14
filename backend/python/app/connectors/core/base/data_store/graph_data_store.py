@@ -391,10 +391,11 @@ class GraphTransactionStore(TransactionStore):
         provider = self.graph_provider._provider
         if self._org_marked_for_unclassified:
             # a long block renews its leases before a write, so the sweep never reads it as dead and closes it while it still writes.
-            # shortcut: nothing in the store fences the forwarded write itself: one that reaches the graph more than half a lease plus the grace
-            # (420 s) after this check can land after the sweep closed its lease, and a pass that ran in between reads current until the block's
-            # own mark lands (never, if the process dies first). Only without explicit transactions (NEO4J_EXPLICIT_TRANSACTIONS=false); upgrade
-            # by refusing unclassified writes there, or by a fence every provider write checks, if that mode is kept.
+            # shortcut: nothing in the store fences the forwarded write itself. After a renewal at most half a lease plus the grace (420 s) separate
+            # this check from the sweep; after renewals that gave up, as little as the grace (a write at 602 s on a lease due at 600 s can be
+            # reclaimed at 720 s). A write that lands after the sweep closed its lease leaves a pass that ran in between reading current until the
+            # block's own mark lands (never, if the process dies first). Only without explicit transactions (NEO4J_EXPLICIT_TRANSACTIONS=false);
+            # upgrade with a fence checked in the write's own transaction.
             if monotonic() - self._renewed_at > OPEN_WRITE_SECONDS / 2:
                 renewed = True
                 for connector_id in sorted(self.opened):
