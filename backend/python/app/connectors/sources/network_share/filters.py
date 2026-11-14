@@ -10,10 +10,18 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     extension_passes_filter,
 )
+from app.connectors.core.registry.folder_scope import FILE_SHARE_PATHS, FolderScope
 from app.connectors.sources.network_share.pathing import file_extension
 
 if TYPE_CHECKING:
     from app.connectors.sources.network_share.entry import DirectoryEntry
+
+
+def share_folder_scope(sync_filters: FilterCollection | None) -> FolderScope:
+    """The folders a share walk covers. Share names compare as Windows and Samba
+    compare them: ``\\`` separates folders, case and Unicode form do not count,
+    and values may be folder patterns such as ``customer/*/quotes``."""
+    return FolderScope.from_filters(sync_filters, rules=FILE_SHARE_PATHS, wildcards=True)
 
 
 def date_bounds(
