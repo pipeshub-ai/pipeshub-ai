@@ -5500,13 +5500,16 @@ class DataSourceEntitiesProcessor:
         The connector then writes them again for a user it lists again."""
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             for user_id in {u.id for u in users if u.id}:
+                # Grants first: where each statement commits alone (Neo4j without explicit transactions), a
+                # failure in between leaves a linked user short of grants until the retry, never grants
+                # without the withdrawal that should have taken them.
+                if drop_grants:
+                    await tx_store.remove_user_access_to_connector(connector_id, user_id)
                 await tx_store.delete_edge(
                     user_id, CollectionNames.USERS.value,
                     connector_id, CollectionNames.APPS.value,
                     CollectionNames.USER_APP_RELATION.value,
                 )
-                if drop_grants:
-                    await tx_store.remove_user_access_to_connector(connector_id, user_id)
         self.logger.info(f"Withdrew connector {connector_id} from {len(users)} user(s) no longer eligible at the source")
 
     @retry_on_deadlock()

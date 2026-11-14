@@ -289,6 +289,10 @@ def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], s
     return users, next_cursor if isinstance(next_cursor, str) and next_cursor else None
 
 
+# The connector's sync point holding newly listed accounts not yet handed to every project.
+PEOPLE_REREAD_KEY: str = "people_reread"
+
+
 @(
     ConnectorBuilder("Jira Data Center")
     .in_group(AppGroups.ATLASSIAN.value)
@@ -962,7 +966,9 @@ class JiraDataCenterConnector(BaseConnector):
                     "The next sync reads it again"
                 )
             linked_before = {u.source_user_id for u in self._stored_app_users}
-            self._newly_listed_user_keys = {u.source_user_id for u in jira_users if u.source_user_id} - linked_before
+            self._newly_listed_user_keys = await self._note_people_to_reread(
+                {u.source_user_id for u in jira_users if u.source_user_id} - linked_before
+            )
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
@@ -1044,6 +1050,9 @@ class JiraDataCenterConnector(BaseConnector):
             # Sync issues for all projects
             last_sync_time = await self._get_issues_sync_checkpoint()
             sync_stats = await self._sync_all_project_issues(projects, jira_users, last_sync_time)
+            if self._newly_listed_user_keys and not sync_stats.get("failed_project_keys"):
+                # Every project with a level map now carries the retry marker, saved before its walk.
+                await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": "[]"})
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
@@ -4248,7 +4257,12 @@ class JiraDataCenterConnector(BaseConnector):
         if not frontier:
             return 0
 
-        synced_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        try:
+            # An empty directory from a failed read would take every stub's level grants away.
+            synced_users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+        except Exception as e:
+            self.logger.warning("Placeholder sweep skipped: the synced users could not be read: %s", e)
+            return 0
         user_by_account_id: dict[str, AppUser] = {
             u.source_user_id: u for u in synced_users if u.source_user_id
         }
@@ -4701,6 +4715,19 @@ class JiraDataCenterConnector(BaseConnector):
             present and level_id == parent_level and parent_project_id == project_id
             and level_reads_alike(security, parent_level)
         )
+
+    async def _note_people_to_reread(self, newly_listed: set[str]) -> set[str]:
+        """The accounts whose leveled issues need reading again: these, and those an earlier sync saved but did
+        not hand to every project. Saved before the accounts are linked, since once linked they are no longer new."""
+        try:
+            saved = set(json.loads(
+                ((await self.issues_sync_point.read_sync_point(PEOPLE_REREAD_KEY)) or {}).get("accounts") or "[]"))
+        except (TypeError, ValueError):
+            saved = set()
+        pending = saved | newly_listed
+        if pending != saved:
+            await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": json.dumps(sorted(pending))})
+        return pending
 
     async def _withdraw_unlisted_app_users(self, jira_users: list[AppUser]) -> None:
         """Take the connector and their own grants from stored users the complete active-user list no

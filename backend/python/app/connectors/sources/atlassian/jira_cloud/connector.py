@@ -279,6 +279,8 @@ ISSUE_PLACEMENT: str = "stories-under-readable-epic"
 SUBTASK_REREAD_CHUNK: int = 50
 # Accounts per JQL when re-reading the issues that name newly listed accounts.
 PEOPLE_REREAD_CHUNK: int = 50
+# The connector's sync point holding newly listed accounts not yet handed to every project.
+PEOPLE_REREAD_KEY: str = "people_reread"
 # An Atlassian account id ("557058:f58131cb-...", "5b10ac8d82e05b22cc7d4ef5"), safe to quote in JQL.
 JIRA_ACCOUNT_ID = re.compile(r"[A-Za-z0-9:_-]{1,128}")
 # What _files_under_parent needs to know about a parent, which Jira's `parent` field does
@@ -563,6 +565,8 @@ class JiraConnector(BaseConnector):
         self._deactivated_account_ids: set[str] = set()
         self._newly_listed_account_ids: list[str] = []
         self._listed_account_ids: set[str] = set()
+        # The emails of the directory snapshot last filtered against (the map itself, then its emails).
+        self._listed_emails: tuple[object, set[str]] = (None, set())
         self._app_roles_mapping: Optional[dict[str, list[dict[str, str]]]] = None
         # Selected project key -> the key Jira gives that project now, as of the last listing.
         self._renamed_project_keys: dict[str, str] = {}
@@ -978,7 +982,7 @@ class JiraConnector(BaseConnector):
             jira_users = licensed_users
             # Their issues were written without their own grants (or lost them when withdrawn).
             linked_before = {u.source_user_id for u in self._stored_app_users}
-            self._newly_listed_account_ids = sorted(
+            self._newly_listed_account_ids = await self._note_people_to_reread(
                 {u.source_user_id for u in jira_users if u.source_user_id} - linked_before
             )
             if jira_users:
@@ -1027,6 +1031,9 @@ class JiraConnector(BaseConnector):
             # 7. Sync issues (incremental via checkpoint), then deletions
             last_sync_time = await self._get_issues_sync_checkpoint()
             sync_stats = await self._sync_all_project_issues(projects, jira_users, last_sync_time)
+            if self._newly_listed_account_ids and not sync_stats.get("failed_project_keys"):
+                # Every project now holds the accounts in its own checkpoint, or did not need them.
+                await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": "[]"})
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
             failed_issue_projects = set(sync_stats.get("failed_project_keys") or [])
             await self._handle_issue_deletions(
@@ -1188,8 +1195,13 @@ class JiraConnector(BaseConnector):
             return
 
         # Jira's issue payload omits emailAddress, so resolve creator/reporter/assignee
-        # against the synced directory exactly as the reindex path does.
-        synced_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        # against the synced directory exactly as the reindex path does. An empty directory from a
+        # failed read would take every stub's level grants away, so the sweep waits for the next sync.
+        try:
+            synced_users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+        except Exception as e:
+            self.logger.warning("Placeholder sweep skipped: the synced users could not be read: %s", e)
+            return
         user_by_account_id: dict[str, AppUser] = {
             u.source_user_id: u for u in synced_users if u.source_user_id
         }
@@ -2733,7 +2745,9 @@ class JiraConnector(BaseConnector):
         the whole directory, so nothing is dropped then."""
         if not self._directory_read_complete():
             return permissions
-        listed = {u.email.lower() for u in user_by_account_id.values() if u.email}
+        if self._listed_emails[0] is not user_by_account_id:
+            self._listed_emails = (user_by_account_id, {u.email.lower() for u in user_by_account_id.values() if u.email})
+        listed = self._listed_emails[1]
         return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed]
 
     async def _fallback_permissions_for_forbidden_scheme(
@@ -4622,6 +4636,20 @@ class JiraConnector(BaseConnector):
         ):
             if batch:
                 await self._process_new_records(batch, project_key, stats)
+
+    async def _note_people_to_reread(self, newly_listed: set[str]) -> list[str]:
+        """The accounts whose issues need reading again: these, and those an earlier sync saved but did not
+        hand to every project. Saved before the accounts are linked: once linked they are no longer new, so a
+        sync that failed before the project passes would otherwise forget them."""
+        try:
+            saved = set(json.loads(
+                ((await self.issues_sync_point.read_sync_point(PEOPLE_REREAD_KEY)) or {}).get("accounts") or "[]"))
+        except (TypeError, ValueError):
+            saved = set()
+        pending = sorted(saved | newly_listed)
+        if set(pending) != saved:
+            await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": json.dumps(pending)})
+        return pending
 
     async def _reread_for_newly_listed(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],

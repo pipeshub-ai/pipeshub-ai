@@ -311,3 +311,22 @@ class TestWithdrawnAccounts:
         grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue,
                                          {"alice-key": _user("alice-key", "alice@example.com")})
         assert [g.email for g in grants] == ["alice@example.com"]
+
+    async def test_newly_listed_accounts_are_saved_before_they_are_linked(self) -> None:
+        c = _connector()
+        store: dict = {}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
+        assert await c._note_people_to_reread({"carol-key"}) == {"carol-key"}
+        assert store["people_reread"] == {"accounts": '["carol-key"]'}
+        assert await c._note_people_to_reread(set()) == {"carol-key"}
+
+    async def test_a_failed_read_of_the_synced_users_skips_the_stub_sweep(self) -> None:
+        c = _connector()
+        stub = _ticket(is_placeholder=True, external_revision_id=None, record_group_type="PROJECT")
+        c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+        c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=ConnectionError("graph unavailable"))
+        c._fetch_ancestor_level = AsyncMock()
+        assert await c._sweep_placeholder_records({"10"}, set()) == 0
+        c._fetch_ancestor_level.assert_not_awaited()

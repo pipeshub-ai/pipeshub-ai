@@ -213,8 +213,9 @@ class TestPlaceholdersAreRestricted:
         from app.models.entities import AppUser
 
         proc, tx_store = _make_processor(), _make_tx_store()
-        tx_store.delete_edge = AsyncMock()
-        tx_store.remove_user_access_to_connector = AsyncMock(return_value=2)
+        order: list[str] = []
+        tx_store.delete_edge = AsyncMock(side_effect=lambda *a: order.append("link"))
+        tx_store.remove_user_access_to_connector = AsyncMock(side_effect=lambda *a: order.append("grants"))
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
         user = AppUser(id="node-1", app_name=Connectors.JIRA, connector_id="c", source_user_id="a", email="a@x.com", full_name="a")
 
@@ -222,8 +223,11 @@ class TestPlaceholdersAreRestricted:
 
         if drop_grants:
             tx_store.remove_user_access_to_connector.assert_awaited_once_with("conn-1", "node-1")
+            # Where each statement commits alone, a failure after the first leaves the safe state.
+            assert order == ["grants", "link"]
         else:
             tx_store.remove_user_access_to_connector.assert_not_awaited()
+            assert order == ["link"]
 
     @pytest.mark.asyncio
     async def test_withdraw_drops_the_access_cache_when_a_later_delete_fails(self) -> None:

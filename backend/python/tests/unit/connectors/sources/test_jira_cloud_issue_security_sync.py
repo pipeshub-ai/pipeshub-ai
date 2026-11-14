@@ -522,6 +522,24 @@ async def test_the_upgrade_sync_hands_its_reread_projects_to_the_stub_sweep() ->
 
 
 @pytest.mark.asyncio
+async def test_a_failed_read_of_the_synced_users_skips_the_stub_sweep() -> None:
+    """An empty directory would take every stub's level grants away; the next sync sweeps."""
+    c = _connector()
+    c._issue_security[PROJECT_ID] = _present()
+    stub = TicketRecord(
+        id="rid", org_id="org-1", record_name="x", record_type="TICKET", external_record_id="1001", version=0,
+        origin="CONNECTOR", connector_name="JIRA", connector_id="conn-sec", external_record_group_id=PROJECT_ID,
+        record_group_type="PROJECT", is_placeholder=True, external_revision_id=None, access_rule=AccessRule.OPEN)
+    c._bulk_fetch_ancestor_level = AsyncMock(return_value=[_issue({"id": "10102"})])
+    c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+    c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=ConnectionError("graph unavailable"))
+    await c._sweep_placeholder_records({PROJECT_ID}, set())
+    c.data_entities_processor.get_all_app_users.assert_awaited_once_with("conn-sec", raise_on_error=True)
+    c.data_entities_processor.on_new_records.assert_not_awaited()
+    c._bulk_fetch_ancestor_level.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_legacy_open_stub_of_a_leveled_ancestor_is_restricted_after_the_upgrade_sync() -> None:
     """N1: the stub already has a revision, so only the re-read project hands it back to the sweep."""
     c = _connector()
@@ -1802,3 +1820,14 @@ class TestIssueGrantsNameListedAccountsOnly:
         await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, self._ctx(holders=holders), {"people_reread": '["acc-0"]'},
                                          covered=covered)
         assert naming == [] and saved == ["[]"]
+
+    @pytest.mark.asyncio
+    async def test_newly_listed_accounts_are_saved_before_they_are_linked_and_kept_until_handed_on(self) -> None:
+        c = _connector()
+        store: dict = {"people_reread": {"accounts": '["acc-0"]'}}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
+        assert await c._note_people_to_reread({"acc-1"}) == ["acc-0", "acc-1"]
+        assert json.loads(store["people_reread"]["accounts"]) == ["acc-0", "acc-1"]
+        assert await c._note_people_to_reread(set()) == ["acc-0", "acc-1"]  # an earlier sync failed before handing them on
