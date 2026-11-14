@@ -20617,7 +20617,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None, hiding: bool,
     ) -> list[dict[str, Any]]:
         """The undecided children ``handles`` past ``after`` in the page's order, nearest the boundary first, as ``{id, sortKey, nullRank, h}``:
-        their sort keys read as the page reads its rows' (`_kh_v3_slim_aql`). No more than one read asks about: asked about at once, in no order."""
+        their sort keys read as the page reads its rows' (`_kh_v3_slim_aql`). No more than the first window holds are asked about at once, in no order."""
         if len(handles) <= self._KH_UNDECIDED_MAX:
             return [{"id": h.split("/", 1)[1], "h": h} for h in handles]
         slim = await self.http_client.execute_aql(
