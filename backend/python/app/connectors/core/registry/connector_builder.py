@@ -831,6 +831,11 @@ class CommonFields:
                 "Press Enter after each folder; names may contain spaces. "
                 "Include syncs only these folders; Exclude syncs everything except them. "
                 f"Leave empty to sync the whole {container}."
+                + (
+                    " In a folder name * matches any characters and ? one character; a ** folder"
+                    " matches any number of folders, as in customer/*/quotes or **/quotes."
+                    if wildcards else ""
+                )
             ),
             default_operator=ListOperator.IN.value,
             option_source_type=OptionSourceType.MANUAL,
