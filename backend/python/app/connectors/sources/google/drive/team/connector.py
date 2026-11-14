@@ -1984,7 +1984,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         # grant; a new item has nothing stored to keep, so it still gets the reader's grant.
         # shortcut: a refusal (403) from such a user is still taken as ordinary, upgrade if one is seen to hide a revoke.
         if not permissions and not source_entries and (can_share or (stored and not (is_drive or item_drive_id))):
-            raise RuntimeError(f"Empty permission list for {resource_id}, which is not an answer for this item")
+            raise RuntimeError(
+                f"Empty permission list for {resource_id}, from a user who can share it or for a stored My Drive item"
+            )
         if not permissions and inherited_permissions_disabled and not can_list_children:
             return ([], True, [])
         if not permissions and user_email:
