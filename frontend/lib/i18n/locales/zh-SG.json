@@ -2840,7 +2840,7 @@
       "enterpriseSso": {
         "title": "SAML 单点登录和 OpenID Connect",
         "description": "让成员通过 Okta、OneLogin 或其他 SAML 2.0 或 OpenID Connect 身份提供商登录。",
-        "contactSales": "联系销售：{{email}}"
+        "contactSales": "如需购买，请发送邮件至 {{email}}"
       }
     },
     "connectors": {
