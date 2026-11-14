@@ -612,7 +612,8 @@ async def test_run_sync_happy_path_heavy_mock():
         new_callable=AsyncMock,
         return_value=(None, None),
     ):
-        with patch.object(conn, "_fetch_users", new_callable=AsyncMock, return_value=[u]):
+        with patch.object(conn, "_fetch_users", new_callable=AsyncMock, return_value=[u]), \
+                patch.object(conn, "_eligible_users", new_callable=AsyncMock, side_effect=lambda users: users):
             with patch.object(conn, "_sync_user_groups", new_callable=AsyncMock, return_value=GroupMemberships({})):
                 with patch.object(
                     conn, "_fetch_projects", new_callable=AsyncMock, return_value=([], []),
