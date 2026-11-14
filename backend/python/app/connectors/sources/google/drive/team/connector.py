@@ -3940,12 +3940,20 @@ class GoogleDriveTeamConnector(BaseConnector):
             found = None
             self._group_people[group_email] = None
         else:
-            synced = await self._synced_user_emails()
-            found = {email for m in members if (email := (m.get("email") or "").lower()) in synced}
-            self._group_people[group_email] = {
-                email for m in members
-                if str(m.get("type", "USER")).upper() != "GROUP" and (email := (m.get("email") or "").lower())
-            }
+            if any(str(m.get("type", "")).upper() == "CUSTOMER" for m in members):
+                # "CUSTOMER: The member represents all users in a domain", with no email returned
+                # (https://developers.google.com/workspace/admin/directory/reference/rest/v1/members): who it holds is
+                # not listed here, so the group is unknown, as one the directory refuses to list.
+                self.logger.info(f"Group {group_email} holds every user of a domain; its people are not listed")
+                found = None
+                self._group_people[group_email] = None
+            else:
+                synced = await self._synced_user_emails()
+                found = {email for m in members if (email := (m.get("email") or "").lower()) in synced}
+                self._group_people[group_email] = {
+                    email for m in members
+                    if str(m.get("type", "USER")).upper() != "GROUP" and (email := (m.get("email") or "").lower())
+                }
         self._group_members_cache[group_email] = found
         return found
 

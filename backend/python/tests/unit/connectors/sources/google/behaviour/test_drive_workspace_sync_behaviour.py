@@ -3290,6 +3290,19 @@ async def test_a_reader_whose_membership_a_member_group_hides_gets_no_grant_of_t
     assert ws.records.records["f"].inherit_permissions and ws.records.records["dir"].inherit_permissions
 
 
+async def test_a_member_group_that_holds_a_whole_domain_leaves_its_people_unknown(ws: Workspace) -> None:
+    ws.world.add_group("everyone@example.com", ["customer:C0123"])
+    ws.world.add_drive("sd-1", "Team", {"everyone@example.com": "reader"})  # no Manager: the reader's own read decides
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f", "x.txt", parent="dir", perms=[{"type": "anyone", "role": "reader", "allowFileDiscovery": False}])
+    await ws.sync()
+
+    # Bob is in the domain, so a member through the group, though the directory lists no one: unknown, not a
+    # non-member, so no grant of his own.
+    assert BOB not in ws.records.perm_emails("f")
+    assert ws.incomplete
+
+
 async def test_a_folder_turning_limited_is_noted_before_the_feed_moves_on(ws: Workspace) -> None:
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
     ws.world.folder("dir", "Plans", parent="sd-1")

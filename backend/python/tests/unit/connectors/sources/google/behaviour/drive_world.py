@@ -383,7 +383,11 @@ class DriveWorld:
         while pending:
             member = pending.pop()
             for group, data in self.groups.items():
-                if member in data["members"] and group not in found:
+                # A CUSTOMER member holds every user of the account's domain.
+                holds_domain = any(m.startswith("customer:") for m in data["members"]) and (
+                    member.rpartition("@")[2] == self.domain
+                )
+                if (member in data["members"] or holds_domain) and group not in found:
                     found.add(group)
                     pending.append(group)
         return found
@@ -807,7 +811,10 @@ class DriveWorld:
             # Like the directory, members of nested groups are listed alongside the direct ones.
             for email in emails:
                 emails.extend(m for m in self.groups.get(email, {}).get("members", []) if m not in emails)
+        # "customer:<id>" stands for a CUSTOMER member, every user of a domain, which carries no email
+        # (https://developers.google.com/workspace/admin/directory/reference/rest/v1/members).
         members = [
+            {"id": m.split(":", 1)[1], "type": "CUSTOMER", "role": "MEMBER"} if m.startswith("customer:") else
             {"id": self.users[m].user_id if m in self.users else f"ext-{m}", "email": m, "type": "GROUP" if m in self.groups else "USER", "role": "MEMBER"}
             for m in emails
         ]
