@@ -64,8 +64,13 @@ async def _service(args: argparse.Namespace, store: str):  # noqa: ANN202
     if store == "pgvector":
         from app.services.vector_db.pgvector.config import PgVectorConfig
         from app.services.vector_db.pgvector.pgvector import PgVectorService
+        from app.services.vector_db.pgvector.tuning import Tuning
 
-        return await PgVectorService.create(PgVectorConfig.from_dict({"dsn": args.pg_dsn, "pool_max": args.pool, "search": {"sampler_rate": 0}}))
+        # The recall sampler and the quantisation check run in the background and would land inside the measured window: off. (An org's
+        # stored verdict is re-checked weekly, so neither runs in a steady state.) Built directly, not from_dict: PGVECTOR_DSN would
+        # win over --pg-dsn there, and the role follows the login of the DSN given here.
+        search = Tuning.from_dict({"sampler_rate": 0, "validate_quantization": False})
+        return await PgVectorService.create(PgVectorConfig(dsn=args.pg_dsn, pool_max=args.pool, search=search))
     from app.services.vector_db.qdrant.config import QdrantConfig
     from app.services.vector_db.qdrant.qdrant import QdrantService
 
@@ -132,14 +137,14 @@ def _cpu_seconds(source: str) -> float:
     return total
 
 
-def _client(args: argparse.Namespace, idx: int, ready, go, out) -> None:
+def _client(args: argparse.Namespace, idx: int, go, done, out) -> None:
     if args.client_cores:
         lo, hi = (int(x) for x in args.client_cores.split("-"))
         os.sched_setaffinity(0, range(lo, hi + 1))
-    asyncio.run(_client_main(args, idx, ready, go, out))
+    asyncio.run(_client_main(args, idx, go, done, out))
 
 
-async def _client_main(args: argparse.Namespace, idx: int, ready, go, out) -> None:
+async def _client_main(args: argparse.Namespace, idx: int, go, done, out) -> None:
     from app.services.vector_db.models import HybridSearchRequest, SparseVector
 
     c = _corpus(args.corpus)
@@ -168,32 +173,61 @@ async def _client_main(args: argparse.Namespace, idx: int, ready, go, out) -> No
                 except Exception:
                     stats["errors"] += 1        # counted and reported; one failed search does not end the run
                 lat.append((time.perf_counter() - t) * 1000)
-        await asyncio.gather(*[worker() for _ in range(max(1, args.clients // args.procs))])
+        await asyncio.gather(*[worker() for _ in range(_share(args.clients, args.procs, idx))])
 
     await run(list(range(idx * 7, idx * 7 + 64)), [])          # warm-up: connections, caches
     stats.update(degraded=0, errors=0)
-    ready.wait()
+    out.put(("ready", idx, None))
     go.wait()
     lat: list[float] = []
     t0 = time.perf_counter()
-    await run([idx * 101 + i * args.procs + 13 for i in range(max(1, args.queries // args.procs))], lat)
-    out.put({"lat": lat, "t0": t0, "t1": time.perf_counter(), **stats})
+    await run([idx * 101 + i * args.procs + 13 for i in range(_share(args.queries, args.procs, idx))], lat)
+    out.put(("result", idx, {"lat": lat, "t0": t0, "t1": time.perf_counter(), **stats}))
+    done.wait(600)                     # the server CPU is sampled before any client disconnects
     await svc.disconnect()
+
+
+def _share(total: int, parts: int, idx: int) -> int:
+    """Part ``idx`` of ``total`` split over ``parts`` so that the parts add up to it (the first ones take the remainder)."""
+    return total // parts + (1 if idx < total % parts else 0)
+
+
+def _gather(out, kind: str, procs: list) -> dict[int, object]:
+    """One ``kind`` message from every client; a client that exits first (a failed connect, a crash) stops the run instead of hanging it."""
+    import queue
+
+    got: dict[int, object] = {}
+    while len(got) < len(procs):
+        try:
+            msg, idx, value = out.get(timeout=1)
+        except queue.Empty:
+            dead = [(i, p.exitcode) for i, p in enumerate(procs) if p.exitcode is not None and i not in got]
+            if dead:
+                for p in procs:
+                    p.terminate()
+                for p in procs:
+                    p.join(10)
+                sys.exit(f"client process(es) exited before sending '{kind}' (index, exit code): {dead}")
+            continue
+        if msg == kind:
+            got[idx] = value
+    return got
 
 
 def _run(args: argparse.Namespace) -> dict:
     args.procs = min(args.procs, args.clients)
     ctx = mp.get_context("spawn")
-    ready, go, out = ctx.Barrier(args.procs + 1), ctx.Barrier(args.procs + 1), ctx.Queue()
-    procs = [ctx.Process(target=_client, args=(args, i, ready, go, out)) for i in range(args.procs)]
+    go, done, out = ctx.Event(), ctx.Event(), ctx.Queue()
+    procs = [ctx.Process(target=_client, args=(args, i, go, done, out)) for i in range(args.procs)]
     for p in procs:
         p.start()
     cpu = dict(s.split("=", 1) for s in args.cpu)
-    ready.wait()
+    _gather(out, "ready", procs)
     before = {k: _cpu_seconds(v) for k, v in cpu.items()}
-    go.wait()
-    res = [out.get() for _ in procs]
+    go.set()
+    res = list(_gather(out, "result", procs).values())
     after = {k: _cpu_seconds(v) for k, v in cpu.items()}
+    done.set()
     for p in procs:
         p.join(30)
     lat = np.array([x for r in res for x in r["lat"]])
