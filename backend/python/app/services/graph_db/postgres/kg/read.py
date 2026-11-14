@@ -67,8 +67,9 @@ LITERALS = """/* pipeshub:kg.read_literals */ SELECT r.sk, r.id, r.leaf,
 # The knowledge-hub listing asks class_verdicts in a transaction of its own, without PROFILE (its pages are ordered): sorts are off for the literals' seeks only.
 SORTS_OFF = """/* pipeshub:kg.read_sorts_off */ WITH s AS MATERIALIZED (SELECT current_setting('enable_sort') AS was) SELECT was, set_config('enable_sort', 'off', true) FROM s"""
 SORTS_BACK = "/* pipeshub:kg.read_sorts_back */ SELECT set_config('enable_sort', $1, true)"
+# JIT is off as well: the planner's estimate of a seek per asked id passes jit_above_cost at about 9,500 ids (a CHUNK), and compiling the statement then costs more than reading it.
 PROFILE = """/* pipeshub:kg.read_profile */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('enable_sort', 'off', true), set_config('lock_timeout', '200ms', true),
-    set_config('statement_timeout', '2s', true)"""
+    set_config('statement_timeout', '2s', true), set_config('jit', 'off', true)"""
 
 
 def enabled() -> bool:
