@@ -214,13 +214,16 @@ export class OIDCProviderController {
       const deviceEnabled =
         process.env.PIPESHUB_ENABLE_DEVICE_GRANT !== 'false';
       const offered = new Set(this.appConfig.mcpScopes);
+      const deviceClientId = deviceEnabled
+        ? await this.firstPartyDeviceAppService.getOrCreate()
+        : null;
       res.type('text/markdown; charset=utf-8').send(
         renderAuthMd({
           origin,
-          deviceClientId: deviceEnabled
-            ? await this.firstPartyDeviceAppService.getOrCreate()
-            : null,
+          deviceClientId,
           dcrEnabled: process.env.PIPESHUB_ENABLE_DCR === 'true',
+          // Same condition as the agent_auth block in discovery.
+          agentSignup: agentAuthEnabled() && deviceClientId !== null,
           agentScopes: AgentMcpScopes.filter((s) => offered.has(s)),
           // The device app's preset adds offline_access where MCP_SCOPES allows it.
           deviceRefreshes: deviceEnabled && offered.has('offline_access'),

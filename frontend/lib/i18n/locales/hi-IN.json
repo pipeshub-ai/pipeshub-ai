@@ -2737,6 +2737,11 @@
           "samlSso": "SAML SSO",
           "oauth": "OAuth"
         }
+      },
+      "enterpriseSso": {
+        "title": "SAML सिंगल साइन-ऑन और OpenID Connect",
+        "description": "Okta, OneLogin या किसी अन्य SAML 2.0 या OpenID Connect पहचान प्रदाता से लोगों को साइन इन कराएँ।",
+        "contactSales": "खरीदने के लिए {{email}} पर ईमेल करें"
       }
     },
     "connectors": {
