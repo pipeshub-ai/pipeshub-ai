@@ -4326,6 +4326,8 @@ class TestAnyoneLinkKeepsTheReadList:
             {"id": "anyoneWithLink", "type": "anyone", "role": "reader"},
         ]})
         connector.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=False)
+        # u@t.com is not a member of sd-1, so the link share gives them a grant of their own.
+        connector._drive_member_email_list = AsyncMock(return_value=[])
         meta = _make_file_metadata()
         meta["driveId"] = "sd-1"
 
