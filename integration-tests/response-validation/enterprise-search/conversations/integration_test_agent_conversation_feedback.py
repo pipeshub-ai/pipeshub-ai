@@ -38,6 +38,8 @@ from openapi_schema_validator import (
     assert_response_matches_openapi_ref,
 )
 
+pytestmark = pytest.mark.live_model
+
 
 _MINIMAL_FEEDBACK_PAYLOAD: dict[str, Any] = {
     "isHelpful": True,

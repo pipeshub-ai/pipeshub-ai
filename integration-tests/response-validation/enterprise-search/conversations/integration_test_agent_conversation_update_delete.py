@@ -45,6 +45,8 @@ from openapi_schema_validator import (
     assert_response_matches_openapi_ref,
 )
 
+pytestmark = pytest.mark.live_model
+
 
 # Rich optional-field body for offline OpenAPI request validation. Omits `filters`
 # because `Filters.apps` / `Filters.kb` use a oneOf that jsonschema rejects for

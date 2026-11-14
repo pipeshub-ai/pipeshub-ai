@@ -20,7 +20,7 @@ from named_entities.conftest import _wait_for_entities
 from named_entities.corpus import SECRETS
 from retrieval.ranking import virtual_id_of
 
-pytestmark = [pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.named_entities]
+pytestmark = [pytest.mark.live_model, pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.named_entities]
 
 QUERY = "agreement fee settlement refund"
 NO_MATCH = "No documents match this search and its entity filter."

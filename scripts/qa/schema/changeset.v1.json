@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "qa changeset",
+  "type": "object",
+  "required": [
+    "schema",
+    "mode",
+    "base",
+    "head",
+    "files",
+    "commits",
+    "hunks"
+  ],
+  "properties": {
+    "schema": {
+      "const": "qa-changeset/v1"
+    },
+    "mode": {
+      "type": "string"
+    },
+    "base": {
+      "type": "string"
+    },
+    "head": {
+      "type": "string"
+    },
+    "branch": {
+      "type": "string"
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "status",
+          "edition",
+          "kind"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "edition": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "src",
+              "test",
+              "config",
+              "infra",
+              "docs"
+            ]
+          }
+        }
+      }
+    },
+    "commits": {
+      "type": "array"
+    },
+    "hunks": {
+      "type": "object"
+    }
+  }
+}
