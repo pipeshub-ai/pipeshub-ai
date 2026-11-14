@@ -1026,7 +1026,14 @@ class TestEmbedderSwappedDuringTheWait:
 
 class TestReconciliationEmbedIsPlanned:
     @pytest.mark.parametrize("slow", ["changed blocks", "record summary", "code residue"])
-    async def test_a_gate_wait_longer_than_the_budget_does_not_cancel_a_reconciliation(self, slow: str) -> None:
+    async def test_a_gate_wait_longer_than_the_budget_does_not_cancel_a_reconciliation(
+        self, slow: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The loop clock moves only inside the gate wait. On the wall clock, a pause outside it (a full GC in a
+        # long worker, a busy runner) is budget time too, and at 1 s it cut this test in CI before the wait began.
+        loop = asyncio.get_running_loop()
+        now = [loop.time()]
+        monkeypatch.setattr(loop, "time", lambda: now[0])
         store, _ = _reconciling_store()
         member = object()
         store._build_record_summary_document = lambda *_a: Document(page_content="record summary", metadata={})
@@ -1034,7 +1041,10 @@ class TestReconciliationEmbedIsPlanned:
         async def queued(docs: Any, *_args: Any) -> None:
             if docs[0].page_content == slow or (slow == "changed blocks" and docs[0].metadata.get("blockId")):
                 async with current_progress().gate_wait():
-                    await asyncio.sleep(1.5)
+                    now[0] += 1.5
+                    # Two turns of the loop: one to find the old deadline due and fire it, one to deliver the cancel.
+                    await asyncio.sleep(0)
+                    await asyncio.sleep(0)
 
         store._process_document_chunks = queued
         progress = RecordProgress(
@@ -1060,6 +1070,7 @@ class TestReconciliationEmbedIsPlanned:
         finally:
             end_progress()
         assert not budget.expired()
+        assert progress._gate_paused == 1.5
 
 
 class TestReconciliationStallTimerRunsOnlyWhileEmbedding:
