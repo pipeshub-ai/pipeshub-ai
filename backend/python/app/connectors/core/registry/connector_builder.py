@@ -812,10 +812,14 @@ class CommonFields:
         )
 
     @staticmethod
-    def folder_paths_filter(container: str = "bucket") -> FilterField:
+    def folder_paths_filter(
+        container: str = "bucket", *, path_style: str | None = None, wildcards: bool = False,
+    ) -> FilterField:
         """Folders inside a bucket, container or share to sync (typed paths).
 
         Empty syncs everything, as before. See FolderScope for the matching rules.
+        ``path_style`` is "windows" for a file share (``\\`` separates folders,
+        case does not matter) and "posix" or None for an object store.
         """
         return FilterField(
             name=SyncFilterKey.FOLDER_PATHS.value,
@@ -830,6 +834,8 @@ class CommonFields:
             ),
             default_operator=ListOperator.IN.value,
             option_source_type=OptionSourceType.MANUAL,
+            path_style=path_style,
+            wildcards=wildcards,
         )
 
     @staticmethod

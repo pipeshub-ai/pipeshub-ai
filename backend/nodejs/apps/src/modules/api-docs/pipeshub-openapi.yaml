@@ -20757,6 +20757,20 @@ components:
         options:
           type: array
           items: {}
+        pathStyle:
+          type: string
+          enum:
+            - posix
+            - windows
+          description: >-
+            Folder path fields only. `windows` (file shares): `\` and `/` both separate folders and
+            names match whatever their case. `posix` (object stores): names are matched as stored.
+            Absent on other fields.
+        folderWildcards:
+          type: boolean
+          description: >-
+            Folder path fields only. Present and true when the connector reads `*`, `?` and `**`
+            in folder values. Absent otherwise.
     ConnectorAuthSchemaForType:
       type: object
       properties:
