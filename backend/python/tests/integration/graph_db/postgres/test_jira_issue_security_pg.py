@@ -47,6 +47,7 @@ async def world(pg_provider, pg_db, monkeypatch: pytest.MonkeyPatch) -> AsyncIte
         listed = {row for _, row, _ in await it._browse(world, name)}
         return checked, set(searched.values()) & set(ids), listed & set(ids)
     monkeypatch.setattr(it, "_listed_under", listed_from_kg(it._listed_under))
+    monkeypatch.setattr(it, "_browse", listed_from_kg(it._browse))
     monkeypatch.setattr(it, "_access", listed_from_kg(access))
     with bind(OrgContext(org_id, None, "job", "job:test", "t")):
         yield await it.new_world(pg_provider, run, org_id, f"jira-{run}", [])
