@@ -1342,12 +1342,40 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert perms == []
 
     @pytest.mark.asyncio
-    async def test_a_sub_task_follows_its_parent_and_is_not_granted(self) -> None:
+    async def test_a_sub_task_leaves_its_parent_and_is_granted_to_its_own_reporter_and_assignee(self) -> None:
         sub = _issue(None, key="PROJ-2", issue_id="1002")
         sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
         sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
-        record, perms, _ = await _build(_connector(), sub, self._none(self.HOLDERS))
-        assert perms == [] and record.access_rule == AccessRule.STRICT
+        c = _connector()
+        c._parent_levels["1001"] = _ParentLevel(project_id=PROJECT_ID, level_id=None)
+        record, perms, _ = await _build(c, sub, self._none(self.HOLDERS))
+        assert {p.email for p in perms} == {"rep@x.com", "asg@x.com"}
+        assert record.parent_external_record_id is None and record.access_rule == AccessRule.OPEN
+
+        record, perms, _ = await _build(c, sub, self._none([]))
+        assert perms == [] and record.parent_external_record_id == "1001" and record.access_rule == AccessRule.STRICT
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("parent", [_ParentLevel(project_id=PROJECT_ID, level_id="10101"), None],
+                             ids=["leveled_parent", "parent_unread"])
+    async def test_a_sub_task_stays_under_a_parent_that_may_carry_a_level(self, parent: _ParentLevel | None) -> None:
+        """A sub-task payload without its parent's level is held to the parent's readers by the parent edge."""
+        sub = _issue(None, key="PROJ-2", issue_id="1002")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
+        c = _connector()
+        if parent is None:
+            c._parent_level_failures.add("1001")
+        c._parent_levels["1001"] = parent
+        record, perms, _ = await _build(c, sub, self._none(self.HOLDERS))
+        assert perms == [] and record.parent_external_record_id == "1001" and record.access_rule == AccessRule.STRICT
+
+    def test_a_sub_task_stays_under_its_parent_while_the_holders_are_unread(self) -> None:
+        c = _connector()
+        c._parent_levels["500"] = _ParentLevel(project_id=PROJECT_ID, level_id=None)
+        assert c._files_under_parent({}, "500", self._none(None), is_subtask=True) is True
+        assert c._files_under_parent({}, "500", self._none([]), is_subtask=True) is True
+        assert c._files_under_parent({}, "500", self._none(self.HOLDERS), is_subtask=True) is False
 
     def test_a_story_is_not_filed_under_an_epic_its_reporter_may_not_read(self) -> None:
         c = _connector()

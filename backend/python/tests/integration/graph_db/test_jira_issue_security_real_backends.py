@@ -456,6 +456,31 @@ async def test_a_reporter_outside_the_project_reads_only_their_own_issue_and_the
     assert by_key["PROJ-10"] in await _listed_under(world, "bob", by_key["PROJ-6"])
 
 
+async def test_the_reporter_of_a_sub_task_reads_it_alone_and_it_leaves_its_parent(world: dict[str, Any]) -> None:
+    """Jira grants a sub-task's own reporter Browse on it, not on its parent. Filed under the parent
+    it could only be opened to the parent's readers, so it hangs off its project while the holder is
+    used, and goes back under its parent (and away from dave) when the project drops it."""
+    await _sync_project(world)
+    context = world["connector"]._issue_security[PROJECT_ID]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    label = "sub-task of the unleveled story under the unleveled epic"
+
+    parent, _ = ISSUES["unleveled story under the unleveled epic"]  # read in the same batch: its level is known
+
+    context.browse_holders = [{"type": "reporter"}]
+    await _write(world, [parent, _edited(label, "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})],
+                 again=True)
+    assert not await _mismatches(world, {**readers, "PROJ-12": PROJECT_READERS | {"dave"}}, by_key)
+    assert by_key["PROJ-12"] not in await _listed_under(world, "bob", by_key["PROJ-10"])
+
+    context.browse_holders = []
+    await _write(world, [parent, _edited(label, "2024-06-17T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})],
+                 again=True)
+    assert not await _mismatches(world, readers, by_key)
+    assert by_key["PROJ-12"] in await _listed_under(world, "bob", by_key["PROJ-10"])
+
+
 async def test_an_unread_scheme_keeps_the_reporter_of_a_stored_issue_and_the_story_where_it_was_filed(
     world: dict[str, Any],
 ) -> None:
