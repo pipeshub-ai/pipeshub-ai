@@ -1306,7 +1306,7 @@ INT8_INTENT = "int8-w"
 
 
 def _bound_org() -> str | None:
-    """The org bound for this write, or None when none is (the check then reads the collection as a whole)."""
+    """The org bound for this write, or None when none is (the guard keeps it only for a store with one space per org)."""
     try:
         return org_for_filter()
     except OrgRequired:
@@ -1893,6 +1893,7 @@ class VectorStore(Transformer):
                 reset_membership_context(tokens)
             # The membership and the stamp were read before the embedding: what changed meanwhile is applied now, as for the other points
             await self._resync_membership_after_write(virtual_record_id, record_id)
+            await self._check_for_leaks(collection_name, org_id, virtual_record_id)
         self.logger.debug("✅ Indexed record summary for record %s", record_id)
 
     async def _collection_with_model(self, org_id: str, record: Optional["Record"]) -> str:
@@ -1948,6 +1949,7 @@ class VectorStore(Transformer):
             reset_membership_context(tokens)
         # What changed in the membership while the units were embedded is applied now, as for the other points.
         await self._resync_membership_after_write(virtual_record_id, record_id)
+        await self._check_for_leaks(collection_name, org_id, virtual_record_id)
         return sum(d.metadata["blockId"] not in stale for d in documents)
 
     async def _drop_superseded_units(
@@ -2921,7 +2923,7 @@ class VectorStore(Transformer):
             for idx, (start, batch) in enumerate(batches):
                 try:
                     await process_batch(start, batch)
-                except NonRetryableError:
+                except (NonRetryableError, PrecisionFlip):
                     raise
                 except Exception as e:
                     raise VectorStoreError(
@@ -2939,7 +2941,7 @@ class VectorStore(Transformer):
                 *[limited(s, b) for s, b in batches], return_exceptions=True
             )
             for idx, result in enumerate(results):
-                if isinstance(result, NonRetryableError):
+                if isinstance(result, (NonRetryableError, PrecisionFlip)):
                     raise result
                 if isinstance(result, Exception):
                     raise VectorStoreError(

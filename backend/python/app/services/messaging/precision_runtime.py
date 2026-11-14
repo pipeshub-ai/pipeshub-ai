@@ -62,12 +62,15 @@ def build_precision_verdict(config_service, collection_registry, vector_db_servi
     from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 
     async def indexes() -> list[IndexState]:
-        # Derived for every organisation of the deployment, each bound for its own reads and under a statement
-        # timeout; a derivation that times out is "no derivation" for that index (the claim and the per-batch
-        # check still guard every write). Not being able to list the organisations fails the recomputation.
-        with system("precision_verdict_orgs"):
-            orgs = await graph_provider.get_all_orgs(active=True, raise_on_error=True) or []
-        org_ids = [str(o.get("_key") or o.get("id")) for o in orgs if o.get("_key") or o.get("id")]
+        # A store with one collection for everyone has one index per collection: derived once, from the collection.
+        # One with a space per organisation has one per organisation of the deployment, each bound for its own reads
+        # and under a statement timeout; a derivation that times out is "no derivation" for that index (the claim and
+        # the per-batch check still guard every write). Not being able to list the organisations fails the recomputation.
+        org_ids: list[str | None] = [None]
+        if guard.per_org_spaces():
+            with system("precision_verdict_orgs"):
+                orgs = await graph_provider.get_all_orgs(active=True, raise_on_error=True) or []
+            org_ids = [str(o.get("_key") or o.get("id")) for o in orgs if o.get("_key") or o.get("id")]
         found: list[IndexState] = []
         for entry in await collection_registry.list_managed_collections():
             for org in org_ids:

@@ -86,6 +86,18 @@ class PrecisionGuard:
         except Exception:  # a store that does not say is not one
             return False
 
+    def per_org_spaces(self) -> bool:
+        return self._per_org_spaces()
+
+    def scope(self, org: str | None) -> str | None:
+        """The org that names an index: the org on a store with one space per organisation, none on any other.
+
+        A store with one collection for everyone has one pin and one set of counts for that collection, whatever
+        organisation a writer or the verdict poll happens to carry; keying them by org would give one collection
+        several pins, and compare an org's tag counts with the collection's whole point count.
+        """
+        return org if self._per_org_spaces() else None
+
     async def derive(self, collection: str, org: str | None) -> Standing:
         """The precision of an index without a pin, from positive facts, and nothing written.
 
@@ -93,6 +105,7 @@ class PrecisionGuard:
         statement timeout; running out of time raises ``PrecisionDerivationTimeout``: nothing was derived, and
         the caller decides what that means (refuse a claimant, or no derivation at read time).
         """
+        org = self.scope(org)
         if not self._per_org_spaces():
             return await self._derive(collection, org)
         if not org:
@@ -149,6 +162,7 @@ class PrecisionGuard:
     # -- the pin ---------------------------------------------------------------------------------------------
 
     async def standing(self, collection: str, org: str | None, *, fresh: bool = False, derive: bool = True) -> Standing:
+        org = self.scope(org)
         try:
             pin = await self._pins.get(collection, org, fresh=fresh)
             if pin is not None:
@@ -165,6 +179,7 @@ class PrecisionGuard:
 
     async def standing_for_read(self, collection: str, org: str | None) -> Standing:
         """What the read-time check learns about an index: a derivation that timed out is "no derivation", never legacy."""
+        org = self.scope(org)
         try:
             standing = await self.standing(collection, org)
             if standing.source == "derived" and standing.precision:
@@ -184,6 +199,7 @@ class PrecisionGuard:
         only if it is still absent and the count is non-zero, so a pin released by a drop cannot be brought back
         by a cache that has not seen the drop.
         """
+        org = self.scope(org)
         if await self._pins.get(collection, org, fresh=True) is not None:
             return
         if await self._count(collection, org, precision) == 0:
@@ -192,6 +208,7 @@ class PrecisionGuard:
 
     async def release_stale_derived(self, collection: str, org: str | None) -> bool:
         """Delete a derived pin whose collection has no points left (exact count after the index is searchable)."""
+        org = self.scope(org)
         pin = await self._pins.get(collection, org, fresh=True)
         if pin is None or not pin.derived:
             return False
@@ -211,6 +228,7 @@ class PrecisionGuard:
 
         Claims the pin when the collection is empty and the writer is not under a fallback.
         """
+        org = self.scope(org)
         # The pin is read from the store on every batch, never from this process's cache: another process may have
         # released it and claimed it again since, and a cached answer would let this batch land beside the other
         # precision's points. That is one key read per batch.

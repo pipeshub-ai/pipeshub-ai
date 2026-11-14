@@ -117,7 +117,7 @@ class TestNoDeleteWithoutAMatchingWitness:
         db = _FakeDb()
         db.add(INT8, n=3)
         store, _ = _store(db, [])
-        await store._guard._pins.claim("records", INT8, "o1")
+        await store._guard._pins.claim("records", INT8)
         store.dense_embeddings.aembed_documents_witnessed = AsyncMock(return_value=([[0.0]], FP32, False))
         store.dense_embeddings.model = "m"
         db.delete_points = AsyncMock()
@@ -133,7 +133,7 @@ class TestNoDeleteWithoutAMatchingWitness:
         db = _FakeDb()
         db.add(INT8, n=1)
         store, _ = _store(db, [])
-        await store._guard._pins.claim("records", INT8, "o1")
+        await store._guard._pins.claim("records", INT8)
         store.dense_embeddings.aembed_documents_witnessed = AsyncMock(return_value=([[0.0]], INT8, False))
         await store.require_matching_precision_before_delete("records", "o1")
 
@@ -169,7 +169,7 @@ class TestLeaksAtTheEndOfARecord:
         db.add(FP32, n=2, vrid="v1")
         db.add("image", n=2, vrid="v1")
         store, _ = _store(db, [])
-        await store._guard._pins.claim("records", INT8, "o1")
+        await store._guard._pins.claim("records", INT8)
         with pytest.raises(PrecisionFlip, match="removed"):
             await store._check_for_leaks("records", "o1", "v1")
         assert sorted(p["embedPrecision"] for p in db.points) == ["image", "image", INT8, INT8, INT8]
@@ -179,7 +179,7 @@ class TestLeaksAtTheEndOfARecord:
         db = _FakeDb()
         db.add(INT8, n=1, vrid="v1")
         store, _ = _store(db, [])
-        await store._guard._pins.claim("records", INT8, "o1")
+        await store._guard._pins.claim("records", INT8)
         used = []
         original = store._guard._pins._config.get_config
 
@@ -196,7 +196,7 @@ class TestLeaksAtTheEndOfARecord:
         db = _FakeDb()
         db.add(INT8, n=3, vrid="v1")
         store, _ = _store(db, [])
-        await store._guard._pins.claim("records", INT8, "o1")
+        await store._guard._pins.claim("records", INT8)
         await store._check_for_leaks("records", "o1", "v1")
         store.dense_embeddings = SimpleNamespace()
         await store._check_for_leaks("records", "o1", "v1")

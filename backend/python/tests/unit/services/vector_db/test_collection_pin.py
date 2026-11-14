@@ -77,7 +77,7 @@ class TestFirstWrite:
     async def test_the_first_write_claims_the_pin(self) -> None:
         guard, pins, _ = _guard()
         await _verify(guard, INT8)
-        assert (await pins.get("c", "o1", fresh=True)).precision == INT8
+        assert (await pins.get("c", fresh=True)).precision == INT8
 
     @pytest.mark.asyncio
     async def test_every_batch_reads_the_pin_uncached_and_counts_nothing(self) -> None:
@@ -103,7 +103,7 @@ class TestFirstWrite:
         db.add(STAMP_TAG)
         guard, pins, _ = _guard(db)
         await _verify(guard, INT8)  # an empty index as far as text goes: the first writer claims
-        assert (await pins.get("c", "o1", fresh=True)).precision == INT8
+        assert (await pins.get("c", fresh=True)).precision == INT8
 
 
 class TestRefusal:
@@ -114,7 +114,7 @@ class TestRefusal:
         await _verify(guard, pinned)
         with pytest.raises(PrecisionFlip):
             await _verify(guard, writer)
-        assert (await pins.get("c", "o1", fresh=True)).precision == pinned
+        assert (await pins.get("c", fresh=True)).precision == pinned
 
     @pytest.mark.asyncio
     async def test_the_refusal_says_what_to_set_back_and_what_the_cleanup_deletes(self) -> None:
@@ -132,7 +132,7 @@ class TestRefusal:
         await _verify(guard, INT8)
         other, _, _ = _guard(store=None)
         pins2 = CollectionPinStore(_service(pins._config.store), log)
-        standing = await pins2.claim("c", FP32, "o1")
+        standing = await pins2.claim("c", FP32)
         assert standing.precision == INT8
 
     @pytest.mark.asyncio
@@ -153,9 +153,9 @@ class TestFallback:
         guard, pins, _ = _guard()
         with pytest.raises(PrecisionFlip, match="fell back"):
             await _verify(guard, FP32, fallback=True)
-        assert await pins.get("c", "o1", fresh=True) is None
+        assert await pins.get("c", fresh=True) is None
         await _verify(guard, INT8)  # the next boot serves int8: it claims int8
-        assert (await pins.get("c", "o1", fresh=True)).precision == INT8
+        assert (await pins.get("c", fresh=True)).precision == INT8
 
     @pytest.mark.asyncio
     async def test_a_fallback_into_an_fp32_index_continues(self) -> None:
@@ -179,7 +179,7 @@ class TestFirstClaimOnAnExistingIndex:
         guard, pins, _ = _guard(db)
         with pytest.raises(PrecisionFlip):
             await _verify(guard, FP32)
-        restored = await pins.get("c", "o1", fresh=True)
+        restored = await pins.get("c", fresh=True)
         assert restored.precision == INT8 and restored.derived is True
 
     @pytest.mark.asyncio
@@ -197,7 +197,7 @@ class TestFirstClaimOnAnExistingIndex:
         guard, pins, _ = _guard(db)
         with pytest.raises(PrecisionFlip):
             await _verify(guard, INT8)
-        assert await pins.get("c", "o1", fresh=True) is None  # an implicit pin writes nothing
+        assert await pins.get("c", fresh=True) is None  # an implicit pin writes nothing
         await _verify(guard, FP32)
 
     @pytest.mark.asyncio
@@ -258,9 +258,9 @@ class TestTwoProcesses:
         assert standing.precision == FP32
         # The cleanup on A: vectors first, then the pin, nothing left behind.
         db.points.clear()
-        await pins_a.release("c", "o1")
+        await pins_a.release("c")
         await b.restore("c", "o1", FP32)  # B acts on what it saw before the drop
-        assert await pins_a.get("c", "o1", fresh=True) is None
+        assert await pins_a.get("c", fresh=True) is None
 
     @pytest.mark.asyncio
     async def test_a_derived_pin_over_an_empty_collection_is_released(self) -> None:
@@ -270,14 +270,14 @@ class TestTwoProcesses:
         await guard.restore("c", "o1", INT8)
         db.points.clear()
         assert await guard.release_stale_derived("c", "o1") is True
-        assert await pins.get("c", "o1", fresh=True) is None
+        assert await pins.get("c", fresh=True) is None
 
     @pytest.mark.asyncio
     async def test_an_explicit_pin_is_never_released_by_the_derived_rule(self) -> None:
         guard, pins, _ = _guard()
         await _verify(guard, INT8)
         assert await guard.release_stale_derived("c", "o1") is False
-        assert await pins.get("c", "o1", fresh=True) is not None
+        assert await pins.get("c", fresh=True) is not None
 
 
 class TestStalePin:
@@ -287,26 +287,26 @@ class TestStalePin:
         guard, pins, _ = _guard(clock=lambda: now[0])
         t0 = now[0]
         now[0] += 5  # another writer claims after the collection came to exist
-        await pins.claim("c", INT8, "o1")
-        assert await pins.replace_stale("c", FP32, t0, "o1") is False
-        assert (await pins.get("c", "o1", fresh=True)).precision == INT8
+        await pins.claim("c", INT8)
+        assert await pins.replace_stale("c", FP32, t0) is False
+        assert (await pins.get("c", fresh=True)).precision == INT8
 
     @pytest.mark.asyncio
     async def test_a_pin_from_before_the_observed_absence_is_replaced(self) -> None:
         now = [1000.0]
         _, pins, _ = _guard(clock=lambda: now[0])
-        await pins.claim("c", INT8, "o1")
+        await pins.claim("c", INT8)
         now[0] += 3600
-        assert await pins.replace_stale("c", FP32, now[0], "o1") is True
-        assert (await pins.get("c", "o1", fresh=True)).precision == FP32
+        assert await pins.replace_stale("c", FP32, now[0]) is True
+        assert (await pins.get("c", fresh=True)).precision == FP32
 
     @pytest.mark.asyncio
     async def test_a_young_pin_over_a_crash_leftover_is_kept(self) -> None:
         now = [1000.0]
         _, pins, _ = _guard(clock=lambda: now[0])
-        await pins.claim("c", INT8, "o1")
+        await pins.claim("c", INT8)
         now[0] += 10
-        assert await pins.replace_stale("c", FP32, now[0], "o1") is False
+        assert await pins.replace_stale("c", FP32, now[0]) is False
 
 
 class TestRelease:
@@ -323,7 +323,7 @@ class TestRelease:
     @pytest.mark.asyncio
     async def test_a_delete_the_store_cannot_confirm_is_raised(self) -> None:
         _, pins, config = _guard()
-        await pins.claim("c", INT8, "o1")
+        await pins.claim("c", INT8)
 
         async def refuses(_key):  # noqa: ANN202
             return False
@@ -334,7 +334,7 @@ class TestRelease:
         config.delete_config = refuses
         config.get_config = unreadable
         with pytest.raises(ConnectionError):
-            await pins.release("c", "o1")
+            await pins.release("c")
 
     @pytest.mark.asyncio
     async def test_the_manifest_is_not_touched(self) -> None:
@@ -383,7 +383,7 @@ class TestRegistryDrop:
         registry = CollectionRegistry(db, MagicMock(), lambda n: None, manifest, log)
         pins = CollectionPinStore(config, log)
         await pins.claim("c", INT8)
-        await pins.claim("c", INT8, "o1")
+        await pins.claim("c", INT8)
         await pins.claim("other", INT8)
         original = pins.release_collection
 

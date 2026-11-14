@@ -87,7 +87,7 @@ async def test_a_leaked_batch_of_a_reconciled_record_is_removed_and_the_unchange
     db.add(INT8, n=3, vrid=VRID, org=ORG)  # the unchanged blocks of the record
     db.add(FP32, n=1, vrid=VRID, org=ORG)  # one batch a claim race let in
     store = _store(db, INT8)
-    await store._guard._pins.claim("records", INT8, ORG)
+    await store._guard._pins.claim("records", INT8)
     with pytest.raises(Exception) as caught:
         await store.index_documents(_blocks("b-new"), ORG, "rec-1", VRID, is_reconciliation=True)
     assert precision_flip_in(caught.value) is not None
@@ -100,7 +100,7 @@ async def test_a_reconciled_record_with_nothing_leaked_completes() -> None:
     db = _FakeDb()
     db.add(INT8, n=3, vrid=VRID, org=ORG)
     store = _store(db, INT8)
-    await store._guard._pins.claim("records", INT8, ORG)
+    await store._guard._pins.claim("records", INT8)
     assert await store.index_documents(_blocks("b-new"), ORG, "rec-1", VRID, is_reconciliation=True) is True
 
 
@@ -108,7 +108,7 @@ async def test_a_reconciled_record_with_nothing_leaked_completes() -> None:
 async def test_a_full_replace_without_a_resume_attempt_also_checks_for_leaks_at_its_end() -> None:
     db = _FakeDb()
     store = _store(db, INT8)
-    await store._guard._pins.claim("records", INT8, ORG)
+    await store._guard._pins.claim("records", INT8)
     real = store._embed_and_upsert_documents
 
     async def leak_then_store(*a, **k):  # noqa: ANN202
@@ -145,7 +145,7 @@ async def test_a_flip_after_the_delete_is_repaired_on_redelivery() -> None:
     db = _FakeDb()
     db.add(INT8, n=2, vrid=VRID, org=ORG)  # what the first indexing left
     store = _store(db, INT8)
-    await store._guard._pins.claim("records", INT8, ORG)
+    await store._guard._pins.claim("records", INT8)
     # The delete is allowed (the probe says int8), then the first batch comes back fp32: the server was restarted.
     store.dense_embeddings.aembed_documents_witnessed = AsyncMock(side_effect=[([[0.1, 0.2]], INT8, False), ([[0.1, 0.2]], FP32, False)])
     with pytest.raises(Exception) as caught:

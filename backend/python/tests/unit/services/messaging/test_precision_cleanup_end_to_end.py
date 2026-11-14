@@ -54,7 +54,7 @@ async def test_the_cleanup_releases_every_pin_and_refreshes_the_verdict_before_i
     verdict = build_precision_verdict(config, registry, db, graph, log)
     verdict._fetch_states = AsyncMock(return_value={"m": ServerState(FP32, FP32, False)})  # the server now serves fp32
     set_active_verdict(verdict)
-    await pins.claim("records", INT8, ORG)
+    await pins.claim("records", INT8)
     await pins.claim("gone", FP32, "o9")  # an orphan left by a collection that no longer exists
 
     await verdict.refresh()
@@ -95,5 +95,5 @@ async def test_the_cleanup_releases_every_pin_and_refreshes_the_verdict_before_i
     guard = PrecisionGuard(pins, db, log)
     await guard.verify_batch("records", ORG, FP32, fallback=False, intent=INT8)
     db.add(FP32, org=ORG)
-    assert (await pins.get("records", ORG, fresh=True)).precision == FP32
+    assert (await pins.get("records", fresh=True)).precision == FP32
     assert {p["embedPrecision"] for p in db.points} == {FP32}
