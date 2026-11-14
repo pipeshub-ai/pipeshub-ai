@@ -193,6 +193,7 @@ class TestRunSync:
             from app.connectors.core.registry.filters import FilterCollection
             mock_filters.return_value = (FilterCollection(), FilterCollection())
             connector._fetch_users = AsyncMock(return_value=[user])
+            connector._keep_licensed_users = AsyncMock(side_effect=lambda found, _mapping: found)  # all licensed
             connector._sync_user_groups = AsyncMock(return_value={"g1": [user]})
             rg = _project_rg()
             connector._fetch_projects = AsyncMock(return_value=(

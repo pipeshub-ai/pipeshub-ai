@@ -1248,35 +1248,71 @@ class TestFetchUsersPhases:
             for i in ("lic", "unlic")
         )
         connector._fetch_group_members = AsyncMock(return_value=(["lic"], True))
+        connector._app_roles_read = True
         mapping = {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]}
 
         assert await connector._keep_licensed_users([licensed, unlicensed], mapping) == [licensed]
         connector._fetch_group_members.assert_awaited_once_with("g1", "jira-software-users")
         assert connector._licensed_account_ids == {"lic"}, "kept for the scheme's user grants"
 
+    @staticmethod
+    def _three(connector: JiraConnector) -> list[AppUser]:
+        """An account linked before, the connector's own account, and an account never linked."""
+        users = [AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id=i, email=f"{i}@x.com", full_name=i)
+                 for i in ("linked", "own", "new")]
+        connector._stored_app_users = [users[0]]
+        connector._authenticated_jira_account_id = "own"
+        return users
+
     @pytest.mark.asyncio
-    async def test_product_access_unknown_keeps_every_user(self) -> None:
+    @pytest.mark.parametrize("cause", ["roles_unread", "members_unread"])
+    async def test_product_access_unknown_links_no_new_user(self, cause: str) -> None:
+        """Jira may not license an account the groups could not show: only the accounts already linked, and the
+        connector's own, keep the connector; no one new is linked and no one is withdrawn as unlicensed."""
         connector = _make_connector()
-        users = [AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id="u", email="u@x.com", full_name="u")]
+        users = self._three(connector)
+        connector._app_roles_read = cause != "roles_unread"
         connector._fetch_group_members = AsyncMock(return_value=([], False))
         mapping = {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]}
 
-        assert await connector._keep_licensed_users(users, {}) == users
-        assert await connector._keep_licensed_users(users, mapping) == users
+        assert await connector._keep_licensed_users(users, mapping) == users[:2]
+        assert connector._licensed_account_ids is None
 
     @pytest.mark.asyncio
-    async def test_a_partly_read_role_list_keeps_every_user(self) -> None:
+    async def test_a_partly_read_role_list_links_no_new_user(self) -> None:
         connector = _make_connector()
-        users = [
-            AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id=i, email=f"{i}@x.com", full_name=i)
-            for i in ("lic", "other")
-        ]
-        connector._fetch_group_members = AsyncMock(return_value=(["lic"], True))
+        users = self._three(connector)
+        connector._fetch_group_members = AsyncMock(return_value=(["linked", "own", "new"], True))
         connector._app_roles_unread = True
         mapping = {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]}
 
-        assert await connector._keep_licensed_users(users, mapping) == users
+        assert await connector._keep_licensed_users(users, mapping) == users[:2]
         connector._fetch_group_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("user_count", "read"), [(0, True), (3, False), (None, True)],
+                             ids=["no_users", "users_outside_groups", "count_not_given"])
+    async def test_a_role_with_no_group_licenses_nobody_unless_it_counts_users(self, user_count, read) -> None:
+        """Roles read in full with no group license nobody. A role whose licence counts users that no group
+        grants licenses them some other way, which the groups cannot show: product access is then unknown."""
+        connector = _make_connector()
+        role = {"key": "jira-software", "groupDetails": []}
+        if user_count is not None:
+            role["userCount"] = user_count
+        connector._call_with_retry = AsyncMock(return_value=_make_mock_response(200, [role]))
+        mapping = await connector._fetch_application_roles_to_groups_mapping()
+        assert connector._app_roles_read is read
+        users = self._three(connector)
+        assert await connector._keep_licensed_users(users, mapping) == ([] if read else users[:2])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [403, 404])
+    async def test_a_role_list_refused_or_missing_leaves_product_access_unknown(self, status: int) -> None:
+        connector = _make_connector()
+        connector.notify = AsyncMock()
+        connector._call_with_retry = AsyncMock(return_value=_make_mock_response(status, {}))
+        await connector._fetch_application_roles_to_groups_mapping()
+        assert connector._app_roles_read is False
 
     @pytest.mark.asyncio
     async def test_withdraws_stored_users_jira_reports_ineligible(self) -> None:
@@ -4484,6 +4520,7 @@ async def test_an_unresolved_account_outside_the_product_groups_gets_no_browse_g
     """A hidden-email account whose lookup failed never reaches the licence filter; the groups still decide."""
     connector = _make_connector()
     connector._fetch_group_members = AsyncMock(return_value=(["acc-x", "acc-lic"], True))
+    connector._app_roles_read = True
     listed = [_make_app_user("x@acme.com", "acc-x")]
     kept = await connector._keep_licensed_users(listed, {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]})
     connector._user_read_unfinished = True  # what a failed email lookup leaves
