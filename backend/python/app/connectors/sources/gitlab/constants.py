@@ -8,7 +8,7 @@ change them without reading those comments first.
 
 import re
 
-from app.config.constants.arangodb import ExtensionTypes
+from app.config import file_types
 
 # ---------------------------------------------------------------------------
 # Instance URLs
@@ -113,9 +113,7 @@ IMAGE_EXTENSIONS: frozenset[str] = frozenset(
 
 # Extensions for documents/media that the UI can render as a preview (i.e. not
 # raw source code).  Anything outside this set is treated as a code file.
-PREVIEW_RENDERABLE_EXTENSIONS: frozenset[str] = frozenset(
-    ext.value for ext in ExtensionTypes
-)
+PREVIEW_RENDERABLE_EXTENSIONS: frozenset[str] = file_types.preview_extensions()
 
 # Regex matching GitLab upload links embedded in Markdown.
 # Examples:

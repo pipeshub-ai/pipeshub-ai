@@ -3,8 +3,8 @@ from copy import deepcopy
 from enum import Enum
 from typing import Any
 
+from app.config import file_types
 from app.config.constants.arangodb import (
-    EXCLUDABLE_FILE_EXTENSIONS,
     ExtensionTypes,
     PermissionModel,
 )
@@ -863,12 +863,7 @@ class CommonFields:
             options=[
                 FilterOption(id=ext, label=(labels or {}).get(ext, f".{ext}"))
                 for ext in (
-                    [ext.value for ext in extensions]
-                    if extensions
-                    else [
-                        *(ext.value for ext in ExtensionTypes),
-                        *EXCLUDABLE_FILE_EXTENSIONS,
-                    ]
+                    [ext.value for ext in extensions] if extensions else file_types.filter_option_ids()
                 )
             ]
         )
