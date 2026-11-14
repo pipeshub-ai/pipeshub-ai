@@ -11,7 +11,6 @@ import asyncio
 import dataclasses
 import time
 import uuid
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import asyncpg
@@ -80,6 +79,8 @@ from app.services.vector_db.pgvector.visibility import Scope, scope_of
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from app.config.configuration_service import ConfigurationService
     from app.core.db import KernelDB, Tx
 
@@ -199,6 +200,8 @@ class PgVectorService(IVectorDBService):
                 task.cancel()
             if self._sampler is not None:
                 await self._sampler.close()
+            if self._sizer is not None:
+                self._sizer.close()
             self._sizer = self._sampler = None
             if self._own_placement:
                 self.placement, self._own_placement = None, False
@@ -442,8 +445,9 @@ class PgVectorService(IVectorDBService):
 
     async def group_clock_skew(self, org_id: str, *, min_ahead_seconds: float = 30.0) -> tuple[int, float]:
         """``(rows, seconds)``: how many of the org's group rows were computed more than ``min_ahead_seconds`` after the database's clock, and by how
-        much the furthest is. A rewrite writes at the database's time and a group row is replaced only by a later one, so a row ahead of the clock
-        refuses every rewrite of its virtual record until the clock passes it.
+        much the furthest is: rows a writer timed with its own clock, which was ahead (a write that names no time takes the database's). A row more
+        than 30 s ahead orders against nothing: the next write of its group, a rewrite included, replaces it (`writes.write_groups`). A row less far
+        ahead refuses an earlier writer, a rewrite included, until the clock passes it, which takes at most 30 s.
 
         shortcut: reads the org's group rows without an index on ``computed_at``; it is an operator command, so run it when asked, not per request."""
         db, _ = self._assert_connected()
@@ -670,10 +674,11 @@ class PgVectorService(IVectorDBService):
     async def upsert_points(
         self, collection_name: str, points: list[VectorPoint], *, computed_at: datetime | None = None
     ) -> None:
-        """``computed_at``: when the membership arrays the points carry were read from the graph (default: now). A group's arrays are
-        replaced only by a writer with a later time, so an index run that read its arrays before the membership sync wrote newer ones
-        passes the time it read them and loses to the sync; without it the call time is used, which is right for a run that reads the
-        graph and writes at once and makes the last writer win otherwise."""
+        """``computed_at``: when the membership arrays the points carry were read from the graph (default: the database's clock when the call starts,
+        never a host's). A group's arrays are replaced only by a writer with a later time, so an index run that read its arrays before the membership
+        sync wrote newer ones passes the time it read them and loses to the sync; without it the call time is used, which is right for a run that
+        reads the graph and writes at once and makes the last writer win otherwise. Every batch of the call writes at that one time: a sync that
+        commits between two batches keeps its newer arrays."""
         if not points:
             return
         db, catalog = self._assert_connected()
@@ -681,7 +686,9 @@ class PgVectorService(IVectorDBService):
         if len(orgs) != 1:
             raise OrgMismatch("a batch of points must belong to one organisation")
         coll = await catalog.require_collection(collection_name)
-        computed_at = computed_at or datetime.now(UTC)
+        if computed_at is None:
+            with org_scope(next(iter(orgs))):
+                computed_at = await self.fence_time()
         for start in range(0, len(points), writes.UPSERT_BATCH):
             batch = writes.prepare(points[start:start + writes.UPSERT_BATCH])
             if len(set(batch.dims)) != 1:
@@ -739,7 +746,6 @@ class PgVectorService(IVectorDBService):
         payload. One transaction."""
         db, catalog = self._assert_connected()
         coll = await catalog.require_collection(collection_name)
-        t = computed_at or datetime.now(UTC)
         membership = writes.membership_of(payload)
         group_filter = compile_filter(expr, first_param=3) if expr is not None else None
         merge_filter = compile_filter(expr, first_param=5) if expr is not None else None
@@ -754,7 +760,7 @@ class PgVectorService(IVectorDBService):
             if membership and selected:
                 keys = await writes.group_keys_of_ids(tx, org, coll.collection_id, selected)
                 if keys:
-                    await writes.write_groups(tx, org, coll.collection_id, dict.fromkeys(keys, membership), t, allow_empty=True)
+                    await writes.write_groups(tx, org, coll.collection_id, dict.fromkeys(keys, membership), computed_at, allow_empty=True)
             if merge_ids is not None and not merge_ids:
                 return                                           # the filter matched no point
             await writes.merge_payload(tx, org, coll.collection_id, payload, None if merge_ids is not None else merge_filter, merge_ids, replace=replace)

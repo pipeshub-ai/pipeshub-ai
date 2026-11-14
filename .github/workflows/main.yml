@@ -352,9 +352,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      # The workflow trust check parses YAML; this is the version integration-tests/uv.lock pins.
-      - name: Install the scripts' test dependency
-        run: python3 -m pip install pyyaml==6.0.3
+      # The workflow trust check parses YAML; scripts/test_assert_no_skips.py runs pytest on a throwaway project. These are the versions
+      # integration-tests/uv.lock pins.
+      - name: Install the scripts' test dependencies
+        run: python3 -m pip install pyyaml==6.0.3 pytest==9.1.1
 
       # scripts/test_log_pii.py parses TypeScript; it fails, not skips, without the typescript package.
       - name: Set up Node.js
