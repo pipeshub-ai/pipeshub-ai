@@ -1230,8 +1230,6 @@ async def test_a_failing_reconcile_scan_does_not_stop_the_owed_redrives(fleet: F
 
 @pytest.mark.asyncio
 async def test_the_stage_worker_pauses_not_fails_on_a_precision_flip() -> None:
-    from unittest.mock import AsyncMock
-
     from app.exceptions.indexing_exceptions import IndexingError
     from app.modules.pipeline.worker import StageWaitsForPrecision
     from app.services.messaging.precision_flip import PrecisionFlip

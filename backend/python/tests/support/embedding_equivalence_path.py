@@ -25,7 +25,12 @@ from app.config.constants.ai_models import (
     EMBEDDING_PRIORITY_HEADER,
     EMBEDDING_PRIORITY_QUERY,
 )
-from app.utils.embedding_precision import FP32, INT8, QUANTIZER_VERSION, PrecisionSelector
+from app.utils.embedding_precision import (
+    FP32,
+    INT8,
+    QUANTIZER_VERSION,
+    PrecisionSelector,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Sequence
@@ -156,7 +161,7 @@ def _bfloat16_loader(self, load, model_name=None):  # noqa: ANN202
 
 
 @contextlib.contextmanager
-def dynamic_activation_variant():  # noqa: ANN201
+def dynamic_activation_variant():
     """The control: int8 layers that also quantise activations per batch, so a text's vector depends on its neighbours."""
 
     from app.utils import int8_linear

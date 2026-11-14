@@ -6,11 +6,11 @@ from tests.integration.vector_db.helpers import strict_service
 
 
 class _Request:
-    def __init__(self, outcome) -> None:  # noqa: ANN001
+    def __init__(self, outcome) -> None:
         self.outcome = outcome
         self.asked: list[str] = []
 
-    def getfixturevalue(self, name: str):  # noqa: ANN201
+    def getfixturevalue(self, name: str) -> object:
         self.asked.append(name)
         if isinstance(self.outcome, BaseException):
             raise self.outcome

@@ -10,16 +10,13 @@ from app.services.vector_db.models import (
     DistanceMetric,
     FieldCondition,
     FilterExpression,
-    HybridSearchRequest,
-    SparseVector,
     VectorPoint,
 )
-
 
 DIM = 8  # small fixed dimension for tests
 
 
-def strict_service(request, backend: str):  # noqa: ANN001, ANN201
+def strict_service(request, backend: str):
     """The service fixture of a backend a job selected; one that cannot be reached fails instead of skipping.
 
     The shared service fixtures skip when their server is down, which is right for a developer running the
