@@ -217,7 +217,7 @@ class TestRunSync:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("swept", [True, False], ids=["sweep_ran", "sweep_skipped"])
-    async def test_newly_listed_accounts_are_cleared_only_after_the_stub_sweep_ran(self, swept: bool):
+    async def test_newly_listed_accounts_are_cleared_only_after_the_stub_sweep_ran(self, swept: bool) -> None:
         """A sweep skipped because the synced users could not be read leaves the re-read projects' stubs without the
         accounts' grants: the accounts stay saved, so the next sync reads their issues again and sweeps."""
         connector = _make_connector()
