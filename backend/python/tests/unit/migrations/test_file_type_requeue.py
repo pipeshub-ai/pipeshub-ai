@@ -662,3 +662,25 @@ async def test_a_failed_read_of_an_outbox_entry_keeps_it() -> None:
     config.fail.discard(key)
     _, config, again = await _run(graph, config=config)
     assert again.ids() == ["u1"]
+
+
+def test_logs_and_configs_stored_under_their_own_mime_are_selected_as_their_type() -> None:
+    from app.migrations.file_type_requeue.migration import is_selected
+
+    over = file_types.TEXT_MAX_DOWNLOAD_BYTES + 1
+    cases = {
+        ("log", "text/x-log", "app.log", 100): True,
+        ("cfg", "text/x-cfg", "app.cfg", 100): True,
+        (None, "text/x-log", "app.log", 100): True,
+        (None, "text/x-cfg", "app.cfg", 100): True,
+        ("LOG", "TEXT/X-LOG", "APP.LOG", 100): True,
+        ("log", "text/x-log", "huge.log", over): False,  # past the download ceiling: it would only be refused again
+        ("log", "text/plain", "app.log", 100): False,  # read before: its status is not the old gate's
+        ("cfg", "text/plain", "app.cfg", 100): False,
+    }
+    for (ext, mime, name, size), expected in cases.items():
+        record = _file("r", name, ext=ext, mime=mime, size=size)
+        row = {"mimeType": mime, "sizeInBytes": size}
+        assert is_selected(record, row, frozenset())[0] is expected, (ext, mime)
+        assert gate_v1.supported(extension=ext, mime=mime, record_name=name, is_code_file=False) is (not expected and mime == "text/plain"), (ext, mime)
+    assert is_selected(_file("r", "app.log", ext="log", mime="text/x-log"), {"mimeType": "text/x-log"}, frozenset({"log"})) == (False, "log")
