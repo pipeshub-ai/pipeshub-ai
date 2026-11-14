@@ -24243,11 +24243,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # Matched by id alone so the planner seeks each edge; naming the
         # from node lets it expand the whole hub instead. The match is
         # re-checked because Neo4j may reuse a deleted edge's id.
+        # The write on the record takes its lock, so the check for an edge
+        # already on the target reads what a concurrent classification
+        # committed while this waited, instead of creating a second one.
         query = f"""
             MATCH ()-[e:{rel}]->() WHERE elementId(e) IN $ids
             WITH e, startNode(e) AS r, endNode(e) AS from
             WHERE r:Record AND from:{label} AND from.id = $from_key AND r.orgId = $org_id
               AND ($only_merged_from IS NULL OR e.{provenance} = $only_merged_from)
+            SET r.{_MATCH_LOCK} = true
+            REMOVE r.{_MATCH_LOCK}
+            WITH e, r
             MATCH (target:{label} {{id: $to_key}})
             OPTIONAL MATCH (r)-[x:{rel}]->(target)
             WITH r, e, target, count(x) AS existing

@@ -102,6 +102,9 @@ class TestMoveEdgesNeo4j:
         assert "n.mergedFrom = null" not in query  # only a legacy restore clears merge history
         assert "OPTIONAL MATCH (r)-[x:BELONGS_TO_TOPIC]->(target)" in query
         assert "WITH r, e, target, count(x) AS existing" in query
+        # The record's lock is taken before the check for an edge already on the target.
+        assert query.index("SET r.matchLock = true") < query.index("OPTIONAL MATCH")
+        assert "REMOVE r.matchLock" in query
         assert params["ids"] == ["e1", "e2", "e3"]
         assert {k: params[k] for k in ("from_key", "to_key", "org_id", "set_merged_from", "only_merged_from")} == {
             "from_key": "a", "to_key": "b", "org_id": "org-1", "set_merged_from": "a", "only_merged_from": None,
