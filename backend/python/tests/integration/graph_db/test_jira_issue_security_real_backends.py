@@ -542,14 +542,38 @@ async def test_reassigning_an_issue_moves_the_assignee_grant_on_the_stored_recor
 
 async def test_a_holder_removed_from_a_level_loses_every_issue_of_it_with_one_write(world: dict[str, Any]) -> None:
     """The level's record group holds its holders once, so the write before the walk takes every
-    issue of the level, its sub-task too, from alice and gives it to bob at once, before any issue is read again."""
+    issue of the level from alice and gives it to bob at once, before any issue is read again. A sub-task holds a copy
+    of its level's holders and is read only with its parent: closed to both until the re-read the change asks for."""
     await _sync_project(world)
     by_key = await _ticket_ids(world)
     readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
     world["connector"]._issue_security[PROJECT_ID].members_by_level["10101"] = [_user_holder("bob")]
     await _write_levels(world, ["10101"])
-    moved = {"PROJ-2": {"bob"}, "PROJ-7": {"bob"}, "PROJ-11": {"bob"}, "PROJ-8": {"bob"}}
-    assert not await _mismatches(world, {**readers, **moved}, by_key)
+    moved = {"PROJ-2": {"bob"}, "PROJ-7": {"bob"}, "PROJ-11": {"bob"}}
+    assert not await _mismatches(world, {**readers, **moved, "PROJ-8": set()}, by_key)
+    await _write(world, [ISSUES["sub-task of the leveled story"][0]], again=True)
+    assert not await _mismatches(world, {**readers, **moved, "PROJ-8": {"bob"}}, by_key)
+
+
+async def test_a_holder_removed_from_a_level_loses_its_ancestor_stub_with_the_same_write(world: dict[str, Any]) -> None:
+    """A stub of a leveled task out of the sync's scope lists its title to the level's readers only. It takes its access
+    from the level's group, as the task would, so the write before the walk moves it too: an incremental sync does not
+    send an already backfilled stub through the sweep again."""
+    await _sync_project(world)
+    connector = world["connector"]
+    await _write(world, [_issue("21", "PROJ-21", "Sub-task", parent="20")])  # its parent is out of scope: a stub
+    connector._bulk_fetch_ancestor_level = AsyncMock(return_value=[_issue("20", "PROJ-20", "Task", level="10101")])
+    await connector._sweep_placeholder_records({PROJECT_ID})
+    stub = await world["processor"].get_record_by_external_id(world["connector_id"], "20")
+    assert stub is not None and stub.is_placeholder and stub.external_revision_id
+
+    async def listing_it() -> set[str]:
+        return {name for name in PEOPLE if stub.id in {row for _, row, _ in await _browse(world, name)}}
+
+    assert await listing_it() == {"alice"}
+    connector._issue_security[PROJECT_ID].members_by_level["10101"] = [_user_holder("bob")]
+    await _write_levels(world, ["10101"])
+    assert await listing_it() == {"bob"}
 
 
 async def test_a_level_removed_from_the_scheme_closes_its_issues_at_once(world: dict[str, Any]) -> None:
@@ -579,13 +603,16 @@ async def test_issues_stored_with_a_copy_of_their_holders_take_their_level_group
     for issue, _ in ISSUES.values():
         await _write(world, [issue], again=True)
     assert not await _mismatches(world, readers, by_key)
-    graph, inherited = world["graph"], {}
+    graph, inherited, level_group = world["graph"], {}, {}
+    for level in ("10101",):
+        group = await graph.get_record_group_by_external_id(world["connector_id"], f"level:{PROJECT_ID}:{level}")
+        level_group[level] = f"recordGroups/{group.id}"
     for key in ("PROJ-2", "PROJ-7", "PROJ-8", "PROJ-11"):
         edges = await graph.get_edges_from_node(f"records/{by_key[key]}", CollectionNames.INHERIT_PERMISSIONS.value)
-        inherited[key] = sorted(str(e.get("_to") or f"{e.get('to_collection')}/{e.get('to_id')}").split("/")[0] for e in edges)
-    # the leveled issues, the sub-task too, inherit their level's group alone
-    assert inherited == {"PROJ-2": ["recordGroups"], "PROJ-7": ["recordGroups"], "PROJ-8": ["recordGroups"],
-                         "PROJ-11": ["recordGroups"]}
+        inherited[key] = sorted(str(e.get("_to") or f"{e.get('to_collection')}/{e.get('to_id')}") for e in edges)
+    # the leveled issues inherit their level's group alone; the sub-task its parent, with a copy of its level's holders
+    assert inherited == {**{key: [level_group["10101"]] for key in ("PROJ-2", "PROJ-7", "PROJ-11")},
+                         "PROJ-8": [f"records/{by_key['PROJ-7']}"]}
 
 
 async def test_a_level_read_that_will_be_retried_keeps_the_issue_with_its_level(world: dict[str, Any]) -> None:
@@ -607,8 +634,9 @@ async def test_an_issue_moved_to_another_level_is_read_by_that_level_alone(world
     readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
     await _write(world, [_edited("leveled story under the unleveled epic", "2024-06-16T10:00:00.000+0000",
                                  security={"id": "10102", "name": "level 10102"})])
-    # its sub-task keeps its own level (Jira copies a parent's level onto a sub-task only when it is created)
-    assert not await _mismatches(world, {**readers, "PROJ-7": {"carol"}}, by_key)
+    # Its sub-task is read only with it: until a read reports the sub-task's level following its parent's ("Sub-tasks also
+    # inherit the security level of their parent issue"), its stored level 10101 and its parent's 10102 admit nobody.
+    assert not await _mismatches(world, {**readers, "PROJ-7": {"carol"}, "PROJ-8": set()}, by_key)
     # listed under its epic and its new level only: the old level's folder no longer holds it
     graph = world["graph"]
     groups = {g.get("externalGroupId"): g.get("id") or g.get("_key") for g in await graph.get_nodes_by_filters(

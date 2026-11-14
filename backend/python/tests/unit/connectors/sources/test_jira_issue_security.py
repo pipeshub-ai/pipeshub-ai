@@ -25,7 +25,6 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     classify_scheme_response,
     closed_level_groups,
     collect_paged_values,
-    group_held_levels,
     hold_levels_naming_unread_roles,
     level_group_grants,
     level_reads_alike,
@@ -927,13 +926,14 @@ class TestLevelGroups:
                                       project_key="P", user_by_id={}, app_roles_mapping=None)
         assert {(g.entity_type, g.external_id) for g in group} == {(EntityType.GROUP, "g-1"), (EntityType.ROLE, "P_projectLead")}
 
-    def test_a_sub_task_takes_its_own_level_s_group_not_its_parent(self) -> None:
-        """Jira judges a sub-task by its own Browse and level; it copies its parent's level when created, and keeps it."""
+    def test_a_sub_task_holds_a_copy_of_its_level_and_is_read_only_with_its_parent(self) -> None:
+        """Atlassian documents that a sub-task inherits its parent's level, not that its own holders read it without the
+        parent: it keeps no group, so it inherits its parent and is read by those its level admits among its parent's."""
         rec, grants, _, _ = self._apply({"security": {"id": "7"}}, is_subtask=True, parent_external_record_id="1")
-        assert (rec.access_rule, rec.access_group_external_id) == (AccessRule.STRICT, "level:p-1:7")
-        assert [(g.entity_type, g.email) for g in grants] == [(EntityType.USER, "rep@x.com")]
+        assert (rec.access_rule, rec.access_group_external_id, rec.inherit_permissions) == (AccessRule.RESTRICTED, "", True)
+        assert len(grants) == 3  # a copy of every holder
         rec, grants, _, _ = self._apply({"security": {"id": "7"}}, is_subtask=True, project_id=None)
-        assert (rec.access_rule, len(grants)) == (AccessRule.RESTRICTED, 3)  # without a group: a copy of every holder
+        assert (rec.access_rule, len(grants)) == (AccessRule.RESTRICTED, 3)
 
     def test_an_issue_with_no_level_or_a_level_without_holders_names_no_group(self) -> None:
         for fields in ({"security": None}, {"security": {"id": "8"}}):
@@ -981,12 +981,6 @@ class TestSplitLevelDigests:
         assert role.level_fingerprints({"r": [{"groupId": "a"}]}, split=True)["7"].split(".")[0] != \
             role.level_fingerprints({"r": [{"groupId": "b"}]}, split=True)["7"].split(".")[0]
 
-    def test_only_a_change_of_the_group_s_holders_is_held_by_the_group(self) -> None:
-        stored = {"1": "s1.d1", "2": "s2.d2", "3": "legacy", "4": "s4.d4", "*": "retry"}
-        current = {"1": "s1x.d1", "2": "s2.d2x", "3": "s3.d3", "4": "s4.d4", "5": "s5.d5"}
-        assert group_held_levels(stored, current) == {"1"}
-        assert group_held_levels(None, current) == set()
-
     def test_a_level_gone_from_the_scheme_is_closed_only_when_a_group_was_written(self) -> None:
         stored = {"1": "s1.d1", "2": "legacy", "3": "s3.d3", "*": "retry"}
         assert closed_level_groups(stored, {"3": "s3.d3"}) == ["1"]
@@ -998,7 +992,6 @@ class TestSplitLevelDigests:
         reread, levels, to_save = plan_level_reread(
             security, security.level_fingerprints(), is_new_project=False, app_roles_mapping={}, split=True)
         assert (reread, levels, to_save) == ("levels", ["1", "2"], security.level_fingerprints(split=True))
-        assert group_held_levels(security.level_fingerprints(), to_save) == set()
 
 
 class TestBrowseAndLevelNamedOnTheIssue:

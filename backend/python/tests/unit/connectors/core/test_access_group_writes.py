@@ -148,6 +148,17 @@ async def test_a_level_group_that_is_not_there_is_an_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_kept_level_group_is_seen_by_the_full_sync() -> None:
+    """A full sync that could not read the level writes no group; the group kept for the issue is not unlinked after it."""
+    processor = _processor()
+    run = processor.begin_full_sync_run("conn")
+    stored = SimpleNamespace(id="rec-1", record_group_id="proj", access_rule=AccessRule.STRICT)
+    record = _issue(access_group_external_id=None, rewrite_permissions=False)
+    await processor._keep_access_group(record, _Store(stored=stored, inherits=[{"_to": f"{G}/lvl-7"}]))
+    assert record.access_group_external_id == "level:p-1:7" and run.has(G, "lvl-7")
+
+
+@pytest.mark.asyncio
 async def test_a_write_that_names_no_group_keeps_the_stored_level_and_rule() -> None:
     """A level read that will be retried keeps the issue's stored grants; it keeps its level and STRICT rule too."""
     stored = SimpleNamespace(id="rec-1", record_group_id="proj", access_rule=AccessRule.STRICT)

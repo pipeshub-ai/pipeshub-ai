@@ -2799,7 +2799,8 @@ class DataSourceEntitiesProcessor:
             processed, moves = await body()
         finally:
             record.access_rule = final_rule
-        if processed is not None and not record.is_placeholder:
+        # A stub takes its group too, unless it was written over the real record (which keeps its own).
+        if processed is not None and (not record.is_placeholder or stored is None or stored.is_placeholder):
             await self._apply_access_group(record, tx_store)
             if held_closed:
                 await tx_store.batch_update_nodes(
@@ -2832,6 +2833,8 @@ class DataSourceEntitiesProcessor:
         group = await tx_store.get_record_group_by_id(held[0])
         if group is None:
             return
+        # Not written by a sync that could not read its level: unseen, a full sync's unlink would drop its grants.
+        self._note_full_sync_seen(record.connector_id, CollectionNames.RECORD_GROUPS.value, group.id)
         record.access_group_external_id = group.external_group_id
         if not record.rewrite_permissions:
             record.access_rule = existing.access_rule

@@ -94,7 +94,6 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     closed_level_groups,
     collect_paged_values,
     custom_field_ids_from_members,
-    group_held_levels,
     hold_levels_naming_unread_roles,
     http_status_is_transient,
     index_members,
@@ -1298,9 +1297,12 @@ class JiraConnector(BaseConnector):
     def _secure_ancestor_stub(
         self, record: Record, issue: dict[str, Any] | None, user_by_account_id: dict[str, AppUser],
     ) -> list[Permission]:
-        """Give a stub its issue's level, so browsing lists its title only to the level's holders."""
+        """Give a stub its issue's level, so browsing lists its title only to the level's holders. In its own
+        project it takes its level's record group, as the issue would: the group's write moves it at once, and
+        an incremental sync does not send an already backfilled stub through the sweep again."""
         fields = (issue or {}).get("fields") or {}
-        context = self._issue_security.get((fields.get("project") or {}).get("id"))
+        project_id = (fields.get("project") or {}).get("id")
+        context = self._issue_security.get(project_id)
         if context is None:
             return []
         issue_data = self._extract_issue_data(issue, user_by_account_id)
@@ -1314,6 +1316,7 @@ class JiraConnector(BaseConnector):
             app_roles_mapping=self._app_roles_mapping,
             reporter_email=issue_data["reporter_email"],
             assignee_email=issue_data["assignee_email"],
+            project_id=str(project_id) if project_id and str(project_id) == record.external_record_group_id else None,
         )
         return permissions
 
@@ -4307,12 +4310,8 @@ class JiraConnector(BaseConnector):
                 [*security.members_by_level, *closed_level_groups(stored_levels, levels_to_save)],
                 {user.source_user_id: user for user in jira_users if user.source_user_id},
             )
-        if reread == "levels" and not security.browse_holders:
-            # A change the levels' groups hold alone is applied by their writes above. With Browse holders that name people on each
-            # issue, a user holder of the level may now read an issue alone (``_reads_alone``), so those issues are read again.
-            held = group_held_levels(stored_levels, levels_to_save)
-            changed_levels = [lid for lid in changed_levels or [] if lid not in held]
-            reread = "levels" if changed_levels else None
+        # A changed level's issues are read again even when its group's write holds the change: a sub-task holds a copy of
+        # its level's holders, and an OPEN issue a grant to a user holder who reads it alone (``_reads_alone``).
         unreadable = not readable and security.knowledge != SchemeKnowledge.NONE
         if security.defer_checkpoint or (unreadable and reread):
             # Saved before the walk: a page that fails later leaves issues written with their
@@ -4546,6 +4545,12 @@ class JiraConnector(BaseConnector):
             if skipped:
                 self.logger.warning(
                     f"Security level {level_id} of {project_key}: holders of type {skipped} were not granted")
+                external_id = level_group_external_id(project_id, level_id)
+                if self._project_access_may_be_partial(project_key) and await \
+                        self.data_entities_processor.get_record_group_by_external_id(self.connector_id, external_id) is not None:
+                    # A holder unread is not out of the level: the stored group keeps its grants, seen by a full sync.
+                    await self.data_entities_processor.note_kept_record_group(self.connector_id, external_id)
+                    continue
             groups.append((RecordGroup(
                 id=str(uuid4()),
                 org_id=self.data_entities_processor.org_id,
@@ -4564,19 +4569,18 @@ class JiraConnector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups(groups)
 
     async def _ensure_level_group(
-        self, external_id: str, project_id: str, project_key: str, security: IssueSecurityContext, level_id: str | None,
+        self, project_id: str, project_key: str, security: IssueSecurityContext, level_id: str | None,
         user_by_account_id: dict[str, AppUser],
     ) -> list[str]:
-        """Outside a sync: write the level's record group when no sync has yet (a level added since).
-        Returns the holder types its grants would skip, so the caller keeps the stored record rather
-        than write a partial audience (application roles are read by the sync)."""
+        """Outside a sync: write the level's record group with the holders read now, as a sync does (a level added
+        since, or holders changed since: the issue inherits the group). Returns the holder types its grants would
+        skip, so the caller keeps the stored record rather than write a partial audience (application roles are
+        read by the sync)."""
         _, skipped = level_group_grants(
             security.members_by_level.get(level_id or "", []), project_key=project_key,
             user_by_id=user_by_account_id, app_roles_mapping=self._app_roles_mapping,
         )
-        if not skipped and level_id and await self.data_entities_processor.get_record_group_by_external_id(
-            self.connector_id, external_id,
-        ) is None:
+        if not skipped and level_id:
             await self._write_level_groups(project_id, project_key, security, [level_id], user_by_account_id)
         return skipped
 
@@ -7300,7 +7304,7 @@ class JiraConnector(BaseConnector):
             )
             if settled and not skipped_holders and issue_record.access_group_external_id:
                 skipped_holders = await self._ensure_level_group(
-                    issue_record.access_group_external_id, project_id, project.get("key") or project_ref,
+                    project_id, project.get("key") or project_ref,
                     security, read_security_level(fields)[1], user_by_account_id,
                 )
             if not settled or skipped_holders:

@@ -709,7 +709,7 @@ def apply_issue_access_settled(
     project is handled by the processor, which keeps the child on its own project.
     Attachments are handled separately and stay empty.
 
-    With ``project_id``, a leveled issue, a sub-task too, takes its access from its
+    With ``project_id``, a leveled issue other than a sub-task takes its access from its
     level's record group (``level_group_external_id``), which holds the holders that name
     the same people on every issue once (``level_group_grants``): the issue is STRICT,
     inherits that group and nothing it is filed under, and carries as its own grants only
@@ -718,6 +718,12 @@ def apply_issue_access_settled(
     was; placement grants nothing. Every other issue names no group, so an earlier one is
     removed. Without ``project_id`` no group is managed: a leveled issue holds a copy of
     its level's holders, and a sub-task inherits its parent.
+
+    A leveled sub-task always holds that copy and inherits its parent, so it is read only by
+    those who read its parent too. Atlassian documents only that "Sub-tasks also inherit the
+    security level of their parent issue" (Issue security schemes,
+    https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-security-schemes/),
+    not that a sub-task's own holders read it without its parent: fail-closed until checked live.
     """
     # None: no group is managed (or a stored one is kept); "": this issue has none. A personal
     # account has no levels, so no group.
@@ -748,9 +754,8 @@ def apply_issue_access_settled(
         # An issue filed under another one, or a stub, only follows it. A top-level issue is
         # also read by the people the project's Browse holders name on it (its reporter, say),
         # who need not read the project, so a direct grant must be enough: OPEN, not STRICT.
-        # shortcut: Jira judges a sub-task by its own Browse, so its own reporter may read it alone; an OPEN sub-task would
-        # also be read by everyone its parent admits by a grant of the parent's own (below a seed), which Jira does not show
-        # it to. Give a sub-task its own way to the project (an access-only group) if a sync shows such a reporter missing.
+        # A sub-task is read only with its parent: Atlassian does not document that a sub-task's own Browse holders (its
+        # reporter, say) read it without its parent, so it gets no grant of its own until a live check shows they do.
         top_level = not (record.parent_external_record_id or getattr(record, "is_placeholder", False))
         if top_level and context.browse_holders is None and not present:
             # Holders unread and the level not returned: keep the stored grants and stay OPEN so a stored
@@ -791,8 +796,7 @@ def apply_issue_access_settled(
         return close()
 
     holders = context.members_by_level.get(level_id, [])
-    # A sub-task too: Jira judges it by its own Browse and its own level (it copies its parent's when created), not by its parent.
-    grouped = project_id is not None and level_id in context.members_by_level
+    grouped = project_id is not None and level_id in context.members_by_level and not is_subtask
     if grouped:
         holders = [h for h in holders if isinstance(h, dict) and h.get("type") not in _SAME_ON_EVERY_ISSUE]
     grants, unreadable, skipped = level_grants(
@@ -946,19 +950,6 @@ def plan_level_reread(
         return "leveled", None, current
     changed = sorted(lid for lid in current if stored_real.get(lid) != current[lid])
     return ("levels" if changed else None), changed or None, current
-
-
-def group_held_levels(stored: dict[str, str] | None, current: dict[str, str]) -> set[str]:
-    """Of the levels whose split digests (``level_fingerprints(split=True)``) changed, those whose
-    holders that depend on the issue did not: the change is one write of the level's record group,
-    which every issue of the level inherits, and no issue is read again. A digest stored before the
-    groups existed is never one."""
-    held = set()
-    for level_id, now in current.items():
-        before = (stored or {}).get(level_id) or ""
-        if "." in before and "." in now and before != now and before.split(".", 1)[1] == now.split(".", 1)[1]:
-            held.add(level_id)
-    return held
 
 
 def closed_level_groups(stored: dict[str, str] | None, current: dict[str, str]) -> list[str]:

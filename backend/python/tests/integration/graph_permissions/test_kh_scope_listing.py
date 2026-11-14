@@ -75,6 +75,8 @@ def _graph() -> tuple[list, list]:
         r("r-seed", "Seed"), r("r-seed-1", "Below the seed"), r("r-seed-strict", "Strict below the seed",
                                                                rule="STRICT"),
         r("r-seed-null", None),
+        # A group that carries access only (its records are listed where they are filed): never a row.
+        rg("g-level", "Access only", rule="RESTRICTED", accessOnly=True, **group),
         # The small App: no null names anywhere.
         app(SMALL, "Small App", connector="SHAREPOINT ONLINE", app_group="Microsoft"),
         r("s-1", "small one", app_id=SMALL), r("s-2", "small two", app_id=SMALL),
@@ -96,6 +98,7 @@ def _graph() -> tuple[list, list]:
         nr("g-block", "r-seed"), nr("r-seed", "r-seed-1"), ip("r-seed-1", "r-seed"),
         nr("r-seed", "r-seed-strict"), ip("r-seed-strict", "r-seed"),
         nr("g-block", "r-seed-null"),
+        nr(APP, "g-level"), ip("g-level", APP), perm(USER_U, "g-level"),
         perm(USER_U, "g-gate"), perm(USER_U, "r-nested"), perm(USER_U, "g-restricted"),
         perm(USER_U, "r-seed"), perm(USER_U, "r-seed-null"),
         nr(SMALL, "s-1"), ip("s-1", SMALL), nr(SMALL, "s-2"), ip("s-2", SMALL),
@@ -218,6 +221,14 @@ async def test_the_walk_stops_at_fifty_hops(scope_graph, neo4j_provider, monkeyp
     deep = sorted(r[0] for r in rows if r[0].startswith("deep-"))
     # The App is hop 0, the site hop 1: deep-0 is hop 2, so hops 2..50 are deep-0..deep-48.
     assert deep == sorted(f"deep-{i}" for i in range(49))
+
+
+async def test_an_access_only_group_is_not_listed_or_counted(scope_graph, neo4j_provider, monkeypatch,
+                                                              scope_counter) -> None:
+    on, off = await _pair(neo4j_provider, monkeypatch, USER_U, APP, 500)
+    assert scope_counter["served"] > 0
+    assert on == off
+    assert "g-level" not in [r[0] for r in on[0][0]]
 
 
 async def test_a_null_named_seed_is_listed_and_counted_once(scope_graph, neo4j_provider, monkeypatch) -> None:
