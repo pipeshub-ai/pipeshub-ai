@@ -11677,7 +11677,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 if not any(x.get("id") == user.get("id") for x in existing_list):
                                     existing_list.append(user)
                     except Exception as e:
-                        self.logger.error(f"❌ Error querying legacy users: {str(e)}")
+                        self.logger.error("Error querying legacy users: %s", str(e))
 
                 for norm, u_list in by_norm.items():
                     if not u_list:
@@ -11692,7 +11692,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         result_map[u["email"]] = val
                     for orig in norm_to_orig.get(norm, []):
                         result_map[orig] = val
-                self.logger.debug(f"✅ Found {len(by_norm)} users")
+                self.logger.debug("Found %d users", len(by_norm))
             except Exception as e:
                 self.logger.error(f"❌ Error querying users: {str(e)}")
 
