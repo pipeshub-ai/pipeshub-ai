@@ -101,7 +101,7 @@ async def listing(layer: GraphCheckLayer, world: World, viewer: str, filters: di
 
 def visible(reference: OracleLayer, world: World, viewer: str) -> dict[str, Any]:
     """The nodes the oracle lets the viewer list: groups and records that are live and not placeholders."""
-    nodes = {n.id: n for n in world.nodes if n.kind != "app" and not n.deleted and not n.placeholder}
+    nodes = {n.id: n for n in world.nodes if n.kind != "app" and not n.deleted and not n.placeholder and not n.access_only}
     verdicts = reference.explain(world, viewer, list(nodes))
     return {i: n for i, n in nodes.items() if verdicts[i].admitted}
 
@@ -185,7 +185,8 @@ def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> 
     granted = {reference._ns.local(i) for i in oracle.viewer(store, reference._ns.id(viewer), reference._ns.org).granted}
 
     def hier(n: Node) -> list[str]:
-        return [p.id for p in n.parents if p.rel in HIERARCHY]
+        # a group that carries access only is no parent a browse opens
+        return [p.id for p in n.parents if p.rel in HIERARCHY and not world.node(p.id).access_only]
 
     def own(n: Node) -> list[str]:
         return [g for g in (n.belongs if n.kind == "record" else hier(n)) if g != n.id and world.node(g).kind == "group"]
@@ -372,7 +373,8 @@ async def _browse(
         if node not in tops_of:
             tops_of[node] = chain_tops(reference, world, viewer, node)
         tops = tops_of[node]
-        return [n for n in world.nodes if not n.deleted and (n.id in tops or any(p.id == node and p.rel in HIERARCHY for p in n.parents))]
+        return [n for n in world.nodes if not n.deleted and not n.access_only
+                and (n.id in tops or any(p.id == node and p.rel in HIERARCHY for p in n.parents))]
 
     def capped(node: str, missing: str, listed: dict[str, Any]) -> bool:
         """Whether a browse of ``node`` leaves ``missing`` out only for the cap on the children it asks the check about (`_KH_UNDECIDED_MAX`, the

@@ -304,7 +304,7 @@ CHAIN_GRANTED = """/* pipeshub:kg.chain_granted */ SELECT r.sk, r.id, r.kind, r.
       AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN'"""
 CHAIN_ROWS = """/* pipeshub:kg.chain_rows */ SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk, r.deleted FROM kg.records r
     WHERE r.org_id = $1 AND r.coll = ANY('{2,3}'::smallint[]) AND r.id = ANY($2::text[])"""
-CHAIN_BY_SK = "/* pipeshub:kg.chain_by_sk */ SELECT r.sk, r.kind, r.parent_sk, r.deleted FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[])"
+CHAIN_BY_SK = "/* pipeshub:kg.chain_by_sk */ SELECT r.sk, r.kind, r.parent_sk, r.deleted, r.alien FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[])"
 APP_KEY = "/* pipeshub:kg.app_key */ SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = $2"
 # The groups that hold a record among ids ``$2`` (as its group or by a group link) that could be a chain-top: read once per request by key from the grants.
 HELD_ANY = """/* pipeshub:kg.listing_held_any */ SELECT DISTINCT g.sk FROM kg.records c

@@ -3119,6 +3119,10 @@ class RecordGroup(BaseModel):
         default=False,
         description="When true, child records are hidden in the knowledge-base tree UI",
     )
+    access_only: bool = Field(
+        default=False,
+        description="Carries access only (a Jira security level): never a Knowledge Hub row, its records are listed where they are filed",
+    )
     is_deleted_at_source: bool = Field(
         default=False,
         description="Gone at the source and kept only while records in the trash belong to it",
@@ -3147,6 +3151,7 @@ class RecordGroup(BaseModel):
             "groupType": self.group_type.value,
             "isInternal": self.is_internal,
             "hideChildren": self.hide_children,
+            "accessOnly": self.access_only,
             "accessRule": self.access_rule.value,
             "permissionModel": (self.permission_model.value if self.permission_model else None),
             "webUrl": self.web_url,
@@ -3173,6 +3178,7 @@ class RecordGroup(BaseModel):
             connector_id=arango_base_record_group.get("connectorId"),
             is_internal=arango_base_record_group.get("isInternal", False),
             hide_children=arango_base_record_group.get("hideChildren", False),
+            access_only=bool(arango_base_record_group.get("accessOnly", False)),
             group_type=arango_base_record_group.get("groupType", RecordGroupType.KB),
             web_url=arango_base_record_group.get("webUrl"),
             created_at=arango_base_record_group.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),

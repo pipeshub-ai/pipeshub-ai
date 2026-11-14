@@ -4553,6 +4553,7 @@ class JiraConnector(BaseConnector):
                 # RESTRICTED under its project: a reader needs a grant here and to browse the project.
                 inherit_permissions=True,
                 access_rule=AccessRule.RESTRICTED,
+                access_only=True,  # its issues are listed where they are filed, not under it
             ), grants))
         if groups:
             await self.data_entities_processor.on_new_record_groups(groups)

@@ -132,7 +132,7 @@ def _node(ns: Namespace, n: Node, ids: set[str]) -> NodeDict:
     if n.kind == "group":
         props = {**base, "groupName": n.id, "groupType": "CONFLUENCE_SPACES", "connectorName": "CONFLUENCE",
                  "createdAtTimestamp": TS, "accessRule": n.rule, "connectorId": connector,
-                 "isInternal": False, "hideChildren": n.hide_children}
+                 "isInternal": False, "hideChildren": n.hide_children, **({"accessOnly": True} if n.access_only else {})}
         if n.model:
             props["permissionModel"] = n.model
         if n.deleted:

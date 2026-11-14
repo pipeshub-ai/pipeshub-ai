@@ -436,8 +436,9 @@ def _cypher_read_by_app(v: str) -> str:
     """Whether ``v`` is read by this App's rules; ``app`` must be in scope. A record or group of another
     connector that a group edge, a hierarchy edge or an app-level filing joins to this App is read by its
     own connector's rules (the batch check decides a node in its own App), so every listing arm ends in
-    this test, once."""
-    return f"({v}.connectorId = app.id)"
+    this test, once. A group that carries access only (``accessOnly``) is never a row: what hangs under it is listed
+    under its other parents."""
+    return f"({v}.connectorId = app.id AND NOT coalesce({v}.accessOnly, false))"
 
 
 def _cypher_kh_held(v: str, stub: Callable[[str], str], container: str) -> str:
@@ -21008,7 +21009,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHEN {self._kh_v3_hidden_above(v, "ku", from_depth=0)} THEN [] ELSE COLLECT {{
             MATCH ({v})-[kh_ur:NODE_RELATION]->(kh_u:Record|RecordGroup)
             WHERE kh_ur.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND kh_u.orgId = $org_id AND kh_u.connectorId = $app_id
-              AND kh_u.id IS NOT NULL AND NOT coalesce(kh_u.isDeleted, false) AND NOT coalesce(kh_u.isPlaceholder, false)
+              AND NOT coalesce(kh_u.accessOnly, false) AND kh_u.id IS NOT NULL AND NOT coalesce(kh_u.isDeleted, false) AND NOT coalesce(kh_u.isPlaceholder, false)
               {f"AND NOT coalesce(({decided}), false)" if decided else ""} AND NOT {self._kh_v3_in_hidden_group("kh_u", "kv")}
               // a child a browse of it would refuse takes no place under the cap
               AND {self._kh_v3_opens_below_hidden("kh_u", v)}
@@ -21194,7 +21195,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH c.id AS id,
                  [(p)-[r:NODE_RELATION]->(c)
                     WHERE r.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
-                      AND (p:Record OR p:RecordGroup OR p:App)
+                      AND (p:Record OR p:RecordGroup OR p:App) AND NOT coalesce(p.accessOnly, false)
                     | p.id] AS parents,
                  [g IN {self._kh_v3_chain_top_owns("c")}
                   | {{id: g.id, deleted: coalesce(g.isDeleted, false)}}] AS ownGroups

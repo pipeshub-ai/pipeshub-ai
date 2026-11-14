@@ -42,6 +42,7 @@ from .kh_worlds import (
     HIDESEED,
     KEYCLASH,
     KH_WORLDS,
+    LEVELS,
     NESTSTUB,
     OPENGRANT,
     OPENGRANTTEAM,
@@ -320,6 +321,25 @@ async def test_a_child_below_a_group_that_hides_its_children_is_listed_only_wher
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
             await layer.release([HIDESEED, DECLHIDE])
+
+
+async def test_a_group_that_carries_access_only_is_no_row_and_each_record_under_it_is_listed_once(graph_layers) -> None:
+    """A Jira security level's group (LEVELS): never listed, flattened or opened, no arrow for it, and every issue under it listed once, where it
+    is filed; a record granted below it whose other parent the viewer cannot open is a chain-top of its own group, as if the level were not
+    there. The access check still reads through it."""
+    for layer in graph_layers:
+        await layer.preload([LEVELS])
+        try:
+            assert await layer.admitted(LEVELS, "u", ["s1", "t1", "s2", "L"]) == {"s1", "t1", "s2", "L"}, layer.name
+            assert await children_of(layer, LEVELS, "u", "P", "recordGroup") == {"E": True, "E2": True, "t1": True, "t2": False}, layer.name
+            assert await children_of(layer, LEVELS, "u", "E", "record") == {"s1": False}, layer.name
+            assert await children_of(layer, LEVELS, "y", "P", "recordGroup") == {"E": True, "E2": True, "o": False, "t1": False, "t2": False}, layer.name
+            assert await children_of(layer, LEVELS, "w", "P", "recordGroup") == {"E": False, "t2": False}, layer.name
+            assert "L" not in (await children_of(layer, LEVELS, "u", "J", "app", flattened=True) or {}), layer.name
+            bad = _bad(await check_world(layer, LEVELS, "levels"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([LEVELS])
 
 
 async def test_a_flattens_sidebar_keeps_a_record_exactly_where_its_arrow_is_on(graph_layers) -> None:

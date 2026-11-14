@@ -1069,6 +1069,7 @@ record_group_schema = {
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
             "hideChildren": {"type": ["boolean", "null"], "default": False},
+            "accessOnly": {"type": ["boolean", "null"], "default": False},
             # Permission traversal input, as on records: per node, and
             # RESTRICTED never cascades to children.
             "accessRule": {
