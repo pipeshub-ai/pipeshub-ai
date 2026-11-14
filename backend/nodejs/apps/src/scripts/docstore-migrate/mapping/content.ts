@@ -774,6 +774,12 @@ export const CONTENT_MAPPINGS: CollectionMapping[] = LISTED.map((m) =>
 );
 
 export const CONTENT_IGNORED: IgnoredCollection[] = [
+  // shortcut: a store move starts the agent activity log afresh; map it (import access, change-log trigger) if it must survive a move
+  {
+    collection: 'agentCallEvents',
+    reason:
+      'agent activity log with a 30-day retention: a store move starts a new log on the target rather than copying the old one',
+  },
   {
     collection: 'crawlingManagerConfigs',
     reason:

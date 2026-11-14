@@ -14,6 +14,7 @@ import { ProjectDto } from '../../projects/types/project.interfaces';
 import { ProjectService } from '../../projects/services/project.service';
 import { resolveCallerTeamIds } from '../../projects/utils/team-membership';
 import { ProjectsFeature } from '../../projects/utils/projects-feature';
+import { markScopeDenied } from '../../../libs/middlewares/agent-call-recorder';
 
 const logger = Logger.getInstance({ service: 'ProjectContext' });
 
@@ -32,6 +33,8 @@ export interface ProjectCaller {
   resolveTeamIds: () => Promise<string[]>;
   /** The scopes of an OAuth token or PAT; undefined for a session token, which is not scope-limited. */
   oauthScopes?: string[];
+  /** Called when the call is refused for a missing scope, so the call's audit row says so. */
+  onScopeDenied?: () => void;
 }
 
 type TokenFields = { isOAuth?: boolean; oauthScopes?: string[] };
@@ -44,6 +47,7 @@ export function projectCallerFromRequest(
   return {
     resolveTeamIds: () => resolveCallerTeamIds(req, appConfig),
     oauthScopes: user?.isOAuth === true ? (user.oauthScopes ?? []) : undefined,
+    onScopeDenied: () => markScopeDenied(req),
   };
 }
 
@@ -71,7 +75,8 @@ export async function accessibleProjectIdsFor(
  */
 function assertProjectReadScope(caller: ProjectCaller | undefined): void {
   const scopes = caller?.oauthScopes;
-  if (scopes && !scopes.includes(OAuthScopeNames.PROJECT_READ)) {
+  if (caller && scopes && !scopes.includes(OAuthScopeNames.PROJECT_READ)) {
+    caller.onScopeDenied?.();
     throw new ForbiddenError(
       `Insufficient scope. Required: ${OAuthScopeNames.PROJECT_READ}`,
     );

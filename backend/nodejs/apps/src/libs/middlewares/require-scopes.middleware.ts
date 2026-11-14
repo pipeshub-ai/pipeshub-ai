@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { ForbiddenError } from '../errors/http.errors';
 import { AuthenticatedUserRequest } from './types';
 import { OAuthScopeNames } from '../enums/oauth-scopes.enum';
+import { markScopeDenied } from './agent-call-recorder';
 
 /**
  * Middleware factory that enforces OAuth scope validation on a per-route basis.
@@ -44,6 +45,7 @@ export function requireScopes(...requiredScopes: OAuthScopeNames[]) {
       );
 
       if (!hasScope) {
+        markScopeDenied(req);
         throw new ForbiddenError(
           `Insufficient scope. Required: ${requiredScopes.join(' or ')}`,
         );

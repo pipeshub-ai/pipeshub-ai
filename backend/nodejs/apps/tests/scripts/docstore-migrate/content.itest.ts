@@ -24,10 +24,10 @@ const suite = haveStack ? describe : describe.skip;
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 
 describe('docstore-migrate: content mappings (no database)', () => {
-  it('lists every collection of the group once and ignores one with a reason', () => {
+  it('lists every collection of the group once and gives each ignored one a reason', () => {
     const names = CONTENT_MAPPINGS.map((m) => m.collection);
     expect(new Set(names).size).to.equal(names.length);
-    expect(CONTENT_IGNORED.map((i) => i.collection).sort()).to.deep.equal(['crawlingManagerConfigs']);
+    expect(CONTENT_IGNORED.map((i) => i.collection).sort()).to.deep.equal(['agentCallEvents', 'crawlingManagerConfigs']);
     for (const i of CONTENT_IGNORED) expect(i.reason.length).to.be.greaterThan(20);
   });
   it('mapping files import no repository code', () => {
