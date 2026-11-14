@@ -4,7 +4,7 @@
 
 <h3>An open-source context layer for AI agents and an enterprise AI search platform</h3>
 
-<p>Permission-aware search and cited answers across about 35 indexed sources, including Slack, Google Drive, Jira, Confluence and GitHub, for your people and for agents through MCP. Self-hosted or PipesHub Cloud.</p>
+<p>Permission-aware search and cited answers across 30+ indexed sources, including Slack, Google Drive, Jira, Confluence and GitHub, for your people and for agents through MCP. Self-hosted or PipesHub Cloud.</p>
 
 <p><strong>#1 of 39 systems on <a href="https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard">EnterpriseRAG-Bench</a></strong> (as of 3 November 2026), ahead of OpenAI File Search, Amazon Q, Azure AI Search and Vertex AI Search. <a href="#benchmarks">All benchmarks →</a> · <a href="#how-pipeshub-works">How it works →</a></p>
 
@@ -50,7 +50,7 @@
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> is an open-source platform for connecting AI applications to the knowledge stored across your company's business systems.
 
-Connect about 35 sources, among them Slack, Google Drive, GitHub, Microsoft 365 and Notion, and let agents act in about 35 apps through built-in integrations and in any app with an MCP server: 38 are in the [catalog](https://docs.pipeshub.com/agent-guide/mcp-servers), including Zapier's, which reaches thousands of apps. Search across them and get answers with citations, filtered by what each person is allowed to see — or give that same context to your own agents, workflows and MCP clients.
+Connect 30+ sources, among them Slack, Google Drive, GitHub, Microsoft 365 and Notion, and let agents act in about 20 apps through built-in integrations and in any app with an MCP server: 29 are in the [catalog](https://docs.pipeshub.com/agent-guide/mcp-servers), including Zapier's, which reaches thousands of apps. Search across them and get answers with citations, filtered by what each person is allowed to see — or give that same context to your own agents, workflows and MCP clients.
 
 > [!TIP]
 > Deploy with a single command:
@@ -131,7 +131,7 @@ Want the same retrieval inside your own code, or behind a search box for your te
 
 **Connected to your systems**
 
-- 🔌 **Enterprise Connectors:** About 35 indexed sources with scheduled incremental sync, plus file upload to knowledge bases; agent actions in about 35 apps, plus any app with an MCP server ([38 in the catalog](https://docs.pipeshub.com/agent-guide/mcp-servers), including Zapier).
+- 🔌 **Enterprise Connectors:** 30+ indexed sources with scheduled incremental sync, plus file upload to knowledge bases; agent actions in about 20 apps, plus any app with an MCP server ([29 in the catalog](https://docs.pipeshub.com/agent-guide/mcp-servers), including Zapier).
 - 🕸️ **Knowledge Graph Retrieval:** Graph-backed retrieval that captures relationships across enterprise data.
 - 🎙️ **Multimodal Support:** Image, diagram, and scanned-file understanding plus voice-based interaction.
 
@@ -282,7 +282,7 @@ PipesHub provides developer SDKs for Python, TypeScript, and Go to help you inte
 <li>✅ 🧰 <strong>Developer SDKs</strong></li>
 <li>✅ 🔍 <strong>Code search</strong> across GitHub and GitLab</li>
 <li>⬜ 👤 <strong>Personalized search</strong> based on team, role, and history</li>
-<li>✅ ☸️ <strong>Production Kubernetes</strong> deployment: Helm chart; the app tier can run several replicas against shared stores, while connector sync runs in a single worker, Neo4j runs as a single instance and Redis has no automatic failover by default (<a href="https://docs.pipeshub.com/deployment/reference-architecture">reference architecture</a>)</li>
+<li>✅ ☸️ <strong>Production Kubernetes</strong> deployment: Helm chart; the app tier can run several replicas against shared stores, while each app replica runs its own connector process with one sync worker, Neo4j runs as a single instance and Redis has no automatic failover by default (<a href="https://docs.pipeshub.com/deployment/reference-architecture">reference architecture</a>)</li>
 <li>⬜ 📈 <strong>PageRank-augmented relevance</strong> across the knowledge graph</li>
 </ul>
 <p>👉 <strong><a href="https://plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">View the full product roadmap on Notion</a></strong></p>
@@ -323,7 +323,7 @@ Answers come from an agent loop that combines hybrid search, grep, knowledge-gra
 
 ### What connectors does PipesHub support?
 
-PipesHub indexes about 35 sources with scheduled incremental sync, plus files you upload, and its agents can act in about 35 apps through built-in integrations and in any app with an MCP server, including thousands through Zapier's. See the [connectors overview](https://docs.pipeshub.com/connectors/overview) and [permissions by connector](https://docs.pipeshub.com/connectors/permissions-matrix).
+PipesHub indexes 30+ sources with scheduled incremental sync, plus files you upload, and its agents can act in about 20 apps through built-in integrations and in any app with an MCP server, including thousands through Zapier's. See the [connectors overview](https://docs.pipeshub.com/connectors/overview) and [permissions by connector](https://docs.pipeshub.com/connectors/permissions-matrix).
 
 ### What file formats can PipesHub index?
 
