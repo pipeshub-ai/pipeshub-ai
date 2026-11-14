@@ -122,6 +122,11 @@ fields:
   inherit_permissions_from_group:
     required: false
     type: boolean
+  # Write-time: the record group the record takes its access from (a Jira issue's security level); empty when it has none, absent when the
+  # writer names none. Never stored on the record (the processor writes it as edges).
+  access_group_external_id:
+    required: false
+    type: string
   rewrite_permissions:
     required: false
     type: boolean
