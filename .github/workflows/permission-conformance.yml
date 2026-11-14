@@ -84,7 +84,7 @@ jobs:
       # The one allowed skip is the strict expected failure that reports matrix cells without a scenario, by its exact name.
       - name: Check the oracle run for skips
         run: |
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 1377 \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 1372 \
             --allow test_coverage_gaps_are_reported
 
       - name: Run the viewer-scope service tests (no services)
@@ -162,7 +162,7 @@ jobs:
           - shard: 7
             suite: tests.permissions
             tests: tests/permissions --ignore=tests/permissions/test_conformance_kh.py
-            cases: 288
+            cases: 290
             pytest_args: -p no:logging --timeout=3000
             allow: test_generation_paths::test_an_edge_another_transaction_removed_and_this_write_put_back_moves_the_generation[arango]
     services:

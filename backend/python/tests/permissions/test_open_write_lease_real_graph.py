@@ -172,3 +172,16 @@ async def test_the_store_clock_is_close_to_this_hosts_and_a_skewed_sweeper_leave
     monkeypatch.setattr(sg, "time", SimpleNamespace(time=lambda: time.time() + 3600))      # a sweeper host an hour ahead
     assert await recover_expired_writes(backend.provider, conn) == 0
     assert unclosed_writes(await app_of(backend, conn)) == 1
+
+
+async def test_a_compare_and_set_is_refused_once_the_stores_clock_is_past_the_callers_bound(backend) -> None:
+    """A lease computed from a clock read is written only while the store's clock, read by the write itself, is within the bound."""
+    _, conn, *_ = await _world(backend)
+    app = await app_of(backend, conn)
+    now = await backend.provider.store_time()
+    assert not await backend.provider.update_node_fields_if_match(conn, CollectionNames.APPS.value, {OPEN_WRITES_KEY: "late"},
+                                                                  {OPEN_WRITES_KEY: app.get(OPEN_WRITES_KEY)}, clock_at_most=now - 1)
+    assert (await app_of(backend, conn)).get(OPEN_WRITES_KEY) == app.get(OPEN_WRITES_KEY)
+    assert await backend.provider.update_node_fields_if_match(conn, CollectionNames.APPS.value, {OPEN_WRITES_KEY: "{}"},
+                                                              {OPEN_WRITES_KEY: app.get(OPEN_WRITES_KEY)}, clock_at_most=now + 60)
+    assert (await app_of(backend, conn))[OPEN_WRITES_KEY] == "{}"

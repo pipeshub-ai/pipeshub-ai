@@ -6779,12 +6779,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         updates: dict[str, Any],
         expected: dict[str, Any],
         transaction: str | None = None,
+        *,
+        clock_at_most: float | None = None,
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if_match`."""
         if not expected:
             raise ValueError("update_node_fields_if_match needs an expectation")
         bind_vars: dict[str, Any] = {"@collection": collection, "key": key, "updates": dict(updates)}
         filters = []
+        if clock_at_most is not None:      # evaluated by each run of the statement, a retry after a conflict included
+            bind_vars["clock_at_most"] = clock_at_most
+            filters.append("FILTER DATE_NOW() <= @clock_at_most * 1000")
         for i, (name, value) in enumerate(expected.items()):
             bind_vars[f"f{i}"] = name
             if value is None:

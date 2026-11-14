@@ -2483,11 +2483,17 @@ class IGraphDBProvider(ABC):
         updates: dict[str, Any],
         expected: dict[str, Any],
         transaction: str | None = None,
+        *,
+        clock_at_most: float | None = None,
     ) -> bool:
         """Merge ``updates`` into the node only while every field in
         ``expected`` still holds its value (``None`` means absent), in one
         statement. Unlike ``update_node_if_match`` the document is merged,
         not replaced. A ``None`` in ``updates`` removes or nulls the field.
+        ``clock_at_most`` (epoch seconds): also only while the store's own
+        clock (`store_time`), read by the statement as it writes, is not past
+        it, so a value computed from an earlier read of that clock is never
+        written later than the caller allowed.
 
         Returns:
             True iff the write applied.

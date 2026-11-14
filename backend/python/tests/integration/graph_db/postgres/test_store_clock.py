@@ -36,3 +36,14 @@ async def test_the_store_clock_is_the_databases_and_a_skewed_sweeper_leaves_a_li
         assert await recover_expired_writes(pg_provider, "c1") == 0
         assert unclosed_writes(await pg_provider.get_document("c1", CollectionNames.APPS.value)) == 1
         assert await close_write(pg_provider, "c1", token)
+
+
+async def test_a_compare_and_set_is_refused_once_the_databases_clock_is_past_the_callers_bound(pg_provider, org_ctx) -> None:
+    """A lease computed from a clock read is written only while the database's clock, read by the write itself, is within the bound."""
+    with org_ctx(uuid.uuid4().hex[:24]):
+        assert await pg_provider.batch_upsert_nodes([{"_key": "c1", "name": "app"}], CollectionNames.APPS.value)
+        now = await pg_provider.store_time()
+        assert not await pg_provider.update_node_fields_if_match("c1", CollectionNames.APPS.value, {"name": "late"}, {"name": "app"}, clock_at_most=now - 1)
+        assert (await pg_provider.get_document("c1", CollectionNames.APPS.value))["name"] == "app"
+        assert await pg_provider.update_node_fields_if_match("c1", CollectionNames.APPS.value, {"name": "in time"}, {"name": "app"}, clock_at_most=now + 60)
+        assert (await pg_provider.get_document("c1", CollectionNames.APPS.value))["name"] == "in time"
