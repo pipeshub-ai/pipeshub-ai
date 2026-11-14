@@ -5,6 +5,7 @@ not open instead of dropping them silently. No store: `browse_pages` is replaced
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -165,3 +166,51 @@ async def test_children_a_hiding_group_holds_are_no_candidates_of_the_cap(monkey
     reference = OracleLayer()
     found = await kh_layer._browse(_Layer(), reference, world, "u", kh_layer.visible(reference, world, "u"), "self")
     assert ("browse_gap", "f: the browse leaves out k200, which the viewer may open") in {(f.kind, f.detail) for f in found}
+
+
+class _Store:
+    """A store that records what it loads and releases; ``check_world`` raises ``fails`` on the world ``fails_at``."""
+
+    def __init__(self, name: str, fails: BaseException | None = None, fails_at: int = -1) -> None:
+        self.name, self.fails, self.fails_at = name, fails, fails_at
+        self.held: set[int] = set()
+        self.checked: list[int] = []
+
+    async def preload(self, worlds: list[int]) -> None:
+        self.held |= set(worlds)
+
+    async def release(self, worlds: list[int]) -> None:
+        self.held -= set(worlds)
+
+
+async def _check_world(layer: _Store, world: int, scenario_id: str) -> list[kh_layer.KhFinding]:
+    await asyncio.sleep(0)      # the other store's turn
+    if world == layer.fails_at:
+        raise layer.fails
+    layer.checked.append(world)
+    return [kh_layer.KhFinding(scenario_id, "u", "under", layer.name)]
+
+
+async def test_a_store_that_raises_keeps_the_others_findings_and_releases_its_worlds(monkeypatch) -> None:
+    monkeypatch.setattr(kh_layer, "check_world", _check_world)
+    worlds = list(range(kh_layer.CHUNK + 3))      # two chunks
+    neo, arango = _Store("neo4j", ValueError("down"), fails_at=kh_layer.CHUNK + 1), _Store("arango")
+    results = await kh_layer.on_every_store([neo, arango], lambda layer: kh_layer.check_worlds(layer, worlds, "t"))
+    (first, raised), (second, found) = results
+    assert (first, second) == (neo, arango)
+    assert isinstance(raised, ValueError) and neo.held == set()
+    assert [f.scenario for f in found] == [f"t-{i}" for i in worlds] and arango.held == set()
+
+
+async def test_a_stop_that_is_no_exception_stops_every_store_and_releases_their_worlds(monkeypatch) -> None:
+    """A test timeout (pytest's outcome, a BaseException) on one store cancels the other, which still releases what it loaded."""
+    monkeypatch.setattr(kh_layer, "check_world", _check_world)
+
+    class Stop(BaseException):
+        pass
+    worlds = list(range(5))
+    neo, arango = _Store("neo4j", Stop(), fails_at=2), _Store("arango")
+    with pytest.raises(Stop):
+        await kh_layer.on_every_store([neo, arango], lambda layer: kh_layer.check_worlds(layer, worlds, "t"))
+    assert neo.held == set() and arango.held == set()
+    assert len(arango.checked) < len(worlds)
