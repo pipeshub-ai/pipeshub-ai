@@ -1034,12 +1034,14 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 self.logger.error(
                     f"Placeholder sweep exceeded safety bound ({PLACEHOLDER_SWEEP_SAFETY_MAX}); aborting"
                 )
-                # Touched but not read: kept as stored, so neither a full sync's unlink nor its cleanup removes them.
+                # Touched but not read: kept as stored. The ancestors above them were not even reached, so the run
+                # is incomplete: neither a full sync's unlink nor its cleanup may take what it did not see for gone.
                 self.data_entities_processor.note_kept_records(
                     self.connector_id, [record.id for record in next_frontier if record.id]
                 )
                 for record in next_frontier:
                     self._sync_ledger.keep_ancestor(record.external_record_id)
+                self._sync_ledger.note_incomplete()
                 break
             frontier = next_frontier
 

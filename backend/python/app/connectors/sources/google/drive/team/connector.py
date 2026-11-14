@@ -4496,6 +4496,15 @@ class GoogleDriveTeamConnector(BaseConnector):
         seeds = await self.data_entities_processor.get_placeholder_records(self.connector_id)
         if rewrite_real_ancestors:
             seeds = [*seeds, *await self._out_of_scope_seed_parents(synced_drive_ids)]
+        # An ancestor an earlier user's sweep could not read is tried again from here: the records below it that
+        # sweep wrote are seen, so this walk would stop at them and never reach it.
+        seen_seeds = {seed.external_record_id for seed in seeds}
+        for external_id in sorted(self._sync_ledger.kept_ancestors - self._sync_ledger.seen - seen_seeds):
+            kept = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=external_id
+            )
+            if kept is not None:
+                seeds.append(kept)
         if not seeds:
             return
 
@@ -4653,12 +4662,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.error(
                     f"Placeholder sweep exceeded safety bound ({PLACEHOLDER_SWEEP_SAFETY_MAX}); aborting"
                 )
-                # Touched but not read: kept as stored, so neither a full sync's unlink nor its cleanup removes them.
+                # Touched but not read: kept as stored. The ancestors above them were not even reached, so the run
+                # is incomplete: neither a full sync's unlink nor its cleanup may take what it did not see for gone.
                 self.data_entities_processor.note_kept_records(
                     self.connector_id, [record.id for record in next_frontier if record.id]
                 )
                 for record in next_frontier:
                     self._sync_ledger.keep_ancestor(record.external_record_id)
+                self._sync_ledger.note_incomplete()
                 break
             frontier = next_frontier
 

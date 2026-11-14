@@ -5256,6 +5256,29 @@ class TestSweepPlaceholderRecords:
         conn.data_entities_processor.on_new_records.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_walk_the_safety_bound_stops_leaves_the_run_incomplete(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The ancestors above where the bound stopped the walk were never reached, so nothing the run did not see
+        may be taken for gone: the run is incomplete, which holds the cleanup and the unlink."""
+        import app.connectors.sources.google.drive.team.connector as team
+
+        monkeypatch.setattr(team, "PLACEHOLDER_SWEEP_SAFETY_MAX", 0)
+        conn = _make_connector()
+        stub_b, stub_a = self._b_under_a(b_is_placeholder=True)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: stub_a if ext_id == "A" else None
+        )
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=_make_http_error(404))
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1", user_email="u@example.com", drive_data_source=ds, drive_id="my-drive",
+            is_shared_drive=False, seeds=[stub_b],
+        )
+
+        assert conn._sync_ledger.incomplete
+        assert "rec-a" in self._kept(conn), "the next ancestor, reached but not read, is kept too"
+
+    @pytest.mark.asyncio
     async def test_unreadable_ancestor_is_kept_as_a_stub(self):
         """Noted kept, so a full sync's unlink leaves its record-group and parent edges; not rewritten, since a stub
         read back by external id is a plain Record that no graph store writes as a file."""

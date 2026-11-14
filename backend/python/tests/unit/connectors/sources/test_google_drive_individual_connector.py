@@ -3045,6 +3045,30 @@ class TestSweepPlaceholderRecords:
         assert _submitted_records(connector) == {}
 
     @pytest.mark.asyncio
+    async def test_a_walk_the_safety_bound_stops_leaves_the_run_incomplete(
+        self, connector: "GoogleDriveIndividualConnector", monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ancestors above where the bound stopped the walk were never reached, so nothing the run did not see
+        may be taken for gone: the run is incomplete, which holds the cleanup and the unlink."""
+        import app.connectors.sources.google.drive.individual.connector as personal
+
+        monkeypatch.setattr(personal, "PLACEHOLDER_SWEEP_SAFETY_MAX", 0)
+        connector._get_fresh_datasource = AsyncMock()
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_make_folder_stub("C", parent="B")]
+        )
+        connector.drive_data_source.files_get = AsyncMock(
+            side_effect=lambda **kwargs: _make_folder_metadata(kwargs["fileId"], parents=["B" if kwargs["fileId"] == "C" else "A"])
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: _make_folder_stub(ext_id, parent="A" if ext_id == "B" else None)
+        )
+
+        await connector._sweep_placeholder_records("u1", "u@t.com", "drive-1")
+
+        assert connector._sync_ledger.incomplete
+
+    @pytest.mark.asyncio
     async def test_cyclic_source_terminates(self, connector):
         """Malformed source cycle C -> B -> C: the visited guard stops the walk."""
         connector._get_fresh_datasource = AsyncMock()

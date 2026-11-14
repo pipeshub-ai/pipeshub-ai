@@ -1389,6 +1389,27 @@ async def test_a_selected_folders_parent_one_member_cannot_read_is_written_again
     assert ws.records.records["pick"].parent_external_record_id == "team-parent"
 
 
+async def test_an_ancestor_above_one_already_written_is_still_read_by_a_member_who_can(ws: Workspace) -> None:
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "organizer"})
+    ws.world.folder("top", "Top", parent="sd-1")
+    ws.world.folder("middle", "Middle", parent="top")
+    ws.world.folder("pick", "Picked", parent="middle")
+    ws.world.add_item("deep", "deep.txt", parent="pick")
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await ws.sync()
+    assert not ws.records.records["top"].is_placeholder
+
+    ws.world.files["top"].perms.append(reader(carol))
+    # Alice's sweep writes Middle but cannot read Top; Bob's starts below Middle, which is already seen.
+    ws.sync_points.sync_points.clear()
+    ws.http.fail("GET", "/drive/v3/files/top", 404, "notFound", when=lambda r: r.identity == ALICE)
+    await ws.sync()
+
+    assert (carol, "USER", "READ") in ws.grants("top"), "Bob's sweep reads Top again"
+
+
 async def test_a_selected_shortcut_syncs_the_folder_it_points_to(ws: Workspace) -> None:
     ws.world.folder("pick", "Picked", parent="root-bob", owner=BOB)
     ws.world.add_item("deep", "deep.txt", parent="pick", owner=BOB)
