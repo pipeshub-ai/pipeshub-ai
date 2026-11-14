@@ -110,6 +110,16 @@ TRUTH_TABLE = [
     (45, FS, "in", ["*/ quotes"],
      [("file", "a/ quotes/q.pdf", True), ("role", "a/ quotes", KEEP), ("role", "a", PASS)], False),
     (45, OS, "not_in", ["tmp?"], [("file", "tmp /x", False), ("role", "tmp ", SKIP)], False),
+    # An empty name between two slashes is a folder level of its own; outer slashes are trimmed.
+    (46, OS, "in", ["a/*/quotes"],
+     [("file", "a//b/quotes/f", False), ("role", "a//b/quotes", SKIP), ("role", "a//b", SKIP),
+      ("file", "a/b/quotes/f", True), ("file", "/a/b/quotes/f", True), ("role", "/a/b/quotes/", KEEP)], False),
+    (46, OS, "not_in", ["a/*/quotes"], [("file", "a//b/quotes/f", True), ("role", "a//b/quotes", KEEP)], False),
+    (47, OS, "in", ["a/*/b/quotes"], [("file", "a//b/quotes/f", True), ("role", "a//b/quotes", KEEP)], False),
+    (48, OS, "in", ["a/**/quotes"], [("file", "a//quotes/f", True), ("file", "a///x/quotes/f", True)], False),
+    (49, OS, "in", ["a/?"], [("file", "a//f", False), ("file", "a/b/f", True)], False),
+    (50, FS, "in", ["a/*/quotes"],
+     [("file", "a\\\\b\\quotes\\f", False), ("file", "a\\b\\quotes\\f", True)], False),
     (38, OS, "in", ["quote?"], [("file", "quotes\n/x", False), ("file", "quotes/x", True)], False),
 ]
 

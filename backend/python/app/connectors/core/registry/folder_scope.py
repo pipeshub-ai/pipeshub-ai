@@ -374,7 +374,15 @@ class FolderScope:
         return sorted(kept)
 
     def _parts(self, folder: str) -> list[str]:
-        return [p for p in folder.split("/") if p]
+        """The folder names of a normalised folder path, for pattern matching.
+
+        Leading and trailing slashes are trimmed, as for a literal. An empty name
+        between two slashes is kept: an object key ``a//b/f`` is three folders deep,
+        so ``*`` there matches the empty name and never reaches past it. A share path
+        has no empty name; its walk joins server names (``pathing.join_rel_path``).
+        """
+        trimmed = folder.strip("/")
+        return trimmed.split("/") if trimmed else []
 
     def includes_file(self, path: str) -> bool:
         """Whether a file (its path within the store) is synced."""

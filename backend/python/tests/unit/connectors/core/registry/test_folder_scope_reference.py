@@ -29,7 +29,7 @@ from app.connectors.core.registry.folder_scope import (
 )
 
 NAME_PIECES = ("a", "A", "b", " ", "é", "é", ".", "[", "]", "!", "\\", "\n", "*", "?", "\\*", "\\?")
-PATH_PIECES = ("a", "A", "b", "ab", " ", "é", "é", ".", "[", "]", "!", "\\", "\n", "*", "?")
+PATH_PIECES = ("a", "A", "b", "ab", " ", "/", "é", "é", ".", "[", "]", "!", "\\", "\n", "*", "?")
 segment = st.one_of(st.just("**"), st.lists(st.sampled_from(NAME_PIECES), min_size=1, max_size=4).map("".join))
 value = st.lists(segment, min_size=1, max_size=4).map("/".join)
 name = st.lists(st.sampled_from(PATH_PIECES), min_size=1, max_size=3).map("".join)
@@ -61,6 +61,13 @@ def _fnmatch_text(seg: str, escapes: bool) -> str:
     """The segment as an fnmatch pattern with no character classes."""
     return "".join(c if wild else ("[[]" if c == "[" else f"[{c}]" if c in "*?" else c)
                    for c, wild in _tokens(seg, escapes))
+
+
+def _names(folder: str) -> tuple[str, ...]:
+    """Folder names with the outer slashes trimmed; an empty name between two slashes stays."""
+    if not folder.strip("/"):
+        return ()
+    return tuple(folder.strip("/").split("/"))
 
 
 class Reference:
@@ -112,7 +119,7 @@ class Reference:
         n = _n(p, self.share)
         cleaned = n.strip().strip("/")
         folder = f"{cleaned}/" if cleaned else ""
-        return folder, tuple(x for x in n.split("/") if x)
+        return folder, _names(n)
 
     def role(self, p: str) -> FolderRole:
         folder, parts = self._folder(p)
@@ -128,7 +135,7 @@ class Reference:
     def includes_file(self, p: str) -> bool:
         n = _n(p, self.share).lstrip("/")
         inside = any(n.startswith(f) for f in self.literals)
-        parent = tuple(x for x in n.split("/")[:-1] if x)
+        parent = _names(n.rsplit("/", 1)[0] if "/" in n else "")
         inside = inside or any(self._full(s, parent) for s in self.patterns)
         return not inside if self.exclude else inside
 
