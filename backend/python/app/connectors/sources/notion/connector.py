@@ -4578,7 +4578,8 @@ class NotionConnector(BaseConnector):
         synced here is readable through it. It is not RECORD_GROUP_LEVEL either:
         reaching it must never stand in for checking a record. Written on every run,
         so a workspace stored while it still inherited the app loses that edge and
-        that declaration.
+        that declaration; so is every other workspace this connector stored, which an
+        earlier token reached and an earlier version may have opened to the app.
         """
         try:
             if not self.workspace_id:
@@ -4591,6 +4592,15 @@ class NotionConnector(BaseConnector):
                     connector_id=self.connector_id,
                     external_id=self.workspace_id,
                 )
+                earlier = [
+                    RecordGroup.from_arango_base_record_group(doc)
+                    for doc in await tx_store.get_nodes_by_filters(
+                        CollectionNames.RECORD_GROUPS.value,
+                        {"connectorId": self.connector_id, "groupType": RecordGroupType.NOTION_WORKSPACE.value},
+                        raise_on_error=True,
+                    )
+                    if doc.get("externalGroupId") != self.workspace_id
+                ]
             if not record_group:
                 record_group = RecordGroup(
                     org_id=self.data_entities_processor.org_id,
@@ -4602,11 +4612,14 @@ class NotionConnector(BaseConnector):
                     created_at=get_epoch_timestamp_in_ms(),
                     updated_at=get_epoch_timestamp_in_ms(),
                 )
-            record_group.inherit_permissions = False
-            record_group.permission_model = None
+            for group in (record_group, *earlier):
+                group.inherit_permissions = False
+                group.permission_model = None
 
             # [] clears any grant an earlier version wrote on the workspace.
-            await self.data_entities_processor.on_new_record_groups([(record_group, [])])
+            await self.data_entities_processor.on_new_record_groups(
+                [(group, []) for group in (record_group, *earlier)]
+            )
 
         except Exception as e:
             self.logger.error(f"❌ Failed to create workspace record group: {e}", exc_info=True)

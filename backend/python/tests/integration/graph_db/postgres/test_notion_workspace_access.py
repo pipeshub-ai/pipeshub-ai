@@ -106,3 +106,20 @@ async def test_a_workspace_that_inherited_the_app_stops_granting_its_pages(w: Wo
     await connector._create_workspace_record_group()
 
     assert await w.allowed("m", *pages) == set(), "The next sync left the workspace granting its pages to every member."
+
+
+async def test_a_workspace_an_earlier_token_reached_stops_granting_its_pages(w: World) -> None:
+    connector = await _connector(w)
+    # The token moved to another workspace; the one it reached before was stored inheriting the app.
+    await connector.data_entities_processor.on_new_record_groups([(RecordGroup(
+        org_id=w.org, name="PG workspace", external_group_id=WORKSPACE, connector_name=Connectors.NOTION,
+        connector_id=APP, group_type=RecordGroupType.NOTION_WORKSPACE,
+        permission_model=PermissionModel.RECORD_GROUP_LEVEL, inherit_permissions=True,
+    ), [])])
+    pages = await _sync_pages(connector)
+    assert await w.allowed("m", *pages) == set(pages), "the earlier state must be visible for this test to mean anything"
+
+    connector.workspace_id, connector.workspace_name = "ws-other", "Other workspace"
+    await connector._create_workspace_record_group()
+
+    assert await w.allowed("m", *pages) == set(), "the workspace the token reached before still grants its pages"

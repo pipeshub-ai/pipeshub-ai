@@ -123,7 +123,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("github", "container", CONTAINER, "github/connector.py:178"),
     Connector("gitlab", "container", CONTAINER, "gitlab/projects.py:538"),
     Connector("gitlab_personal", "container", CONTAINER, "gitlab_personal/connector.py:107"),
-    Connector("notion", "container", CONTAINER, "notion/connector.py:4605",
+    Connector("notion", "container", CONTAINER, "notion/connector.py:4616",
               "records inherit the workspace group, which grants nobody (no inheritance from the app, no grant) and carries no "
               "permission model: Notion's API does not say who may open a page"),
     Connector("notion_personal", "container", CONTAINER, "notion_personal/connector.py:55"),
@@ -208,7 +208,7 @@ ANCHORS: dict[str, str] = {
     'github': '.with_permission_model(PermissionModel.APP_LEVEL)',
     'gitlab': 'permission_model=PermissionModel.RECORD_GROUP_LEVE',
     'gitlab_personal': '.with_permission_model(PermissionModel.APP_LEVEL)',
-    'notion': 'record_group.inherit_permissions = False',
+    'notion': 'group.inherit_permissions = False',
     'notion_personal': '.with_permission_model(PermissionModel.APP_LEVEL)',
     'localKB': '.with_permission_model(PermissionModel.APP_LEVEL)',
     'local_fs': '.with_permission_model(PermissionModel.APP_LEVEL)',

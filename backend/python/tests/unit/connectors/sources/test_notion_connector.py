@@ -2460,6 +2460,7 @@ def _make_connector_fullcov():
     dsp = runs_in_its_transaction(MagicMock())
     mock_tx = MagicMock()
     mock_tx.get_record_group_by_external_id = AsyncMock(return_value=None)
+    mock_tx.get_nodes_by_filters = AsyncMock(return_value=[])
     tx_cm = AsyncMock()
     tx_cm.__aenter__ = AsyncMock(return_value=mock_tx)
     tx_cm.__aexit__ = AsyncMock(return_value=False)
