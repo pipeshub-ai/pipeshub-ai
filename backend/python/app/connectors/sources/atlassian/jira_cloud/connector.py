@@ -2624,6 +2624,9 @@ class JiraConnector(BaseConnector):
         Always fetches fresh data from the API so that group membership
         changes in Jira are picked up on every sync.
         """
+        # GET /rest/api/3/applicationrole: "Permissions required: Administer Jira global permission"; 403: "Returned if
+        # the user is not an administrator". Any answer but a 200 list leaves product access unknown.
+        # (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-application-roles/)
         mapping: dict[str, list[dict[str, str]]] = {}
         self._app_roles_forbidden = False
         self._app_roles_unread = False
@@ -2686,6 +2689,10 @@ class JiraConnector(BaseConnector):
                 group_details = role.get("groupDetails", [])
                 if not group_details and isinstance(role.get("userCount"), int) and role["userCount"] > 0:
                     # Users count against this role's licence, but no group grants it: who they are is not read here.
+                    # ApplicationRole.userCount: "The number of users counting against your license."; groupDetails:
+                    # "The groups associated with the application role." The docs name no other source of product
+                    # access, so a role with users and no group leaves access unknown (fail closed).
+                    # (https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json)
                     access_outside_groups = True
 
                 if role_key and group_details:
