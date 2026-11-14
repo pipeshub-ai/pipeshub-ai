@@ -84,6 +84,11 @@ async def _look(consumer: IndexingRedisStreamsConsumer) -> None:
     await consumer._IndexingRedisStreamsConsumer__reclaim_while_reading()
 
 
+async def _read_pass(consumer: IndexingRedisStreamsConsumer) -> None:
+    consumer._last_ownership_refresh = 0.0
+    await consumer._IndexingRedisStreamsConsumer__read_phase()
+
+
 async def _owned(consumer, name: str, lane: str = LANE) -> list[dict]:
     return await consumer.redis.xpending_range(
         lane, GROUP, min="-", max="+", count=1000, consumername=name
@@ -317,7 +322,8 @@ class TestAnEntryRecoveryCouldNotHandOn:
         await _look(consumer)
         assert consumer._scheduler.pending_count == 0
         consumer._last_unhanded_retry = 0.0
-        await _look(consumer)
+        consumer._last_reclaim = float("inf")
+        await _read_pass(consumer)
 
         assert consumer._scheduler.pending_count == 2
         mine = await _owned(consumer, consumer.consumer_name)
@@ -344,7 +350,7 @@ class TestRetryCapacity:
 
 
 class TestATrimmedEntryWhoseAcknowledgementFailed:
-    async def test_it_is_acknowledged_on_a_later_pass_even_with_a_full_buffer(self, consumer) -> None:
+    async def test_it_is_acknowledged_on_a_later_read_pass_with_a_full_buffer(self, consumer) -> None:
         await _left_by_a_stopped_consumer(consumer, 2)
         trimmed = (await _owned(consumer, "replaced"))[0]["message_id"]
         real_xclaim, real_xack = consumer.redis.xclaim, consumer.redis.xack
@@ -368,8 +374,66 @@ class TestATrimmedEntryWhoseAcknowledgementFailed:
         await consumer.redis.xdel(LANE, trimmed)
         await _fill_with_new_events(consumer, BUFFER - consumer._scheduler.pending_count)
         consumer._last_unhanded_retry = 0.0
-        await _look(consumer)
+        # The real read pass, which returns early on a full buffer.
+        await _read_pass(consumer)
 
         mine = [e["message_id"] for e in await _owned(consumer, consumer.consumer_name)]
         assert trimmed not in mine
         assert (LANE, trimmed) not in consumer._unhanded
+
+
+async def _untracked_under(consumer) -> set[str]:
+    """Ids pending under this consumer that it neither holds nor remembers."""
+    tracked = {m for _t, m in consumer._unhanded} | {m for _s, m in consumer._held_entries}
+    return {e["message_id"] for e in await _owned(consumer, consumer.consumer_name)} - tracked
+
+
+class TestTheRetryListNeverLosesAnEntry:
+    async def test_a_drain_whose_handoffs_all_fail_claims_no_more_than_the_list_holds(
+        self, consumer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.services.messaging.redis_streams import indexing_consumer as module
+
+        monkeypatch.setattr(module, "_UNHANDED_LIMIT", 3)
+
+        async def always_fails(*_args, **_kwargs):  # noqa: ANN202
+            raise ConnectionError("retry store unreachable")
+
+        consumer._should_dead_letter = always_fails
+        await _left_by_a_stopped_consumer(consumer, 6)
+
+        await consumer._drain_pending()
+
+        assert len(consumer._unhanded) == 3
+        assert await _untracked_under(consumer) == set()
+        assert len(await _owned(consumer, "replaced")) == 3
+
+    async def test_failed_checks_of_bodiless_entries_across_owners_stay_within_it(
+        self, consumer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.services.messaging.redis_streams import indexing_consumer as module
+
+        monkeypatch.setattr(module, "_UNHANDED_LIMIT", 2)
+        for owner in ("replaced-a", "replaced-b"):
+            for i in range(2):
+                await consumer.redis.xadd(LANE, _fields(f"{owner}-{i}"))
+            await consumer.redis.xreadgroup(GROUP, owner, {LANE: ">"}, count=2)
+        await asyncio.sleep(_stopped_for(consumer))
+        real_xclaim, real_pending = consumer.redis.xclaim, consumer.redis.xpending_range
+
+        async def pre_7_xclaim(*args, **kwargs):  # noqa: ANN202
+            return [(None, None) for _ in await real_xclaim(*args, **kwargs)]
+
+        async def check_fails(*args, **kwargs):  # noqa: ANN202
+            if kwargs.get("min") not in (None, "-"):
+                raise ConnectionError("lost the connection")
+            return await real_pending(*args, **kwargs)
+
+        consumer.redis.xclaim = pre_7_xclaim
+        consumer.redis.xpending_range = check_fails
+
+        await _look(consumer)
+
+        consumer.redis.xpending_range = real_pending
+        assert len(consumer._unhanded) == 2
+        assert await _untracked_under(consumer) == set()

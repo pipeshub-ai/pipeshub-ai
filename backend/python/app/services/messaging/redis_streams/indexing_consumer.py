@@ -1338,9 +1338,31 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         own-pending recovery runs only when this consumer is alone, peers take
         only from stopped consumers, and the idle drain needs quiet lanes."""
         self._unhanded.pop((topic, message_id), None)
+        if len(self._unhanded) >= _UNHANDED_LIMIT:
+            # Unreachable for claimed entries: every claim is bounded by
+            # __retry_room. An own entry found by a pending-list scan is not
+            # remembered past the bound, but nothing is evicted either, and the
+            # next scan finds it again.
+            self.logger.warning(
+                "Not remembering pending entry %s on %s for a retry: %d already are",
+                message_id, topic, len(self._unhanded),
+            )
+            return
         self._unhanded[(topic, message_id)] = None
-        while len(self._unhanded) > _UNHANDED_LIMIT:
-            self._unhanded.pop(next(iter(self._unhanded)))
+
+    def __retry_room(self) -> int:
+        """Claims recovery may still make. Each claimed entry that is not handed
+        on is remembered for a retry, so no path claims past the list's room
+        and none is ever forgotten while pending under this consumer."""
+        return max(0, _UNHANDED_LIMIT - len(self._unhanded))
+
+    async def __retry_unhanded_when_due(self) -> None:
+        """At most once a second, and before any full-buffer or backpressure
+        return: an entry left without a body needs no room to be acknowledged."""
+        now = time.monotonic()
+        if self._unhanded and now - self._last_unhanded_retry >= _RECOVERY_INTERVAL_SECONDS:
+            self._last_unhanded_retry = now
+            await self.__retry_unhanded()
 
     async def __retry_unhanded(self) -> None:
         """Offer remembered entries again, oldest first.
@@ -1788,10 +1810,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """
         if self.redis is None or not self.config.topics or self._dispatch_budget().blocked:
             return
-        now = time.monotonic()
-        if self._unhanded and now - self._last_unhanded_retry >= _RECOVERY_INTERVAL_SECONDS:
-            self._last_unhanded_retry = now
-            await self.__retry_unhanded()
         interval = (
             _RECOVERY_INTERVAL_SECONDS
             if self._reclaim_found
@@ -1834,7 +1852,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         budget = self._dispatch_budget()
         # Each claim may end up remembered for a retry; never claim past what
         # that list can hold, or a forgotten entry would stay pending here.
-        retry_room = _UNHANDED_LIMIT - len(self._unhanded)
+        retry_room = self.__retry_room()
         if self._scheduler is None:
             headroom = _headroom(budget.total_ceiling)
             return min(budget.remaining - headroom, _RECLAIM_PER_LOOK, retry_room)
@@ -1864,7 +1882,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         and this stops there."""
         taken = 0
         while taken < limit and self.running:
-            want = min(limit - taken, _RECLAIM_PAGE)
+            # Re-read each page: a failed handoff in this look, of a body or of
+            # an entry left without one, takes a place in the retry list.
+            want = min(limit - taken, _RECLAIM_PAGE, self.__retry_room())
+            if want <= 0:
+                return taken
             try:
                 listed = await self.redis.xpending_range(  # type: ignore[union-attr]
                     topic, self.config.group_id, min="-", max="+", count=want, consumername=owner
@@ -2198,7 +2220,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         scheduler = self._scheduler
         if scheduler is not None:
             budget = min(budget, max(0, (self.__buffer_room() or 0) - self.__buffer_headroom()))
-        return min(10, budget)
+        return min(10, budget, self.__retry_room())
 
     def __buffer_headroom(self) -> int:
         """Buffer places recovery leaves free for new events. Filled to the last
@@ -2572,6 +2594,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.__sweep_stale_buffered()
         await self.__drain_deferred()
         await self.__recover_while_reading()
+        await self.__retry_unhanded_when_due()
         # Parked entries are held in memory too, so they count against the
         # buffer budget -- that budget is what bounds this consumer's memory.
         scheduler_full = (
@@ -2853,6 +2876,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     # First, so a consumer held back by full gates still keeps
                     # its running entries fresh and is not taken for stopped.
                     await self.__refresh_held_ownership()
+                    await self.__retry_unhanded_when_due()
                     budget = self._dispatch_budget()
                     # Saturation matters as much as queue depth: with both
                     # index pools full and nothing queued behind them, the
