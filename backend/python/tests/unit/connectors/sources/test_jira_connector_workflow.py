@@ -52,6 +52,8 @@ def _make_mock_deps():
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-jira-1"
     data_entities_processor.on_new_app_users = AsyncMock()
+    data_entities_processor.open_app_to_org_team = AsyncMock()
+    data_entities_processor.withdraw_team_app_edge = AsyncMock()
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()

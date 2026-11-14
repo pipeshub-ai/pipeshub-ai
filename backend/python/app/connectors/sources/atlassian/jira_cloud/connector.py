@@ -1026,6 +1026,7 @@ class JiraConnector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups(readable_projects)
             # A project kept as stored may still be granted through roles under its old key.
             access_written_in_full = len(readable_projects) == len(projects)
+            await self._admit_everyone_to_public_projects(readable_projects, written_in_full=access_written_in_full)
 
             # 7. Sync issues (incremental via checkpoint), then deletions
             last_sync_time = await self._get_issues_sync_checkpoint()
@@ -2749,6 +2750,20 @@ class JiraConnector(BaseConnector):
         if not self._directory_read_complete():
             listed = listed | {u.email.lower() for u in self._stored_app_users if u.email}
         return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed]
+
+    async def _admit_everyone_to_public_projects(
+        self, projects: list[tuple[RecordGroup, list[Permission]]], *, written_in_full: bool,
+    ) -> None:
+        """Browse held by ``anyone`` is Jira's anonymous access: anyone reads those projects, signed in or not,
+        with or without an account or product access. Their ORG grant reaches only users who pass the connector
+        gate, so the org's All team passes it while a synced project is public, and stops once every project's
+        access was written and none is. ``anyone`` is the only ORG grant this connector writes on a project."""
+        if self.scope != ConnectorScope.TEAM.value:
+            return
+        if any(p.entity_type == EntityType.ORG for _, perms in projects for p in perms or []):
+            await self.data_entities_processor.open_app_to_org_team(self.connector_id)
+        elif written_in_full:
+            await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
 
     async def _fallback_permissions_for_forbidden_scheme(
         self,

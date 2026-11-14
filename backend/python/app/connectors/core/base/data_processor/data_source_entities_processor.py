@@ -7203,6 +7203,34 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.ensure_team_app_edge(connector_id, self.org_id)
 
+    @retry_on_deadlock()
+    async def open_app_to_org_team(self, connector_id: str) -> None:
+        """Let the org's All team through the connector gate, for content the source opens to everyone. Until then
+        the gate alone kept every org user the connector does not link away from grants still naming them (left
+        from before withdrawals took them), so the first opening removes those grants first."""
+        team = f"all_{self.org_id}"
+        async with self.data_store_provider.transaction() as tx_store:
+            if await tx_store.get_edge(
+                team, CollectionNames.TEAMS.value, connector_id, CollectionNames.APPS.value,
+                CollectionNames.USER_APP_RELATION.value, raise_on_error=True,
+            ):
+                return
+        linked = {u.id for u in await self.get_app_user_links(connector_id)}
+        unlinked = [u.id for u in await self.get_all_active_users() if u.id and u.id not in linked]
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            for user_id in unlinked:
+                await tx_store.remove_user_access_to_connector(connector_id, user_id)
+            await tx_store.ensure_team_app_edge(connector_id, self.org_id)
+
+    async def withdraw_team_app_edge(self, connector_id: str) -> None:
+        """Undo ``open_app_to_org_team``: the org's members pass the gate again only through their own links."""
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            await tx_store.delete_edge(
+                f"all_{self.org_id}", CollectionNames.TEAMS.value,
+                connector_id, CollectionNames.APPS.value,
+                CollectionNames.USER_APP_RELATION.value,
+            )
+
     async def get_nodes_by_filters(
         self,
         collection: str,
