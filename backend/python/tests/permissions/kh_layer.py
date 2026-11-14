@@ -151,13 +151,27 @@ def _ancestors(world: World, node: Node) -> list[Parent]:
     return out
 
 
+def stored(reference: OracleLayer, world: World) -> World:
+    """The world as the store under test holds it (the reference's shape): only the nodes it keeps, and only the edges between them. ArangoDB
+    keeps no node with an unknown rule and no deleted or placeholder group, so a chain through one does not reach the App there."""
+    graph, _ = reference._store(world)
+    kept = {reference._ns.local(n["id"]) for n in graph["nodes"]}
+    return replace(world, nodes=tuple(
+        replace(n, parents=tuple(p for p in n.parents if p.id in kept), belongs=tuple(g for g in n.belongs if g in kept),
+                inherits=tuple(i for i in n.inherits if i in kept))
+        for n in world.nodes if n.id in kept))
+
+
 def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> set[str]:
     """The granted rows a browse of ``node`` (an App or a group) lists beside its hierarchy children, by the placement rule the stores share
     (``GraphDBProvider._kh_v3_chain_tops``, ``place_chain_tops``): a live, OPEN, non-placeholder record or group of the App the viewer is
     granted, with no hierarchy parent the viewer may open and not the App's hierarchy child, outside a group that hides its children. It is
     listed under each of its own groups (a record's groups, a group's parent groups) the viewer may open; with none, under the App when it
     has no own group or one that hangs from the App. A group's browse places only the records that belong to it. None in an App that opens
-    everything."""
+    everything. The parents, groups and chains to the App are read from the world as the store holds it (`stored`), as the store reads them."""
+    asked_world, world = world, stored(reference, world)
+    if node not in {n.id for n in world.nodes}:      # a node the store does not keep lists nothing
+        return set()
     target = world.node(node)
     app_id = node if target.kind == "app" else target.connector
     if app_id is None:      # a group of no App: nothing is placed under it
@@ -179,7 +193,7 @@ def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> 
              and (target.kind == "app" or (n.kind == "record" and node in n.belongs))]
     asked = sorted({i for n in cands for i in [n.id, *hier(n), *own(n)]})
     # the stores' check admits a placeholder asked by id where it would admit a real node there (the oracle refuses every placeholder): asked as one
-    real = replace(world, nodes=tuple(replace(n, placeholder=False) for n in world.nodes))
+    real = replace(asked_world, nodes=tuple(replace(n, placeholder=False) for n in asked_world.nodes))
     ok = {i for i, v in reference.explain(real, viewer, asked).items() if v.admitted}
     out = set()
     for n in cands:
