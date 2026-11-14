@@ -30,6 +30,7 @@ from app.services.graph_db.postgres.base import (
     _ekey,
     _j,
 )
+from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.records import _TYPE_COLLS
 from app.services.graph_db.taxonomy import RECORD_ENRICHMENT_EDGE_COLLECTIONS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -327,6 +328,9 @@ class HierarchyMixin(PgBase):
             return {}
         safe = max(1, min(int(max_depth), 10))
         rec_depth = max(1, safe - 1)
+        got = await kg_hier.answer(self, "depths", None, lambda tx: kg_hier.depths(tx, org, parent_id, parent_type, list(node_ids), safe, rec_depth))
+        if got is not None:
+            return got
         try:
             if parent_type == "app":
                 rows = await self._rows("""/* pipeshub:graph.get_node_depths_batch_app */ WITH RECURSIVE w(id, lvl) AS (
