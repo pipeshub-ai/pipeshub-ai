@@ -60,3 +60,41 @@ def test_the_shared_rule() -> None:
     assert file_types.stored_mime_for_new_file("application/json", "a.log") == "application/json"
     assert file_types.stored_mime_for_new_file("text/plain", "a.docm") == "text/plain"
     assert file_types.stored_mime_for_new_file("text/plain", None) == "text/plain"
+
+
+@pytest.mark.parametrize("ext", ["log", "cfg"])
+@pytest.mark.parametrize("sent", ["text/plain", "application/octet-stream"])
+async def test_a_row_saved_under_its_own_mime_keeps_it_when_the_connector_resends_text_plain(
+    ext: str, sent: str
+) -> None:
+    proc, tx_store = _make_processor(), _make_tx_store()
+    tx_store.get_record_by_external_id = AsyncMock(return_value=_make_record(
+        record_name=f"server.{ext}", mime_type=_OWN[ext]))
+    proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+    incoming = _make_record(record_name=f"server.{ext}", mime_type=sent)
+    await proc.on_new_records([(incoming, [])])
+    assert [r.mime_type for r in _stored(tx_store)] == [_OWN[ext]]
+
+
+@pytest.mark.parametrize("sent", ["text/x-log", "text/plain"])
+async def test_a_legacy_row_found_by_its_id_keeps_text_plain(sent: str) -> None:
+    proc, tx_store = _make_processor(), _make_tx_store()
+    legacy = _make_record(record_name="server.log", mime_type="text/plain")
+    tx_store.get_record_by_key = AsyncMock(return_value=legacy)
+    proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+    incoming = _make_record(record_name="server.log", mime_type=sent)
+    incoming.id = legacy.id
+    await proc.on_new_records([(incoming, [])])
+    assert [r.mime_type for r in _stored(tx_store)] == ["text/plain"]
+
+
+def test_the_move_path_keeps_the_mime_a_row_already_has() -> None:
+    from types import SimpleNamespace
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+
+    new = SimpleNamespace(mime_type="text/plain", record_name="b.log")
+    DataSourceEntitiesProcessor._keep_the_stored_text_mime(new, SimpleNamespace(mime_type="text/x-log"))
+    assert new.mime_type == "text/x-log"

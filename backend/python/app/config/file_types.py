@@ -923,7 +923,22 @@ def extension_for_mime(mime_type: str | None) -> str | None:
     hint = MIME_EXTENSION_HINTS.get(mime_type)  # type: ignore[arg-type]
     if hint is not None or not isinstance(mime_type, str):
         return hint
-    return MIME_EXTENSION_HINTS.get(normalize_mime(mime_type))
+    return _HINTS_BY_NORMALIZED_MIME.get(normalize_mime(mime_type))
+
+
+def _hints_by_normalized_mime() -> dict[str, str]:
+    """The hints keyed by normalised mime; one naming another type's extension (pptm -> ppt) stays
+    exact-only, so a new spelling of it names nothing it did not name before."""
+    index: dict[str, str] = {}
+    for mime, ext in MIME_EXTENSION_HINTS.items():
+        owner = _BY_MIME.get(normalize_mime(mime))
+        if ";" in mime or owner is None or (owner.extensions and ext not in owner.extensions):
+            continue
+        index.setdefault(normalize_mime(mime), ext)
+    return index
+
+
+_HINTS_BY_NORMALIZED_MIME: Final = _hints_by_normalized_mime()
 
 
 def _ext_type(extension: object) -> FileType | None:
@@ -1125,8 +1140,12 @@ def gate_decision(
             # beyond the types the extension decides, the name is matched as it always was.
             ext_ok = False
         supported = ext_ok or by_mime is not None
-        if ext_ok and by_ext.ext_wins and _new_type_wins(by_ext, mime):
-            decisive = by_ext
+        # The refusals below are for the reader the dispatch will pick, not for either label alone.
+        dispatch = legacy_route(
+            mime, extension, code_extension=extension, reads_as_code_file=False,  # type: ignore[arg-type]
+        )
+        if dispatch is not None and dispatch.file_type is not None:
+            decisive = dispatch.file_type
         else:
             decisive = by_mime if by_mime is not None else (by_ext if ext_ok else None)
     if not supported:
@@ -1179,6 +1198,12 @@ def stored_mime_for_new_file(mime_type: str | None, name: str | None) -> str | N
     if mime_type is None or (isinstance(mime_type, str) and normalize_mime(mime_type) in _UNNAMED_MIMES):
         return ft.canonical_mime
     return mime_type
+
+
+def mime_to_store(incoming: str | None, name: str | None, stored: str | None) -> str | None:
+    """The mime a save writes: the new-file rule, except that a legacy text/plain row keeps it."""
+    own = stored_mime_for_new_file(incoming, name)
+    return stored if stored is not None and keeps_stored_mime(stored, own, name) else own
 
 
 def keeps_stored_mime(stored_mime: str | None, new_mime: str | None, name: str | None) -> bool:
