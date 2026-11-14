@@ -4307,6 +4307,12 @@ class JiraConnector(BaseConnector):
                 [*security.members_by_level, *closed_level_groups(stored_levels, levels_to_save)],
                 {user.source_user_id: user for user in jira_users if user.source_user_id},
             )
+        if reread == "levels" and not security.browse_holders:
+            # A change the levels' groups hold alone is applied by their writes above. With Browse holders that name people on each
+            # issue, a user holder of the level may now read an issue alone (``_reads_alone``), so those issues are read again.
+            held = group_held_levels(stored_levels, levels_to_save)
+            changed_levels = [lid for lid in changed_levels or [] if lid not in held]
+            reread = "levels" if changed_levels else None
         unreadable = not readable and security.knowledge != SchemeKnowledge.NONE
         if security.defer_checkpoint or (unreadable and reread):
             # Saved before the walk: a page that fails later leaves issues written with their
@@ -4413,8 +4419,7 @@ class JiraConnector(BaseConnector):
             )
             try:
                 await self._reread_leveled_issues(
-                    project_key, project_id, jira_users, stats, changed_levels, every_issue=reread == "project",
-                    subtasks_only=group_held_levels(stored_levels, levels_to_save) if reread == "levels" else set(),
+                    project_key, project_id, jira_users, stats, changed_levels, every_issue=reread == "project"
                 )
             except JiraReadError as e:
                 if e.status != HttpStatusCode.BAD_REQUEST.value or reread != "levels":
@@ -4639,23 +4644,16 @@ class JiraConnector(BaseConnector):
 
     async def _reread_leveled_issues(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
-        level_ids: list[str] | None, *, every_issue: bool = False, subtasks_only: set[str] | frozenset[str] = frozenset(),
+        level_ids: list[str] | None, *, every_issue: bool = False,
     ) -> None:
         """Rebuild the stored issues in ``level_ids``; when it is None, every stored issue
-        with a level, or every stored issue with ``every_issue``. Of the levels in
-        ``subtasks_only`` only the sub-tasks are rebuilt: the others take their access from
-        the level's record group, written before the walk."""
-        full = None if level_ids is None else [lid for lid in level_ids if lid not in subtasks_only]
-        subtask_levels = [lid for lid in level_ids or [] if lid in subtasks_only]
-        for ids, subtasks in ((full, False), (subtask_levels, True)):
-            if ids == []:
-                continue
-            async for batch, _more, _ts in self._fetch_issues_batched(
-                project_key, project_id, users, None, None, is_new_project=True,
-                level_ids=ids, leveled_only=ids is None and not every_issue, stored_only=True, subtasks_only=subtasks,
-            ):
-                if batch:
-                    await self._process_new_records(batch, project_key, stats)
+        with a level, or every stored issue with ``every_issue``."""
+        async for batch, _more, _ts in self._fetch_issues_batched(
+            project_key, project_id, users, None, None, is_new_project=True,
+            level_ids=level_ids, leveled_only=level_ids is None and not every_issue, stored_only=True,
+        ):
+            if batch:
+                await self._process_new_records(batch, project_key, stats)
 
     async def _fetch_issues_batched(
         self,
@@ -4670,7 +4668,6 @@ class JiraConnector(BaseConnector):
         leveled_only: bool = False,
         stored_only: bool = False,
         parent_ids: list[str] | None = None,
-        subtasks_only: bool = False,
     ) -> AsyncGenerator[tuple[list[tuple[Record, list[Permission], bool]], bool, Optional[int]], None]:
         """
         Fetch issues for a project in batches, yielding processed records.
@@ -4717,8 +4714,6 @@ class JiraConnector(BaseConnector):
         if parent_ids:
             # Only the children of these issues (ids are numeric).
             jql_conditions.append(f'parent in ({", ".join(str(int(i)) for i in parent_ids)})')
-        if subtasks_only:
-            jql_conditions.append("issuetype in subTaskIssueTypes()")
 
         # Build final JQL (ORDER BY required for consistent pagination)
         # Add id ASC as secondary sort for stable ordering when timestamps are equal

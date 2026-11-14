@@ -139,21 +139,15 @@ class TestSecuredIssues:
         assert not any(p.entity_type == EntityType.ORG for p in [*perms, *grants])
 
     @pytest.mark.asyncio
-    async def test_a_leveled_sub_task_keeps_a_copy_of_every_holder_and_names_no_group(self) -> None:
-        """A sub-task is read by its own level's holders who can read its parent: it inherits the parent."""
+    async def test_a_leveled_sub_task_takes_its_own_level_s_group(self) -> None:
+        """Jira judges a sub-task by its own level, not its parent's readers: it takes its level's group, filed under its parent."""
         sub = _issue({"id": "10102", "name": "Leadership"}, key="PROJ-2", issue_id="1002")
         sub["fields"]["issuetype"] = {"name": "Sub-task", "hierarchyLevel": -1, "subtask": True}
         sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
         record, perms, _ = await _build(_connector(), sub, _present())
-        assert (record.access_rule, record.access_group_external_id) == (AccessRule.RESTRICTED, "")
-        assert {(p.entity_type, p.external_id, p.email) for p in perms} == {
-            (EntityType.GROUP, "group-1", None),
-            (EntityType.USER, None, "mia@x.com"),
-            (EntityType.USER, None, "rep@x.com"),
-            (EntityType.USER, None, "asg@x.com"),
-            (EntityType.ROLE, "PROJ_projectLead", None),
-            (EntityType.ROLE, "PROJ_10003", None),
-        }
+        assert (record.access_rule, record.access_group_external_id) == (AccessRule.STRICT, "level:p-1:10102")
+        assert record.parent_external_record_id == "1001"
+        assert {(p.entity_type, p.email) for p in perms} == {(EntityType.USER, "rep@x.com"), (EntityType.USER, "asg@x.com")}
 
     @pytest.mark.asyncio
     async def test_leveled_issue_with_unreadable_members_is_closed(self) -> None:
@@ -370,11 +364,10 @@ class TestMemberChangeRereadsOnlyTheAffectedLevels:
         async def fetch(
             key: str, pid: str, users: list, last_sync: int | None, resume: int | None, *,
             is_new_project: bool = False, level_ids: list[str] | None = None, leveled_only: bool = False,
-            stored_only: bool = False, subtasks_only: bool = False,
+            stored_only: bool = False,
         ) -> AsyncIterator:
             calls.append({"resume": resume, "is_new_project": is_new_project, "level_ids": level_ids,
-                          "leveled_only": leveled_only, "stored_only": stored_only,
-                          **({"subtasks_only": True} if subtasks_only else {})})
+                          "leveled_only": leveled_only, "stored_only": stored_only})
             if fetch_fn:
                 await fetch_fn(c, calls)
             return
@@ -720,7 +713,7 @@ class TestSubtasksFollowTheirParent:
         calls = []
 
         async def fetch(key, pid, users, last_sync, resume, *, is_new_project=False, level_ids=None,
-                        leveled_only=False, stored_only=False, parent_ids=None, subtasks_only=False) -> AsyncIterator:
+                        leveled_only=False, stored_only=False, parent_ids=None) -> AsyncIterator:
             calls.append({"stored_only": stored_only, "parent_ids": parent_ids})
             if parent_ids and fail_subtasks:
                 raise JiraReadError(503, "unavailable")
@@ -962,15 +955,14 @@ class TestLevelPassAfterFailuresAndRemovals:
         assert saved == {"10102": "d", "*": "unreadable"}
 
     @pytest.mark.asyncio
-    async def test_a_group_leaving_an_application_role_rewrites_the_level_group_and_rereads_its_sub_tasks(self) -> None:
-        """The level's group holds the role's groups once: one write, and only the sub-tasks, which keep a
-        copy of the holders, are read again."""
+    async def test_a_group_leaving_an_application_role_rewrites_the_level_group_and_reads_no_issue_again(self) -> None:
+        """The level's group holds the role's groups once: one write, and no issue of the level is read again."""
         ctx = _present(members={"10102": [{"type": "applicationRole", "parameter": "jira-software"}]})
         c = _connector()
         c._app_roles_mapping = {"jira-software": [{"groupId": "g-1"}]}
         stored = ctx.level_fingerprints({"jira-software": [{"groupId": "g-1"}, {"groupId": "g-removed"}]}, split=True)
         _, _, calls, _ = await self._sync(stored_levels=stored, ctx=ctx, connector=c)
-        assert (calls[1]["level_ids"], calls[1].get("subtasks_only")) == (["10102"], True)
+        assert len(calls) == 1  # the incremental pass alone
         (group, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
         assert group.external_group_id == "level:p-1:10102"
         assert [(g.entity_type, g.external_id) for g in grants] == [(EntityType.GROUP, "g-1")]
@@ -980,7 +972,7 @@ class TestLevelPassAfterFailuresAndRemovals:
         """Its issues hold a copy of their level's holders; read again, each drops it for its level's group."""
         ctx = _present()
         c, _, calls, _ = await self._sync(stored_levels=ctx.level_fingerprints(), ctx=ctx)
-        assert calls[1]["level_ids"] == ["10102"] and "subtasks_only" not in calls[1]
+        assert calls[1]["level_ids"] == ["10102"]
         assert json.loads(c.issues_sync_point.update_sync_point.await_args.args[1]["security_levels"]) == \
             ctx.level_fingerprints(split=True)
 
@@ -1262,7 +1254,7 @@ class TestEpicsReadAgainNextSync:
         c._process_new_records = AsyncMock()
 
         async def fetch(key, pid, users, last_sync, resume, *, is_new_project=False, level_ids=None,
-                        leveled_only=False, stored_only=False, parent_ids=None, subtasks_only=False) -> AsyncIterator:
+                        leveled_only=False, stored_only=False, parent_ids=None) -> AsyncIterator:
             if parent_ids:
                 return
             c._parents_to_retry.add("2001")

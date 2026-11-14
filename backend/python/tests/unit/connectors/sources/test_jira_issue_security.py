@@ -927,11 +927,13 @@ class TestLevelGroups:
                                       project_key="P", user_by_id={}, app_roles_mapping=None)
         assert {(g.entity_type, g.external_id) for g in group} == {(EntityType.GROUP, "g-1"), (EntityType.ROLE, "P_projectLead")}
 
-    def test_a_sub_task_keeps_a_copy_of_every_holder(self) -> None:
-        rec, grants, _, _ = self._apply({"security": {"id": "7"}}, is_subtask=True)
-        assert (rec.access_rule, rec.access_group_external_id) == (AccessRule.RESTRICTED, "")
-        assert {(g.entity_type, g.external_id or g.email) for g in grants} == {
-            (EntityType.GROUP, "g-1"), (EntityType.USER, "rep@x.com"), (EntityType.ROLE, "P_projectLead")}
+    def test_a_sub_task_takes_its_own_level_s_group_not_its_parent(self) -> None:
+        """Jira judges a sub-task by its own Browse and level; it copies its parent's level when created, and keeps it."""
+        rec, grants, _, _ = self._apply({"security": {"id": "7"}}, is_subtask=True, parent_external_record_id="1")
+        assert (rec.access_rule, rec.access_group_external_id) == (AccessRule.STRICT, "level:p-1:7")
+        assert [(g.entity_type, g.email) for g in grants] == [(EntityType.USER, "rep@x.com")]
+        rec, grants, _, _ = self._apply({"security": {"id": "7"}}, is_subtask=True, project_id=None)
+        assert (rec.access_rule, len(grants)) == (AccessRule.RESTRICTED, 3)  # without a group: a copy of every holder
 
     def test_an_issue_with_no_level_or_a_level_without_holders_names_no_group(self) -> None:
         for fields in ({"security": None}, {"security": {"id": "8"}}):
@@ -997,3 +999,47 @@ class TestSplitLevelDigests:
             security, security.level_fingerprints(), is_new_project=False, app_roles_mapping={}, split=True)
         assert (reread, levels, to_save) == ("levels", ["1", "2"], security.level_fingerprints(split=True))
         assert group_held_levels(security.level_fingerprints(), to_save) == set()
+
+
+class TestBrowseAndLevelNamedOnTheIssue:
+    """Level 10115 holds projectRole 10002, the reporter and two users; the project's Browse is held by the reporter too. The reporter,
+    in neither the role nor the project's readers, reads the issue in Jira: Browse and the level both name them on it."""
+
+    LEVEL = {"10115": [
+        {"type": "projectRole", "parameter": "10002", "projectRole": {"id": "10002", "name": "Developers"}},
+        {"type": "reporter"},
+        {"type": "user", "parameter": "acc-1", "user": {"accountId": "acc-1", "emailAddress": "one@x.com"}},
+        {"type": "user", "parameter": "acc-2", "user": {"accountId": "acc-2", "emailAddress": "two@x.com"}},
+    ]}
+
+    def _apply(self, browse: list[dict] | None, members: dict | None = None, **emails: str) -> tuple[Record, list]:
+        context = _present(members=members or self.LEVEL)
+        context.browse_holders = browse
+        rec = _record()
+        grants, _, settled = apply_issue_access_settled(
+            rec, {"security": {"id": next(iter(context.members_by_level))}}, is_subtask=False, project_key="JUNI", context=context,
+            project_id="p-1", **emails)
+        assert settled
+        return rec, grants
+
+    def test_the_reporter_reads_it_alone(self) -> None:
+        rec, grants = self._apply([{"type": "reporter"}], reporter_email="angela@x.com")
+        assert (rec.access_rule, rec.access_group_external_id) == (AccessRule.OPEN, "level:p-1:10115")
+        assert [(g.entity_type, g.email) for g in grants] == [(EntityType.USER, "angela@x.com")]
+
+    def test_a_user_holder_named_by_browse_on_the_issue_reads_it_alone(self) -> None:
+        rec, grants = self._apply([{"type": "assignee"}], assignee_email="one@x.com", reporter_email="angela@x.com")
+        assert rec.access_rule == AccessRule.STRICT  # the reporter's grant needs the project: Browse does not name them on it
+        rec, grants = self._apply([{"type": "assignee"}], members={"7": [{"type": "user", "parameter": "acc-1",
+                                  "user": {"accountId": "acc-1", "emailAddress": "one@x.com"}}]}, assignee_email="one@x.com")
+        assert (rec.access_rule, [g.email for g in grants]) == (AccessRule.OPEN, ["one@x.com"])
+
+    def test_without_browse_named_on_the_issue_the_reporter_needs_the_project(self) -> None:
+        for browse in ([], None):
+            rec, grants = self._apply(browse, reporter_email="angela@x.com")
+            assert (rec.access_rule, [g.email for g in grants]) == (AccessRule.STRICT, ["angela@x.com"])
+
+    def test_someone_browse_names_outside_the_level_is_no_grant(self) -> None:
+        rec, grants = self._apply([{"type": "assignee"}], members={"7": [{"type": "group", "value": "g-1"}]},
+                                  assignee_email="out@x.com")
+        assert (rec.access_rule, grants) == (AccessRule.STRICT, [])

@@ -709,14 +709,15 @@ def apply_issue_access_settled(
     project is handled by the processor, which keeps the child on its own project.
     Attachments are handled separately and stay empty.
 
-    With ``project_id``, a leveled issue that is not a sub-task takes its access from its
+    With ``project_id``, a leveled issue, a sub-task too, takes its access from its
     level's record group (``level_group_external_id``), which holds the holders that name
     the same people on every issue once (``level_group_grants``): the issue is STRICT,
     inherits that group and nothing it is filed under, and carries as its own grants only
-    the holders it names itself (reporter, assignee, a field). It stays filed where it was;
-    placement grants nothing. A sub-task keeps a copy of its level's holders and inherits
-    its parent. Every other issue names no group, so an earlier one is removed. Without
-    ``project_id`` no group is managed.
+    the holders it names itself (reporter, assignee, a field); OPEN when each of those is
+    someone who reads it without the project (``_reads_alone``). It stays filed where it
+    was; placement grants nothing. Every other issue names no group, so an earlier one is
+    removed. Without ``project_id`` no group is managed: a leveled issue holds a copy of
+    its level's holders, and a sub-task inherits its parent.
     """
     # None: no group is managed (or a stored one is kept); "": this issue has none. A personal
     # account has no levels, so no group.
@@ -747,6 +748,9 @@ def apply_issue_access_settled(
         # An issue filed under another one, or a stub, only follows it. A top-level issue is
         # also read by the people the project's Browse holders name on it (its reporter, say),
         # who need not read the project, so a direct grant must be enough: OPEN, not STRICT.
+        # shortcut: Jira judges a sub-task by its own Browse, so its own reporter may read it alone; an OPEN sub-task would
+        # also be read by everyone its parent admits by a grant of the parent's own (below a seed), which Jira does not show
+        # it to. Give a sub-task its own way to the project (an access-only group) if a sync shows such a reporter missing.
         top_level = not (record.parent_external_record_id or getattr(record, "is_placeholder", False))
         if top_level and context.browse_holders is None and not present:
             # Holders unread and the level not returned: keep the stored grants and stay OPEN so a stored
@@ -787,7 +791,8 @@ def apply_issue_access_settled(
         return close()
 
     holders = context.members_by_level.get(level_id, [])
-    grouped = project_id is not None and not is_subtask and level_id in context.members_by_level
+    # A sub-task too: Jira judges it by its own Browse and its own level (it copies its parent's when created), not by its parent.
+    grouped = project_id is not None and level_id in context.members_by_level
     if grouped:
         holders = [h for h in holders if isinstance(h, dict) and h.get("type") not in _SAME_ON_EVERY_ISSUE]
     grants, unreadable, skipped = level_grants(
@@ -803,11 +808,43 @@ def apply_issue_access_settled(
         return close()
     record.rewrite_permissions = True
     if grouped:
-        record.access_rule = AccessRule.STRICT
         record.access_group_external_id = level_group_external_id(project_id, level_id)
+        alone = _reads_alone(context, level_id, grants, project_key=project_key, fields=fields or {}, users=users,
+                             app_roles_mapping=app_roles_mapping, reporter_email=reporter_email, assignee_email=assignee_email)
+        # A grant of an OPEN record admits on its own (a seed), so the issue is OPEN only when every grant it holds is to someone
+        # Jira shows it to without the project: Browse named on this issue, and named by its level.
+        alone_keys = {_grant_key(g) for g in alone}
+        if alone and all(_grant_key(g) in alone_keys for g in grants):
+            record.access_rule = AccessRule.OPEN
+            return alone, skipped, True
+        record.access_rule = AccessRule.STRICT
         return grants, skipped, True
     record.access_rule = AccessRule.RESTRICTED
     return grants, skipped, True
+
+
+def _grant_key(grant: Permission) -> tuple[str, str]:
+    return (str(grant.entity_type), (grant.email or "").lower() if grant.email else str(grant.external_id))
+
+
+def _reads_alone(
+    context: IssueSecurityContext, level_id: str, dynamic: list[Permission], *, project_key: str, fields: dict[str, Any],
+    users: dict[str, Any], app_roles_mapping: dict[str, list[dict[str, Any]]] | None, reporter_email: str | None,
+    assignee_email: str | None,
+) -> list[Permission]:
+    """Who reads a leveled issue without browsing its project: a person the project's Browse holders name on this issue (its
+    reporter, say) whom the level names too, on this issue or as a user holder of the level.
+
+    shortcut: a person in the level only through a group or role holder is not matched (its members are not known here), and
+    reads the issue only through the project; match memberships if a sync shows such a person missing."""
+    if not context.browse_holders:
+        return []
+    browse = browse_holder_grants(context.browse_holders, project_key=project_key, fields=fields, user_by_id=users,
+                                  reporter_email=reporter_email, assignee_email=assignee_email)
+    static, _ = level_group_grants(context.members_by_level.get(level_id, []), project_key=project_key,
+                                   user_by_id=users, app_roles_mapping=app_roles_mapping)
+    named = {_grant_key(g) for g in dynamic} | {_grant_key(g) for g in static if g.entity_type == EntityType.USER}
+    return [g for g in browse if _grant_key(g) in named]
 
 
 def apply_issue_access(
@@ -914,8 +951,8 @@ def plan_level_reread(
 def group_held_levels(stored: dict[str, str] | None, current: dict[str, str]) -> set[str]:
     """Of the levels whose split digests (``level_fingerprints(split=True)``) changed, those whose
     holders that depend on the issue did not: the change is one write of the level's record group,
-    which every issue of the level but a sub-task inherits. Only their sub-tasks, which keep a copy
-    of the holders, are read again. A digest stored before the groups existed is never one."""
+    which every issue of the level inherits, and no issue is read again. A digest stored before the
+    groups existed is never one."""
     held = set()
     for level_id, now in current.items():
         before = (stored or {}).get(level_id) or ""
