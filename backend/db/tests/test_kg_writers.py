@@ -50,9 +50,9 @@ CASTS = {   # the arguments psycopg cannot type from a list of Nones, or that ar
     "kg.w_listing_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::bytea[]"],
     "kg.w_r13_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]"],
     "kg.w_scopes_set": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]"],
-    "kg.w_fence_rows": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]"],
+    "kg.w_fence_rows": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]", "%s"],
     "kg.w_stamps_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bytea[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]",
-                        "%s::smallint[]", "%s::boolean[]"],
+                        "%s::smallint[]", "%s::boolean[]", "%s"],
     "kg.w_classes_set": ["%s::bigint[]", "%s::bigint[]", "%s::bigint[]", "%s::text[]::jsonb[]", "%s::bytea[]"],
     "kg.w_grants_set": ["%s::bigint[]", "%s::bigint[]", "%s::text[]", "%s::text[]", "%s::bigint[]", "%s::boolean[]"],
 }
@@ -62,7 +62,13 @@ def marks(args: tuple, name: str | None = None) -> str:
     return ", ".join(CASTS[name]) if name in CASTS and len(args) == len(CASTS[name]) else ", ".join("%s" for _ in args)
 
 
-def call(c, name: str, org: str | None, args: tuple):
+# The writers that take the caller's projection code epoch last (kg_0013); call() passes it.
+GUARDED = ("kg.w_stamps_set", "kg.w_fence_rows", "kg.w_queue_touch", "kg.w_queue_done", "kg.w_changes_ack", "kg.w_changes_delete")
+EPOCH = 5
+
+
+def call(c, name: str, org: str | None, args: tuple, *, epoch: int | None = EPOCH):
+    args = (*args, epoch) if name in GUARDED else args
     sql = f"SELECT * FROM {name}({marks(args, name)})" if name == "kg.w_nodes_upsert" else f"SELECT {name}({marks(args, name)})"
     with unit(c, "pipeshub_connectors", org):
         return c.execute(sql, args).fetchall()
@@ -147,9 +153,31 @@ def test_the_change_log_is_acknowledged_by_transaction_and_by_id_and_only_in_the
         c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, ARRAY['3:mine'])", (ORG_A,))              # as the capture trigger will: this transaction's id by default
         c.execute("SET LOCAL ROLE pipeshub_connectors")
         c.execute("SELECT set_config('app.org_id', %s, true)", (ORG_A,))
-        assert c.execute("SELECT kg.w_changes_ack()").fetchone()[0] == 1
+        assert c.execute("SELECT kg.w_changes_ack(5)").fetchone()[0] == 1
         c.execute("COMMIT")
         assert [list(r[4]) for r in rows(c, "kg.graph_changes", ORG_A)] == [["3:other", "4:u"]]
+        clean(c)
+
+
+@pytest.mark.parametrize("name", GUARDED)
+def test_a_caller_below_the_current_projection_code_or_of_an_older_release_is_refused_and_writes_nothing(pdb, name):
+    """Code of an older release calls these writers without the epoch and finds no function; a caller that passes an epoch below 5 is refused with 22023. Either
+    way nothing is written: it would write stamps or fences, or take work off the change log or the restamp queue, without the access lists and r13."""
+    args, table = CALLS[name]
+    with conn(pdb) as c:
+        clean(c)
+        c.execute("INSERT INTO kg.graph_changes (org_id, txid, ends) VALUES (%s, '100'::xid8, ARRAY['3:needle'])", (ORG_A,))
+        if name == "kg.w_changes_delete":
+            args = ([c.execute("SELECT id FROM kg.graph_changes WHERE org_id = %s", (ORG_A,)).fetchone()[0]],)
+        before = rows(c, table, ORG_A)
+        for epoch in (4, 0, None):
+            with pytest.raises(pg.InvalidParameterValue, match="p_projector_epoch"):
+                call(c, name, ORG_A, args, epoch=epoch)
+        old = ", ".join(CASTS[name][:-1]) if name in CASTS else ", ".join("%s" for _ in args)      # the signature of kg_0012
+        with pytest.raises(pg.UndefinedFunction), unit(c, "pipeshub_connectors", ORG_A):
+            c.execute(f"SELECT {name}({old})", args)
+        assert rows(c, table, ORG_A) == before
+        call(c, name, ORG_A, args, epoch=6)                                                       # a later code epoch passes
         clean(c)
 
 
@@ -214,6 +242,7 @@ def test_bad_arguments_are_22023(pdb, name, bad):
 @pytest.mark.parametrize("role", ["pipeshub_node", "pipeshub_indexing", "pipeshub_query", "pipeshub_jobs", "pipeshub_backup", "pipeshub_restore", "pipeshub_ro"])
 def test_only_the_connectors_service_executes_a_writer(pdb, name, role):
     args, _ = CALLS[name]
+    args = (*args, EPOCH) if name in GUARDED else args
     with conn(pdb) as c, unit(c, role, ORG_A), pytest.raises(pg.InsufficientPrivilege):
         c.execute(f"SELECT {name}({marks(args, name)})", args)
 

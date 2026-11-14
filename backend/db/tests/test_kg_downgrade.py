@@ -240,3 +240,37 @@ def test_a_downgrade_goes_through_when_a_dropped_writer_took_its_rows_with_it(db
         assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname LIKE 'w\\_%'").fetchone()[0] == 0
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
+
+
+def test_downgrading_the_projector_epoch_gives_the_writers_back_their_earlier_signatures(db):
+    """kg_0013 down: the six writers lose the projection code epoch again (the signatures of kg_0012, which the code of that release calls), the catalog stays
+    clean, and an upgrade takes it back with nothing left over."""
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    old = ["kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[])",
+           "kg.w_fence_rows(bigint[],smallint[],text[],smallint[],bigint[])", "kg.w_queue_touch(bigint,bigint,text,integer,text)", "kg.w_queue_done(bigint)",
+           "kg.w_changes_ack()", "kg.w_changes_delete(bigint[])"]
+    new = [s[:-1] + (",integer)" if not s.endswith("()") else "integer)") for s in old]
+
+    def present(c, sigs: list[str]) -> list[bool]:
+        return [c.execute("SELECT to_regprocedure(%s) IS NOT NULL", (s,)).fetchone()[0] for s in sigs]
+
+    def clean_catalog(c) -> None:
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+        assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 26
+
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert present(c, old) == [False] * 6 and present(c, new) == [True] * 6
+    r = run_migrate(url, "downgrade", "kg_0012", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert present(c, old) == [True] * 6 and present(c, new) == [False] * 6
+        clean_catalog(c)
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert present(c, old) == [False] * 6 and present(c, new) == [True] * 6
+        clean_catalog(c)
