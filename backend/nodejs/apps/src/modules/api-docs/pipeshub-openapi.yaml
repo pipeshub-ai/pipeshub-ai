@@ -8528,8 +8528,9 @@ components:
                 (`DATA_STORE=postgres`) stops counting, at one of two limits per connector:
                 - 10,000 items, for a connector whose access the graph store decides by class;
                 - the readable items among the first 500 candidates, for a connector it does
-                  not decide that way, for a browse with more than 200 items it cannot decide,
-                  and for the sidebar.
+                  not decide that way, for a listing or browse with more than 200 items it
+                  cannot decide, and for a sidebar folder or group with more children than one
+                  browse holds in memory (5,000). Any other sidebar node is counted in full.
                 A total is also capped when the request's budget ran out before it decided a
                 listed item's `hasChildren`.
                 Search and filters across connectors add up each connector's count, so
@@ -24851,8 +24852,8 @@ components:
           type: array
           maxItems: 10
           description: >-
-            Only these kinds. Leave out for all, which is the only way to get `person` and
-            `organization` results: neither is accepted here (400).
+            Only these kinds. Omitted or empty means all, which is the only way to get `person`
+            and `organization` results: neither is accepted here (400).
           items:
             $ref: '#/components/schemas/EntityType'
         namedEntityKinds:
@@ -24922,11 +24923,6 @@ components:
                           type: string
               moreRecords:
                 type: boolean
-        scopeNote:
-          type: string
-          description: >-
-            Set only when `results` is empty and the caller's access covers only part of some
-            connectors' records, so matches can be missing.
     EntityNeighborsRequest:
       type: object
       description: Request body for `POST /search/entities/neighbors`.
@@ -75348,8 +75344,8 @@ paths:
         (`person`: members of the organisation named by records) and
         organisations (`organization`, such as CRM accounts) and, where
         named-entity extraction is on, other named entities (`named_entity`).
-        People and organisations are returned only when `entityTypes` is left
-        out.
+        People and organisations are returned only when `entityTypes` is
+        omitted or empty.
 
         Only entities connected to records the caller can read are returned,
         decided by the same access check as the assistant's entity tools. Each

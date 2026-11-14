@@ -415,29 +415,35 @@ async def test_the_neighbors_answer_matches_the_published_schema_and_dates_a_rec
     assert {k: v for k, v in preview.items() if k in dates} == dates
 
 
-async def _search_answer(hits: list) -> dict:
-    """What the route answers for ``hits`` (as the access check kept them), extraction off."""
-    ed ="app.agents.actions.knowledge_graph.ops.entity_discovery"
-    state = {"org_id": ORG, "user_id": USER, "config_service": MagicMock(), "filters": {},
-             "entity_vector_store": MagicMock(), "graph_provider": MagicMock()}
-    with patch.object(ks, "_entity_state", AsyncMock(return_value=state)), \
-         patch(f"{ed}.load_entity_access_context", AsyncMock(return_value=_context())), \
-         patch(f"{ed}.search_entities_for_user", AsyncMock(return_value=hits)), \
-         patch(f"{ed}.limited_scope_note", return_value="limited"), \
+async def _search_answer(hits: list, **body) -> tuple[dict, AsyncMock]:
+    """What the route answers for ``hits`` (as the access check kept them), extraction off, and the search it ran.
+
+    The route's own state and access context are built for real, so whatever the route leaves out of them (a turn's
+    selection or bound) is left out here too; only the graph's answer about the caller's access is stubbed."""
+    from app.modules.retrieval.selection_scope import SelectionScope
+
+    ed = "app.agents.actions.knowledge_graph.ops.entity_discovery"
+    ep = "app.modules.retrieval.entity_permissions"
+    search = AsyncMock(return_value=hits)
+    with patch("app.api.routes.chatbot.load_entity_vector_store", AsyncMock(return_value=MagicMock())), \
+         patch(f"{ep}._load_access_context", AsyncMock(return_value=_context())), \
+         patch(f"{ep}._row_scopes", AsyncMock(return_value=(SelectionScope(),))), \
+         patch(f"{ed}.search_entities_for_user", search), \
          patch(f"{ed}._named_entities_enabled", AsyncMock(return_value=False)):
-        return json.loads((await ks.search_entities(_request(), ks.EntitySearchQuery(query="acme"), MagicMock())).body)
+        response = await ks.search_entities(_request(), ks.EntitySearchQuery(query="acme", **body), MagicMock())
+    return json.loads(response.body), search
 
 
 async def test_the_search_answer_is_exactly_what_the_published_schema_documents() -> None:
     from app.modules.retrieval.entity_permissions import EntityHit
 
     row = {"_key": RID, "recordName": "Doc", "recordType": "FILE", "connectorId": "c1"}
-    found = await _search_answer([
+    found, _ = await _search_answer([
         EntityHit("u1", "person", "Ada", 0.9, [row], True),
         EntityHit("o1", "organization", "Acme", 0.8, [row], False),
         EntityHit(RID, "record", "Acme plan", 0.7, [row], False, indexing_status="QUEUED", indexed=False),
     ])
-    empty = await _search_answer([])
+    empty, _ = await _search_answer([])
     for payload in (found, empty):
         _validate("EntitySearchResponse", payload)
     schema = yaml.safe_load(_SPEC.read_text(encoding="utf-8"))["components"]["schemas"]["EntitySearchResponse"]
@@ -445,9 +451,16 @@ async def test_the_search_answer_is_exactly_what_the_published_schema_documents(
     # every field the route writes is documented, and every documented field is one the route writes
     assert set(found) | set(empty) == set(schema["properties"])
     assert {k for r in found["results"] for k in r} == set(item)
-    assert "scopeNote" in empty and "scopeNote" not in found
+    # the route never limits the search to part of the caller's sources, so it never says it did
+    assert "scopeNote" not in empty
     with pytest.raises(jsonschema.ValidationError):
         _validate("EntitySearchResponse", {"results": [{"entityId": 1}]})
+
+
+@pytest.mark.parametrize("types", [None, []])
+async def test_no_entity_types_or_an_empty_list_searches_every_type(types) -> None:
+    _, search = await _search_answer([], entityTypes=types)
+    assert search.await_args.kwargs["entity_types"] is None
 
 
 @pytest.mark.parametrize("failing", ["get_record_taxonomy_links", "get_named_entities_for_record"])
