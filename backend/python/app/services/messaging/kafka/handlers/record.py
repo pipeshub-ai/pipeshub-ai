@@ -2257,12 +2257,10 @@ class RecordEventHandler(BaseEventService):
                 ),
             )
 
-            # A capped-text file whose size the record does not say is held to the ceiling as it
-            # downloads (the gate refused the ones that say it).
+            # A .log/.cfg whose size the record does not say is held to the hard limit as it
+            # downloads, whatever reads it (the gate refused the ones that say it).
             download_limit = (
-                file_types.TEXT_MAX_DOWNLOAD_BYTES
-                if decision.file_type is not None and decision.file_type.prep is file_types.Prep.CAPPED_TEXT
-                else None
+                file_types.TEXT_LOG_HARD_LIMIT_BYTES if file_types.is_bounded_text(decision.judged_extension) else None
             )
 
             # Try signed URL first if available, fallback to connector streaming if it fails

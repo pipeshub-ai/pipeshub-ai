@@ -21,3 +21,5 @@ ALLOWED_DELTAS: dict[str, dict[str, Any]] = {
 ALLOWED_DELTA_REASONS: dict[str, list[str]] = {key: entry["why"] for key, entry in _DATA["rows"].items()}
 ALLOWED_MIME_DELTAS: dict[str, dict[str, Any]] = _DATA["mimes"]
 ALLOWED_GLOBAL_DELTAS: dict[str, Any] = _DATA["globals"]
+# Cells main read at any size that the .log/.cfg size cap and hard limit now bound.
+ALLOWED_SIZE_DELTAS: dict[str, dict[str, Any]] = _DATA["sizes"]

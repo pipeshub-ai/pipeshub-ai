@@ -103,15 +103,14 @@ async def test_a_long_log_keeps_its_first_and_last_lines_and_says_what_it_left_o
 ) -> None:
     from app.modules.parsers.text import capped_text
 
-    monkeypatch.setattr(capped_text, "TEXT_LOG_MAX_BYTES", 50_000)
-    monkeypatch.setattr(capped_text.prepare_capped_text, "__kwdefaults__", {"max_bytes": 50_000})
+    monkeypatch.setattr(capped_text.prepare_capped_text, "__kwdefaults__", {"max_bytes": 50_000, "refuse_binary": True})
     data = samples.make_log(SENTINEL, lines=5000)
     last_line = data.decode().rstrip("\n").rsplit("\n", 1)[-1]
     containers, _, _ = await legacy("log", "application/octet-stream", data)
     text = _text(containers)
     assert text.startswith("2026-11-13T09:00:00Z INFO worker-0 handled request 0")
     assert last_line in text
-    assert f"of {len(data):,}); the start and the end of the file are kept" in text
+    assert f"bytes omitted from this {len(data):,}-byte file; its first and last lines are kept" in text
 
 
 async def test_a_config_comment_is_text_not_a_heading() -> None:
@@ -203,7 +202,7 @@ async def test_a_binary_file_named_like_text_is_not_supported(ext: str) -> None:
 
 async def test_a_log_past_the_download_ceiling_is_not_downloaded() -> None:
     record, downloaded = await handler_run(
-        "log", "application/octet-stream", b"x\n", size=file_types.TEXT_MAX_DOWNLOAD_BYTES + 1
+        "log", "application/octet-stream", b"x\n", size=file_types.TEXT_LOG_HARD_LIMIT_BYTES + 1
     )
     assert not downloaded
     assert record["indexingStatus"] == "FILE_TYPE_NOT_SUPPORTED"
@@ -232,25 +231,39 @@ async def test_each_good_file_passes_the_handler_without_failing(ext: str) -> No
 
 
 @pytest.mark.parametrize("ext", ["log", "cfg"])
-async def test_a_text_plain_log_keeps_main_s_whole_text_path(ext: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Main indexed a .log/.cfg stored as text/plain whole, as text: no cap, no new refusal."""
+async def test_a_text_plain_log_keeps_main_s_text_reader_with_the_size_cap(
+    ext: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A .log/.cfg stored as text/plain is still read as text (Markdown), but only its first and
+    last lines are indexed when it is over the cap, and the record says so."""
     from app.modules.parsers.text import capped_text
+    from app.utils.user_errors import partly_indexed_text
 
-    monkeypatch.setattr(capped_text.prepare_capped_text, "__kwdefaults__", {"max_bytes": 1_000})
+    monkeypatch.setattr(capped_text.prepare_capped_text, "__kwdefaults__", {"max_bytes": 2_000, "refuse_binary": True})
     data = samples.make_log(SENTINEL, lines=200)
-    containers, _, _ = await legacy(ext, "text/plain", data)
+    containers, _, record = await legacy(ext, "text/plain", data)
     text = _text(containers)
-    assert "bytes left out" not in text
+    assert "bytes omitted" in text
     assert data.decode().rstrip("\n").rsplit("\n", 1)[-1] in text
     assert "worker-0 handled request 0" in text
+    assert len(text.encode()) <= 2_000
+    assert record["reason"] == partly_indexed_text()
 
 
-async def test_a_text_plain_log_past_the_ceiling_is_still_downloaded() -> None:
+@pytest.mark.parametrize("ext", ["log", "cfg"])
+async def test_a_small_text_plain_log_is_read_whole_as_before(ext: str) -> None:
+    containers, _, record = await legacy(ext, "text/plain", _GOOD["log"])
+    assert "bytes omitted" not in _text(containers)
+    assert SENTINEL in _text(containers)
+    assert not record.get("reason")
+
+
+async def test_a_text_plain_log_past_the_hard_limit_is_not_downloaded() -> None:
     record, downloaded = await handler_run(
-        "log", "text/plain", _GOOD["log"], size=file_types.TEXT_MAX_DOWNLOAD_BYTES + 1
+        "log", "text/plain", _GOOD["log"], size=file_types.TEXT_LOG_HARD_LIMIT_BYTES + 1
     )
-    assert downloaded
-    assert record["indexingStatus"] != "FILE_TYPE_NOT_SUPPORTED"
+    assert not downloaded
+    assert record["indexingStatus"] == "FILE_TYPE_NOT_SUPPORTED"
 
 
 async def test_a_text_plain_binary_log_is_read_as_main_read_it() -> None:

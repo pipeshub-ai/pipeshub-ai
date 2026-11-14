@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.config import file_types
+from app.utils.user_errors import file_too_large_to_read
 from tests.unit.config.file_types import gen_pinned_decisions as gen
 
 if TYPE_CHECKING:
@@ -129,21 +130,25 @@ async def test_the_off_switch_is_read_once_a_minute() -> None:
 
 @pytest.mark.parametrize("ext", ["log", "cfg"])
 async def test_capped_text_past_the_ceiling_is_refused_before_the_download(ext: str) -> None:
-    record = _record(ext, sizeInBytes=file_types.TEXT_MAX_DOWNLOAD_BYTES + 1)
+    record = _record(ext, sizeInBytes=file_types.TEXT_LOG_HARD_LIMIT_BYTES + 1)
     handler = gen._gate_handler(record)
     decision = await _gate_with(handler, record, ext, "application/octet-stream")
-    assert decision == f"FILE_TYPE_NOT_SUPPORTED|This .{ext} file is larger than 256 MB, so PipesHub doesn't read it."
+    assert decision == f"FILE_TYPE_NOT_SUPPORTED|{file_too_large_to_read(ext)}"
 
 
 @pytest.mark.parametrize("ext", ["log", "cfg"])
-async def test_a_text_plain_log_main_indexed_has_no_new_ceiling(ext: str) -> None:
-    """Main took a .log stored as text/plain whatever its size; it still does."""
-    record = _record(ext, sizeInBytes=file_types.TEXT_MAX_DOWNLOAD_BYTES + 1)
-    assert await _gate_with(gen._gate_handler(record), record, ext, "text/plain") == "ok"
+async def test_the_hard_limit_holds_for_a_log_whatever_reads_it(ext: str) -> None:
+    """Stored as text/plain (the text reader) or as a code mime (the code reader), a .log/.cfg over
+    the hard limit is refused; at the limit it is read."""
+    for mime in ("text/plain", "application/javascript", "application/octet-stream"):
+        record = _record(ext, sizeInBytes=file_types.TEXT_LOG_HARD_LIMIT_BYTES + 1)
+        assert (await _gate_with(gen._gate_handler(record), record, ext, mime)).startswith("FILE_TYPE_NOT_SUPPORTED"), mime
+        record = _record(ext, sizeInBytes=file_types.TEXT_LOG_HARD_LIMIT_BYTES)
+        assert await _gate_with(gen._gate_handler(record), record, ext, mime) == "ok", mime
 
 
 async def test_the_ceiling_is_only_for_capped_text() -> None:
-    record = _record("docm", sizeInBytes=file_types.TEXT_MAX_DOWNLOAD_BYTES + 1)
+    record = _record("docm", sizeInBytes=file_types.TEXT_LOG_HARD_LIMIT_BYTES + 1)
     assert await _gate_with(gen._gate_handler(record), record, "docm", None) == "ok"
 
 

@@ -38,7 +38,7 @@ def test_each_charset_reads_as_the_text_written(data: bytes, text: str) -> None:
     result = prepare_capped_text(data)
     assert isinstance(result, CappedText)
     assert result.text == text
-    assert result.skipped is None
+    assert not result.truncated
 
 
 def test_a_file_with_nul_bytes_that_is_not_utf16_is_binary() -> None:
@@ -56,12 +56,11 @@ def test_an_oversized_log_keeps_its_head_and_tail_cut_at_line_breaks() -> None:
     data = _log(20_000)
     result = prepare_capped_text(data, max_bytes=200_000)
     assert isinstance(result, CappedText)
-    head_end, tail_start = result.skipped  # type: ignore[misc]
-    assert data[head_end - 1:head_end] == b"\n" and data[tail_start - 1:tail_start] == b"\n"
+    assert result.truncated
     assert result.text.startswith("2026-11-13 line 000000 ")
     assert result.text.rstrip("\n").endswith(f"line {19_999:06d} " + "x" * 50)
-    assert f"bytes {head_end:,} to {tail_start:,} of {len(data):,}" in result.text
-    assert len(result.text.encode()) <= 200_000 + 200
+    assert f"{result.omitted_bytes:,} bytes omitted from this {len(data):,}-byte file" in result.text
+    assert len(result.text.encode()) <= 200_000
     for line in result.text.splitlines():
         assert line.startswith(("2026-11-13 line ", "[... "))
 

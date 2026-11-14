@@ -65,7 +65,7 @@ from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
 from app.modules.parsers.encryption import raise_if_password_protected_office
-from app.modules.parsers.file_prep import needs_preparing, prepare_file
+from app.modules.parsers.file_prep import bound_text, needs_preparing, prepare_file
 from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
@@ -112,7 +112,7 @@ from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_errors import RETRY_SCHEDULED, binary_text_file
+from app.utils.user_errors import RETRY_SCHEDULED, binary_text_file, partly_indexed_text
 
 
 def _record_key(doc: dict[str, Any] | None) -> str | None:
@@ -1925,6 +1925,15 @@ class EventProcessor:
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
                 file_content, extension, mime_type = prepared.content, prepared.extension, prepared.mime_type
+                truncated = prepared.truncated
+            elif file_types.is_bounded_text(code_ext) and file_content:
+                # Whatever reader a .log/.cfg has (main's text path, the code parser), its indexed
+                # text has the same cap, so its embedding cost is bounded.
+                file_content, truncated = await bound_text(file_content)
+            else:
+                truncated = False
+            if truncated:
+                await self.update_record_fields(doc, {"reason": partly_indexed_text()})
 
             # ── New service pipeline (opt-in via USE_PARSING_SERVICE=true) ──
             if self._use_service_pipeline():

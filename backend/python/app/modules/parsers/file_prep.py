@@ -28,6 +28,7 @@ class PreparedFile:
     content: bytes | str
     extension: str | None
     mime_type: str | None
+    truncated: bool = False  # only the first and last part of a .log/.cfg is kept
 
 
 def needs_preparing(file_type: FileType | None) -> bool:
@@ -61,5 +62,20 @@ async def prepare_file(
         # find the log/cfg reader.
         if not extension or extension == "unknown":
             extension = label
-        return PreparedFile(prepared.text.encode("utf-8"), extension, _OCTET)
+        return PreparedFile(prepared.text.encode("utf-8"), extension, _OCTET, prepared.truncated)
     return PreparedFile(content, extension, mime_type)
+
+
+async def bound_text(content: bytes | str) -> tuple[bytes | str, bool]:
+    """A .log/.cfg read by another reader (text, code, JSON...), held to the same size cap.
+
+    Unchanged when it fits; else its first and last lines as UTF-8 text, and True. The reader is
+    the one the file always had, binary or not.
+    """
+    from app.modules.parsers.text.capped_text import CappedText, prepare_capped_text
+
+    data = content.encode("utf-8") if isinstance(content, str) else bytes(content)
+    prepared = await asyncio.to_thread(prepare_capped_text, data, refuse_binary=False)
+    if not isinstance(prepared, CappedText) or not prepared.truncated:
+        return content, False
+    return prepared.text.encode("utf-8"), True

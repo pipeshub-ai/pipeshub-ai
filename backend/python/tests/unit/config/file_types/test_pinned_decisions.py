@@ -13,6 +13,7 @@ from tests.unit.config.file_types.allowed_deltas import (
     ALLOWED_DELTAS,
     ALLOWED_GLOBAL_DELTAS,
     ALLOWED_MIME_DELTAS,
+    ALLOWED_SIZE_DELTAS,
 )
 
 _PINNED = gen.load()
@@ -129,3 +130,17 @@ def test_main_indexed_cells_differ_only_where_listed() -> None:
     rows = {gen.case_key(r): r for r in _PINNED["rows"]}
     changed = {k for k in ALLOWED_DELTAS if delta_rules.main_indexed(rows[k])}
     assert changed == set(delta_rules.EXISTING_CELL_EXCEPTIONS)
+
+
+def test_only_the_listed_log_and_cfg_cells_are_bounded_by_size() -> None:
+    """Main read every accepted cell at any size. The size rules bound exactly the listed cells,
+    each a .log/.cfg; every other cell is still taken at any size."""
+    bounded = {
+        gen.case_key(r) for r in _PINNED["rows"]
+        if delta_rules.main_indexed(r) and all(v is None or isinstance(v, str) for v in r[:2])
+        and delta_rules.gate_over_limit(r) == "too_large"
+    }
+    assert bounded == set(ALLOWED_SIZE_DELTAS)
+    rows = {gen.case_key(r): r for r in _PINNED["rows"]}
+    assert all(delta_rules.bounded_text_row(rows[k]) for k in ALLOWED_SIZE_DELTAS)
+    assert {v["why"] for v in ALLOWED_SIZE_DELTAS.values()} == {"bounded-token-cost"}

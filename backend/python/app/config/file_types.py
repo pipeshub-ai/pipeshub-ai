@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -1092,7 +1093,40 @@ def legacy_route(
 
 
 GateRefusal = Literal["type", "disabled", "too_large"]
-TEXT_MAX_DOWNLOAD_BYTES: Final = 256 * 1024 * 1024
+
+
+def _env_bytes(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    try:
+        value = int(raw) if raw.strip() else default
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+# A .log or .cfg is indexed as at most this much decoded text (its head and tail), whatever reads
+# it, so its embedding cost is bounded; one larger than the hard limit is not downloaded at all.
+TEXT_LOG_MAX_BYTES: Final = _env_bytes("TEXT_LOG_MAX_BYTES", 256 * 1024)
+TEXT_LOG_HARD_LIMIT_BYTES: Final = _env_bytes("TEXT_LOG_HARD_LIMIT_BYTES", 50 * 1024 * 1024)
+if TEXT_LOG_MAX_BYTES > TEXT_LOG_HARD_LIMIT_BYTES:
+    raise ValueError(
+        f"TEXT_LOG_MAX_BYTES ({TEXT_LOG_MAX_BYTES}) must not exceed TEXT_LOG_HARD_LIMIT_BYTES "
+        f"({TEXT_LOG_HARD_LIMIT_BYTES})"
+    )
+
+
+def classifies(record_name: object) -> bool:
+    """Whether the LLM classifies a record's content: not for a .log/.cfg, whose cost is bounded
+    to its embeddings."""
+    name = record_name if isinstance(record_name, str) else ""
+    return not is_bounded_text(name.rsplit(".", 1)[-1] if "." in name else None)
+
+
+def is_bounded_text(extension: object) -> bool:
+    """Whether a file with this extension (.log, .cfg) is held to the text size cap and limit,
+    whichever reader reads it."""
+    ft = _ext_type(extension)
+    return ft is not None and ft.prep is Prep.CAPPED_TEXT
 
 
 @dataclass(frozen=True, slots=True)
@@ -1117,8 +1151,9 @@ def gate_decision(
 
     A FILE is taken by a mime or an extension of an indexable type. A CODE_FILE's mime is not
     trusted (repository walkers default it to text/plain), so it is judged on the extension of its
-    name alone. A type in *disabled*, or a capped-text file larger than the download ceiling, is
-    refused before anything is downloaded.
+    name alone. A type in *disabled* (judged by the reader the dispatch picks), or a .log/.cfg
+    larger than the hard limit (judged by its extension, whatever reads it), is refused before
+    anything is downloaded.
     """
     if (extension is None or extension == "unknown") and mime is not None and mime != "unknown":
         derived = extension_for_mime(mime)  # type: ignore[arg-type]
@@ -1161,12 +1196,7 @@ def gate_decision(
         return GateDecision(False, judged, None, "type")
     if decisive is not None and decisive.key in disabled:
         return GateDecision(False, judged, decisive, "disabled")
-    if (
-        decisive is not None
-        and decisive.prep is Prep.CAPPED_TEXT
-        and isinstance(size_bytes, int)
-        and size_bytes > TEXT_MAX_DOWNLOAD_BYTES
-    ):
+    if is_bounded_text(judged) and isinstance(size_bytes, int) and size_bytes > TEXT_LOG_HARD_LIMIT_BYTES:
         return GateDecision(False, judged, decisive, "too_large")
     return GateDecision(True, judged, decisive)
 

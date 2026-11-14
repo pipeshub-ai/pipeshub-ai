@@ -1,8 +1,8 @@
-"""Log and configuration files read as plain text, kept to a size the index can hold.
+"""Log and configuration files read as text, kept to a size the index can hold.
 
 A log grows without bound and its newest lines matter most, so an oversized one keeps its first
-and last halves of the cap, each cut at a line break, with a line saying which bytes were left
-out. Config and log files come from any system, so the charset is found per file (UTF-16 without
+and last lines, at most ``TEXT_LOG_MAX_BYTES`` of decoded UTF-8 text in all, each part cut at a
+line break, with a line saying how much was left out. Config and log files come from any system, so the charset is found per file (UTF-16 without
 a byte-order mark is common from Windows services) and the result is UTF-8. A file holding NUL
 bytes that are not UTF-16 is binary and is not read at all.
 """
@@ -11,10 +11,11 @@ from __future__ import annotations
 import codecs
 from dataclasses import dataclass
 
+from app.config.file_types import TEXT_LOG_MAX_BYTES
 from app.modules.parsers.text_decoding import decode_text
-from app.utils.env_config import env_int
 
-TEXT_LOG_MAX_BYTES = env_int("TEXT_LOG_MAX_BYTES", 5 * 1024 * 1024)
+# Room in the cap for the line that says what was left out.
+_MARKER_RESERVE = 256
 _SNIFF_BYTES = 8 * 1024
 _CHARSET_SAMPLE_BYTES = 64 * 1024
 _NEWLINE_SEARCH_BYTES = 64 * 1024
@@ -35,7 +36,11 @@ _BOMS = (
 class CappedText:
     text: str
     total_bytes: int
-    skipped: tuple[int, int] | None  # the [start, end) byte range left out, when over the cap
+    omitted_bytes: int  # of the file's bytes, how many the text leaves out (0 when it is whole)
+
+    @property
+    def truncated(self) -> bool:
+        return self.omitted_bytes > 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,24 +177,62 @@ def is_binary(content: bytes) -> bool:
     return _utf16_without_bom(sample) is None
 
 
-def prepare_capped_text(content: bytes, *, max_bytes: int = TEXT_LOG_MAX_BYTES) -> CappedText | BinaryFile:
-    """*content* decoded, whole when it fits in *max_bytes*, else its head and tail with a marker."""
-    if is_binary(content):
+def _trim_head(text: str, budget: int) -> str:
+    """*text*'s first lines that fit in *budget* UTF-8 bytes (a whole line where one is near)."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= budget:
+        return text
+    cut = encoded[:budget]
+    newline = cut.rfind(b"\n", max(0, budget - _NEWLINE_SEARCH_BYTES))
+    return cut[: newline + 1 if newline >= 0 else budget].decode("utf-8", errors="ignore")
+
+
+def _trim_tail(text: str, budget: int) -> str:
+    """*text*'s last lines that fit in *budget* UTF-8 bytes (a whole line where one is near)."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= budget:
+        return text
+    cut = encoded[-budget:]
+    newline = cut.find(b"\n", 0, _NEWLINE_SEARCH_BYTES)
+    return cut[newline + 1 if newline >= 0 else 0:].decode("utf-8", errors="ignore")
+
+
+def _raw_length(text: str, codec: str | None) -> int:
+    try:
+        return len(text.encode(codec or "utf-8"))
+    except (UnicodeEncodeError, LookupError):
+        return len(text.encode("utf-8"))
+
+
+def prepare_capped_text(
+    content: bytes, *, max_bytes: int = TEXT_LOG_MAX_BYTES, refuse_binary: bool = True,
+) -> CappedText | BinaryFile:
+    """*content* decoded: whole when it fits in *max_bytes* of UTF-8, else its first and last lines
+    with a marker, all within *max_bytes*. *refuse_binary* False reads a binary as text anyway (a
+    reader that always read it so)."""
+    if refuse_binary and is_binary(content):
         return BinaryFile()
     codec, bom_length = _codec(content)
     total = len(content)
+    budget = max(1, (max_bytes - _MARKER_RESERVE) // 2)
     if total <= max_bytes:
-        return CappedText(_decode(content[bom_length:], codec), total, None)
-
-    newline = _line_break(codec)
-    half = max(1, max_bytes // 2)
-    head_end = _aligned(_head_end(content, half, newline), codec, bom_length)
-    tail_start = _aligned(_tail_start(content, total - half, newline), codec, bom_length)
-    head = _decode(content[bom_length:head_end], codec)
-    tail = _decode(content[tail_start:], codec)
+        text = _decode(content[bom_length:], codec)
+        if len(text.encode("utf-8")) <= max_bytes:
+            return CappedText(text, total, 0)
+        head_text = tail_text = text  # longer than both budgets together, so they cannot overlap
+    else:
+        # Only the ends are decoded: the middle of a large file is never read into a string.
+        newline = _line_break(codec)
+        half = max(1, max_bytes // 2)
+        head_end = _aligned(_head_end(content, half, newline), codec, bom_length)
+        tail_start = _aligned(_tail_start(content, total - half, newline), codec, bom_length)
+        head_text = _decode(content[bom_length:head_end], codec)
+        tail_text = _decode(content[tail_start:], codec)
+    head = _trim_head(head_text, budget)
+    tail = _trim_tail(tail_text, budget)
+    omitted = max(0, total - bom_length - _raw_length(head, codec) - _raw_length(tail, codec))
     marker = (
-        f"{'' if head.endswith(chr(10)) else chr(10)}[... {tail_start - head_end:,} bytes left out "
-        f"(bytes {head_end:,} to {tail_start:,} of {total:,}); the start and the end of the file "
-        "are kept ...]\n"
+        f"{'' if not head or head.endswith(chr(10)) else chr(10)}[... {omitted:,} bytes omitted from "
+        f"this {total:,}-byte file; its first and last lines are kept ...]\n"
     )
-    return CappedText(f"{head}{marker}{tail}", total, (head_end, tail_start))
+    return CappedText(f"{head}{marker}{tail}", total, omitted)

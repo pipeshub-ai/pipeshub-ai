@@ -176,10 +176,28 @@ def unsupported_file_type(extension: str | None) -> str:
     return f"PipesHub can't read {what} yet. Convert the file to PDF, DOCX or TXT to make it searchable."
 
 
+def _size_label(size: int) -> str:
+    return f"{size // (1024 * 1024)} MB" if size >= 1024 * 1024 else f"{size // 1024} KiB"
+
+
 def file_too_large_to_read(extension: str | None) -> str:
+    from app.config.file_types import TEXT_LOG_HARD_LIMIT_BYTES
+
     ext = (extension or "").strip().lstrip(".").lower()
     what = f".{ext} file" if ext and ext not in {"unknown", "none"} else "file"
-    return f"This {what} is larger than 256 MB, so PipesHub doesn't read it."
+    return (
+        f"This {what} is too large to index (over {_size_label(TEXT_LOG_HARD_LIMIT_BYTES)}). "
+        "It can still be found by its name."
+    )
+
+
+def partly_indexed_text() -> str:
+    from app.config.file_types import TEXT_LOG_MAX_BYTES
+
+    return (
+        "Only the first and last part of this file is indexed "
+        f"(file is larger than {_size_label(TEXT_LOG_MAX_BYTES)})."
+    )
 
 
 def binary_text_file(extension: str | None) -> str:

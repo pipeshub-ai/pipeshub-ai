@@ -29,7 +29,7 @@ def _gate(ext: str | None, mime: str | None, **kw: object) -> file_types.GateDec
 
 
 def test_a_pdf_labelled_with_the_log_mime_is_not_held_to_the_log_ceiling() -> None:
-    decision = _gate("pdf", "text/x-log", size_bytes=file_types.TEXT_MAX_DOWNLOAD_BYTES + 1)
+    decision = _gate("pdf", "text/x-log", size_bytes=file_types.TEXT_LOG_HARD_LIMIT_BYTES + 1)
     assert decision.supported
     assert decision.file_type is not None and decision.file_type.key == "pdf"
 

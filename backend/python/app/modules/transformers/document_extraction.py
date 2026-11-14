@@ -14,6 +14,7 @@ from app.agents.agent_loop.prompt_cache import (
     family_cache_strategy,
     forget_cache_params,
 )
+from app.config import file_types
 from app.config.constants.arangodb import DepartmentNames
 from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import Block, BlockGroup, BlocksContainer, SemanticMetadata
@@ -478,6 +479,10 @@ class DocumentExtraction(Transformer):
 
     async def apply(self, ctx: TransformContext) -> None:
         record = ctx.record
+        if not file_types.classifies(record.record_name):
+            # A .log/.cfg is indexed for search only: no model call for its metadata.
+            record.semantic_metadata = None
+            return
         try:
             record.semantic_metadata = await self.process_document(
                 record.block_containers.blocks,

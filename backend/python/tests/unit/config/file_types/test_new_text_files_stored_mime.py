@@ -26,7 +26,7 @@ def test_a_kb_upload_is_stored_under_its_own_mime_and_takes_the_capped_route(ext
     assert dispatch.file_type is not None and dispatch.file_type.prep is Prep.CAPPED_TEXT
     decision = file_types.gate_decision(
         mime=mime, extension=ext, record_name=f"a.{ext}", is_code_file=False, code_file_extension=None,
-        size_bytes=file_types.TEXT_MAX_DOWNLOAD_BYTES + 1,
+        size_bytes=file_types.TEXT_LOG_HARD_LIMIT_BYTES + 1,
     )
     assert decision.refusal == "too_large"
 

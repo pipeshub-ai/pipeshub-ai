@@ -32,6 +32,8 @@ REASONS: dict[str, str] = {
           "no mime, a CODE_FILE); stored as text/plain they keep main's full-text path",
     "xlsm-mime": "the macro-enabled workbook mime alone (no extension) names xlsm and is read as a workbook",
     "filter-options": "the sync filter offers the new types; log moves from exclude-only to offered",
+    "bounded-token-cost": "a .log/.cfg main read (as text, code or JSON) is indexed as at most "
+                          "TEXT_LOG_MAX_BYTES of text and refused over TEXT_LOG_HARD_LIMIT_BYTES",
     "package-not-text": "a FILE stored as text/plain whose bytes are a package (msg, odt, rtf, xlsm, docm, dotx, "
            "potx) is read as that package, not as text (listed cell by cell below)",
 }
@@ -153,6 +155,41 @@ def classify_mime(oracle: Oracle, mime: str | None, new: object) -> str | None:
     return None
 
 
+def gate_over_limit(row: list[Any]) -> str | None:
+    """The live gate's refusal for *row* at one byte over the text hard limit."""
+    from app.config import file_types
+
+    ext, mime, name, record_type = row[:4]
+    is_code_file = record_type == "CODE_FILE"
+    code_ext = name.rsplit(".", 1)[-1].lower() if is_code_file and "." in name else None
+    return file_types.gate_decision(
+        mime=mime, extension=ext, record_name=name, is_code_file=is_code_file, code_file_extension=code_ext,
+        size_bytes=file_types.TEXT_LOG_HARD_LIMIT_BYTES + 1,
+    ).refusal
+
+
+def bounded_text_row(row: list[Any]) -> bool:
+    """Whether the row names a .log/.cfg: its extension, or for a CODE_FILE (or a record with no
+    extension) its name's."""
+    ext, _mime, name, record_type = row[:4]
+    e = _ext(ext)
+    name_ext = name.rsplit(".", 1)[-1].lower() if "." in name else None
+    return e in ("log", "cfg") or (
+        name_ext in ("log", "cfg") and (record_type == "CODE_FILE" or e in (None, "", "unknown"))
+    )
+
+
+def size_rows(pinned: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Cells main read whatever their size that the size rules now bound, each with its reason."""
+    rows = {}
+    for row in pinned["rows"]:
+        if not main_indexed(row) or not all(v is None or isinstance(v, str) for v in row[:2]):
+            continue
+        if gate_over_limit(row) == "too_large":
+            rows[_key(row)] = {"why": "bounded-token-cost", "over_hard_limit": "too_large"}
+    return rows
+
+
 def build(pinned: dict[str, Any], replay: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     oracle = Oracle(pinned)
     rows: dict[str, dict[str, Any]] = {}
@@ -182,13 +219,18 @@ def build(pinned: dict[str, Any], replay: dict[str, Any]) -> tuple[dict[str, Any
     )
     changed = {k: v for k, v in replay["globals"].items() if pinned["globals"].get(k) != v}
     unexplained.extend(f"list {k} changed" for k in changed if k not in GLOBAL_REASONS)
-    return {"rows": rows, "mimes": mimes, "globals": changed}, unexplained
+    sizes = size_rows(pinned)
+    unexplained.extend(
+        f"{key}: size-bounded but not a .log/.cfg"
+        for key in sizes if not bounded_text_row(json.loads(key))
+    )
+    return {"rows": rows, "mimes": mimes, "sizes": sizes, "globals": changed}, unexplained
 
 
 def dump(deltas: dict[str, Any]) -> str:
     """One entry per line, so a reviewed delta reads as a one-line diff."""
     lines = ["{"]
-    for section in ("rows", "mimes"):
+    for section in ("rows", "mimes", "sizes"):
         items = sorted(deltas[section].items())
         lines.append(f'  "{section}": {{')
         lines.extend(

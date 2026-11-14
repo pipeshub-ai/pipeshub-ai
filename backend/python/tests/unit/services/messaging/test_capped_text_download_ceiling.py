@@ -82,4 +82,4 @@ async def test_the_limit_is_passed_only_for_capped_text() -> None:
     record, _ = await handler_run("pdf", "application/pdf", b"%PDF-1.4", download_kwargs=seen)
     assert seen.get("max_bytes") is None
     await handler_run("log", None, b"line\n", download_kwargs=seen)
-    assert seen.get("max_bytes") == file_types.TEXT_MAX_DOWNLOAD_BYTES
+    assert seen.get("max_bytes") == file_types.TEXT_LOG_HARD_LIMIT_BYTES
