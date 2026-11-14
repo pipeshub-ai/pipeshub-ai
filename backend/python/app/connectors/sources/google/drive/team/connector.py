@@ -3621,12 +3621,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         left: list[dict[str, object]] = []
         budget = LIMITED_SUBTREE_MAX_CHECKS
         children_by_drive: dict[str, dict[str, list[Record]]] = {}
-        for (drive_id, folder_id), state in sorted(pending.items(), key=lambda kv: kv[0]):
+        for (drive_id, folder_id), was in sorted(pending.items(), key=lambda kv: kv[0]):
             try:
                 if drive_id not in children_by_drive:
                     children_by_drive[drive_id] = await self._stored_children_of_drive(drive_id)
                 state, budget = await self._clear_cut_out_grants_below(
-                    drive_id, folder_id, state, budget, children_by_drive[drive_id]
+                    drive_id, folder_id, was, budget, children_by_drive[drive_id]
                 )
             except Exception as e:
                 self.logger.warning(
@@ -3634,7 +3634,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     "they are settled next run"
                 )
                 self._sync_ledger.note_incomplete()
-                left.append({"drive": drive_id, "folder": folder_id, **state})
+                left.append({"drive": drive_id, "folder": folder_id, **was})
                 continue
             if state is not None:  # not finished, whether or not its cursor is set
                 left.append({"drive": drive_id, "folder": folder_id, **state})
