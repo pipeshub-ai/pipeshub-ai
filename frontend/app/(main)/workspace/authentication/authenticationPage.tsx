@@ -12,6 +12,7 @@ import {
   IconButton,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SettingsSaveBar } from '../components/settings-save-bar';
 import { ConfirmationDialog } from '../components/confirmation-dialog';
@@ -34,6 +35,8 @@ import {
   type SignInRemovalStatus,
 } from './types';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
+
+const SALES_EMAIL = 'sales@pipeshub.com';
 
 // ============================================================
 // Page
@@ -368,6 +371,26 @@ export default function AuthenticationPage() {
                   />
                 );
               })}
+              <EnterpriseFeatureNotice
+                title={t('workspace.authentication.enterpriseSso.title')}
+                description={t('workspace.authentication.enterpriseSso.description')}
+                action={
+                  <Text size="1">
+                    <a
+                      href={`mailto:${SALES_EMAIL}`}
+                      className="touch-size"
+                      style={{
+                        color: 'var(--accent-11)',
+                        textDecoration: 'none',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                      }}
+                    >
+                      {t('workspace.authentication.enterpriseSso.contactSales', { email: SALES_EMAIL })}
+                    </a>
+                  </Text>
+                }
+              />
             </Flex>
         </Flex>
 
