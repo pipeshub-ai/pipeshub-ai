@@ -9,7 +9,9 @@ import asyncio
 import logging
 import os
 import re
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2969,7 +2971,7 @@ class TestSweepPlaceholderRecords:
             stub.model_dump(include=set(Record.model_fields)) | {"parent_record_type": None, **changes}
         )
 
-    def _wire_a(self, connector) -> tuple[Record, list]:
+    def _wire_a(self, connector: Any) -> tuple[Record, list]:
         plain_a = self._as_stored(_make_folder_stub("A", parent=None))
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(
             side_effect=lambda connector_id, ext_id: plain_a if ext_id == "A" else None
@@ -2981,7 +2983,9 @@ class TestSweepPlaceholderRecords:
         return plain_a, kept
 
     @pytest.mark.asyncio
-    async def test_a_real_ancestor_whose_fetch_fails_is_kept_and_its_parent_walked(self, connector):
+    async def test_a_real_ancestor_whose_fetch_fails_is_kept_and_its_parent_walked(
+        self, connector: Any
+    ) -> None:
         """A folder-filtered full sync walks real ancestors too. One that cannot be fetched is kept, and its parent A
         is still reached and kept, so the unlink leaves A's edges."""
         connector._get_fresh_datasource = AsyncMock()
@@ -3003,7 +3007,9 @@ class TestSweepPlaceholderRecords:
         assert _submitted_records(connector) == {}
 
     @pytest.mark.asyncio
-    async def test_an_ancestor_whose_permissions_cannot_be_read_is_kept_and_its_parent_walked(self, connector):
+    async def test_an_ancestor_whose_permissions_cannot_be_read_is_kept_and_its_parent_walked(
+        self, connector: Any
+    ) -> None:
         """B is fetched but processing it fails (its permission read failed), so nothing is written for it. It is
         kept, and the walk still reaches A through B's stored parent id."""
         connector._get_fresh_datasource = AsyncMock()
@@ -3020,7 +3026,7 @@ class TestSweepPlaceholderRecords:
 
         connector.drive_data_source.files_get = AsyncMock(side_effect=files_get)
 
-        async def nothing_written(*args: object, **kwargs: object):
+        async def nothing_written(*args: object, **kwargs: object) -> AsyncIterator[tuple]:
             return
             yield
 
