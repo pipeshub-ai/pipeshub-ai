@@ -289,7 +289,8 @@ def test_upgrade_from_the_previous_release_with_data_in_place(db, tmp_path):
     assert epochs(cluster, name) == HEADS
     # the previous build, started against the upgraded database, finds nothing to do (it would be a helm rollback)
     r = run_migrate(url, PYTHONPATH=str(prev), PG_MIGRATE_SURFACE_CHECK="skip")
-    out = r.stdout + r.stderr          # nothing to do, or (a contract revision above its code epoch: the retrieval branch's) a refusal that says what to do
-    assert (r.returncode == 0 and "database is ahead of this build" in out) or (r.returncode == 2 and "cannot run against" in out and "retrieval" in out), out
+    out = r.stdout + r.stderr          # nothing to do, or (a contract revision above its code epoch: the retrieval branch's, kg_0013) a refusal that says what to do
+    assert (r.returncode == 0 and "database is ahead of this build" in out) or (r.returncode == 2 and "cannot run against" in out
+                                                                                and ("retrieval" in out or "kg" in out)), out
     rows = {b: (e, m) for b, e, m in connect(cluster, name).execute("SELECT branch, epoch, min_code_epoch FROM kernel.schema_epoch")}
     assert boot_assert.schema_problems(rows, {"kernel": {"requires": 15, "code": 15}}) == []         # and the previous code's boot check accepts it

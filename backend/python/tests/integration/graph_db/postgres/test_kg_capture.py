@@ -29,7 +29,7 @@ async def log(p, org: str) -> list[tuple[str, list[str]]]:
 
 async def clear(p, org: str) -> None:
     async def go(tx) -> None:
-        await tx.execute("/* pipeshub:test.clear_log */ SELECT kg.w_changes_delete(ARRAY(SELECT id FROM kg.graph_changes WHERE org_id = $1))", org)
+        await tx.execute("/* pipeshub:test.clear_log */ SELECT kg.w_changes_delete(ARRAY(SELECT id FROM kg.graph_changes WHERE org_id = $1), 5)", org)
     with ctx(org):
         await p._q(go, None, write=True)
 
