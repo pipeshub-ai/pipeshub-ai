@@ -60,7 +60,8 @@ async def run_pin_scenario(service: IVectorDBService, collection: str, org: str)
     assert await counts(guard, collection, org) == zero
 
     await guard.verify_batch(collection, org, INT8, fallback=False, intent=INT8)  # the first writer claims
-    assert (await pins.get(collection, org, fresh=True)).precision == INT8
+    assert (await pins.get(collection, guard.scope(org), fresh=True)).precision == INT8
+    assert await pins.keys() == [pins.key(collection, guard.scope(org))]  # one pin for the index, under the key its store uses
 
     await service.upsert_points(collection, [
         point(org, "t1", "v1", INT8, 0), point(org, "t2", "v1", INT8, 1), point(org, "t3", "v1", INT8, 2),
@@ -92,7 +93,7 @@ async def run_pin_scenario(service: IVectorDBService, collection: str, org: str)
     await service.make_searchable(collection)
     await pins.release_collection(collection)
     await guard.verify_batch(collection, org, FP32, fallback=False, intent=INT8)
-    assert (await pins.get(collection, org, fresh=True)).precision == FP32
+    assert (await pins.get(collection, guard.scope(org), fresh=True)).precision == FP32
 
 
 async def run_legacy_scenario(service: IVectorDBService, collection: str, org: str) -> None:
@@ -104,5 +105,5 @@ async def run_legacy_scenario(service: IVectorDBService, collection: str, org: s
     assert (standing.precision, standing.source) == (FP32, "legacy")
     with pytest.raises(PrecisionFlip):
         await guard.verify_batch(collection, org, INT8, fallback=False, intent=INT8)
-    assert await pins.get(collection, org, fresh=True) is None  # a refusal claims nothing
+    assert await pins.get(collection, guard.scope(org), fresh=True) is None  # a refusal claims nothing
     await guard.verify_batch(collection, org, FP32, fallback=False, intent=INT8)
