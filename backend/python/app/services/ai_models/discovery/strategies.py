@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
 
+from app.config.constants.ai_models import OPENLLM_KEY_REQUIRED_MESSAGE, OPENLLM_PLACEHOLDER_API_KEY
 from app.services.ai_models.discovery.http import MAX_MODELS, MAX_PAGES, DiscoveryHttp, bearer
 from app.services.ai_models.discovery.types import DiscoveryErrorCode, DiscoveryHttpError, RawModel
 
@@ -336,6 +337,55 @@ class OpenRouterStrategy(DiscoveryStrategy):
                     is_reasoning="reasoning" in params if params else None,
                     supports_tools="tools" in params if params else None,
                     deprecated=bool(row.get("expiration_date")),
+                )
+            )
+        return _cap(models, [])
+
+
+def _positive_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+class OpenLLMStrategy(DiscoveryStrategy):
+    """GET {endpoint}/models. Each card lists what the model does (chat, vision, tools, ...)."""
+
+    required_fields = ("endpoint",)
+
+    async def list_models(self, configuration, http, query):
+        base = _openai_v1_base(_endpoint(configuration))
+        own_key = str(configuration.get("apiKey") or "").strip()
+        try:
+            payload = await http.get_json(f"{base}/models", bearer(own_key or OPENLLM_PLACEHOLDER_API_KEY))
+        except DiscoveryHttpError as exc:
+            if exc.code == DiscoveryErrorCode.AUTH_ERROR and not own_key:
+                raise DiscoveryHttpError(DiscoveryErrorCode.AUTH_ERROR, OPENLLM_KEY_REQUIRED_MESSAGE) from exc
+            raise
+        models: list[RawModel] = []
+        for row in _rows(payload):
+            model_id = str(row.get("id") or "").strip()
+            if not model_id:
+                continue
+            raw_caps = row.get("capabilities")
+            if isinstance(raw_caps, list):
+                flags = {str(flag) for flag in raw_caps}
+                if "chat" not in flags:
+                    continue
+                vision, reasoning, tools = "vision" in flags, "reasoning" in flags, "tools" in flags
+            else:
+                # An older card without a capability list is kept as a chat model.
+                vision = reasoning = tools = None
+            display_name = row.get("display_name")
+            models.append(
+                RawModel(
+                    id=model_id,
+                    display_name=display_name if isinstance(display_name, str) and display_name.strip() else None,
+                    capabilities=["llm"],
+                    context_length=_positive_int(row.get("context_window"))
+                    or _positive_int(row.get("max_input_tokens")),
+                    is_multimodal=vision,
+                    is_reasoning=reasoning,
+                    supports_tools=tools,
+                    released_at=_released(row),
                 )
             )
         return _cap(models, [])
@@ -1088,6 +1138,7 @@ def build_registry() -> dict[str, DiscoveryStrategy]:
         "gemini": GeminiStrategy(),
         "xai": XAIStrategy(),
         "openRouter": OpenRouterStrategy(),
+        "openLLM": OpenLLMStrategy(),
         "cohere": CohereStrategy(),
         "mistral": MistralStrategy(),
         "together": TogetherStrategy(),
