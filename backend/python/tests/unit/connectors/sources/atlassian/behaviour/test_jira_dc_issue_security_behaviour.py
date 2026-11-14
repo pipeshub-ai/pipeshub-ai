@@ -27,6 +27,7 @@ from test_jira_dc_sync_behaviour import (
     make_connector,
     stub_site,
     ts,
+    user,
 )
 
 from app.config.constants.arangodb import AccessRule
@@ -248,7 +249,7 @@ class TestLevelHolders:
         assert sub.parent_external_record_id == "2" and hidden_from_project(sub)
         assert readers(db, "3") == {("USER", "alice@example.com")}
 
-    async def test_a_holder_who_cannot_browse_the_project_is_granted_but_the_project_still_gates_the_issue(
+    async def test_a_holder_outside_the_directory_is_not_granted_and_the_project_still_gates_the_issue(
         self, jira, db, store, jql_search,
     ) -> None:
         stub_site(jira, jql_search)
@@ -259,10 +260,11 @@ class TestLevelHolders:
 
         await connector.run_sync()
 
-        # The issue inherits the project, so a holder outside it reads nothing; the grant is still the holder's.
+        # ghost is not in the active-user list (deactivated or removed): Jira treats the account as gone, so the
+        # level's grant does not name it. The issue still inherits the project and stays closed to it.
         assert db.records["2"].inherit_permissions is True
         assert hidden_from_project(db.records["2"])
-        assert readers(db, "2") == {("USER", "ghost@example.com")}
+        assert readers(db, "2") == set()
 
 
 class TestUpgrade:
@@ -946,3 +948,31 @@ class TestReindex:
 
         written = {r.external_record_id: r for batch in db.record_batches for r in batch}["2"]
         assert hidden_from_project(written) and readers(db, "2") == set()
+
+
+class TestWithdrawnAccounts:
+    async def test_a_deactivated_reporter_is_withdrawn_with_their_grants_and_regains_the_issue_when_listed_again(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """Their level grant on the issue goes with the link (the store drops it); listed again, the leveled
+        issues are read again, though none changed, so the grant comes back."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("reporter")]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="carol"))
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert ("USER", "carol@example.com") in readers(db, "2")
+
+        everyone_but_carol = [user("alice-key", "alice", "alice@example.com"), user("bob-key", "bob", "bob@example.com"),
+                              user("dave-key", "dave", None)]
+        jira.on("GET", f"{API}/user/list", json_response({"values": everyone_but_carol, "isLast": True}))
+        await sync(connector, jql_search, recent=[])
+        assert [u.source_user_id for u in db.withdrawn_users] == ["carol-key"]
+        db.record_permissions["2"] = [p for p in db.record_permissions["2"] if p.email != "carol@example.com"]
+
+        jira.on("GET", f"{API}/user/list", json_response({
+            "values": [*everyone_but_carol, user("carol-key", "carol", "carol@example.com")], "isLast": True}))
+        batches_before = len(db.record_batches)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
+        assert "2" in {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}

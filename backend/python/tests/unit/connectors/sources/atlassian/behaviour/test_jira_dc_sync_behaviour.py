@@ -61,8 +61,16 @@ class JiraRecordsDb(FakeRecordsDb):
     async def get_all_active_users(self) -> list[Any]:
         return self.platform_users
 
-    async def get_all_app_users(self, connector_id: str) -> list[AppUser]:
-        return self.cached_app_users
+    async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[AppUser]:
+        """The links an earlier sync left (``cached_app_users``) and those this one wrote, less the withdrawn."""
+        gone = {u.source_user_id for u in self.withdrawn_users}
+        linked = {u.source_user_id: u for u in [*self.cached_app_users, *self.app_users] if u.source_user_id not in gone}
+        return list(linked.values())
+
+    async def on_new_app_users(self, users: list[Any]) -> None:
+        await super().on_new_app_users(users)
+        listed = {u.source_user_id for u in users}
+        self.withdrawn_users = [u for u in self.withdrawn_users if u.source_user_id not in listed]
 
     async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
         for role, members in roles:

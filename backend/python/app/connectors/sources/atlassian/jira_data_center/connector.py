@@ -495,6 +495,9 @@ class JiraDataCenterConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
+        self._stored_app_users: list[AppUser] = []
+        self._listed_user_keys: set[str] = set()
+        self._newly_listed_user_keys: set[str] = set()
         # True when this sync kept stored groups, roles, a lead, a project or its issues after
         # a read that may pass on a later run (408, 429, 5xx, a transport error);
         # full_sync_coverage() then reports the read as incomplete.
@@ -958,9 +961,12 @@ class JiraDataCenterConnector(BaseConnector):
                     "project access are kept, and anything with nothing stored is saved from what was read. "
                     "The next sync reads it again"
                 )
+            linked_before = {u.source_user_id for u in self._stored_app_users}
+            self._newly_listed_user_keys = {u.source_user_id for u in jira_users if u.source_user_id} - linked_before
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
+            await self._withdraw_unlisted_app_users(jira_users)
 
             # Fetch and sync user groups (returns mapping for role resolution). Saving a
             # group replaces its members, so on an unfinished user read a group whose
@@ -1539,6 +1545,7 @@ class JiraDataCenterConnector(BaseConnector):
         self._user_read_unfinished = False
 
         cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        self._stored_app_users = cached_app_users
         pipeshub_users = await self.data_entities_processor.get_all_active_users()
 
         cached_key_to_email: dict[str, str] = {
@@ -1576,6 +1583,7 @@ class JiraDataCenterConnector(BaseConnector):
             f"👥 Jira DC bulk: {len(all_active_user_keys)} active users, "
             f"{len(visible_email_map)} with visible email"
         )
+        self._listed_user_keys = all_active_user_keys
 
         resolved: dict[str, AppUser] = {}
         org_id = self.data_entities_processor.org_id
@@ -3389,6 +3397,12 @@ class JiraDataCenterConnector(BaseConnector):
             stored_levels = None  # synced before level tracking existed
         if not isinstance(stored_levels, dict):
             stored_levels = None
+        if self._newly_listed_user_keys and stored_levels and "*" not in stored_levels and not is_new_project:
+            # An issue's level grants name only listed accounts, and a withdrawn one lost them: an account
+            # listed again (or for the first time) gets them back when the leveled issues are read again.
+            # Saved first, so a walk that fails repeats it.
+            stored_levels = {**stored_levels, "*": "retry"}
+            await self._record_security_levels(project_key, stored_levels, force=True)
         reread, changed_levels, levels_to_save = plan_level_reread(
             security, stored_levels, is_new_project=is_new_project, app_roles_mapping=self._app_roles_mapping,
         )
@@ -4688,6 +4702,29 @@ class JiraDataCenterConnector(BaseConnector):
             and level_reads_alike(security, parent_level)
         )
 
+    async def _withdraw_unlisted_app_users(self, jira_users: list[AppUser]) -> None:
+        """Take the connector and their own grants from stored users the complete active-user list no
+        longer shows (deactivated or removed), unless another listed account has their email. A list
+        cut short, refused or read through the search fallback is not complete."""
+        if self._user_read_unfinished or self._user_bulk_forbidden or self._user_bulk_incomplete:
+            return
+        kept_emails = {u.email.lower() for u in jira_users if u.email}
+        gone = [
+            u for u in self._stored_app_users
+            if u.source_user_id and u.source_user_id not in self._listed_user_keys
+            and (u.email or "").lower() not in kept_emails
+        ]
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)
+
+    def _directory_grants(self, permissions: list[Permission], users: dict[str, AppUser]) -> list[Permission]:
+        """An issue's own grants (reporter, assignee, level members) name only accounts in the synced
+        directory; nothing is dropped when the directory read was cut short."""
+        if self._user_read_unfinished:
+            return permissions
+        listed = {u.email.lower() for u in users.values() if u.email}
+        return [p for p in permissions if p.entity_type != EntityType.USER or (p.email or "").lower() in listed]
+
     def _secure_ancestor_stub(
         self, record: Record, issue: dict[str, Any], level_users: dict[str, AppUser],
     ) -> list[Permission]:
@@ -4712,7 +4749,7 @@ class JiraDataCenterConnector(BaseConnector):
             reporter_email=record.reporter_email,
             assignee_email=record.assignee_email,
         )
-        return permissions
+        return self._directory_grants(permissions, level_users)
 
     async def _build_issue_records(
         self,
@@ -4893,6 +4930,7 @@ class JiraDataCenterConnector(BaseConnector):
                         reporter_email=reporter_email,
                         assignee_email=assignee_email,
                     )
+                    permissions = self._directory_grants(permissions, level_users)
                     if (
                         issue_record.access_rule == AccessRule.RESTRICTED and not issue_record.rewrite_permissions
                         and (is_issue_changed or self._rereading_children)
@@ -6278,7 +6316,7 @@ class JiraDataCenterConnector(BaseConnector):
             # and a level's user holders are named by key.
             synced_users = self._users_with_usernames({
                 u.source_user_id: u
-                for u in await self.data_entities_processor.get_all_app_users(self.connector_id)
+                for u in await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
                 if u.source_user_id
             })
 
@@ -6414,7 +6452,7 @@ class JiraDataCenterConnector(BaseConnector):
             if synced_users is None:
                 synced_users = self._users_with_usernames({
                     u.source_user_id: u
-                    for u in await self.data_entities_processor.get_all_app_users(self.connector_id)
+                    for u in await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
                     if u.source_user_id
                 })
             # The directory is shared by every issue of the reindex; only this issue's own people are added.
@@ -6518,6 +6556,7 @@ class JiraDataCenterConnector(BaseConnector):
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
             )
+            permissions = self._directory_grants(permissions, synced_users)  # not the people this issue names
             if (not settled or skipped_holders) and getattr(record, "access_rule", None) != AccessRule.RESTRICTED:
                 # Stored open, and the issue is not known to be without a level now: closed, not left readable
                 # by the project. (A stored leveled issue keeps its grants below; its level is not stored.)

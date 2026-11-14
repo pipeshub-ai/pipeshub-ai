@@ -243,3 +243,48 @@ class TestParentKeyLookup:
             return_value=MagicMock(status=200, json=MagicMock(return_value={"id": "8"})))))
         assert await connector._resolve_issue_id_from_key_or_id(issue_id=None, issue_key="P-8", context="x") == "8"
         assert connector._issue_id_to_key_cache["8"] == "P-8"
+
+
+class TestWithdrawnAccounts:
+    """An account the complete active-user list no longer shows loses the connector and its own grants; an
+    issue's level grants name only listed accounts; an account listed again has the leveled issues read again."""
+
+    @staticmethod
+    def _stored(c: JiraDataCenterConnector) -> list[AppUser]:
+        c._stored_app_users = [_user("gone", "g@x.com"), _user("kept", "k@x.com"), _user("moved", "m@x.com")]
+        c._listed_user_keys = {"kept", "moved-new"}
+        c.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        return c._stored_app_users
+
+    async def test_an_unlisted_account_is_withdrawn_with_its_grants(self) -> None:
+        c = _connector()
+        stored = self._stored(c)
+        await c._withdraw_unlisted_app_users([_user("kept", "k@x.com"), _user("moved-new", "m@x.com")])
+        c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [stored[0]], drop_grants=True)
+
+    @pytest.mark.parametrize("flag", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_incomplete"])
+    async def test_a_list_that_is_not_complete_withdraws_nobody(self, flag: str) -> None:
+        c = _connector()
+        self._stored(c)
+        setattr(c, flag, True)
+        await c._withdraw_unlisted_app_users([])
+        c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+
+    def test_a_level_member_outside_the_directory_is_not_granted(self) -> None:
+        c = _connector()
+        c._issue_security["10"] = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [
+                {"type": "user", "parameter": "alice-key", "user": {"key": "alice-key"}},
+                {"type": "user", "parameter": "gone", "user": {"key": "gone", "emailAddress": "former@x.com"}},
+            ]},
+        )
+        issue = {"id": "9", "key": "P-9", "fields": {
+            "project": {"id": "10", "key": "P"}, "security": {"id": "1"}, "issuetype": {"name": "Epic"}}}
+        grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue,
+                                         {"alice-key": _user("alice-key", "alice@example.com")})
+        assert [g.email for g in grants] == ["alice@example.com"]
+        c._user_read_unfinished = True  # a directory read cut short is not the whole directory
+        grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue,
+                                         {"alice-key": _user("alice-key", "alice@example.com")})
+        assert sorted(g.email for g in grants) == ["alice@example.com", "former@x.com"]
