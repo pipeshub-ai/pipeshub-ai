@@ -3513,7 +3513,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             try:
                 if drive_id not in children_by_drive:
                     children_by_drive[drive_id] = await self._stored_children_of_drive(drive_id)
-                left_after, budget = await self._clear_cut_out_grants_below(
+                done, left_after, budget = await self._clear_cut_out_grants_below(
                     drive_id, folder_id, after, budget, children_by_drive[drive_id]
                 )
             except Exception as e:
@@ -3524,7 +3524,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self._sync_ledger.note_incomplete()
                 left.append({"drive": drive_id, "folder": folder_id, "after": after})
                 continue
-            if left_after is not None:
+            if not done:  # its cursor may still be unset: a folder the budget never reached stays too
                 left.append({"drive": drive_id, "folder": folder_id, "after": left_after})
         if pending or stored.get("pending"):
             await self.drive_delta_sync_point.update_sync_point(LIMITED_SUBTREES_SYNC_POINT_KEY, {"pending": left})
@@ -3556,9 +3556,14 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _clear_cut_out_grants_below(
         self, drive_id: str, folder_id: str, after: str | None, budget: int, children: dict[str, list[Record]]
-    ) -> tuple[str | None, int]:
-        """Check the stored descendants of one limited folder, in id order from past `after`. Returns the last id
-        checked when the budget ran out first (None when all were), and the budget left. A failed read raises."""
+    ) -> tuple[bool, str | None, int]:
+        """Check the stored descendants of one limited folder, in id order from past `after`. Returns whether all
+        were checked, the last id checked (the cursor to go on from), and the budget left. A failed read raises.
+
+        A member keeps their own grant on a descendant when anything Drive counts for it admits them: a user grant
+        the item's list (read as a Manager) names, a group grant on it whose members include them, a domain or
+        everyone share on it, or the Manager role on the drive (Managers keep access through limits). Only a grant
+        none of these explain, one that stood in for the membership the limit cut, goes."""
         below: list[Record] = []
         todo, seen = [folder_id], {folder_id}
         while todo:
@@ -3568,13 +3573,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                     below.append(child)
                     todo.append(child.external_record_id)
         members = set(await self._drive_member_email_list(drive_id))
+        managers = set(await self._drive_manager_emails(drive_id))
         read_as = {"inherited_permissions_disabled": False, "inherits_from_drive": True, "item_drive_id": drive_id}
         last: str | None = None
         for record in sorted(below, key=lambda r: r.id):
             if after is not None and record.id <= after:
                 continue
             if budget <= 0:
-                return last or after, 0
+                return False, last or after, 0
             budget -= 1
             holders = {
                 (u.email or "").lower()
@@ -3582,18 +3588,44 @@ class GoogleDriveTeamConnector(BaseConnector):
                     record.id, CollectionNames.RECORDS.value, raise_on_error=True
                 )
             }
-            cut = sorted((holders & members) - {""})
+            cut = sorted((holders & members) - managers - {""})
             if cut:
                 managed = await self._permissions_as_drive_manager(record.external_record_id, drive_id, cut[0], read_as)
                 # No Manager can list it: a member reaches it through the drive only (decision for such drives).
-                named = {(p.email or "").lower() for p in managed[0]} if managed is not None else set()
+                admitted = await self._admitted_by(managed[0]) if managed is not None else set()
                 for email in cut:
-                    if email not in named:
+                    if admitted is not None and email not in admitted and not self._audience_admits(managed, email):
                         await self.data_entities_processor.delete_permission_from_record(
                             record.id, email, self.connector_id
                         )
             last = record.id
-        return None, budget
+        return True, None, budget
+
+    async def _admitted_by(self, permissions: list[Permission]) -> set[str] | None:
+        """The people a list's user and group grants admit, the groups' members included. None when a group's
+        members cannot be listed: who it admits is unknown, so nobody's grant may go."""
+        admitted = {(p.email or "").lower() for p in permissions if p.entity_type == EntityType.USER and p.email}
+        for p in permissions:
+            if p.entity_type != EntityType.GROUP or not p.external_id or _is_audience_group(p.external_id):
+                continue
+            people = await self._group_member_emails(p.external_id)
+            if people is None:
+                return None
+            admitted |= {e.lower() for e in people}
+        return admitted
+
+    @staticmethod
+    def _audience_admits(managed: tuple | None, email: str) -> bool:
+        """Whether a domain or everyone share on the list admits the person."""
+        for p in (managed[0] if managed is not None else ()):
+            group = p.external_id if p.entity_type == EntityType.GROUP else None
+            if group == ALL_MEMBERS_GROUP_ID:
+                return True
+            if group and group.startswith(DOMAIN_MEMBERS_GROUP_PREFIX) and (
+                group[len(DOMAIN_MEMBERS_GROUP_PREFIX):].lower() == _email_domain(email)
+            ):
+                return True
+        return False
 
     async def _drive_member_email_list(self, drive_id: str) -> list[str]:
         """Everyone who is a member of a shared drive, directly or through a member group, synced or not, this run.

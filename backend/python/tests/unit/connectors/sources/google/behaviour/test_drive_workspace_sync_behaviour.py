@@ -3184,6 +3184,56 @@ async def test_the_items_below_a_folder_turning_limited_are_checked_over_several
     assert not reaches(ws, BOB, "f1") and not reaches(ws, BOB, "f2")
 
 
+async def test_a_folder_the_bound_never_reached_stays_pending_until_it_is_checked(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+
+    monkeypatch.setattr(drive_connector, "LIMITED_SUBTREE_MAX_CHECKS", 1)
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    for folder, item in (("dir-a", "fa"), ("dir-b", "fb")):
+        ws.world.folder(folder, folder, parent="sd-1")
+        ws.world.add_item(item, f"{item}.txt", parent=folder)
+    await ws.sync()
+    _old_style_grant(ws, "fa", BOB)
+    _old_style_grant(ws, "fb", BOB)
+
+    for folder in ("dir-a", "dir-b"):
+        ws.world._mutate(folder, lambda folder=folder: ws.world._bump(folder, inheritedPermissionsDisabled=True))
+    await ws.sync()  # dir-a's item uses the whole bound; dir-b is not reached
+    await ws.sync()
+
+    assert not reaches(ws, BOB, "fa") and not reaches(ws, BOB, "fb")
+
+
+async def test_a_member_a_group_grant_admits_keeps_their_grant_below_a_folder_turning_limited(ws: Workspace) -> None:
+    ws.world.add_group("team@example.com", [BOB])
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f", "x.txt", parent="dir", perms=[{"type": "group", "role": "reader", "emailAddress": "team@example.com"}])
+    await ws.sync()
+    _old_style_grant(ws, "f", BOB)
+
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+
+    assert BOB in ws.records.perm_emails("f"), "the item's group grant admits him, so his grant is not a stand-in"
+
+
+async def test_a_manager_keeps_their_grant_on_a_limited_folder_below_one_turning_limited(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.folder("sub", "Sub", parent="dir").meta["inheritedPermissionsDisabled"] = True
+    ws.world.add_item("f", "x.txt", parent="sub")
+    await ws.sync()
+    assert ALICE in ws.records.perm_emails("sub"), "a limited folder stores its Managers"
+
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+
+    assert ALICE in ws.records.perm_emails("sub") and reaches(ws, ALICE, "f"), "Managers keep access through limits"
+
+
 async def test_a_direct_grant_below_a_folder_turning_limited_stays(ws: Workspace) -> None:
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
     ws.world.folder("dir", "Plans", parent="sd-1")
