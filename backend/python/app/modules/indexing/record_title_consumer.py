@@ -31,6 +31,7 @@ from app.core.org_context import for_org, spawn_detached
 from app.models.entities import EntityRecord, EntityType
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.config import messaging_env
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.messaging.record_titles import (
     DELETE,
     UPSERT,
@@ -192,6 +193,17 @@ class RecordTitleWriter:
                 reason = await self._on_worker(lambda: self._write(batch)) or ""
             except asyncio.CancelledError:
                 raise
+            except PrecisionFlip as flip:
+                # Not a failure: the entity index holds another weight precision than the server serves.
+                # The batch goes back to be written on a later flush, with no attempt counted and nothing dropped.
+                for event in batch:
+                    key = (event.org_id, event.record_id)
+                    held = self._pending.get(key)
+                    if held is None or event.rank >= held.rank:
+                        self._pending[key] = event
+                self.logger.warning("Record title batch of %d waits for the embedding precision: %s", len(batch), flip)
+                await asyncio.sleep(max(self._retry_first_seconds, 1.0))  # the idle flush loop must not spin on it
+                return False
             except Exception as exc:
                 reason = f"{type(exc).__name__}"
                 self.logger.warning(

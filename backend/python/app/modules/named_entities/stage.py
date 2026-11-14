@@ -27,6 +27,7 @@ from app.modules.named_entities.graph_writer import (
 from app.modules.named_entities.merge import anchor_year_less_dates
 from app.modules.named_entities.normalizers.dates import NormalizationContext
 from app.modules.named_entities.resolution import NamedEntityResolver
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.telemetry.modules.named_entity_metrics import observe_stage, record_run
 
 _MODEL_GAVE_UP = frozenset({"no_progress", "budget_turns", "budget_tokens", "timeout"})
@@ -186,6 +187,8 @@ async def persist_named_entities(
             await entity_vector_store.upsert_entities_batch(embeddable)
     except PersistRetrySupersededError:
         outcome = result = "superseded"
+    except PrecisionFlip:
+        raise  # the index holds another weight precision: the stage waits, it did not fail
     except Exception as exc:
         outcome = result = "failed"
         logger.warning(

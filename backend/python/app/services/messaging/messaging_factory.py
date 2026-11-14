@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from app.services.messaging.consumer_concurrency import PriorityLane, StageAdmission
     from app.services.messaging.disposition import AbandonedMessageSink
     from app.services.messaging.lanes.interface import LaneRouter
+    from app.services.messaging.precision_check import PrecisionHandBack
     from app.services.messaging.worker_loop import WorkerLoop
     from app.services.resource_governor import ResourceGovernor
 
@@ -337,6 +338,7 @@ class MessagingFactory:
         weight_provider: WeightProvider | None = None,
         disposition_sink: "AbandonedMessageSink | None" = None,
         connector_off_filter: "ConnectorOffFilter | None" = None,
+        precision_filter: "PrecisionHandBack | None" = None,
         stage_admission: "StageAdmission | None" = None,
         priority_lane: "PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
@@ -375,6 +377,9 @@ class MessagingFactory:
             connector_off_filter: Optional (INDEXING consumers only). Settles, as they
                       are read, the record events the handler would only skip because
                       their connector is turned off or removed.
+            precision_filter: Optional (INDEXING consumers only). Hands back, as they are read, the
+                      events that write vectors while the embedding server's weight precision and
+                      the indexes disagree.
             priority_lane: Optional (INDEXING consumers only). Makes this the consumer of
                       the priority topic: records are admitted ahead of the queued
                       backlog but under the lane's own caps and lease pools.
@@ -413,6 +418,7 @@ class MessagingFactory:
                 stage_admission=stage_admission,
                 priority_lane=priority_lane,
                 worker=worker if consumer_type == ConsumerType.INDEXING else None,
+                precision_filter=precision_filter if consumer_type == ConsumerType.INDEXING else None,
             )
         if broker_type == MessageBrokerType.KAFKA:
             if config is None:
@@ -442,6 +448,7 @@ class MessagingFactory:
                     weight_provider=weight_provider,
                     disposition_sink=disposition_sink,
                     connector_off_filter=connector_off_filter,
+                    precision_filter=precision_filter,
                     stage_admission=stage_admission,
                     priority_lane=priority_lane,
                     worker=worker,
@@ -468,6 +475,7 @@ class MessagingFactory:
                     weight_provider=weight_provider,
                     disposition_sink=disposition_sink,
                     connector_off_filter=connector_off_filter,
+                    precision_filter=precision_filter,
                     stage_admission=stage_admission,
                     priority_lane=priority_lane,
                     worker=worker,

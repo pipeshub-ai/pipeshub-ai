@@ -17,6 +17,8 @@ BLOCK_ID_FIELD = "metadata.blockId"
 # of another (see app/modules/indexing/embed_resume.py).
 CONTENT_REV_FIELD = "metadata.contentRev"
 EMBED_KEY_FIELD = "metadata.embedKey"
+# Which weights made a point (fp32, int8-w; image and stamp mark points that are not text vectors).
+EMBED_PRECISION_FIELD = "metadata.embedPrecision"
 CONNECTOR_IDS_FIELD = "connectorIds"
 RECORD_GROUP_IDS_FIELD = "recordGroupIds"
 # Root of a record's group chain, so search can scope by root instead of every
@@ -30,6 +32,7 @@ PAYLOAD_KEYWORD_INDEXES = (
     (BLOCK_ID_FIELD, {"type": "keyword"}),
     (CONTENT_REV_FIELD, {"type": "keyword"}),
     (EMBED_KEY_FIELD, {"type": "keyword"}),
+    (EMBED_PRECISION_FIELD, {"type": "keyword"}),
     (CONNECTOR_IDS_FIELD, {"type": "keyword"}),
     (RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),
     (ROOT_RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),

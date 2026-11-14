@@ -67,6 +67,10 @@ class CollectionManifestStore:
         self._cached_at: float = 0.0
         self._lock = asyncio.Lock()
 
+    @property
+    def config_service(self):  # noqa: ANN201
+        return self._config_service
+
     async def list(self, *, fresh: bool = False, strict: bool = False) -> list[ManagedCollection]:
         """Every managed collection.
 

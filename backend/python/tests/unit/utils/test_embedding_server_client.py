@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import Callable, Iterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import openai
 import pytest
@@ -474,9 +474,11 @@ class TestEmbeddingServerEmbeddings:
             "timeout": EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
             "extra_body": None,
         }
-        assert documents_call.kwargs == expected
+        clients = {"http_client": ANY, "http_async_client": ANY}
+        assert documents_call.kwargs == {**expected, **clients}
         assert query_call.kwargs == {
             **expected,
+            **clients,
             "default_headers": {"X-Embedding-Priority": "query"},
         }
 
@@ -503,9 +505,11 @@ class TestEmbeddingServerEmbeddings:
             "timeout": 120.0,
             "extra_body": {"trust_remote_code": True},
         }
-        assert documents_call.kwargs == expected
+        clients = {"http_client": ANY, "http_async_client": ANY}
+        assert documents_call.kwargs == {**expected, **clients}
         assert query_call.kwargs == {
             **expected,
+            **clients,
             "default_headers": {"X-Embedding-Priority": "query"},
         }
 
@@ -723,6 +727,73 @@ class TestMaxInputTokens:
 
         embedding_server([_model(DEFAULT_EMBEDDING_MODEL, 512)])
         assert await get_default_embedding_model().max_input_tokens() == 512
+
+
+class TestReadPrecision:
+    @pytest.mark.asyncio
+    async def test_reads_the_precision_of_its_own_model(self, embedding_server) -> None:
+        embedding_server([{**_model("other", 128), "precision": "fp32"}, {**_model("m", 512), "precision": "int8-w"}])
+        client = EmbeddingServerEmbeddings(model="m")
+        assert client.precision is None
+        assert await client.read_precision() == "int8-w"
+        assert client.precision == "int8-w"
+
+    @pytest.mark.asyncio
+    async def test_none_when_the_server_does_not_say(self, embedding_server) -> None:
+        embedding_server([_model("m", 512)])
+        client = EmbeddingServerEmbeddings(model="m")
+        client.precision = "int8-w"
+        # A server that says nothing about the model (it is not loaded) does not erase what was known.
+        assert await client.read_precision() == "int8-w"
+        assert client.precision == "int8-w"
+
+    @pytest.mark.asyncio
+    async def test_none_and_logged_when_the_server_errors(self, embedding_server, caplog: pytest.LogCaptureFixture) -> None:
+        embedding_server([], fail_models=True)
+        with caplog.at_level(logging.WARNING):
+            assert await EmbeddingServerEmbeddings(model="m").read_precision() is None
+        assert "weight precision" in caplog.text
+
+
+class TestPrecisionAfterReconnect:
+    """A restarted server may load another precision; the stamp must follow it."""
+
+    @staticmethod
+    def _client(inner_calls):  # noqa: ANN205
+        with patch("app.utils.embedding_server_client.OpenAIEmbeddings") as cls:
+            inner = MagicMock()
+            inner.aembed_documents = AsyncMock(side_effect=inner_calls)
+            cls.return_value = inner
+            client = EmbeddingServerEmbeddings(model="m", max_retries=2)
+        client.precision = "int8-w"
+        return client
+
+    @pytest.mark.asyncio
+    async def test_rereads_after_a_lost_connection(self, embedding_server) -> None:
+        embedding_server([{**_model("m", 512), "precision": "fp32"}])
+        lost = openai.APIConnectionError(request=MagicMock())
+        client = self._client([lost, [[0.1]]])
+        with patch("app.utils.embedding_retry.asyncio.sleep", new=AsyncMock()):
+            assert await client.aembed_documents(["a"]) == [[0.1]]
+        assert client.precision == "fp32"
+
+    @pytest.mark.asyncio
+    async def test_does_not_reread_on_healthy_batches(self, embedding_server) -> None:
+        server = embedding_server([{**_model("m", 512), "precision": "fp32"}])
+        client = self._client([[[0.1]], [[0.2]]])
+        await client.aembed_documents(["a"])
+        await client.aembed_documents(["b"])
+        assert client.precision == "int8-w"
+        assert server.requests == []
+
+    @pytest.mark.asyncio
+    async def test_keeps_trying_while_the_read_fails(self, embedding_server) -> None:
+        embedding_server([], fail_models=True)
+        lost = openai.APIConnectionError(request=MagicMock())
+        client = self._client([lost, [[0.1]]])
+        with patch("app.utils.embedding_retry.asyncio.sleep", new=AsyncMock()):
+            await client.aembed_documents(["a"])
+        assert client._precision_stale is True
 
 
 class TestCountTokens:

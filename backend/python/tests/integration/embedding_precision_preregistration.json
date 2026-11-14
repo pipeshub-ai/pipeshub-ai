@@ -1,0 +1,64 @@
+{
+  "status": "frozen",
+  "note": "Seeds, corpus shapes and thresholds are fixed before the full run. T2, T3 and TM are the gates as written in the plan, not adjusted after the pilot. T1 is a diagnostic. The full corpus has 2000 prose chunks because the repository's Markdown yields 2220 in all (the pilot draws from the same pool with other seeds, so a few chunks can appear in both). A threshold is not relaxed after the full run without the owner's sign-off. The corpus hash covers the repository's Markdown: after an edit to any .md file it must be re-pinned before another full run.",
+  "model": "BAAI/bge-large-en-v1.5",
+  "model_revision": null,
+  "seeds": {
+    "pilot_corpus": 31337,
+    "pilot_prose_queries": 31338,
+    "pilot_near_duplicates": 31339,
+    "pilot_number_heavy": 31340,
+    "pilot_long": 31341,
+    "full_corpus": 7100,
+    "full_queries": 7101,
+    "full_near_duplicates": 7102,
+    "full_number_heavy": 7103,
+    "full_long": 7104,
+    "full_split": 7105,
+    "bootstrap": 7106,
+    "controls": 7107
+  },
+  "pilot": {
+    "prose_chunks": 330,
+    "number_heavy_chunks": 60,
+    "long_chunks": 50,
+    "near_duplicate_chunks": 60,
+    "queries": 200
+  },
+  "full": {
+    "prose_chunks": 2000,
+    "number_heavy_chunks": 400,
+    "long_chunks": 300,
+    "near_duplicate_chunks": 400,
+    "queries": 1500
+  },
+  "corpus": {
+    "repo_commit": "e897f0a60 plus the working-tree documents at freeze time; the corpus is pinned by corpus_sha256",
+    "corpus_sha256": "92b837c321fc87dd82535d473da869bbf73ad3792aa8c5017b9a165d1106c4c4",
+    "hard_negative_cosine": 0.95,
+    "retrieval_benchmark_sha256": null
+  },
+  "thresholds": {
+    "cosine_mean_floor": 0.995,
+    "cosine_min_floor": 0.95,
+    "t1_diagnostic_mean": 0.99976,
+    "t2_score_drift_p99": 0.005,
+    "t2_score_drift_max": 0.02,
+    "t3_overlap_mean": 0.95,
+    "t3_overlap_mean_p1": 0.96,
+    "t3_top1_identical": 0.97,
+    "t3_hit10_drop": 0.01,
+    "t3_hit1_drop": 0.015,
+    "tm_abs_mean_gap": 0.002,
+    "tm_p99_gap": 0.005,
+    "tm_new_outranks_old_band": 0.05,
+    "t4_batch_invariance_cosine": 0.9999999,
+    "t5_unit_norm_tolerance": 0.001
+  },
+  "controls": {
+    "degraded_noise": 1.5,
+    "biased_strength": 0.5,
+    "dynamic_activation_variant_must_fail_t4": true
+  },
+  "frozen_on": "2026-11-12"
+}

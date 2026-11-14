@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from app.core import org_context
@@ -65,3 +66,21 @@ def ambient_or_required() -> str:
     if org is None:
         raise OrgRequired("this call takes its organisation from the request context and none is bound")
     return org
+
+
+_STATEMENT_TIMEOUT_MS: ContextVar[int | None] = ContextVar("pgvector_statement_timeout_ms", default=None)
+
+
+def current_statement_timeout_ms() -> int | None:
+    """The time budget a caller put on the counting reads of this unit of work, or None for the default."""
+    return _STATEMENT_TIMEOUT_MS.get()
+
+
+@contextmanager
+def statement_timeout(milliseconds: int) -> Iterator[None]:
+    """Bound the counting reads (``count_points``, the point count of ``get_collection_info``) made inside the block."""
+    token = _STATEMENT_TIMEOUT_MS.set(int(milliseconds))
+    try:
+        yield
+    finally:
+        _STATEMENT_TIMEOUT_MS.reset(token)

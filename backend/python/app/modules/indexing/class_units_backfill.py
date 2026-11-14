@@ -37,6 +37,7 @@ from app.models.blocks import BlocksContainer
 from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.version import EMBED_UNITS_VERSION
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.utils.env_utils import env_bool
 
 if TYPE_CHECKING:
@@ -149,10 +150,17 @@ async def backfill_class_units(
     except _LeaseLost:
         logger.warning("Class units backfill stopped: its leader lease was lost")
         return counts
+    except _WaitingForPrecision:
+        logger.info("Class units backfill paused: the embedding precision and the index disagree; the next pass continues")
+        return counts
     await config_service.set_config(flag_key, {"done": True, **asdict(counts)})
     logger.info("Class units backfill for %s done: %d record(s) gained %d unit(s), %d failed",
                 EMBED_UNITS_VERSION, counts.embedded, counts.units, counts.failed)
     return counts
+
+
+class _WaitingForPrecision(Exception):
+    """The pass stops here; nothing it skipped is counted as failed."""
 
 
 def _page_records(org_id: str, rows: list[dict]) -> dict[str, dict]:
@@ -195,6 +203,9 @@ async def _backfill_org_records(org_id: str, records: dict[str, dict], vector_st
             written = await vector_store.index_class_units(
                 records[vrid]["_key"], vrid, org_id, blocks, views[vrid],
                 stored_now=_stored_blocks(reader, vrid, org_id))
+        except PrecisionFlip:
+            # The index holds another weight precision than the server serves: stop the pass, count nothing failed.
+            raise _WaitingForPrecision from None
         except Exception as exc:  # one record must not stop the backfill; it is counted and logged
             counts.failed += 1
             logger.warning("Class units backfill skipped record %s (%s): %s", records[vrid]["_key"], vrid, exc)

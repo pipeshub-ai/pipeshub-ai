@@ -944,3 +944,52 @@ async def test_reindex_stops_as_a_failure_when_a_page_cannot_be_read():
     # The first page was real work; the second was a failure, not the end.
     assert processor.reindex_existing_records.await_count == 1
     assert JOB_LOCK_KEY not in redis.store
+
+
+# ── Indexing is waiting for the embedding precision ──
+
+
+@pytest.mark.asyncio
+async def test_queued_records_do_not_block_while_indexing_waits_for_the_precision():  # noqa: ANN201
+    """Their events are handed back at read time; a queued record has written nothing this attempt."""
+    from app.connectors.services import vector_store_rebuild as rebuild
+
+    seen: list[list[str]] = []
+
+    async def by_status(**kwargs):  # noqa: ANN202
+        seen.append(list(kwargs["status_filters"]))
+        return [] if kwargs["status_filters"] == [ProgressStatus.IN_PROGRESS.value] else [_rec("r1", "application/pdf")]
+
+    graph = AsyncMock()
+    graph.get_records_by_status = by_status
+    with patch.object(rebuild, "get_coordinator", return_value=None):
+        await rebuild.assert_no_indexing_in_flight(graph, [("org-1", "app-1")], waiting_for_precision=True)
+        with pytest.raises(rebuild.VectorStoreRebuildConflictError):
+            await rebuild.assert_no_indexing_in_flight(graph, [("org-1", "app-1")])
+    assert seen[0] == [ProgressStatus.IN_PROGRESS.value]
+    assert ProgressStatus.QUEUED.value in seen[1]
+
+
+@pytest.mark.asyncio
+async def test_a_record_in_progress_still_blocks_while_indexing_waits_for_the_precision():  # noqa: ANN201
+    from app.connectors.services import vector_store_rebuild as rebuild
+
+    graph = AsyncMock()
+    graph.get_records_by_status = AsyncMock(return_value=[_rec("r1", "application/pdf")])
+    with patch.object(rebuild, "get_coordinator", return_value=None), pytest.raises(rebuild.VectorStoreRebuildConflictError):
+        await rebuild.assert_no_indexing_in_flight(graph, [("org-1", "app-1")], waiting_for_precision=True)
+
+
+@pytest.mark.asyncio
+async def test_the_wait_is_read_from_the_verdict_key_and_a_missing_or_unreadable_key_is_not_a_wait():  # noqa: ANN201
+    from app.connectors.services import vector_store_rebuild as rebuild
+
+    config = AsyncMock()
+    config.get_config = AsyncMock(return_value={"mismatch": True})
+    assert await rebuild.precision_wait_in_force(config) is True
+    config.get_config = AsyncMock(return_value={"mismatch": False})
+    assert await rebuild.precision_wait_in_force(config) is False
+    config.get_config = AsyncMock(return_value=None)  # expired: no service is saying it waits
+    assert await rebuild.precision_wait_in_force(config) is False
+    config.get_config = AsyncMock(side_effect=ConnectionError("kv down"))
+    assert await rebuild.precision_wait_in_force(config) is False

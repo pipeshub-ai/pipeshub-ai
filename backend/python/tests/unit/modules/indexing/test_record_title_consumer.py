@@ -411,6 +411,23 @@ class TestFailures:
         await _feed(writer, _msg("r2"))
         assert [e.entity_id for e in store.written()] == ["r1", "r2"]
 
+    async def test_a_precision_flip_puts_the_batch_back_without_counting_an_attempt(self, monkeypatch) -> None:
+        from app.services.messaging.precision_flip import PrecisionFlip
+
+        waits = AsyncMock()
+        monkeypatch.setattr("app.modules.indexing.record_title_consumer.asyncio.sleep", waits)
+        graph, store = FakeGraph(), FakeStore()
+        graph.records = {"r1": _record(), "r2": _record()}
+        store.upsert_errors = [PrecisionFlip("the entity index holds int8-w")]
+        writer = _writer(graph, store)
+        await writer.handle(_msg("r1"))
+        await writer.handle(_msg("r2"))
+        assert await writer.flush() is False
+        assert store.upserts == [] and set(writer._pending) == {(ORG, "r1"), (ORG, "r2")}  # nothing dropped, none given up
+        waits.assert_awaited()  # the idle flush loop does not spin on it
+        await _feed(writer)  # the next flush writes them
+        assert sorted(e.entity_id for e in store.written()) == ["r1", "r2"]
+
     async def test_an_unreadable_graph_is_retried_not_taken_for_missing(self) -> None:
         graph, store = FakeGraph(), FakeStore()
         graph.records = {"r1": _record()}

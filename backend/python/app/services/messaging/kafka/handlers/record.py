@@ -134,6 +134,9 @@ from app.services.paid_cache.cache import RefreshPurgeInProgress
 from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
 from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
 from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
+from app.services.messaging.precision_check import active_verdict
+from app.services.messaging.precision_flip import PrecisionFlip, precision_flip_in
+from app.services.vector_db.collection_pin import CollectionPinStore
 from app.services.vector_db.membership import mark_scope_stale
 from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
@@ -1649,6 +1652,29 @@ class RecordEventHandler(BaseEventService):
             key=str(payload.get("connectorId")),
         )
 
+    async def _require_matching_precision_before_delete(self, org_id: str | None) -> None:
+        """Before the record's vectors are taken out to be written again: refuse if the index's precision is not what is served."""
+        sink = getattr(self.event_processor, "sink_orchestrator", None)
+        vector_store = getattr(sink, "vector_store", None) if sink is not None else None
+        if vector_store is not None:
+            await vector_store.require_matching_precision_before_delete(None, org_id, build_model=True)
+
+    async def _forget_precision_state(self) -> None:
+        """After the drop: release every pin left under the pin directory (orphans too) and recompute the verdict now.
+
+        Without the recompute, a process would keep handing events back for up to a poll period after the
+        indexes it was waiting on are gone.
+        """
+        try:
+            await CollectionPinStore(self.config_service, self.logger).release_all()
+        except Exception:
+            self.logger.error("Could not release every weight-precision pin after the cleanup", exc_info=True)
+            raise
+        verdict = active_verdict()
+        if verdict is not None:
+            verdict.clear()
+            await verdict.refresh()
+
     async def _delete_vector_collection(self, payload: dict | None = None) -> AsyncGenerator[PipelineEvent, None]:
         # The cleanup job polls for a phase and otherwise waits out its whole
         # deadline, so every exit from here must publish one — a failure
@@ -1660,6 +1686,7 @@ class RecordEventHandler(BaseEventService):
                 self.config_service, PHASE_FAILED, logger=self.logger
             )
             raise
+        await self._forget_precision_state()
         await mark_cleanup_phase(self.config_service, PHASE_READY, logger=self.logger)
         yield PipelineEvent(
             event=IndexingEvent.PARSING_COMPLETE,
@@ -1882,6 +1909,7 @@ class RecordEventHandler(BaseEventService):
         cancelled = False
         # Handed back to the broker for a model provider's rate-limit wait (``ProviderRateLimitRequeue``).
         handed_back = False
+        precision_flipped = False
         # Handed back because the record's connector is being deleted: nothing of it is written.
         held_for_delete = False
         held_for_refresh = False
@@ -2775,7 +2803,24 @@ class RecordEventHandler(BaseEventService):
             error_msg = "Record processing was cancelled"
             last_exception = ce
             raise
+        except PrecisionFlip as flip:
+            # The embedding server serves other weights than this index holds: the message goes back
+            # with no attempt counted, and the record is never failed for it.
+            error_occurred = True
+            precision_flipped = True
+            error_msg = str(flip)
+            last_exception = flip
+            self.logger.warning(f"Record {record_id} handed back: {flip}")
+            raise
         except IndexingError as ie:
+            flip = precision_flip_in(ie)
+            if flip is not None:
+                error_occurred = True
+                precision_flipped = True
+                error_msg = str(flip)
+                last_exception = flip
+                self.logger.warning(f"Record {record_id} handed back: {flip}")
+                raise flip from ie
             error_occurred = True
             error_msg = str(ie)
             last_exception = ie
@@ -2807,6 +2852,14 @@ class RecordEventHandler(BaseEventService):
             self.logger.info(f"Record {record_id} held: another delivery of its refresh is purging")
             raise
         except Exception as e:
+            flip = precision_flip_in(e)
+            if flip is not None:
+                error_occurred = True
+                precision_flipped = True
+                error_msg = str(flip)
+                last_exception = flip
+                self.logger.warning(f"Record {record_id} handed back: {flip}")
+                raise flip from e
             error_occurred = True
             error_msg = str(e)
             last_exception = e
@@ -2867,6 +2920,10 @@ class RecordEventHandler(BaseEventService):
                     == MessageErrorType.TERMINAL
                 ):
                     is_final = True
+
+                if precision_flipped:
+                    # A flip is never final: the record waits in the broker for the setting to be put right.
+                    is_final = False
 
                 if is_final is None:
                     self.logger.warning(
