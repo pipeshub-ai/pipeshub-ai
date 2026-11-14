@@ -116,10 +116,10 @@ class TestPythonVenvFailureSaysWhy:
         class _Proc:
             returncode = 1
 
-            async def communicate(self):
+            async def communicate(self) -> tuple[bytes, bytes]:
                 return b"ensurepip is not available; install python3.12-venv\n", b""
 
-        async def _exec(*_args, **_kwargs):
+        async def _exec(*_args: object, **_kwargs: object) -> _Proc:
             return _Proc()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
