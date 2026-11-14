@@ -2637,6 +2637,32 @@ components:
           description: Null when the admin asking cannot read the container.
         restricted:
           type: boolean
+    NotionPersonalTokenState:
+      type: object
+      description: One user's Notion personal access token entry, without the token.
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [NOT_LINKED, LINKED, FAILED]
+          description: |
+            `FAILED`: the token stopped working (revoked, expired, its creator left the workspace)
+            or is not the user's own. It was dropped; the user links a new one.
+        reason:
+          type: string
+          description: Why the token stopped working, for `FAILED`.
+        linkedAt:
+          type: integer
+          format: int64
+          description: When the token was linked, in epoch milliseconds.
+        updatedAt:
+          type: integer
+          format: int64
+          description: When the entry last changed, in epoch milliseconds.
+        checkedAt:
+          type: integer
+          format: int64
+          description: When a sync last checked the token, in epoch milliseconds.
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -25124,6 +25150,33 @@ components:
                 maxUserBytes:
                   type: integer
   responses:
+    NotionPersonalTokenBadRequest:
+      description: |
+        The connector instance ID does not match the pattern, or the token is empty, longer than
+        512 characters or holds whitespace (`VALIDATION_ERROR`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotionPersonalTokenUnauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotionPersonalTokenNotFound:
+      description: |
+        No Notion team connector of the caller's organization the caller may open has this ID.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotionPersonalTokenUnavailable:
+      description: The connector service could not be reached, or could not save the token. Safe to retry.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     CodeToolResult:
       description: The code tool's result, as the matching `pipeshub_code_*` MCP tool returns it.
       content:
@@ -55408,6 +55461,176 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/notion/personal-token:
+    parameters:
+      - name: connectorId
+        in: path
+        required: true
+        description: Connector instance ID (`_key` of the instance) of a Notion team connector.
+        schema:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+    get:
+      tags:
+        - Connector Instances
+      summary: Get your own Notion personal access token's state
+      description: |
+        Notion's API does not say who may open a page, so a Notion team connector shows each
+        person the pages their own Notion personal access token can open. This returns whether
+        the caller linked a token to the connector and whether it still works. The token itself
+        is never returned.
+
+        Any member who may open the connector can call it. A connector that is not a Notion team
+        connector, or one the caller may not open, gets <code>404</code>.
+      operationId: getNotionPersonalToken
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: The caller's own entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotionPersonalTokenState'
+        '400':
+          $ref: '#/components/responses/NotionPersonalTokenBadRequest'
+        '401':
+          $ref: '#/components/responses/NotionPersonalTokenUnauthorized'
+        '404':
+          $ref: '#/components/responses/NotionPersonalTokenNotFound'
+        '503':
+          $ref: '#/components/responses/NotionPersonalTokenUnavailable'
+    put:
+      tags:
+        - Connector Instances
+      summary: Link or replace your own Notion personal access token
+      description: |
+        Stores the caller's Notion personal access token for the connector, replacing any earlier
+        one. It takes effect at the connector's next sync, which checks that the token belongs to
+        the caller. Create one in Notion: https://developers.notion.com/guides/connections-and-tokens/personal-access-tokens.
+      operationId: linkNotionPersonalToken
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        required: true
+        description: The caller's own token. It is stored encrypted and never returned.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  writeOnly: true
+                  minLength: 1
+                  maxLength: 512
+                  pattern: '^\S+$'
+                  description: The Notion personal access token, as Notion shows it.
+      responses:
+        '200':
+          description: The caller's entry after the link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotionPersonalTokenState'
+        '400':
+          $ref: '#/components/responses/NotionPersonalTokenBadRequest'
+        '401':
+          $ref: '#/components/responses/NotionPersonalTokenUnauthorized'
+        '403':
+          description: The OAuth client's token lacks the `connector:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotionPersonalTokenNotFound'
+        '503':
+          $ref: '#/components/responses/NotionPersonalTokenUnavailable'
+    delete:
+      tags:
+        - Connector Instances
+      summary: Remove your own Notion personal access token
+      description: |
+        Removes the caller's token from the connector. Pages only that token could open stop being
+        shown to the caller after the connector's next sync.
+      operationId: unlinkNotionPersonalToken
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      responses:
+        '200':
+          description: The token is removed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotionPersonalTokenState'
+        '400':
+          $ref: '#/components/responses/NotionPersonalTokenBadRequest'
+        '401':
+          $ref: '#/components/responses/NotionPersonalTokenUnauthorized'
+        '403':
+          description: The OAuth client's token lacks the `connector:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotionPersonalTokenNotFound'
+        '503':
+          $ref: '#/components/responses/NotionPersonalTokenUnavailable'
+  /connectors/{connectorId}/notion/personal-tokens:
+    get:
+      tags:
+        - Connector Instances
+      summary: List who linked a Notion personal access token
+      description: |
+        Org admins only: every user who linked a Notion personal access token to the connector,
+        with its state. No token is returned. Anyone else gets <code>404</code>, as does a
+        connector that is not a Notion team connector.
+      operationId: listNotionPersonalTokens
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID (`_key` of the instance) of a Notion team connector.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+      responses:
+        '200':
+          description: Who linked a token, sorted by user ID.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items:
+                      allOf:
+                        - type: object
+                          required: [userId]
+                          properties:
+                            userId:
+                              type: string
+                        - $ref: '#/components/schemas/NotionPersonalTokenState'
+        '400':
+          $ref: '#/components/responses/NotionPersonalTokenBadRequest'
+        '401':
+          $ref: '#/components/responses/NotionPersonalTokenUnauthorized'
+        '404':
+          $ref: '#/components/responses/NotionPersonalTokenNotFound'
+        '503':
+          $ref: '#/components/responses/NotionPersonalTokenUnavailable'
   /connectors/record/{recordId}/content:
     get:
       tags:

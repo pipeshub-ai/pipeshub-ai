@@ -26,6 +26,7 @@ from app.connectors.services.vector_cleanup_events import (
     log_cleanup_publish_failure,
 )
 from app.connectors.sources.localKB.handlers.delete_lease import lease_is_held
+from app.connectors.sources.notion import personal_tokens
 from app.core.org_context import for_org, spawn_in_request
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
@@ -95,10 +96,10 @@ def retry_delay_ms(attempts: int) -> int:
 async def delete_connector_credentials(
     logger: Logger, config_service: ConfigurationService, connector_id: str,
 ) -> bool:
-    """Whether the connector's credentials are gone. Never raises."""
+    """Whether the connector's credentials, and any personal tokens its users linked, are gone. Never raises."""
     key = f"/services/connectors/{connector_id}/config"
     try:
-        if await delete_config_confirmed(config_service, key):
+        if await delete_config_confirmed(config_service, key) and await personal_tokens.unlink_all(config_service, connector_id):
             return True
     except Exception:
         logger.warning("Connector credentials not confirmed deleted | connector=%s", connector_id, exc_info=True)

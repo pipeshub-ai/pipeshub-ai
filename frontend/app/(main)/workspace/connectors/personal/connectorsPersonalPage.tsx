@@ -34,6 +34,7 @@ import {
   ConfigSuccessDialog,
 } from '../components';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
+import { NotionTeamAccess } from '../components/instance-panel/notion-personal-token';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 import { useResolvedConnectorTypeParam } from '../utils/resolve-connector-type-param';
 import type {
@@ -629,6 +630,7 @@ function PersonalConnectorsPageContent() {
         onAddInstance={handleAddInstanceFromCatalog}
         onCardClick={handleCardClick}
         isLoading={isLoading}
+        banner={<NotionTeamAccess />}
       />
       <ConnectorPanel />
     </>

@@ -1740,6 +1740,43 @@ export const getPermissionStatus =
     }
   };
 
+/**
+ * The caller's own Notion personal access token for a Notion team connector (`personal-token`),
+ * or, for admins, who linked one (`personal-tokens`). The connector service decides who may see
+ * what and answers anything else with the 404 of a missing connector. The request body holds the
+ * token, so it is forwarded and never logged.
+ */
+export const proxyNotionPersonalToken =
+  (
+    appConfig: AppConfig,
+    method: HttpMethod,
+    path: 'personal-token' | 'personal-tokens',
+  ) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(req.params.connectorId as string)}/notion/${path}`,
+        method,
+        buildProxyHeaders(req),
+        method === HttpMethod.PUT
+          ? { token: (req.body as { token: string }).token }
+          : undefined,
+      );
+      handleConnectorResponse(
+        response,
+        res,
+        'Notion personal access token',
+        'Connector not found',
+      );
+    } catch (error) {
+      next(handleBackendError(error, 'Notion personal access token'));
+    }
+  };
+
 export const getConnectorStats =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {

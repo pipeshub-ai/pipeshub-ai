@@ -3494,6 +3494,27 @@
           "other": "Bei den Berechtigungen dieses Konnektors muss sich jemand etwas ansehen.",
           "unreadable": "Die Liste der Ordner, die auf ein Update warten, kann nicht gelesen werden. Bitten Sie die Person, die PipesHub betreibt, den Berechtigungsindex dieses Konnektors neu aufzubauen. Die Suche prüft währenddessen jedes Ergebnis."
         }
+      },
+      "notionAccess": {
+        "title": "Ihr Notion-Zugriff",
+        "titleFor": "Ihr Notion-Zugriff: {{connector}}",
+        "intro": "Notion gibt nicht an, wer eine Seite öffnen darf. Deshalb zeigt PipesHub Ihnen die Seiten, die Ihr eigenes persönliches Notion-Zugriffstoken öffnen kann.",
+        "guide": "So erstellen Sie ein persönliches Zugriffstoken",
+        "loadError": "Ihr Notion-Zugriff konnte nicht geladen werden.",
+        "tokenLabel": "Persönliches Notion-Zugriffstoken",
+        "link": "Verknüpfen",
+        "replace": "Ersetzen",
+        "remove": "Entfernen",
+        "nextSync": "Änderungen gelten ab der nächsten Synchronisierung des Connectors.",
+        "linkedUsers": "Wer ein Token verknüpft hat",
+        "nobodyLinked": "Noch niemand hat ein Token verknüpft.",
+        "status": {
+          "notLinked": "Nicht verknüpft. Verknüpfen Sie Ihr Token, um die Notion-Seiten zu sehen, die Sie öffnen können.",
+          "linked": "Verknüpft.",
+          "linkedOn": "Verknüpft am {{when}}.",
+          "failed": "Funktioniert nicht mehr. Verknüpfen Sie ein neues Token.",
+          "failedReason": "Funktioniert nicht mehr: {{reason}}. Verknüpfen Sie ein neues Token."
+        }
       }
     },
     "mcpServers": {

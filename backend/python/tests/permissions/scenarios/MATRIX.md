@@ -29,7 +29,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `github` | container | container | the whole app | `app/connectors/sources/github/connector.py:178` | writer read |
 | `gitlab` | container | container | projects | `app/connectors/sources/gitlab/projects.py:538` | writer read |
 | `gitlab_personal` | container | container | the whole app | `app/connectors/sources/gitlab_personal/connector.py:107` | writer read |
-| `notion` | container | container | the workspace group, which grants nobody | `app/connectors/sources/notion/connector.py:4605` | writer read |
+| `notion` | item-acl | override | - | `app/connectors/sources/notion/connector.py:1314` | writer read |
 | `notion_personal` | container | container | the whole app | `app/connectors/sources/notion_personal/connector.py:55` | writer read |
 | `localKB` | container | container | the whole app | `app/connectors/sources/localKB/connector.py:57` | writer read |
 | `local_fs` | container | container | the whole app | `app/connectors/sources/local_fs/connector.py:467` | writer read |
@@ -88,7 +88,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `github` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `gitlab` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `gitlab_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
-| `notion` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
+| `notion` | - | - | - | - | - | - | - | - | - | - | - |
 | `notion_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `localKB` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `local_fs` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |

@@ -136,7 +136,7 @@ class TestNotionTeamWarning:
         from app.connectors.sources.notion.connector import NotionConnector
 
         info = NotionConnector._connector_metadata["connectorInfo"]
-        assert "not searchable by anyone" in info
+        assert "personal access token" in info and "Your Notion access" in info
         assert "everyone in your Notion workspace" not in info
         assert "Notion Personal" in info
         # The shared per-user-ACL copy is false for Notion: the API exposes no

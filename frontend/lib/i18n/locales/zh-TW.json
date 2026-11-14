@@ -3634,6 +3634,27 @@
           "other": "此連接器的權限需要有人查看。",
           "unreadable": "無法讀取等待更新的資料夾清單。請讓執行 PipesHub 的人員重建此連接器的權限索引。在此期間，搜尋會逐筆檢查結果。"
         }
+      },
+      "notionAccess": {
+        "title": "你的 Notion 存取",
+        "titleFor": "你的 Notion 存取：{{connector}}",
+        "intro": "Notion 不會說明誰可以開啟某個頁面，因此 PipesHub 會向你顯示你自己的 Notion 個人存取權杖可以開啟的頁面。",
+        "guide": "如何建立個人存取權杖",
+        "loadError": "無法載入你的 Notion 存取。",
+        "tokenLabel": "Notion 個人存取權杖",
+        "link": "連結",
+        "replace": "取代",
+        "remove": "移除",
+        "nextSync": "變更會在連接器下次同步時生效。",
+        "linkedUsers": "誰連結了權杖",
+        "nobodyLinked": "尚未有人連結權杖。",
+        "status": {
+          "notLinked": "未連結。連結你的權杖即可查看你能開啟的 Notion 頁面。",
+          "linked": "已連結。",
+          "linkedOn": "已於 {{when}} 連結。",
+          "failed": "已失效。請連結新的權杖。",
+          "failedReason": "已失效：{{reason}}。請連結新的權杖。"
+        }
       }
     },
     "mcpServers": {

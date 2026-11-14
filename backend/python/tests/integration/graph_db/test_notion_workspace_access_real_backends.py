@@ -150,23 +150,27 @@ def _page(page_id: str, parent: dict) -> dict:
     }
 
 
-async def _sync_pages(env: _Env) -> list[str]:
-    """A top-level page and one under it, saved as the page walk saves them; their search ids."""
+async def _indexed(env: _Env, external_id: str) -> str:
+    """Search only returns indexed records; stand in for indexing. The record's search id."""
+    stored = await env.connector.data_entities_processor.get_record_by_external_id(env.connector.connector_id, external_id)
+    await env.graph.update_node(
+        stored.id, CollectionNames.RECORDS.value,
+        {"indexingStatus": ProgressStatus.COMPLETED.value, "virtualRecordId": f"vr-{stored.id}"},
+    )
+    return f"vr-{stored.id}"
+
+
+async def _sync_pages(env: _Env, *, inheriting: tuple[str, ...] = ()) -> list[str]:
+    """A top-level page and one under it, saved as the page walk saves them; their search ids.
+    ``inheriting``: pages stored as an earlier version stored them, inheriting from what is above them."""
     pages = [_page("page-top", {"type": "workspace", "workspace": True}),
              _page("page-child", {"type": "page_id", "page_id": "page-top"})]
     virtual_ids = []
     for page in pages:
         record = await env.connector._transform_to_webpage_record(page, "page")
+        record.inherit_permissions = record.inherit_permissions or page["id"] in inheriting
         await env.connector.data_entities_processor.on_new_records([(record, [])])
-        stored = await env.connector.data_entities_processor.get_record_by_external_id(
-            env.connector.connector_id, page["id"]
-        )
-        # Search only returns indexed records; stand in for indexing.
-        await env.graph.update_node(
-            stored.id, CollectionNames.RECORDS.value,
-            {"indexingStatus": ProgressStatus.COMPLETED.value, "virtualRecordId": f"vr-{stored.id}"},
-        )
-        virtual_ids.append(f"vr-{stored.id}")
+        virtual_ids.append(await _indexed(env, page["id"]))
     return virtual_ids
 
 
@@ -190,9 +194,32 @@ async def test_a_workspace_that_inherited_the_app_stops_granting_its_pages(env: 
         group_type=RecordGroupType.NOTION_WORKSPACE, permission_model=PermissionModel.RECORD_GROUP_LEVEL,
         inherit_permissions=True,
     ), [])])
-    pages = await _sync_pages(env)
+    pages = await _sync_pages(env, inheriting=("page-top", "page-child"))
     assert set(pages) <= await _found(env), "the earlier state must be visible for this test to mean anything"
 
     await env.connector._create_workspace_record_group()
 
     assert not await _found(env) & set(pages), "The next sync left the workspace granting its pages to every member."
+
+
+async def test_a_page_a_token_lists_opens_with_its_files_and_a_subpage_it_does_not_list_stays_shut(env: _Env) -> None:
+    """The member's own personal access token lists the top page only (the subpage is restricted from them in
+    Notion). The subpage was stored inheriting from its parent, as an earlier version left it."""
+    await env.connector._create_workspace_record_group()
+    top, child = await _sync_pages(env, inheriting=("page-child",))
+    attachment = env.connector._transform_to_file_record({
+        "id": "block-pdf", "type": "pdf", "pdf": {"type": "external", "external": {"url": "https://files.example/a.pdf"}},
+    }, "page-top")
+    await env.connector.data_entities_processor.on_new_records([(attachment, [])])
+    file_id = await _indexed(env, "block-pdf")
+    env.connector._readers = {"page-top": {env.member["email"]}}
+
+    await env.connector._apply_page_access()
+
+    found = await _found(env)
+    assert {top, file_id} <= found, "The member cannot find the page their token lists, or its file."
+    assert child not in found, "A grant on a page reached a subpage the member's token does not list."
+
+    env.connector._readers = {}
+    await env.connector._apply_page_access()
+    assert not await _found(env) & {top, child, file_id}, "Access stayed after the token stopped listing the page."

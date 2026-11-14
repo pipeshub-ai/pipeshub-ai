@@ -3634,6 +3634,27 @@
           "other": "此连接器的权限需要有人查看。",
           "unreadable": "无法读取等待更新的文件夹列表。请让运行 PipesHub 的人员重建此连接器的权限索引。在此期间，搜索会逐条检查结果。"
         }
+      },
+      "notionAccess": {
+        "title": "你的 Notion 访问",
+        "titleFor": "你的 Notion 访问：{{connector}}",
+        "intro": "Notion 不会说明谁可以打开某个页面，因此 PipesHub 会向你显示你自己的 Notion 个人访问令牌可以打开的页面。",
+        "guide": "如何创建个人访问令牌",
+        "loadError": "无法加载你的 Notion 访问。",
+        "tokenLabel": "Notion 个人访问令牌",
+        "link": "关联",
+        "replace": "替换",
+        "remove": "移除",
+        "nextSync": "更改将在连接器下次同步时生效。",
+        "linkedUsers": "谁关联了令牌",
+        "nobodyLinked": "还没有人关联令牌。",
+        "status": {
+          "notLinked": "未关联。关联你的令牌即可查看你能打开的 Notion 页面。",
+          "linked": "已关联。",
+          "linkedOn": "已于 {{when}} 关联。",
+          "failed": "已失效。请关联新的令牌。",
+          "failedReason": "已失效：{{reason}}。请关联新的令牌。"
+        }
       }
     },
     "mcpServers": {

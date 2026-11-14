@@ -3485,6 +3485,27 @@
           "other": "Something about this connector's permissions needs a person to look at it.",
           "unreadable": "The list of folders waiting to update can't be read. Ask whoever runs PipesHub to rebuild this connector's permission index. Search checks each result meanwhile."
         }
+      },
+      "notionAccess": {
+        "title": "Your Notion access",
+        "titleFor": "Your Notion access: {{connector}}",
+        "intro": "Notion does not say who may open a page, so PipesHub shows you the pages your own Notion personal access token can open.",
+        "guide": "How to create a personal access token",
+        "loadError": "We could not load your Notion access.",
+        "tokenLabel": "Notion personal access token",
+        "link": "Link",
+        "replace": "Replace",
+        "remove": "Remove",
+        "nextSync": "Changes apply at the connector's next sync.",
+        "linkedUsers": "Who linked a token",
+        "nobodyLinked": "Nobody has linked a token yet.",
+        "status": {
+          "notLinked": "Not linked. Link your token to see the Notion pages you can open.",
+          "linked": "Linked.",
+          "linkedOn": "Linked on {{when}}.",
+          "failed": "Stopped working. Link a new token.",
+          "failedReason": "Stopped working: {{reason}}. Link a new token."
+        }
       }
     },
     "mcpServers": {

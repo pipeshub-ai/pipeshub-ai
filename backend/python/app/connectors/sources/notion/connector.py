@@ -7,6 +7,7 @@ Authentication: OAuth 2.0
 import base64
 import bisect
 import hashlib
+import inspect
 import math
 import mimetypes
 import re
@@ -76,6 +77,7 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     load_connector_filters,
 )
+from app.connectors.sources.notion import personal_tokens
 from app.connectors.sources.notion.block_parser import NotionBlockParser, property_items_fetcher
 from app.connectors.sources.notion.common.apps import NotionApp
 from app.connectors.utils.record_ids import new_record_id
@@ -106,13 +108,17 @@ from app.models.entities import (
     SourcePerson,
     WebpageRecord,
 )
-from app.models.permission import Permission
+from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.notion.notion import (
     NotionClient,
+    NotionResponse,
     NotionRESTClientViaOAuth,
+    NotionTokenConfig,
     notion_api_base_url,
 )
+from app.sources.client.resilience import ResiliencePolicy
 from app.sources.external.notion.notion import NotionDataSource
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
@@ -159,6 +165,10 @@ _IMAGE_MAX_BYTES = 20 * 1024 * 1024
 _IMAGE_FETCH_CONCURRENCY = 4
 # Bounds the per-block fan-out of comment and row lookups at stream time.
 _STREAM_FETCH_CONCURRENCY = 5
+# Indexing outcomes after which a record's chunks are its current content (or it has none).
+_REINDEX_DONE = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
+# A reindex not done this long after it was asked for is asked for again.
+_REINDEX_RETRY_MS = 6 * 60 * 60 * 1000
 
 # Notion answers 404 object_not_found both for "deleted" and for "not shared with this
 # integration". Either way the integration can no longer read it, so with a token Notion just
@@ -228,6 +238,72 @@ def _with_comment_digest(
     return f"{revision}|comments:{digest}"
 
 
+def _without_linked_content(node: object) -> None:
+    """Remove, in place, what a Notion object shows of other pages: a page or database mention's
+    title, every rollup, and on a page that relates to others, its formulas.
+
+    Notion returns a mention's title to the integration whatever the reader may open, and a rollup
+    or a formula over a relation is computed from the related pages. Each of those pages has readers
+    of its own, so a reader of this one must not learn them from it.
+    """
+    if isinstance(node, list):
+        for item in node:
+            _without_linked_content(item)
+        return
+    if not isinstance(node, dict):
+        return
+    if node.get("type") == "mention" and (node.get("mention") or {}).get("type") in ("page", "database"):
+        node["plain_text"] = ""
+    if node.get("type") == "rollup" and "rollup" in node:
+        node["rollup"] = {"type": "unsupported"}
+    properties = node.get("properties") if node.get("object") == "page" else None
+    if isinstance(properties, dict) and any(
+        isinstance(p, dict) and p.get("type") == "relation" for p in properties.values()
+    ):
+        for prop in properties.values():
+            if isinstance(prop, dict) and prop.get("type") == "formula":
+                prop["formula"] = {"type": "unsupported"}
+    for value in node.values():
+        _without_linked_content(value)
+
+
+class _BodyWithoutLinkedContent:
+    """A Notion response body whose ``json()`` has gone through ``_without_linked_content``."""
+
+    def __init__(self, body: HTTPResponse) -> None:
+        self._body = body
+        self._parsed: object = None
+
+    def json(self) -> object:
+        if self._parsed is None:
+            self._parsed = self._body.json()
+            _without_linked_content(self._parsed)
+        return self._parsed
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._body, name)
+
+
+class _DataSourceWithoutLinkedContent:
+    """A NotionDataSource whose successful responses carry no content of other pages."""
+
+    def __init__(self, inner: NotionDataSource) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> object:
+        attr = getattr(self._inner, name)
+        if not inspect.iscoroutinefunction(attr):
+            return attr
+
+        async def call(*args: object, **kwargs: object) -> NotionResponse:
+            response = await attr(*args, **kwargs)
+            if getattr(response, "success", False) and getattr(response, "data", None) is not None:
+                response.data = _BodyWithoutLinkedContent(response.data)
+            return response
+
+        return call
+
+
 def _user_email(user: object) -> str:
     """A Notion user object's email, or "" when it shows none."""
     if not isinstance(user, dict):
@@ -281,6 +357,16 @@ class _DatabaseGone(Exception):
 
 class _DatabaseUnavailable(RuntimeError):
     """Notion could not answer for a database right now (429, 5xx, unusable payload)."""
+
+
+class _TokenRejected(Exception):
+    """A linked personal access token that will not work again: refused by Notion, or not the
+    linking user's own token in this workspace. ``reason`` is shown to the user; it never holds
+    the token."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class UnconvertibleImageError(Exception):
@@ -420,6 +506,9 @@ class NotionConnector(BaseConnector):
     _COMMENT_RECHECK_SYNCS_PER_CYCLE = 24
     # Pages whose sync-time comments are kept for the stream that indexes them.
     _SYNC_COMMENTS_CACHE_MAX = 20000
+    # Pages and data sources carry their own readers: a grant on a page must not reach a subpage
+    # Notion restricts. The personal connector instead lets everything inherit its one audience.
+    _PER_PAGE_ACCESS = True
 
     def __init__(
         self,
@@ -483,6 +572,23 @@ class NotionConnector(BaseConnector):
         # page id -> (revision, comments_by_block) the sync read; the stream indexing that
         # revision uses them instead of one comments call per block again.
         self._sync_comments: dict[str, tuple[str | None, dict[str, list[tuple[dict[str, Any], str]]]]] = {}
+        # Who may open what this sync: page or data source id -> emails of PipesHub users whose
+        # linked personal access token lists it; the members /v1/users listed; and the ids whose
+        # own public_url is set (None until the reconcile listing reads them all).
+        self._readers: dict[str, set[str]] = {}
+        self._member_emails: set[str] = set()
+        self._published: set[str] | None = None
+        # Notion user id -> email of each member /v1/users listed this sync: who owns a token.
+        self._member_ids: dict[str, str] = {}
+        # data source id -> the rows the integration's full page listing put under it this sync
+        # (None until that listing finished), whose content its table record indexes.
+        self._listed_rows: dict[str, set[str]] | None = None
+        # The grants _apply_page_access last wrote in full, so an unchanged sync writes none.
+        self._access_written: str | None = None
+        self._access_write_failures = 0
+        # Records indexed again this sync without other pages' titles: nobody reads them until next
+        # sync. None until that step has run this sync: then nobody reads anything.
+        self._withheld: set[str] | None = set()
 
     def _oauth_config_type(self) -> str:
         """Key this connector's shared OAuth apps are stored under.
@@ -767,6 +873,7 @@ class NotionConnector(BaseConnector):
             self.logger.info(f"🚀 Starting Notion sync for org: {org_id}")
             self._sync_incomplete = False
             self._failed_pages = set()
+            self._readers, self._published, self._listed_rows, self._withheld = {}, None, None, None
 
             datasource = await self._get_fresh_datasource()
             await self._assert_required_capabilities(datasource)
@@ -785,14 +892,32 @@ class NotionConnector(BaseConnector):
             # Step 1: Sync users
             await self._sync_users()
 
-            # Step 2: Sync all data sources (Search API returns all, regardless of hierarchy)
-            await self._sync_objects_by_type("data_source")
+            self._access_write_failures = 0
+            try:
+                # What each linked personal access token may open; a failure here only leaves
+                # that person, or everyone, without grants this sync.
+                await self._load_personal_access()
+                try:
+                    await self._reindex_without_linked_content()
+                except Exception as e:
+                    # _withheld stays None: nobody is granted this sync, and the next one tries again.
+                    self._sync_incomplete = True
+                    self.logger.error(f"Asking for Notion content to be indexed again failed: {e}", exc_info=True)
 
-            # Step 3: Sync all pages (Search API returns all, regardless of hierarchy)
-            # along with all page attachments and comments
-            await self._sync_objects_by_type("page")
+                # Step 2: Sync all data sources (Search API returns all, regardless of hierarchy)
+                await self._sync_objects_by_type("data_source")
 
-            await self._finish_sync()
+                # Step 3: Sync all pages (Search API returns all, regardless of hierarchy)
+                # along with all page attachments and comments
+                await self._sync_objects_by_type("page")
+
+                await self._finish_sync()
+            finally:
+                # Also after a walk that failed: a token revoked since the last sync must not keep its grants.
+                await self._apply_page_access_logged()
+            if self._access_write_failures:
+                # The next run writes them again.
+                raise RuntimeError(f"Could not write who may read {self._access_write_failures} Notion record(s)")
             self.logger.info("✅ Notion sync completed successfully")
 
         except Exception as e:
@@ -838,15 +963,22 @@ class NotionConnector(BaseConnector):
 
     # ==================== Reconciliation with the source ====================
 
-    async def _list_visible_objects(self, object_type: str) -> dict[str, dict[str, Any]] | None:
+    async def _list_visible_objects(
+        self, object_type: str, datasource: NotionDataSource | None = None,
+    ) -> dict[str, dict[str, Any]] | None:
         """Every page or data source search returns now, by id (trashed ones too), or None when
         the walk did not reach its end: a failed call, a cursor that did not advance, an empty page
-        that still has more, or Notion reporting the result incomplete."""
+        that still has more, or Notion reporting the result incomplete.
+
+        ``datasource``: search as a personal access token instead; Notion refusing it raises
+        _TokenRejected."""
         found: dict[str, dict[str, Any]] = {}
         cursor: str | None = None
         restarts = 0
+        personal = datasource is not None
         while True:
-            datasource = await self._get_fresh_datasource()
+            if not personal:
+                datasource = await self._get_fresh_datasource()
             body: dict[str, Any] = {
                 "filter": {"property": "object", "value": object_type},
                 "page_size": self._SYNC_PAGE_SIZE,
@@ -863,6 +995,8 @@ class NotionConnector(BaseConnector):
                     restarts += 1
                     cursor = None
                     continue
+                if personal and response and response.status_code == HTTPStatus.UNAUTHORIZED:
+                    raise _TokenRejected("Notion no longer accepts the token")
                 self.logger.warning(
                     "Notion %s listing failed: %s", object_type, response.error if response else "No response"
                 )
@@ -912,6 +1046,17 @@ class NotionConnector(BaseConnector):
                 obj_id: obj for obj_id, obj in listed.items()
                 if not (obj.get("archived") or obj.get("in_trash"))
             }
+            if object_type == "data_source":
+                self._published = {obj_id for obj_id, obj in live.items() if obj.get("public_url")}
+            elif self._published is not None:
+                self._published |= {obj_id for obj_id, obj in live.items() if obj.get("public_url")}
+            if object_type == "page":
+                listed_rows: dict[str, set[str]] = defaultdict(set)
+                for obj_id, obj in live.items():
+                    parent = obj.get("parent") or {}
+                    if parent.get("type") == "data_source_id" and parent.get("data_source_id"):
+                        listed_rows[parent["data_source_id"]].add(obj_id)
+                self._listed_rows = listed_rows
 
             missing = [obj for obj_id, obj in live.items() if obj_id not in stored_ids]
             if missing:
@@ -965,6 +1110,219 @@ class NotionConnector(BaseConnector):
                 )
                 if not await self._delete_records(doomed):
                     self._sync_incomplete = True
+
+    # ==================== Who may open each page ====================
+
+    async def _load_personal_access(self) -> None:
+        """Fill ``_readers`` from every personal access token linked to this connector.
+
+        A user whose token cannot be read through this run gets nothing this run: their earlier
+        grants could cover a page they lost since. A token Notion refuses, or one that is not the
+        user's own, is dropped and the user is told.
+        """
+        linked = await personal_tokens.entries(self.config_service, self.connector_id)
+        outcomes = await gather_with_concurrency(_COMMENT_FETCH_CONCURRENCY, *[
+            self._read_personal_access(user_id, entry) for user_id, entry in linked.items()
+            if entry.get("status") == personal_tokens.LINKED and entry.get("token")
+        ], return_exceptions=True)
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                self._sync_incomplete = True
+                self.logger.warning("Reading a linked Notion token failed (%s); that user gets nothing this sync",
+                                    type(outcome).__name__)
+
+    async def _read_personal_access(self, user_id: str, entry: dict[str, Any]) -> None:
+        user = await self.data_entities_processor.get_user_by_user_id(user_id, raise_on_error=True)
+        if not user or user.org_id != self.data_entities_processor.org_id or user.is_active is False or not user.email:
+            # Gone from the org or deactivated: the secret has no one left to serve.
+            await personal_tokens.unlink_token(self.config_service, self.connector_id, user_id)
+            return
+        token = entry["token"]
+        try:
+            seen = await self._visible_with_token(token, user.email)
+        except _TokenRejected as rejected:
+            if not await personal_tokens.mark_failed(self.config_service, self.connector_id, user_id, rejected.reason, token):
+                return  # replaced by a new token while this sync ran
+            self.logger.warning("Dropping the Notion token user %s linked: %s", user_id, rejected.reason)
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=f"{self.display_name}: your Notion access token no longer works",
+                message=f"{rejected.reason}. Link a new personal access token to see your Notion pages in PipesHub again.",
+                recipient_user_ids=[user_id],
+            )
+            return
+        except Exception as e:
+            self._sync_incomplete = True
+            self.logger.warning(
+                "Could not list what user %s may open in Notion this sync (%s); they get no Notion pages until it can",
+                user_id, type(e).__name__,
+            )
+            return
+        email = user.email.lower()
+        for object_id in seen:
+            self._readers.setdefault(object_id, set()).add(email)
+
+    async def _visible_with_token(self, token: str, email: str) -> set[str]:
+        """The ids of the pages and data sources Notion lists to ``token``, which must be ``email``'s own
+        token in this connector's workspace."""
+        # Its own limiter: Notion rate-limits each token apart from the connector's.
+        resilience = ResiliencePolicy.from_config(
+            self.connector_metadata.get("resilienceConfig"), name=f"{self.connector_name}-personal", logger=self.logger,
+        )
+        client = NotionTokenConfig(token=token, resilience=resilience).create_client()
+        try:
+            return await self._visible_with_client(NotionDataSource(NotionClient(client)), email)
+        finally:
+            await client.close()
+
+    async def _visible_with_client(self, datasource: NotionDataSource, email: str) -> set[str]:
+        response = await datasource.retrieve_bot_user()
+        if response is not None and response.status_code == HTTPStatus.UNAUTHORIZED:
+            raise _TokenRejected("Notion no longer accepts the token")
+        if not response or not response.success or not response.data:
+            raise RuntimeError("Notion did not say whose token this is")
+        bot = response.data.json() or {}
+        details = bot.get("bot") or {}
+        owner = (details.get("owner") or {}).get("user") or {}
+        if not self.workspace_id:
+            raise RuntimeError("this sync does not know its Notion workspace")
+        if details.get("workspace_id") != self.workspace_id:
+            raise _TokenRejected("The token belongs to another Notion workspace")
+        # By the owner's id among the members /v1/users listed: /users/me shows the owner's email only
+        # with an email capability, and a creator who is no longer a member must not keep their reach.
+        owner_email = self._member_ids.get(owner.get("id") or "")
+        if not owner_email:
+            raise RuntimeError("the token's owner is not among the members this sync listed")
+        if owner_email != email.lower():
+            # A token lent by someone else would show their pages to this user.
+            raise _TokenRejected("The token is not yours: it belongs to another Notion member")
+        seen: set[str] = set()
+        for object_type in ("data_source", "page"):
+            listed = await self._list_visible_objects(object_type, datasource)
+            if listed is None:
+                raise RuntimeError("the search did not reach its end")
+            seen |= {i for i, obj in listed.items() if not (obj.get("archived") or obj.get("in_trash"))}
+        return seen
+
+    async def _apply_page_access_logged(self) -> None:
+        try:
+            await self._apply_page_access()
+        except Exception as e:
+            self._sync_incomplete = True
+            self._access_write_failures += 1
+            self.logger.error(f"Writing who may read each Notion page failed: {e}", exc_info=True)
+
+    async def _reindex_without_linked_content(self) -> None:
+        """Before the walk: have every page and data source stored before content dropped other
+        pages' titles indexed again, once, and put in ``_withheld`` (granted to nobody) each one whose
+        new index is not confirmed. Records this code writes need none of it.
+
+        ``notionContent`` keeps, per record still waiting, when its reindex was asked for. A record
+        counts as done once indexing finished it after that (``lastIndexTimestamp``, with a status
+        that is an outcome); one that failed, was never sent, or is still not done after
+        ``_REINDEX_RETRY_MS`` is asked for again and stays withheld.
+        """
+        key = personal_tokens.content_state_path(self.connector_id)
+        state = await self.config_service.get_config(key, use_cache=False, raise_on_error=True) or {}
+        raw = state.get("pending") or {}
+        pending: dict[str, int] = dict(raw) if isinstance(raw, dict) else dict.fromkeys(raw, 0)
+        if not state.get("done"):
+            pending = {
+                r.id: 0 for record_type in (RecordType.WEBPAGE, RecordType.DATASOURCE)
+                for r in await self.data_entities_processor.get_records_by_record_type(self.connector_id, record_type)
+                if not r.is_placeholder
+            }
+        self._withheld = set(pending)
+        if not pending:
+            if not state.get("done"):
+                await self._save_content_state(key, pending)
+            return
+        now = get_epoch_timestamp_in_ms()
+
+        async def stored(record_id: str) -> tuple[str, dict[str, Any] | None]:
+            async with self.data_store_provider.transaction() as tx_store:
+                return record_id, await tx_store.get_record_by_key(record_id, raise_on_error=True)
+
+        resend: list[Record] = []
+        for record_id, doc in await gather_with_concurrency(_STREAM_FETCH_CONCURRENCY, *[stored(i) for i in pending]):
+            asked = pending[record_id]
+            if doc is None or doc.get("isDeleted"):
+                del pending[record_id]  # gone, and its index with it
+                continue
+            status, indexed = doc.get("indexingStatus"), doc.get("lastIndexTimestamp") or 0
+            if asked and indexed >= asked and status in _REINDEX_DONE:
+                del pending[record_id]
+            elif not asked or status == ProgressStatus.FAILED.value or now - asked > _REINDEX_RETRY_MS:
+                resend.append(Record.from_arango_base_record(doc))
+        if resend:
+            published = set(await self.data_entities_processor.reindex_existing_records(resend))
+            pending.update({r.id: now for r in resend if r.id in published})
+        self._withheld = set(pending)
+        await self._save_content_state(key, pending)
+
+    async def _save_content_state(self, key: str, pending: dict[str, int]) -> None:
+        if not await self.config_service.set_config(key, {"done": True, "pending": pending}):
+            raise RuntimeError("the configuration store did not keep the reindex state")
+
+    def _readers_of(self, object_id: str) -> set[str]:
+        readers = set(self._readers.get(object_id, ()))
+        if self._published is not None and object_id in self._published:
+            readers |= self._member_emails
+        return readers
+
+    async def _apply_page_access(self) -> None:
+        """Give every stored page and data source exactly the readers this sync proved.
+
+        A data source record indexes the table of every row Notion returns for it, stored as a record
+        or not, so it goes only to people who may open every row the full page listing put under it
+        (and every stored one); without that listing this sync, to nobody. A file inherits from its page.
+        A record whose write fails is counted and the rest are still written; the run then fails.
+        shortcut: a sync whose grants changed anywhere rewrites every record (one transaction each);
+        compare with the stored grants per record when workspaces of tens of thousands of pages need it.
+        """
+        processor = self.data_entities_processor
+        stored = [
+            r for record_type in (RecordType.WEBPAGE, RecordType.DATASOURCE)
+            for r in await processor.get_records_by_record_type(self.connector_id, record_type)
+            if r.external_record_id
+        ]
+        # By parent id: a stored record does not keep its parent's type.
+        data_sources = {r.external_record_id for r in stored if r.record_type == RecordType.DATASOURCE}
+        rows: dict[str, set[str]] = defaultdict(set)
+        for r in stored:
+            if r.record_type == RecordType.WEBPAGE and r.parent_external_record_id in data_sources:
+                rows[r.parent_external_record_id].add(r.external_record_id)
+        wanted: list[tuple[Record, list[str]]] = []
+        for record in stored:
+            withheld = self._withheld is None or record.id in self._withheld
+            readers = set() if withheld else self._readers_of(record.external_record_id)
+            if record.record_type == RecordType.DATASOURCE:
+                if self._listed_rows is None:
+                    readers = set()
+                for row in rows[record.external_record_id] | (self._listed_rows or {}).get(record.external_record_id, set()):
+                    readers &= self._readers_of(row)
+            wanted.append((record, sorted(readers)))
+
+        fingerprint = hashlib.sha256(repr(sorted((r.id, readers) for r, readers in wanted)).encode()).hexdigest()
+        # A full sync unlinks what it did not see written, so it always writes.
+        if fingerprint == self._access_written and not processor.full_sync_running(self.connector_id):
+            return
+        failed = 0
+        for record, readers in wanted:
+            # Loaded records read back as inheriting; a page must never reach its parent's readers.
+            record.inherit_permissions = False
+            try:
+                await processor.on_updated_record_permissions(record, [
+                    Permission(email=email, type=PermissionType.READ, entity_type=EntityType.USER) for email in readers
+                ])
+            except Exception as e:
+                failed += 1
+                self.logger.error("Could not write who may read Notion record %s: %s", record.id, type(e).__name__)
+        self._access_written = None if failed else fingerprint
+        if failed:
+            self._sync_incomplete = True
+            self._access_write_failures += failed
 
     async def _recheck_page_comments(self, live: dict[str, dict[str, Any]], stored_ids: set) -> None:
         """Re-read the comments of a rotating slice of stored pages.
@@ -1460,7 +1818,7 @@ class NotionConnector(BaseConnector):
         record.record_group_id = stub.record_group_id
         if not record.external_record_group_id:
             record.external_record_group_id = stub.external_record_group_id or self.workspace_id
-        record.inherit_permissions = True
+        record.inherit_permissions = not self._PER_PAGE_ACCESS
 
         # Same gate the search pass applies (see _sync_objects_by_type). Without it the
         # sweep is a way in for content the user filtered off: promoting a stub publishes a
@@ -1982,7 +2340,7 @@ class NotionConnector(BaseConnector):
             updated.external_record_group_id = (
                 record.external_record_group_id or self.workspace_id
             )
-        updated.inherit_permissions = True
+        updated.inherit_permissions = not self._PER_PAGE_ACCESS
         return (updated, [])
 
     async def get_filter_options(
@@ -2091,6 +2449,7 @@ class NotionConnector(BaseConnector):
             user_details_complete = True
             listing_complete = True
             workspace_emails: List[str] = []
+            member_ids: dict[str, str] = {}
             persons_seen = 0
             persons_without_email = 0
             members_without_email: list[str] = []
@@ -2229,6 +2588,10 @@ class NotionConnector(BaseConnector):
                         workspace_emails.extend(
                             app_user.email for app_user in app_users if app_user.email
                         )
+                        member_ids.update({
+                            app_user.source_user_id: app_user.email.lower()
+                            for app_user in app_users if app_user.email and app_user.source_user_id
+                        })
                         self.logger.info(f"✅ Synced {len(app_users)} users in this batch")
 
                 if not has_more or not next_cursor:
@@ -2250,6 +2613,8 @@ class NotionConnector(BaseConnector):
                     "then sync again."
                 )
             self._bot_ids_complete = listing_complete
+            self._member_emails = {email.lower() for email in workspace_emails}
+            self._member_ids = member_ids
             if user_details_complete:
                 await self._remove_departed_workspace_users(workspace_emails, members_without_email)
             else:
@@ -2748,6 +3113,22 @@ class NotionConnector(BaseConnector):
 
     # ==================== Fetching Methods ======================
 
+    def _hide_child_titles(self, blocks: list[Block], block_groups: list[BlockGroup]) -> None:
+        """Drop the names of the pages and databases a record links to or holds.
+
+        Each has readers of its own, so a reader of this record may be one Notion hides the child
+        from; its title must not be found through this record. The links keep their ids.
+        """
+        if not self._PER_PAGE_ACCESS:
+            return
+        for block in blocks:
+            if block.sub_type == BlockSubType.CHILD_RECORD:
+                block.data, block.source_name = "", None
+        for item in (*blocks, *block_groups):
+            metadata = getattr(item, "table_row_metadata", None)
+            for child in (item.children_records or []) + ((metadata.children_records if metadata else None) or []):
+                child.child_name = None
+
     async def _fetch_page_as_blocks(
         self,
         page_id: str,
@@ -2791,6 +3172,7 @@ class NotionConnector(BaseConnector):
         if comments_by_block:
             await self._attach_comments_to_blocks(blocks, block_groups, comments_by_block, page_id, parent_page_url, parser)
 
+        self._hide_child_titles(blocks, block_groups)
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     async def _fetch_data_source_as_blocks(
@@ -2883,9 +3265,13 @@ class NotionConnector(BaseConnector):
 
         async def record_child(external_id: str) -> ChildRecord | None:
             if external_id not in record_children:
-                record_children[external_id] = await self.get_record_child_by_external_id(
+                child = await self.get_record_child_by_external_id(
                     external_id, data_source_id if external_id in row_ids else None
                 )
+                if child is not None and self._PER_PAGE_ACCESS and external_id not in row_ids:
+                    # A relation's target has readers of its own: the table shows its id, not its title.
+                    child = child.model_copy(update={"child_name": None})
+                record_children[external_id] = child
             return record_children[external_id]
 
         async def user_child(user_id: str) -> ChildRecord | None:
@@ -2905,6 +3291,7 @@ class NotionConnector(BaseConnector):
 
         self.logger.info(f"Fetched data source {data_source_id}: {len(block_groups)} tables, {len(blocks)} rows")
 
+        self._hide_child_titles(blocks, block_groups)
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     async def _fetch_page_attachments_and_comments(
@@ -3571,6 +3958,9 @@ class NotionConnector(BaseConnector):
         """Children of a block. A synced block whose original lives on a page the integration
         cannot see gets a 404 for the original's children: it renders empty rather than failing
         the whole page."""
+        if children_block_id != block_id and self._PER_PAGE_ACCESS:
+            # A synced copy shows another page's content, which has readers of its own.
+            return []
         try:
             return await self._process_blocks_recursive(children_block_id, *args)
         except HTTPException as e:
@@ -3856,7 +4246,7 @@ class NotionConnector(BaseConnector):
                         version=0,
                         is_placeholder=True,
                         origin=OriginTypes.CONNECTOR,
-                        inherit_permissions=True,
+                        inherit_permissions=not self._PER_PAGE_ACCESS,
                         parent_external_record_id=parent_ext_id,
                         parent_record_type=parent_record_type,
                     )
@@ -4963,7 +5353,7 @@ class NotionConnector(BaseConnector):
                 connector_id=self.connector_id,
                 mime_type=MimeTypes.BLOCKS.value,
                 preview_renderable=False,
-                inherit_permissions=True,
+                inherit_permissions=not self._PER_PAGE_ACCESS,
                 weburl=obj_data.get("url"),
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
@@ -5426,7 +5816,7 @@ class NotionConnector(BaseConnector):
                 version=0,
                 is_placeholder=True,
                 origin=OriginTypes.CONNECTOR,
-                inherit_permissions=True,
+                inherit_permissions=not self._PER_PAGE_ACCESS,
                 parent_external_record_id=parent_data_source_id,
                 parent_record_type=RecordType.DATASOURCE if parent_data_source_id else None,
             )
@@ -5619,4 +6009,6 @@ class NotionConnector(BaseConnector):
             if getattr(internal_client, "headers", None) is not None:
                 internal_client.headers["Authorization"] = f"Bearer {fresh_token}"
 
-        return NotionDataSource(self.notion_client)
+        datasource = NotionDataSource(self.notion_client)
+        # Each page has its own readers here, so one page's content must not carry another's.
+        return _DataSourceWithoutLinkedContent(datasource) if self._PER_PAGE_ACCESS else datasource

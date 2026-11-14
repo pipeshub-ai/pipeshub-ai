@@ -2119,7 +2119,7 @@ class NotionBlockParser:
                     page_id = rel.get("id")
                     if page_id:
                         child_record = await get_record_child_callback(page_id)
-                        title = child_record.child_name if child_record else page_id
+                        title = (child_record.child_name if child_record else None) or page_id
                         titles.append(title)
                 return ", ".join(titles)
             else:

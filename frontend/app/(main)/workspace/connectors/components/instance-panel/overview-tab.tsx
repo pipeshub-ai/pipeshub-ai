@@ -29,6 +29,7 @@ import { IndexingStatsPanel } from '@/app/components/indexing-stats/indexing-sta
 import { CodeGraphStatus } from './code-graph-status';
 import { LastRunSummary } from './last-run-summary';
 import { PermissionFreshness } from './permission-freshness';
+import { NotionPersonalToken, isNotionTeamConnector } from './notion-personal-token';
 import { ActionItemsCallout } from './action-items-callout';
 import { AccessCheckDialog } from './access-check-dialog';
 
@@ -358,6 +359,8 @@ export function OverviewTab({
         onSyncNow={instance.isActive && !isSyncRunning(instance.status) ? handleOverviewResync : undefined}
         syncBusy={isHeaderSyncBusy}
       />
+
+      {instance._key && isNotionTeamConnector(instance) && <NotionPersonalToken connectorId={instance._key} />}
 
       {/* Shared stats panel */}
       <IndexingStatsPanel

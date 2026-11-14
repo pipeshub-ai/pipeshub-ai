@@ -729,3 +729,13 @@ export interface PermissionStatus {
     fix?: { vendor?: string; permission?: string } | null;
   }>;
 }
+
+/** GET|PUT|DELETE /connectors/:id/notion/personal-token. Never holds the token itself. */
+export interface NotionPersonalTokenState {
+  status: 'NOT_LINKED' | 'LINKED' | 'FAILED';
+  /** Why the token stopped working, for FAILED. */
+  reason?: string;
+  /** Epoch milliseconds. */
+  linkedAt?: number;
+  updatedAt?: number;
+}
