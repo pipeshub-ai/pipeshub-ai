@@ -2296,7 +2296,9 @@ class JiraConnector(BaseConnector):
         # ====================================================================
         # Phase 1: DB reads (0 API calls)
         # ====================================================================
-        cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        # A failed read raises: read as none, every listed account would look new, and none be kept while product
+        # access is unknown.
+        cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
         self._stored_app_users = cached_app_users
         pipeshub_users = (
             active_pipeshub_users

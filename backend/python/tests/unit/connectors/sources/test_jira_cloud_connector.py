@@ -1354,6 +1354,28 @@ class TestFetchUsersPhases:
         assert connector._deactivated_account_ids == {"gone"}
 
     @pytest.mark.asyncio
+    async def test_a_failed_read_of_the_linked_accounts_fails_the_user_read(self) -> None:
+        """The linked accounts decide who is kept while product access is unknown, who is newly listed and who left.
+        Read as none after a failure, every account would look new and nobody would be kept: the read fails instead."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        async def get_all_app_users(connector_id: str, *, raise_on_error: bool = False) -> list:
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
+            return []  # what every store answers for a failed read without the flag
+
+        connector.data_entities_processor.get_all_app_users = AsyncMock(side_effect=get_all_app_users)
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, [
+            {"accountId": "u2", "accountType": "atlassian", "active": True, "emailAddress": "h@x.com"}]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        with pytest.raises(ConnectionError):
+            await connector._fetch_users()
+
+    @pytest.mark.asyncio
     async def test_reverse_lookup_skipped_when_all_resolved(self):
         """Phase 5 not triggered when all users have visible email."""
         connector = _make_connector()
