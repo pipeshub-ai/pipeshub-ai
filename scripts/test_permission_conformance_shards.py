@@ -4,25 +4,53 @@ The `graph` job splits two suites across `matrix.shard`, each shard with its own
 stores. A shard names its pytest paths in `tests`. For each suite one shard
 takes the whole folder minus what the others name (`--ignore`), so a new test
 file is never left out. A file too slow for one shard runs alone in several,
-each with a `k` expression; for every test exactly one of them is true. Each
-shard pins its case count in `cases`, and a suite's pins add up to TOTALS.
+each with a `k` expression; for every test exactly one of them is true. No
+count is written down: each shard checks its run against its own
+`pytest --collect-only`, and `--collect` (run in permission-conformance.yml,
+where the suites' dependencies are installed) collects each suite's folder and
+every shard and checks they match.
 
 Run: python3 -m unittest discover -s scripts -p 'test_permission_conformance_shards.py'
+     python3 scripts/test_permission_conformance_shards.py --collect
 """
 
 import itertools
 import re
+import sys
 import unittest
 from pathlib import Path
 
 import yaml
+from assert_no_skips import collect, shard_problems
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/permission-conformance.yml"
 PYTHON = ROOT / "backend/python"
+# the suites the graph job splits (the junit classname prefix), and what its run step passes besides tests and k
+SUITES = ("tests.integration.graph_permissions", "tests.permissions")
+SELECT = ["-m", "integration"]
 
-# Cases of each suite under `-m integration` (the junit classname prefix). Adding tests raises this and the cases of the shard that runs them.
-TOTALS = {"tests.integration.graph_permissions": 842, "tests.permissions": 316}
+
+def _shards() -> tuple[list[int], dict[int, dict]]:
+    matrix = yaml.safe_load(WORKFLOW.read_text())["jobs"]["graph"]["strategy"]["matrix"]
+    return matrix["shard"], {entry["shard"]: entry for entry in matrix["include"]}
+
+
+def collected_problems() -> list[str]:
+    """Collect each suite's folder and each shard as the workflow runs them; every case must run in exactly one shard of its suite."""
+    _, shards = _shards()
+    problems = []
+    for suite in SUITES:
+        folder, problem = collect([suite.replace(".", "/"), *SELECT], cwd=PYTHON)
+        problems += [f"{suite}: {problem}"] if problem else []
+        runs = {}
+        for shard, entry in shards.items():
+            if entry["suite"] == suite:
+                k = ["-k", entry["k"]] if entry.get("k") else []
+                runs[shard], problem = collect([*entry["tests"].split(), *SELECT, *k], cwd=PYTHON)
+                problems += [f"shard {shard}: {problem}"] if problem else []
+        problems += [f"{suite}: {p}" for p in shard_problems(folder, runs)]
+    return problems
 
 
 def _holds(expression: str, true: set[str]) -> bool:
@@ -44,25 +72,17 @@ def _partition(expressions: list[str]) -> bool:
 
 class PermissionConformanceShardsTest(unittest.TestCase):
     def setUp(self) -> None:
-        matrix = yaml.safe_load(WORKFLOW.read_text())["jobs"]["graph"]["strategy"]["matrix"]
-        self.names = matrix["shard"]
-        self.shards = {entry["shard"]: entry for entry in matrix["include"]}
+        self.names, self.shards = _shards()
         self.args = {shard: entry["tests"].split() for shard, entry in self.shards.items()}
 
-    def test_every_shard_has_its_suite_tests_and_pin(self) -> None:
+    def test_every_shard_has_its_suite_and_tests(self) -> None:
         self.assertEqual(sorted(self.names), sorted(self.shards))
         for shard, entry in self.shards.items():
-            self.assertIn(entry["suite"], TOTALS, shard)
-            self.assertIsInstance(entry["cases"], int, shard)
-            self.assertGreater(entry["cases"], 0, shard)
+            self.assertIn(entry["suite"], SUITES, shard)
             self.assertTrue(self.args[shard], shard)
 
-    def test_the_pins_add_up_to_each_suite(self) -> None:
-        for suite, total in TOTALS.items():
-            self.assertEqual(sum(e["cases"] for e in self.shards.values() if e["suite"] == suite), total, suite)
-
     def test_each_test_runs_in_exactly_one_shard(self) -> None:
-        for suite in TOTALS:
+        for suite in SUITES:
             folder = suite.replace(".", "/")
             mine = {shard: self.args[shard] for shard, e in self.shards.items() if e["suite"] == suite}
             rest = [shard for shard, args in mine.items() if folder in args]
@@ -112,4 +132,10 @@ class PermissionConformanceShardsTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--collect"]:
+        found = collected_problems()
+        if found:
+            sys.exit("\n".join(found))
+        sys.stdout.write("every case of each suite runs in exactly one shard\n")
+        sys.exit(0)
     unittest.main()

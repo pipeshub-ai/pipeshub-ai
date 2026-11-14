@@ -75,8 +75,9 @@ class OrgView:
         out = [c.line() for c in self.connectors]
         if self.group_rows_ahead:
             rows, ahead = self.group_rows_ahead
-            out.append(f"! group_rows_ahead: {rows} pgvector group row(s) were computed up to {int(ahead)} s after the database's clock; a rewrite of their "
-                       "virtual records is refused (the roots stay pending) until the clock passes them, or they are indexed again")
+            out.append(f"! group_rows_ahead: {rows} pgvector group row(s) were computed up to {int(ahead)} s after the database's clock by a writer whose "
+                       "clock was ahead; the next write of their groups (a rewrite included) replaces them, so their roots clear on the next rewrite. "
+                       "Check the clock of the hosts that pass their own time")
         out += [f"! {n}" for n in self.notes]
         return out
 
