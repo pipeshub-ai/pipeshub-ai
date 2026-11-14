@@ -1014,3 +1014,33 @@ class TestProductAccessRegained:
         assert "2" not in {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}, (
             "read again once"
         )
+
+    async def test_an_account_withdrawn_and_linked_again_gets_its_level_grants_again(self, jira, db, store, jql_search) -> None:
+        """The first hand-out of carol ends once every project had her; linked again after a withdrawal, she starts
+        a new one, so her level grant, dropped meanwhile, comes back though the issue did not change."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="carol-key", user={"key": "carol-key", "name": "carol"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="alice"))
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key", "carol-key")
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        product_group(*LICENSED)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
+
+        product_group("alice-key", "bob-key", "dave-key")
+        await sync(connector, jql_search, recent=[])
+        assert [u.source_user_id for u in db.withdrawn_users] == ["carol-key"]
+        db.record_permissions["2"] = [p for p in db.record_permissions["2"] if p.email != "carol@example.com"]
+
+        product_group(*LICENSED)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
