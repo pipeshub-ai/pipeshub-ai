@@ -571,7 +571,9 @@ class TestRecoveryClaimBudget:
 
         budget = consumer._IndexingRedisStreamsConsumer__recovery_claim_budget(100)
 
-        assert budget == 3
+        # Three places free, one of them (a quarter of the buffer) left for new
+        # events, so recovery never fills the buffer and stops reading.
+        assert budget == 2
 
     async def test_budget_is_zero_when_the_buffer_is_full(self, logger, config):
         consumer = _make_consumer(

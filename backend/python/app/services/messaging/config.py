@@ -454,6 +454,17 @@ class MessagingEnvConfig:
         return _env_seconds("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", 3600.0)
 
     @property
+    def stranded_record_pending_max_age_seconds(self) -> float:
+        """How long ago a pending (delivered, not acknowledged) event may have been
+        published and still hold back the stranded-record sweep on its lane.
+
+        Pending entries of a consumer that stopped are discounted anyway; this caps
+        the rest, so one entry nothing finishes cannot hold a lane's waiting records
+        for ever. Zero removes the cap.
+        """
+        return _env_seconds("STRANDED_RECORD_PENDING_MAX_AGE_SECONDS", 24 * 3600.0)
+
+    @property
     def revision_retention_grace_seconds(self) -> float:
         """How old an artifact-set revision or a revision's stage states must be before the
         retention sweep may remove them, once nothing points at or is on that revision.

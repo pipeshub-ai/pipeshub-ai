@@ -26,7 +26,7 @@ from app.services.messaging.lanes.assignment import (
     LaneEntry,
     read_lane_map,
 )
-from app.services.messaging.lanes.backlog import LaneBacklog
+from app.services.messaging.lanes.backlog import LaneBacklog, StalePending
 from app.services.messaging.lanes.hash_router import stable_lane
 from app.telemetry.backend import METRICS_BACKEND
 from tests.support.fake_redis_connection_provider import FakeRedisConnectionProvider
@@ -245,6 +245,32 @@ class TestTheLaneView:
         slack_lane = (await _map(provider))[SLACK].lane
         assert shared["movingOff"] == [{"id": SLACK, "toLane": slack_lane, "fencedAt": None}]
         assert lanes[slack_lane]["movingOn"] == [{"id": SLACK, "fromLane": SHARED, "fencedAt": None}]
+
+    async def test_it_says_how_old_each_pending_list_is_and_which_stopped_consumers_hold_it(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph
+    ) -> None:
+        graph.add(GITLAB)
+        await _assignments(provider).lane_for(GITLAB)
+        stream = f"{TOPIC}.{SHARED}"
+        backlog = LaneBacklog(
+            TOPIC,
+            {stream: 1.0},
+            pending={stream: 2001},
+            oldest_pending_ms={stream: 1.0},
+            oldest_live_ms={},
+            stale={stream: StalePending({"replaced-1": (2000, 90_000_000)}, 1.0)},
+        )
+
+        view = (await _upkeep(provider, graph, backlog=backlog)).as_dict()
+
+        lanes = {lane["lane"]: lane for lane in view["lanes"]}  # type: ignore[union-attr]
+        assert lanes[SHARED]["oldestPendingSeconds"] > 0
+        assert lanes[SHARED]["staleConsumers"] == [
+            {"name": "replaced-1", "pending": 2000, "idleSeconds": 90_000.0}
+        ]
+        quiet = next(lane for number, lane in lanes.items() if number != SHARED)
+        assert quiet["oldestPendingSeconds"] is None
+        assert quiet["staleConsumers"] == []
 
     async def test_a_deleted_connector_is_counted_on_its_lane_but_not_listed(
         self, provider: FakeRedisConnectionProvider, graph: _Graph
