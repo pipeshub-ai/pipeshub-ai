@@ -3342,7 +3342,28 @@
         "loadingOptions": "正在載入選項…",
         "noResults": "找不到結果",
         "optionsLoadFailed": "無法載入此篩選條件的選項。請關閉此清單後重新開啟以重試。",
-        "loadingMore": "正在載入更多…"
+        "loadingMore": "正在載入更多…",
+        "folderPaths": {
+          "help": "路徑從最上層開始。* 符合單一資料夾名稱中的任意字元，** 符合任意數量的資料夾，? 符合一個字元。符合的資料夾中的所有內容都會包含在內。未比對到任何內容的模式會在連接器卡片上標示。",
+          "examples": {
+            "oneLevel": "customer/*/quotes：每位客戶的 quotes 資料夾",
+            "anyDepth": "**/quotes：任意深度下名為 quotes 的每個資料夾（會讀取每個資料夾）",
+            "exclude": "archive 搭配排除：除了 archive 資料夾以外的所有內容"
+          },
+          "caseInsensitive": "名稱比對不分大小寫。\\ 和 / 都可分隔資料夾。",
+          "caseSensitive": "名稱區分大小寫。要在名稱中比對這些字元，請寫 \\* 或 \\?。",
+          "notFiles": "模式選擇的是資料夾，而不是檔案。要選擇檔案類型，請使用 File Extensions。",
+          "errors": {
+            "climbsOut": "資料夾「{{value}}」必須是從最上層開始的路徑，且不含「..」。",
+            "emptySegment": "資料夾「{{value}}」的兩個斜線之間有空的資料夾名稱。請刪除多餘的「/」。",
+            "excludesEverything": "排除「{{value}}」後將沒有可同步的內容。請移除它，或切換為包含。",
+            "tooLong": "資料夾「{{value}}」超過 1024 個字元。",
+            "uncPath": "資料夾「{{value}}」看起來像網路路徑。請從共用的最上層開始，不要包含 \\\\server\\share。",
+            "doubleStarInName": "在資料夾「{{value}}」中，「**」必須是完整的資料夾名稱，例如 reports/**/2026。名稱的一部分請使用「*」。",
+            "tooManyDoubleStars": "資料夾「{{value}}」使用「**」超過 4 次。請減少使用。",
+            "tooManyStars": "「{{value}}」中的某個資料夾名稱包含超過 16 個「*」。請減少使用。"
+          }
+        }
       },
       "syncStrategies": {
         "SCHEDULED": "排程",
@@ -3494,6 +3515,16 @@
             "title": "Drupal Wiki 拒絕成員與頁面結構查詢",
             "message": "私人空間只能使用先前同步時確認的存取權限進行同步，且僅限確認後的 {{days}} 天內。從未同步過或確認時間更早的私人空間會被略過，且頁面階層無法使用。開放空間不受影響。 完整同步（包括因變更篩選條件而啟動的同步）會使私人空間停止這樣同步，直到 Drupal Wiki 再次列出其成員。",
             "message_dated": "私人空間只能使用先前同步時確認的存取權限進行同步，且僅限確認後的 {{days}} 天內。從未同步過或確認時間更早的私人空間會被略過，且頁面階層無法使用。開放空間不受影響。 完整同步（包括因變更篩選條件而啟動的同步）會使私人空間停止這樣同步，直到 Drupal Wiki 再次列出其成員。 正在使用的最早存取權限確認於 {{confirmedOn}}。"
+          },
+          "folder_filter_unmatched": {
+            "title": "資料夾模式未比對到任何內容",
+            "message": "此連接器同步的資料夾中沒有與 {{values}} 相符的，因此不會為其同步任何內容。請檢查 Folders 篩選器中的拼寫。",
+            "title_several": "{{count}} 個資料夾模式未比對到任何內容",
+            "message_several": "此連接器同步的資料夾中沒有與 {{values}} 相符的，因此不會為它們同步任何內容。請檢查 Folders 篩選器中的拼寫。",
+            "title_exclude": "資料夾模式未比對到任何內容",
+            "message_exclude": "此連接器同步的資料夾中沒有與 {{values}} 相符的，因此它不會排除任何內容。請檢查 Folders 篩選器中的拼寫。",
+            "title_several_exclude": "{{count}} 個資料夾模式未比對到任何內容",
+            "message_several_exclude": "此連接器同步的資料夾中沒有與 {{values}} 相符的，因此它們不會排除任何內容。請檢查 Folders 篩選器中的拼寫。"
           }
         }
       },
