@@ -103,10 +103,11 @@ def _present(members=None) -> IssueSecurityContext:
 
 async def _build(
     connector: JiraConnector, issue: dict, context: IssueSecurityContext, existing: MagicMock | None = None,
+    *, full_sync: bool = False,
 ) -> tuple:
     connector._issue_security[PROJECT_ID] = context
     connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
-    records, _ = await connector._build_issue_records([issue], PROJECT_ID, _users())
+    records, _ = await connector._build_issue_records([issue], PROJECT_ID, _users(), full_sync)
     return records[0]
 
 
@@ -1592,6 +1593,24 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert perms == [] and record.rewrite_permissions is True and record.access_rule == AccessRule.STRICT
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("stored_rule", "updated", "kept"), [
+        (AccessRule.OPEN, False, True), (AccessRule.STRICT, False, True), (AccessRule.RESTRICTED, False, False),
+        (AccessRule.OPEN, True, False)], ids=["open_unchanged", "strict_unchanged", "was_leveled", "changed"])
+    async def test_an_unchanged_issue_stored_without_a_level_keeps_its_grants_while_the_holders_are_unread(
+        self, stored_rule: AccessRule, updated: bool, kept: bool,
+    ) -> None:
+        """No level now and none stored, and the issue unchanged: the stored grants are the holders' grants for the
+        same people, so a sync that cannot read the holders keeps them. A stored RESTRICTED issue had a level whose
+        members must lose it, and a changed one may name other people: both are rewritten."""
+        c = _connector()
+        first, _, _ = await _build(c, _issue(None), self._none(None))
+        existing = MagicMock(id="rid", version=0, is_placeholder=False, access_rule=stored_rule,
+                             source_updated_at=first.source_updated_at - (1 if updated else 0))
+        record, perms, _ = await _build(c, _issue(None), self._none(None), existing, full_sync=True)
+        assert perms == [] and record.rewrite_permissions is not kept
+        assert record.access_rule == (stored_rule if kept else AccessRule.STRICT)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(("version", "changed", "kept"), [(1, False, True), (0, False, True), (0, True, False)],
                              ids=["changed_before", "never_changed_since_its_first_sync", "new_or_promoted"])
     async def test_an_issue_that_keeps_its_grants_is_written_by_the_content_update_not_a_full_sync_rewrite(
@@ -1601,10 +1620,12 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         version 0 (unchanged since its first sync) is just as existing; only a new issue, or a promoted placeholder
         (both reported changed), has no stored grants to keep."""
         c = _connector()
-        issue = _issue()
-        del issue["fields"]["security"]
-        record, perms, _ = await _build(c, issue, self._none(None))
-        record.version = version
+        first, _, _ = await _build(c, _issue(None), self._none(None))  # search returns "security": null
+        existing = None if changed else MagicMock(
+            id="rid", version=version, source_updated_at=first.source_updated_at, is_placeholder=False,
+            access_rule=AccessRule.OPEN)
+        record, perms, built_changed = await _build(c, _issue(None), self._none(None), existing, full_sync=True)
+        assert built_changed is changed
         c.data_entities_processor.on_record_content_update = AsyncMock()
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         await c._process_new_records([(record, perms, changed)], "PROJ", {"new_count": 0, "updated_count": 0})

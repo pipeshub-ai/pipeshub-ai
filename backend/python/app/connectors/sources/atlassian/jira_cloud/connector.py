@@ -25,6 +25,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AccessRule,
     AppGroups,
     CollectionNames,
     Connectors,
@@ -5354,6 +5355,9 @@ class JiraConnector(BaseConnector):
                 app_roles_mapping=self._app_roles_mapping,
                 reporter_email=reporter_email,
                 assignee_email=assignee_email,
+                unchanged_stored_rule=None if is_issue_changed or existing_record is None else next(
+                    (r for r in AccessRule if r.value == getattr(existing_record.access_rule, "value",
+                                                                 existing_record.access_rule)), None),
             )
             if skipped_holders and (logged := (project_id, read_security_level(fields)[1], ",".join(skipped_holders))) \
                     not in self._skipped_holders_logged:
