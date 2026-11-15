@@ -25,6 +25,7 @@
       - [alice, P]
       - [bob, P]
       - [dave, i1]
+      - [bob, i1]
       - [carol, i2]
       - [g:admins, c1]
       - [g:admins, c3]
@@ -56,4 +57,5 @@
     for dave's group and inherits i1, so dave reads it, and f1 (OPEN, inheriting c1) and c5 (PARENT_AND_GRANT, granted to dave, under c1)
     with it. Never without its own grant (c2 for dave, c1 for bob), never under a parent the viewer cannot read (c3 for dave: i2 is
     carol's), never without inheriting (c4). A STRICT node (s1) still needs the walk from the App. Withdrawing dave's grant on i1 hides
-    all of it from him again; alice still reads it from the App.
+    all of it from him again; alice still reads it from the App. bob's own grant on i1 changes nothing he reads; it keeps the withdrawal a
+    grant-only change (i1 still has grants of its own).
