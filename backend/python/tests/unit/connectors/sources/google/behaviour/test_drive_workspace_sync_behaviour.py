@@ -3889,6 +3889,36 @@ async def test_a_queue_write_that_fails_part_way_leaves_the_earlier_queue_whole(
     assert await connector._read_id_queue("q") == ["a", "b", "c"]
 
 
+async def test_an_item_read_again_by_id_then_reported_removed_in_the_same_run_is_not_written(ws: Workspace) -> None:
+    await ws.sync()
+    # A new item of Bob's shared with Alice, waiting on her checkpoint to be read again by id.
+    ws.world.add_item("n", "n.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[ALICE].user_id}"))
+    ws.sync_points.sync_points[key]["feed_failed_items"] = ["n"]
+    ws.records.records.pop("n", None)
+    ws.records.permissions.pop("n", None)
+    # Her read by id finds it; then she loses it, and her feed in the same run says so.
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern == r"^/drive/v3/files/([^/]+)/permissions$")
+    unshared: list[bool] = []
+
+    def permissions(req: ApiRequest) -> object:
+        answer = real(req)
+        if req.identity == ALICE and req.path == "/drive/v3/files/n/permissions" and not unshared:
+            unshared.append(True)
+            ws.world.unshare("n", ALICE)
+        return answer
+
+    ws.http.route("GET", r"/drive/v3/files/([^/]+)/permissions", permissions)
+    bob = ws.world.users.pop(BOB)  # only Alice's run this time, so no other read of the item writes it
+    try:
+        await ws.sync()
+    finally:
+        ws.world.users[BOB] = bob
+
+    assert unshared, "her read by id came first"
+    assert ALICE not in ws.records.perm_emails("n"), "the flush does not write the access her feed just removed"
+
+
 async def test_a_reader_who_lost_the_item_is_no_evidence_for_a_later_cut_in_the_run(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
     from app.connectors.sources.google.drive.utils.folder_filter_utils import (
