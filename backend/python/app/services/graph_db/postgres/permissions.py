@@ -22,7 +22,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
-from app.services.graph_db.postgres.identity import _soft
+from app.services.graph_db.postgres.identity import _AGENT_CAN, _soft
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.taxonomy import own_record_labels
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -36,7 +36,6 @@ _NO_ACCESS: dict[str, Any] = {"grantee_ids": [], "gated_app_ids": [], "by_connec
 
 
 _ROLE_RANK = {"OWNER": 4, "WRITER": 3, "READER": 2}
-_AGENT_CAN = {"can_edit": ("OWNER", "WRITER", "ORGANIZER"), "can_delete": ("OWNER",), "can_share": ("OWNER", "ORGANIZER")}
 _KB_TYPE = Connectors.KNOWLEDGE_BASE.value
 _CTX_RANK = {"OWNER": 6, "ADMIN": 5, "EDITOR": 4, "WRITER": 3, "READER": 1}
 _DETAIL_RANK = {"OWNER": 3, "WRITER": 2, "READER": 1}      # the roles a record's access details name
