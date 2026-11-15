@@ -4748,7 +4748,7 @@ class TestListUserKnowledgeBases:
             assert "kb2" not in query
 
     @pytest.mark.asyncio
-    async def test_folders_are_the_first_100_by_id_and_say_when_there_are_more(
+    async def test_folders_are_the_first_100_by_id_read_per_collection_of_the_page_and_say_when_there_are_more(
         self, neo4j_provider: Neo4jProvider
     ) -> None:
         neo4j_provider.client.execute_query = AsyncMock(side_effect=[[], [{"total": 0}], []])
@@ -4757,8 +4757,10 @@ class TestListUserKnowledgeBases:
 
         call = neo4j_provider.client.execute_query.call_args_list[0]
         query, params = call[0][0], call[1]["parameters"]
-        assert params["folders_cap"] == 100
-        assert query.index("ORDER BY folderRecord.id") < query.index("COLLECT(DISTINCT CASE")
+        assert params["folders_cap"] == 100 and params["folders_fetch"] == 101
+        # The page of collections is cut before any folder is read, and each collection reads at most one folder more than the cap, in id order.
+        assert query.index("LIMIT $limit") < query.index("MATCH (folderRecord:Record)")
+        assert query.index("ORDER BY folderRecord.id") < query.index("LIMIT $folders_fetch") < query.index("RETURN collect({")
         assert "folders: folders[0..$folders_cap]" in query
         assert "foldersTruncated: size(folders) > $folders_cap" in query
 

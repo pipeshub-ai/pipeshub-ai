@@ -130,3 +130,16 @@ async def test_a_collection_lists_its_first_100_folders_by_id_and_says_when_ther
         kb = listed[kb_id]
         assert [f["id"] for f in kb["folders"]] == sorted(ids)[:KB_LIST_FOLDERS_CAP], f"{len(ids)} folders"
         assert kb["foldersTruncated"] is (len(ids) > KB_LIST_FOLDERS_CAP), f"{len(ids)} folders"
+
+
+async def test_a_page_of_one_collection_reads_the_same_folders_as_the_whole_list(org: _Org) -> None:
+    """The folders are read for the page of collections only (after it is cut): one collection at a time gives each the same folders and flag as one page of all."""
+    whole = await org.service.list_user_knowledge_bases(user_id=org.owner_id, org_id=org.org_id, page=1, limit=50)
+    by_id = {kb["id"]: (kb["folders"], kb["foldersTruncated"]) for kb in whole["knowledgeBases"]}
+    paged = {}
+    for page in range(1, len(org.folders) + 1):
+        one = await org.service.list_user_knowledge_bases(user_id=org.owner_id, org_id=org.org_id, page=page, limit=1)
+        assert len(one["knowledgeBases"]) == 1, one
+        kb = one["knowledgeBases"][0]
+        paged[kb["id"]] = (kb["folders"], kb["foldersTruncated"])
+    assert paged == by_id

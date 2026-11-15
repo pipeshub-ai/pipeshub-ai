@@ -14681,29 +14681,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {self._kb_best_role_rows(search_filter)}
             WHERE final_role IS NOT NULL {permission_filter}
 
-            // Get folders for all KBs (folder records linked via BELONGS_TO with mimeType = folder)
-            OPTIONAL MATCH (folderRecord:Record)-[:BELONGS_TO]->(kb)
-            WHERE folderRecord.mimeType IN $folder_mime_types
-
-            // Sorted before the collect so the cap keeps the first folders by id.
-            WITH kb, final_role, folderRecord
-            ORDER BY folderRecord.id
-            WITH kb, final_role,
-                 COLLECT(DISTINCT CASE
-                     WHEN folderRecord.id IS NOT NULL THEN {{
-                         id: folderRecord.id,
-                         name: folderRecord.recordName,
-                         createdAtTimestamp: folderRecord.createdAtTimestamp,
-                         webUrl: folderRecord.webUrl
-                     }}
-                     ELSE null
-                 END) AS allFolders
-
-            WITH kb, final_role, [f IN allFolders WHERE f IS NOT NULL] AS folders
-
+            // The page of collections first; then, for each, its folders by id, one more than the cap (whether more exist), never all of them.
+            WITH kb, final_role
             ORDER BY {sort_field} {sort_direction}, kb.id
             SKIP $skip
             LIMIT $limit
+            CALL (kb) {{
+                MATCH (folderRecord:Record)-[:BELONGS_TO]->(kb)
+                WHERE folderRecord.mimeType IN $folder_mime_types AND folderRecord.id IS NOT NULL
+                WITH DISTINCT folderRecord
+                ORDER BY folderRecord.id
+                LIMIT $folders_fetch
+                RETURN collect({{
+                    id: folderRecord.id,
+                    name: folderRecord.recordName,
+                    createdAtTimestamp: folderRecord.createdAtTimestamp,
+                    webUrl: folderRecord.webUrl
+                }}) AS folders
+            }}
 
             RETURN {{
                 id: kb.id,
@@ -14735,6 +14730,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             params = {
                 "folder_mime_types": FOLDER_MIME_TYPES,
                 "folders_cap": KB_LIST_FOLDERS_CAP,
+                "folders_fetch": KB_LIST_FOLDERS_CAP + 1,
                 "user_id": user_id,
                 "org_id": org_id,
                 "kb_type": Connectors.KNOWLEDGE_BASE.value,
