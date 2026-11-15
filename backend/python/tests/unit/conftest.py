@@ -111,10 +111,33 @@ def _no_leaked_pipeshub_temp_files(_private_temp_dir: str) -> Iterator[None]:
     )
 
 
+def _registered_name(attribute: str, value: object) -> str | None:
+    """The name pytest registers ``value`` under when it finds it as ``attribute``; None if no fixture."""
+    marker = getattr(value, "_fixture_function_marker", None)
+    if marker is None:
+        return None
+    return marker.name or attribute
+
+
 def _bind_unit_test_fixtures() -> None:
     fixtures = unit_test_fixtures()
-    clashes = sorted(fixtures.keys() & globals().keys())
-    # Binding over a name defined above would silently replace that fixture for every test.
+    registered = {
+        name
+        for attribute, value in globals().items()
+        if (name := _registered_name(attribute, value))
+    }
+    added = [
+        name
+        for attribute, value in fixtures.items()
+        if (name := _registered_name(attribute, value))
+    ]
+    # A second fixture of one name silently replaces the first for every test; so does
+    # binding over a name defined above. ``name=`` sets the name, not the mapping key.
+    clashes = sorted(
+        (fixtures.keys() & globals().keys())
+        | (registered & set(added))
+        | {name for name in added if added.count(name) > 1}
+    )
     assert not clashes, (
         f"unit_test_fixtures() redefines names in this conftest: {clashes}"
     )

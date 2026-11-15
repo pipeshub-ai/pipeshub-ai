@@ -1,5 +1,6 @@
 """The unit conftest gives every unit test the fixtures ``unit_test_fixtures()`` returns."""
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -58,18 +59,42 @@ def test_a_returned_autouse_fixture_runs_for_every_test(
     assert calls == ["test_one", "test_two"]
 
 
-def test_a_returned_name_may_not_replace_a_conftest_fixture(
-    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    @pytest.fixture
-    def frozen_heap() -> None:
+def _a_fixture(name: str | None = None) -> object:
+    # Built per test: a fixture defined at module level would also be one of this module's.
+    @pytest.fixture(name=name)
+    def probe() -> None:
         return None
 
-    monkeypatch.setattr(
-        edition_defaults, "unit_test_fixtures", lambda: {"frozen_heap": frozen_heap}
-    )
+    return probe
+
+
+# pytest registers a fixture under its decorator's ``name=`` when it has one, else under
+# the attribute it is bound to; either way it must not take a name already registered.
+@pytest.mark.parametrize(
+    ("returned", "clash"),
+    [
+        pytest.param(lambda: {"frozen_heap": _a_fixture()}, "frozen_heap", id="by-key"),
+        pytest.param(
+            lambda: {"z_heap": _a_fixture("frozen_heap")},
+            "frozen_heap",
+            id="by-decorator-name",
+        ),
+        pytest.param(
+            lambda: {"first": _a_fixture("added"), "second": _a_fixture("added")},
+            "added",
+            id="twice-in-the-hook",
+        ),
+    ],
+)
+def test_a_returned_fixture_may_not_take_a_registered_name(
+    pytester: pytest.Pytester,
+    monkeypatch: pytest.MonkeyPatch,
+    returned: Callable[[], dict[str, object]],
+    clash: str,
+) -> None:
+    monkeypatch.setattr(edition_defaults, "unit_test_fixtures", returned)
 
     result = _run_unit_conftest(pytester, "def test_probe():\n    pass\n")
 
     assert result.ret == pytest.ExitCode.USAGE_ERROR
-    assert "redefines names in this conftest: ['frozen_heap']" in result.stderr.str()
+    assert f"redefines names in this conftest: ['{clash}']" in result.stderr.str()
