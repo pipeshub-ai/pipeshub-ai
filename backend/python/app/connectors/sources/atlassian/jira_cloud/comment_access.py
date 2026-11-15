@@ -31,12 +31,15 @@ def restricted_comment_grants(
     *,
     project_key: str,
     role_ids: dict[str, str],
-    group_ids: dict[str, str],
+    group_ids_by_name: dict[str, str],
     product_access_groups: list[str] | None,
 ) -> list[Permission]:
     """Who Jira shows a restricted comment to, among the people who read its issue.
 
-    ``visibility`` names a project role (by name) or a group (by id, or by name). A Service
+    ``visibility`` names a project role (by name) or a group: by its id (``identifier``, as Jira
+    Cloud sends it), or by name alone in an older payload, resolved through ``group_ids_by_name``
+    (this sync's complete group read only). A name the read gives another id than the explicit one
+    is stale or ambiguous, and grants nobody. A Service
     Management internal note is read by everyone who opens the issue in Jira itself, not
     through the customer portal: the people with product access, ``product_access_groups``
     (None when the application roles could not be read in full). Anything unresolved grants
@@ -49,7 +52,10 @@ def restricted_comment_grants(
         kind = visibility.get("type")
         identifier, name = str(visibility.get("identifier") or ""), str(visibility.get("value") or "")
         if kind == "group":
-            group_id = group_ids.get(identifier) or group_ids.get(name) or identifier
+            by_name = group_ids_by_name.get(name)
+            if identifier and by_name and by_name != identifier:
+                return []
+            group_id = identifier or by_name
             return [Permission(entity_type=EntityType.GROUP, external_id=group_id, type=PermissionType.READ)] \
                 if group_id else []
         if kind == "role":

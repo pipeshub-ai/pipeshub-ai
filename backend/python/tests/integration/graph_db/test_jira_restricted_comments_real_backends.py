@@ -10,6 +10,7 @@ user's access is read three ways: the access check, search, and the Knowledge Hu
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -157,28 +158,62 @@ async def test_deleting_an_issue_deletes_its_comment_records(world: dict[str, An
 
 
 
+FIGURES = {"id": "777", "filename": "figures.txt", "mimeType": "text/plain", "size": 5, "created": "2024-06-15T10:00:00.000+0000"}
+SHOWS_FIGURES = '<p><a href="https://site.example/rest/api/3/attachment/content/777">figures.txt</a></p>'
+
+
+async def _write_with_file(world: dict[str, Any], updated: str, comments: list[dict], total: int | None = None) -> None:
+    """Write the plain task with the figures file and ``comments`` (``total`` more than them: the rest unread)."""
+    issue = _edited("plain task", updated, attachment=[FIGURES],
+                    comment={"comments": comments, "total": len(comments) if total is None else total})
+    issue["renderedFields"] = {"description": "", "comment": {"comments": [
+        {"id": c["id"], "body": c.get("renderedBody", "")} for c in comments]}}
+    built, delete_ids = await world["connector"]._build_issue_records([issue], PROJECT_ID, _users(world))
+    if delete_ids:
+        await world["processor"].on_records_deleted_cascade(delete_ids, world["connector_id"], cascade_children=False)
+    await world["connector"]._process_new_records(built, PROJECT_KEY, {"new_count": 0, "updated_count": 0})
+
+
+async def _file_readers(world: dict[str, Any]) -> set[str] | None:
+    """Who may read the figures file, or None when it has no record."""
+    stored = await world["processor"].get_record_by_external_id(
+        connector_id=world["connector_id"], external_record_id="attachment_777")
+    if stored is None:
+        return None
+    return {name for name in PEOPLE if await world["graph"].filter_accessible_record_ids(
+        [stored.id], world["user_ids"][name], world["org_id"])}
+
+
 async def test_a_file_shown_only_in_a_restricted_comment_is_read_by_the_readers_of_that_comment(
     world: dict[str, Any],
 ) -> None:
-    """Jira shows a file attached in a restricted comment only to those who can read the comment."""
+    """Jira shows a file attached in a restricted comment only to those who can read the comment
+    (JRACLOUD-80445); bob and carol read the issue but are not in the group."""
     await _comment_world(world)
-    shown = {**_comment("501", group=ADMINS_GROUP),
-             "renderedBody": '<p><a href="https://site.example/rest/api/3/attachment/content/777">figures.txt</a></p>'}
-    issue = _edited("plain task", "2024-06-16T10:00:00.000+0000",
-                    comment={"comments": [shown], "total": 1},
-                    attachment=[{"id": "777", "filename": "figures.txt", "mimeType": "text/plain", "size": 5,
-                                 "created": "2024-06-15T10:00:00.000+0000"}])
-    issue["renderedFields"] = {"description": "", "comment": {"comments": [{"id": "501", "body": shown["renderedBody"]}]}}
-    built, _ = await world["connector"]._build_issue_records([issue], PROJECT_ID, _users(world))
-    await world["connector"]._process_new_records(built, PROJECT_KEY, {"new_count": 0, "updated_count": 0})
-
+    await _write_with_file(world, "2024-06-16T10:00:00.000+0000",
+                           [{**_comment("501", group=ADMINS_GROUP), "renderedBody": SHOWS_FIGURES}])
     stored = await world["processor"].get_record_by_external_id(
         connector_id=world["connector_id"], external_record_id="attachment_777")
     assert stored is not None and stored.parent_external_record_id == "comment_501"
-    for name in PEOPLE:
-        allowed = name == "alice"  # reads the issue and is in the group; bob and carol read only the issue
-        checked = await world["graph"].filter_accessible_record_ids([stored.id], world["user_ids"][name], world["org_id"])
-        assert bool(checked) == allowed, f"{name} {'cannot' if allowed else 'can'} read the file"
+    assert await _file_readers(world) == {"alice"}
+
+
+async def test_a_file_never_outlives_its_comment_record_under_a_wider_parent(world: dict[str, Any]) -> None:
+    """When the comments cannot be read the comment record goes, and its file with it; when the comment is
+    made public the file is filed under the issue again, as Jira shows it to every reader of the issue then."""
+    await _comment_world(world)
+    restricted = {**_comment("501", group=ADMINS_GROUP), "renderedBody": SHOWS_FIGURES}
+    await _write_with_file(world, "2024-06-16T10:00:00.000+0000", [restricted])
+    assert await _file_readers(world) == {"alice"}
+
+    world["connector"]._read_issue_comments = AsyncMock(side_effect=RuntimeError("HTTP 503"))
+    await _write_with_file(world, "2024-06-17T10:00:00.000+0000", [], total=1)  # the comment list is unread
+    assert not await _comment_ids(world)
+    assert await _file_readers(world) in (None, set(), {"alice"}), "the file is read beyond its comment's readers"
+
+    public = {**_comment("501"), "renderedBody": SHOWS_FIGURES, "updated": "2024-06-18T10:00:00.000+0000"}
+    await _write_with_file(world, "2024-06-18T10:00:00.000+0000", [public])
+    assert await _file_readers(world) == {"alice", "bob", "carol"}
 
 
 async def test_search_and_chat_retrieval_hand_a_restricted_comment_only_to_its_group(world: dict[str, Any]) -> None:

@@ -523,10 +523,10 @@ class JiraConnector(BaseConnector):
         self.indexing_filters = None
 
         self.value_mapper = ValueMapper()
-        # Project role ids by name, and group ids by id and by name, as last read: a restricted
-        # comment names its role or group by name.
+        # Project role ids by name as last read, and group ids by name as this sync read them in
+        # full: a restricted comment names its role by name, and may name its group by name alone.
         self._role_ids: dict[str, str] = {}
-        self._group_ids: dict[str, str] = {}
+        self._group_ids_by_name: dict[str, str] = {}
         # True when /applicationrole returned 403 (sync user is not a Jira admin)
         self._app_roles_forbidden: bool = False
         # True when /applicationrole could not be read for a reason that may pass (401, 429,
@@ -2155,12 +2155,7 @@ class JiraConnector(BaseConnector):
         touched. Their PARENT_CHILD edges are swept by the edge cleanup, so the
         child tickets simply lose their parent link and remain otherwise intact.
         """
-        below_comments: list[str] = []
-        for comment in await self._stored_comment_records(issue_record.external_record_id):
-            files = await self.data_entities_processor.get_records_by_parent(
-                self.connector_id, comment.external_record_id, RecordType.FILE.value,
-            )
-            below_comments += [comment.id, *(f.id for f in files)]
+        below_comments = await self._with_their_files(await self._stored_comment_records(issue_record.external_record_id))
         result = await self.data_entities_processor.on_records_deleted_cascade(
             [issue_record.id, *below_comments], self.connector_id, cascade_children=False,
         )
@@ -3246,6 +3241,7 @@ class JiraConnector(BaseConnector):
         members could not be read maps to None and is not saved. Returns None when the
         group list itself could not be read in full, so roles can't be resolved this run.
         """
+        self._group_ids_by_name = {}
         try:
             self.logger.info("🚀 Starting Jira user group synchronization")
 
@@ -3285,13 +3281,14 @@ class JiraConnector(BaseConnector):
             user_groups_batch = []
             # Mapping: group_id -> members, group_name -> members (for role actor lookup)
             groups_members_map: dict[str, Optional[list[AppUser]]] = {}
+            group_ids_by_name: dict[str, str] = {}
 
             for res in results:
                 if res is None:
                     continue
                 group_id, group_name, user_group, app_users = res
                 if group_id and group_name:
-                    self._group_ids.update({group_id: group_id, group_name: group_id})
+                    group_ids_by_name[group_name] = group_id
                 # Store mapping by both group_id and group_name for flexible lookup
                 if group_id:
                     groups_members_map[group_id] = app_users
@@ -3314,6 +3311,8 @@ class JiraConnector(BaseConnector):
             else:
                 self.logger.info("ℹ️ No groups with valid members to sync")
 
+            # A list cut short may miss a group that took a name since: no name resolves then.
+            self._group_ids_by_name = {} if fetch_failed else group_ids_by_name
             return None if fetch_failed else groups_members_map
 
         except StoredAccessReadError:
@@ -5403,7 +5402,7 @@ class JiraConnector(BaseConnector):
                 "restricted comments are removed until it is read again: %s", issue_key, e
             )
             if existing_record is not None:
-                delete_ids.extend(r.id for r in await self._stored_comment_records(issue_id))
+                delete_ids.extend(await self._with_their_files(await self._stored_comment_records(issue_id)))
             return records, delete_ids, False
         # Not returned: the stored comment records stay. A personal connector's one reader is the
         # account the comments were read as, so it has no restricted comment to write.
@@ -5522,6 +5521,17 @@ class JiraConnector(BaseConnector):
             self.connector_id, issue_id, RecordType.COMMENT.value,
         )
 
+    async def _with_their_files(self, comments: list[Record]) -> list[str]:
+        """Ids of these comment records and of the files filed under them, which go with them:
+        a file left behind would no longer be held to its comment's readers."""
+        ids: list[str] = []
+        for comment in comments:
+            files = await self.data_entities_processor.get_records_by_parent(
+                self.connector_id, comment.external_record_id, RecordType.FILE.value,
+            )
+            ids += [comment.id, *(f.id for f in files)]
+        return ids
+
     def _product_access_groups(self) -> list[str] | None:
         """Ids of the groups that give Jira product access, or None when they could not be read in full."""
         if self._app_roles_unread or self._app_roles_forbidden or not self._app_roles_mapping:
@@ -5532,7 +5542,8 @@ class JiraConnector(BaseConnector):
         self, issue_record: TicketRecord, comments: list[Any], project_key: str, issue_key: str, *, stored: bool,
     ) -> tuple[list[tuple[Record, list[Permission], bool]], list[str]]:
         """A record under the issue for each comment only some of its readers may read, and the ids
-        of the stored ones that are gone or now public (the issue's own content shows those).
+        of the stored ones that are gone or now public (the issue's own content shows those), with
+        the files filed under them; a file still on the issue is filed again by this read.
 
         Each is RESTRICTED under the issue: read by those who read the issue and are named by its
         ``visibility`` (or, for an internal note, have product access), as Jira shows it.
@@ -5582,7 +5593,7 @@ class JiraConnector(BaseConnector):
             )
             record.indexing_status = issue_record.indexing_status
             grants = restricted_comment_grants(
-                comment, project_key=project_key, role_ids=self._role_ids, group_ids=self._group_ids,
+                comment, project_key=project_key, role_ids=self._role_ids, group_ids_by_name=self._group_ids_by_name,
                 product_access_groups=product_access_groups,
             )
             if not grants:
@@ -5591,7 +5602,7 @@ class JiraConnector(BaseConnector):
                     "no one reads it until a sync resolves it", comment["id"], issue_key,
                 )
             out.append((record, grants, changed))
-        return out, [r.id for r in stored_by_id.values()]
+        return out, await self._with_their_files(list(stored_by_id.values()))
 
     async def _read_issue_comments(self, issue_id: str) -> list[dict[str, Any]]:
         """Every comment of the issue with its rendered HTML, read page by page.
@@ -5985,6 +5996,13 @@ class JiraConnector(BaseConnector):
                 parent_external_record_id=issue_id,
                 record_type=RecordType.FILE.value
             )
+            # And the files filed under the issue's restricted comments.
+            for comment in await self._stored_comment_records(str(issue_id)):
+                existing_records += await self.data_entities_processor.get_records_by_parent(
+                    connector_id=self.connector_id,
+                    parent_external_record_id=comment.external_record_id,
+                    record_type=RecordType.FILE.value,
+                )
 
             deleted_by_filename = 0
             for record in existing_records:

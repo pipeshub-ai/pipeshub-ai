@@ -51,7 +51,7 @@ SOURCE: dict[str, Any] = {"origin": OriginTypes.CONNECTOR, "connector_name": Con
 def _grants(comment: dict[str, Any], *, roles=None, groups=None, product=("g-sw",)) -> set[tuple[str, str]]:
     return {(p.entity_type.value, p.external_id) for p in restricted_comment_grants(
         comment, project_key="PROJ", role_ids=roles if roles is not None else {"Administrators": "10002"},
-        group_ids=groups if groups is not None else {"g-admins": "g-admins", "jira-admins": "g-admins"},
+        group_ids_by_name=groups if groups is not None else {"jira-admins": "g-admins"},
         product_access_groups=list(product) if product is not None else None)}
 
 
@@ -62,11 +62,13 @@ def _grants(comment: dict[str, Any], *, roles=None, groups=None, product=("g-sw"
     # A role this sync could not name grants nobody, never the project.
     (ROLE_COMMENT, {"roles": {}}, set()),
     (GROUP_COMMENT, {}, {("GROUP", "g-admins")}),
-    # Named by its name alone (Jira gives the id; an older payload may not).
+    # Named by its name alone (Jira gives the id; an older payload may not), through this sync's read only.
     ({**GROUP_COMMENT, "visibility": {"type": "group", "value": "jira-admins"}}, {}, {("GROUP", "g-admins")}),
     ({**GROUP_COMMENT, "visibility": {"type": "group", "value": "jira-admins"}}, {"groups": {}}, set()),
-    # The id is enough when the group list could not be read.
+    # The explicit id is enough when the group list could not be read.
     (GROUP_COMMENT, {"groups": {}}, {("GROUP", "g-admins")}),
+    # The read gives the name another id (renamed, or re-created): neither is trusted.
+    (GROUP_COMMENT, {"groups": {"jira-admins": "g-new"}}, set()),
     ({**GROUP_COMMENT, "visibility": {"type": "user", "value": "x"}}, {}, set()),
     ({**GROUP_COMMENT, "visibility": "Administrators"}, {}, set()),
     (INTERNAL_NOTE, {}, {("GROUP", "g-sw")}),
@@ -90,7 +92,7 @@ def _connector(cls: type[JiraConnector] = JiraConnector) -> JiraConnector:
     connector._load_issue_security = AsyncMock(return_value=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
     connector.site_url = "https://site.atlassian.net"
     connector._role_ids = {"Administrators": "10002"}
-    connector._group_ids = {"g-admins": "g-admins", "jira-admins": "g-admins"}
+    connector._group_ids_by_name = {"jira-admins": "g-admins"}
     connector._app_roles_mapping = {"jira-software": [{"groupId": "g-sw"}], "jira-servicedesk": [{"groupId": "g-sd"}]}
     return connector
 
@@ -110,6 +112,15 @@ def _issue(comments: list[dict[str, Any]] | None, *, total: int | None = None) -
 async def _build(connector: JiraConnector, issue: dict[str, Any]) -> tuple[list, list[str]]:
     records, delete_ids, _ = await connector._build_records_for_issue(issue, "10000", {}, "https://site.atlassian.net", False)
     return records, delete_ids
+
+
+def _stored_below(connector: JiraConnector, below: dict[tuple[str, str], list]) -> None:
+    """Stored records by (parent external id, record type), as get_records_by_parent answers."""
+    async def by_parent(*args: str, **kwargs: str) -> list:
+        parent = kwargs.get("parent_external_record_id", args[1] if len(args) > 1 else None)
+        record_type = kwargs.get("record_type", args[2] if len(args) > 2 else None)
+        return below.get((parent, record_type), [])
+    connector.data_entities_processor.get_records_by_parent = AsyncMock(side_effect=by_parent)
 
 
 def _stored_comment(comment_id: str, record_id: str, updated: int) -> CommentRecord:
@@ -146,15 +157,18 @@ async def test_a_stored_comment_record_goes_when_its_comment_is_public_or_gone()
     connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(
         id="ticket-1", is_placeholder=False, source_updated_at=1, version=3, parent_external_record_id=None))
     updated = connector._parse_jira_timestamp(ROLE_COMMENT["updated"])
-    connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[
-        _stored_comment("11", "rec-11", updated), _stored_comment("14", "rec-14", 1), _stored_comment("99", "rec-99", 1)])
+    _stored_below(connector, {
+        ("100", "COMMENT"): [_stored_comment("11", "rec-11", updated), _stored_comment("14", "rec-14", 1),
+                             _stored_comment("99", "rec-99", 1)],
+        ("comment_99", "FILE"): [MagicMock(id="file-in-99")]})
 
     records, delete_ids = await _build(connector, _issue([ROLE_COMMENT, PUBLIC_COMMENT]))
 
     kept = [(r, changed) for r, _, changed in records if isinstance(r, CommentRecord)]
     assert [(r.id, r.version, changed) for r, changed in kept] == [("rec-11", 2, False)]
-    assert sorted(delete_ids) == ["rec-14", "rec-99"]
-    connector.data_entities_processor.get_records_by_parent.assert_awaited_with("conn-1", "100", "COMMENT")
+    # A file filed under a comment that goes, goes with it: left behind it would no longer be held
+    # to the comment's readers. One still on the issue is filed again by this read.
+    assert sorted(delete_ids) == ["file-in-99", "rec-14", "rec-99"]
 
 
 async def test_comments_beyond_those_embedded_are_read_in_full() -> None:
@@ -169,12 +183,13 @@ async def test_unread_comments_remove_the_stored_comment_records() -> None:
     connector = _connector()
     connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(
         id="ticket-1", is_placeholder=False, source_updated_at=1, version=3, parent_external_record_id=None))
-    connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[_stored_comment("11", "rec-11", 1)])
+    _stored_below(connector, {("100", "COMMENT"): [_stored_comment("11", "rec-11", 1)],
+                              ("comment_11", "FILE"): [MagicMock(id="file-in-11")]})
     connector._read_issue_comments = AsyncMock(side_effect=RuntimeError("HTTP 503"))
 
     records, delete_ids = await _build(connector, _issue([PUBLIC_COMMENT], total=30))
     assert not [r for r, _, _ in records if isinstance(r, CommentRecord)]
-    assert delete_ids == ["rec-11"]
+    assert delete_ids == ["rec-11", "file-in-11"]
 
 
 async def test_an_issue_read_without_its_comments_keeps_its_comment_records() -> None:
@@ -215,9 +230,8 @@ async def test_a_comment_record_names_the_id_its_issue_was_written_under() -> No
 
 async def test_deleting_an_issue_deletes_its_comment_records_and_their_files() -> None:
     connector = _connector()
-    below = {("100", "COMMENT"): [_stored_comment("11", "rec-11", 1)], ("comment_11", "FILE"): [MagicMock(id="file-in-11")]}
-    connector.data_entities_processor.get_records_by_parent = AsyncMock(
-        side_effect=lambda _connector, parent, record_type: below.get((parent, record_type), []))
+    _stored_below(connector, {("100", "COMMENT"): [_stored_comment("11", "rec-11", 1)],
+                              ("comment_11", "FILE"): [MagicMock(id="file-in-11")]})
     connector.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={
         "deleted_records": ["ticket-1", "rec-11", "file-in-11", "file-1"]})
     issue = MagicMock(id="ticket-1", external_record_id="100")
@@ -284,3 +298,24 @@ async def test_the_issue_content_holds_no_restricted_comment_or_internal_note() 
                           **SOURCE)
     body = json.loads(await connector._process_issue_blockgroups_for_streaming(ticket))
     assert {g["source_group_id"] for g in body["block_groups"]} & {"11", "12", "13", "14"} == {"14"}
+
+
+async def test_a_file_removed_from_an_issue_goes_when_it_was_filed_under_a_comment() -> None:
+    """The changelog's id comparison also covers files filed under the issue's comment records."""
+    connector = _connector()
+    in_comment = MagicMock(id="file-in-11", external_record_id="attachment_777", record_name="figures.txt")
+    _stored_below(connector, {("100", "COMMENT"): [_stored_comment("11", "rec-11", 1)],
+                              ("comment_11", "FILE"): [in_comment]})
+    issue = _issue([PUBLIC_COMMENT])
+    issue["changelog"] = {"histories": [{"items": []}], "total": 2}  # truncated: the ids are compared
+    assert await connector._handle_attachment_deletions_from_changelog(issue) == ["file-in-11"]
+
+
+async def test_a_group_name_resolves_only_through_the_sync_that_read_every_group() -> None:
+    connector = _connector()
+    connector._fetch_groups = AsyncMock(return_value=([], True))  # the group list could not be read
+    connector._group_bulk_forbidden = False
+    connector._group_fetch_interrupted = False
+    connector.notify = AsyncMock()
+    await connector._sync_user_groups([])
+    assert connector._group_ids_by_name == {}
