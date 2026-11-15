@@ -16,6 +16,7 @@ from app.modules.pipeline.pause_budget import PauseState
 from app.modules.pipeline.pause_store import PauseStore
 from app.services.llm_gateway.fleet_breaker import ALLOW, FleetBreaker
 from app.services.llm_gateway.fleet_redis import bind_fleet_redis, get_fleet_redis
+from app.services.llm_gateway.trial_lease import get_trial_renewer
 from app.services.messaging.config import RedisConfig
 from app.services.messaging.fail_safe_retry_tracker import FailSafeRetryTracker
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -23,10 +24,14 @@ from app.services.pg_state import PgRetryTracker
 
 
 class _Config:
-    """An in-memory ConfigurationService for the two calls the install secret makes."""
+    """An in-memory ConfigurationService for the install secret's two calls and the Redis the fleet binds."""
 
-    def __init__(self, store: dict[str, str]) -> None:
+    def __init__(self, store: dict[str, str], redis: RedisConfig | None = None) -> None:
         self.store = store
+        self.redis = redis or RedisConfig()
+
+    async def get_redis_config(self) -> RedisConfig:
+        return self.redis
 
     async def create_config_if_absent(self, key: str, value: str) -> bool:
         return self.store.setdefault(key, value) is value
@@ -55,9 +60,9 @@ async def test_the_fleet_state_binds_beside_the_real_retry_tracker(monkeypatch: 
     retry = MessagingFactory.create_retry_manager(logging.getLogger("t"), config)
     assert isinstance(retry, tracker), "the factory's own product, not a stand-in"
     shared: dict[str, str] = {}
-    container = SimpleNamespace(config_service=lambda: _Config(shared))
+    container = SimpleNamespace(config_service=lambda: _Config(shared, config))
     try:
-        fleet = await _bind_fleet_state(container, config, logging.getLogger("t"))
+        fleet = await _bind_fleet_state(container, logging.getLogger("t"))
         assert get_fleet_redis() is fleet
         assert len(shared["/services/indexing/spendGuard/hmacKey"]) >= 32, "the install secret exists"
         # the breaker and the pause budget work on what was bound
@@ -66,11 +71,46 @@ async def test_the_fleet_state_binds_beside_the_real_retry_tracker(monkeypatch: 
         await PauseStore().put("vr:rev:classify", PauseState(since_ms=1, sends=2))
         assert (await PauseStore().get("vr:rev:classify")).sends == 2
     finally:
+        # The shutdown path's order: the process's trial renewer stops before the fleet is unbound.
+        await get_trial_renewer().stop()
         bind_fleet_redis(None)
         registry = getattr(container, "fleet_redis_registry", None)
         if registry is not None:
             await registry.aclose()
+    assert not get_trial_renewer().running, "no renewer outlives the test"
     assert os.environ.get("REDIS_MODE") in (None, mode)
+
+
+async def test_every_service_binds_the_configured_redis_whatever_the_broker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With a PostgreSQL broker the broker's Redis config is a default (localhost). The fleet must still be the Redis the
+    install configured, the same one the Extraction and parsing services bind, or their breakers are not shared."""
+    from app.services.llm_gateway import fleet_redis
+
+    monkeypatch.setenv("MESSAGE_BROKER", "postgres")
+    configured = RedisConfig(host="redis.internal", port=6380)
+    opened: list[RedisConfig] = []
+
+    async def open_fleet(logger: object, redis_config: RedisConfig) -> tuple[object, SimpleNamespace]:
+        opened.append(redis_config)
+        return fleet_redis.FleetRedis(lambda: None), SimpleNamespace()
+
+    async def secret(_config_service: object) -> None:
+        return None
+
+    monkeypatch.setattr(fleet_redis, "open_fleet_redis", open_fleet)
+    monkeypatch.setattr("app.services.llm_gateway.fleet_breaker.load_install_secret", secret)
+    import app.indexing_main as indexing_main
+
+    monkeypatch.setattr(indexing_main, "open_fleet_redis", open_fleet)
+    monkeypatch.setattr(indexing_main, "load_install_secret", secret)
+    monkeypatch.setattr(indexing_main, "get_trial_renewer", lambda: SimpleNamespace(start=lambda: None))
+    service = _Config({}, configured)
+    try:
+        await fleet_redis.bind_service_fleet(service, logging.getLogger("t"))
+        await indexing_main._bind_fleet_state(SimpleNamespace(config_service=lambda: service), logging.getLogger("t"))
+    finally:
+        bind_fleet_redis(None)
+    assert [(c.host, c.port) for c in opened] == [("redis.internal", 6380)] * 2
 
 
 def test_start_kafka_consumers_binds_the_fleet_state_before_anything_pauses() -> None:

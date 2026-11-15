@@ -521,6 +521,7 @@ class LLMGateway:
                     lease = self._start_lease(fleet, pk, cls, admission) if trial and fleet and admission else None
                     with wire.wire_scope() as seen:
                         try:
+                            started = asyncio.get_running_loop().time()
                             result = await asyncio.wait_for(make_call(), call_timeout)
                         except NonRetryableError:
                             # Neither the provider's failure nor one to retry: the caller must not fall back.
@@ -532,6 +533,9 @@ class LLMGateway:
                             )
                             raise
                         except asyncio.CancelledError:
+                            # Cut off (the stage's deadline): the requests it made brought no usable answer, and they
+                            # count before the cancellation goes on, so the run that commits them pays for them.
+                            _note_failed_sends(seen.requests)
                             if trial and fleet is not None and admission is not None:
                                 await self._release_trial(fleet, pk, cls, admission.token)
                             raise
@@ -545,7 +549,12 @@ class LLMGateway:
                                 raise self._sends_used(
                                     provider, pk, cls, sent_any=sent_any, requests=requests_total, charged=charged_total
                                 ) from exc
-                            caller_expired = caller_budget and isinstance(exc, TimeoutError)
+                            # The caller's own budget ran out only when it actually elapsed: a provider's timeout
+                            # raised with budget left is the provider's failure, not a slow call.
+                            caller_expired = (
+                                caller_budget and isinstance(exc, TimeoutError)
+                                and asyncio.get_running_loop().time() - started >= call_timeout * 0.99
+                            )
                             policy = policy_error_from_exception(exc)
                             if policy is not None and _is_background_call():
                                 report_background_refusal(policy)
@@ -558,6 +567,11 @@ class LLMGateway:
                             retry = (
                                 _is_rate_limited(exc, policy) or seen.status == _TOO_MANY_REQUESTS
                             ) and attempt < RATE_LIMIT_ATTEMPTS - 1 and (policy is None or policy.retryable)
+                            # Requests an SDK retried inside this attempt failed too: each is settled and charged
+                            # on its own, before the attempt's own outcome.
+                            charged_total += await self._settle_retried(
+                                fleet, breaker, pk, cls, admission, seen, trace, provider
+                            )
                             settlement = await self._settle_outcome(fleet, breaker, pk, cls, admission, judged)
                             if judged == wire.FAIL:
                                 # Each failed attempt is charged on its own settlement: a later, unchargeable one
@@ -574,6 +588,9 @@ class LLMGateway:
                         else:
                             sent_any = sent_any or seen.sent
                             _note_failed_sends(max(0, seen.requests - 1))
+                            charged_total += await self._settle_retried(
+                                fleet, breaker, pk, cls, admission, seen, trace, provider
+                            )
                             await self._settle_outcome(fleet, breaker, pk, cls, admission, wire.OK)
                             LLM_BREAKER_OPEN.set(provider, value=0.0)
                             note_llm_call()
@@ -616,6 +633,25 @@ class LLMGateway:
             size_class=cls,
             requests=requests,
         )
+
+    async def _settle_retried(
+        self, fleet: FleetBreaker | None, breaker: CircuitBreaker, pk: str, cls: str, admission: Admission | None,
+        seen: wire.WireOutcome, trace: JobTrace | None, provider: str,
+    ) -> int:
+        """Settle as failures the requests an SDK retried inside one attempt (every request but the last: an SDK retries
+        only a failure), each on its own, and return how many were chargeable. A half-open trial carries one outcome for
+        the fleet, so its retried requests are counted as sends but not settled again."""
+        retried = max(0, seen.requests - 1)
+        if retried == 0 or (admission is not None and admission.trial):
+            return 0
+        charged = 0
+        for _ in range(retried):
+            settlement = await self._settle_outcome(fleet, breaker, pk, cls, admission, wire.FAIL)
+            chargeable = bool(settlement and settlement.chargeable)
+            charged += 1 if chargeable else 0
+            if trace is not None:
+                trace.note_attempt(pk, cls, provider, chargeable=chargeable, trial=False)
+        return charged
 
     async def _end_refused_attempt(
         self, fleet: FleetBreaker | None, breaker: CircuitBreaker, pk: str, cls: str, admission: Admission | None,

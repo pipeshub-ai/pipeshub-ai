@@ -53,8 +53,9 @@ class Judgement:
     jitter_s: float = 0.0
     # This verdict put the key on hold (it is the third distinct capped job): an episode begins.
     newly_held: bool = False
-    # The key scope (``pk:cls``) the redrives are owed under.
+    # The key scope (``pk:cls``) the redrives are owed under, and the hold episode they are owed for.
     scope: str = ""
+    episode: str = ""
 
 
 class PauseJudge:
@@ -136,11 +137,15 @@ class PauseJudge:
             return None
         limits = await self.limits()
         verdict = counters_spent(prior, limits)
-        if verdict is Verdict.FAIL_CHARGED and prior.scope and await self._store.is_owed(prior.scope, job.state_key):
+        episode = (
+            await self._store.owed_episode(prior.scope, job.state_key)
+            if verdict is Verdict.FAIL_CHARGED and prior.scope else None
+        )
+        if episode is not None:
             # A hold owes this job a redrive whose reset has not happened yet: its charges were the key's, not its own.
             # The scope is indexed first, so the leader also finds the other jobs it owes, which do not wake by themselves.
             await self._store.note_owed_scope(prior.scope)
-            await self._store.release_charged(job.state_key)
+            await self._store.release_charged(job.state_key, episode)
             await self._store.redrive_done(prior.scope, job.state_key)
             prior = replace(prior, charged=0)
             verdict = counters_spent(prior, limits)
@@ -195,6 +200,7 @@ class PauseJudge:
         redrive: tuple[str, ...] = ()
         jitter = 0.0
         newly_held = False
+        capped_episode = ""
         if decision.verdict is Verdict.CAPPED:
             breaker = self._breaker()
             if breaker is None or not result.provider_pk or not result.size_class:
@@ -209,19 +215,20 @@ class PauseJudge:
                     # The breaker's script has already made every capped job of the window owed a redrive, this one
                     # included, atomically with the hold; what follows can fail without losing any of them.
                     redrive = capped.others
-                    await self._settle_own_redrive(job, scope)
+                    capped_episode = capped.episode
+                    await self._settle_own_redrive(job, scope, capped.episode)
                     jitter = self._rng.uniform(0, HOLD_COOLDOWN_MS / 1000.0)
                     newly_held = capped.newly_held
                     if capped.newly_held:
                         await self._note_hold(breaker, job, result, capped.episode, label, len(redrive) + 1, now)
-        return Judgement(decision, redrive, jitter, newly_held, scope)
+        return Judgement(decision, redrive, jitter, newly_held, scope, episode=capped_episode)
 
-    async def _settle_own_redrive(self, job: StageJob, scope: str) -> None:
+    async def _settle_own_redrive(self, job: StageJob, scope: str, episode: str) -> None:
         """This job is owed a fresh charge count: give it now, or leave it owed for its next wake (``spent``) or the
         recovery leader, either of which resets it before it can be failed at the old count."""
         try:
             await self._store.note_owed_scope(scope)
-            await self._store.release_charged(job.state_key)
+            await self._store.release_charged(job.state_key, episode)
             await self._store.redrive_done(scope, job.state_key)
         except PauseStoreUnavailable as exc:
             self._logger.warning("the charge count of %s is reset later (%s): it stays owed", job.state_key, exc)
@@ -265,12 +272,12 @@ class PauseJudge:
         except PauseStoreUnavailable as exc:
             self._logger.warning("the sends of %s were not committed (%s); its reservation counts them", job.state_key, exc)
 
-    async def release_charged(self, state_key: str) -> bool:
+    async def release_charged(self, state_key: str, episode: str = "") -> bool:
         """A fresh charge count for a job a hold redrives. Raises ``PauseStoreUnavailable``: a redrive must not go out
         with the old count, which the pre-run check would fail at once."""
-        return await self._store.release_charged(state_key)
+        return await self._store.release_charged(state_key, episode)
 
-    async def pending_redrives(self) -> dict[str, list[str]]:
+    async def pending_redrives(self) -> dict[str, list[tuple[str, str]]]:
         return await self._store.pending_redrives()
 
     async def redrive_done(self, scope: str, state_key: str) -> None:

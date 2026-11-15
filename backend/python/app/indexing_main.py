@@ -95,6 +95,7 @@ from app.services.llm_gateway.fleet_hold import (
 from app.services.llm_gateway.fleet_redis import (
     FleetRedis,
     bind_fleet_redis,
+    fleet_redis_config,
     get_fleet_redis,
     open_fleet_redis,
 )
@@ -2317,7 +2318,7 @@ async def start_kafka_consumers(
         retry_manager = MessagingFactory.create_retry_manager(logger, redis_config)
         await retry_manager.initialize()
         logger.info("✅ RetryManager initialized for %s consumer", broker_type.value)
-        await _bind_fleet_state(app_container, redis_config, logger)
+        await _bind_fleet_state(app_container, logger)
 
         if _distributed_leases_wanted():
             concurrency_manager = MessagingFactory.create_lease_manager(logger, redis_config)
@@ -2574,12 +2575,14 @@ async def _close_worker_loop(container: IndexingAppContainer) -> None:
         setattr(container, "worker_loop", None)
 
 
-async def _bind_fleet_state(app_container: Any, redis_config: Any, logger: logging.Logger) -> FleetRedis:  # noqa: ANN401
+async def _bind_fleet_state(app_container: Any, logger: logging.Logger) -> FleetRedis:  # noqa: ANN401
     """Open the Redis the model providers' circuit breaker and the stage pause budget live in, and bind it.
 
     Independent of the retry tracker, which is a Redis wrapper or a PostgreSQL one depending on the state store."""
     await load_install_secret(app_container.config_service())
-    fleet, registry = await open_fleet_redis(logger, redis_config)
+    # Not the broker's Redis config: with a PostgreSQL broker that is a default, and the fleet must be the same Redis the
+    # Extraction and parsing services bind (``fleet_redis_config``).
+    fleet, registry = await open_fleet_redis(logger, await fleet_redis_config(app_container.config_service()))
     setattr(app_container, "fleet_redis_registry", registry)
     bind_fleet_redis(fleet)
     # Trial leases are renewed from this (main) loop, so a stall of the worker loop cannot lapse one.

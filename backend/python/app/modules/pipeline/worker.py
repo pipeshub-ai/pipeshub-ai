@@ -446,7 +446,7 @@ class StageJobHandler:
             if not await self._settle(job, ProgressStatus.PAUSED, attempt=attempt, reason=result.reason):
                 return
             if judgement is not None:
-                await self._redrive_capped(judgement.scope, judgement.redrive)
+                await self._redrive_capped(judgement.scope, judgement.redrive, judgement.episode)
             # Backs off like a retry (15 s, 1 min, 4 min, then every 5 min) so a long outage costs
             # little, and never returns before the dependency said it might be back.
             delay = max(result.retry_after_s or 0.0, compute_retry_backoff_seconds(attempt))
@@ -509,13 +509,13 @@ class StageJobHandler:
         if self._pause is not None:
             await self._pause.clear(job.state_key, attempt=attempt)
 
-    async def _redrive_capped(self, scope: str, state_keys: Sequence[str]) -> None:
+    async def _redrive_capped(self, scope: str, state_keys: Sequence[str], episode: str = "") -> None:
         """Jobs the charged cap failed in the window of a key hold: the key was the problem, not the document. Each is
         owed a redrive until it is done (``_redrive_one``); what this pass cannot do, the recovery leader retries."""
         if self._pause is None:
             return
         for key in state_keys:
-            if await self._redrive_one(key):
+            if await self._redrive_one(key, episode):
                 try:
                     await self._pause.redrive_done(scope, key)
                 except PauseStoreUnavailable:
@@ -530,14 +530,14 @@ class StageJobHandler:
             await self._pause.reconcile_owed()
         self._redrive_passes += 1
         done = 0
-        for scope, keys in (await self._pause.pending_redrives()).items():
-            for key in keys:
-                if await self._redrive_one(key):
+        for scope, owed in (await self._pause.pending_redrives()).items():
+            for key, episode in owed:
+                if await self._redrive_one(key, episode):
                     await self._pause.redrive_done(scope, key)
                     done += 1
         return done
 
-    async def _redrive_one(self, key: str) -> bool:
+    async def _redrive_one(self, key: str, episode: str = "") -> bool:
         """Redrive one job a hold owes: a fresh charge count first, then a redrive that is not forced, so its pause budget
         (sends, wall) carries on. True when nothing more is owed: done, or the job no longer needs it. A job still running
         may yet settle FAILED by its charged cap, and a reset or redrive that fails is tried again, so those stay owed."""
@@ -550,12 +550,13 @@ class StageJobHandler:
             if other.status is ProgressStatus.IN_PROGRESS:
                 return False
             if other.status in (ProgressStatus.QUEUED, ProgressStatus.PAUSED):
-                # It will run again: it must not meet its old charge count at the pre-run check.
-                await self._pause.release_charged(key)
+                # It will run again: it must not meet its old charge count at the pre-run check. Once per episode,
+                # so a pass repeated after its redrive went out leaves the charges a new run has made.
+                await self._pause.release_charged(key, episode)
                 return True
             if other.status is not ProgressStatus.FAILED:
                 return True
-            await self._pause.release_charged(key)
+            await self._pause.release_charged(key, episode)
             with for_org(other.org_id, job="stage_hold_redrive"):
                 await self._coordinator.redrive(other.to_job().view, other.stage, priority=other.priority, force=False)
             return True

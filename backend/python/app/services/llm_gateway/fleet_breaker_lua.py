@@ -183,6 +183,7 @@ return 1
 # KEYS: capped, counted, br, hold, owed
 # ARGV: now, job, window_ms, hold_jobs, hold_cooldown_ms, episode, reason, label, cls, owed_ttl_s, org
 # The hold hash names the org to notify, so the recovery leader can rebuild a hold it lost track of from Redis alone.
+# ``owed`` maps each job owed a redrive to the hold episode it is owed for, so its charge reset happens once per episode.
 # -> {already, distinct, newly_held, episode, member...}
 # A job counts once per revision (``counted``). When the hold rule fires the window is cleared, so the same
 # set cannot trigger another hold; a counted job that reaches the cap again is refused (already = 1).
@@ -199,7 +200,7 @@ if redis.call('EXISTS', hold) == 1 then
   -- document's. The job is redriven like the ones the hold absorbed, and owed that until it is done.
   redis.call('HSETNX', counted, job, now)
   redis.call('EXPIRE', counted, 8 * 86400)
-  redis.call('SADD', owed, job)
+  redis.call('HSET', owed, job, redis.call('HGET', hold, 'episode') or '')
   redis.call('EXPIRE', owed, owed_ttl)
   return {0, hold_jobs, 0, redis.call('HGET', hold, 'episode') or ''}
 end
@@ -229,7 +230,7 @@ if distinct >= hold_jobs then
   -- hold, so no failure after this script can lose one.
   for _, member in ipairs(redis.call('ZRANGE', capped, 0, -1)) do
     table.insert(out, member)
-    redis.call('SADD', owed, member)
+    redis.call('HSET', owed, member, episode)
   end
   redis.call('EXPIRE', owed, owed_ttl)
   redis.call('DEL', capped)

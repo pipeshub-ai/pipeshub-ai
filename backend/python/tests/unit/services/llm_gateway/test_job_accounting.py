@@ -189,3 +189,33 @@ def test_the_breaker_key_follows_the_service_key_the_hook_sends() -> None:
     same_service_key = credential_of(_ProxiedModel("sk-1", "svc-1")), credential_of(_ProxiedModel("sk-2", "svc-1"))
     assert same_service_key[0] == same_service_key[1], "one service key on the wire is one quota"
     assert credential_of(_ProxiedModel("sk-1", None)) != credential_of(_ProxiedModel("sk-2", None))
+
+
+async def test_each_request_an_sdk_retried_is_settled_and_charged_on_its_own(fleet: FleetRedis) -> None:
+    """20 served calls, then one call whose SDK sends three 503s (the gateway does not retry a 503, so this is one
+    attempt): each request is settled on its own, so the first two are charged (20/20 and 20/21 served) and the third is
+    not (20/22). One settlement for the whole call would charge 1."""
+    await _serving(fleet, 20)
+    with llm_job("job-1") as trace, pytest.raises(ProviderUnavailableError) as raised:
+        await LLMGateway(2).invoke(_Wire(503, 503, 503), "hi", provider=PROVIDER)
+    assert trace.charged == 2 and raised.value.charged == 2
+    assert trace.requests == 3
+
+
+async def test_a_cancelled_attempt_counts_its_failed_sends(fleet: FleetRedis) -> None:
+    """The stage's deadline cuts off a call whose SDK has already sent and been refused: those sends still count."""
+
+    class Backing:
+        async def ainvoke(self, value: object, /, **kwargs: object) -> str:
+            wire._request_hook(httpx.Request("POST", "http://host/v1/chat"))
+            wire.note_response(429)
+            await asyncio.sleep(10)  # the SDK's backoff before its retry
+            return "never"
+
+    with llm_job("job-1") as trace:
+        task = asyncio.create_task(LLMGateway(2).invoke(Backing(), "hi", provider=PROVIDER))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert trace.requests == 1

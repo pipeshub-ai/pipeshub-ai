@@ -71,25 +71,22 @@ async def open_fleet_redis(logger: Any, redis_config: Any) -> tuple[FleetRedis, 
     return FleetRedis(registry.client, registry.provider.key_namespace), registry
 
 
+async def fleet_redis_config(config_service: Any) -> Any:  # noqa: ANN401 - ConfigurationService -> RedisConfig
+    """The Redis every service's fleet breaker and pause budget live in: the configured one, whatever the message broker.
+    It must be the same server in every process, so it is never a default chosen by broker type (a PostgreSQL broker
+    does not mean Redis is on localhost); with nothing stored, the configuration falls back to the Redis environment."""
+    return await config_service.get_redis_config()
+
+
 async def bind_service_fleet(config_service: Any, logger: Any) -> Any:  # noqa: ANN401
     """Bind the fleet Redis of a service that makes paid model calls but does not run the stage runtime (the Extraction and
     parsing services): the same breaker state as the indexing service, so an outage seen by one is seen by all.
 
     Returns the client registry for the caller to ``aclose`` at shutdown."""
-    from app.services.messaging.config import (
-        MessageBrokerType,
-        RedisConfig,
-        get_message_broker_type,
-    )
-
-    if get_message_broker_type() == MessageBrokerType.POSTGRES:
-        redis_config = RedisConfig()
-    else:
-        redis_config = await config_service.get_redis_config()
     from app.services.llm_gateway.fleet_breaker import load_install_secret
 
     await load_install_secret(config_service)
-    fleet, registry = await open_fleet_redis(logger, redis_config)
+    fleet, registry = await open_fleet_redis(logger, await fleet_redis_config(config_service))
     bind_fleet_redis(fleet)
     logger.info("Fleet breaker bound to Redis (namespace %r)", fleet.namespace)
     return registry

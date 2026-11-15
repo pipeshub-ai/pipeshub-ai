@@ -72,8 +72,12 @@ class _RealClock:
 
 
 class _Config:
-    def __init__(self) -> None:
+    def __init__(self, redis: RedisConfig | None = None) -> None:
         self.store: dict[str, str] = {}
+        self.redis = redis or RedisConfig()
+
+    async def get_redis_config(self) -> RedisConfig:
+        return self.redis
 
     async def create_config_if_absent(self, key: str, value: str) -> bool:
         return self.store.setdefault(key, value) is value
@@ -129,9 +133,9 @@ async def test_startup_storm_and_recovery(monkeypatch: pytest.MonkeyPatch) -> No
     assert isinstance(tracker, FailSafeRetryTracker)
     await tracker.initialize()
     container = SimpleNamespace(config_service=_Config)
-    shared_config = _Config()
+    shared_config = _Config(config)
     container.config_service = lambda: shared_config
-    fleet = await _bind_fleet_state(container, config, log)
+    fleet = await _bind_fleet_state(container, log)
     namespace = f"smoke{int(time.time())}"
     fleet._namespace = namespace
 

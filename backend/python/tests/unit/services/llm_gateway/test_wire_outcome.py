@@ -20,11 +20,13 @@ class _Weird(Exception):
     pass
 
 
-def _runnable(*, status: int | None, raises: BaseException | None, sent: bool = True) -> object:
+def _runnable(*, status: int | None, raises: BaseException | None, sent: bool = True, delay: float = 0.0) -> object:
     class Fake:
         async def ainvoke(self, value, /, **kwargs):  # noqa: ANN202
             if sent:
                 wire.note_request_sent()
+            if delay:
+                await asyncio.sleep(delay)
             if status is not None:
                 wire.note_response(status)
             if raises is not None:
@@ -48,25 +50,31 @@ CASES = {
     "404-rate-limit-named": (404, True, type("RateLimitError", (Exception,), {})("x"), False, False),
     "422": (422, True, ValueError("bad"), False, False),
     "200": (200, True, None, False, False),
-    "caller-budget-timeout": (None, True, TimeoutError(), True, False),
+    # The caller's budget elapses while the request waits: neutral, not the provider's failure.
+    "caller-budget-timeout": (None, True, None, True, False),
+    # The provider times out with the caller's budget far from spent: a failure.
+    "provider-timeout-with-budget-left": (None, True, TimeoutError(), True, True),
 }
+CALLER_BUDGET_S = 0.05
 
 
 @pytest.mark.parametrize("case", list(CASES), ids=list(CASES))
 async def test_outcome_is_decided_by_the_wire(case: str, fleet: FleetRedis) -> None:
     status, sent, raises, caller_budget, is_failure = CASES[case]
     gateway = LLMGateway(4)
-    runnable = _runnable(status=status, raises=raises, sent=sent)
-    call = gateway.invoke(runnable, "hi", provider="p:m@e", timeout=5.0 if caller_budget else None)
+    waits = case == "caller-budget-timeout"
+    runnable = _runnable(status=status, raises=raises, sent=sent, delay=CALLER_BUDGET_S * 10 if waits else 0.0)
+    budget = (CALLER_BUDGET_S if waits else 5.0) if caller_budget else None
+    call = gateway.invoke(runnable, "hi", provider="p:m@e", timeout=budget)
     if is_failure:
         with pytest.raises(ProviderUnavailableError) as seen:
             await call
         assert seen.value.sent is True
-    elif raises is None:
-        assert await call == "answer"
-    elif caller_budget:
+    elif waits:
         with pytest.raises(TimeoutError):
             await call
+    elif raises is None:
+        assert await call == "answer"
     else:
         with pytest.raises(type(raises)):  # the request's fault comes back unchanged
             await call

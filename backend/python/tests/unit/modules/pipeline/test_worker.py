@@ -920,22 +920,22 @@ async def test_a_hold_redrive_is_owed_until_the_job_settles_and_its_reset_succee
     await h.store.add_redrives(scope, [job.state_key])
 
     assert await h.handler.retry_hold_redrives() == 0
-    assert await h.store.pending_redrives() == {scope: [job.state_key]}, "still running: owed"
+    assert await h.store.pending_redrives() == {scope: [(job.state_key, "")]}, "still running: owed"
 
     h.states.put(h.state(job).model_copy(update={"status": ProgressStatus.FAILED}))
     real_release = PauseStore.release_charged
     calls = {"n": 0}
 
-    async def flaky(self, key):  # noqa: ANN202
+    async def flaky(self, key, episode=""):  # noqa: ANN202
         calls["n"] += 1
         if calls["n"] == 1:
             raise PauseStoreUnavailable("redis blinked")
-        return await real_release(self, key)
+        return await real_release(self, key, episode)
 
     monkeypatch.setattr(PauseStore, "release_charged", flaky)
     assert await h.handler.retry_hold_redrives() == 0
     assert h.state(job).status is ProgressStatus.FAILED, "no redrive with the old charge count"
-    assert await h.store.pending_redrives() == {scope: [job.state_key]}
+    assert await h.store.pending_redrives() == {scope: [(job.state_key, "")]}
 
     assert await h.handler.retry_hold_redrives() == 1
     after = await h.pause_state(job)
@@ -962,10 +962,10 @@ async def test_a_hold_whose_own_reset_fails_owes_every_job_and_the_job_is_not_fa
     h.seed(third)
     real_release = PauseStore.release_charged
 
-    async def down_for_the_third(self, key):  # noqa: ANN202
+    async def down_for_the_third(self, key, episode=""):  # noqa: ANN202
         if key == third.state_key:
             raise PauseStoreUnavailable("redis blinked")
-        return await real_release(self, key)
+        return await real_release(self, key, episode)
 
     monkeypatch.setattr(PauseStore, "release_charged", down_for_the_third)
     with pytest.raises(StagePaused):
@@ -1054,7 +1054,7 @@ async def test_owed_redrives_are_found_from_the_owed_sets_when_the_index_lost_th
     scope = f"{_PK}:{_CLS}"
     h.seed(job, ProgressStatus.FAILED)
     await h.store.put(job.state_key, PauseState(since_ms=h.clock(), charged=6, sends=6, scope=scope))
-    await fleet.client().sadd(fleet.key(f"sg:{{p:{scope}}}:owed"), job.state_key)
+    await fleet.client().hset(fleet.key(f"sg:{{p:{scope}}}:owed"), job.state_key, "ep-1")
     assert await h.store.pending_redrives() == {}, "the index does not know the scope"
     assert await h.handler.retry_hold_redrives() == 1
     assert h.state(job).status is not ProgressStatus.FAILED
@@ -1073,3 +1073,40 @@ async def test_an_owed_scope_noted_again_is_not_removed_by_a_pass_that_saw_it_em
     await h.store.note_owed_scope("pk:s")  # noted again after the pass read it
     await h.store._eval(store_module._REMOVE_IF_SCORE, [index], "pk:s", repr(float(seen)))  # type: ignore[attr-defined]
     assert await fleet.client().zscore(index, "pk:s") is not None
+
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_redrive_pass_does_not_clear_the_charges_of_the_run_it_started(fleet: FleetRedis) -> None:
+    """A pass reset the job's charges and redrove it, but marking it done failed. The new run charges 2 and pauses. The
+    next pass finds the job still owed: the reset already happened for this hold episode, so the 2 charges stay."""
+    h, job = _BudgetHarness(fleet), _job()
+    scope = f"{_PK}:{_CLS}"
+    h.seed(job, ProgressStatus.FAILED)
+    await h.store.put(job.state_key, PauseState(since_ms=h.clock(), charged=6, sends=6, scope=scope))
+    await h.store.add_redrives(scope, [job.state_key], episode="ep-1")
+    assert await h.store.release_charged(job.state_key, "ep-1")
+    await h.store.apply(
+        job.state_key, attempt=5, sends=2, charged=2, trials=0, since_ms=h.clock(), ledger_at_since=0, scope=scope
+    )
+    h.states.put(h.state(job).model_copy(update={"status": ProgressStatus.PAUSED}))
+    assert await h.handler.retry_hold_redrives() == 1, "nothing more is owed"
+    state = await h.pause_state(job)
+    assert state is not None and state.charged == 2, "the new run's charges are kept"
+
+
+@pytest.mark.asyncio
+async def test_a_pause_whose_verdict_could_not_be_written_keeps_the_run_s_share(fleet: FleetRedis, monkeypatch: pytest.MonkeyPatch) -> None:
+    """At 19 sends a run makes its last failed send, and Redis fails before the verdict is written. Its reservation
+    stays, so the next delivery gets no send until the store answers; it never gets back a send that was spent."""
+    h, job = _BudgetHarness(fleet), _job()
+    await h.store.put(job.state_key, PauseState(since_ms=h.clock(), sends=19))
+    assert await h.judge.reserve(job, attempt=1, stale_ms=60_000) == 1
+
+    async def down(self, *args, **kwargs):  # noqa: ANN202
+        raise PauseStoreUnavailable("redis blinked")
+
+    monkeypatch.setattr(PauseStore, "apply", down)
+    assert await h.judge.judge(job, _charged_pause(requests=1), attempt=1) is None
+    monkeypatch.undo()
+    assert await h.judge.reserve(job, attempt=2, stale_ms=60_000) == 0

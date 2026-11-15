@@ -114,10 +114,14 @@ if score and tonumber(score) == tonumber(ARGV[2]) then return redis.call('ZREM',
 return 0
 """
 
-# KEYS: hash. A fresh charge count for a redriven job; its sends and trials stay.
+# KEYS: hash  ARGV: episode. A fresh charge count for a job a hold redrives, once per hold episode: a retry of the same
+# reset (its redrive went out but marking it done failed) finds the episode recorded and leaves the charges a new run
+# has made since. Its sends and trials stay. Returns 0 with no budget, 2 when this episode's reset was already done.
 _RELEASE_CHARGED = """
 if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+if ARGV[1] ~= '' and redis.call('HGET', KEYS[1], 'reset_episode') == ARGV[1] then return 2 end
 redis.call('HSET', KEYS[1], 'charged', 0)
+if ARGV[1] ~= '' then redis.call('HSET', KEYS[1], 'reset_episode', ARGV[1]) end
 return 1
 """
 
@@ -247,9 +251,10 @@ class PauseStore:
         """Delete the budget of a run that settled as ``attempt``, unless a later attempt has written it since."""
         return bool(await self._eval(_CLEAR, [self._key(state_key), self._runs_key(state_key)], attempt))
 
-    async def release_charged(self, state_key: str) -> bool:
-        """Give a redriven job a fresh charge count; its sends and trials stay. False when it has no state."""
-        return bool(await self._eval(_RELEASE_CHARGED, [self._key(state_key)]))
+    async def release_charged(self, state_key: str, episode: str = "") -> bool:
+        """Give a job a hold redrives a fresh charge count, once per hold ``episode`` (``_RELEASE_CHARGED``); its sends
+        and trials stay. False when it has no state."""
+        return bool(await self._eval(_RELEASE_CHARGED, [self._key(state_key)], episode))
 
     # ---- the redrives a hold owes ------------------------------------------------------------------
     # The owed set of a key scope is written by the breaker's script that opens the hold (``owed_key_name``), atomically
@@ -273,31 +278,38 @@ class PauseStore:
 
         await self._do(add())
 
-    async def add_redrives(self, scope: str, state_keys: tuple[str, ...] | list[str]) -> None:
-        """Owe the jobs ``state_keys`` a redrive under ``scope`` (the breaker's script does this when it opens a hold)."""
+    async def add_redrives(self, scope: str, state_keys: tuple[str, ...] | list[str], episode: str = "") -> None:
+        """Owe the jobs ``state_keys`` a redrive under ``scope`` for hold ``episode`` (the breaker's script does this when
+        it opens a hold)."""
         if not state_keys:
             return
         client = self._handle().client()
         key = self._owed_key(scope)
 
         async def add() -> None:
-            await client.sadd(key, *state_keys)
+            await client.hset(key, mapping=dict.fromkeys(state_keys, episode))
             await client.expire(key, OWED_TTL_SECONDS)
 
         await self.note_owed_scope(scope)
         await self._do(add())
 
-    async def is_owed(self, scope: str, state_key: str) -> bool:
-        return bool(await self._do(self._handle().client().sismember(self._owed_key(scope), state_key)))
+    async def owed_episode(self, scope: str, state_key: str) -> str | None:
+        """The hold episode ``state_key`` is owed a redrive for, or None when it is owed none."""
+        value = await self._do(self._handle().client().hget(self._owed_key(scope), state_key))
+        return None if value is None else _s(value)
 
-    async def pending_redrives(self) -> dict[str, list[str]]:
-        """The redrives still owed, by key scope. A scope whose set has emptied or expired leaves the index, unless it
-        was noted again meanwhile."""
+    async def is_owed(self, scope: str, state_key: str) -> bool:
+        return await self.owed_episode(scope, state_key) is not None
+
+    async def pending_redrives(self) -> dict[str, list[tuple[str, str]]]:
+        """The redrives still owed, by key scope: ``(state key, hold episode)``. A scope whose set has emptied or
+        expired leaves the index, unless it was noted again meanwhile."""
         client = self._handle().client()
-        pending: dict[str, list[str]] = {}
+        pending: dict[str, list[tuple[str, str]]] = {}
         for raw_scope, score in await self._do(client.zrange(self._redrive_index(), 0, -1, withscores=True)):
             scope = _s(raw_scope)
-            members = sorted(_s(m) for m in await self._do(client.smembers(self._owed_key(scope))))
+            owed = await self._do(client.hgetall(self._owed_key(scope)))
+            members = sorted((_s(k), _s(v)) for k, v in owed.items())
             if members:
                 pending[scope] = members
             else:
@@ -311,10 +323,10 @@ class PauseStore:
         found = 0
         async for key in scan_keys(self._handle(), "sg:{p:", "}:owed"):
             scope = _scope_of(key, "sg:{p:", "}:owed")
-            if scope is not None and await self._do(self._handle().client().scard(key)):
+            if scope is not None and await self._do(self._handle().client().hlen(key)):
                 await self.note_owed_scope(scope)
                 found += 1
         return found
 
     async def redrive_done(self, scope: str, state_key: str) -> None:
-        await self._do(self._handle().client().srem(self._owed_key(scope), state_key))
+        await self._do(self._handle().client().hdel(self._owed_key(scope), state_key))
