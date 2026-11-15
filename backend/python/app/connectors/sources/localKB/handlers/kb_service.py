@@ -319,12 +319,12 @@ def _ambient_org() -> str | None:
 # filter, so an edited cursor can move where a page starts, never widen what it may hold. It is
 # bound to the collection and to the listing kind (single files only, or every batch) so that a
 # cursor from another list is refused rather than read as a position in this one.
-def _trash_cursor(kb_id: str, files_only: bool, deleted_at: int, batch_id: str) -> str:
+def _trash_cursor(kb_id: str, deleted_at: int, batch_id: str, *, files_only: bool) -> str:
     raw = json.dumps({"kb": kb_id, "f": files_only, "t": deleted_at, "b": batch_id}, separators=(",", ":"))
     return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
 
-def _trash_cursor_position(cursor: str, kb_id: str, files_only: bool) -> tuple[int, str] | None:
+def _trash_cursor_position(cursor: str, kb_id: str, *, files_only: bool) -> tuple[int, str] | None:
     """The ``(batchDeletedAt, batchId)`` a cursor of this listing names, or None for any other string."""
     try:
         wire = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
@@ -2500,7 +2500,7 @@ class KnowledgeBaseService:
             files_only = user_role not in RESTORE_BATCH_ROLES
             after = None
             if cursor is not None:
-                after = _trash_cursor_position(cursor, kb_id, files_only)
+                after = _trash_cursor_position(cursor, kb_id, files_only=files_only)
                 if after is None:
                     return {"success": False, "code": 400, "reason": TRASH_CURSOR_REFUSED_REASON}
             # One row more than the page says whether a next page exists, whatever the capped total says.
@@ -2526,7 +2526,9 @@ class KnowledgeBaseService:
                     "totalCount": total,
                     "totalPages": -(-total // limit),
                     "totalCapped": capped,
-                    "nextCursor": _trash_cursor(kb_id, files_only, last["batchDeletedAt"], last["batchId"]) if last else None,
+                    "nextCursor": (
+                        _trash_cursor(kb_id, last["batchDeletedAt"], last["batchId"], files_only=files_only) if last else None
+                    ),
                 },
                 "retention": None if min_age_ms is None else {"minAgeMs": min_age_ms},
             }
