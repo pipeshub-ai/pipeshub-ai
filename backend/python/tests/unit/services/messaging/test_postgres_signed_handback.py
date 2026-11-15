@@ -33,7 +33,7 @@ class _Queue:
         self.nacks: list[dict] = []
         self.ack = AsyncMock()
 
-    async def nack(self, group, d, delay, error="", *, refund=False, value=None):  # noqa: ANN001, ANN201
+    async def nack(self, group, d, delay, error="", *, refund=False, value=None):  # noqa: ANN202
         self.nacks.append({"delay": delay, "refund": refund, "reissued": value is not None})
         if value is not None:
             self.value = value
@@ -44,7 +44,7 @@ class _Filter:
     def __init__(self, hand_backs: int) -> None:
         self.left = hand_backs
 
-    def hand_back(self, messages):  # noqa: ANN001, ANN201
+    def hand_back(self, messages):  # noqa: ANN202
         if self.left <= 0:
             return {}
         self.left -= 1
@@ -52,7 +52,7 @@ class _Filter:
 
 
 @pytest.fixture
-def clock(monkeypatch):  # noqa: ANN001, ANN201
+def clock(monkeypatch):  # noqa: ANN201
     now = [1_800_000_000.0]
     monkeypatch.setattr(envelope, "time", SimpleNamespace(time=lambda: now[0]))
     monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
@@ -93,7 +93,7 @@ def _claim(queue: _Queue, attempts: int = 1) -> SimpleNamespace:
     return SimpleNamespace(topic=TOPIC, message_id=7, attempts=attempts, value=queue.value)
 
 
-async def test_a_message_that_waits_past_the_lifetime_through_hand_backs_still_runs(clock) -> None:  # noqa: ANN001
+async def test_a_message_that_waits_past_the_lifetime_through_hand_backs_still_runs(clock) -> None:
     queue = _Queue(_signed(clock[0]))
     consumer = _consumer(queue, hand_backs=3)
     for _ in range(3):  # three waits of 10 minutes: 30 minutes against a 15 minute lifetime
@@ -109,7 +109,7 @@ async def test_a_message_that_waits_past_the_lifetime_through_hand_backs_still_r
     queue.ack.assert_awaited_once()
 
 
-async def test_the_renewed_message_is_signed_over_the_same_payload(clock) -> None:  # noqa: ANN001
+async def test_the_renewed_message_is_signed_over_the_same_payload(clock) -> None:
     queue = _Queue(_signed(clock[0]))
     before = json.loads(queue.value)
     clock[0] += 600
@@ -120,7 +120,7 @@ async def test_the_renewed_message_is_signed_over_the_same_payload(clock) -> Non
     assert after["ctx"]["issuedAt"] == int(clock[0])
 
 
-async def test_a_message_that_is_already_stale_is_refused_and_not_renewed(clock) -> None:  # noqa: ANN001
+async def test_a_message_that_is_already_stale_is_refused_and_not_renewed(clock) -> None:
     queue = _Queue(_signed(clock[0] - LIFETIME - 5))
     consumer = _consumer(queue, hand_backs=1)
     await consumer._settle(_claim(queue))
@@ -130,7 +130,7 @@ async def test_a_message_that_is_already_stale_is_refused_and_not_renewed(clock)
     assert "stale" in consumer._abandon.await_args.args[2]
 
 
-async def test_a_tampered_message_is_not_renewed_and_is_refused(clock) -> None:  # noqa: ANN001
+async def test_a_tampered_message_is_not_renewed_and_is_refused(clock) -> None:
     stored = json.loads(_signed(clock[0]))
     stored["payload"] = stored["payload"].replace("rec-1", "rec-2")
     queue = _Queue(json.dumps(stored))
@@ -142,13 +142,13 @@ async def test_a_tampered_message_is_not_renewed_and_is_refused(clock) -> None: 
     assert json.loads(queue.value)["payload"] == stored["payload"]
 
 
-async def test_a_hand_back_that_is_not_signed_for_this_key_cannot_be_renewed(clock) -> None:  # noqa: ANN001
+async def test_a_hand_back_that_is_not_signed_for_this_key_cannot_be_renewed(clock) -> None:
     other = json.dumps(sign(derive_key("someone-else"), TOPIC, {"orgId": "org-a"}, CTX, event_type="newRecord", issued_at=int(clock[0])))
     with pytest.raises(envelope.EnvelopeRejected):
         await refresh_envelope(TOPIC, json.loads(other))
 
 
-async def test_nothing_is_renewed_without_a_key_to_verify_with(clock) -> None:  # noqa: ANN001
+async def test_nothing_is_renewed_without_a_key_to_verify_with(clock) -> None:
     envelope.configure(None, None, None)
     assert await refresh_envelope(TOPIC, json.loads(_signed(clock[0]))) is None
 
@@ -161,17 +161,17 @@ class _Tx:
     async def __aenter__(self):  # noqa: ANN204
         return self
 
-    async def __aexit__(self, *_a):  # noqa: ANN002, ANN204
+    async def __aexit__(self, *_a):  # noqa: ANN204
         return False
 
-    async def execute(self, sql, *args):  # noqa: ANN001, ANN201
+    async def execute(self, sql, *args):  # noqa: ANN202
         self.statements.append((sql, args))
         return self.nack_result if "queue.nack" in sql else "UPDATE 1"
 
 
 class TestQueueNackValue:
     @staticmethod
-    def _queue(tx):  # noqa: ANN001, ANN205
+    def _queue(tx):  # noqa: ANN205
         from app.services.messaging.postgres.queue import PgQueue
 
         queue = object.__new__(PgQueue)
