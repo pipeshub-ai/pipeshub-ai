@@ -704,3 +704,54 @@ class TestOwnPendingScanProgress:
         finally:
             module._PENDING_SCAN_PAGE = original
         assert found_on is not None and found_on <= math.ceil((stuck + 1) / (page_size * pages)) + 1
+
+
+class TestAScanThatRaisesPartWay:
+    @staticmethod
+    async def _owned_with_bodies(consumer, count: int) -> list[str]:
+        await consumer.redis.xgroup_create(LANE, GROUP, id="0", mkstream=True)
+        for i in range(count):
+            await consumer.redis.xadd(LANE, _fields(f"r-{i}", f"conn-{i}"))
+        read = await consumer.redis.xreadgroup(GROUP, consumer.consumer_name, {LANE: ">"})
+        return [message_id for _s, entries in read for message_id, _f in entries]
+
+    @staticmethod
+    def _xrange_raises_for(consumer, failing: str, times: int) -> None:
+        real = consumer.redis.xrange
+        left = {"n": times}
+
+        async def xrange(topic, *args, **kwargs):  # noqa: ANN001, ANN202
+            if kwargs.get("min") == failing and left["n"] > 0:
+                left["n"] -= 1
+                raise ConnectionError("lost the connection")
+            return await real(topic, *args, **kwargs)
+
+        consumer.redis.xrange = xrange
+
+    async def test_entries_read_before_the_error_are_returned_and_the_failing_one_comes_next(
+        self, provider
+    ) -> None:
+        consumer = await _fifo_consumer(provider)
+        ids = await self._owned_with_bodies(consumer, 5)
+        self._xrange_raises_for(consumer, ids[2], times=1)
+        scan = consumer._IndexingRedisStreamsConsumer__own_unheld_pending_payloads
+
+        first = await scan(LANE, 10, ignore_budget=True)
+        second = await scan(LANE, 10, ignore_budget=True)
+
+        assert [m for m, _f in first] == ids[:2]
+        assert [m for m, _f in second][:3] == ids[2:]
+
+    async def test_an_entry_that_keeps_raising_first_does_not_hide_the_ones_behind(
+        self, provider
+    ) -> None:
+        consumer = await _fifo_consumer(provider)
+        ids = await self._owned_with_bodies(consumer, 4)
+        self._xrange_raises_for(consumer, ids[0], times=1000)
+        scan = consumer._IndexingRedisStreamsConsumer__own_unheld_pending_payloads
+
+        with pytest.raises(ConnectionError):
+            await scan(LANE, 10, ignore_budget=True)
+        second = await scan(LANE, 10, ignore_budget=True)
+
+        assert [m for m, _f in second] == ids[1:]

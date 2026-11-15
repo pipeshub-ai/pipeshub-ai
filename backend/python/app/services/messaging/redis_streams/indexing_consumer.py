@@ -2149,6 +2149,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         segments = [(resume, "+")] if resume == "-" else [(resume, "+"), ("-", resume[1:])]
         last_examined: str | None = None
         reached_end = False
+        raised = False
         try:
             for low, high in segments:
                 cursor = low
@@ -2190,10 +2191,26 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     cursor = f"({last_examined}"
             reached_end = True
             return found
+        except Exception as e:
+            raised = True
+            if not found:
+                raise
+            # Entries already read are handed on, not dropped: the callers
+            # discard everything when the scan raises, and the cursor is past
+            # them, so they would wait for the scan to wrap round the list.
+            self.logger.warning(
+                "Pending scan on %s stopped after %d entries: %s", topic, len(found), e
+            )
+            return found
         finally:
             if reached_end:
                 self._own_scan_resume[topic] = "-"
+            elif raised and found:
+                # The entry that raised is examined again on the next scan.
+                self._own_scan_resume[topic] = f"({found[-1][0]}"
             elif last_examined is not None:
+                # Stepping past it keeps one entry that keeps failing from
+                # filling every scan.
                 self._own_scan_resume[topic] = f"({last_examined}"
 
     async def __reclaim_for_dispatch(self, topic: str, message_id: str) -> bool:
