@@ -156,10 +156,14 @@ def hop_failure(s: Store, v: Viewer, c: str, p: str, opens: bool) -> str | None:
     r, g, i = _rule(s, c), c in v.granted, _inherits(s, c, p)
     if r in ("OPEN", "STRICT"):
         return None if i or g else f"R6:{r}-no-inherit-no-grant@{c}"
-    if r in ("RESTRICTED", PAG):
+    if r == "RESTRICTED":
         if i and g:
             return None
-        return f"R6:{r}-{'no-grant' if i else 'no-inherit'}@{c}"
+        return f"R6:RESTRICTED-{'no-grant' if i else 'no-inherit'}@{c}"
+    if r == PAG:
+        if i and g:
+            return None
+        return f"R6:PARENT_AND_GRANT-{'no-grant' if i else 'no-inherit'}@{c}"
     return f"R6:unknown-rule@{c}"
 
 
