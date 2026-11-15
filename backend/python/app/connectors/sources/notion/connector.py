@@ -617,6 +617,10 @@ class NotionConnector(BaseConnector):
         self._token_resilience: ResiliencePolicy | None = None
         # Notion user id -> email of each member /v1/users listed this sync: who owns a token.
         self._member_ids: dict[str, str] = {}
+        # Whether that listing reached its end with every member's details, and the members it
+        # listed without an email (who may still be verified members).
+        self._members_complete = False
+        self._members_without_email: set[str] = set()
         # data source id -> the rows the integration's full page listing put under it this sync
         # (None until that listing finished), whose content its table record indexes.
         self._listed_rows: dict[str, set[str]] | None = None
@@ -1316,8 +1320,12 @@ class NotionConnector(BaseConnector):
         # By the owner's id among the members /v1/users listed with a verified email: /users/me shows
         # the owner's email only with an email capability (developers.notion.com/reference/get-self),
         # and a creator who is no longer a member must not keep their reach.
-        owner_email = self._member_ids.get(owner.get("id") or "")
+        owner_id = owner.get("id") or ""
+        owner_email = self._member_ids.get(owner_id)
         if not owner_email:
+            if owner_id and self._members_complete and owner_id not in self._members_without_email:
+                # Only a complete listing proves it: a short one, or a hidden email, says nothing.
+                raise _TokenRejected("Its creator is no longer a member of this Notion workspace with a verified email")
             raise RuntimeError("the token's owner is not among the members this sync listed with a verified email")
         if owner_email != email.lower():
             # A token lent by someone else would show their pages to this user.
@@ -2744,6 +2752,8 @@ class NotionConnector(BaseConnector):
                 )
             self._bot_ids_complete = listing_complete
             self._member_ids = member_ids
+            self._members_complete = user_details_complete
+            self._members_without_email = set(members_without_email)
             if user_details_complete:
                 await self._remove_departed_workspace_users(workspace_emails, members_without_email)
             else:

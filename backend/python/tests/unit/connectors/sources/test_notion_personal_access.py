@@ -79,6 +79,7 @@ def _connector(token_datasource: MagicMock | None = None) -> NotionConnector:
     conn.config_service = _Config()
     conn.notify = AsyncMock()
     conn._member_ids = {ALICE_ID: ALICE, "notion-bob": "bob@example.com"}
+    conn._members_complete = True  # /v1/users was read to its end this sync
     conn.data_entities_processor.get_user_by_user_id = AsyncMock(
         side_effect=lambda uid, **_: User(email=ALICE, user_id=uid, org_id="org-1", is_active=True) if uid == "u-alice" else None
     )
@@ -205,18 +206,37 @@ async def test_a_user_lookup_that_fails_keeps_the_token_and_grants_nothing() -> 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["no workspace known", "owner not listed"])
+@pytest.mark.parametrize("change", ["no workspace known", "member listing fell short", "owner's email hidden"])
 async def test_what_this_sync_does_not_know_keeps_the_token_and_grants_nothing(change: str) -> None:
     conn = _connector(_datasource(_bot(), _search("p1")))
     if change == "no workspace known":
         conn.workspace_id = None  # /users/me of the connector's own token failed this run
+    elif change == "member listing fell short":
+        conn._member_ids, conn._members_complete = {}, False
     else:
-        conn._member_ids = {}  # the owner is no member /v1/users listed: removed, or the listing fell short
+        conn._member_ids, conn._members_without_email = {}, {ALICE_ID}  # listed, but Notion showed no email
     await _link(conn)
     await conn._load_personal_access()
     assert conn._readers == {} and conn._sync_incomplete is True
     assert conn.config_service.values[personal_tokens.token_path(conn.connector_id, "u-alice")]["status"] == personal_tokens.LINKED
     conn.notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("member_ids", [
+    {"notion-bob": "bob@example.com"},  # the creator left the workspace: /v1/users no longer lists them
+    {},  # or is listed without a verified email
+])
+async def test_a_token_whose_creator_is_not_a_verified_member_of_a_complete_listing_is_dropped_and_they_are_told(
+        member_ids: dict[str, str]) -> None:
+    conn = _connector(_datasource(_bot(), _search("p1")))
+    conn._member_ids = member_ids
+    await _link(conn)
+    await conn._load_personal_access()
+    assert conn._readers == {}
+    entry = conn.config_service.values[personal_tokens.token_path(conn.connector_id, "u-alice")]
+    assert entry["status"] == personal_tokens.FAILED and "verified email" in entry["reason"]
+    assert conn.notify.await_args.kwargs["recipient_user_ids"] == ["u-alice"]
 
 
 @pytest.mark.asyncio
@@ -798,3 +818,4 @@ async def test_only_a_member_with_a_verified_email_can_own_a_linked_token() -> N
     conn._remove_departed_workspace_users = AsyncMock()
     await conn._sync_users()
     assert conn._member_ids == {"n1": "a@example.com"}
+    assert conn._members_complete is True and conn._members_without_email == set()
