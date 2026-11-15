@@ -184,7 +184,7 @@ async def test_wide_and_narrow_schema_writers_running_together_never_fail_an_upd
 
 @pytest.mark.parametrize("name", FIELDS)
 @pytest.mark.parametrize("value", [2.0, True, 1e20, 2**53 + 1, -0.0, {}, [], 10**30, 7, 0, 1, -1], ids=repr)
-async def test_the_validator_neo4j_and_postgres_use_agrees_with_arango(store: _Store, name: str, value: object) -> None:
+async def test_the_validator_the_other_graph_stores_use_agrees_with_this_schema(store: _Store, name: str, value: object) -> None:
     await store.provider.ensure_schema()
     key = f"e-{uuid.uuid4().hex[:8]}"
     assert await store.insert(_record(key)) is None
