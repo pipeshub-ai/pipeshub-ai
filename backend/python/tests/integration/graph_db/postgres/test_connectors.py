@@ -9,6 +9,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 from __future__ import annotations
 
 import os
+import re
 from typing import TYPE_CHECKING
 
 import asyncpg
@@ -395,13 +396,17 @@ async def test_a_failed_instances_list_is_empty_and_comes_back(w: World, monkeyp
 async def test_the_stats_read_the_connector_and_not_the_whole_organisation(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """The stats of a connector read the record edges of its own record groups, and a collection's those of its app: the cost does not grow with the records of
     the organisation's other connectors. As one statement with the kind as a parameter, the group test (``to_id IN (SELECT ...)``) sat inside an OR, which PostgreSQL
-    does not turn into a join, and the plan read every record edge of the organisation."""
+    does not turn into a join, and the plan read every record edge of the organisation. As a join against the groups it still did whenever the planner guessed the
+    groups were many: the other connector's groups nest (200 under 4), so the recursive step is estimated at 50 groups a hop, and on a database where the organisation
+    fills its partition a scan of all its record edges came out cheaper. Every read of graph.edges and graph.nodes must name its key (``to_id =`` or ``id =``), so
+    the stage states of the other connector's records are not read either."""
     admin_url = os.environ.get("PG_ADMIN_URL")
     assert admin_url, "set PG_ADMIN_URL (an owner DSN): this test analyses graph.nodes and graph.edges before it reads the plans"
     await w.nodes("recordGroups", {"_key": "top"})
     await w.edge("belongsTo", ("recordGroups", "top"), ("apps", APP))
     await w.nodes("apps", {"_key": "kb", "type": Connectors.KNOWLEDGE_BASE.value})
-    await w.nodes("records", {"_key": "r1", "recordType": "FILE"}, {"_key": "k1", "recordType": "FILE"})
+    await w.nodes("records", {"_key": "r1", "recordType": "FILE", "virtualRecordId": "v1", "contentRev": "1"}, {"_key": "k1", "recordType": "FILE"})
+    await w.nodes("stageStates", {"_key": "v1:1:entities", "status": "COMPLETED"})
     await w.edge("belongsTo", ("records", "r1"), ("recordGroups", "top"))
     await w.edge("belongsTo", ("records", "k1"), ("apps", "kb"))
     # another connector: 20,000 records in its own groups and app
@@ -409,6 +414,10 @@ async def test_the_stats_read_the_connector_and_not_the_whole_organisation(w: Wo
         FROM generate_series(1, 20000) g""", w.org), write=True)
     await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id) SELECT $1, 'belongsTo', 'records', 'n' || g,
         'recordGroups', 'og' || (g % 200) FROM generate_series(1, 20000) g""", w.org), write=True)
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id) SELECT $1, 'belongsTo', 'recordGroups', 'og' || g,
+        'recordGroups', 'oroot' || (g % 4) FROM generate_series(0, 199) g""", w.org), write=True)
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'stageStates', 'n' || g || ':1:entities', '{"status": "COMPLETED"}'::jsonb
+        FROM generate_series(1, 20000) g""", w.org), write=True)
     con = await asyncpg.connect(admin_url)
     try:
         await con.execute("ANALYZE graph.nodes; ANALYZE graph.edges")      # as autovacuum would have by now: a plan that needs no statistics is not what is measured
@@ -421,11 +430,14 @@ async def test_the_stats_read_the_connector_and_not_the_whole_organisation(w: Wo
         sent.append((sql, args))
         return await real(sql, *args, **kw)
     monkeypatch.setattr(w.p, "_lrows", spy)
-    assert (await w.p.get_connector_stats(w.org, APP))["data"]["stats"]["total"] == 1
+    stats = (await w.p.get_connector_stats(w.org, APP))["data"]["stats"]
+    assert stats["total"] == 1 and stats["entitiesStatus"]["COMPLETED"] == 1
     assert (await w.p.get_connector_stats(w.org, "kb"))["data"]["stats"]["total"] == 1
     assert len(sent) == 2
     for sql, args in sent:
         plan = "\n".join(r[0] for r in await pg_db.run(lambda tx, sql=sql, args=args: tx._con.fetch("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) " + sql, *args)))
+        scans = re.findall(r"(Seq Scan|Index Scan|Index Only Scan|Bitmap Index Scan) (?:using \S+ )?on (?:nodes|edges)\S*[^\n]*\n(?:\s+Index Cond: ([^\n]*))?", plan)
+        assert scans and all(kind != "Seq Scan" and re.search(r"\b(?:to_)?id = ", cond) for kind, cond in scans), plan
         root = next(line for line in plan.splitlines() if line.strip().startswith("Buffers:"))
         touched = sum(int(part.split("=")[1]) for part in root.split() if part.startswith(("hit=", "read=")))
         assert touched < 200, (touched, plan)
