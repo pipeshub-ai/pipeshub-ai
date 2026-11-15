@@ -145,7 +145,7 @@ class TestDispatch:
         assert args == ("query_service", "/api/v1/search", "POST")
         assert kwargs["value"] >= 0
 
-    async def test_a_response_still_streaming_is_already_counted(self):
+    async def test_a_response_still_streaming_is_already_counted(self) -> None:
         """Recorded when the response starts, as before: a long stream is in every push while it runs."""
         request = make_request(
             path="/api/v1/stream", route=SimpleNamespace(path_format="/api/v1/stream", path="/api/v1/stream")
