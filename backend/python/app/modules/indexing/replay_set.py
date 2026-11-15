@@ -25,7 +25,8 @@ acknowledges, and an event with no envelope has no event id, so the guard does n
 
 **An entry answers a replay only while the record still shows a remembered completion that is not older.**
 The record's ``lastIndexTimestamp`` must be the completed-at of an entry (the current completion is one the
-set knows), and the replayed event must be that delivery, or come before it in the same broker log. Without
+set knows), and the replayed event must be that delivery, or come before it in the same broker log (a Kafka
+partition, a PostgreSQL queue; a Redis Streams entry id names no stream, so it is compared with nothing). Without
 that, an older event whose entry was lost (a failed write, a trim, an eviction) runs again on replay and can
 index its own, older bytes; a newer event acknowledged after it would leave the record there. Since the
 record is the proof, a lost write can only make a replay run, never make one skip.
@@ -190,10 +191,11 @@ async def read_entries(redis: Redis, record_id: str, payload: Mapping[str, Any])
     return entries
 
 
-# The consumers' delivery ids (``stamp_delivery_id``): Kafka ``<topic>-<partition>-<offset>``, the PostgreSQL
-# queue ``<topic>:<row id>``, Redis Streams the bare entry id ``<ms>-<seq>``. A retry keeps its original's id.
+# The consumers' delivery ids (``stamp_delivery_id``): Kafka ``<topic>-<partition>-<offset>`` and the PostgreSQL
+# queue ``<topic>:<row id>``. A retry keeps its original's id. Redis Streams stamps the bare entry id
+# ``<ms>-<seq>``, which does not name its stream: a record's events can be on different lane streams, whose ids
+# are not ordered against each other, so it names no position here.
 _PG_ID = re.compile(r"(.+):(\d+)")
-_REDIS_ID = re.compile(r"(\d+)-(\d+)")
 _KAFKA_ID = re.compile(r"(.+)-(\d+)-(\d+)")
 
 
@@ -203,8 +205,6 @@ def log_position(delivery_id: str | None) -> tuple[str, tuple[int, ...]] | None:
         return None
     if match := _PG_ID.fullmatch(delivery_id):
         return f"pg:{match[1]}", (int(match[2]),)
-    if match := _REDIS_ID.fullmatch(delivery_id):
-        return "redis", (int(match[1]), int(match[2]))
     if match := _KAFKA_ID.fullmatch(delivery_id):
         return f"kafka:{match[1]}-{match[2]}", (int(match[3]),)
     return None

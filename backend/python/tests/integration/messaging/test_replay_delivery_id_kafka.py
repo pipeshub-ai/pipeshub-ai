@@ -134,10 +134,10 @@ async def test_redelivery_keeps_the_delivery_id_kafka(kafka_available, topic, un
     assert second[0] == first[0], "a redelivery from the committed offset carries the same delivery id"
 
 
-def _completed_record() -> dict[str, Any]:
+def _completed_record(record_id: str) -> dict[str, Any]:
     """The record as the graph holds it: COMPLETED, and stamped by each COMPLETED write."""
     return {
-        "_key": "r1", "virtualRecordId": "vr1", "contentRev": "rev-1", "mimeType": "application/pdf",
+        "_key": record_id, "virtualRecordId": "vr1", "contentRev": "rev-1", "mimeType": "application/pdf",
         "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value,
         "lastIndexTimestamp": None,
     }
@@ -166,7 +166,8 @@ def _record_handler(record: dict[str, Any]):  # noqa: ANN202
 async def test_window_of_two_events_for_one_record_kafka(
     kafka_available, redis_available, topic, unique_suffix, first_entry_lost: bool
 ) -> None:
-    record_id = "r1"
+    # Its own record per case: the replay-set keys are the record's, and cases may run on parallel workers.
+    record_id = f"r-{unique_suffix}"
     redis = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
     await redis.delete(replay_set.hash_key(record_id), replay_set.order_key(record_id))
     updates = [(EventTypes.UPDATE_RECORD.value, {"recordId": record_id, "orgId": "org-1", "virtualRecordId": "vr1",
@@ -179,7 +180,7 @@ async def test_window_of_two_events_for_one_record_kafka(
     first_downloads: list[str] = []
     replay_downloads: list[str] = []
     replay_done: list[str] = []
-    record = _completed_record()
+    record = _completed_record(record_id)
     completions = iter(range(1_000, 2_000))
 
     def wrap(handler: Any, downloads: list[str], done: list[str]):  # noqa: ANN202, ANN401

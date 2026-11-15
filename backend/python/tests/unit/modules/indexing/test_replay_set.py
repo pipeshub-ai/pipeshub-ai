@@ -177,15 +177,16 @@ class TestLogPosition:
             ("record-events-0-42", ("kafka:record-events-0", (42,))),
             ("t-3-7", ("kafka:t-3", (7,))),
             ("record-events:981", ("pg:record-events", (981,))),
-            ("1731650000000-3", ("redis", (1731650000000, 3))),
+            # Redis Streams: a bare entry id, with no stream; ids of two lane streams are not ordered.
+            ("1731650000000-3", None),
             ("", None),
             (None, None),
             ("not-a-position", None),
         ],
     )
     def test_each_consumer_id_names_its_log_and_position(self, delivery_id, position) -> None:
-        # The formats stamp_delivery_id receives: Kafka topic-partition-offset, the PostgreSQL queue
-        # topic:row id, and the bare Redis Streams entry id.
+        # The formats stamp_delivery_id receives: Kafka topic-partition-offset and the PostgreSQL queue
+        # topic:row id name a position; the bare Redis Streams entry id does not.
         assert replay_set.log_position(delivery_id) == position
 
 
@@ -250,3 +251,10 @@ class TestTheRecordMustStillShowARememberedCompletion:
         assert all(
             not replay_set.not_older_than_the_record(f"evt-{n}", entries, 5000) for n in range(5, total)
         )
+
+    def test_redis_streams_ids_answer_only_their_own_completion(self) -> None:
+        # Two lane streams: 1000-5 on one and 1000-0 on the other say nothing about which came first.
+        entries = self._entries(("u1", "1000-0", 1), ("u2", "1000-5", 2))
+
+        assert not replay_set.not_older_than_the_record("u1", entries, 2)
+        assert replay_set.not_older_than_the_record("u2", entries, 2)

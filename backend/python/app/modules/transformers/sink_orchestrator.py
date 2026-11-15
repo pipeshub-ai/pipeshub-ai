@@ -347,6 +347,11 @@ class SinkOrchestrator(Transformer):
                 await self._save_reconciliation_metadata(ctx)
             with stage("entities.identity"):
                 await self._sync_record_identity_entities(ctx)
+            # Every write of the run is done, so the delivery may be remembered, with the lastIndexTimestamp
+            # its COMPLETED write stored: a run that failed after that write leaves no entry, and its
+            # redelivery runs again. A call of its own; a failure only weakens the replay guard.
+            if ctx.indexed_at_ms is not None:
+                await note_record_completed(record_id, ctx.indexed_at_ms, self.logger)
         # Also reached when the record was already COMPLETED and nothing was re-indexed.
         await self._project_properties(ctx, record_doc)
 
@@ -911,10 +916,7 @@ class SinkOrchestrator(Transformer):
         self.logger.debug(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )
-        # The write above returned true, so the delivery that ran it may be remembered, with the
-        # lastIndexTimestamp it wrote. A call of its own (never part of the write): a failure only weakens
-        # the replay guard and never fails the completion.
-        await note_record_completed(record.id, timestamp, self.logger)
+        ctx.indexed_at_ms = timestamp
         # The record is only searchable now, so the accessible-record map that
         # gates search is stale. Connector records arrive in bursts, so their
         # deletes are coalesced (see `on_record_indexed`).
