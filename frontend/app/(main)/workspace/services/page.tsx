@@ -186,7 +186,10 @@ export default function ServicesPage() {
   // Each refresh starts a new memory request; only the latest may set the state.
   const memoryRequest = useRef(0);
 
-  const infraServiceList = useMemo(() => buildInfraServices(localDeployment, t), [localDeployment, t]);
+  const infraServiceList = useMemo(
+    () => buildInfraServices(localDeployment, localInfra, t),
+    [localDeployment, localInfra, t],
+  );
   const appServiceList = useMemo(() => buildAppServices(t, localApp), [t, localApp]);
 
   useEffect(() => {

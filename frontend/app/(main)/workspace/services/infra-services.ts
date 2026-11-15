@@ -29,7 +29,13 @@ function redisLabel(mode: string | undefined, t: TFunction): string {
   return baseLabel;
 }
 
-export function buildInfraServices(deployment: Deployment | null, t: TFunction): ServiceMeta[] {
+// `infra` is the services map of GET /api/v1/health: it reports `postgres` in
+// place of `mongodb` when PostgreSQL is the document store.
+export function buildInfraServices(
+  deployment: Deployment | null,
+  infra: Record<string, string> | null,
+  t: TFunction,
+): ServiceMeta[] {
   const services: ServiceMeta[] = [];
 
   const redisDesc = deployment?.kvStoreType === 'redis'
@@ -37,24 +43,31 @@ export function buildInfraServices(deployment: Deployment | null, t: TFunction):
     : t('workspace.services.infra.redis.description');
   services.push({
     key: 'redis',
-    logoSlug: 'redis',
+    logoSlug: deployment?.redisMode === 'postgres' ? 'postgresql' : 'redis',
     label: redisLabel(deployment?.redisMode, t),
     description: redisDesc,
   });
 
-  services.push({ key: 'mongodb', logoSlug: 'mongodb', label: t('workspace.services.infra.mongodb.label'), description: t('workspace.services.infra.mongodb.description') });
+  if (infra && 'postgres' in infra) {
+    services.push({ key: 'postgres', logoSlug: 'postgresql', label: t('workspace.services.infra.postgres.label'), description: t('workspace.services.infra.postgres.description') });
+  } else {
+    services.push({ key: 'mongodb', logoSlug: 'mongodb', label: t('workspace.services.infra.mongodb.label'), description: t('workspace.services.infra.mongodb.description') });
+  }
 
-  const brokerSlug = deployment?.messageBrokerType === 'redis' ? 'redis' : 'apachekafka';
+  const brokerType = deployment?.messageBrokerType;
+  const brokerSlug = brokerType === 'redis' ? 'redis' : brokerType === 'postgres' ? 'postgresql' : 'apachekafka';
   services.push({ key: 'messageBroker', logoSlug: brokerSlug, label: t('workspace.services.infra.messageBroker.label'), description: t('workspace.services.infra.messageBroker.description') });
 
   if (deployment?.kvStoreType === 'etcd') {
     services.push({ key: 'KVStoreservice', logoSlug: 'etcd', label: t('workspace.services.infra.etcd.label'), description: t('workspace.services.infra.etcd.description') });
   }
 
-  const graphSlug = deployment?.graphDbType === 'neo4j' ? 'neo4j' : 'arangodb';
+  const graphType = deployment?.graphDbType;
+  const graphSlug = graphType === 'neo4j' ? 'neo4j' : graphType === 'postgres' ? 'postgresql' : 'arangodb';
   services.push({ key: 'graphDb', logoSlug: graphSlug, label: t('workspace.services.infra.graphDb.label'), description: t('workspace.services.infra.graphDb.description') });
 
-  const vectorSlug = deployment?.vectorDbType || 'qdrant';
+  // pgvector runs inside PostgreSQL.
+  const vectorSlug = deployment?.vectorDbType === 'pgvector' ? 'postgresql' : deployment?.vectorDbType || 'qdrant';
   services.push({ key: 'vectorDb', logoSlug: vectorSlug, label: t('workspace.services.infra.vectorDb.label'), description: t('workspace.services.infra.vectorDb.description') });
 
   return services;

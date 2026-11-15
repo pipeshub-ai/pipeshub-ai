@@ -4217,6 +4217,10 @@
           "label": "MongoDB",
           "description": "सत्र और उपयोगकर्ता मेटाडेटा"
         },
+        "postgres": {
+          "label": "PostgreSQL",
+          "description": "सत्र और उपयोगकर्ता मेटाडेटा"
+        },
         "messageBroker": {
           "label": "संदेश ब्रोकर",
           "description": "वितरित इवेंट स्ट्रीमिंग"

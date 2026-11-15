@@ -4213,6 +4213,10 @@
           "label": "MongoDB",
           "description": "Sessions and user metadata"
         },
+        "postgres": {
+          "label": "PostgreSQL",
+          "description": "Sessions and user metadata"
+        },
         "messageBroker": {
           "label": "Message broker",
           "description": "Distributed event streaming"

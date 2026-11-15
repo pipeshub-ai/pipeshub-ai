@@ -4222,6 +4222,10 @@
           "label": "MongoDB",
           "description": "Sitzungen und Benutzermetadaten"
         },
+        "postgres": {
+          "label": "PostgreSQL",
+          "description": "Sitzungen und Benutzermetadaten"
+        },
         "messageBroker": {
           "label": "Nachrichtenbroker",
           "description": "Verteiltes Ereignis-Streaming"

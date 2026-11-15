@@ -4263,6 +4263,10 @@
           "label": "MongoDB",
           "description": "Sesiones y metadatos de usuario"
         },
+        "postgres": {
+          "label": "PostgreSQL",
+          "description": "Sesiones y metadatos de usuario"
+        },
         "messageBroker": {
           "label": "Intermediario de mensajes",
           "description": "Transmisión de eventos distribuidos"
