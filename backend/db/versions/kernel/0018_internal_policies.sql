@@ -9,13 +9,14 @@ CREATE TABLE kernel.internal_policies (
   PRIMARY KEY (rel, polname));
 REVOKE ALL ON kernel.internal_policies FROM PUBLIC;
 
--- deparsed with a fixed path, so the registration and the check agree whatever the caller's search_path
+-- deparsed with a fixed path, so the registration and the check agree whatever the caller's search_path; a JSON array keeps every
+-- field in its place, NULLs included, so the same expression moved from USING to WITH CHECK is a different fingerprint
 CREATE FUNCTION kernel._internal_policy_md5(p_rel regclass, p_polname name) RETURNS text
 LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
-  SELECT md5(concat_ws('|', p.polcmd, p.polpermissive,
-                       (SELECT string_agg(r.rolname, ',' ORDER BY r.rolname) FROM pg_roles r WHERE r.oid = ANY (p.polroles)),
-                       (p.polroles = '{0}'::oid[]),
-                       pg_get_expr(p.polqual, p.polrelid), pg_get_expr(p.polwithcheck, p.polrelid)))
+  SELECT md5(jsonb_build_array(p.polcmd::text, p.polpermissive,
+                               (SELECT jsonb_agg(r.rolname ORDER BY r.rolname) FROM pg_roles r WHERE r.oid = ANY (p.polroles)),
+                               p.polroles = '{0}'::oid[],
+                               pg_get_expr(p.polqual, p.polrelid), pg_get_expr(p.polwithcheck, p.polrelid))::text)
   FROM pg_policy p WHERE p.polrelid = p_rel AND p.polname = p_polname $$;
 
 CREATE FUNCTION kernel.register_internal_policy(p_rel regclass, p_polname name) RETURNS void
