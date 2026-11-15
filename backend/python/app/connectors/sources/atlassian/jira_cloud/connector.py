@@ -117,7 +117,13 @@ from app.connectors.sources.atlassian.core.oauth import (
     OAUTH_JIRA_CONFIG_PATH,
     AtlassianScope,
 )
-from app.connectors.sources.atlassian.core.people import atlassian_person, jira_user, ticket_people, withdrawals_held
+from app.connectors.sources.atlassian.core.people import (
+    WITHDRAW_CONFIRMATIONS,
+    absent_accounts_due,
+    atlassian_person,
+    jira_user,
+    ticket_people,
+)
 from app.connectors.sources.atlassian.core.read_outcome import (
     JiraReadError,
     StoredAccessReadError,
@@ -2785,22 +2791,30 @@ class JiraConnector(BaseConnector):
             u for u in self._stored_app_users
             if u.source_user_id in ineligible_ids and (u.email or "").lower() not in kept_emails
         ]
-        if withdrawals_held(len(gone), len(self._stored_app_users)):
+        # A row that shows the account deactivated, or without product access, is evidence whatever the count; an
+        # account missing from the list is held when many are, until later complete reads agree.
+        absent = [u for u in gone if u.source_user_id not in self._seen_account_ids]
+        due, just_held = await absent_accounts_due(
+            self.issues_sync_point, {u.source_user_id for u in absent}, len(self._stored_app_users),
+            get_epoch_timestamp_in_ms(),
+        ) if absent else (True, False)
+        if not due:
+            gone = [u for u in gone if u not in absent]
             self.logger.warning(
-                "%s of %s linked Jira accounts would lose the connector this sync; held until a later sync agrees",
-                len(gone), len(self._stored_app_users),
+                "%s of %s linked Jira accounts are missing from the user list; held until %s complete reads agree",
+                len(absent), len(self._stored_app_users), WITHDRAW_CONFIRMATIONS,
             )
+        if just_held:
             await self.notify(
                 type=NotificationType.CONNECTOR_WARNING,
                 severity=NotificationSeverity.WARNING,
                 title=self._notification_title("held back removing many users"),
                 message=(
-                    f"{len(gone)} of {len(self._stored_app_users)} linked Jira users are no longer listed as active. "
-                    "Their access is kept until the user list confirms it: check the connector's Jira account can "
-                    "browse users, and run the sync again."
+                    f"{len(absent)} of {len(self._stored_app_users)} linked Jira users are missing from the user list. "
+                    f"They keep their access until {WITHDRAW_CONFIRMATIONS} syncs in a row agree: check the connector's "
+                    "Jira account can browse users."
                 ),
             )
-            return
         if gone:
             # Their own grants go too: the org's All team may still pass them through the gate.
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)

@@ -283,15 +283,29 @@ class TestWithdrawnAccounts:
         await c._fetch_users_via_list()
         assert set(ds.get_user_list_v2.await_args.kwargs) == {"cursor", "maxResults"}
 
-    async def test_too_many_withdrawals_in_one_sync_are_held(self) -> None:
+    @pytest.mark.parametrize("shown_inactive", [False, True], ids=["missing", "shown_deactivated"])
+    async def test_many_accounts_missing_from_a_complete_list_wait_for_three_reads(self, shown_inactive: bool) -> None:
         c = _connector()
+        store: dict = {}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
         c.notify = AsyncMock()
         c.data_entities_processor.withdraw_app_user_access = AsyncMock()
         c._stored_app_users = [_user(f"k{i}", f"u{i}@x.com") for i in range(40)]
         c._listed_user_keys = {f"k{i}" for i in range(11, 40)}
-        await c._withdraw_unlisted_app_users([])
+        c._seen_user_keys = {f"k{i}" for i in range(40 if shown_inactive else 11, 40)} | (
+            {f"k{i}" for i in range(11)} if shown_inactive else set())
+        if shown_inactive:  # rows that show the accounts deactivated: evidence whatever the count
+            await c._withdraw_unlisted_app_users([])
+            assert len(c.data_entities_processor.withdraw_app_user_access.await_args.args[1]) == 11
+            return
+        for _ in range(2):
+            await c._withdraw_unlisted_app_users([])
         c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
         c.notify.assert_awaited_once()
+        await c._withdraw_unlisted_app_users([])
+        assert len(c.data_entities_processor.withdraw_app_user_access.await_args.args[1]) == 11
 
     @pytest.mark.parametrize("flag", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_incomplete"])
     async def test_a_list_that_is_not_complete_withdraws_nobody(self, flag: str) -> None:
