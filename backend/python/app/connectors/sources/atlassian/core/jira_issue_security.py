@@ -107,6 +107,9 @@ class IssueSecurityContext:
     browse_holders: list[dict[str, Any]] | None = field(default_factory=list)
     # Level id -> its name, from the scheme read, to name the level's record group.
     level_names: dict[str, str] = field(default_factory=dict)
+    # Levels naming an application role while the role list is unread or refused: their issues and group
+    # keep what is stored, their digest is kept and marked; every other level is applied as read.
+    held_levels: set[str] = field(default_factory=set)
 
     def browse_fingerprint(self) -> str:
         """"?" when the holders are unknown, "" when there are none, else a digest of them."""
@@ -743,11 +746,12 @@ def apply_issue_access_settled(
 
     def close() -> tuple[list[Permission], list[str], bool]:
         # RESTRICTED with no grant hides the issue. A transient failure is
-        # retried, so the grants already stored stay until that retry.
-        if context.defer_checkpoint:
+        # retried, so the grants already stored stay until that retry; so do a held level's.
+        keep = context.defer_checkpoint or level_id in context.held_levels
+        if keep:
             record.access_group_external_id = None  # and so does its level's group, with its stored rule
         record.access_rule = AccessRule.RESTRICTED
-        record.rewrite_permissions = not context.defer_checkpoint
+        record.rewrite_permissions = not keep
         return [], [], False
 
     def project_open() -> tuple[list[Permission], list[str], bool]:
@@ -790,7 +794,7 @@ def apply_issue_access_settled(
     if level_id is None:
         return project_open()
 
-    if not context.members_readable:
+    if not context.members_readable or level_id in context.held_levels:
         # Includes a Data Center that has no member route. A leveled issue stays
         # closed rather than opening to everyone who can browse the project.
         return close()
@@ -886,15 +890,18 @@ def apply_attachment_access(record: Record) -> list[Permission]:
 def hold_levels_naming_unread_roles(
     security: IssueSecurityContext, *, app_roles_unread: bool,
 ) -> IssueSecurityContext:
-    """A level naming an application role is unknown, not narrower, while the role list
-    could not be read in full: its issues keep their stored grants until a sync reads it."""
-    if app_roles_unread and any(
-        isinstance(holder, dict) and holder.get("type") == HOLDER_APPLICATION_ROLE
-        for holders in security.members_by_level.values() for holder in holders
-    ):
-        security.members_readable = False
-        security.defer_checkpoint = True
+    """A level naming an application role is unknown, not narrower, while the role list could not be read in
+    full (unread, or refused: a 403 lasts while the account is not an administrator): its issues and group keep
+    what is stored until a sync reads it (``held_levels``). The other levels are read and applied as usual."""
+    if app_roles_unread:
+        security.held_levels = {
+            level_id for level_id, holders in security.members_by_level.items()
+            if any(isinstance(holder, dict) and holder.get("type") == HOLDER_APPLICATION_ROLE for holder in holders)
+        }
     return security
+
+
+HELD_DIGEST = "|held"
 
 
 def plan_level_reread(
@@ -937,10 +944,16 @@ def plan_level_reread(
         closed = is_new_project or marker == "unreadable"
         return (None if closed else "leveled"), None, {**stored_real, "*": "unreadable"}
     current = security.level_fingerprints(app_roles_mapping, split=split)
+    # A held level keeps its stored digest, marked so the first sync that reads its roles reads its issues again.
+    held = {lid: v if (v := stored_real.get(lid, "")).endswith(HELD_DIGEST) else v + HELD_DIGEST
+            for lid in security.held_levels if lid in current}
+    current.update(held)
     if is_new_project:
         return None, None, current
     if stored is None:
-        # Synced before levels were tracked: every leveled issue, holder-less levels included.
+        # Synced before levels were tracked: every leveled issue, holder-less levels included. Its issues were
+        # stored open, with nothing of the level to keep: a held level is applied as read (its roles left out).
+        security.held_levels = set()
         return "leveled", None, current
     if stored_real.keys() - current.keys():
         # A level lost its last holder or was deleted. An issue moved out of it to no level
@@ -948,7 +961,7 @@ def plan_level_reread(
         return "project", None, current
     if marker is not None:
         return "leveled", None, current
-    changed = sorted(lid for lid in current if stored_real.get(lid) != current[lid])
+    changed = sorted(lid for lid in current if lid not in held and stored_real.get(lid) != current[lid])
     return ("levels" if changed else None), changed or None, current
 
 

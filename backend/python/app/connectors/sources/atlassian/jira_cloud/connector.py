@@ -4540,6 +4540,11 @@ class JiraConnector(BaseConnector):
         none, so its issues close at once. One write per level, whatever the number of its issues."""
         groups: list[tuple[RecordGroup, list[Permission]]] = []
         for level_id in level_ids:
+            if level_id in security.held_levels:
+                # Its roles' groups are unknown: the stored group stays, seen by a full sync.
+                await self.data_entities_processor.note_kept_record_group(
+                    self.connector_id, level_group_external_id(project_id, level_id))
+                continue
             grants, skipped = level_group_grants(
                 security.members_by_level.get(level_id, []), project_key=project_key,
                 user_by_id=user_by_account_id, app_roles_mapping=self._app_roles_mapping,

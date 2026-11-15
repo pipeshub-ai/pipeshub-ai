@@ -7,8 +7,11 @@ import pytest
 
 from app.config.constants.arangodb import AccessRule
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    HELD_DIGEST,
     IssueSecurityContext,
     SchemeKnowledge,
+    apply_issue_access,
+    plan_level_reread,
 )
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
@@ -246,11 +249,23 @@ class TestParentKeyLookup:
 
 
 class TestRefusedRoleList:
-    def test_a_refused_role_list_holds_a_level_naming_a_role(self) -> None:
-        """A 403 from applicationrole leaves the role's groups unknown, not empty: the level's issues keep their stored copy."""
+    def test_only_the_level_naming_a_role_is_held_and_a_plain_level_is_applied(self) -> None:
+        """A 403 from applicationrole lasts while the account is not an administrator: only the level naming a role
+        keeps its stored copy; a holder removed from a plain level loses its issues on this sync."""
         connector = _connector()
-        connector._app_roles_forbidden = True
-        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={
-            "1": [{"type": "applicationRole", "parameter": "jira-software"}]})
-        held = connector._security_with_roles(security)
-        assert (held.members_readable, held.defer_checkpoint) == (False, True)
+        connector._app_roles_forbidden, connector._app_roles_mapping = True, {}
+        role_level = [{"type": "applicationRole", "parameter": "jira-software"}]
+        stored = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={
+            "1": role_level, "2": [{"type": "group", "value": "g-old"}]}).level_fingerprints({"jira-software": [{"groupId": "g"}]})
+        security = connector._security_with_roles(IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={
+                "1": role_level, "2": [{"type": "group", "value": "g-new"}]}))
+        assert (security.held_levels, security.members_readable, security.defer_checkpoint) == ({"1"}, True, False)
+        reread, levels, to_save = plan_level_reread(security, stored, is_new_project=False, app_roles_mapping={})
+        assert (reread, levels, to_save["1"]) == ("levels", ["2"], stored["1"] + HELD_DIGEST)
+        plain = _ticket()
+        grants, _ = apply_issue_access(plain, {"security": {"id": "2"}}, is_subtask=False, project_key="P", context=security)
+        assert plain.rewrite_permissions and [g.external_id for g in grants] == ["g-new"]
+        held = _ticket()
+        grants, _ = apply_issue_access(held, {"security": {"id": "1"}}, is_subtask=False, project_key="P", context=security)
+        assert (grants, held.rewrite_permissions) == ([], False)

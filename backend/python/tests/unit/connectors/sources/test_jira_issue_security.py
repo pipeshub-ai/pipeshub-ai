@@ -6,6 +6,7 @@ import pytest
 
 from app.config.constants.arangodb import AccessRule, Connectors, OriginTypes
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    HELD_DIGEST,
     UNREADABLE_AUTH,
     UNREADABLE_KEEPS_STORED_ACCESS,
     UNREADABLE_NOT_LISTED,
@@ -741,11 +742,21 @@ class TestHoldLevelsNamingUnreadRoles:
             knowledge=SchemeKnowledge.PRESENT, members_readable=True,
             members_by_level={"1": [{"type": "applicationRole", "parameter": "jira-software"}]})
         held = hold_levels_naming_unread_roles(security, app_roles_unread=True)
-        assert held.members_readable is False and held.defer_checkpoint is True
+        assert held.held_levels == {"1"} and held.members_readable is True and held.defer_checkpoint is False
 
     def test_other_levels_and_read_roles_are_untouched(self) -> None:
         security = _with_users(**{"1": ["a"]})
-        assert hold_levels_naming_unread_roles(security, app_roles_unread=True).members_readable is True
+        held = hold_levels_naming_unread_roles(security, app_roles_unread=True)
+        assert (held.held_levels, held.members_readable) == (set(), True)
+
+    def test_a_project_stored_before_levels_were_tracked_holds_nothing(self) -> None:
+        """Its issues were stored open: nothing of the level to keep, so the level is applied as read (roles left out)."""
+        security = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [{"type": "applicationRole", "parameter": "jira-software"}]})
+        hold_levels_naming_unread_roles(security, app_roles_unread=True)
+        reread, _, to_save = plan_level_reread(security, None, is_new_project=False, app_roles_mapping={})
+        assert (reread, security.held_levels, to_save["1"].endswith(HELD_DIGEST)) == ("leveled", set(), True)
 
 
 class TestUnreadableNotices:
