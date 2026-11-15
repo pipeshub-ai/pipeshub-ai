@@ -1907,26 +1907,6 @@ class RecordEventHandler(BaseEventService):
                 # The runtime never saw this revision: a full reindex dispatches every stage.
                 stage_redrive = False
 
-            #Reconciliation
-            vector_db_only = bool(payload.get("vectorDbOnly"))
-            embeddings_deleted = False
-            if parse_now:
-                # Parsing to read, not to index: nothing is taken out of the vector store.
-                pass
-            elif clears_embeddings_first(event_type, payload):
-                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
-                    [virtual_record_id], org_id=payload.get("orgId") or None
-                )
-                embeddings_deleted = True
-            elif not vector_db_only and event_type in (
-                EventTypes.UPDATE_RECORD.value,
-                EventTypes.REINDEX_RECORD.value,
-            ):
-                self.logger.info(
-                    f"📊 Reconciliation-enabled type detected for record {record_id}, "
-                    f"skipping full embedding deletion"
-                )
-
             doc = dict(record)
 
             # The guard stops a replayed newRecord from re-running the pipeline over
@@ -1940,13 +1920,16 @@ class RecordEventHandler(BaseEventService):
             # else is enriching it. Running it again
             # finishes the enrichment, which is what lets its queued duplicates
             # be promoted; acknowledging it here would leave them parked.
+            # Decided before anything is taken out of the vector store: an event that is
+            # acknowledged here must leave the record's points exactly as they are.
             resuming_enrichment = record_resuming_enrichment(doc)
             if already_indexed(event_type, payload, doc) and not (
                 stage_ingress is not None and await stage_ingress.handoff_lost(doc)
             ):
-                # The finally block releases queued copies from here. A delete marked while the
-                # embeddings were being deleted is seen before that, as at the connector check.
-                deleting_id = gating_connector_id(record) if embeddings_deleted else None
+                # The finally block releases queued copies from here, and that is a write, so a
+                # delete marked since the check above is seen first: the connector's app is read
+                # again, as at the connector check below.
+                deleting_id = gating_connector_id(record)
                 if deleting_id and connector_state(await self._read_gating_app(deleting_id)) is ConnectorState.DELETING:
                     held_for_delete = True
                     raise RecordHeldForDelete(
@@ -1957,6 +1940,24 @@ class RecordEventHandler(BaseEventService):
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
+
+            # Reconciliation: only an event that goes on to run touches the vector store.
+            vector_db_only = bool(payload.get("vectorDbOnly"))
+            if parse_now:
+                # Parsing to read, not to index: nothing is taken out of the vector store.
+                pass
+            elif clears_embeddings_first(event_type, payload):
+                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
+                    [virtual_record_id], org_id=payload.get("orgId") or None
+                )
+            elif not vector_db_only and event_type in (
+                EventTypes.UPDATE_RECORD.value,
+                EventTypes.REINDEX_RECORD.value,
+            ):
+                self.logger.info(
+                    f"📊 Reconciliation-enabled type detected for record {record_id}, "
+                    f"skipping full embedding deletion"
+                )
 
             # Check if record is from a connector and if the connector is active.
             # UPDATE_RECORD is included: without it an update for a disabled
