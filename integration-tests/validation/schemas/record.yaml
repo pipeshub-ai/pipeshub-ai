@@ -114,6 +114,12 @@ fields:
   queued_at:
     required: false
     type: integer
+  first_queued_at:
+    required: false
+    type: integer
+  indexing_attempts:
+    required: false
+    type: integer
   inherit_permissions:
     required: false
     type: boolean
