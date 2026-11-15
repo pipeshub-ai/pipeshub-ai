@@ -669,23 +669,26 @@ async def test_a_vector_rebuild_of_a_turned_off_connector_still_runs(monkeypatch
 
 
 @pytest.mark.parametrize(("flip", "held"), [("DELETING", True), ("off", False)])
-async def test_an_already_indexed_reindex_sees_a_delete_marked_while_embeddings_are_deleted(flip: str, held: bool) -> None:
+async def test_an_already_indexed_reindex_sees_a_delete_marked_before_the_guard(flip: str, held: bool) -> None:
     """A non-forced reindex of an indexed record returns early, and the finally block then releases
-    its queued copies; a delete marked during the embedding delete holds it first. A connector turned
-    off meanwhile keeps the early return, as before."""
+    its queued copies; a delete marked after the first check (here, while the stage runtime is asked
+    whether its hand-off was lost) holds it first. A connector turned off meanwhile keeps the early
+    return, as before. Nothing is taken out of the vector store on the way."""
     graph = FakeConnectorGraph()
     graph.add_connector("conn-off", active=True)
     graph.add_record("r1", "conn-off", indexingStatus=ProgressStatus.COMPLETED.value,
                      extractionStatus=ProgressStatus.COMPLETED.value)
     handler, event_processor = _handler(graph)
 
-    async def flipped_meanwhile(*_a: object, **_kw: object) -> None:
+    async def flipped_meanwhile(*_a: object, **_kw: object) -> bool:
         if flip == "DELETING":
             graph.apps["conn-off"]["status"] = "DELETING"
         else:
             graph.set_active("conn-off", False)
+        return False
 
-    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.side_effect = flipped_meanwhile
+    event_processor.stage_ingress = MagicMock()
+    event_processor.stage_ingress.handoff_lost = AsyncMock(side_effect=flipped_meanwhile)
     payload = dict(_payload(**_CLEARS_EMBEDDINGS_FIRST))
 
     if held:
@@ -696,3 +699,4 @@ async def test_an_already_indexed_reindex_sees_a_delete_marked_while_embeddings_
         events = [e.event async for e in handler.process_event(REINDEX, payload)]
         assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
         assert graph.calls["update_queued_duplicates_status"] == 1
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
