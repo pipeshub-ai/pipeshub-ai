@@ -3,7 +3,7 @@
 The template owner check of ``update_agent_template`` / ``delete_agent_template`` on ArangoDB kept only templates whose
 ``isDeleted`` equals false, so its owner could not edit or delete a template stored without the field, though the list and
 ``get_template`` showed it. Every read and write here treats a missing field as not deleted and ``isDeleted: true`` as deleted.
-The PostgreSQL provider runs the same cases in ``postgres/test_kb_listings.py`` and ``postgres/test_agents.py``.
+The PostgreSQL provider runs the reads it has in ``postgres/test_agent_is_deleted.py``.
 
 Runs in backend-matrix on both graph jobs. Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
