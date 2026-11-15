@@ -205,6 +205,8 @@ dependencies = [
     "confluent-kafka==2.16.0",
     "cachetools==8.0.0",
     "cloudscraper==1.2.71",
+    # Outlook .msg bodies kept as compressed RTF (MIT).
+    "compressed-rtf==1.0.7",
     "cryptography==50.0.2",
     "dateparser>=1.2.0",
     # Free web search when no provider key is set: one query spread over several engines.
@@ -317,6 +319,8 @@ dependencies = [
     "py-trello==0.20.1",
     "python-arango==8.3.6",
     "python-docx==1.2.0",
+    # Outlook .msg files (MIT); olefile (BSD) comes with it. extract-msg is GPL and is not used.
+    "python-oxmsg==0.0.2",
     # Pinned: 6.4.0 can spin in pool acquisition without ever yielding, which
     # freezes the event loop (neo4j-python-driver#1360); 6.4.1 has the fix.
     "neo4j==6.4.1",
@@ -354,6 +358,8 @@ dependencies = [
     "transformers==5.20.2",
     "slack-sdk==3.45.0",
     "smbprotocol==1.17.0",
+    # The text of an RTF body that holds no HTML (BSD-3-Clause).
+    "striprtf==0.0.35",
     "talon==1.4.4",
     "tenacity==8.5.0",
     "thrift>=0.16.0",

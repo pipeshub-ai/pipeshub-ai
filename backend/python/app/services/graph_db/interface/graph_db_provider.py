@@ -3753,7 +3753,9 @@ class IGraphDBProvider(ABC):
             transaction: Optional transaction ID
 
         Returns:
-            Tuple of (list of KB dicts, total count, available_filters dict)
+            Tuple of (list of KB dicts, total count, available_filters dict). Each KB's
+            ``folders`` holds at most ``KB_LIST_FOLDERS_CAP`` of its folders, the first
+            by id, and ``foldersTruncated`` is True when it has more.
         """
         pass
 
