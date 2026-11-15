@@ -9,6 +9,7 @@ bytes that are not UTF-16 is binary and is not read at all.
 from __future__ import annotations
 
 import codecs
+import unicodedata
 from dataclasses import dataclass
 
 from app.config.file_types import TEXT_LOG_MAX_BYTES
@@ -21,9 +22,8 @@ _MIN_PART_BYTES = 16
 _CHARSET_SAMPLE_BYTES = 64 * 1024
 _NEWLINE_SEARCH_BYTES = 64 * 1024
 _UTF16_NUL_SHARE = 0.9
-_UTF16_PRINTABLE_SHARE = 0.95
-_UTF16_SPACE_SHARE = 0.05
-_UTF16_MAX_LINE = 400
+_UTF16_ONE_SCRIPT_SHARE = 0.9
+_UTF16_CONTROL_SHARE = 0.01
 _CHARDET_MIN_CONFIDENCE = 0.8
 _CHARDET_FALLBACK_CONFIDENCE = 0.5
 _BOMS = (
@@ -89,20 +89,55 @@ def _utf16_without_bom(sample: bytes) -> str | None:
 
 
 def _reads_as_text(sample: bytes, codec: str) -> bool:
+    """Whether *sample* is UTF-16 text, whatever its script and line length.
+
+    It must decode strictly (no unpaired surrogate) to characters that are assigned, printable
+    and not controls (tab, CR and LF aside); and, apart from ASCII, nearly all of its letters
+    and symbols must come from one script. A binary that happens to decode reads as an
+    assortment of scripts and symbol blocks (Latin letters beside ideographs, Yi beside Hangul),
+    which text does not.
+    """
     try:
         text = codecs.getincrementaldecoder(codec)("strict").decode(sample, final=False)
     except UnicodeDecodeError:
         return False
     if not text:
         return False
-    printable = sum(1 for c in text if c.isprintable() or c in "\r\n\t")
-    if printable < _UTF16_PRINTABLE_SHARE * len(text):
+    groups: dict[str, int] = {}
+    counted = bad = 0
+    for c in text:
+        if c in "\t\r\n" or " " <= c <= "~":
+            continue
+        category = unicodedata.category(c)
+        if category in ("Cc", "Cn", "Co", "Cs"):
+            bad += 1
+            continue
+        if category[0] in "MZ" or category == "Cf":
+            continue  # combining marks, spaces, joiners and selectors go with their neighbours
+        counted += 1
+        group = _script_group(c, category)
+        groups[group] = groups.get(group, 0) + 1
+    # Text holds next to no NUL or other control characters; a binary that decodes holds many.
+    if bad > _UTF16_CONTROL_SHARE * len(text):
         return False
-    # ASCII-heavy binary read as UTF-16 also looks printable (as CJK runs); text has line
-    # breaks or spaces between its words.
-    breaks = sum(1 for c in text if c in "\n\r")
-    spaces = text.count(" ")
-    return breaks >= max(1, len(text) // _UTF16_MAX_LINE) or spaces >= _UTF16_SPACE_SHARE * len(text)
+    return counted == 0 or max(groups.values()) >= _UTF16_ONE_SCRIPT_SHARE * counted
+
+
+# Scripts that are written together count as one.
+_SCRIPT_FAMILIES = {"HIRAGANA": "CJK", "KATAKANA": "CJK", "HANGUL": "CJK", "BOPOMOFO": "CJK",
+                    "IDEOGRAPHIC": "CJK", "FULLWIDTH": "CJK", "HALFWIDTH": "CJK"}
+
+
+def _script_group(c: str, category: str) -> str:
+    code = ord(c)
+    if 0x3000 <= code <= 0x303F or 0xFF00 <= code <= 0xFFEF:
+        return "CJK"  # ideographic punctuation, full- and half-width forms
+    if code >= 0x1F000:
+        return "EMOJI"
+    if category[0] != "L":
+        return "SYMBOL"
+    word = unicodedata.name(c, "").split(" ", 1)[0]
+    return _SCRIPT_FAMILIES.get(word, word)
 
 
 def _codec(content: bytes) -> tuple[str | None, int]:
