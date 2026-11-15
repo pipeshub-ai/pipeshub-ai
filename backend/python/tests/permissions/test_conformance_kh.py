@@ -131,6 +131,15 @@ async def test_golden_worlds_count_what_the_viewer_may_read(graph_layers) -> Non
     _assert_each_store(results, "{store} golden", "{store}")
 
 
+async def test_linked_source_accounts_count_what_the_viewer_may_read(account_layers) -> None:
+    """The worlds that link a user to a source account, the account stored as a SourceAccount node: every row, total, count, facet and arrow is
+    still the oracle's on each store."""
+    worlds = [*dict.fromkeys(w for w in (*(s.final_world() for s in load_all()), *KH_WORLDS) if w.links), *(w for _, w in gen.linked(12))]
+    assert worlds
+    results = await on_every_store(account_layers, partial(check_worlds, worlds=worlds, tag="linked"))
+    _assert_each_store(results, "{store} linked", "{store}")
+
+
 async def test_a_stub_on_the_way_to_a_node_the_open_app_reads_is_listed_and_opens(graph_layers) -> None:
     """The conformance check leaves stubs out of the children it expects, so this one asks the browse directly: in an App that opens everything the
     folder lists the stub, with an arrow, and opening the stub lists what it leads to."""

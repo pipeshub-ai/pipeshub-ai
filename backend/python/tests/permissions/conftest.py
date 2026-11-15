@@ -24,3 +24,12 @@ def graph_layers(
     neo4j_provider, arango_provider, neo4j_settings, arango_settings  # noqa: F811
 ) -> list[GraphCheckLayer]:
     return [neo4j_layer(neo4j_provider, neo4j_settings), arango_layer(arango_provider, arango_settings)]
+
+
+@pytest.fixture(scope="module")
+def account_layers(
+    neo4j_provider, arango_provider, neo4j_settings, arango_settings  # noqa: F811
+) -> list[GraphCheckLayer]:
+    """The same stores, with every linked source account stored as a SourceAccount node."""
+    return [neo4j_layer(neo4j_provider, neo4j_settings, accounts=True),
+            arango_layer(arango_provider, arango_settings, accounts=True)]

@@ -22,7 +22,7 @@ from tests.integration.graph_permissions.loaders import (
     load_into_neo4j,
 )
 
-from .graph import Graph, Namespace, compile_world
+from .graph import Graph, Namespace, as_source_accounts, compile_world
 
 if TYPE_CHECKING:
     from .model import World
@@ -53,8 +53,9 @@ def _same(graph: Graph) -> Graph:
 class GraphCheckLayer:
     """`check_access` of a live provider (Neo4j or Arango) as an access layer."""
 
-    def __init__(self, name: str, provider: object, load: LoadFn, unload: UnloadFn, narrow: bool) -> None:
-        self.name = name
+    def __init__(self, name: str, provider: object, load: LoadFn, unload: UnloadFn, narrow: bool, *, accounts: bool = False) -> None:
+        self.name = f"{name}+accounts" if accounts else name
+        self._accounts = accounts
         self._provider = provider
         self._load = load
         self._unload = unload
@@ -63,6 +64,8 @@ class GraphCheckLayer:
         self._counter = itertools.count()  # never reused, so a released prefix cannot collide with a later load
 
     def shape(self, graph: Graph) -> Graph:
+        """The graph as this store keeps it; with ``accounts``, every linked source account is a SourceAccount node (`as_source_accounts`)."""
+        graph = as_source_accounts(graph) if self._accounts else graph
         return arango_graph(graph) if self._narrow else _same(graph)
 
     def _compiled(self, world: World) -> Graph:
@@ -111,7 +114,7 @@ class GraphCheckLayer:
         return {v: (None if by_vrid.get(s) is None else ns.local(by_vrid[s])) for v, s in zip(vrids, stored, strict=True)}
 
 
-def neo4j_layer(provider: object, settings: dict) -> GraphCheckLayer:
+def neo4j_layer(provider: object, settings: dict, *, accounts: bool = False) -> GraphCheckLayer:
     async def load(nodes: list, edges: list) -> None:
         await load_into_neo4j(settings, nodes, edges)
 
@@ -124,10 +127,10 @@ def neo4j_layer(provider: object, settings: dict) -> GraphCheckLayer:
         finally:
             await driver.close()
 
-    return GraphCheckLayer("neo4j", provider, load, unload, narrow=False)
+    return GraphCheckLayer("neo4j", provider, load, unload, narrow=False, accounts=accounts)
 
 
-def arango_layer(provider: object, settings: dict) -> GraphCheckLayer:
+def arango_layer(provider: object, settings: dict, *, accounts: bool = False) -> GraphCheckLayer:
     async def load(nodes: list, edges: list) -> None:
         await load_into_arango(settings, nodes, edges)
 
@@ -144,4 +147,4 @@ def arango_layer(provider: object, settings: dict) -> GraphCheckLayer:
                     if resp.status not in (200, 201, 404):  # 404: the edge collection was never created
                         raise RuntimeError(f"unload from {collection} failed: {resp.status} {await resp.text()}")
 
-    return GraphCheckLayer("arango", provider, load, unload, narrow=True)
+    return GraphCheckLayer("arango", provider, load, unload, narrow=True, accounts=accounts)

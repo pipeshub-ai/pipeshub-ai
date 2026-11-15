@@ -15,7 +15,7 @@ import pytest
 from app.core.org_context import OrgContext, bind
 from tests.integration.graph_permissions.loaders import EDGE_TARGETS, NODE_TARGETS
 from tests.permissions import gen
-from tests.permissions.graph import Graph, Namespace, compile_world
+from tests.permissions.graph import Graph, Namespace, as_source_accounts, compile_world
 from tests.permissions.runner import ConformanceRunner, Report
 from tests.permissions.scenario import Scenario, load_all
 
@@ -43,18 +43,19 @@ class PgLayer:
     """An access layer (see ``tests/permissions/runner.py``) over a live PostgreSQL provider: a world is stored and asked about under its own org."""
 
     name = "postgres"
+    accounts = False      # every linked source account stored as a SourceAccount node (``as_source_accounts``)
 
     def __init__(self, provider, db) -> None:
         self._provider, self._db = provider, db
         self._prefix: dict[World, str] = {}
 
     def shape(self, graph: Graph) -> Graph:
-        return graph
+        return as_source_accounts(graph) if self.accounts else graph
 
     async def preload(self, worlds: Iterable[World]) -> None:
         for w in (w for w in dict.fromkeys(worlds) if w not in self._prefix):
             self._prefix[w] = f"w{next(_COUNTER)}"
-            graph = compile_world(w, self._prefix[w])
+            graph = self.shape(compile_world(w, self._prefix[w]))
             org = _hex(Namespace(self._prefix[w]).org)
             kind = {n["id"]: NODE_TARGETS[n["kind"]] for n in graph["nodes"]}
             await self._wipe(org)      # a world a killed run left behind must not collide
@@ -142,3 +143,22 @@ async def test_generated_worlds_equal_the_oracle(layer: PgLayer, kind: str) -> N
                 assert not report.over_admits, f"{kind} seed {seed} world {start + offset}: over-admit (a leak)\n{_describe(report)}"
                 assert not report.findings, f"{kind} seed {seed} world {start + offset}\n{_describe(report)}"
             await layer.release(chunk)
+
+
+async def test_linked_source_accounts_equal_the_oracle(layer: PgLayer) -> None:
+    """Every world that links a user to a source account, with the account stored as a SourceAccount node instead of a User: the walk must still
+    answer as the oracle does (the account's grants and badges reach the user inside the link's connector only, and nothing else)."""
+    layer.accounts = True
+    scenarios = [s for s in load_all() if s.final_world().links]
+    generated = gen.linked(25)
+    assert scenarios and generated
+    await layer.preload([*(s.final_world() for s in scenarios), *(w for _, w in generated)])
+    runner = ConformanceRunner(layer)
+    total = Report()
+    for s in scenarios:
+        total.merge(await runner.run(s))
+    for name, world in generated:
+        total.merge(await runner.check_world(world, name, cites=True))
+    assert total.pairs > 100, f"the corpus asked {total.pairs} pairs: nothing was checked"
+    assert not total.over_admits, f"over-admits (a leak)\n{_describe(total)}"
+    assert not total.findings, _describe(total)
