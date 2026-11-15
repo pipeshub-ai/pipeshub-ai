@@ -265,25 +265,42 @@ async def test_a_restore_keeps_no_counter_and_the_seed_counts_the_restored_rows(
 
 
 async def test_a_connector_copied_again_at_the_current_projection_epoch_keeps_its_counters_equal_to_count_star(pg_db) -> None:
-    """A connector an older projection code copied (code_epoch below CODE_EPOCH) is copied, verified and promoted again by the worker's bootstrap: every row it rewrites
-    goes through the counter trigger, so the counters it was counted whole with still equal count(*) afterwards, folded or not."""
+    """A connector an older projection code copied: epoch 5 wrote no kind-3 links (every PARENT_CHILD parent), and records arrived since that its copy does not hold. The
+    worker's bootstrap finds the copy differs from the graph and leaves the connector on the walk; it is copied again from the start (``backfill(restart=True)``) at the current
+    epoch and promoted. Every row the drain and the copy write goes through the counter trigger, so the counters the connector was counted whole with equal count(*) afterwards."""
+    from app.services.graph_db.postgres.kg import backfill as bf
     from app.services.graph_db.postgres.kg import bootstrap
-    from app.services.graph_db.postgres.kg.model import CODE_EPOCH
+    from app.services.graph_db.postgres.kg.drainer import drain_org
+    from app.services.graph_db.postgres.kg.model import CODE_EPOCH, LINK_PARENT_CHILD
 
     p, org = prov(pg_db), new_org()
     await world2(p, org)
     await flip(pg_db, org)
     await counts.run(pg_db, org)
+    late = [f"late{i}" for i in range(3)]
     con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
     try:
-        await con.execute("UPDATE kg.projection_state SET code_epoch = $2 WHERE org_id = $1 AND app_sk <> 0", org, CODE_EPOCH - 1)
         assert await con.fetchval("SELECT count(*) FROM kg.counts WHERE org_id = $1 AND facet = 0", org)        # counted whole before the copy
-        due: dict = {}
+        assert await con.fetchval("SELECT count(*) FROM kg.links WHERE org_id = $1 AND kind = $2", org, LINK_PARENT_CHILD)
+        # what epoch-5 code left: no kind-3 links, and its epoch on the connectors
+        await con.execute("DELETE FROM kg.links WHERE org_id = $1 AND kind = $2", org, LINK_PARENT_CHILD)
+        await con.execute("UPDATE kg.projection_state SET code_epoch = $2 WHERE org_id = $1 AND app_sk <> 0", org, CODE_EPOCH - 1)
         with ctx(org):
-            for _ in range(20):
-                if not await bootstrap.bring_to_enforce(pg_db, org, due):
-                    break
-        assert await con.fetchval("SELECT count(*) FROM kg.projection_state WHERE org_id = $1 AND app_sk <> 0 AND code_epoch <> $2", org, CODE_EPOCH) == 0
+            await p.batch_upsert_nodes([{"_key": i, "recordName": i, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for i in late], "records")
+            await p.batch_create_edges([edge("fold", "records", i, "records", relationshipType="PARENT_CHILD") for i in late], "nodeRelations")
+        await drain_org(pg_db, org)
+        with ctx(org):
+            await bootstrap.bring_to_enforce(pg_db, org, {})                     # the copy of epoch 5 differs from the graph: on the walk
+        assert await con.fetchval("SELECT mode FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk WHERE s.org_id = $1 AND k.id = 'app1'", org) != "enforce"
+        for app in ("app1", "app2"):
+            out = await bf.backfill(pg_db, org, app, restart=True)
+            assert out.flipped, (app, out)
+            await bf.promote(pg_db, org, app)
+        assert await con.fetchval("SELECT count(*) FROM kg.projection_state WHERE org_id = $1 AND app_sk <> 0 AND NOT (mode = 'enforce' AND code_epoch = $2)", org, CODE_EPOCH) == 0
+        # copied again: the kind-3 links of the rows the old copy already held are back (the drain alone only projects what changed since, the late records)
+        assert await con.fetchval("""SELECT count(*) FROM kg.links l JOIN kg.records r ON r.org_id = l.org_id AND r.sk = l.child_sk
+            WHERE l.org_id = $1 AND l.kind = $2 AND NOT r.id = ANY($3::text[])""", org, LINK_PARENT_CHILD, late)
+        assert await con.fetchval("SELECT count(*) FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = ANY($2::text[])", org, late) == len(late)
     finally:
         await con.close()
     truth, held, _ = await state(p, org)
