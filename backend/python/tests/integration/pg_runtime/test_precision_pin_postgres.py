@@ -40,7 +40,7 @@ async def test_two_processes_claiming_different_precisions_leave_one_pin(runtime
     (_, pins_a), (_, pins_b) = _process(runtime), _process(runtime)
     collection = f"it-{uid}-race"
     try:
-        one, two = await asyncio.gather(pins_a.claim(collection, INT8, "o1"), pins_b.claim(collection, FP32, "o1"))
+        one, two = await asyncio.gather(pins_a._claim_unfenced(collection, INT8, "o1"), pins_b._claim_unfenced(collection, FP32, "o1"))
         assert one.precision == two.precision  # the loser is told what the winner pinned
         assert (await pins_a.get(collection, "o1", fresh=True)).precision == one.precision
     finally:
@@ -50,9 +50,9 @@ async def test_two_processes_claiming_different_precisions_leave_one_pin(runtime
 async def test_a_release_is_seen_by_an_uncached_read_of_another_process(runtime, uid) -> None:
     (_, pins_a), (_, pins_b) = _process(runtime), _process(runtime)
     collection = f"it-{uid}-release"
-    await pins_a.claim(collection, INT8, "o1")
+    await pins_a._claim_unfenced(collection, INT8, "o1")
     assert (await pins_b.get(collection, "o1")).precision == INT8
     await pins_a.release_collection(collection)
     assert await pins_b.get(collection, "o1", fresh=True) is None
-    assert (await pins_b.claim(collection, FP32, "o1")).precision == FP32  # a new index may take the other precision
+    assert (await pins_b._claim_unfenced(collection, FP32, "o1")).precision == FP32  # a new index may take the other precision
     await pins_b.release_collection(collection)

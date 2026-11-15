@@ -64,9 +64,30 @@ async def test_a_reset_whose_bump_cannot_be_written_raises_and_changes_nothing()
         return await real(key, value, overwrite, ttl)
 
     store.create_key = failing
-    with pytest.raises(ConnectionError):
+    with pytest.raises(RuntimeError, match="could not be moved"):
         await epochs.begin_reset("c")
     assert not await epochs.moved(before)
+
+
+@pytest.mark.asyncio
+async def test_the_epoch_writes_only_through_the_configuration_service() -> None:
+    """The service is the only way to the store (it also tells other processes' caches); its raw store is never used."""
+    from unittest.mock import MagicMock
+
+    config = ConfigurationService(log, InMemoryKeyValueStore(log))
+
+    class _ServiceOnly:
+        store = MagicMock()  # anything that reached past the service would fail on this
+
+        def __getattr__(self, name: str):  # noqa: ANN204
+            return getattr(config, name)
+
+    epochs = CollectionEpochs(_ServiceOnly(), log)
+    before = await epochs.capture("c")
+    ticket = await epochs.begin_reset("c")
+    await epochs.confirm_reset(ticket)
+    assert await epochs.moved(before)
+    assert (await epochs.states("c"))[before.token][0] == RETIRED
 
 
 @pytest.mark.asyncio
@@ -181,7 +202,7 @@ async def test_a_pin_release_that_cannot_be_recorded_raises_so_the_release_does_
         return await real(key, value, overwrite, ttl)
 
     store.create_key = failing
-    with pytest.raises(ConnectionError):
+    with pytest.raises(RuntimeError, match="could not be written"):
         await epochs.pin_released("c", "o1")
 
 

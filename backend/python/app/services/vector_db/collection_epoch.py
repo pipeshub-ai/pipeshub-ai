@@ -98,8 +98,9 @@ class CollectionEpochs:
         return bool(await self._config.create_config_if_absent(key, value))
 
     async def _overwrite(self, key: str, value: dict) -> None:
-        """Write the key; raises on a store error (``set_config`` and ``update_config`` answer False instead)."""
-        await self._config.store.create_key(key, value, overwrite=True)
+        """Write the key and read it back; raises when it did not land (``set_config`` answers False instead)."""
+        if not await self._config.set_config(key, value, keep_in_cache=False):
+            raise RuntimeError("the epoch could not be written")
         stored = await self._read(key)
         if stored != value:
             raise RuntimeError("the epoch could not be written")
@@ -163,7 +164,8 @@ class CollectionEpochs:
             seen.add(previous)
         fresh = uuid.uuid4().hex
         await self._create(self._state_key(collection, fresh, ISSUING), {"at": int(self._clock() * 1000)})
-        await self._config.store.create_key(self._pointer(collection), {"token": fresh}, overwrite=True)
+        if not await self._config.set_config(self._pointer(collection), {"token": fresh}, keep_in_cache=False):
+            raise RuntimeError("the epoch of the collection could not be moved")
         named = await self.current(collection)
         if named is None or named == previous:
             raise RuntimeError("the epoch of the collection could not be moved")

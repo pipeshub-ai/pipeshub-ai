@@ -37,8 +37,9 @@ def _make_config_service(*, down: bool = False):
             return default
         return store.get(key, default)
 
-    async def set_config(key, value):
+    async def set_config(key, value, **_):  # ttl_seconds, keep_in_cache: no expiry and no cache here
         store[key] = value
+        return True
 
     svc = MagicMock()
     svc.get_config = AsyncMock(side_effect=get_config)
@@ -736,7 +737,7 @@ class TestARejectedManifestWriteIsRetried:
         async def get_config(key, default=None, raise_on_error=False, use_cache=False):
             return stored.get(key, default)
 
-        async def set_config(key, value):
+        async def set_config(key, value, **_):
             if state["reject_next_write"]:
                 state["reject_next_write"] = False
                 return False  # what set_config answers on a store failure
