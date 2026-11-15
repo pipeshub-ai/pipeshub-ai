@@ -413,8 +413,9 @@ class GraphNavigator:
         pagination: PaginationInfo | None = None
         if pag_raw:
             pagination = PaginationInfo(
-                # A cursor page has no number of its own; its first row's position gives one.
-                page=pag_raw.page or ((pag_raw.startIndex or 1) - 1) // pag_raw.limit + 1,
+                # A page reached by cursor has no number: after a short page, one worked out from its position would be wrong.
+                page=None if cursor else pag_raw.page,
+                start_index=pag_raw.startIndex,
                 limit=pag_raw.limit,
                 total=pag_raw.totalItems,
                 total_capped=pag_raw.totalCapped,

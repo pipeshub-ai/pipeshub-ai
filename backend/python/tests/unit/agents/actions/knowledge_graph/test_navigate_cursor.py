@@ -177,6 +177,44 @@ class TestTheRenderedView:
         assert "of 120:" in render_navigation_view(_view(None, capped=False, cursor=None), 1)
 
 
+class TestACursorPageHasAPositionNotANumber:
+    @pytest.mark.asyncio
+    async def test_after_a_short_page_the_range_is_the_listings_own_position(self) -> None:
+        """A page reached by cursor has no number; one worked out from its position is wrong after a short page (the range must come from the listing's start index)."""
+        graph = _graph()
+        first = await _navigator(graph).navigate(node_id="space-1", limit=50)
+        graph.get_knowledge_hub_connector_page_v3.side_effect = lambda **kw: {
+            "rows": [_row("r2", "Second")], "hasMore": True, "total": 120, "counts": None, "scope": _scope("space-1")}
+        second = await _navigator(graph).navigate(node_id="space-1", limit=50, cursor=first.pagination.next_cursor)
+
+        assert second.pagination.page is None
+        assert second.pagination.start_index == 2              # one row came before it, not a whole page of 50
+        text = render_navigation_view(second, 2)
+        assert "Children 2-2 of 120:" in text and "Children 51" not in text
+
+    def test_a_cursor_page_with_no_position_lists_its_rows_without_a_range(self) -> None:
+        view = _view(None, capped=False, cursor="tok-3")
+        view.pagination = view.pagination.model_copy(update={"page": None, "start_index": None})
+        text = render_navigation_view(view, 2)
+        assert "\nChildren:" in text and 'navigate(cursor="tok-3") for more' in text
+
+
+class TestTheGoBackHint:
+    def test_a_numbered_page_with_a_next_cursor_still_names_the_page_before_it(self) -> None:
+        space = NodeRef(id="space-1", name="Space", node_type="recordGroup", sub_type=None, is_record=False)
+        view = _view(space, capped=False, cursor="tok-4")
+        view.pagination = view.pagination.model_copy(update={"page": 3, "has_prev": True})
+        text = render_navigation_view(view, 3)
+        assert 'navigate(node_id="space-1", page=2) to go back' in text
+        assert 'navigate(node_id="space-1", cursor="tok-4") for more' in text
+
+    def test_a_cursor_page_names_no_page_before_it(self) -> None:
+        space = NodeRef(id="space-1", name="Space", node_type="recordGroup", sub_type=None, is_record=False)
+        view = _view(space, capped=False, cursor="tok-4")
+        view.pagination = view.pagination.model_copy(update={"page": None, "start_index": 101, "has_prev": True})
+        assert "to go back" not in render_navigation_view(view, 2)
+
+
 def _request(user_id: str = "u1") -> MagicMock:
     request = MagicMock()
     user = {"userId": user_id, "orgId": "o1"}

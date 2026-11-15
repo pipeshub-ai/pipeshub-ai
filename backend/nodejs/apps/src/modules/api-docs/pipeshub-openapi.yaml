@@ -7235,8 +7235,18 @@ components:
       properties:
         page:
           type: integer
+          nullable: true
+          description: >-
+            The page number asked for. Null on a page reached by `cursor`: such a
+            page has a position (`start_index`), not a number.
         limit:
           type: integer
+        start_index:
+          type: integer
+          nullable: true
+          description: >-
+            1-based position of the page's first row in the listing. Null when
+            the listing does not report it.
         total:
           type: integer
           description: >-
