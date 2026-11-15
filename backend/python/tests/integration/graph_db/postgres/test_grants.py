@@ -209,7 +209,7 @@ async def test_a_user_the_source_no_longer_lets_in_loses_only_their_own_grants_o
     assert await w.allowed("u", *ALL) == set(ALL)
     assert await w.p.remove_user_access_to_connector(APP, "u") == 4          # direct, both, the record group g and the membership of grp
     assert await w.allowed("u", *ALL) == {"both", "via_org", "via_grp2", "elsewhere"}
-    assert await w.allowed("other", "direct") == {"direct"}
+    assert keys(await w.p.get_users_with_permission_to_node("direct", "records")) == {"other"}          # another user's grant on the record stays
     assert keys(await w.p.get_users_with_permission_to_node("both", "records")) == set()      # the team's grant is left, the user's own is gone
     assert await w.p.remove_user_access_to_connector(APP, "u") == 0          # a repeat finds nothing
     assert await w.p.remove_user_access_to_connector(APP, "nobody") == 0
