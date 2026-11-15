@@ -78,7 +78,7 @@ def _switch(value: str | None):  # noqa: ANN202
 
 async def flip(db, org: str) -> tuple[int, int]:
     """Copy every connector of the org into kg, verify it and promote it to enforce. Returns (promoted, connectors). A world with a value the projection refuses (an access rule that is
-    not one of the three) stays on the walk, which is itself a case the check must answer equally."""
+    not one of the four) stays on the walk, which is itself a case the check must answer equally."""
     async def apps(tx) -> list[str]:
         return [r["id"] for r in await tx.fetch("SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' ORDER BY id", org)]
     with _bound(org):

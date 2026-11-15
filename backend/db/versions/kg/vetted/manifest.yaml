@@ -50,7 +50,7 @@ functions:
       - {"name": "p_app_sks", "type": "bigint[]", "max_items": 5000}
       - {"name": "p_group_sks", "type": "bigint[]", "max_items": 5000}
       - {"name": "p_parent_sks", "type": "bigint[]", "max_items": 5000}
-      - {"name": "p_rules", "type": "text[]", "max_items": 5000, "item_enum": ["OPEN", "STRICT", "RESTRICTED"]}
+      - {"name": "p_rules", "type": "text[]", "max_items": 5000, "item_enum": ["OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT"]}
       - {"name": "p_models", "type": "text[]", "max_items": 5000, "item_enum": ["APP_LEVEL", "RECORD_LEVEL", "RECORD_GROUP_LEVEL"]}
       - {"name": "p_vrids", "type": "text[]", "max_items": 5000, "item_length": [0, 256]}
       - {"name": "p_names", "type": "text[]", "max_items": 5000}

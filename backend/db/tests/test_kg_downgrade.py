@@ -140,11 +140,12 @@ def test_downgrading_the_listing_writer_removes_only_its_own_objects(db):
         assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = 'w_listing_set'").fetchone()[0] == 1
 
 
-@pytest.mark.parametrize("down, writer, old_check", [("kg_0009", "w_records_upsert", "%4000%"), ("kg_0011", "w_grants_set", "%p_roles has an item of the wrong length%")],
-                         ids=["kg_0010-long-names", "kg_0012-long-roles"])
+@pytest.mark.parametrize("down, writer, old_check", [("kg_0009", "w_records_upsert", "%4000%"), ("kg_0011", "w_grants_set", "%p_roles has an item of the wrong length%"),
+                                                     ("kg_0013", "w_records_upsert", "%'RESTRICTED')%")],
+                         ids=["kg_0010-long-names", "kg_0012-long-roles", "kg_0014-parent-and-grant"])
 def test_downgrading_a_revision_that_relaxes_a_writer_keeps_the_writer_and_an_upgrade_replaces_it(db, down, writer, old_check):
-    """kg_0010 and kg_0012 replace the body of a writer kg_0002 owns: a downgrade keeps the writer, its registry row and its pin (kg_0002 runs the same generated file), and an
-    upgrade from there replaces it again with nothing left over."""
+    """kg_0010, kg_0012 and kg_0014 replace the body of a writer kg_0002 owns: a downgrade keeps the writer, its registry row and its pin (kg_0002 runs the same generated file),
+    and an upgrade from there replaces it again with nothing left over."""
     cluster, name = db
     url = cluster.url(name, "pipeshub_migrate")
     sig = f"'kg.{writer}'::regproc::regprocedure"
