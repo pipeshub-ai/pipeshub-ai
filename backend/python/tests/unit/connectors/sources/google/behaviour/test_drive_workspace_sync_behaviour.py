@@ -3660,6 +3660,48 @@ async def test_a_cut_list_is_read_again_by_id_until_a_real_list_restores_it(ws: 
     assert (dana, "USER", "READ") in ws.grants("f"), "she still holds it, and the real list says so"
 
 
+async def test_a_list_cut_during_a_full_listing_is_read_again_by_id_once_lists_can_be_read(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    dana = "dana@example.com"
+    ws.world.add_user(dana)
+    ws.world.add_item("f", "x.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE), reader(dana)])
+    await ws.sync()
+    for email in (ALICE, BOB):  # their Drives are listed in full again
+        ws.sync_points.sync_points.pop(next(
+            k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[email].user_id}")
+        ))
+    _empty_list_for(ws, "f", BOB, ALICE)
+    for _ in range(MAX_HELD_RUNS):  # held while it fails, each run a full listing; cut on the last
+        await ws.sync()
+    assert (dana, "USER", "READ") not in ws.grants("f"), "cut to what is proven"
+    assert ws.user_checkpoint(BOB), "the listing moved on"
+
+    _lists_read_again(ws)  # nothing changed at the source, so no feed reports the item
+    await ws.sync()
+
+    assert (dana, "USER", "READ") in ws.grants("f"), "read again by id: the real list names her"
+
+
+async def test_a_reader_who_lost_the_item_is_no_evidence_for_a_later_cut_in_the_run(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+        FolderFailureRuns,
+    )
+
+    await ws.sync()
+    connector = ws.connector
+    (await connector._load_empty_list_runs())["f"] = MAX_HELD_RUNS
+    meta = {"id": "f", "owners": [{"emailAddress": "carol@example.com"}]}
+    assert await connector._proven_grants_after_held_runs("f", meta, ALICE) is not None  # Alice's read, then
+    alice = next(u for u in connector.synced_users if u.email == ALICE)
+    await connector._apply_removed_change({"fileId": "f", "removed": True}, alice, {}, FolderFailureRuns(None), "k")
+
+    proven = await connector._proven_grants_after_held_runs("f", meta, BOB)
+
+    assert ALICE not in {p.email for p in proven[0]}, "her feed said she can no longer open it"
+
+
 async def test_a_suspended_owner_gets_no_grant_from_a_cut_list(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
 
