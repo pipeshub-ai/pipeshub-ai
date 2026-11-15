@@ -81,3 +81,66 @@ def test_start_kafka_consumers_binds_the_fleet_state_before_anything_pauses() ->
 
     source = inspect.getsource(start_kafka_consumers)
     assert source.index("create_retry_manager") < source.index("_bind_fleet_state(") < source.index("create_producer")
+
+
+class _ServiceConfig(_Config):
+    async def get_redis_config(self) -> RedisConfig:
+        return RedisConfig()
+
+    def close(self) -> None:
+        return None
+
+
+async def _assert_the_lifespan_binds_the_fleet(lifespan, app) -> None:
+    assert get_fleet_redis() is None
+    async with lifespan(app):
+        fleet = get_fleet_redis()
+        assert fleet is not None, "the service's model calls would use a breaker of their own"
+        assert (await FleetBreaker(fleet).admit("pk", "s", "job")).code == ALLOW
+    assert get_fleet_redis() is None, "shutdown unbinds the fleet"
+
+
+async def test_the_extraction_service_binds_the_fleet_breaker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Extraction service classifies through its own gateway: it must use the fleet's breaker, or an outage it sees
+    is invisible to the indexing service and every replica."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import FastAPI
+
+    import app.extraction_main as extraction_main
+
+    _modes(monkeypatch, "inprocess")
+    container = MagicMock()
+    container.config_service.return_value = _ServiceConfig({})
+    container.logger.return_value = logging.getLogger("t")
+    with (
+        patch.object(extraction_main, "_get_initialized_container", AsyncMock(return_value=container)),
+        patch.object(extraction_main, "DocumentExtraction"),
+        patch.object(extraction_main, "mark_process_non_dumpable"),
+    ):
+        await _assert_the_lifespan_binds_the_fleet(extraction_main.lifespan, FastAPI())
+
+
+async def test_the_parsing_service_binds_the_fleet_breaker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Table summaries, image descriptions and VLM OCR call models through the parsing service's gateway."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import FastAPI
+
+    import app.parsing_main as parsing_main
+
+    _modes(monkeypatch, "inprocess")
+    container = MagicMock()
+    container.config_service.return_value = _ServiceConfig({})
+    container.logger.return_value = logging.getLogger("t")
+    governor = MagicMock()
+    governor.ceilings = SimpleNamespace(heavy=1, light=1)
+    governor.run = AsyncMock()
+    with (
+        patch.object(parsing_main, "_get_initialized_container", AsyncMock(return_value=container)),
+        patch.object(parsing_main, "_build_registry", MagicMock()),
+        patch.object(parsing_main, "ResourceGovernor", MagicMock(return_value=governor)),
+        patch.object(parsing_main, "is_local_cpu_embedding_configured", AsyncMock(return_value=False)),
+        patch.object(parsing_main, "mark_process_non_dumpable"),
+    ):
+        await _assert_the_lifespan_binds_the_fleet(parsing_main.lifespan, FastAPI())
