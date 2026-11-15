@@ -29814,7 +29814,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER perm._from == @user_document_id
                 FILTER perm.role == "OWNER"
                 FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
-                FILTER DOCUMENT(perm._to).isDeleted == false
+                LET template = DOCUMENT(perm._to)
+                // a template stored without isDeleted is live, as in the list and get_template
+                FILTER template != null AND template.isDeleted != true
                 LIMIT 1
                 RETURN perm
             """
@@ -29879,7 +29881,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER perm._from == @user_document_id
                 FILTER perm.role == "OWNER"
                 FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
-                FILTER DOCUMENT(perm._to).isDeleted == false
+                LET template = DOCUMENT(perm._to)
+                // a template stored without isDeleted is live, as in the list and get_template
+                FILTER template != null AND template.isDeleted != true
                 LIMIT 1
                 RETURN perm
             """
