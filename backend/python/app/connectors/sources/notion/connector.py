@@ -1209,12 +1209,14 @@ class NotionConnector(BaseConnector):
             if not await personal_tokens.mark_failed(self.config_service, self.connector_id, user_id, rejected.reason, token):
                 return  # replaced by a new token while this sync ran
             self.logger.warning("Dropping the Notion token user %s linked: %s", user_id, rejected.reason)
-            await self.notify(
+            # Not held back as a repeat: the same notice to another user is not one, and a token is dropped once.
+            await self.notify_and_wait(
                 type=NotificationType.CONNECTOR_WARNING,
                 severity=NotificationSeverity.WARNING,
                 title=f"{self.display_name}: your Notion access token no longer works",
                 message=f"{rejected.reason}. Link a new personal access token to see your Notion pages in PipesHub again.",
                 recipient_user_ids=[user_id],
+                suppress_repeats=False,
             )
             return
         except Exception as e:

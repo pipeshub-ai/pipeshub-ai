@@ -1,6 +1,7 @@
 """Notion team connector: who may open each page, from the personal access tokens users link, confirmed
 page by page with each person's own token; never from workspace membership or publishing alone."""
 
+import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 from typing import Any
@@ -77,7 +78,7 @@ def _connector(token_datasource: MagicMock | None = None) -> NotionConnector:
     conn = _make_connector()
     conn.workspace_id = WS
     conn.config_service = _Config()
-    conn.notify = AsyncMock()
+    conn.notify = conn.notify_and_wait = AsyncMock()
     conn._member_ids = {ALICE_ID: ALICE, "notion-bob": "bob@example.com"}
     conn._members_complete = True  # /v1/users was read to its end this sync
     conn.data_entities_processor.get_user_by_user_id = AsyncMock(
@@ -158,6 +159,25 @@ async def test_a_token_that_is_not_the_users_own_or_is_refused_grants_nothing_an
     assert entry["status"] == personal_tokens.FAILED and reason in entry["reason"]
     assert "token" not in entry, "the secret of a refused token must not be kept"
     assert conn.notify.await_args.kwargs["recipient_user_ids"] == ["u-alice"]
+
+
+@pytest.mark.asyncio
+async def test_everyone_whose_token_is_dropped_for_the_same_reason_is_told() -> None:
+    """The connector holds back a repeat of the same notice; a token dropped is told to its own user once."""
+    conn = _connector(_datasource(_make_api_response(success=False, status=401), _search("p1")))
+    del conn.notify, conn.notify_and_wait  # the connector's own, with its repeat suppression
+    conn.created_by = "admin"
+    published = AsyncMock(return_value=True)
+    conn._notification_service = MagicMock(publish_notification=published)
+    people = {"u-alice": ALICE, "u-bob": "bob@example.com"}
+    conn.data_entities_processor.get_user_by_user_id = AsyncMock(
+        side_effect=lambda uid, **_: User(email=people[uid], user_id=uid, org_id="org-1", is_active=True))
+    await _link(conn, "u-alice")
+    await _link(conn, "u-bob", token="ntn_pat_bob")
+    await conn._load_personal_access()
+    await asyncio.gather(*conn._background_tasks)
+    told = sorted(r for call in published.await_args_list for r in call.kwargs.get("recipient_user_ids") or [])
+    assert told == ["u-alice", "u-bob"]
 
 
 @pytest.mark.asyncio
