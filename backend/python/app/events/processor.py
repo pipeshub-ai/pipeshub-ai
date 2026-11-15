@@ -57,6 +57,7 @@ from app.modules.parsers.code_parser import engine as code_parser_engine
 from app.modules.parsers.code_parser.lang_config import detect_language
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.csv.csv_parser import CSVParser
+from app.modules.parsers.email.msg_to_html import msg_to_html
 from app.modules.parsers.epub.epub_reader import read_epub
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.lightweight_group_parsers import lightweight_group_parsers
@@ -72,6 +73,7 @@ from app.modules.parsers.push_origin import (
     content_is_push_origin,
     record_is_push_origin,
 )
+from app.modules.parsers.text.plain_text_parser import plain_text_to_blocks
 from app.modules.parsers.text_decoding import decode_text
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
@@ -83,11 +85,12 @@ from app.services.messaging.config import (
     PipelineEvent,
     PipelineEventData,
 )
-from app.services.parsing.interface import ParseError
+from app.services.parsing.interface import ParseError, UnreadableFileError, damaged_file_reason
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
 from app.utils.cpu_offload import offload_if_large
 from app.utils.image_utils import fit_inline_images, get_extension_from_mimetype
+from app.utils.libreoffice_convert import LibreOfficeCouldNotReadFileError, convert_with_libreoffice
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.table_enrichment import enhance_tables_with_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -98,6 +101,8 @@ if TYPE_CHECKING:
 
 
 SCANNED_PDF_NO_OCR_MESSAGE = SCANNED_DOCUMENT_NEEDS_OCR
+# A mail's worker past this is stuck on the file, not slow.
+MSG_PARSE_TIMEOUT_SECONDS = 60
 
 
 class Processor:
@@ -1629,9 +1634,14 @@ class Processor:
             return
 
     async def process_html_document(
-        self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
+        self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None,
+        *, allow_remote_fetch: bool = True,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Process HTML document, yielding phase completion events."""
+        """Process HTML document, yielding phase completion events.
+
+        ``allow_remote_fetch=False`` leaves remote images unfetched (an email's, whose sender
+        would learn it was opened).
+        """
         self.logger.debug(
             f"🚀 Starting HTML document processing for record: {recordName}"
         )
@@ -1677,8 +1687,9 @@ class Processor:
             if images:
                 image_parser = self.parsers[ExtensionTypes.PNG.value]
                 urls_to_convert = [image["url"] for image in images]
-                # An HTML file a connector synced: never a pushed blocks document.
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
+                base64_urls = await image_parser.urls_to_base64(
+                    urls_to_convert, allow_remote_fetch=allow_remote_fetch
+                )
 
                 for i, image in enumerate(images):
                     if base64_urls[i]:
@@ -1723,6 +1734,87 @@ class Processor:
             raise
         except Exception as e:
             self.logger.error(f"❌ Error processing HTML document: {str(e)}")
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
+
+    async def process_msg_document(
+        self, recordName: str, recordId: str, version: int, source: str, orgId: str, msg_binary: bytes | str,
+        virtual_record_id: str, event_type: str | None = None, prev_virtual_record_id: str | None = None,
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        """An Outlook .msg file, read as the HTML page of its headers, body and attachment list."""
+        content = msg_binary.encode("utf-8") if isinstance(msg_binary, str) else bytes(msg_binary)
+        # A damaged file raises UnreadableFileError, which comes back from the worker intact.
+        html = await asyncio.to_thread(
+            parse_pool.run_blocking, msg_to_html, content,
+            label=recordName, size=len(content), timeout=MSG_PARSE_TIMEOUT_SECONDS, kind=ParseKind.TEXT,
+        )
+        content = msg_binary = None
+        async for event in self.process_html_document(
+            recordName, recordId, version, source, orgId, html, virtual_record_id, event_type,
+            prev_virtual_record_id, allow_remote_fetch=False,
+        ):
+            yield event
+
+    async def process_libreoffice_document(
+        self, recordName: str, recordId: str, version: int, source: str, orgId: str, binary: bytes,
+        input_ext: str, virtual_record_id: str, event_type: str | None = None,
+        prev_virtual_record_id: str | None = None,
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        """A word-processing file LibreOffice converts to DOCX (.odt, .rtf), read as that DOCX."""
+        try:
+            docx = await convert_with_libreoffice(bytes(binary), input_ext, "docx")
+        except LibreOfficeCouldNotReadFileError as exc:
+            raise UnreadableFileError(input_ext, damaged_file_reason(input_ext)) from exc
+        binary = None
+        async for event in self.process_docx_document(
+            recordName, recordId, version, source, orgId, io.BytesIO(docx), virtual_record_id, event_type,
+            prev_virtual_record_id,
+        ):
+            yield event
+
+    async def process_plain_text_document(
+        self, recordName: str, recordId: str, text_binary: bytes | str, virtual_record_id: str,
+        event_type: str | None = None, prev_virtual_record_id: str | None = None,
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        """A log or configuration file, already capped and decoded to UTF-8, as plain text blocks."""
+        try:
+            text = text_binary.decode("utf-8") if isinstance(text_binary, (bytes, bytearray)) else str(text_binary)
+            text_binary = None
+            if not text.strip():
+                await self._mark_record(recordId, ProgressStatus.EMPTY)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                return
+            if parse_pool.should_offload(len(text)):
+                block_containers = await parse_pool.submit(
+                    plain_text_to_blocks, text, label=recordName, size=len(text), kind=ParseKind.TEXT,
+                )
+            else:
+                block_containers = await asyncio.to_thread(plain_text_to_blocks, text)
+            text = None
+
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            record = await self.graph_provider.get_document(
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            if record is None:
+                raise RecordDeletedError(recordId)
+            record = self._convert_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+            await self._pipeline().apply(ctx)
+
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+        except IndexingError:
+            raise
+        except Exception as e:
+            self.logger.error(f"Error processing plain text document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
