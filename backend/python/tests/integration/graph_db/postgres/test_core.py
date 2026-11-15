@@ -290,6 +290,22 @@ async def test_a_conditional_update_removes_a_field_set_to_none_and_needs_an_exp
         assert (await p.get_document("c", "things"))["z"] == 2
 
 
+async def test_of_concurrent_conditional_updates_holding_the_same_expectation_exactly_one_applies(pg_provider, orgs, org_ctx) -> None:
+    """A compare-and-set: the writers that waited for the first one's row lock must see that the field it expected absent is now set."""
+    a, _ = orgs
+    p = pg_provider
+
+    async def one(key: str, i: int) -> bool:
+        with org_ctx(a):
+            return await p.update_node_fields_if_match(key, "things", {"ver": 1, "who": i}, {"ver": None})
+    for round_ in range(8):
+        key = f"cas{round_}"
+        with org_ctx(a):
+            await p.batch_upsert_nodes([{"_key": key}], "things")
+        results = await asyncio.gather(*(one(key, i) for i in range(6)))
+        assert results.count(True) == 1, (round_, results)
+
+
 async def test_a_collection_prefix_must_name_the_collection_asked(pg_provider, orgs, org_ctx) -> None:
     a, _ = orgs
     p = pg_provider
