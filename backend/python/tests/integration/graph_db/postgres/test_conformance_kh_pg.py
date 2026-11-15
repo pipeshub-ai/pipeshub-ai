@@ -15,6 +15,7 @@ from app.connectors.sources.localKB.handlers.kh_merge import key_for
 from app.core.org_context import OrgContext, bind
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
 from app.services.graph_db.postgres import kh_browse
+from app.services.graph_db.postgres.kg import counts as kg_counts
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
 from tests.permissions.kh_layer import (
@@ -165,6 +166,28 @@ async def test_golden_and_adversarial_worlds_list_what_the_viewer_may_read(kh_la
     assert not bad, f"{kh_layer.name}\n{_describe(bad)}"
     print(f"{kh_layer.name}: {len(worlds)} golden worlds, {kh_layer.not_ready} refused as not copied, promoted {dict(kh_layer.promoted)}")
     assert kh_layer.not_ready * 10 <= len(worlds), f"{kh_layer.not_ready} of {len(worlds)} worlds were refused as not copied"
+
+
+async def test_golden_and_adversarial_worlds_count_from_the_counters_what_the_viewer_may_read(pg_provider, pg_db, monkeypatch) -> None:
+    """With the counters read (PG_KG_COUNTERS=1) an unfiltered total of a connector kg serves comes from kg.counts: every total, count and facet is still the oracle's."""
+    monkeypatch.setenv("PG_KG_COUNTERS", "1")
+    layer = KhPgLayer(pg_provider, pg_db, not_current=False)
+    worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
+    bad: list[KhFinding] = []
+    seeded = 0
+    try:
+        for start in range(0, len(worlds), CHUNK):
+            chunk = worlds[start:start + CHUNK]
+            await layer.preload(chunk)
+            for world in chunk:
+                seeded += await kg_counts.run(pg_db, _hex(Namespace(layer._prefix[world]).org))
+            for offset, world in enumerate(chunk):
+                bad += _bad(await check(layer, world, f"golden-{start + offset}"))
+            await layer.release(chunk)
+    finally:
+        await layer.release(list(layer._prefix))
+    assert seeded, "no connector was counted whole: the counters were never read"
+    assert not bad, f"{layer.name} with counters\n{_describe(bad)}"
 
 
 @pytest.mark.parametrize("kind", sorted(gen.GENERATORS))

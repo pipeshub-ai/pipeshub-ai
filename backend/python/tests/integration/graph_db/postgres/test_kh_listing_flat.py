@@ -161,7 +161,7 @@ async def test_the_exact_total_stops_at_its_cap_and_says_so(pg_db, monkeypatch) 
     monkeypatch.setattr(kh_listing, "COUNT_CAP", 4)
     with ctx(org):
         page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=9), limit=3)
-    assert page["total"] == 4 and page["totalCapped"] is True
+    assert page["total"] == 4 and page["totalCapped"] is True and page["counts"] == {"record": 4}      # the counts by type add up to the total
 
 
 async def test_a_page_that_stops_early_says_where_and_the_walk_from_there_lists_every_readable_row_once(pg_db, monkeypatch) -> None:

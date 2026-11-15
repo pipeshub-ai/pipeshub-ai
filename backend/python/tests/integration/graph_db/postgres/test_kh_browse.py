@@ -202,6 +202,17 @@ async def _group_with_a_folder(p, db, org: str) -> None:
     await flip(db, org)
 
 
+async def test_a_wide_node_whose_count_reaches_the_cap_reports_counts_that_add_up_to_its_total(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    kids = [f"c{i:04d}" for i in range(12)]
+    await seed_folder(p, pg_db, org, 12, readable_kids=kids[:9])
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 5)
+    monkeypatch.setattr(kh_browse, "COUNT_CAP", 4)
+    monkeypatch.setattr(kh_listing, "COUNT_CAP", 4)
+    page = await browse(p, org, "fold", ["fold", *kids[:9]], limit=3)
+    assert page["total"] == 4 and page["totalCapped"] is True and page["counts"] == {"record": 4}
+
+
 async def test_an_arrow_counts_hierarchy_children_only_and_a_child_whose_class_kg_cannot_vouch_for_is_asked_of_the_check(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await _group_with_a_folder(p, pg_db, org)
