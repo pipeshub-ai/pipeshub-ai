@@ -1439,6 +1439,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
     def __fifo_admission_open(
         self,
+        *,
         budget: concurrency.DispatchBudget | None = None,
         saturated: bool | None = None,
     ) -> bool:
@@ -2964,7 +2965,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     # single further record. Claiming more entries then only
                     # grows this consumer's PEL.
                     saturated = concurrency.index_gates_saturated(self)
-                    if not self.__fifo_admission_open(budget, saturated):
+                    if not self.__fifo_admission_open(budget=budget, saturated=saturated):
                         if not self._backpressure_active:
                             self.logger.warning(
                                 "Backpressure engaged: tasks waiting for "
