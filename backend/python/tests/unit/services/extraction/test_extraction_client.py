@@ -425,3 +425,55 @@ async def test_an_outage_from_a_service_without_usage_is_counted_from_its_424() 
     ) as trace, pytest.raises(LLMUnavailableError):
         await client.classify(_bc(), "org-1")
     assert (trace.requests, trace.charged, trace.unavailable) == (2, 1, 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("recorded", "charged_sends"), [({"failed": 2, "charged": 1}, 2), (None, 7)])
+async def test_a_lost_reply_is_charged_what_the_service_recorded_or_everything_it_allowed(
+    recorded: dict | None, charged_sends: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The request may have been received and its reply lost: the job is charged what the service recorded under the
+    request id, or, when nothing is recorded (still running, or it died), the whole allowance it was given."""
+    from app.services.llm_gateway import remote_usage
+    from app.services.llm_gateway.gateway import llm_job
+
+    asked: list[tuple[str, str]] = []
+
+    async def read(job_key: str, request_id: str) -> dict | None:
+        asked.append((job_key, request_id))
+        return recorded
+
+    monkeypatch.setattr(remote_usage, "read", read)
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    lost = AsyncMock(side_effect=ServiceUnavailableError("read timeout", delivered=True))
+    with patch.object(client, "_post_json", new=lost), llm_job("entities:vr-1:rev-a", allowance=7) as trace:
+        with pytest.raises(ServiceUnavailableError):
+            await client.extract_entities(_bc(), "org-1")
+    sent = lost.call_args[0][1]
+    assert asked == [("entities:vr-1:rev-a", sent["request_id"])]
+    assert trace.requests == charged_sends and trace.unavailable == 1
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_request_is_an_unavailable_service_charged_the_first_deliverys_usage() -> None:
+    from app.services.llm_gateway.gateway import llm_job
+
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    body = {"success": False, "error_code": "REPLAYED", "usage": {"failed": 3, "charged": 0}}
+    replayed = AsyncMock(return_value=httpx.Response(409, json=body))
+    with patch.object(client, "_post_json", new=replayed), llm_job("classify:vr-1:rev-a", allowance=9) as trace:
+        with pytest.raises(ServiceUnavailableError) as raised:
+            await client.classify(_bc(), "org-1")
+    assert raised.value.delivered is True and trace.requests == 3
+
+
+@pytest.mark.asyncio
+async def test_a_request_that_never_reached_the_service_is_not_charged() -> None:
+    from app.services.llm_gateway.gateway import llm_job
+
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    refused = AsyncMock(side_effect=ServiceUnavailableError("connect refused", delivered=False))
+    with patch.object(client, "_post_json", new=refused), llm_job("classify:vr-1:rev-a", allowance=9) as trace:
+        with pytest.raises(ServiceUnavailableError):
+            await client.classify(_bc(), "org-1")
+    assert trace.requests == 0

@@ -40,7 +40,7 @@ from app.services.base_client import (
     ServiceUnavailableError,
 )
 from app.services.extraction.client import ExtractionClientError
-from app.services.llm_gateway.gateway import current_job_trace, current_pause_fields
+from app.services.llm_gateway.gateway import current_pause_fields
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 # Bump when the classification prompt or its output mapping changes. 2: cacheable instructions
@@ -160,12 +160,12 @@ class ClassifyStage:
             # before any model work (the slot wait), and an open circuit or a refused connection sent nothing; a request
             # it may have received and never answered may have reached the model, so it counts as one failed send,
             # never charged (whether the provider failed is not known here).
+            # The client has charged the job for a request the service may have received (``_charge_lost_reply``).
             reason = f"Extraction service unavailable: {exc}"
             if getattr(exc, "delivered", False):
-                trace = current_job_trace()
-                if trace is not None:
-                    trace.note_remote({"failed": 1, "unavailable": 1})
-                    return StageResult.paused_for(None, reason, traced=current_pause_fields())
+                traced = current_pause_fields()
+                if traced:
+                    return StageResult.paused_for(None, reason, traced=traced)
                 return StageResult(outcome=StageOutcome.PAUSED, reason=reason, sent=True, requests=1)
             return StageResult(outcome=StageOutcome.PAUSED, reason=reason, sent=False)
         except (ExtractionLLMError, ExtractionClientError) as exc:

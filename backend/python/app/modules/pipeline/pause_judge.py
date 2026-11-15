@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from app.modules.pipeline.models import StageJob, StageResult
+    from app.services.llm_gateway.gateway import JobTrace
 
 @dataclass(frozen=True)
 class Judgement:
@@ -137,6 +138,8 @@ class PauseJudge:
         verdict = counters_spent(prior, limits)
         if verdict is Verdict.FAIL_CHARGED and prior.scope and await self._store.is_owed(prior.scope, job.state_key):
             # A hold owes this job a redrive whose reset has not happened yet: its charges were the key's, not its own.
+            # The scope is indexed first, so the leader also finds the other jobs it owes, which do not wake by themselves.
+            await self._store.note_owed_scope(prior.scope)
             await self._store.release_charged(job.state_key)
             await self._store.redrive_done(prior.scope, job.state_key)
             prior = replace(prior, charged=0)
@@ -199,7 +202,7 @@ class PauseJudge:
             else:
                 label = result.provider_label or "model provider"
                 capped = await breaker.register_capped(
-                    result.provider_pk, result.size_class, job.state_key, label=label, reason="charged_cap"
+                    result.provider_pk, result.size_class, job.state_key, label=label, reason="charged_cap", org=job.org_id
                 )
                 decision = decide(state, capped_distinct=0 if capped.already else capped.distinct, **decide_kwargs)
                 if decision.verdict is Verdict.REDRIVE:
@@ -235,6 +238,33 @@ class PauseJudge:
         except Exception:
             self._logger.warning("could not index the provider hold %s; the next tick will not see it", episode, exc_info=True)
 
+    async def reserve(self, job: StageJob, *, attempt: int, stale_ms: int) -> int:
+        """The failed sends run ``attempt`` may make (``PauseStore.reserve``), held for it until it commits."""
+        limits = await self.limits()
+        return await self._store.reserve(
+            job.state_key, attempt=attempt, absolute=limits.absolute_sends, now_ms=await self._now(), stale_ms=stale_ms
+        )
+
+    async def commit(self, job: StageJob, *, attempt: int, trace: JobTrace | None) -> None:
+        """Commit a run that did not pause: its failed sends, charged sends and trials, and release its reservation. A
+        run that spent nothing creates no budget."""
+        scope = trace.scope() if trace is not None else None
+        try:
+            await self._store.apply(
+                job.state_key,
+                attempt=attempt,
+                sends=trace.requests if trace is not None else 0,
+                charged=trace.charged if trace is not None else 0,
+                trials=trace.trials if trace is not None else 0,
+                since_ms=await self._now(),
+                ledger_at_since=0,
+                scope=f"{scope[0]}:{scope[1]}" if scope else "",
+                scope_ledger=await self._ledger(f"{scope[0]}:{scope[1]}") if scope else 0,
+                create=False,
+            )
+        except PauseStoreUnavailable as exc:
+            self._logger.warning("the sends of %s were not committed (%s); its reservation counts them", job.state_key, exc)
+
     async def release_charged(self, state_key: str) -> bool:
         """A fresh charge count for a job a hold redrives. Raises ``PauseStoreUnavailable``: a redrive must not go out
         with the old count, which the pre-run check would fail at once."""
@@ -245,6 +275,9 @@ class PauseJudge:
 
     async def redrive_done(self, scope: str, state_key: str) -> None:
         await self._store.redrive_done(scope, state_key)
+
+    async def reconcile_owed(self) -> int:
+        return await self._store.reconcile_owed()
 
     async def hold_jitter(self, result: StageResult) -> float:
         """A paused job refused by a key on hold waits a random part of the hold's cooldown on top, so the

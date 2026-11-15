@@ -697,3 +697,42 @@ def test_entities_answers_a_provider_outage_with_a_424_and_what_it_spent(entitie
     assert body["error_code"] == "LLM_UNAVAILABLE"
     assert (body["usage"]["failed"], body["usage"]["charged"], body["usage"]["pk"]) == (2, 1, "pk-1")
     assert not app.state.entity_extraction_semaphore.locked()
+
+
+def test_a_second_delivery_of_a_request_is_refused_without_spending(entities_app, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The caller's client sent a request again after losing the reply: the service spends nothing for it and answers
+    409 with what the first delivery spent."""
+    from app.services.llm_gateway import remote_usage
+
+    app, _, extract = entities_app
+
+    async def already(job_key: str, request_id: str) -> dict:
+        return {"failed": 2, "charged": 1}
+
+    monkeypatch.setattr(remote_usage, "claim", already)
+    response = _post_entities(app, org_id="org-123", job_key="entities:vr:rev", request_id="req-1")
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "REPLAYED" and response.json()["usage"] == {"failed": 2, "charged": 1}
+    extract.assert_not_awaited()
+    assert not app.state.entity_extraction_semaphore.locked()
+
+
+def test_a_request_records_what_it_spent_whatever_its_outcome(entities_app, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.llm_gateway import remote_usage
+
+    app, _, extract = entities_app
+    recorded: list[tuple[str, str, object]] = []
+
+    async def first(job_key: str, request_id: str) -> bool:
+        return True
+
+    async def record(job_key: str, request_id: str, usage: object) -> None:
+        recorded.append((job_key, request_id, usage))
+
+    monkeypatch.setattr(remote_usage, "claim", first)
+    monkeypatch.setattr(remote_usage, "record", record)
+    extract.side_effect = RuntimeError("model blew up")
+    response = _post_entities(app, org_id="org-123", job_key="entities:vr:rev", request_id="req-1")
+    assert response.status_code == 500
+    assert [(k, r) for k, r, _ in recorded] == [("entities:vr:rev", "req-1")]
+    assert isinstance(recorded[0][2], dict) and "failed" in recorded[0][2]

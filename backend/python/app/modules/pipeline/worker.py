@@ -44,7 +44,8 @@ from app.modules.pipeline.stage import (
     StageIO,
     StageStateStore,
 )
-from app.services.llm_gateway.gateway import llm_job
+from app.services.llm_gateway.fleet_hold import RECONCILE_EVERY_TICKS
+from app.services.llm_gateway.gateway import JobTrace, llm_job
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -135,6 +136,7 @@ class StageJobHandler:
         super().__init__()
         # The pause budget (``pause_budget``). None runs without one: a paused job then waits without bound.
         self._pause = pause_judge
+        self._redrive_passes = 0
         self._registry = registry
         self._states = states
         self._headlines = headlines
@@ -289,27 +291,34 @@ class StageJobHandler:
         )
         if not claimed:
             raise StageRetry(f"stage job {job.job_id} changed state while it was being claimed")
+        allowance = None if refusal is not None else await self._reserve_sends(job, stage, run_attempt)
 
+        trace: JobTrace | None = None
         try:
             if refusal is not None:
                 # The budget of this revision is spent: an automatic re-dispatch must not send anything.
                 last = f" Last status: {state.reason}" if state.reason else ""
                 result = StageResult(outcome=StageOutcome.FAILED, reason=f"{refusal[1]}{last}")
             else:
-                with llm_job(job.state_key, allowance=await self._send_allowance(prior)):
+                with llm_job(job.state_key, allowance=allowance) as trace:
                     async with asyncio.timeout(stage.budget_s):
                         result = await stage.run(job, io)
         except TimeoutError:
             result = StageResult(outcome=StageOutcome.RETRY, reason=f"ran past its {stage.budget_s:.0f}s budget")
         except ConnectorBeingDeleted:
+            await self._commit_sends(job, run_attempt, trace)
             raise
         except Exception as exc:
+            await self._commit_sends(job, run_attempt, trace)
             # The consumer classifies it (retry or dead-letter); the reason stays for whoever looks next.
             self._count(job.stage, "error")
             if not await self._settle(job, ProgressStatus.QUEUED, attempt=run_attempt, reason=f"{type(exc).__name__}: {exc}"):
                 # Another run owns the job now; this delivery has nothing left to report.
                 return
             raise
+        if result.outcome is not StageOutcome.PAUSED:
+            # A PAUSED outcome is committed by its verdict; every other one commits what the run spent here.
+            await self._commit_sends(job, run_attempt, trace)
         await self._apply(
             job, stage, result, fingerprint, attempt=run_attempt, was_paused=state.status is ProgressStatus.PAUSED
         )
@@ -468,12 +477,32 @@ class StageJobHandler:
                 self._logger.exception("Stage job %s failed and its follow-up could not run", job.job_id)
         raise StageFailed(reason, record_id=job.job_id)
 
-    async def _send_allowance(self, prior: PauseState | None) -> int | None:
-        """The failed sends this run may make before its pause budget's absolute cap; None without a pause budget."""
-        if self._pause is None:
+    async def _reserve_sends(self, job: StageJob, stage: Stage[Any], attempt: int) -> int | None:
+        """Reserve the failed sends this run may make (what the absolute cap leaves after the committed sends and any
+        twin run's reservation); None without a pause budget. When the store cannot be written the job is handed back
+        (QUEUED, ``StagePaused``) before it sends anything; a forced run goes ahead unreserved, its calls pause on their
+        own while Redis is down."""
+        if self._pause is None or not self._pause.available:
             return None
-        limits = await self._pause.limits()
-        return max(0, limits.absolute_sends - (prior.sends if prior is not None else 0))
+        try:
+            return await self._pause.reserve(job, attempt=attempt, stale_ms=int(2 * stage.budget_s * 1000))
+        except PauseStoreUnavailable as exc:
+            if job.force:
+                return None
+            await self._settle(job, ProgressStatus.QUEUED, attempt=attempt, reason="the pause budget cannot be read")
+            self._count(job.stage, "paused")
+            raise StagePaused(
+                f"the pause budget cannot be written ({exc}); holding stage job {job.job_id}",
+                delay_s=compute_retry_backoff_seconds(max(attempt, 1)),
+            ) from None
+
+    async def _commit_sends(self, job: StageJob, attempt: int, trace: JobTrace | None) -> None:
+        """Commit what a run that did not pause spent (a RETRY, a failure, a timeout, a completion) and release its
+        reservation, so the next run's allowance counts it. A commit that fails leaves the reservation to go stale,
+        and a stale reservation counts as fully spent."""
+        if self._pause is None or not self._pause.available:
+            return
+        await self._pause.commit(job, attempt=attempt, trace=trace)
 
     async def _clear_pause(self, job: StageJob, attempt: int) -> None:
         """A COMPLETED or SKIPPED revision starts its pause budget over, unless a later attempt has written it since."""
@@ -496,6 +525,10 @@ class StageJobHandler:
         """The recovery leader's pass over the redrives provider holds still owe. Returns how many were completed."""
         if self._pause is None or not self._pause.available:
             return 0
+        if self._redrive_passes % RECONCILE_EVERY_TICKS == 0:
+            # The scope index is a fast path; the owed sets themselves are the record (``PauseStore.reconcile_owed``).
+            await self._pause.reconcile_owed()
+        self._redrive_passes += 1
         done = 0
         for scope, keys in (await self._pause.pending_redrives()).items():
             for key in keys:

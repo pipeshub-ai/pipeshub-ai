@@ -279,3 +279,24 @@ async def test_only_the_hold_of_the_jobs_own_key_is_subtracted_from_its_wall(fle
     await breaker.advance_ledger("fleet", held=True)
     woken = await judge.judge(job, _refusal())
     assert woken is not None and woken.decision.verdict is Verdict.FAIL_WALL
+
+
+async def test_a_hold_the_index_lost_is_found_again_from_redis(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    """The script that opens a hold ran, but indexing it failed after: the leader's first tick finds it by scanning,
+    with the org to notify, so the hold is ticked and announced."""
+    breaker = FleetBreaker(fleet)
+    for i in range(3):
+        capped = await breaker.register_capped(PK, CLS, f"job-{i}", label="ChatX:m@host", reason="charged_cap", org="org-9")
+    assert capped.newly_held
+    sent: list[dict] = []
+
+    async def take(doc: dict) -> bool:
+        sent.append(doc)
+        return True
+
+    keeper = HoldKeeper(fleet, breaker, sender=take, clock_ms=sim_clock)
+    assert await keeper.entries() == []
+    assert await keeper.tick() == 1
+    [entry] = await keeper.entries()
+    assert (entry.pk, entry.cls, entry.episode, entry.org_id) == (PK, CLS, capped.episode, "org-9")
+    assert [doc["orgId"] for doc in sent] == ["org-9"], "the hold is announced to its org"

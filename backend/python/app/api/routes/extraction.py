@@ -37,6 +37,7 @@ from app.modules.named_entities.domain.kinds import EntityKind, default_enabled_
 from app.modules.transformers.document_extraction import (
     ExtractionLLMError,
 )
+from app.services.llm_gateway import remote_usage
 from app.services.llm_gateway.gateway import JobTrace, llm_job
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
@@ -81,6 +82,8 @@ class ClassifyRequest(BaseModel):
     job_key: str | None = Field(default=None, max_length=256)
     # The failed sends the caller's job has left (its pause budget); this service sends no more than that.
     send_allowance: int | None = Field(default=None, ge=0)
+    # The caller's name for this request, the same across its transport retries: a second delivery spends nothing.
+    request_id: str | None = Field(default=None, max_length=64)
 
 
 class ClassifyResponse(BaseModel):
@@ -132,6 +135,35 @@ def _unavailable_response(exc: LLMUnavailableError, usage: dict | None) -> JSONR
     )
 
 
+REPLAYED = "REPLAYED"
+
+
+async def _refuse_replay(job_key: str | None, request_id: str | None) -> JSONResponse | None:
+    """A 409 for a request this service was already given (its reply was lost and the caller's client sent it again),
+    with what the first delivery spent when it has finished; None for a first delivery. Claimed only once the request
+    is about to spend (after any slot wait), so a busy 429 the caller retries is not a replay. When the record of
+    deliveries cannot be read the request is refused as a provider outage that sent nothing: spending blind is what
+    the record exists to prevent."""
+    try:
+        claimed = await remote_usage.claim(job_key or "", request_id or "")
+    except Exception as exc:
+        return _unavailable_response(
+            LLMUnavailableError(f"the record of deliveries cannot be read: {type(exc).__name__}", sent=False), None
+        )
+    if claimed is True:
+        return None
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"success": False, "error": "this request was already delivered", "error_code": REPLAYED,
+                 "usage": claimed if isinstance(claimed, dict) else None},
+    )
+
+
+async def _record_usage(job_key: str | None, request_id: str | None, trace: JobTrace | None) -> None:
+    """Recorded whatever happens, so a caller whose reply is lost learns what this request spent."""
+    await remote_usage.record(job_key or "", request_id or "", trace.usage() if trace is not None else None)
+
+
 # ---------------------------------------------------------------------------
 # POST /api/v1/extract/classify
 # ---------------------------------------------------------------------------
@@ -160,74 +192,80 @@ async def classify(
     org_id = service_token_org(claims, body.org_id)
     document_extraction = request.app.state.document_extraction
     trace: JobTrace | None = None
-
+    replay = await _refuse_replay(body.job_key, body.request_id)
+    if replay is not None:
+        return replay
     try:
-        async with scope_from_claims(
-            claims,
-            Workload.EXTRACTION,
-            fallback_service="extraction",
-            config_service=_config_service(request),
-        ):
-            with llm_job(body.job_key or "", allowance=body.send_allowance) as trace:
-                metadata = await document_extraction.classify(
-                    blocks=body.block_container.blocks,
-                    org_id=org_id,
-                    departments=body.departments or None,
-                    record_name=body.record_name,
-                    record_type=body.record_type,
-                    block_groups=body.block_container.block_groups,
-                )
-    except LLMNotConfiguredError as exc:
-        # 4xx: a configuration state, not an outage — the client must neither retry it
-        # nor count it against its circuit breaker.
-        return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content=ClassifyResponse(
-                success=False, error=str(exc), error_code=LLMNotConfiguredError.code
-            ).model_dump(),
-        )
-    except LLMUnavailableError as exc:
-        # A refusal by an open breaker sent nothing: every paused job meets it on every wake, so it is not news.
-        logger.log(
-            logging.WARNING if getattr(exc, "sent", True) else logging.DEBUG,
-            "Model provider unavailable while classifying for org '%s': %s",
-            org_id,
-            exc,
-        )
-        return _unavailable_response(exc, trace.usage() if trace is not None else None)
-    except ExtractionLLMError as exc:
-        # The model answered but produced nothing usable for this document: retried a few times.
-        logger.warning("LLM failed to classify a document for org '%s': %s", org_id, exc)
-        return JSONResponse(
-            status_code=status.HTTP_424_FAILED_DEPENDENCY,
-            content=ClassifyResponse(
-                success=False, error=str(exc), error_code=ExtractionLLMError.code
-            ).model_dump(),
-        )
-    except NonRetryableError as exc:
-        # Not a 5xx: the client resends those, and this would refuse the
-        # whole document again.
-        logger.warning("Classification for org '%s' was refused: %s", org_id, exc)
-        return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content=ClassifyResponse(success=False, error=str(exc)).model_dump(),
-        )
-    except Exception as exc:
-        logger.exception(
-            "Unexpected error during classification for org '%s'", org_id
-        )
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content=ClassifyResponse(success=False, error=str(exc)).model_dump(),
-        )
 
-    usage = trace.usage() if trace is not None else None
-    return JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content=ClassifyResponse(
-            success=True, classification=metadata.model_dump() if metadata is not None else None, usage=usage
-        ).model_dump(),
-    )
+        try:
+            async with scope_from_claims(
+                claims,
+                Workload.EXTRACTION,
+                fallback_service="extraction",
+                config_service=_config_service(request),
+            ):
+                with llm_job(body.job_key or "", allowance=body.send_allowance) as trace:
+                    metadata = await document_extraction.classify(
+                        blocks=body.block_container.blocks,
+                        org_id=org_id,
+                        departments=body.departments or None,
+                        record_name=body.record_name,
+                        record_type=body.record_type,
+                        block_groups=body.block_container.block_groups,
+                    )
+        except LLMNotConfiguredError as exc:
+            # 4xx: a configuration state, not an outage — the client must neither retry it
+            # nor count it against its circuit breaker.
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                content=ClassifyResponse(
+                    success=False, error=str(exc), error_code=LLMNotConfiguredError.code
+                ).model_dump(),
+            )
+        except LLMUnavailableError as exc:
+            # A refusal by an open breaker sent nothing: every paused job meets it on every wake, so it is not news.
+            logger.log(
+                logging.WARNING if getattr(exc, "sent", True) else logging.DEBUG,
+                "Model provider unavailable while classifying for org '%s': %s",
+                org_id,
+                exc,
+            )
+            return _unavailable_response(exc, trace.usage() if trace is not None else None)
+        except ExtractionLLMError as exc:
+            # The model answered but produced nothing usable for this document: retried a few times.
+            logger.warning("LLM failed to classify a document for org '%s': %s", org_id, exc)
+            return JSONResponse(
+                status_code=status.HTTP_424_FAILED_DEPENDENCY,
+                content=ClassifyResponse(
+                    success=False, error=str(exc), error_code=ExtractionLLMError.code
+                ).model_dump(),
+            )
+        except NonRetryableError as exc:
+            # Not a 5xx: the client resends those, and this would refuse the
+            # whole document again.
+            logger.warning("Classification for org '%s' was refused: %s", org_id, exc)
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                content=ClassifyResponse(success=False, error=str(exc)).model_dump(),
+            )
+        except Exception as exc:
+            logger.exception(
+                "Unexpected error during classification for org '%s'", org_id
+            )
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content=ClassifyResponse(success=False, error=str(exc)).model_dump(),
+            )
+
+        usage = trace.usage() if trace is not None else None
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content=ClassifyResponse(
+                success=True, classification=metadata.model_dump() if metadata is not None else None, usage=usage
+            ).model_dump(),
+        )
+    finally:
+        await _record_usage(body.job_key, body.request_id, trace)
 
 
 class ExtractEntitiesRequest(BaseModel):
@@ -239,9 +277,10 @@ class ExtractEntitiesRequest(BaseModel):
     tz: str = "UTC"
     enabled_kinds: list[str] = []
     budgets: NamedEntityBudgets | None = None
-    # As for classify: the caller's stage job, and the failed sends it has left.
+    # As for classify: the caller's stage job, the failed sends it has left, and its name for this request.
     job_key: str | None = Field(default=None, max_length=256)
     send_allowance: int | None = Field(default=None, ge=0)
+    request_id: str | None = Field(default=None, max_length=64)
 
 
 # How long a request waits for an extraction slot before it is shed with a 429.
@@ -277,7 +316,12 @@ async def extract_entities(
                 headers={"Retry-After": str(ENTITY_BACKPRESSURE_RETRY_AFTER_SECONDS)},
                 content=ExtractEntitiesResponse(success=False, error="entity extraction is busy").model_dump(),
             )
+    claimed = False
     try:
+        replay = await _refuse_replay(body.job_key, body.request_id)
+        if replay is not None:
+            return replay
+        claimed = True
         from app.modules.named_entities.extractor import (
             NamedEntityExtractor,
             NamedEntityRequest,
@@ -341,6 +385,8 @@ async def extract_entities(
     finally:
         if semaphore is not None:
             semaphore.release()
+        if claimed:
+            await _record_usage(body.job_key, body.request_id, trace)
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content=ExtractEntitiesResponse(

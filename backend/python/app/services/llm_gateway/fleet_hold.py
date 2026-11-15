@@ -18,7 +18,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +35,10 @@ if TYPE_CHECKING:
     from app.services.llm_gateway.fleet_redis import FleetRedis
 
 TICK_SECONDS = 10.0
+# Every this many ticks (and on the first) the leader also scans Redis for holds the index lost: the index entry is
+# written after the script that opens a hold, so a failure in between would otherwise leave a hold nobody ticks.
+RECONCILE_EVERY_TICKS = 60
+SCAN_COUNT = 500
 NOTICE_TTL_SECONDS = 30 * 24 * 3600
 
 # Removes an index entry only while it still holds the value the caller read: a newer hold episode noted at the
@@ -88,6 +92,7 @@ class HoldKeeper:
         self._sender = sender
         self._logger = logger or logging.getLogger(__name__)
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+        self._ticks = 0
 
     def _index_key(self) -> str:
         return self._fleet.key("sg:holds")
@@ -123,8 +128,32 @@ class HoldKeeper:
                 continue
         return found
 
+    async def reconcile(self) -> int:
+        """Index every hold Redis has that the index lost (``scan_keys``). Returns how many were added back."""
+        client = self._fleet.client()
+        added = 0
+        async for key in scan_keys(self._fleet, "sg:{p:", "}:hold"):
+            scope = _scope_of(key, "sg:{p:", "}:hold")
+            if scope is None or await client.hexists(self._index_key(), scope):
+                continue
+            data = {_s(k): _s(v) for k, v in (await client.hgetall(key)).items()}
+            pk, _, cls = scope.rpartition(":")
+            if not data.get("episode") or not pk:
+                continue
+            value = json.dumps({
+                "pk": pk, "cls": cls, "episode": data["episode"], "label": data.get("label", ""),
+                "since_ms": int(data.get("since_ms") or 0), "notifyOrg": data.get("org", ""), "redriven": 0,
+            })
+            if await client.hsetnx(self._index_key(), scope, value):
+                added += 1
+                self._logger.warning("re-indexed a provider hold the index had lost (%s)", data.get("label", ""))
+        return added
+
     async def tick(self) -> int:
         """One leader pass over the keys on hold. Returns how many are still held."""
+        if self._ticks % RECONCILE_EVERY_TICKS == 0:
+            await self.reconcile()
+        self._ticks += 1
         held = 0
         client = self._fleet.client()
         for entry in await self.entries():
@@ -157,6 +186,27 @@ class HoldKeeper:
         if not sent:
             # Not taken: free the claim so the next tick tries again.
             await client.delete(claim)
+
+
+def _glob_escape(text: str) -> str:
+    return "".join(f"\\{c}" if c in "*?[]\\" else c for c in text)
+
+
+async def scan_keys(fleet: FleetRedis, prefix: str, suffix: str) -> AsyncIterator[str]:
+    """Every key of the namespace named ``<prefix>…<suffix>`` (a SCAN, so it never blocks Redis; on a cluster the client
+    walks every primary)."""
+    pattern = _glob_escape(fleet.key(prefix)) + "*" + _glob_escape(suffix)
+    async for key in fleet.client().scan_iter(match=pattern, count=SCAN_COUNT):
+        yield _s(key)
+
+
+def _scope_of(key: str, prefix: str, suffix: str) -> str | None:
+    """The ``<pk>:<cls>`` scope inside a key named ``…<prefix><scope><suffix>``."""
+    start = key.rfind(prefix)
+    if start < 0 or not key.endswith(suffix):
+        return None
+    scope = key[start + len(prefix): len(key) - len(suffix)]
+    return scope or None
 
 
 def notice_document(entry: HoldEntry, edge: str, *, now_ms: int) -> dict[str, Any]:

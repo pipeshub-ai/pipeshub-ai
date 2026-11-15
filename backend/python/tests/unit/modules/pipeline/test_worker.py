@@ -29,7 +29,7 @@ from app.modules.pipeline.worker import (
 from app.services.messaging.config import IndexingEvent, StreamMessage
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from tests.support import stage_worker_harness as _harness
-from tests.unit.modules.pipeline.fakes import StubIO
+from tests.unit.modules.pipeline.fakes import ClassifyStage, StubIO
 
 _BudgetHarness = _harness.BudgetHarness
 _CLS = _harness.POISON_CLS
@@ -979,3 +979,97 @@ async def test_a_hold_whose_own_reset_fails_owes_every_job_and_the_job_is_not_fa
     await h.deliver(third)
     assert h.state(third).status is ProgressStatus.COMPLETED, "its charges were the key's: not failed on wake"
     assert not await h.store.is_owed(scope, third.state_key)
+
+
+# ---- a run's spend is reserved when it starts and committed whatever its outcome --------------------------------------
+
+
+class _SpendingStage(ClassifyStage):
+    """A stage whose run makes ``failed`` failed sends (as its model calls would) and then returns ``result``."""
+
+    def __init__(self, failed: int, result: StageResult) -> None:
+        super().__init__()
+        self.failed = failed
+        self.result = result
+        self.allowances: list[int | None] = []
+
+    async def run(self, job: StageJob, io: StageIO) -> StageResult:
+        from app.services.llm_gateway.gateway import current_job_trace
+
+        trace = current_job_trace()
+        assert trace is not None
+        self.allowances.append(trace.meter.allowance)
+        trace.meter.failed += self.failed
+        self.runs += 1
+        return self.result
+
+
+def _with_stage(h: _BudgetHarness, stage: ClassifyStage) -> None:
+    h.stage = stage
+    h.registry._stages[stage.name] = stage  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_the_sends_of_a_run_that_retries_are_committed(fleet: FleetRedis) -> None:
+    """A run that sent and then asked to retry (the save found the record busy) still spent them: the next run gets
+    only what is left, so retries cannot take the job past the absolute cap."""
+    h, job = _BudgetHarness(fleet), _job()
+    stage = _SpendingStage(3, StageResult(outcome=StageOutcome.RETRY, reason="record busy"))
+    _with_stage(h, stage)
+    h.seed(job)
+    with pytest.raises(StageRetry):
+        await h.deliver(job)
+    state = await h.pause_state(job)
+    assert state is not None and state.sends == 3
+    with pytest.raises(StageRetry):
+        await h.deliver(job)
+    assert stage.allowances == [20, 17]
+
+
+@pytest.mark.asyncio
+async def test_twin_runs_share_one_allowance(fleet: FleetRedis) -> None:
+    """While one run holds its reservation, a twin of the same job gets only what is left, and nothing once the first
+    holds it all; a run that died is counted as having spent its share once its reservation goes stale."""
+    h, job = _BudgetHarness(fleet), _job()
+    stale_ms = 10_000
+    assert await h.judge.reserve(job, attempt=1, stale_ms=stale_ms) == 20
+    assert await h.judge.reserve(job, attempt=2, stale_ms=stale_ms) == 0, "the first run holds the whole allowance"
+    from app.services.llm_gateway.gateway import JobTrace
+
+    trace = JobTrace()
+    trace.meter.failed = 4
+    await h.judge.commit(job, attempt=1, trace=trace)
+    assert await h.judge.reserve(job, attempt=3, stale_ms=stale_ms) == 16
+    h.clock.advance(stale_ms + 1)
+    assert await h.judge.reserve(job, attempt=4, stale_ms=stale_ms) == 0, "run 3 died holding 16: they count as spent"
+    state = await h.pause_state(job)
+    assert state is not None and state.sends == 20
+
+
+@pytest.mark.asyncio
+async def test_owed_redrives_are_found_from_the_owed_sets_when_the_index_lost_them(fleet: FleetRedis) -> None:
+    """A hold made its capped jobs owed (in the breaker's script), but noting the scope in the index failed after: the
+    leader's first pass finds the owed set by scanning and redrives the FAILED job, which would not wake by itself."""
+    h, job = _BudgetHarness(fleet), _job()
+    scope = f"{_PK}:{_CLS}"
+    h.seed(job, ProgressStatus.FAILED)
+    await h.store.put(job.state_key, PauseState(since_ms=h.clock(), charged=6, sends=6, scope=scope))
+    await fleet.client().sadd(fleet.key(f"sg:{{p:{scope}}}:owed"), job.state_key)
+    assert await h.store.pending_redrives() == {}, "the index does not know the scope"
+    assert await h.handler.retry_hold_redrives() == 1
+    assert h.state(job).status is not ProgressStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_an_owed_scope_noted_again_is_not_removed_by_a_pass_that_saw_it_empty(fleet: FleetRedis) -> None:
+    """A pass read the scope's set empty and is about to drop it from the index while a hold notes it again: the
+    removal compares the add count it read, so the new note stays."""
+    from app.modules.pipeline import pause_store as store_module
+
+    h = _BudgetHarness(fleet)
+    index = h.store._redrive_index()  # type: ignore[attr-defined]
+    await h.store.note_owed_scope("pk:s")
+    seen = await fleet.client().zscore(index, "pk:s")
+    await h.store.note_owed_scope("pk:s")  # noted again after the pass read it
+    await h.store._eval(store_module._REMOVE_IF_SCORE, [index], "pk:s", repr(float(seen)))  # type: ignore[attr-defined]
+    assert await fleet.client().zscore(index, "pk:s") is not None

@@ -181,7 +181,8 @@ return 1
 """
 
 # KEYS: capped, counted, br, hold, owed
-# ARGV: now, job, window_ms, hold_jobs, hold_cooldown_ms, episode, reason, label, cls, owed_ttl_s
+# ARGV: now, job, window_ms, hold_jobs, hold_cooldown_ms, episode, reason, label, cls, owed_ttl_s, org
+# The hold hash names the org to notify, so the recovery leader can rebuild a hold it lost track of from Redis alone.
 # -> {already, distinct, newly_held, episode, member...}
 # A job counts once per revision (``counted``). When the hold rule fires the window is cleared, so the same
 # set cannot trigger another hold; a counted job that reaches the cap again is refused (already = 1).
@@ -215,7 +216,8 @@ local out = {0, distinct, 0, episode}
 if distinct >= hold_jobs then
   if redis.call('EXISTS', hold) == 0 then
     episode = ARGV[6]
-    redis.call('HSET', hold, 'since_ms', now, 'reason', ARGV[7], 'episode', episode, 'label', ARGV[8], 'cls', ARGV[9])
+    redis.call('HSET', hold, 'since_ms', now, 'reason', ARGV[7], 'episode', episode, 'label', ARGV[8], 'cls', ARGV[9],
+      'org', ARGV[11])
     newly = 1
   end
   redis.call('HSET', br, 'state', 'open', 'opened_ms', now, 'cooldown_ms', tonumber(ARGV[5]),

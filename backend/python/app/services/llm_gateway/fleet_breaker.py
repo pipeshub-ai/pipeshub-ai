@@ -297,7 +297,7 @@ class FleetBreaker:
         reply = await self._run(lua.RENEW, [self._key(pk, cls, "br")], self._now(), token, TRIAL_LEASE_MS)
         return int(reply) == 1
 
-    async def register_capped(self, pk: str, cls: str, job: str, *, label: str, reason: str) -> CappedResult:
+    async def register_capped(self, pk: str, cls: str, job: str, *, label: str, reason: str, org: str = "") -> CappedResult:
         reply = await self._run(
             lua.CAPPED,
             [
@@ -305,7 +305,7 @@ class FleetBreaker:
                 self._fleet.key(owed_key_name(f"{pk}:{cls}")),
             ],
             self._now(), job, HOLD_WINDOW_MS, HOLD_JOBS, HOLD_COOLDOWN_MS, uuid.uuid4().hex, reason, label, cls,
-            OWED_TTL_SECONDS,
+            OWED_TTL_SECONDS, org,
         )
         already, distinct, newly, episode, *members = reply
         return CappedResult(
