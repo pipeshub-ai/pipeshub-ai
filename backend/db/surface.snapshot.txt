@@ -320,6 +320,9 @@ column kernel.function_registry.person_effect type=text notnull=false identity= 
 column kernel.function_registry.proc type=regprocedure notnull=true identity= generated= default=-
 column kernel.function_registry.scope type=text notnull=true identity= generated= default='org'::text
 column kernel.function_registry.writer type=name notnull=false identity= generated= default=-
+column kernel.internal_policies.def_md5 type=text notnull=true identity= generated= default=-
+column kernel.internal_policies.polname type=name notnull=true identity= generated= default=-
+column kernel.internal_policies.rel type=regclass notnull=true identity= generated= default=-
 column kernel.job_gate_grants.owner type=name notnull=true identity= generated= default=-
 column kernel.job_gate_grants.rel type=text notnull=true identity= generated= default='platform.jobs'::text
 column kernel.lock_keys.class_id type=integer notnull=true identity= generated= default=-
@@ -678,6 +681,9 @@ column platform.jobs.kind type=text notnull=true identity= generated= default=-
 column platform.jobs.progress type=jsonb notnull=true identity= generated= default='{}'::jsonb
 column platform.jobs.status type=text notnull=true identity= generated= default=-
 column platform.jobs.updated_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column platform.kv_access.enforce type=boolean notnull=true identity= generated= default=false
+column platform.kv_access.id type=boolean notnull=true identity= generated= default=true
+column platform.kv_access.updated_at type=timestamp with time zone notnull=true identity= generated= default=now()
 column platform.kv_entries.expires_at type=timestamp with time zone notnull=false identity= generated= default=-
 column platform.kv_entries.key type=text notnull=true identity= generated= default=-
 column platform.kv_entries.updated_at type=timestamp with time zone notnull=true identity= generated= default=now()
@@ -984,6 +990,7 @@ constraint kernel.function_registry function_registry_helper_is_read c def=896b8
 constraint kernel.function_registry function_registry_person_effect c def=d14e22f04683341c4c207d0471ecdded
 constraint kernel.function_registry function_registry_pkey p def=b664a5b1e44013a75f9cb4978b703ade
 constraint kernel.function_registry function_registry_scope_check c def=6f4985ec551f448f651cea213a30ade3
+constraint kernel.internal_policies internal_policies_pkey p def=74e071a9b98462e6a41a45a7ae39f66a
 constraint kernel.job_gate_grants job_gate_grants_pkey p def=27e717ec98bb52c36934560f5bc7b963
 constraint kernel.job_gate_grants job_gate_grants_rel_check c def=1cf45e19250dd8dae7506b9ee802391a
 constraint kernel.lock_keys lock_keys_class_id_check c def=810e3fd3156f65c8f0e2406cc1cf3012
@@ -1105,6 +1112,8 @@ constraint platform.docstore_changes org_id_format c def=e0f1eb94c06a8955f0a535a
 constraint platform.docstore_changes org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint platform.jobs jobs_pkey p def=4c6419b3704337bbfe50f018842a9ad3
 constraint platform.jobs jobs_status_check c def=0b1660fa4b72c6172fa023081f133040
+constraint platform.kv_access kv_access_id_check c def=cddd5f1abfdea207f35d375bbadc5064
+constraint platform.kv_access kv_access_pkey p def=4c6419b3704337bbfe50f018842a9ad3
 constraint platform.kv_entries kv_entries_pkey p def=729d3ed6c85722f863da384d2313331e
 constraint platform.mail_log mail_log_pkey p def=48a08b3c3358406f44dea2f2d12bb5e2
 constraint platform.mail_log org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
@@ -1216,6 +1225,7 @@ func identity.gauge_user_counts() owner=pipeshub_vetted_identity secdef=true lea
 func identity.oldest_org() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=7b7fd3d718eb548a5a207136e23c8290 ext=-
 func identity.org_count(boolean) owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=892c38309b38ba7ac2fb88a0d1f3aaea ext=-
 func kernel._import_policy(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=e487fa418a1422d72efe0653ec0fc640 ext=-
+func kernel._internal_policy_md5(regclass,name) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=search_path=pg_catalog body=79e7b5075abee867b25a52779a680457 ext=-
 func kernel._secure_rel(regclass,regclass,text,boolean,boolean,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=45e944ca69cf028cb941e242e4632ec7 ext=-
 func kernel._sync_vetted_privs(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=747275dd9bec9bbdfed44bae8293ba49 ext=-
 func kernel._vetted_org_policy(regclass,regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=4ef3b302aaac501d6fb397dbca31f17c ext=-
@@ -1241,6 +1251,7 @@ func kernel.postgres_store_epoch() owner=pipeshub_vetted_kernel secdef=true leak
 func kernel.profile_epoch() owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=032994c6311412f0f44ca0a3e09466fd ext=-
 func kernel.register_function(regprocedure,text,name,text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=sql config=search_path=pg_catalog, kernel, pg_temp body=cd7129043fbda03f78361a02a8d806e2 ext=-
 func kernel.register_internal(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=sql config=search_path=pg_catalog, kernel, pg_temp body=4c4756c98033506a41dd99c286c4110e ext=-
+func kernel.register_internal_policy(regclass,name) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=2ff811bca053cafddcdfdac245f2450f ext=-
 func kernel.require_job_done(text) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=c4ecaff7145d039c1a2db0fe16c9c17b ext=-
 func kernel.require_vetted_org_policy(regclass,text[]) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=732fa8ffff9eee3ae3a109dcba21d766 ext=-
 func kernel.restore_allows(text) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=search_path=pg_catalog, kernel, pg_temp body=121d24d8b4401d3a668330099e195751 ext=-
@@ -1284,6 +1295,8 @@ func platform.docstore_log_change() owner=pipeshub_owner secdef=false leakproof=
 func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=cf7661f94594d8ec819c0366b33552c3 ext=-
 func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=3d09739831c3da55ece8c82d25d49989 ext=-
 func platform.job_start(text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=decc34a34ab24b2019d64f57cbcc241e ext=-
+func platform.kv_may(text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=- body=c7982d6530c7c77c258e7b6fc8247ce9 ext=-
+func platform.kv_outside(text,text,timestamp with time zone) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, pg_temp body=da3fbdc19817fc5f91e2cb37c013aba4 ext=-
 func retrieval.collection_create(text,boolean,boolean,text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=6881aa406340bf1c4dcee0d6fc6c7b25 ext=-
 func retrieval.collection_get(text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=14c63d7ec9cef2ed8b66e1241e62fd0d ext=-
 func retrieval.collection_list(integer,integer) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=b79897367c042993d52db548ede4b30a ext=-
@@ -1437,6 +1450,16 @@ funcacl platform.job_checkpoint(bigint,text) pipeshub_import EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_jobs EXECUTE
 funcacl platform.job_finish(bigint,text) pipeshub_owner EXECUTE
 funcacl platform.job_start(text) pipeshub_owner EXECUTE
+funcacl platform.kv_may(text,boolean) pipeshub_connectors EXECUTE
+funcacl platform.kv_may(text,boolean) pipeshub_indexing EXECUTE
+funcacl platform.kv_may(text,boolean) pipeshub_kv EXECUTE
+funcacl platform.kv_may(text,boolean) pipeshub_node EXECUTE
+funcacl platform.kv_may(text,boolean) pipeshub_query EXECUTE
+funcacl platform.kv_outside(text,text,timestamp with time zone) pipeshub_connectors EXECUTE
+funcacl platform.kv_outside(text,text,timestamp with time zone) pipeshub_indexing EXECUTE
+funcacl platform.kv_outside(text,text,timestamp with time zone) pipeshub_kv EXECUTE
+funcacl platform.kv_outside(text,text,timestamp with time zone) pipeshub_node EXECUTE
+funcacl platform.kv_outside(text,text,timestamp with time zone) pipeshub_query EXECUTE
 funcacl retrieval.collection_create(text,boolean,boolean,text) pipeshub_jobs EXECUTE
 funcacl retrieval.collection_get(text) pipeshub_app EXECUTE
 funcacl retrieval.collection_list(integer,integer) pipeshub_app EXECUTE
@@ -1545,6 +1568,7 @@ index kernel.alembic_version_pkc on kernel.alembic_version unique=true exclusion
 index kernel.completed_jobs_pkey on kernel.completed_jobs unique=true exclusion=false valid=true def=15027330d42fe41c06bc07732df27c9c
 index kernel.extension_schemas_pkey on kernel.extension_schemas unique=true exclusion=false valid=true def=542ab4475729ca447b06e65f4bccc85c
 index kernel.function_registry_pkey on kernel.function_registry unique=true exclusion=false valid=true def=493d61676b029c47e9a418c2c17038d9
+index kernel.internal_policies_pkey on kernel.internal_policies unique=true exclusion=false valid=true def=0a85f508d453bbee45818f011d7e3150
 index kernel.job_gate_grants_pkey on kernel.job_gate_grants unique=true exclusion=false valid=true def=1c015c63a6ad61f61c72436ca1a64dba
 index kernel.lock_keys_name_key on kernel.lock_keys unique=true exclusion=false valid=true def=50cb3130e507b92b2f7b826deb0e3f3d
 index kernel.lock_keys_pkey on kernel.lock_keys unique=true exclusion=false valid=true def=4974bcfad5d5c28cc1b367a1aa7e8760
@@ -1647,6 +1671,7 @@ index platform.docstore_changes_by_id on platform.docstore_changes unique=false 
 index platform.docstore_changes_pkey on platform.docstore_changes unique=true exclusion=false valid=true def=5c24ff547b880656a29904ccc6c85bee
 index platform.jobs_one_running_per_kind on platform.jobs unique=true exclusion=false valid=true def=48b0837b864e0155e01b30cd4761f3bf
 index platform.jobs_pkey on platform.jobs unique=true exclusion=false valid=true def=79f9c6e47506242e024f85e368948de3
+index platform.kv_access_pkey on platform.kv_access unique=true exclusion=false valid=true def=0eddb0cf5d6d8d5c9ad87359f90e80ee
 index platform.kv_entries_expiry on platform.kv_entries unique=false exclusion=false valid=true def=3fd96ca779f6b615709654ddb1a836fc
 index platform.kv_entries_pkey on platform.kv_entries unique=true exclusion=false valid=true def=3b0c327cf2af823aa5b132cf444b9604
 index platform.mail_log_pkey on platform.mail_log unique=true exclusion=false valid=true def=c719d3a90642058b616d76a1f88aa0b1
@@ -1998,6 +2023,10 @@ policy platform.docstore_changes import_all cmd=* permissive=true roles=pipeshub
 policy platform.docstore_changes jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy platform.docstore_changes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.docstore_changes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy platform.kv_entries kv_delete cmd=d permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(key, true) OR (expires_at <= now()) OR platform.kv_outside(key, 'delete'::text, expires_at)) check=-
+policy platform.kv_entries kv_insert cmd=a permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=- check=(platform.kv_may(key, true) OR platform.kv_outside(key, 'insert'::text, expires_at))
+policy platform.kv_entries kv_read cmd=r permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(key, false) OR platform.kv_outside(key, 'read'::text, expires_at)) check=-
+policy platform.kv_entries kv_update cmd=w permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(key, true) OR platform.kv_outside(key, 'update'::text, expires_at)) check=(platform.kv_may(key, true) OR platform.kv_outside(key, 'update'::text, expires_at))
 policy platform.mail_log backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.mail_log import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy platform.mail_log org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
@@ -2102,6 +2131,7 @@ rel kernel.alembic_version kind=r owner=pipeshub_owner rls=false force=false opt
 rel kernel.completed_jobs kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.extension_schemas kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.function_registry kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.internal_policies kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.job_gate_grants kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.lock_keys kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.org_policy_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=6787dc7f01438b42591d936627e0bc18
@@ -2112,7 +2142,7 @@ rel kernel.policy_template kind=r owner=pipeshub_owner rls=false force=false opt
 rel kernel.restore_window kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.rls_exemptions kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.rls_registry kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
-rel kernel.rls_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=16a28a0b1d8f38ce26533812ffa3a3d3
+rel kernel.rls_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=92122f9bcb9b57c0d902dbc86f972b5b
 rel kernel.rls_violations_core kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=e232e39bc8fc37a16c579397aa6379a6
 rel kernel.rls_warnings kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=82f66d8e056dc84e6344cb21d9064d00
 rel kernel.schema_epoch kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
@@ -2155,7 +2185,8 @@ rel platform.docstore_changes kind=r owner=pipeshub_owner rls=true force=true op
 rel platform.docstore_changes_id_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.jobs kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.jobs_id_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
-rel platform.kv_entries kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel platform.kv_access kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel platform.kv_entries kind=r owner=pipeshub_owner rls=true force=false options=- ext=-
 rel platform.mail_log kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
 rel platform.notifications kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
 rel platform.outbox kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
@@ -2693,6 +2724,11 @@ relacl platform.docstore_changes pipeshub_restore INSERT grantable=false
 relacl platform.jobs pipeshub_vetted_platform INSERT grantable=false
 relacl platform.jobs pipeshub_vetted_platform SELECT grantable=false
 relacl platform.jobs pipeshub_vetted_platform UPDATE grantable=false
+relacl platform.kv_access pipeshub_connectors SELECT grantable=false
+relacl platform.kv_access pipeshub_indexing SELECT grantable=false
+relacl platform.kv_access pipeshub_kv SELECT grantable=false
+relacl platform.kv_access pipeshub_node SELECT grantable=false
+relacl platform.kv_access pipeshub_query SELECT grantable=false
 relacl platform.kv_entries pipeshub_connectors DELETE grantable=false
 relacl platform.kv_entries pipeshub_connectors INSERT grantable=false
 relacl platform.kv_entries pipeshub_connectors SELECT grantable=false
