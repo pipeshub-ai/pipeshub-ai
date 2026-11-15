@@ -45,13 +45,13 @@ def _make_config_service(*, down: bool = False):
     svc.set_config = AsyncMock(side_effect=set_config)
     svc.list_keys_in_directory = AsyncMock(return_value=[])  # no weight-precision pins to release
 
-    async def create_if_absent(key, value, **_k):
+    async def create_if_absent(key, value, **_k):  # noqa: ANN202
         if key in store:
             return False
         store[key] = value
         return True
 
-    async def create_key(key, value, overwrite=True, ttl=None):
+    async def create_key(key, value, overwrite=True, ttl=None):  # noqa: ANN202
         store[key] = value
         return True
 
