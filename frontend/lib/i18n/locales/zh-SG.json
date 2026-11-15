@@ -70,6 +70,7 @@
       "restoredMany_one": "已恢复 {{count}} 个项目",
       "restoredMany_other": "已恢复 {{count}} 个项目",
       "showing": "第 {{from}}–{{to}} 项，共 {{total}} 项",
+      "showingAtLeast": "第 {{from}}–{{to}} 项，共 {{total, number}}+ 项",
       "previous": "上一页",
       "next": "下一页",
       "nameAndMore_one": "{{name}} 及另外 {{count}} 项",

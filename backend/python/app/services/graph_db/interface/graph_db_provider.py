@@ -6013,6 +6013,8 @@ class IGraphDBProvider(ABC):
         skip: int = 0,
         limit: int = 25,
         single_file_batches_only: bool = False,
+        after: tuple[int, str] | None = None,
+        count_cap: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """One page of what delete actions put in the trash in one connector (a KB), newest first.
@@ -6026,6 +6028,10 @@ class IGraphDBProvider(ABC):
         one file are listed (what a file organizer may restore). Sorted by the
         batch's ``deletedAtTimestamp``, then batch id, both descending, and
         paged inside the query; ``total`` counts batches in a separate read.
+        ``after`` is a keyset: the ``(batchDeletedAt, batchId)`` of the last
+        batch already listed, so the page starts strictly after it in that
+        order (``skip`` still applies on top). With ``count_cap``, ``total``
+        stops counting at ``count_cap + 1`` batches.
         Each read walks only this connector's trash, through an index that
         holds only the trash, at a fixed cost per record, so a deleted folder's
         files never cost a read of their whole batch.
@@ -6037,9 +6043,11 @@ class IGraphDBProvider(ABC):
         root), ``isFile``, ``fileMimeType`` and ``sizeInBytes`` from its type
         doc, ``rootCount`` (the batch's roots), ``otherRootNames`` (up to
         ``TRASH_LIST_OTHER_ROOT_NAMES`` other roots' names, by key),
-        ``batchSize`` (records in the batch in this connector) and
+        ``batchSize`` (records in the batch in this connector),
         ``deletedByName`` and ``deletedByEmail`` for the user in
-        ``deletedByUserId`` (None when unknown). A failed read raises.
+        ``deletedByUserId`` (None when unknown), and ``batchId`` and
+        ``batchDeletedAt``, the batch's sort key, for ``after``. A failed read
+        raises.
         """
         raise NotImplementedError
 
@@ -7995,14 +8003,8 @@ class IGraphDBProvider(ABC):
         if access is None:
             return
 
-        async def lists_a_chain_top(row: dict[str, Any]) -> bool:
-            probe = access.get("probe")
-            by_groups = await self._kh_v3_chain_top_groups_by_probe(
-                app_id, org_id, row["id"], probe["grantees"], transaction) if probe else None
-            return bool((await self._kh_v3_chain_tops(
-                app_id, org_id, access, transaction, only_group=row["id"], by_groups=by_groups)).get(row["id"]))
-
-        for row, lists in zip(asked, await asyncio.gather(*(lists_a_chain_top(r) for r in asked)), strict=True):
+        for row, lists in zip(asked, await asyncio.gather(
+                *(self._kh_v3_lists_a_chain_top(app_id, org_id, r["id"], access, transaction) for r in asked)), strict=True):
             row["hasChildren"] = lists
         # A row with no child the rules select still has an arrow when the check admits one of its children (a second parent's walk, an App
         # member, below a seed): the browse of the row lists it (`_kh_v3_undecided`). A row the walk does not reach has an arrow only if the
@@ -8306,6 +8308,16 @@ class IGraphDBProvider(ABC):
         hidden = await self._kh_v3_chain_top_hidden(app_id, [c["id"] for c in tops], transaction)
         tops = [c for c in tops if c["id"] not in hidden]
         return place_chain_tops(tops, open_groups | open_parents, app_id)
+
+    async def _kh_v3_lists_a_chain_top(
+        self, app_id: str, org_id: str, group_id: str, access: dict[str, Any], transaction: str | None,
+    ) -> bool:
+        """Whether a browse of the group ``group_id`` places a chain-top under it (``_kh_v3_chain_tops`` with ``only_group``)."""
+        probe = access.get("probe")
+        by_groups = await self._kh_v3_chain_top_groups_by_probe(
+            app_id, org_id, group_id, probe["grantees"], transaction) if probe else None
+        return bool((await self._kh_v3_chain_tops(
+            app_id, org_id, access, transaction, only_group=group_id, by_groups=by_groups)).get(group_id))
 
     async def _kh_v3_chain_top_groups(
         self,

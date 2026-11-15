@@ -14,17 +14,15 @@ from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.models import (
     HeadlineField,
     Priority,
-    RecordView,
     StageFingerprint,
     StageJob,
     StageOutcome,
     StageResult,
     StageState,
-    Workload,
 )
-from app.modules.pipeline.policy import DEFAULT_POLICY, PipelinePolicy
+from app.modules.pipeline.policy import DEFAULT_POLICY
 from app.modules.pipeline.registry import StageRegistry
-from app.modules.pipeline.stage import Deadline, StageIO
+from app.modules.pipeline.stage import StageIO
 from app.modules.pipeline.worker import (
     StageFailed,
     StageHeldForDelete,
@@ -36,56 +34,16 @@ from app.services.messaging.config import IndexingEvent, StreamMessage
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.services.resource_governor.models import ParseTier
 from tests.unit.modules.pipeline.fakes import (
+    ClassifyStage,
     Clock,
     InMemoryStageStateStore,
     RecordingHeadlines,
     RecordingProducer,
+    StubIO,
 )
 
 
-class _IO:
-    def __init__(self, job: StageJob, deadline: Deadline) -> None:
-        self._deadline = deadline
-
-    @property
-    def policy(self) -> PipelinePolicy:
-        return DEFAULT_POLICY
-
-    @property
-    def deadline(self) -> Deadline:
-        return self._deadline
-
-
-class _Classify:
-    name: ClassVar[str] = "classify"
-    version: ClassVar[int] = 1
-    requires: ClassVar[frozenset[str]] = frozenset({"embed"})
-    workload: ClassVar[Workload] = Workload.LLM
-    headline: ClassVar[HeadlineField | None] = HeadlineField.EXTRACTION
-    budget_s: ClassVar[float] = 5.0
-
-    def __init__(self) -> None:
-        self.config = "model-a"
-        self.result: StageResult | BaseException = StageResult(outcome=StageOutcome.COMPLETED)
-        self.delay = 0.0
-        self.runs = 0
-
-    def applies(self, view: RecordView, policy: PipelinePolicy) -> bool:
-        return True
-
-    async def fingerprint(self, job: StageJob, io: StageIO) -> StageFingerprint:
-        return StageFingerprint(stage=self.name, stage_version=self.version, input_digest=job.text_digest, config_digest=self.config)
-
-    async def run(self, job: StageJob, io: StageIO) -> StageResult:
-        self.runs += 1
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        if isinstance(self.result, BaseException):
-            raise self.result
-        return self.result
-
-
-class _SummaryEmbed(_Classify):
+class _SummaryEmbed(ClassifyStage):
     name: ClassVar[str] = "summary-embed"
     requires: ClassVar[frozenset[str]] = frozenset({"classify"})
     headline: ClassVar[HeadlineField | None] = None
@@ -108,7 +66,7 @@ class _Harness:
         self.states = InMemoryStageStateStore(self.clock)
         self.headlines = RecordingHeadlines()
         self.producer = RecordingProducer()
-        self.stage = _Classify()
+        self.stage = ClassifyStage()
         self.registry = StageRegistry()
         self.registry.register_external("embed")
         self.registry.register(self.stage)
@@ -118,7 +76,7 @@ class _Harness:
             policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("t"), clock_ms=self.clock,
         )
         self.handler = StageJobHandler(
-            self.registry, self.states, self.headlines, self.coordinator, _IO,
+            self.registry, self.states, self.headlines, self.coordinator, StubIO,
             logger=logging.getLogger("t"), worker_id="w1", clock_ms=self.clock,
         )
 
@@ -200,7 +158,7 @@ async def test_a_missing_state_is_recreated_from_the_job() -> None:
     assert h.state(job).status is ProgressStatus.COMPLETED
 
 
-class _RecordsIO(_IO):
+class _RecordsIO(StubIO):
     """An IO that knows which of the job's records are still on its revision."""
 
     current: ClassVar[list[str]] = []
@@ -227,7 +185,7 @@ async def test_a_missing_state_is_recreated_only_while_a_record_is_left(
         assert h.handler.outcomes("classify")["stale"] == 1
 
 
-class _UnreadableIO(_IO):
+class _UnreadableIO(StubIO):
     async def current_record_ids(self, job: StageJob) -> list[str]:
         raise ConnectionError("graph 503")
 
@@ -511,7 +469,7 @@ async def test_a_final_headline_runs_the_settled_hook_and_a_failing_hook_retries
             raise RuntimeError("copies not released")
 
     h.handler = StageJobHandler(
-        h.registry, h.states, h.headlines, h.coordinator, _IO,
+        h.registry, h.states, h.headlines, h.coordinator, StubIO,
         logger=logging.getLogger("t"), worker_id="w1", clock_ms=h.clock, on_headline_settled=on_settled,
     )
     h.seed(job)
@@ -532,7 +490,7 @@ async def test_no_hook_when_no_record_is_still_on_the_revision() -> None:
         settled.append(record_ids)
 
     h.handler = StageJobHandler(
-        h.registry, h.states, h.headlines, h.coordinator, _IO,
+        h.registry, h.states, h.headlines, h.coordinator, StubIO,
         logger=logging.getLogger("t"), worker_id="w1", clock_ms=h.clock, on_headline_settled=on_settled,
     )
     h.headlines.moved_on = True
@@ -613,7 +571,7 @@ async def test_an_unchanged_completion_loses_to_a_redrive_that_finished_meanwhil
     assert h.producer.sent == []
 
 
-class _DeletingIO(_IO):
+class _DeletingIO(StubIO):
     """A stage IO whose job's connector is (or is not) being deleted."""
 
     deleting: ClassVar[set[str]] = set()
@@ -622,7 +580,7 @@ class _DeletingIO(_IO):
         return job.connector_id in self.deleting
 
 
-def _harness_with(io: type[_IO]) -> _Harness:
+def _harness_with(io: type[StubIO]) -> _Harness:
     h = _Harness()
     h.handler = StageJobHandler(
         h.registry, h.states, h.headlines, h.coordinator, io,
@@ -693,3 +651,16 @@ async def test_a_job_of_another_connector_runs_as_before() -> None:
     h.seed(job)
     await h.deliver(job)
     assert h.stage.runs == 1 and h.state(job).status is ProgressStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_a_job_with_a_tier_and_priority_a_newer_release_added_still_runs() -> None:
+    h, job = _Harness(), _job()
+    h.seed(job)
+    payload = {**job.model_dump(mode="json", by_alias=True), "tier": "nano", "priority": "urgent"}
+
+    events = [event.event async for event in h.handler(StreamMessage(eventType="stageJob", payload=payload))]
+
+    assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+    assert h.stage.runs == 1
+    assert h.state(job).status is ProgressStatus.COMPLETED

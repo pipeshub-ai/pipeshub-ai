@@ -6826,20 +6826,30 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         (an exclusive one another transaction holds): read in the writing statement, the clock could be older than the write. The second statement is
         compiled after the first holds the document's lock, which it keeps until the commit."""
         txn = await self.http_client.begin_transaction([], [collection])
+        committed = False
         try:
-            applied = bool(await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=txn))
-            if applied:
-                [late] = await self.http_client.execute_aql("RETURN DATE_NOW() > @bound * 1000", bind_vars={"bound": clock_at_most}, txn_id=txn)
-                applied = not late
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await self.http_client.abort_transaction(txn)
-            raise
-        if applied:
+            if not await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=txn):
+                return False
+            [late] = await self.http_client.execute_aql("RETURN DATE_NOW() > @bound * 1000", bind_vars={"bound": clock_at_most}, txn_id=txn)
+            if late:
+                return False
             await self.http_client.commit_transaction(txn)
-        else:
+            committed = True
+            return True
+        finally:
+            if not committed:
+                # Whatever ended the attempt (refused, an error, a commit that failed, a cancel), the transaction is aborted here: "There is no automatic
+                # abort!", it stays open until it has been idle for --transaction.streaming-idle-timeout (60 s by default, 120 s at most), holding the
+                # document's lock (https://docs.arango.ai/arangodb/3.12/develop/transactions/stream-transactions/). "Aborting is an idempotent
+                # operation", and an abort of one already committed is refused with 400
+                # (https://docs.arango.ai/arangodb/3.12/develop/http-api/transactions/stream-transactions/), so it is always tried, shielded from a cancel.
+                await asyncio.shield(self._abort_quietly(txn))
+
+    async def _abort_quietly(self, txn: str) -> None:
+        try:
             await self.http_client.abort_transaction(txn)
-        return applied
+        except Exception:
+            self.logger.warning("could not abort stream transaction %s; ArangoDB drops it after its idle timeout", txn, exc_info=True)
 
     @staticmethod
     def _condition_filters(conditions: Sequence[Cond]) -> tuple[list[str], dict[str, Any]]:
@@ -17555,11 +17565,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         skip: int = 0,
         limit: int = 25,
         single_file_batches_only: bool = False,
+        after: tuple[int, str] | None = None,
+        count_cap: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """See ``IGraphDBProvider.list_trashed_records``."""
         if not connector_id or not org_id or limit <= 0:
             return {"items": [], "total": 0}
+        after_ts, after_batch = after or (None, None)
         bind_vars = {
             "connector_id": connector_id,
             "org_id": org_id,
@@ -17578,6 +17591,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 COLLECT batch = r.deleteBatchId
                     AGGREGATE deleted_at = MAX(r.deletedAtTimestamp), first_key = MIN(r._key),
                         root_count = COUNT(1)
+                FILTER @after_ts == null OR deleted_at < @after_ts OR (deleted_at == @after_ts AND batch < @after_batch)
                 SORT deleted_at DESC, batch DESC
                 LIMIT @skip, @limit
                 LET r = DOCUMENT(@@records, first_key)
@@ -17633,7 +17647,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     ),
                     deletedByName: u == null ? null
                         : (u.fullName ? u.fullName : TRIM(CONCAT_SEPARATOR(" ", u.firstName, u.lastName))),
-                    deletedByEmail: u.email
+                    deletedByEmail: u.email,
+                    batchId: batch,
+                    batchDeletedAt: deleted_at
                 }}
             """,
             bind_vars={
@@ -17642,12 +17658,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "limit": limit,
                 "names": TRASH_LIST_OTHER_ROOT_NAMES,
                 "@users": CollectionNames.USERS.value,
+                "after_ts": after_ts,
+                "after_batch": after_batch,
             },
             transaction=transaction,
         ) or []
+        capped = "" if count_cap is None else " LIMIT @count_limit"
         counted = await self.execute_query(
-            f"{_TRASH_BATCH_ROOTS} COLLECT batch = r.deleteBatchId COLLECT WITH COUNT INTO total RETURN total",
-            bind_vars=bind_vars,
+            f"{_TRASH_BATCH_ROOTS} COLLECT batch = r.deleteBatchId{capped} COLLECT WITH COUNT INTO total RETURN total",
+            bind_vars=bind_vars if count_cap is None else {**bind_vars, "count_limit": count_cap + 1},
             transaction=transaction,
         )
         for item in rows:

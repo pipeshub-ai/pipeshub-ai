@@ -333,7 +333,7 @@ INVALID: list[tuple[str, str, tuple, dict]] = [
     ("replace unknown key", "update_node_if_match", ("r1", "records", rec(bogusKey=1), "version", 1), {}),
     # targeted
     ("cas_indexing_status bad", "compare_and_set_indexing_status", (["r1"], "NOT_STARTED", "NOT_A_STATUS"), {}),
-    ("stage_state cas bad status", "stage_state_compare_and_set", ("s1", "NOT_STARTED", "NOT_A_STATUS", {}), {}),
+    ("stage_state cas bad status", "stage_state_compare_and_set", ("s1", "NOT_STARTED", 7, {}), {}),
     ("stage_state cas bad field", "stage_state_compare_and_set", ("s1", "NOT_STARTED", "IN_PROGRESS", {"attempt": "many"}), {}),
     ("reset_indexing_status bad status", "reset_indexing_status_for_connector", ("c1", "NOT_A_STATUS"), {}),
     ("update_user_sync_state bad field", "update_user_sync_state", ("a@x.io", 12345, "Drive"), {}),
