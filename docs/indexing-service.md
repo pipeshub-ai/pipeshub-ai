@@ -325,7 +325,7 @@ Only a record that was being embedded, or whose last attempt failed, carries the
 
 ### 2.6 Record processing diagnostics
 
-A stored record may carry four optional facts about how its processing went. They are for diagnosis only: they are in `INTERNAL_RECORD_FIELDS`, so the record endpoint never returns them and `pipeshub-openapi.yaml` does not describe them. They are declared in the records schema (ArangoDB; Neo4j and PostgreSQL read the same registry) before anything writes them, so a process on the previous schema never meets a key it rejects. Absent and JSON null both mean "unknown". The schema refuses anything else that is not a number of the stated kind (a string, a fraction where an integer is stated, a negative attempt count, a page count below 1) on every store, so a reader meets only those two forms.
+A stored record may carry four optional facts about how its processing went. They are for diagnosis only: they are in `INTERNAL_RECORD_FIELDS`, so the record endpoint never returns them and `pipeshub-openapi.yaml` does not describe them. They are declared in the records schema (ArangoDB; Neo4j and PostgreSQL read the same registry) before anything writes them, so a process on the previous schema never meets a key it rejects. Each field is either a number of the stated kind or unknown; absent and JSON null both mean "unknown". The schema refuses any other value on every store (a string, a fraction where an integer is stated, a negative attempt count, a page count below 1), so a reader meets only a valid number, absent, or null.
 
 | Field | Type | Meaning |
 |---|---|---|
