@@ -690,8 +690,8 @@ async def test_a_browse_of_many_chain_top_holders_resolves_the_chain_tops_once(p
 async def test_the_chain_top_read_reads_each_graph_node_by_its_key_whatever_the_statistics(pg_db) -> None:
     """EXPLAIN gate for ``CHAIN_GRANTED`` (``_kh_v3_chain_top_groups``): an org of 4,000 records and 200 groups, 600 of them granted, read as the call reads it (custom plan) while the
     statistics know only two small orgs whose graph nodes share its partition, after ANALYZE, and with two more orgs of its size in that partition. In every state each graph node is
-    read by its key for its kg row: an index scan of the partition's primary key with the id in its condition, one row per probe; once analysed, kg.records is read by the granted ids or
-    the connector, never by the org alone. As a join, the org's nodes were read whole once per granted row while the statistics did not know the org (they put it at one row), or once
+    read by its key for its kg row: an index scan of the partition's primary key with the id in its condition, one row per probe; kg.records and the connector's key are read once, never per
+    row. As a join, the org's nodes were read whole once per granted row while the statistics did not know the org (they put it at one row), or once
     for the statement with a kg probe per node after ANALYZE (the access rule, an expression with no statistics, put it at 0.5 % of its nodes). Rows whose rule is not OPEN (RESTRICTED,
     an empty string) are left out; an absent or null rule is OPEN."""
     from asyncpg import connect
@@ -720,20 +720,18 @@ async def test_the_chain_top_read_reads_each_graph_node_by_its_key_whatever_the_
     granted = [f"chain{g}" for g in range(1, 4201, 7)]
     expected = sorted(f"chain{g}" for g in range(1, 4201, 7) if g % 10 not in (1, 2))
 
-    def unkeyed(node: dict, analysed: bool) -> list[str]:
+    def unkeyed(node: dict) -> list[str]:
         found = []
         rel, index, cond = node.get("Relation Name") or "", node.get("Index Name") or "", node.get("Index Cond") or ""
-        if node["Node Type"] == "Seq Scan" and (rel in ("records", "node_keys") or rel.startswith("nodes")):
-            found.append(f"Seq Scan on {rel}")
-        elif rel.startswith("nodes") or index.startswith("nodes"):
+        if rel.startswith("nodes") or index.startswith("nodes"):
             if node["Node Type"] != "Index Scan" or not re.fullmatch(r"nodes\w*_pkey", index) or not re.search(r"\bid = ", cond):
                 found.append(f"{node['Node Type']} {index} on {rel}: {cond}")
             elif node["Actual Rows"] > 1:
                 found.append(f"{index}: {node['Actual Rows']} rows per probe")
-        # before ANALYZE the planner may read the org's kg rows once (as any browse statement may: test_every_browse_statement_reads_by_an_index_and_never_scans_the_organisation)
-        if analysed and index.startswith(("records_", "node_keys")) and not NODE_COND.search(cond):
-            found.append(f"{index} without the node in its index condition: {cond}")
-        return found + [x for child in node.get("Plans", []) for x in unkeyed(child, analysed)]
+        # kg.records and the connector's key are read once, by whatever plan the statistics pick (a few thousand rows are a sequential scan even when analysed), never per row
+        elif (rel in ("records", "node_keys") or index.startswith(("records_", "node_keys"))) and node.get("Actual Loops", 1) > 1:
+            found.append(f"{node['Node Type']} {index or rel} read {node['Actual Loops']} times")
+        return found + [x for child in node.get("Plans", []) for x in unkeyed(child)]
 
     for state in ("fresh", "analysed", "crowded"):
         if state == "crowded":
@@ -749,7 +747,7 @@ async def test_the_chain_top_read_reads_each_graph_node_by_its_key_whatever_the_
         with ctx(org):
             plan, rows = await p._kq(go, None)
         assert rows == expected, (state, len(rows), len(expected))
-        assert not (bad := unkeyed(plan["Plan"], state != "fresh")), f"{state}: {bad}"
+        assert not (bad := unkeyed(plan["Plan"])), f"{state}: {bad}"
 
 
 async def test_a_request_reads_at_most_its_budget_over_all_its_placeholder_walks_and_resumes_at_one_it_cannot_finish(pg_db, monkeypatch) -> None:

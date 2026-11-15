@@ -1138,7 +1138,7 @@ def test_the_hop_order_indexes_are_partial_byte_ordered_and_on_every_leaf(rdb):
             assert leaves == parts and leaves > 0, (idx, leaves, parts)
 
 
-# ---- the records and files that link a storage document (graph_0012) -----------------------------------------------------------------------
+# ---- the records and files that link a storage document (graph_0013) -----------------------------------------------------------------------
 REF = "SELECT doc_id, kind, node_id, origin FROM graph.ref_links(%s::text[], 'UPLOAD', 'KB', %s) ORDER BY 1, 2, 3"
 
 

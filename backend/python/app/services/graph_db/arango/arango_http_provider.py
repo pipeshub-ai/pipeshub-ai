@@ -252,6 +252,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
+    UNSUPPORTED_PAGE_FIELDS,
     AccessibleContainers,
     CodeFileInfo,
     FolderChangedDuringDelete,
@@ -3266,6 +3267,61 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 expected, new_status, str(e),
             )
             raise
+
+    async def list_unsupported_page(
+        self,
+        org_id: str,
+        connector_id: str,
+        after_key: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        # A range seek of the (orgId, connectorId, indexingStatus, _key) index; the sort is the index's.
+        rows = await self.http_client.execute_aql(
+            """
+            FOR r IN @@records
+                FILTER r.orgId == @org_id AND r.connectorId == @connector_id
+                    AND r.indexingStatus == @status AND r._key > @after AND r.isDeleted != true
+                SORT r._key
+                LIMIT @limit
+                RETURN KEEP(r, @fields)
+            """,
+            {
+                "@records": CollectionNames.RECORDS.value,
+                "org_id": org_id,
+                "connector_id": connector_id,
+                "status": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                "after": after_key or "",
+                "limit": max(1, int(limit)),
+                "fields": ["_key", *UNSUPPORTED_PAGE_FIELDS],
+            },
+        )
+        return list(rows or [])
+
+    async def transition_unsupported(self, record_ids: list[str], to_status: str) -> list[str]:
+        keys = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not keys:
+            return []
+        bind_vars: dict[str, Any] = {
+            "@records": CollectionNames.RECORDS.value,
+            "keys": keys,
+            "expected": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+            "to": to_status,
+        }
+        fields = "{ indexingStatus: @to, reason: null }"
+        if to_status == ProgressStatus.QUEUED.value:
+            fields = "{ indexingStatus: @to, reason: null, queuedAtTimestamp: @now }"
+            bind_vars["now"] = get_epoch_timestamp_in_ms()
+        # One statement: the status is read where it is written, so a record the indexer moved on is not taken back.
+        updated = await self.http_client.execute_aql(
+            f"""
+            FOR doc IN @@records
+                FILTER doc._key IN @keys AND doc.indexingStatus == @expected AND doc.isDeleted != true
+                UPDATE doc WITH {fields} IN @@records
+                RETURN NEW._key
+            """,
+            bind_vars,
+        )
+        return [k for k in (updated or []) if isinstance(k, str)]
 
     # ==================== Pipeline stage states ====================
 
@@ -26959,6 +27015,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_ids: list[str],
         org_id: str,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their _key (record IDs).
@@ -26999,6 +27057,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"Failed to fetch records by record IDs: {e}\n{traceback.format_exc()}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_virtual_record_holders(
@@ -28256,7 +28316,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
     async def check_agent_permission(
-        self, agent_id: str, user_id: str, org_id: str
+        self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None
     ) -> dict | None:
         try:
             query = f"""
@@ -28307,7 +28367,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
 
             bind_vars = {"agent_id": agent_id, "user_id": user_id, "org_id": org_id}
-            result = await self.execute_query(query, bind_vars=bind_vars)
+            result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
 
             if not result or result[0] is None:
                 return None
@@ -28749,7 +28809,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Tools, connectors, kb, vectorDBs are handled via edges, not in agent document.
         """
         try:
-            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -28844,7 +28904,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.logger.warning(f"Agent {agent_id} not found")
                 return False
 
-            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -29529,7 +29589,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, role: str, transaction: str | None = None) -> dict | None:
         """Update permission role for users and teams on an agent (only OWNER can do this)"""
         try:
-            perm = await self.check_agent_permission(agent_id, owner_user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, owner_user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
                 return {"success": False, "reason": "Agent not found or no permission"}
@@ -29614,7 +29674,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN perm._to
             )
 
-            // Get templates with individual access
+            // Get templates with individual access. Edit and delete need the user's own OWNER grant
+            // (update_agent_template, delete_agent_template), so can_edit/can_delete say so; a team's grant gives neither.
             LET individual_templates = (
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
@@ -29631,7 +29692,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         permission_to: perm._to,
                         permission_created_at: perm.createdAtTimestamp,
                         permission_updated_at: perm.updatedAtTimestamp,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_edit: perm.role == "OWNER",
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
@@ -29658,8 +29719,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         permission_to: perm._to,
                         permission_created_at: perm.createdAtTimestamp,
                         permission_updated_at: perm.updatedAtTimestamp,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
+                        can_edit: false,
+                        can_delete: false,
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
                     }})
@@ -29715,7 +29776,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         permission_to: perm._to,
                         permission_created_at: perm.createdAtTimestamp,
                         permission_updated_at: perm.updatedAtTimestamp,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_edit: perm.role == "OWNER",
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
@@ -29739,8 +29800,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         permission_to: perm._to,
                         permission_created_at: perm.createdAtTimestamp,
                         permission_updated_at: perm.updatedAtTimestamp,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
+                        can_edit: false,
+                        can_delete: false,
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
                     }})

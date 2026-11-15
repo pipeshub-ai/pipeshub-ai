@@ -3,8 +3,8 @@ from alembic import op
 from db.lib.ddl import ensure_partitioned_index
 from db.lib.vetted import run_vetted
 
-revision = "graph_0012"
-down_revision = "graph_0011"
+revision = "graph_0013"
+down_revision = "graph_0012"
 branch_labels = None
 depends_on = None
 older_code_compatible = "adds indexes and functions only; older code does not call them and reads the same rows"
