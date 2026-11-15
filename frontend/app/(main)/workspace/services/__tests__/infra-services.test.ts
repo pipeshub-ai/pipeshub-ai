@@ -52,6 +52,13 @@ describe('buildInfraServices', () => {
     expect(rows({ ...pg, redisMode: 'standalone' }, null)[0]).toEqual(['redis', 'redis']);
   });
 
+  it('labels the PostgreSQL cache as PostgreSQL, which names its logo for screen readers', () => {
+    const label = (redisMode: string) =>
+      buildInfraServices({ kvStoreType: 'postgres', messageBrokerType: 'postgres', graphDbType: 'postgres', redisMode }, null, t)[0].label;
+    expect(label('postgres')).toBe('workspace.services.infra.postgres.label');
+    expect(label('standalone')).toBe('workspace.services.infra.redis.label');
+  });
+
   it('keeps the MongoDB row when the health answer is not in yet', () => {
     expect(
       rows({ kvStoreType: 'redis', messageBrokerType: 'redis', graphDbType: 'arangodb' }, null).map(([key]) => key),

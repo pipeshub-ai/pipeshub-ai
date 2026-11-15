@@ -19,6 +19,7 @@ export interface Deployment {
 }
 
 function redisLabel(mode: string | undefined, t: TFunction): string {
+  if (mode === 'postgres') return t('workspace.services.infra.postgres.label');
   const baseLabel = t('workspace.services.infra.redis.label');
   if (mode === 'cluster') {
     return `${baseLabel} (${t('workspace.services.infra.redis.modeCluster')})`;
