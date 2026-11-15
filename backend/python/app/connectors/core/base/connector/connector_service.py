@@ -829,7 +829,7 @@ class BaseConnector(ABC):
         A notice that failed to publish does not hold back the next attempt.
         ``suppress_repeats=False`` sends it even when the same notice went out recently.
         """
-        key = self._notification_key(title, message)
+        key = self._notification_key(title, message, recipient_user_ids, recipient_roles)
         reservation_before = self._notification_cache.get(key)
         prepared = self._prepare_notification(
             type, severity, title, message, payload, recipient_user_ids, recipient_roles,
@@ -877,8 +877,11 @@ class BaseConnector(ABC):
             )
             return NotificationOutcome.SKIPPED
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
+        recipient_user_ids, recipient_roles = self._notification_recipients(recipient_user_ids, recipient_roles)
 
-        if suppress_repeats and self._suppress_notification(title, message, severity):
+        if suppress_repeats and self._suppress_notification(
+            title, message, severity, recipient_user_ids, recipient_roles
+        ):
             return NotificationOutcome.SUPPRESSED
 
         connector_type = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name
@@ -886,12 +889,6 @@ class BaseConnector(ABC):
             redirect_link = payload["redirect_link"]
         else:
             redirect_link = DEFAULT_CONNECTOR_NOTIFICATION_LINK + f"{self.scope}/?connectorType={connector_type}"
-
-        if not recipient_user_ids and not recipient_roles:
-            ids = [self.created_by]
-            if self.last_synced_by and self.last_synced_by != self.created_by:
-                ids.append(self.last_synced_by)
-            recipient_user_ids = ids
 
         return svc, {
             "org_id": str(org_id),
@@ -906,15 +903,46 @@ class BaseConnector(ABC):
             "recipient_roles": recipient_roles,
         }
 
-    def _notification_key(self, title: str, message: str) -> str:
-        return f"{self.connector_id}:{title}:{message}"
+    def _notification_recipients(
+        self,
+        recipient_user_ids: list[str] | None,
+        recipient_roles: list[NotificationRecipientRole] | None,
+    ) -> tuple[list[str] | None, list[NotificationRecipientRole] | None]:
+        """Who a notice goes to: as given, or else the connector's creator and whoever last synced it."""
+        if recipient_user_ids or recipient_roles:
+            return recipient_user_ids, recipient_roles
+        ids = [self.created_by]
+        if self.last_synced_by and self.last_synced_by != self.created_by:
+            ids.append(self.last_synced_by)
+        return ids, recipient_roles
 
-    def _suppress_notification(self, title: str, message: str, severity: NotificationSeverity) -> bool:
+    def _notification_key(
+        self,
+        title: str,
+        message: str,
+        recipient_user_ids: list[str] | None = None,
+        recipient_roles: list[NotificationRecipientRole] | None = None,
+    ) -> str:
+        """A repeat is the same notice to the same people: one person's notice never holds back another's."""
+        user_ids, roles = self._notification_recipients(recipient_user_ids, recipient_roles)
+        org_id = getattr(self.data_entities_processor, "org_id", None) or ""
+        who = ",".join(sorted({str(u) for u in user_ids or ()}))
+        roles_key = ",".join(sorted({str(getattr(r, "value", r)) for r in roles or ()}))
+        return f"{org_id}:{self.connector_id}:{who}:{roles_key}:{title}:{message}"
+
+    def _suppress_notification(
+        self,
+        title: str,
+        message: str,
+        severity: NotificationSeverity,
+        recipient_user_ids: list[str] | None = None,
+        recipient_roles: list[NotificationRecipientRole] | None = None,
+    ) -> bool:
 
         if severity in [NotificationSeverity.INFO, NotificationSeverity.SUCCESS]:
             return False
 
-        key = self._notification_key(title, message)
+        key = self._notification_key(title, message, recipient_user_ids, recipient_roles)
         now = get_epoch_timestamp_in_ms()
 
         if key in self._notification_cache:
