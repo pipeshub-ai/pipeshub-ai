@@ -1927,6 +1927,21 @@ class TestRolesKeptForLevels:
         assert (await _roles_at(points, 27 * HOUR_MS, roles=None))._level_roles == read._level_roles
 
     @pytest.mark.asyncio
+    async def test_past_the_bound_an_unread_role_list_drops_the_roles_groups_as_a_refused_one_does(self) -> None:
+        """Unread (not refused): the project naming the role is marked partial for its Browse grants, but the level
+        group follows the role list the levels apply, so it is rewritten with what resolves, not kept."""
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        c = await _roles_at(points, 25 * HOUR_MS, roles=None)
+        c._app_roles_forbidden, c._app_roles_unread = False, True
+        c._projects_naming_unread_roles = {"PROJ"}
+        c.data_entities_processor.note_kept_record_group = AsyncMock()
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id="lvl"))
+        stored = _present(members={"10102": self.LEVEL}).level_fingerprints(self.ROLES, split=True)
+        written, passes = await self._group_written(c, stored, self.LEVEL[:2])
+        assert written == ["g-2"] and passes == [None, ["10102"]]
+
+    @pytest.mark.asyncio
     async def test_a_sub_task_keeps_its_roles_groups_while_the_roles_are_refused(self) -> None:
         points = _KeptSyncPoints()
         await _roles_at(points, 0, roles=self.ROLES)

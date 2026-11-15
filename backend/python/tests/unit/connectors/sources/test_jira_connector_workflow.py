@@ -92,6 +92,9 @@ def _make_mock_deps():
 def _make_connector():
     logger, dep, dsp, cs, tx = _make_mock_deps()
     connector = JiraConnector(logger, dep, dsp, cs, "conn-jira-1", "team", "test-user-id")
+    # The role list kept for security levels (roles_for_levels): nothing kept yet.
+    connector.issues_sync_point.read_sync_point = AsyncMock(return_value={})
+    connector.issues_sync_point.update_sync_point = AsyncMock()
     return connector, dep, dsp, cs, tx
 
 

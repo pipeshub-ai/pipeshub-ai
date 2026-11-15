@@ -92,6 +92,7 @@ from app.connectors.sources.atlassian.core.html_utils import (
     inline_images_as_markdown,
 )
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    HOLDER_USER,
     ROLE_LIST_MAX_AGE_MS,
     UNREADABLE_REASONS,
     IssueSecurityContext,
@@ -4572,7 +4573,9 @@ class JiraConnector(BaseConnector):
                 self.logger.warning(
                     f"Security level {level_id} of {project_key}: holders of type {skipped} were not granted")
                 external_id = level_group_external_id(project_id, level_id)
-                if self._project_access_may_be_partial(project_key) and await \
+                # Only an unfinished user read leaves a user holder unknown; a role holder resolves (or not) from the role
+                # list the levels apply (``roles_for_levels``), so past its bound the group drops the roles' groups.
+                if self._user_read_unfinished and HOLDER_USER in skipped and await \
                         self.data_entities_processor.get_record_group_by_external_id(self.connector_id, external_id) is not None:
                     # A holder unread is not out of the level: the stored group keeps its grants, seen by a full sync.
                     await self.data_entities_processor.note_kept_record_group(self.connector_id, external_id)

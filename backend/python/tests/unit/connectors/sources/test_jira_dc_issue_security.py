@@ -314,3 +314,13 @@ class TestRolesKeptForLevels:
         await _roles_at(points, 0, roles=self.ROLES)
         assert (await _roles_at(points, 23 * HOUR_MS, roles=None))._level_roles == self.ROLES
         assert (await _roles_at(points, 25 * HOUR_MS, roles=None))._level_roles == {}
+
+    @pytest.mark.asyncio
+    async def test_past_the_bound_an_unread_role_list_drops_the_roles_groups(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        connector = await _roles_at(points, 25 * HOUR_MS, roles=None)
+        connector._app_roles_forbidden, connector._app_roles_unread = False, True
+        await connector._read_level_roles()
+        plan, grants = self._copy(connector, self.LEVEL[:2], self._stored())
+        assert (plan, grants) == (("levels", ["1"]), ["g-2"])
