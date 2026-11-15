@@ -270,16 +270,17 @@ class TestFifoLoop:
         assert [p["recordId"] for p in producer.sent] == ["n1"] and producer.sent[0][HANDBACKS_KEY] == 1
         assert handler.seen == ["d1"]  # the delete passes; nothing of n1 was downloaded or parsed
 
-    async def test_a_failed_publish_leaves_the_fresh_entry_pending_and_the_handler_never_runs(self, harness) -> None:
+    async def test_a_failed_publish_takes_the_normal_path_instead_of_waiting_pending(self, harness) -> None:
+        # This loop reads only new entries: one left pending would wait for an idle drain or a restart.
         await harness.produce(_envelope("n1", ON))
         consumer, producer = _build(harness, _verdict(True), enabled=False)
         producer.send_event = AsyncMock(side_effect=RuntimeError("broker down"))
         handler = Handler()
         await consumer.start(handler)
-        await _until(lambda: producer.send_event.await_count >= 1)
+        await _until(lambda: handler.seen == ["n1"], timeout=10.0)
         await asyncio.sleep(0.2)
-        assert handler.seen == []
-        assert int((await harness.client.xpending(TOPIC, GROUP))["pending"]) == 1  # not acknowledged
+        assert handler.seen == ["n1"]  # run once; the write-time check guards the write
+        assert producer.send_event.await_count == 1  # not retried in a loop
 
     async def test_a_match_verdict_still_runs_the_handler(self, harness) -> None:
         await harness.produce(_envelope("n1", ON))
