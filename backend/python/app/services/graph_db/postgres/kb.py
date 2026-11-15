@@ -7,7 +7,7 @@ org is an error and never an answer such as "not found"); every statement is a l
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, Connectors
 from app.core.org_context import current_org_id
@@ -26,9 +26,13 @@ from app.services.graph_db.common.utils import (
     uploaded_document_id,
 )
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
+from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.records import _vis
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import folder_in_trash
+
+if TYPE_CHECKING:
+    from app.core.db import Tx
 
 _KB = Connectors.KNOWLEDGE_BASE.value
 _ROLES = list(TEAM_GRANT_ROLES)
@@ -272,29 +276,38 @@ class KbMixin(PgBase):
         return _arango(d, "records") if d else None
 
     async def get_folder_depth(self, folder_id: str, transaction: str | None = None) -> int:
-        """1 for a folder with no parent, else one more than the longest chain of parents above it."""
+        """1 for a folder with no parent, else one more than the longest chain of parents above it. Read from kg's PARENT_CHILD links for a connector it serves
+        (``kg.hierarchy.pc_depth``), else walked."""
         org = current_org_id()
-        depth = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.get_folder_depth */ WITH RECURSIVE up(id, depth, seen) AS (
-              SELECT n.id, 0, ARRAY[n.id] FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $2
-              UNION ALL
-              SELECT e.from_id, up.depth + 1, up.seen || e.from_id FROM up JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations'
-                AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.to_coll = 'records' AND e.to_id = up.id
-              WHERE NOT e.from_id = ANY(up.seen) AND up.depth < $3)
-            SELECT coalesce(max(depth), 0) + 1 FROM up""", org, folder_id, CONTAINMENT_MAX_DEPTH), transaction)
-        return int(depth)
+
+        async def walk(tx: Tx) -> int:
+            return int(await tx.fetchval("""/* pipeshub:graph.get_folder_depth */ WITH RECURSIVE up(id, depth, seen) AS (
+                  SELECT n.id, 0, ARRAY[n.id] FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $2
+                  UNION ALL
+                  SELECT e.from_id, up.depth + 1, up.seen || e.from_id FROM up JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations'
+                    AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.to_coll = 'records' AND e.to_id = up.id
+                  WHERE NOT e.from_id = ANY(up.seen) AND up.depth < $3)
+                SELECT coalesce(max(depth), 0) + 1 FROM up""", org, folder_id, CONTAINMENT_MAX_DEPTH))
+        got = await kg_hier.answer(self, "pc_depth", transaction, lambda tx: kg_hier.pc_depth(tx, org, folder_id, CONTAINMENT_MAX_DEPTH), walk=walk)
+        return got if got is not None else await self._q(walk, transaction)
 
     async def get_folder_subtree_height(self, folder_id: str, folder_mime_types: list[str], transaction: str | None = None) -> int:
-        """How many levels of folders lie below the folder (0 for none); the records between two folders count as levels."""
+        """How many levels of folders lie below the folder (0 for none); the records between two folders count as levels. Read from kg's PARENT_CHILD links for a
+        connector it serves (``kg.hierarchy.pc_height``), else walked."""
         org = current_org_id()
-        height = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.get_folder_subtree_height */ WITH RECURSIVE down(id, depth, seen) AS (
-              SELECT n.id, 0, ARRAY[n.id] FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $2
-              UNION ALL
-              SELECT e.to_id, down.depth + 1, down.seen || e.to_id FROM down JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations'
-                AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.from_id = down.id AND e.to_coll = 'records'
-              WHERE NOT e.to_id = ANY(down.seen) AND down.depth < $4)
-            SELECT coalesce(max(d.depth), 0) FROM down d JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'records' AND s.id = d.id
-            WHERE d.depth >= 1 AND s.doc->>'mimeType' = ANY($3::text[])""", org, folder_id, list(folder_mime_types), CONTAINMENT_MAX_DEPTH), transaction)
-        return int(height)
+
+        async def walk(tx: Tx) -> int:
+            return int(await tx.fetchval("""/* pipeshub:graph.get_folder_subtree_height */ WITH RECURSIVE down(id, depth, seen) AS (
+                  SELECT n.id, 0, ARRAY[n.id] FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $2
+                  UNION ALL
+                  SELECT e.to_id, down.depth + 1, down.seen || e.to_id FROM down JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations'
+                    AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.from_id = down.id AND e.to_coll = 'records'
+                  WHERE NOT e.to_id = ANY(down.seen) AND down.depth < $4)
+                SELECT coalesce(max(d.depth), 0) FROM down d JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'records' AND s.id = d.id
+                WHERE d.depth >= 1 AND s.doc->>'mimeType' = ANY($3::text[])""", org, folder_id, list(folder_mime_types), CONTAINMENT_MAX_DEPTH))
+        got = await kg_hier.answer(self, "pc_height", transaction,
+                                   lambda tx: kg_hier.pc_height(tx, org, folder_id, list(folder_mime_types), CONTAINMENT_MAX_DEPTH), walk=walk)
+        return got if got is not None else await self._q(walk, transaction)
 
     async def is_record_folder(self, record_id: str, transaction: str | None = None) -> bool:
         """The record's type document says it is not a file. A failed read answers False."""

@@ -6,6 +6,7 @@ import pytest
 from app.services.graph_db.postgres.kg.model import (
     LINK_GROUP,
     LINK_HIERARCHY,
+    LINK_PARENT_CHILD,
     PRINCIPALS,
     UAR,
     GEdge,
@@ -66,7 +67,21 @@ def test_a_second_parent_and_a_second_group_are_links() -> None:
     primary_parent = min(snap.sk[REC], snap.sk[("records", "p2")])
     primary_group = min(snap.sk[G], snap.sk[("recordGroups", "g2")])
     assert (row["parent_sk"], row["group_sk"]) == (primary_parent, primary_group)
-    assert d.links == {(max(snap.sk[REC], snap.sk[("records", "p2")]), LINK_HIERARCHY, snap.sk[CHILD]), (max(snap.sk[G], snap.sk[("recordGroups", "g2")]), LINK_GROUP, snap.sk[CHILD])}
+    assert d.links == {(max(snap.sk[REC], snap.sk[("records", "p2")]), LINK_HIERARCHY, snap.sk[CHILD]), (max(snap.sk[G], snap.sk[("recordGroups", "g2")]), LINK_GROUP, snap.sk[CHILD]),
+                       (snap.sk[REC], LINK_PARENT_CHILD, snap.sk[CHILD])}      # the PARENT_CHILD parent, primary or not; the attachment's parent and the bookmark are not
+
+
+def test_every_parent_child_parent_is_a_kind_3_link_and_an_attachment_parent_is_not() -> None:
+    """The move guards follow PARENT_CHILD relations only: each such parent of a record is a kind-3 link (the primary parent too); an ATTACHMENT parent, a parent that
+    is not there and a relation of another kind give none."""
+    p2, p3, gone = ("records", "p2"), ("records", "p3"), ("records", "gone")
+    nodes = {APP: {}, REC: {"connectorId": "a"}, p2: {"connectorId": "a"}, p3: {"connectorId": "a"}, CHILD: {"connectorId": "a"}}
+    edges = [edge("nodeRelations", *REC, *CHILD, relationshipType="PARENT_CHILD"), edge("nodeRelations", *p2, *CHILD, relationshipType="PARENT_CHILD"),
+             edge("nodeRelations", *p3, *CHILD, relationshipType="ATTACHMENT"), edge("nodeRelations", *gone, *CHILD, relationshipType="PARENT_CHILD"),
+             edge("nodeRelations", *p3, *REC, relationshipType="LINKED")]
+    snap = world(nodes, edges)
+    d = derive({CHILD, REC}, snap)
+    assert {lk for lk in d.links if lk[1] == LINK_PARENT_CHILD} == {(snap.sk[REC], LINK_PARENT_CHILD, snap.sk[CHILD]), (snap.sk[p2], LINK_PARENT_CHILD, snap.sk[CHILD])}
 
 
 def test_grants_are_read_from_both_ends_and_the_membership_is_a_closure_row() -> None:
@@ -182,7 +197,8 @@ def test_the_primary_parent_is_a_parent_child_one_in_the_same_connector_then_the
     snap = world(nodes, edges)
     d = derive({CHILD}, snap)
     assert d.records[snap.sk[CHILD]]["parent_sk"] == snap.sk[pc]
-    assert d.links == {(snap.sk[att], LINK_HIERARCHY, snap.sk[CHILD]), (snap.sk[foreign], LINK_HIERARCHY, snap.sk[CHILD])}
+    assert d.links == {(snap.sk[att], LINK_HIERARCHY, snap.sk[CHILD]), (snap.sk[foreign], LINK_HIERARCHY, snap.sk[CHILD]),
+                       (snap.sk[foreign], LINK_PARENT_CHILD, snap.sk[CHILD]), (snap.sk[pc], LINK_PARENT_CHILD, snap.sk[CHILD])}
 
 
 def test_the_primary_group_is_one_of_the_records_own_connector_first() -> None:
