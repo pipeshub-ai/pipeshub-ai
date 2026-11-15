@@ -856,8 +856,12 @@ KV_MATRIX = [
     *[("indexing", k, False, False) for k in ("/services/connectors/c1/config", "/services/connectors/c1/configx/metadataSchemas",
                                               "/services/oauth/jira", "/services/toolsets/i1/u1", "/services/mcp/credentials/i1/u1",
                                               "/services/api-toolsets/credentials/i1/u1", "/services/webSearch", "/services/smtp")],
+    ("indexing", "/services/aiGateway/identityPolicy", True, False), ("indexing", "/services/redis", True, False),
     ("kv", "/services/aiModels", True, False), ("kv", "/services/secretKeys", True, False),
-    *[("kv", k, False, False) for k in ("/services/connectors/c1/config", "/services/oauth/jira", "state:lock:x:leader", "/services/redis")],
+    ("kv", "/services/aiGateway/identityPolicy", True, False), ("kv", "/services/redis", True, False), ("kv", "state:lock:x:leader", True, False),
+    ("kv", "/services/connectors/c1/metadataSchemas/latest", True, False),
+    *[("kv", k, False, False) for k in ("/services/connectors/c1/config", "/services/oauth/jira", "/services/toolset-instances",
+                                        "/services/mcp/credentials/i1/u1", "/services/webSearch", "/services/smtp", "crawl:reconcile:c1")],
 ]
 UPSERT = ("INSERT INTO platform.kv_entries (key, value) VALUES (%s, 'w') "
           "ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = now() RETURNING true")

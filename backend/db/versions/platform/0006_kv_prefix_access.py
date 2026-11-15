@@ -21,6 +21,6 @@ def downgrade():
     op.execute("DROP POLICY kv_update ON platform.kv_entries")
     op.execute("DROP POLICY kv_delete ON platform.kv_entries")
     op.execute("ALTER TABLE platform.kv_entries DISABLE ROW LEVEL SECURITY")
-    op.execute("DROP FUNCTION platform.kv_may(text, boolean), platform.kv_outside(text, text, timestamptz)")
+    op.execute("DROP FUNCTION platform.kv_may(text, boolean), platform.kv_admin_or_credential(text), platform.kv_outside(text, text, timestamptz)")
     op.execute("DELETE FROM kernel.rls_registry WHERE rel = 'platform.kv_access'::regclass")
     op.execute("DROP TABLE platform.kv_access")
