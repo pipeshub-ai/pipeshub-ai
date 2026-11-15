@@ -11,7 +11,33 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.utils.user_messages import DATABASE_UNREACHABLE
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+# Set by the service that consumes userAdded (EntityEventService.ensure_caller_user): writes the request's own caller
+# into the graph from their live identity record. Unset elsewhere, where a missing user stays missing.
+_ensurer: dict[str, Callable[[str], Awaitable[bool]]] = {}
+
+
+def register_caller_node_ensurer(ensure: Callable[[str], Awaitable[bool]]) -> None:
+    _ensurer["caller_node"] = ensure
+
+
+async def get_caller_user(
+    graph_provider: IGraphDBProvider, user_id: str | None, *, raise_on_error: bool = False
+) -> dict[str, Any] | None:
+    """The user's graph record, read once more after the caller's own record is written when it is missing.
+
+    A brand-new account calls before the userAdded event that writes its graph user has been consumed. The ensurer
+    writes only the request's own caller, from their live identity record; anyone else, or an account that is
+    deleted or disabled, stays None.
+    """
+    user = await graph_provider.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
+    ensure = _ensurer.get("caller_node")
+    if user or not user_id or ensure is None or not await ensure(user_id):
+        return user
+    return await graph_provider.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
 
 
 async def get_user_or_503(graph_provider: IGraphDBProvider, user_id: str | None) -> dict[str, Any] | None:
@@ -22,7 +48,7 @@ async def get_user_or_503(graph_provider: IGraphDBProvider, user_id: str | None)
     they are not; a 401 also signs them out. A failed read is a 503 instead.
     """
     try:
-        return await graph_provider.get_user_by_user_id(user_id, raise_on_error=True)
+        return await get_caller_user(graph_provider, user_id, raise_on_error=True)
     except Exception as e:
         raise _database_unreachable() from e
 

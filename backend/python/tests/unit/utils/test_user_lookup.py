@@ -16,7 +16,8 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import CollectionNames
-from app.utils.user_lookup import get_org_or_503, get_user_or_503
+from app.utils import user_lookup
+from app.utils.user_lookup import get_caller_user, get_org_or_503, get_user_or_503
 from app.utils.user_messages import DATABASE_UNREACHABLE
 
 
@@ -58,6 +59,49 @@ class TestGetUserOr503:
         graph = AsyncMock()
         graph.get_user_by_user_id = AsyncMock(return_value={"_key": "k1"})
         assert await get_user_or_503(graph, "u1") == {"_key": "k1"}
+
+
+@pytest.fixture
+def ensurer(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    ensure = AsyncMock(return_value=True)
+    monkeypatch.setitem(user_lookup._ensurer, "caller_node", ensure)
+    return ensure
+
+
+class TestGetCallerUser:
+    """A caller whose graph user is not written yet (their userAdded event is in flight) is written, then read again."""
+
+    async def test_a_missing_caller_is_written_and_read_again(self, ensurer: AsyncMock) -> None:
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(side_effect=[None, {"_key": "k1"}])
+        assert await get_caller_user(graph, "u1") == {"_key": "k1"}
+        ensurer.assert_awaited_once_with("u1")
+        assert graph.get_user_by_user_id.await_count == 2
+
+    async def test_a_present_user_is_not_written(self, ensurer: AsyncMock) -> None:
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(return_value={"_key": "k1"})
+        assert await get_caller_user(graph, "u1") == {"_key": "k1"}
+        ensurer.assert_not_awaited()
+
+    async def test_a_user_the_ensurer_refuses_stays_missing_and_is_read_once(self, ensurer: AsyncMock) -> None:
+        ensurer.return_value = False  # someone else, or a deleted or disabled account
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(return_value=None)
+        assert await get_caller_user(graph, "u1") is None
+        graph.get_user_by_user_id.assert_awaited_once_with("u1", raise_on_error=False)
+
+    async def test_without_an_ensurer_a_missing_user_stays_missing(self) -> None:
+        assert "caller_node" not in user_lookup._ensurer
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(return_value=None)
+        assert await get_caller_user(graph, "u1") is None
+
+    async def test_the_routes_lookup_goes_through_it(self, ensurer: AsyncMock) -> None:
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(side_effect=[None, {"_key": "k1"}])
+        assert await get_user_or_503(graph, "u1") == {"_key": "k1"}
+        ensurer.assert_awaited_once_with("u1")
 
 
 class TestGetOrgOr503:

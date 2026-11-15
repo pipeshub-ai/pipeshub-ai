@@ -1,0 +1,19 @@
+"""A brand-new organisation's first knowledge-base create succeeds on PostgreSQL before its sign-up events are consumed.
+
+The case itself, and why, is in tests/integration/graph_db/test_fresh_org_first_call_real_backends.py (Neo4j and
+ArangoDB). Here it runs on a migrated database with the graph schema enforced, as the application writes it.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from tests.integration.graph_db.fresh_org_support import first_calls_after_signup
+from tests.integration.graph_db.postgres.pg_support import new_org
+
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
+
+
+async def test_the_first_creates_after_signup_succeed(pg_provider, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "strict")  # after the folder's conftest, which turns it off
+    await first_calls_after_signup(pg_provider, new_org())

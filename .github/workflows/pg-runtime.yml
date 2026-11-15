@@ -35,6 +35,7 @@ on:
       - 'backend/python/tests/integration/graph_db/test_code_graph_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_accessible_containers_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
+      - 'backend/python/tests/integration/graph_db/fresh_org_support.py'
       - 'backend/python/tests/integration/real_graph.py'
       - 'backend/python/tests/permissions/**'
       - 'backend/python/tests/integration/graph_permissions/loaders.py'

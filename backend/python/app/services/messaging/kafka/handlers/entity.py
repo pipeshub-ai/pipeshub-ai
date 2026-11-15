@@ -1,9 +1,12 @@
 import asyncio
 import logging
 import time
+import weakref
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 from uuid import uuid4
 
+from app.api.middlewares.caller_role import fetch_own_identity
 from app.config.constants.arangodb import (
     AccountType,
     AppGroups,
@@ -72,6 +75,21 @@ PRINCIPAL_EVENTS = frozenset({"userAdded", "userUpdated", "userDeleted", "appEna
 # Each one that misses means another toggle committed meanwhile; this many in a row is someone
 # toggling non-stop, and the event is failed rather than looped on.
 _DISABLE_WRITE_ATTEMPTS = 5
+
+
+# shortcut: per-process lock, so two writers of one new user (its userAdded event and the caller's own first request,
+# ensure_caller_user) cannot each mint a node; enough while one process consumes entity events and serves the routes
+# that call ensure_caller_user. A deployment that splits them needs a store-side unique key on the user instead.
+_USER_ADD_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def _user_add_lock(email: object) -> asyncio.Lock:
+    key = str(email or "").lower()
+    lock = _USER_ADD_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _USER_ADD_LOCKS[key] = lock
+    return lock
 
 
 def _superseded_by_a_newer_toggle(payload: dict, app_doc: dict) -> bool:
@@ -302,7 +320,51 @@ class EntityEventService(BaseEventService):
             raise
 
     # USER EVENTS
+    async def ensure_caller_user(self, user_id: str) -> bool:
+        """Write the request's own caller into the graph when the events announcing them have not been consumed yet.
+
+        A brand-new organisation's admin calls before its orgCreated and userAdded events reach this service. Only
+        the caller the verified token names, in that token's org, and only from Node's live records of that user and
+        org: a deleted or disabled account, or a record of another org, writes nothing. The writes are the events'
+        own handlers, so the events, when they arrive, find everything in place.
+        """
+        ctx = org_context.peek()
+        if ctx is None or ctx.kind != "user" or not ctx.org_id or not user_id or ctx.user_id != user_id:
+            return False
+        org_id = ctx.org_id
+        try:
+            config_service = self.app_container.config_service()
+            user = await fetch_own_identity(
+                config_service, org_id, user_id, f"/api/v1/users/internal/{quote(user_id, safe='')}"
+            )
+            if (
+                not user or str(user.get("orgId")) != org_id or user.get("isDeleted") or user.get("isDisabled")
+                or not user.get("email")
+            ):
+                return False
+            if not await self.graph_provider.get_document(org_id, CollectionNames.ORGS.value, raise_on_error=True):
+                org = await fetch_own_identity(config_service, org_id, user_id, "/api/v1/org/internal")
+                if not org or str(org.get("_id")) != org_id:
+                    return False
+                org_payload = {"orgId": org_id, "accountType": org.get("accountType")}
+                if org.get("registeredName"):
+                    org_payload["registeredName"] = org["registeredName"]
+                await self.process_event("orgCreated", org_payload)
+            user_payload = {"orgId": org_id, "userId": user_id, "email": user["email"], "fullName": user.get("fullName") or ""}
+            if user.get("kind"):
+                user_payload["kind"] = user["kind"]
+            written = bool(await self.process_event("userAdded", user_payload))
+            self.logger.info("Wrote the graph user of %s ahead of its userAdded event (written=%s)", user_id, written)
+            return written
+        except Exception as e:
+            error_class.log_failure(self.logger, "entity_event.step_failed", e, step="ensure_caller_user")
+            return False
+
     async def _handle_user_added(self, payload: dict) -> bool:
+        async with _user_add_lock(payload.get("email")):
+            return await self._add_user(payload)
+
+    async def _add_user(self, payload: dict) -> bool:
         """Handle user creation event"""
         try:
             self.logger.debug("Processing user added event for user %s", payload.get("userId"))
