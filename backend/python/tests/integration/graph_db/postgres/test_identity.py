@@ -23,6 +23,7 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.core import org_context
 from app.core.org_context import MissingOrgContext, OrgMismatch, SystemContextNotAllowed
 from app.models.entities import AppRole, AppUser, AppUserGroup
+from app.models.permission import PermissionType
 from tests.support.in_memory_config import InMemoryConfigService
 
 from .test_access import APP, World, rec
@@ -483,6 +484,30 @@ async def test_a_group_rewrite_after_an_address_changed_hands_admits_only_the_ac
     assert await w.allowed("m", "doc") == set()
 
     await processor.on_new_user_groups([(group, [new])])
+    assert await w.allowed("m", "doc") == {"doc"}
+
+
+async def test_a_member_added_by_an_event_after_an_address_changed_hands_is_the_account_it_names(w: World) -> None:
+    """An event log may still list an addition for the deleted account; only the account holding the address now is
+    added."""
+    await member(w, "m", userId="um", email="m@x.com")
+    await w.nodes("records", rec("doc"))
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    group = AppUserGroup(app_name=Connectors.JIRA, connector_id=APP, source_user_group_id="ext-team", name="Team")
+    old, new = app_user("m@x.com", "m"), app_user("m@x.com", "m").model_copy(update={"source_user_id": "src-m-new"})
+    await processor.on_new_app_users([old])
+    await processor.on_new_user_groups([(group, [])])
+    stored = await w.p.get_user_group_by_external_id(APP, "ext-team")
+    await w.edge("permission", ("groups", stored.id), ("records", "doc"), type="GROUP", role="READER")
+    await processor.on_new_app_users([new])
+
+    for source_id in ("src-m", None):
+        await processor.on_user_group_member_added("ext-team", "m@x.com", PermissionType.READ, APP, source_user_id=source_id)
+        assert await w.allowed("m", "doc") == set(), source_id
+
+    await processor.on_user_group_member_added("ext-team", "m@x.com", PermissionType.READ, APP, source_user_id="src-m-new")
     assert await w.allowed("m", "doc") == {"doc"}
 
 

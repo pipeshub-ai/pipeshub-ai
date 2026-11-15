@@ -4545,12 +4545,14 @@ class TestFetchProjectPermissionScheme401403DC:
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn.creator_email = "admin@example.com"
+        conn._authenticated_user_key = "JIRAUSER10000"
         ds = MagicMock()
         ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=_err_resp(403, '{"errorMessages":["You cannot edit..."]}'))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             perms = await conn._fetch_project_permission_scheme("PROJ", {})
         assert len(perms) == 1
         assert perms[0].email == "admin@example.com"
+        assert perms[0].external_id == "JIRAUSER10000"
 
     @pytest.mark.asyncio
     async def test_scheme_401_no_email_returns_none(self):

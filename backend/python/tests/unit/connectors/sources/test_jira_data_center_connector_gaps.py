@@ -302,6 +302,7 @@ class TestPermissionSchemeGaps:
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn.creator_email = "owner@example.com"
+        conn._authenticated_user_key = "JIRAUSER10100"
         conn._app_roles_forbidden = True
         sch = _ok_resp({"id": 1})
         grants = _ok_resp({
@@ -320,6 +321,7 @@ class TestPermissionSchemeGaps:
         assert len(perms) == 1
         assert perms[0].entity_type == EntityType.USER
         assert perms[0].email == "owner@example.com"
+        assert perms[0].external_id == "JIRAUSER10100"     # the authenticated account's user key
 
 
 class TestUserAndGroupGaps:

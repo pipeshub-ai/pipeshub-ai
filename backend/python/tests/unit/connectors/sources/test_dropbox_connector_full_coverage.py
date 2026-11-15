@@ -45,6 +45,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import Permission, PermissionType
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
 
 
 # ---------------------------------------------------------------------------
@@ -1429,6 +1430,23 @@ class TestHandleGroupChangeMemberRoleEvent:
 # _update_user_group_permission
 # ===========================================================================
 class TestUpdateUserGroupPermission:
+    @pytest.fixture(autouse=True)
+    def _accounts(self, connector):
+        stub_source_accounts(connector)
+
+    async def test_a_reused_address_is_updated_only_for_the_member_holding_it(self, connector):
+        """The event log can still list a change for the earlier account of an address."""
+        connector.source_accounts.reused = {"user@test.com": "dbmid:new"}
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=MagicMock(id="u1"))
+        connector.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(id="ug1"))
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock()
+
+        for member, written in (("dbmid:old", False), (None, False), ("dbmid:new", True)):
+            assert await connector._update_user_group_permission(
+                "g1", "user@test.com", PermissionType.OWNER, member
+            ) is written
+        connector.data_entities_processor.upsert_permission_edge.assert_called_once()
+
     async def test_user_not_found(self, connector):
         connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=None)
 

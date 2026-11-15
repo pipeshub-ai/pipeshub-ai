@@ -37,6 +37,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import AppUser
 from app.models.permission import EntityType, Permission, PermissionType
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
 
 
 # ---------------------------------------------------------------------------
@@ -2939,6 +2940,10 @@ class TestHandleGroupChangeMemberRoleEvent:
 # _update_user_group_permission
 # ===========================================================================
 class TestUpdateUserGroupPermission:
+    @pytest.fixture(autouse=True)
+    def _accounts(self, connector):
+        stub_source_accounts(connector)
+
     async def test_user_not_found(self, connector):
         connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=None)
         result = await connector._update_user_group_permission("g1", "user@test.com", PermissionType.OWNER)

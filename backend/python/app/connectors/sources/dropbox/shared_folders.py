@@ -112,6 +112,14 @@ def member_grant_id(user: object) -> str:
     return team_member_id if isinstance(team_member_id, str) and team_member_id else user.account_id
 
 
+def event_member_id(user: object) -> str | None:
+    """The team member an event-log user names, when it is one: "team_member_id ... Team member ID. Might be missing
+    due to historical data gap." (https://github.com/dropbox/dropbox-api-spec/blob/master/team_log_generated.stone,
+    struct TeamMemberLogInfo). Missing, a grant to a re-used address fails closed."""
+    team_member_id = getattr(user, "team_member_id", None)
+    return team_member_id if isinstance(team_member_id, str) and team_member_id else None
+
+
 def folder_grants(users: Iterable, groups: Iterable, invitees: Iterable) -> list[Permission]:
     """A shared folder's own members as grants. Members it inherits stay on the parent folder."""
     grants: list[Permission] = []

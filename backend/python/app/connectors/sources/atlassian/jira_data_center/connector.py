@@ -513,6 +513,7 @@ class JiraDataCenterConnector(BaseConnector):
         self._user_bulk_refused: bool = False
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
+        self._authenticated_user_key: str | None = None
         # Hierarchy link field ids: None = before init, "" = not found, else customfield id
         self._epic_link_field_id: str | None = None
         self._parent_link_field_id: str | None = None
@@ -907,6 +908,10 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.debug("Could not read the authenticated Jira account: %s", e)
             return
         email = data.get("emailAddress")
+        # The user key users are listed with (UserBean `key`): it names the account on the configuring user's grants.
+        # shortcut: while /myself cannot be read the key is unknown, and for a re-used address those grants fail
+        # closed; upgrade by reading it before the permission schemes.
+        self._authenticated_user_key = data.get("key") if isinstance(data.get("key"), str) else None
         await self.register_authenticated_source_user(
             email.strip() if isinstance(email, str) else None,
             data.get("accountId") or data.get("key") or data.get("name"),
@@ -2091,6 +2096,7 @@ class JiraDataCenterConnector(BaseConnector):
             return [Permission(
                 entity_type=EntityType.USER,
                 email=self.creator_email,
+                external_id=self._authenticated_user_key,
                 type=PermissionType.READ,
             )]
 
@@ -2278,6 +2284,7 @@ class JiraDataCenterConnector(BaseConnector):
                             permissions.append(Permission(
                                 entity_type=EntityType.USER,
                                 email=self.creator_email,
+                                external_id=self._authenticated_user_key,
                                 type=PermissionType.READ,
                             ))
                             self.logger.info(
