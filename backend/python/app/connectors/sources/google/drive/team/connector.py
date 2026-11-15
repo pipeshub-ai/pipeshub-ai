@@ -9,6 +9,7 @@ import tempfile
 import uuid
 from enum import Enum
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
 from logging import Logger
@@ -280,28 +281,35 @@ UNDECIDED_KEPT_KEY = f"{UNDECIDED_REMOVALS_SYNC_POINT_PREFIX}kept"
 KEPT_RECORDS_BATCH = 100
 # The ids of the items that failed in the listing this task is reading (each user's sync runs in its own task).
 _failed_items: ContextVar[set[str] | None] = ContextVar("drive_failed_items", default=None)
-# Per user sync (its own task): the items this sync withdrew (trashed, removed, out of scope) since a new record of
-# each last joined its batch. The batch is written later, and a removal finds nothing stored yet, so the flush leaves
-# them out instead of writing access just withdrawn.
-_withdrawn_items: ContextVar[set[str] | None] = ContextVar("drive_withdrawn_items", default=None)
+@dataclass
+class _SyncWithdrawals:
+    """Per user sync (its own task): what it withdrew since a new record of each item last joined its batch. New
+    records are written when the batch is flushed, while a deletion or removal applies to the store at once and finds
+    nothing stored yet, so the flush settles them: an item the sync deleted for everyone (`deleted`), and anything
+    below it, is not written and is read again by id; an item this user lost (`lost`) is written without this user's
+    grant, for the others who still open it."""
+
+    user_email: str
+    deleted: set[str] = field(default_factory=set)
+    lost: set[str] = field(default_factory=set)
+    # A folder, or an item of unknown kind, was deleted: a record whose folders above are unknown may be below it.
+    folder_deleted: bool = False
 
 
-def _note_withdrawn(file_id: str | None) -> None:
-    withdrawn = _withdrawn_items.get()
-    if withdrawn is not None and file_id:
-        withdrawn.add(file_id)
+_withdrawals: ContextVar[_SyncWithdrawals | None] = ContextVar("drive_sync_withdrawals", default=None)
 
 
-def _under_withdrawn(record: Record, withdrawn: set[str], batch_parents: dict[str, str | None]) -> bool:
-    """Whether the record, or a folder above it through the batch, was withdrawn."""
-    seen: set[str] = set()
-    current: str | None = record.external_record_id
-    while current and current not in seen:
-        if current in withdrawn:
-            return True
-        seen.add(current)
-        current = batch_parents.get(current)
-    return False
+def _note_deleted(file_id: str | None, *, folder: bool) -> None:
+    """The item was deleted for everyone in this sync (in the trash, deleted, out of scope, or no one opens it)."""
+    if (w := _withdrawals.get()) is not None and file_id:
+        w.deleted.add(file_id)
+        w.folder_deleted = w.folder_deleted or folder
+
+
+def _note_lost(file_id: str | None) -> None:
+    """This sync's user can no longer open the item; others may."""
+    if (w := _withdrawals.get()) is not None and file_id:
+        w.lost.add(file_id)
 FILTER_CLEANUP_PAGE_SIZE = 500
 
 
@@ -2956,8 +2964,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 await self._handle_record_updates(update)
                 continue
             else:
-                if (withdrawn := _withdrawn_items.get()) is not None:
-                    withdrawn.discard(record.external_record_id)  # read again after it was withdrawn: written
+                if (w := _withdrawals.get()) is not None:  # read again after it was withdrawn: as read now
+                    w.deleted.discard(record.external_record_id)
+                    w.lost.discard(record.external_record_id)
                 batch_records.append((record, perms))
                 batch_count += 1
                 total_counter += 1
@@ -2975,17 +2984,66 @@ class GoogleDriveTeamConnector(BaseConnector):
         return batch_records, batch_count, total_counter
 
     async def _flush_batch(self, batch_records: list) -> None:
-        """Write a batch of new records, but none of an item this sync withdrew after the record joined the batch,
-        nor of one below a folder it withdrew. Another user who still opens the item writes it on their own read."""
-        withdrawn = _withdrawn_items.get()
-        if withdrawn:
-            # Through new folders in the batch too: a folder above them withdrawn takes them along.
-            parents = {record.external_record_id: record.parent_external_record_id for record, _ in batch_records}
-            kept = [(record, perms) for record, perms in batch_records if not _under_withdrawn(record, withdrawn, parents)]
-        else:
-            kept = batch_records
+        """Write a batch of new records, settled against what this sync withdrew since each joined it
+        (`_SyncWithdrawals`). A record not written is read again by id on a later run, so nothing is passed over."""
+        w = _withdrawals.get()
+        if w is None or not (w.deleted or w.lost):
+            if batch_records:
+                await self.data_entities_processor.on_new_records(batch_records)
+            return
+        parents = {record.external_record_id: record.parent_external_record_id for record, _ in batch_records}
+        stored: dict[str, Record | None] = {}
+        failed = _failed_items.get()
+        kept = []
+        for record, perms in batch_records:
+            verdict = await self._withdrawal_verdict(record, parents, w, stored)
+            if verdict in ("deleted", "unknown"):
+                if failed is not None:
+                    failed.add(record.external_record_id)
+                continue
+            if verdict == "lost":
+                record.shared_with_me_record_group_ids = [
+                    g for g in record.shared_with_me_record_group_ids or [] if g != f"0S:{w.user_email}"
+                ]
+                if record.external_record_id not in w.lost and failed is not None:
+                    failed.add(record.external_record_id)  # below what they lost: a grant of its own comes back
+                kept.append((record, [
+                    p for p in perms
+                    if not (p.entity_type == EntityType.USER and (p.email or "").lower() == w.user_email)
+                ]))
+                continue
+            kept.append((record, perms))
         if kept:
             await self.data_entities_processor.on_new_records(kept)
+
+    async def _withdrawal_verdict(
+        self, record: Record, parents: dict[str, str | None], w: _SyncWithdrawals, stored: dict[str, Record | None]
+    ) -> str:
+        """How a new record stands against what the sync withdrew, through its folders in the batch and the store:
+        "deleted" (it, or a folder above it, is gone), "lost" (this user lost it or a folder above it), "unknown" (a
+        folder above it is not known, and the sync deleted a folder it may have been in), or "ok". Google does not
+        say a trashed or removed folder's descendants each get a change of their own: a change names "the file
+        which has changed" (https://developers.google.com/workspace/drive/api/reference/rest/v3/changes), and a
+        child is "trashed, either explicitly or from a trashed parent folder"
+        (https://developers.google.com/workspace/drive/api/guides/delete)."""
+        lost, seen = False, set()
+        current: str | None = record.external_record_id
+        while current and current not in seen:
+            seen.add(current)
+            if current in w.deleted:
+                return "deleted"
+            lost = lost or current in w.lost
+            if current in parents:
+                current = parents[current]
+                continue
+            if current not in stored:
+                stored[current] = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id, external_record_id=current
+                )
+            if stored[current] is None:
+                return "unknown" if w.folder_deleted else ("lost" if lost else "ok")
+            current = stored[current].parent_external_record_id
+        return "lost" if lost else "ok"
 
     async def _process_remaining_batch_records(
         self,
@@ -3193,7 +3251,6 @@ class GoogleDriveTeamConnector(BaseConnector):
         A scope exit is a source-side move, so it applies to every user; whichever
         user's changes feed reports it first performs the delete and the rest no-op.
         """
-        _note_withdrawn(file_id)
         exited_scope, existing_record = await has_exited_scope(
             self.data_entities_processor, self.connector_id, file_id, tracked_folder_ids
         )
@@ -3203,8 +3260,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
             return
 
+        _note_deleted(file_id, folder=existing_record.mime_type in FOLDER_MIME_TYPES)
         if existing_record.mime_type in FOLDER_MIME_TYPES:
-            await self._note_withdrawn_below(existing_record)
             self.logger.info(
                 "📁 Folder %s exited folder-filter scope; deleting folder and descendants",
                 existing_record.record_name,
@@ -3373,11 +3430,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         stay. At the limit the file is kept, listed under `undecided_key` to be checked again on later runs, and
         the checkpoint may move on: one file nobody answers for must not hold every later change. The reporting
         user's own grant is already gone. Any other failure raises, so the change is read again."""
-        _note_withdrawn(file_id)
-        if file_id and _withdrawn_items.get() is not None:
-            await self._note_withdrawn_below(await self.data_entities_processor.get_record_by_external_id(
-                connector_id=self.connector_id, external_record_id=file_id
-            ))
+        _note_lost(file_id)  # deleted for everyone too, if the check below deletes it
         if not file_id:
             await apply()
             return None
@@ -3716,6 +3769,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         try:
             if await still_open(record):
                 return _Settled.UNDECIDED if unknown else _Settled.KEPT
+            _note_deleted(record.external_record_id, folder=record.mime_type in FOLDER_MIME_TYPES)
             if record.mime_type in FOLDER_MIME_TYPES:
                 await remove_folder_confirming_contents(
                     self.data_entities_processor, self.connector_id, record, still_open, self.logger
@@ -4357,35 +4411,19 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _delete_gone_item(self, file_id: str | None) -> None:
         """Delete the record of a file that is in the trash or deleted, if one was synced."""
-        _note_withdrawn(file_id)
         if not file_id:
             return
         record = await self.data_entities_processor.get_record_by_external_id(
             connector_id=self.connector_id, external_record_id=file_id
         )
         if record is not None:
-            await self._note_withdrawn_below(record)
             await self._delete_record_tree(record)
-
-    async def _note_withdrawn_below(self, record: Record | None) -> None:
-        """Note the stored records below a withdrawn folder as withdrawn too, before anything deletes them. Google's
-        changes reference says only that a change names "the file which has changed"
-        (https://developers.google.com/workspace/drive/api/reference/rest/v3/changes), not that a trashed or
-        removed folder's descendants each get a change of their own, while a child is "trashed, either explicitly
-        or from a trashed parent folder" (https://developers.google.com/workspace/drive/api/guides/delete). So a new
-        record below it waiting in the batch is left out whether or not its own change comes."""
-        if _withdrawn_items.get() is None or record is None or record.mime_type not in FOLDER_MIME_TYPES:
-            return
-        todo, seen = [record.external_record_id], {record.external_record_id}
-        while todo:
-            for child in await self.data_entities_processor.get_records_by_parent(self.connector_id, todo.pop()):
-                if child.external_record_id and child.external_record_id not in seen:
-                    seen.add(child.external_record_id)
-                    _note_withdrawn(child.external_record_id)
-                    todo.append(child.external_record_id)
+        else:
+            _note_deleted(file_id, folder=True)  # its kind is not known: a folder, for what may be below it
 
     async def _delete_record_tree(self, record: Record) -> None:
         """Delete a record; a folder takes the records under it along."""
+        _note_deleted(record.external_record_id, folder=record.mime_type in FOLDER_MIME_TYPES)
         self.logger.info("Deleting record: %s", record.record_name)
         if record.mime_type in FOLDER_MIME_TYPES:
             await self.data_entities_processor.on_records_deleted_cascade(
@@ -5484,7 +5522,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             user: AppUser object containing email, source_user_id, etc.
         """
         try:
-            _withdrawn_items.set(set())  # this user's own: a task of its own, so other users' syncs keep theirs
+            _withdrawals.set(_SyncWithdrawals(user.email.lower()))  # its own task: other users' syncs keep theirs
             self.logger.info(f"Starting Google Drive sync for user {user.email}")
 
             # 1-2. Create a Drive data source impersonating this user
