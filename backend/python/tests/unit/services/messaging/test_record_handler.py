@@ -1974,6 +1974,61 @@ class TestAlreadyIndexed:
         ingress.handoff_lost.assert_awaited_once()
         assert not self._logged_already_done(handler)
 
+    _XLSX = {
+        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "extension": "xlsx",
+    }
+
+    def _indexed_xlsx(self, *, handoff_lost: bool) -> tuple[RecordEventHandler, MagicMock]:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={
+            "_key": "r1", "virtualRecordId": "vr1", "contentRev": "rev-1", **self._XLSX,
+            "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value,
+        })
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
+        ingress = MagicMock()
+        ingress.handoff_lost = AsyncMock(return_value=handoff_lost)
+        handler.event_processor.stage_ingress = ingress
+        pipeline = AsyncMock()
+        handler.event_processor.processor.indexing_pipeline = pipeline
+        return handler, pipeline
+
+    @pytest.mark.asyncio
+    async def test_a_replayed_unforced_reindex_of_an_indexed_xlsx_makes_no_vector_store_call(self) -> None:
+        handler, pipeline = self._indexed_xlsx(handoff_lost=False)
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", **self._XLSX}
+
+        events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        # Neither the embedding delete, nor the point delete, nor any call on the vector store.
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
+        pipeline.delete_points_for_virtual_record.assert_not_awaited()
+        assert pipeline.vector_db_service.mock_calls == []
+        assert pipeline.mock_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_lost_hand_off_still_reconciles_before_running(self) -> None:
+        handler, pipeline = self._indexed_xlsx(handoff_lost=True)
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", **self._XLSX}
+
+        # The full path runs into the bare test doubles further on; what matters is the reconciliation.
+        with contextlib.suppress(Exception):
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        pipeline.bulk_delete_embeddings.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_forced_reindex_of_an_indexed_xlsx_still_reconciles(self) -> None:
+        handler, pipeline = self._indexed_xlsx(handoff_lost=False)
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "forceReindex": True, **self._XLSX}
+
+        with contextlib.suppress(Exception):
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        pipeline.bulk_delete_embeddings.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_new_record_already_completed(self):
         handler = _make_handler()
@@ -6090,7 +6145,10 @@ class TestStageRedrive:
         handler, gp, ingress = self._handler(None)
         # The full path ends by promoting the record's queued copies; it has none.
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
-        await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload())
+        # A reindex the connector publishes is forced; one that is not is a replay, which is acknowledged.
+        # The full path runs into the bare test doubles further on; what matters is what came first.
+        with contextlib.suppress(Exception):
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(forceReindex=True))
         ingress.redrive.assert_awaited_once()
         # Past the stage branch: the regular reindex path clears the old vectors.
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id=None)
