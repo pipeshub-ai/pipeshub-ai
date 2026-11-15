@@ -30,6 +30,7 @@ Targets the ~607 uncovered lines to achieve 95%+ coverage by testing:
 - Various ADF edge cases, media, marks, list types
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -1416,21 +1417,45 @@ class TestFetchUsersPhases:
         await connector._fetch_all_jira_users_bulk()
         assert connector._user_read_unfinished is True
 
-    @pytest.mark.asyncio
-    async def test_too_many_withdrawals_in_one_sync_are_held(self) -> None:
-        """More accounts leaving at once than a directory loses is more likely a user list read wrong: they keep
-        the connector, and the connector's owner is told."""
-        connector = _make_connector()
+    @staticmethod
+    def _withdrawing(connector: JiraConnector) -> dict:
+        store: dict = {}
+        connector.issues_sync_point = MagicMock()
+        connector.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
+        connector.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
         connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
         connector.notify = AsyncMock()
         connector._stored_app_users = [
             AppUser(id=f"n{i}", app_name=Connectors.JIRA, connector_id="c", source_user_id=f"u{i}", email=f"u{i}@x.com",
                     full_name=str(i)) for i in range(40)]
+        return store
+
+    @pytest.mark.asyncio
+    async def test_many_accounts_missing_from_the_list_go_after_three_reads_agree_and_the_owner_is_told_once(self) -> None:
+        """Absence is the only evidence for them and the list's end is not promised by the docs: eleven missing at
+        once (over a tenth of forty, and the floor of ten) wait until three complete reads in a row agree."""
+        connector = _make_connector()
+        store = self._withdrawing(connector)
+        connector._seen_account_ids = {f"u{i}" for i in range(11, 40)}
+        missing = {f"u{i}" for i in range(11)}
+        for _ in range(2):
+            await connector._withdraw_ineligible_app_users([], missing)
+            connector.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+        assert connector.notify.await_count == 1, "told once, not every sync"
+        assert json.loads(store["withdrawals_held"]["accounts"]) == sorted(missing)
+        await connector._withdraw_ineligible_app_users([], missing)
+        withdrawn = connector.data_entities_processor.withdraw_app_user_access.await_args.args[1]
+        assert {u.source_user_id for u in withdrawn} == missing
+        assert store["withdrawals_held"]["accounts"] == "[]"
+
+    @pytest.mark.asyncio
+    async def test_accounts_the_list_shows_deactivated_go_whatever_their_number(self) -> None:
+        connector = _make_connector()
+        self._withdrawing(connector)
+        connector._seen_account_ids = {f"u{i}" for i in range(40)}  # every one is in the list; eleven are inactive
         await connector._withdraw_ineligible_app_users([], {f"u{i}" for i in range(11)})
-        connector.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
-        connector.notify.assert_awaited_once()
-        await connector._withdraw_ineligible_app_users([], {f"u{i}" for i in range(10)})
-        connector.data_entities_processor.withdraw_app_user_access.assert_awaited_once()
+        assert len(connector.data_entities_processor.withdraw_app_user_access.await_args.args[1]) == 11
+        connector.notify.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_reverse_lookup_skipped_when_all_resolved(self):
