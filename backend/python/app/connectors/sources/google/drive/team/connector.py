@@ -2889,6 +2889,14 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         return batch_records, batch_count, total_counter
 
+    @staticmethod
+    def _drop_buffered(batch_records: list, file_id: str | None) -> tuple[list, int]:
+        """The batch without the new records of an item the user's feed now reports removed: unwritten yet, the
+        removal finds nothing stored, and the flush would write the access the user just lost. Returns the batch
+        and how many it dropped. Another user who still opens the item writes it on their own read."""
+        kept = [(record, perms) for record, perms in batch_records if record.external_record_id != file_id]
+        return kept, len(batch_records) - len(kept)
+
     async def _process_remaining_batch_records(
         self,
         batch_records: List,
@@ -5341,6 +5349,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                     file_metadata = change.get("file")
 
                     if is_removed:
+                        batch_records, dropped = self._drop_buffered(batch_records, change.get("fileId"))
+                        batch_count -= dropped
                         error = await self._apply_removed_change(
                             change, user, owner_sources, held_removals, sync_point_key
                         )
@@ -6104,6 +6114,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                                         file_metadata = change.get("file")
 
                                         if is_removed:
+                                            batch_records, dropped = self._drop_buffered(
+                                                batch_records, change.get("fileId")
+                                            )
+                                            batch_count -= dropped
                                             # Deleted, moved to another drive, or only this user lost
                                             # access: removed only once no synced user can open it.
                                             error = await self._bounded_removal(
