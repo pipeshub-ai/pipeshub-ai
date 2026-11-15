@@ -6,17 +6,32 @@ the job envelope and the graph's record fields; parsing accepts either spelling.
 """
 
 import hashlib
+import logging
 from collections.abc import Mapping
 from enum import StrEnum
 from types import MappingProxyType
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 from pydantic.alias_generators import to_camel
 
 from app.config.constants.arangodb import ProgressStatus
 from app.services.resource_governor.models import ParseTier
 
 _WIRE = ConfigDict(frozen=True, alias_generator=to_camel, populate_by_name=True, extra="ignore")
+
+
+_KNOWN_STATUSES = frozenset(status.value for status in ProgressStatus)
+_logger = logging.getLogger(__name__)
+#: Unknown stored values already reported, so a row's value is logged once per process and not once per read.
+_REPORTED: set[tuple[str, str]] = set()
+
+
+def _report_unknown(field: str, value: str, mapped_to: str) -> None:
+    if (field, value) not in _REPORTED:
+        _REPORTED.add((field, value))
+        _logger.warning(
+            "Stage state with unknown %s %r (written by a newer release): read as %s", field, value, mapped_to
+        )
 
 
 class Priority(StrEnum):
@@ -232,6 +247,34 @@ class StageState(BaseModel):
     updated_at_ms: int = Field(ge=0)
     worker_id: str | None = None
     reason: str | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _unknown_status_is_not_settled(cls, value: object) -> object:
+        """A status this release does not know, written by a later one (the stored schema accepts any
+        string), reads as ``NOT_STARTED``: not settled, so the sweep decides, and the read never fails."""
+        if isinstance(value, str) and value not in _KNOWN_STATUSES:
+            _report_unknown("status", value, ProgressStatus.NOT_STARTED.value)
+            return ProgressStatus.NOT_STARTED
+        return value
+
+    @field_validator("tier", mode="before")
+    @classmethod
+    def _unknown_tier_is_heavy(cls, value: object) -> object:
+        """A tier a later release added reads as HEAVY, the pool that is safe for any document."""
+        if isinstance(value, str) and value not in {tier.value for tier in ParseTier}:
+            _report_unknown("tier", value, ParseTier.HEAVY.value)
+            return ParseTier.HEAVY
+        return value
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _unknown_priority_is_bulk(cls, value: object) -> object:
+        """A priority a later release added reads as ``bulk``: never ahead of an interactive job."""
+        if isinstance(value, str) and value not in {priority.value for priority in Priority}:
+            _report_unknown("priority", value, Priority.BULK.value)
+            return Priority.BULK
+        return value
 
     @classmethod
     def from_job(
