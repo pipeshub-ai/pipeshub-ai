@@ -44,6 +44,8 @@ while :; do
   elif [ "$since_full" -ge "$full_s" ]; then type=full
   elif [ "$since_any" -ge "$incr_s" ]; then type=incr
   else
+    # nothing due: the repository holds backups within both intervals, which is healthy (also right after a restart)
+    touch "$ok"
     # at most a minute, so a gap is noticed within one
     left=$(( incr_s - since_any )); sleep $(( left > 60 ? 60 : left )); continue
   fi

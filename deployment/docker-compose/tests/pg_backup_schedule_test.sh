@@ -38,6 +38,10 @@ check "full 1 day, newest backup 7 hours old: an incremental one" \
   "$(decide "[{\"backup\":[$(backup full 86400),$(backup incr 25200)]}]")" "backup --type=incr"
 check "full 1 day, newest backup 1 hour old: waits, a minute at a time" "$(decide "$recent")" "sleep 60"
 check "unreadable repository: no backup, waits to retry" "$(decide 'not json')" "sleep 300"
+rm -f "$work/ok"; decide "$recent" >/dev/null 2>&1
+check "restarted with backups inside both intervals: healthy without a new backup" "$([ -e "$work/ok" ] && echo healthy || echo unhealthy)" healthy
+rm -f "$work/ok"; decide 'not json' >/dev/null 2>&1
+check "restarted with an unreadable repository: not healthy" "$([ -e "$work/ok" ] && echo healthy || echo unhealthy)" unhealthy
 
 # WAL dropped by the queue cap: unhealthy at once, says so, and a full backup now even though one is not due
 touch "$work/ok" "$work/gap"

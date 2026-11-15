@@ -61,6 +61,10 @@ fi
 
 start=$(date +%s)
 echo "pg-restore: restoring ${target} into volume ${volume}"
+# A new named volume takes the owner of the image's /pgbackrest-restore (postgres); one that does not (another volume driver, or a volume
+# made elsewhere) is handed to postgres here, as root, so that pgBackRest itself never runs as root.
+docker compose run --rm --no-deps -T -u root -v "$volume:/pgbackrest-restore" --entrypoint sh pg-backup \
+  -c 'chown postgres:postgres /pgbackrest-restore && chmod 0700 /pgbackrest-restore'
 # pg1-path through the environment, not the command line: pgBackRest copies command-line options into the restored restore_command, and
 # the server that replays the WAL has its data at another path (the stack's server at /var/lib/postgresql/data)
 docker compose run --rm --no-deps -T -v "$volume:/pgbackrest-restore" -e PGBACKREST_PG1_PATH=/pgbackrest-restore pg-backup "${restore[@]}"

@@ -6,7 +6,7 @@
 #   - to the end of the archive into a new volume: they must equal the live database's;
 #   - to T in place, over the stack's own volume: equal to T again, and backups go on afterwards (pgbackrest check).
 # It prints the measured backup and restore times and the archive lag (how much a restore can lose) for the RTO/RPO table in
-# postgres/README.md. Knobs: DRILL_MAJORS (17 18), DRILL_ROWS per schema (20000), DRILL_ARCHIVE_TIMEOUT (60 s), DRILL_PG_MEMORY (2G),
+# postgres/README.md. The repository is a new host directory on 17 (PG_BACKUP_REPO) and a new named volume on 18. Knobs: DRILL_MAJORS (17 18), DRILL_ROWS per schema (20000), DRILL_ARCHIVE_TIMEOUT (60 s), DRILL_PG_MEMORY (2G),
 # DRILL_PG_SHARED_BUFFERS (256MB), DRILL_PGBACKREST_EXTRA (more PGBACKREST_* lines, for example another repository). PROJECT_PREFIX and
 # EXTRA_COMPOSE_FILE as in the other tests here.
 # Needs docker; PG_IMAGE_17 / PG_IMAGE_18 name the built images (default: pmcompose/postgres:17-pmc and :18-pmc).
@@ -20,6 +20,8 @@ copies=()
 cleanup() {
   for c in "${copies[@]}"; do $DOCKER rm -f "$c" >/dev/null 2>&1 || true; $DOCKER volume rm "$c" >/dev/null 2>&1 || true; done
   if [ -n "$proj" ]; then dc down -v >/dev/null 2>&1 || true; fi
+  # the host repository directories belong to root and postgres (Docker created them)
+  for d in "$work"/repo-*; do [ -d "$d" ] && $DOCKER run --rm -v "$work:/w" --entrypoint rm "$image" -rf "/w/${d##*/}"; done
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -35,7 +37,10 @@ envfile() { # major image
     echo "REDIS_PASSWORD=x"; echo "COMPOSE_PROFILES=postgres"; echo "PGBACKREST_ENV_FILE=$work/pgbackrest.env"
     echo "PG_MEMORY_LIMIT=${DRILL_PG_MEMORY:-2G}"; echo "PG_SHARED_BUFFERS=${DRILL_PG_SHARED_BUFFERS:-256MB}"
     echo "PG_ARCHIVE_TIMEOUT=${DRILL_ARCHIVE_TIMEOUT:-60}"; echo "PG_BACKUP_INCR_HOURS=10000"; echo "PG_BACKUP_FULL_DAYS=10000"
-    echo "PG_BACKUP_RETRY_SECS=10"; } > "$work/env$1"
+    echo "PG_BACKUP_RETRY_SECS=10"
+    # 17: the repository in a host directory that does not exist yet, as PG_BACKUP_REPO gives it (Docker creates it, owned by root);
+    # 18: the default named volume. Both are new, as on a first start.
+    if [ "$1" = 17 ]; then echo "PG_BACKUP_REPO=$work/repo-$1"; fi; } > "$work/env$1"
   printf 'PGBACKREST_REPO1_RETENTION_FULL=2\nPGBACKREST_COMPRESS_TYPE=zst\nPGBACKREST_START_FAST=y\nPGBACKREST_ARCHIVE_PUSH_QUEUE_MAX=128MiB\n%s' \
     "${DRILL_PGBACKREST_EXTRA:-}" > "$work/pgbackrest.env"
 }
