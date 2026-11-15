@@ -10,7 +10,7 @@ deltas:
     public:
       connector: Google Drive
       source: "A file shared by link only: anyone with the link, or anyone in your domain with the link, can open it, but it cannot be found in Drive search"
-      differs: "The link gives no one access in PipesHub. People it is shared with directly, through a group, or with a share of your domain or of anyone that can be found in Drive search still see it."
+      differs: "The link gives no one access in PipesHub. People it is shared with directly or through a group still see it. So do the people a share with your domain or with anyone reaches when the share can be found in Drive search, unless the file is in another organisation's shared drive."
     direction: under-share
     scenarios: [DRIVE-S-03]
     pairs: [DRIVE-S-03/fay/notes]
@@ -21,7 +21,10 @@ deltas:
       google/drive/team/connector.py:1393-1394). Google: allowFileDiscovery is "Whether the permission allows the file
       to be discovered through search. This is only applicable for permissions of type domain or anyone."
       (https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions). A discoverable domain or
-      anyone share is granted to its audience group since #5726 (DRIVE-C-08), so only the link-only share differs.
+      anyone share is granted to its audience group since #5726 (DRIVE-C-08), so only the link-only share differs,
+      except on an item in a shared drive the account's own listing does not return (drives.list with
+      useDomainAdminAccess, connector.py:2421): there audiences_apply is false (connector.py:1817) and no audience
+      is granted, which the public text names.
       Fail-closed by design.
     fix: "None planned: Drive does not say who holds a link. People it is shared with directly, through a group or with a discoverable share keep their access."
   - id: DELTA-05

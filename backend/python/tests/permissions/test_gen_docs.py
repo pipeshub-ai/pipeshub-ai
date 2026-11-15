@@ -11,7 +11,7 @@ GOLDEN = """| Connector | Source permission | What PipesHub does differently |
 | --- | --- | --- |
 | Confluence | A page nested very deep in a space | A page more than 50 levels below its space is hidden from everyone. Move it closer to the top of the space. |
 | Gmail | A delegate added to a mailbox | Delegates cannot search the mailbox in PipesHub. Only the mailbox owner can. |
-| Google Drive | A file shared by link only: anyone with the link, or anyone in your domain with the link, can open it, but it cannot be found in Drive search | The link gives no one access in PipesHub. People it is shared with directly, through a group, or with a share of your domain or of anyone that can be found in Drive search still see it. |
+| Google Drive | A file shared by link only: anyone with the link, or anyone in your domain with the link, can open it, but it cannot be found in Drive search | The link gives no one access in PipesHub. People it is shared with directly or through a group still see it. So do the people a share with your domain or with anyone reaches when the share can be found in Drive search, unless the file is in another organisation's shared drive. |
 """
 INTERNAL = re.compile(r"DELTA|\.py|\bR\d+\b|\bEE\b|enterprise|tenant|billing|customer|ticket|S\d+[a-z]?\b|PM-\d+", re.IGNORECASE)
 
