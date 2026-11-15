@@ -620,8 +620,9 @@ async def _collected(env_: IT.Env) -> dict[str, list[str]]:
 
 
 async def _two_deleters(env, deleting, kind: str, *, stagger: bool = False) -> tuple[dict, dict]:
-    """Two deleters past their access check and marker. With *stagger* the second one is held at its
-    type-document step until the first has finished the whole delete: it then meets nodes already gone."""
+    """Two deleters past their access check and marker. With *stagger* both collect their type documents
+    first, then the second one is held at its type-document step until the first has finished the whole
+    delete: it then meets nodes already gone."""
     IT.record_keys(env, "r-1", "r-2", "r-3")
     for ext in ("r-1", "r-2", "r-3"):
         await env.push(env.body(ext=ext, name=ext, text=f"content {ext}"))
@@ -642,6 +643,21 @@ async def _two_deleters(env, deleting, kind: str, *, stagger: bool = False) -> t
 
     env.graph.delete_connector_instance = meet
     if stagger:
+        # Collected before the write transaction opens: a deleter that collected only after the other
+        # had deleted them would have nothing to delete, and never reach the documents already gone.
+        collected = {"n": 0}
+        both_collected = asyncio.Event()
+        collect = env.graph._collect_isoftype_targets
+
+        async def collect_together(*a: object, **kw: object) -> tuple:
+            found = await collect(*a, **kw)
+            collected["n"] += 1
+            if collected["n"] >= 2:
+                both_collected.set()
+            await asyncio.wait_for(both_collected.wait(), 30)
+            return found
+
+        env.graph._collect_isoftype_targets = collect_together
         steps = {"n": 0}
         step = env.graph._delete_isoftype_targets_from_collected
 
