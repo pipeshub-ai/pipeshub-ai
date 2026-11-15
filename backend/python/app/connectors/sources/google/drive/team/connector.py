@@ -3160,6 +3160,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         same way (`_bounded_removal`). Any other failure raises as before.
         """
         file_id = change.get("fileId")
+        # They can no longer open it: this run's read of theirs proves nothing for a list cut to what is known.
+        if file_id and user.email:
+            self._empty_list_readers.get(file_id, set()).discard(user.email.lower())
         try:
             return await self._bounded_removal(
                 file_id, change.get("driveId"), held, sync_point_key, self._undecided_key(user),
@@ -5079,6 +5082,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             seen_page_tokens: set[str] = set()
             total_files = 0
             walk = DrivePageWalk()
+            # Items the listing could not settle (failed, or cut to what is known): read again by id from the feed.
+            listing_failed = self._track_failed_items()
 
             while True:
                 # Prepare files_list parameters
@@ -5177,10 +5182,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             # starts every removed change's count over.
             stale_removals = {HELD_REMOVED_CHANGES: []} if (sync_point or {}).get(HELD_REMOVED_CHANGES) else {}
             reseeded = self._reseed_fields(shared_failed, asked=bool((sync_point or {}).get(RESEED_SHARED_WITH_ME)))
+            if not await self._keep_failed_items(sync_point_key, listing_failed):
+                return  # too many to keep by id: the user's Drive is listed in full again
             await self.drive_delta_sync_point.update_sync_point(
                 sync_point_key,
                 {"pageToken": start_page_token, **holds.checkpoint_changes(), **stale_removals,
-                 **reseeded, **released(sync_point)}
+                 **reseeded, FEED_FAILED_ITEMS: sorted(listing_failed), **released(sync_point)}
             )
 
             self.logger.info(f"✅ Full sync completed for user {user.email}. Processed {total_files} files. Saved page token: {start_page_token[:20]}...")
