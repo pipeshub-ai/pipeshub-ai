@@ -240,16 +240,37 @@ async def test_users_by_email_rows_partial_vetted_read_discards_and_runs_fallbac
 
 async def test_users_by_email_rows_returns_vetted_rows_when_no_addresses_missing() -> None:
     h = Harness()
-    # Vetted read finds all requested emails
-    h.p._id_rows = AsyncMock(return_value=[
-        {"email": "user1@example.com", "id": "u1", "active": True},
-        {"email": "user2@example.com", "id": "u2", "active": True},
+    # Vetted read finds all requested emails, and no padded duplicate exists
+    h.p._id_rows = AsyncMock(side_effect=[
+        [
+            {"email": "user1@example.com", "id": "u1", "active": True},
+            {"email": "user2@example.com", "id": "u2", "active": True},
+        ],
+        [],  # has_padded_users returns empty
     ])
     rows = await h.call("_users_by_email_rows", "org-1", ["user1@example.com", "user2@example.com"], None)
     assert len(rows) == 2
-    # Only vetted query called, fallback not called
-    assert h.p._id_rows.await_count == 1
-    assert "users_by_email_vetted" in h.p._id_rows.await_args.args[0]
+    # Vetted read and has_padded_users check called, fallback not called
+    assert h.p._id_rows.await_count == 2
+    assert "users_by_email_vetted" in h.p._id_rows.await_args_list[0].args[0]
+    assert "has_padded_users" in h.p._id_rows.await_args_list[1].args[0]
+
+
+async def test_users_by_email_rows_falls_back_when_padded_duplicate_exists() -> None:
+    h = Harness()
+    # Vetted read finds the unpadded user, but a padded duplicate also exists
+    h.p._id_rows = AsyncMock(side_effect=[
+        [{"email": "user1@example.com", "id": "u1", "active": True}],
+        [1],  # has_padded_users finds padded duplicate
+        [
+            {"email": "user1@example.com", "id": "u1", "active": True},
+            {"email": "user1@example.com", "id": "u2", "active": True},
+        ],  # users_by_email fallback returns both
+    ])
+    rows = await h.call("_users_by_email_rows", "org-1", ["user1@example.com"], None)
+    assert len(rows) == 2
+    assert h.p._id_rows.await_count == 3
+    assert "users_by_email" in h.p._id_rows.await_args_list[2].args[0]
 
 
 async def test_batch_upsert_app_users_uses_ambient_org_as_org_node() -> None:
@@ -282,3 +303,36 @@ async def test_batch_upsert_app_users_uses_ambient_org_as_org_node() -> None:
     # Membership edge has to_id set to ambient org ORG
     member_edge = h.p.batch_create_edges.await_args_list[0].args[0][0]
     assert member_edge["to_id"] == ORG
+
+
+async def test_batch_upsert_app_users_matches_existing_user_with_nbsp_padded_email() -> None:
+    from app.config.constants.arangodb import Connectors
+    from app.models.entities import AppUser
+
+    h = Harness()
+    h.p.get_all_orgs = AsyncMock(return_value=[{"_key": ORG, "id": ORG}])
+    h.p._atomic = MagicMock()
+    h.p.batch_upsert_nodes = AsyncMock()
+    h.p.migrate_person_to_user = AsyncMock()
+    h.p.batch_create_edges = AsyncMock()
+    h.p._id_rows = AsyncMock(return_value=[{"raw": "alice@example.com", "low": "alice@example.com"}])
+    # _users_by_email_rows returns existing user whose email was normalized without NBSP
+    h.p._users_by_email_rows = AsyncMock(return_value=[{"email": "alice@example.com", "id": "u-existing", "active": True}])
+    h.p._q = AsyncMock()
+
+    user = AppUser(
+        app_name=Connectors.GOOGLE_DRIVE,
+        connector_id="c1",
+        id="u-new",
+        source_user_id="s1",
+        email="\u00a0alice@example.com\u00a0",
+        full_name="Alice",
+    )
+
+    await h.call("batch_upsert_app_users", [user])
+    # The NBSP-padded email matches the existing user: no new user node is upserted
+    h.p.batch_upsert_nodes.assert_not_called()
+    # The userAppRelation edge links to the resolved existing user ID
+    app_edge = h.p.batch_create_edges.await_args_list[0].args[0][0]
+    assert app_edge["from_id"] == "u-existing"
+

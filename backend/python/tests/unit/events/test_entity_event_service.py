@@ -359,7 +359,7 @@ class TestHandleUserDeleted:
         gp.batch_upsert_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_legacy_fallback_with_matching_ownership(self):
+    async def test_legacy_fallback_with_matching_ownership(self) -> None:
         svc, logger, gp, _ = _make_service()
         gp.get_user_by_email = AsyncMock(return_value=None)
         gp.get_entity_id_by_email = AsyncMock(return_value="key-1")
@@ -375,7 +375,7 @@ class TestHandleUserDeleted:
         assert node["isActive"] is False
 
     @pytest.mark.asyncio
-    async def test_legacy_fallback_missing_document(self):
+    async def test_legacy_fallback_missing_document(self) -> None:
         svc, logger, gp, _ = _make_service()
         gp.get_user_by_email = AsyncMock(return_value=None)
         gp.get_entity_id_by_email = AsyncMock(return_value="key-1")
@@ -388,7 +388,7 @@ class TestHandleUserDeleted:
         gp.batch_upsert_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_legacy_fallback_mismatched_ownership(self):
+    async def test_legacy_fallback_mismatched_ownership(self) -> None:
         svc, logger, gp, _ = _make_service()
         gp.get_user_by_email = AsyncMock(return_value=None)
         gp.get_entity_id_by_email = AsyncMock(return_value="key-1")

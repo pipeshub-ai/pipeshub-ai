@@ -139,17 +139,26 @@ class IdentityMixin(PgBase):
         """``(email, id, active)`` of the users whose lower-cased email is one of the lower-cased ``emails``: the vetted read of graph_0006 for up to its bound of
         addresses, or the statement for more, for an address out of its bounds or a page that may not be all of the matches. One read either way: chunks would each
         see their own snapshot, and a login moving between two of them would be missed by both (the batch would then create a duplicate user)."""
-        if emails and len(emails) <= 1000 and all(0 < len(e) <= 1000 for e in emails):
+        norm_emails = list(dict.fromkeys(e.strip().lower() for e in emails if e and e.strip()))
+        if norm_emails and len(norm_emails) <= 1000 and all(0 < len(e) <= 1000 for e in norm_emails):
             rows = await self._id_rows("""/* pipeshub:graph.users_by_email_vetted */ SELECT lower(btrim(p.doc->>'email', E' \t\r\n')) AS email, p.node_id AS id,
                    coalesce((p.doc->>'isActive')::boolean, false) AS active FROM graph.principals_by_email(ARRAY['users'], $1::text[]) p
-                   WHERE lower(btrim(p.doc->>'email', E' \t\r\n')) = ANY($1::text[]) ORDER BY p.node_id""", [emails], transaction)
+                   WHERE lower(btrim(p.doc->>'email', E' \t\r\n')) = ANY($1::text[]) ORDER BY p.node_id""", [norm_emails], transaction)
             if rows is not None and len(rows) < _PRINCIPALS_PAGE:
-                found_emails = {r["email"] for r in rows}
-                if all(e in found_emails for e in emails):
-                    return list(rows)
+                found_emails = {(r.get("email") or "").strip().lower() for r in rows}
+                if all(e in found_emails for e in norm_emails):
+                    has_padded = await self._id_rows(
+                        """/* pipeshub:graph.has_padded_users */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'users'
+                           AND lower(btrim(doc->>'email', E' \t\r\n')) = ANY($2::text[])
+                           AND doc->>'email' != btrim(doc->>'email', E' \t\r\n') LIMIT 1""",
+                        [org, norm_emails], transaction
+                    )
+                    if not has_padded:
+                        return [{"email": (r.get("email") or "").strip().lower(), "id": r["id"], "active": r["active"]} for r in rows]
 
-        return await self._id_rows("""/* pipeshub:graph.users_by_email */ SELECT lower(btrim(doc->>'email', E' \t\r\n')) AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
-               FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', E' \t\r\n')) = ANY($2::text[]) ORDER BY id""", [org, emails], transaction)
+        rows = await self._id_rows("""/* pipeshub:graph.users_by_email */ SELECT lower(btrim(doc->>'email', E' \t\r\n')) AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
+               FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', E' \t\r\n')) = ANY($2::text[]) ORDER BY id""", [org, norm_emails], transaction)
+        return [{"email": (r.get("email") or "").strip().lower(), "id": r["id"], "active": r["active"]} for r in (rows or [])]
 
     async def _verified_email_peers(self, org: str, email: str, transaction: str | None) -> list:
         """The users whose lower-cased email is ``email``'s, by id: the vetted read of graph_0006, or the statement for an address out of its bounds."""
@@ -208,7 +217,7 @@ class IdentityMixin(PgBase):
         lookup_emails = list(dict.fromkeys([e for e in (email, norm_email) if e]))
         rows = await self._principals_by_email(["users"], lookup_emails, transaction)
         cands = [_doc(r["doc"]) for r in (rows or [])]
-        if not any(d.get("isActive") is not False for d in cands):
+        if not any(d.get("isActive") is True for d in cands):
             fb_rows = await self._id_rows(
                 "/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', E' \t\r\n')) = $2",
                 [current_org_id(), norm_email], transaction
@@ -218,7 +227,7 @@ class IdentityMixin(PgBase):
             return None
 
         def _sort_key(d: dict) -> tuple[int, str]:
-            is_active = d.get("isActive") is not False
+            is_active = d.get("isActive") is True
             uid = str(d.get("id") or d.get("_key") or "")
             return (0 if is_active else 1, uid)
 
@@ -234,29 +243,41 @@ class IdentityMixin(PgBase):
             return {}
         # lower(doc->>'email') is the expression index nodes_user_email (org_id, lower(doc->>'email')), which the vetted read reaches.
         vetted_emails = list(dict.fromkeys([*raw_wanted, *[e.lower() for e in emails if e]]))
-        rows = await self._principals_by_email(["users"], vetted_emails, transaction)
 
-        cands_by_norm: dict[str, list[dict]] = {w: [] for w in raw_wanted}
-        for r in (rows or []):
-            d = _doc(r["doc"])
-            norm = (d.get("email") or "").strip().lower()
-            if norm in cands_by_norm:
-                cands_by_norm[norm].append(d)
+        # Both reads must share one snapshot so a login moving between two chunks is not missed.
+        # When no caller transaction is supplied we open a read-only one and always roll it back.
+        snap = transaction
+        owned_snap = False
+        if snap is None:
+            snap = await self.begin_snapshot()
+            owned_snap = True
+        try:
+            rows = await self._principals_by_email(["users"], vetted_emails, snap)
 
-        missing_active = [w for w in raw_wanted if not any(d.get("isActive") is not False for d in cands_by_norm[w])]
-        if missing_active:
-            fb_rows = await self._id_rows(
-                "/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', E' \t\r\n')) = ANY($2::text[])",
-                [org, missing_active], transaction
-            )
-            for r in (fb_rows or []):
+            cands_by_norm: dict[str, list[dict]] = {w: [] for w in raw_wanted}
+            for r in (rows or []):
                 d = _doc(r["doc"])
                 norm = (d.get("email") or "").strip().lower()
                 if norm in cands_by_norm:
                     cands_by_norm[norm].append(d)
 
+            missing_active = [w for w in raw_wanted if not any(d.get("isActive") is True for d in cands_by_norm[w])]
+            if missing_active:
+                fb_rows = await self._id_rows(
+                    "/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', E' \t\r\n')) = ANY($2::text[])",
+                    [org, missing_active], snap
+                )
+                for r in (fb_rows or []):
+                    d = _doc(r["doc"])
+                    norm = (d.get("email") or "").strip().lower()
+                    if norm in cands_by_norm:
+                        cands_by_norm[norm].append(d)
+        finally:
+            if owned_snap:
+                await self.rollback_transaction(snap)
+
         def _sort_key(d: dict) -> tuple[int, str]:
-            is_active = d.get("isActive") is not False
+            is_active = d.get("isActive") is True
             uid = str(d.get("id") or d.get("_key") or "")
             return (0 if is_active else 1, uid)
 
@@ -490,11 +511,14 @@ class IdentityMixin(PgBase):
         async with self._atomic(transaction) as tx:
             await self._q(lambda t: t.execute("""/* pipeshub:graph.ensure_minimal_app */ INSERT INTO graph.nodes (org_id, coll, id, doc)
                 VALUES ($1, 'apps', $2, $3::jsonb) ON CONFLICT DO NOTHING""", org, connector_id, _j(stub)), tx, write=True)
-            # the database lowers and trims an address, as it lowers the stored ones: Python's lower() may disagree on non-ASCII letters
+            # the database lowers and trims an address, as it lowers the stored ones: Python's lower() may disagree on non-ASCII letters.
+            # Use Python strip() on input emails to match the serializer (handles NBSP and all Unicode whitespace).
+            stripped_emails = list({(u.email or "").strip() for u in users if u.email})
             low = {r["raw"]: r["low"] for r in await self._id_rows("/* pipeshub:graph.lower_emails */ SELECT e AS raw, lower(btrim(e, E' \t\r\n')) AS low FROM unnest($1::text[]) e",
-                                                                   [list({u.email for u in users})], tx)}
+                                                                   [stripped_emails], tx)}
             def _canon(u: AppUser) -> str:
-                return low.get(u.email, (u.email or "").strip().lower())
+                raw_stripped = (u.email or "").strip()
+                return low.get(raw_stripped, raw_stripped.lower())
 
             have: dict[str, tuple[str, bool]] = {}
             shared: dict[str, list[tuple[str, bool]]] = {}

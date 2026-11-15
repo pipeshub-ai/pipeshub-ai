@@ -35,6 +35,10 @@ def _pg(rows: list[dict]) -> IdentityMixin:
     p = object.__new__(IdentityMixin)
     p.logger = logging.getLogger("t")
     p._id_rows = AsyncMock(return_value=[{"id": r["_key"], "doc": {**r, "id": r["_key"]}} for r in rows])
+    # Snapshot opened when no caller transaction is supplied.
+    p.begin_snapshot = AsyncMock(return_value="snap-tx")
+    p.begin_transaction = AsyncMock(return_value="snap-tx")
+    p.rollback_transaction = AsyncMock()
     return p
 
 

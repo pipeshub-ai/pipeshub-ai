@@ -10599,23 +10599,37 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         )
                         continue
 
+                    # When the resolved ID differs from the newly created inactive stub,
+                    # reconcile the unused stub without disrupting existing safeguards.
+                    if user_record.id != user.id:
+                        try:
+                            await self.delete_nodes(
+                                [user.id],
+                                collection=CollectionNames.USERS.value,
+                                transaction=transaction,
+                            )
+                        except Exception as stub_err:
+                            self.logger.warning(
+                                "Failed to clean up unused user stub %s: %s", user.id, stub_err
+                            )
+
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.
                     try:
                         norm_person_email = user.email.strip().lower() if user.email else ""
                         await self.migrate_person_to_user(
-                            norm_person_email, user.id, target_org_id, transaction=transaction
+                            norm_person_email, user_record.id, target_org_id, transaction=transaction
                         )
                     except Exception as migrate_err:
                         self.logger.error(
-                            "Person adoption failed for user %s in org %s: %s", user.id, target_org_id, migrate_err
+                            "Person adoption failed for user %s in org %s: %s", user_record.id, target_org_id, migrate_err
                         )
 
                     # A guest is saved so grants to them resolve, but org membership
                     # would hand them every org-wide grant.
                     if not user.is_guest:
                         user_org_edge = {
-                            "from_id": user.id,
+                            "from_id": user_record.id,
                             "from_collection": CollectionNames.USERS.value,
                             "to_id": target_org_id,
                             "to_collection": CollectionNames.ORGS.value,

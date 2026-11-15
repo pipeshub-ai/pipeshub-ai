@@ -8191,9 +8191,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if key not in found or (u.is_active and not found[key].is_active):
                     found[key] = u
 
-            # Fallback for unmatched inputs: find legacy unnormalized rows with mixed-case stored emails
+            # Fallback for unmatched inputs: find legacy unnormalized rows with mixed-case stored emails.
+            # When a transaction is supplied the flag was read under the same snapshot, so we cannot
+            # establish that backfill completed before the snapshot; run the fallback unconditionally.
             unmatched = [e for e in wanted if e not in found or not found[e].is_active]
-            if unmatched and not is_backfilled:
+            if unmatched and (transaction is not None or not is_backfilled):
                 legacy_query = f"""
                 FOR user IN {CollectionNames.USERS.value}
                     {org_filter}
@@ -8276,9 +8278,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if is_active:
                     return candidate
 
-            # Legacy fallback during rollout: runs when indexed lookup does not find an active
-            # user and backfill is not yet complete.
-            if not is_backfilled:
+            # Legacy fallback during rollout: runs when indexed lookup does not find an active user
+            # and backfill is not yet complete.  When the caller supplies a transaction the flag was
+            # read under the same snapshot, so we cannot prove backfill preceded the snapshot.
+            if transaction is not None or not is_backfilled:
                 legacy_query = f"""
                 FOR user IN {CollectionNames.USERS.value}
                     {org_filter}
@@ -11064,17 +11067,27 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 except Exception:
                     org_id = None
             connector_id = users[0].connector_id
-            app = await self.get_document(connector_id, CollectionNames.APPS.value)
+            app = await self.get_document(connector_id, CollectionNames.APPS.value, transaction=transaction)
+            connector_org = None
+            if isinstance(app, dict):
+                raw_app_org = app.get("orgId") or app.get("org_id")
+                if isinstance(raw_app_org, str) and raw_app_org.strip():
+                    connector_org = raw_app_org.strip()
             if not org_id:
-                orgs = await self.get_all_orgs()
-                if not orgs:
-                    raise Exception("No organizations found in the database")
-                if len(orgs) == 1:
-                    org_id = orgs[0]["_key"]
+                if connector_org:
+                    org_id = connector_org
                 else:
-                    raise ValueError(
-                        f"Cannot resolve organization for batch_upsert_app_users (connector: {connector_id})"
-                    )
+                    orgs = await self.get_all_orgs(transaction=transaction)
+                    if not orgs:
+                        raise Exception("No organizations found in the database")
+                    if len(orgs) == 1:
+                        org_id = orgs[0]["_key"]
+                    else:
+                        raise ValueError(
+                            f"Cannot resolve organization for batch_upsert_app_users (connector: {connector_id})"
+                        )
+            if not connector_org:
+                connector_org = org_id
 
             if not app:
                 raise Exception(f"Failed to get/create app: {connector_id}")
@@ -11088,7 +11101,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     continue
 
                 user_org = getattr(user, "org_id", None) or getattr(user, "orgId", None)
-                target_org_id = user_org if isinstance(user_org, str) and user_org.strip() else org_id
+                target_org_id = user_org if isinstance(user_org, str) and user_org.strip() else connector_org
+
+                # Reject users whose declared org differs from the connector's org to prevent
+                # cross-org edge writes.  Users without an explicit org default to the connector's
+                # org and are always accepted.
+                if target_org_id != connector_org:
+                    self.logger.warning(
+                        "Skipping app user %s: target_org_id %s does not match connector org %s",
+                        user.id, target_org_id, connector_org,
+                    )
+                    continue
 
                 # Check if user exists within connector's organization
                 user_record = await self.get_user_by_email(
@@ -11097,20 +11120,25 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
                 if not user_record:
                     # Create new user
-                    await self.batch_upsert_nodes(
+                    upsert_ok = await self.batch_upsert_nodes(
                         [{**user.to_arango_base_user(), "orgId": target_org_id, "isActive": False}],
                         collection=CollectionNames.USERS.value,
                         transaction=transaction
                     )
+                    if not upsert_ok:
+                        raise Exception(
+                            f"Failed to create user record for user {user.id} "
+                            f"(org {target_org_id})"
+                        )
 
                     user_record = await self.get_user_by_email(
                         user.email, transaction, raise_on_error=True, org_id=target_org_id
                     )
                     if not user_record:
-                        self.logger.warning(
-                            "Failed to retrieve created user record for user %s", user.id
+                        raise Exception(
+                            f"Failed to retrieve created user record for user {user.id} "
+                            f"(org {target_org_id}) after insert"
                         )
-                        continue
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.

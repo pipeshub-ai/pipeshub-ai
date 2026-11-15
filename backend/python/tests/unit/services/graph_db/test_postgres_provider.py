@@ -209,7 +209,8 @@ async def test_get_user_by_email_reads_only_the_ambient_org(org_id: str | None, 
 
     p = object.__new__(IdentityMixin)
     p.logger = logging.getLogger("t")
-    p._principals_by_email = AsyncMock(return_value=[{"doc": {"email": "a@x.io"}}])      # the vetted read, which takes the ambient org itself
+    p._principals_by_email = AsyncMock(return_value=[{"doc": {"email": "a@x.io", "isActive": True}}])      # the vetted read, which takes the ambient org itself
+    p._id_rows = AsyncMock(return_value=[])
     user = object()
     with for_org("o1", job="t"), patch.object(identity, "_arango", lambda d, _c: d), \
             patch.object(identity.User, "from_arango_user", return_value=user):
@@ -237,6 +238,8 @@ async def test_get_user_by_email_prefers_active_legacy_user_over_inactive_exact(
 async def test_get_users_by_emails_prefers_active_legacy_user_over_inactive_exact() -> None:
     p = PostgresGraphProvider.__new__(PostgresGraphProvider)
     p.logger = logging.getLogger("t")
+    p.begin_snapshot = AsyncMock(return_value="snap-tx")
+    p.rollback_transaction = AsyncMock()
     p._principals_by_email = AsyncMock(return_value=[{"doc": {"id": "u-inactive", "_key": "u-inactive", "email": "a@x.io", "isActive": False}}])
     p._id_rows = AsyncMock(return_value=[{"doc": {"id": "u-active", "_key": "u-active", "email": " a@x.io ", "isActive": True}}])
     with for_org("o1", job="t"):
