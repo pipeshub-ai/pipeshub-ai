@@ -474,6 +474,10 @@ class TestRetryOrder:
         beside a live peer, so read-time own-pending recovery stays off and
         only the retry can bring them back."""
         await _a_live_peer(consumer)
+        # With room in the buffer, own-pending recovery offers them too, beside a peer or not, and it runs first; a
+        # slow runner that puts a second between passes lets it run on each, and the order checks then pass without
+        # the retry.
+        consumer._IndexingRedisStreamsConsumer__recover_while_reading = AsyncMock()
         for i in range(count):
             await consumer.redis.xadd(LANE, _fields(f"waiting-{i}", f"conn-{i}"))
         read = await consumer.redis.xreadgroup(GROUP, consumer.consumer_name, {LANE: ">"}, count=count)
