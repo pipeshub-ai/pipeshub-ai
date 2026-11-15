@@ -7,7 +7,7 @@ org is an error and never an answer such as "not found"); every statement is a l
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, Connectors
 from app.core.org_context import current_org_id
@@ -23,12 +23,17 @@ from app.services.graph_db.common.team_grant_role import (
 )
 from app.services.graph_db.common.utils import (
     CONTAINMENT_MAX_DEPTH,
+    KB_LIST_FOLDERS_CAP,
     uploaded_document_id,
 )
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
+from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.records import _vis
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import folder_in_trash
+
+if TYPE_CHECKING:
+    from app.core.db import Tx
 
 _KB = Connectors.KNOWLEDGE_BASE.value
 _ROLES = list(TEAM_GRANT_ROLES)
@@ -68,10 +73,11 @@ class KbMixin(PgBase):
             SELECT s.total, s.roles, p.doc, p.role, p.folders FROM
               (SELECT (SELECT count(*) FROM kept) AS total, (SELECT coalesce(array_agg(DISTINCT role), '{}') FROM base) AS roles) s
               LEFT JOIN LATERAL (SELECT f.id, f.doc, f.role, (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'name', r.doc->'recordName',
-                    'createdAtTimestamp', r.doc->'createdAtTimestamp', 'webUrl', r.doc->'webUrl') ORDER BY r.id), '[]'::jsonb)
-                  FROM (SELECT DISTINCT n.id, n.doc FROM graph.edges be JOIN graph.nodes n ON n.org_id = be.org_id AND n.coll = 'records' AND n.id = be.from_id
+                    'createdAtTimestamp', r.doc->'createdAtTimestamp', 'webUrl', r.doc->'webUrl') ORDER BY r.id COLLATE "C"), '[]'::jsonb)
+                  FROM (SELECT n.id, n.doc FROM graph.edges be JOIN graph.nodes n ON n.org_id = be.org_id AND n.coll = 'records' AND n.id = be.from_id
                         WHERE be.org_id = $1 AND be.coll = 'belongsTo' AND be.from_coll = 'records' AND be.to_coll = 'apps' AND be.to_id = f.id
-                          AND n.doc->>'mimeType' = ANY($14::text[])) r) AS folders
+                          AND n.doc->>'mimeType' = ANY($14::text[])
+                        GROUP BY n.id, n.doc ORDER BY n.id COLLATE "C" LIMIT $15) r) AS folders
                 FROM kept f
                 ORDER BY (CASE WHEN $10::int = 1 AND $13::boolean THEN f.doc->>'name' END) COLLATE "C" ASC, (CASE WHEN $10::int = 1 AND NOT $13::boolean THEN f.doc->>'name' END) COLLATE "C" DESC,
                          (CASE WHEN $10::int = 2 AND $13::boolean THEN f.doc->'createdAtTimestamp' END) ASC, (CASE WHEN $10::int = 2 AND NOT $13::boolean THEN f.doc->'createdAtTimestamp' END) DESC,
@@ -79,15 +85,17 @@ class KbMixin(PgBase):
                          (CASE WHEN $10::int = 4 AND $13::boolean THEN f.role END) COLLATE "C" ASC, (CASE WHEN $10::int = 4 AND NOT $13::boolean THEN f.role END) COLLATE "C" DESC, f.id
                 OFFSET $11 LIMIT $12) p ON true""",
                                                   org, user_id, org_id, TEAM_GRANT_ROLE_CAP, sorted(RETIRED_ROLES), _ROLES, _KB, search or None, permissions or None,
-                                                  key, skip, limit, sort_order.upper() != "DESC", FOLDER_MIME_TYPES), transaction)
+                                                  key, skip, limit, sort_order.upper() != "DESC", FOLDER_MIME_TYPES, KB_LIST_FOLDERS_CAP + 1), transaction)
         kbs = []
         for r in rows:
             if r["doc"] is None:
                 continue
             d = _doc(r["doc"])
+            folders = _doc_list(r["folders"])
             kbs.append({"id": d.get("id"), "name": d.get("name") if d.get("name") is not None else "Untitled", "description": d.get("description"),
                         "createdAtTimestamp": d.get("createdAtTimestamp"), "updatedAtTimestamp": d.get("updatedAtTimestamp"), "createdBy": d.get("createdBy"),
-                        "userRole": r["role"], "status": d.get("status"), "folders": _doc_list(r["folders"])})
+                        "userRole": r["role"], "status": d.get("status"), "folders": folders[:KB_LIST_FOLDERS_CAP],
+                        "foldersTruncated": len(folders) > KB_LIST_FOLDERS_CAP})
         return kbs, rows[0]["total"], {"permissions": sorted(rows[0]["roles"]), "sortFields": list(_SORTS), "sortOrders": ["asc", "desc"]}
 
     # ---- who holds a role on a knowledge base --------------------------------------------------------------------
@@ -249,21 +257,29 @@ class KbMixin(PgBase):
     async def find_folder_by_name_in_parent(self, kb_id: str, folder_name: str, parent_folder_id: str | None = None, exclude_folder_id: str | None = None,
                                             transaction: str | None = None, *, raise_on_error: bool = False) -> dict | None:
         """A live folder of that name (case-insensitive) directly under the parent folder, or at the root of the knowledge base (a folder
-        with no parent record)."""
+        with no parent record). Each reads from the parent's edges: the children of the folder, or the records of the knowledge base, never the organisation's records.
+        shortcut: a root check reads every record of the knowledge base (row-level security keeps a plain statement from an index on the name); a vetted name read if one grows past ~100k records."""
         org = current_org_id()
         try:
-            d = await self._one("""/* pipeshub:graph.find_folder_by_name_in_parent */ SELECT f.doc FROM graph.nodes f
-                WHERE f.org_id = $1 AND f.coll = 'records' AND f.doc->>'mimeType' = ANY($2::text[]) AND lower(f.doc->>'recordName') = lower($3::text)
-                  AND coalesce((f.doc->>'isDeleted')::boolean, false) = false AND ($4::text IS NULL OR f.id <> $4)
-                  AND CASE WHEN $5::text IS NULL
-                    THEN EXISTS (SELECT 1 FROM graph.edges b JOIN graph.nodes k ON k.org_id = b.org_id AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = $6
-                          WHERE b.org_id = f.org_id AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = f.id AND b.to_coll = 'apps' AND b.to_id = $7)
+            if parent_folder_id is None:
+                d = await self._one("""/* pipeshub:graph.find_folder_by_name_in_kb_root */ SELECT f.doc FROM graph.edges b
+                    JOIN graph.nodes k ON k.org_id = b.org_id AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = $5
+                    JOIN graph.nodes f ON f.org_id = b.org_id AND f.coll = 'records' AND f.id = b.from_id
+                    WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.to_id = $6 AND b.to_coll = 'apps' AND b.from_coll = 'records'
+                      AND f.doc->>'mimeType' = ANY($2::text[]) AND lower(f.doc->>'recordName') = lower($3::text)
+                      AND coalesce((f.doc->>'isDeleted')::boolean, false) = false AND ($4::text IS NULL OR f.id <> $4)
                       AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = f.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
                           AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = f.id)
-                    ELSE EXISTS (SELECT 1 FROM graph.edges p JOIN graph.nodes pn ON pn.org_id = p.org_id AND pn.coll = 'records' AND pn.id = p.from_id
-                          WHERE p.org_id = f.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD' AND p.from_coll = 'records' AND p.from_id = $5
-                            AND p.to_coll = 'records' AND p.to_id = f.id) END
-                ORDER BY f.id LIMIT 1""", org, FOLDER_MIME_TYPES, folder_name, exclude_folder_id, parent_folder_id, _KB, kb_id, transaction=transaction)
+                    ORDER BY f.id LIMIT 1""", org, FOLDER_MIME_TYPES, folder_name, exclude_folder_id, _KB, kb_id, transaction=transaction)
+            else:
+                d = await self._one("""/* pipeshub:graph.find_folder_by_name_in_folder */ SELECT f.doc FROM graph.edges p
+                    JOIN graph.nodes pn ON pn.org_id = p.org_id AND pn.coll = 'records' AND pn.id = p.from_id
+                    JOIN graph.nodes f ON f.org_id = p.org_id AND f.coll = 'records' AND f.id = p.to_id
+                    WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.from_id = $5 AND p.from_coll = 'records' AND p.to_coll = 'records'
+                      AND p.doc->>'relationshipType' = 'PARENT_CHILD'
+                      AND f.doc->>'mimeType' = ANY($2::text[]) AND lower(f.doc->>'recordName') = lower($3::text)
+                      AND coalesce((f.doc->>'isDeleted')::boolean, false) = false AND ($4::text IS NULL OR f.id <> $4)
+                    ORDER BY f.id LIMIT 1""", org, FOLDER_MIME_TYPES, folder_name, exclude_folder_id, parent_folder_id, transaction=transaction)
         except Exception as e:
             self.logger.error(f"❌ Failed to find folder by name: {e}")
             if raise_on_error:
@@ -272,29 +288,38 @@ class KbMixin(PgBase):
         return _arango(d, "records") if d else None
 
     async def get_folder_depth(self, folder_id: str, transaction: str | None = None) -> int:
-        """1 for a folder with no parent, else one more than the longest chain of parents above it."""
+        """1 for a folder with no parent, else one more than the longest chain of parents above it. Read from kg's PARENT_CHILD links for a connector it serves
+        (``kg.hierarchy.pc_depth``), else walked."""
         org = current_org_id()
-        depth = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.get_folder_depth */ WITH RECURSIVE up(id, depth, seen) AS (
-              SELECT n.id, 0, ARRAY[n.id] FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $2
-              UNION ALL
-              SELECT e.from_id, up.depth + 1, up.seen || e.from_id FROM up JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations'
-                AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.to_coll = 'records' AND e.to_id = up.id
-              WHERE NOT e.from_id = ANY(up.seen) AND up.depth < $3)
-            SELECT coalesce(max(depth), 0) + 1 FROM up""", org, folder_id, CONTAINMENT_MAX_DEPTH), transaction)
-        return int(depth)
+
+        async def walk(tx: Tx) -> int:
+            return int(await tx.fetchval("""/* pipeshub:graph.get_folder_depth */ WITH RECURSIVE up(id, depth, seen) AS (
+                  SELECT n.id, 0, ARRAY[n.id] FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $2
+                  UNION ALL
+                  SELECT e.from_id, up.depth + 1, up.seen || e.from_id FROM up JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations'
+                    AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.to_coll = 'records' AND e.to_id = up.id
+                  WHERE NOT e.from_id = ANY(up.seen) AND up.depth < $3)
+                SELECT coalesce(max(depth), 0) + 1 FROM up""", org, folder_id, CONTAINMENT_MAX_DEPTH))
+        got = await kg_hier.answer(self, "pc_depth", transaction, lambda tx: kg_hier.pc_depth(tx, org, folder_id, CONTAINMENT_MAX_DEPTH), walk=walk)
+        return got if got is not None else await self._q(walk, transaction)
 
     async def get_folder_subtree_height(self, folder_id: str, folder_mime_types: list[str], transaction: str | None = None) -> int:
-        """How many levels of folders lie below the folder (0 for none); the records between two folders count as levels."""
+        """How many levels of folders lie below the folder (0 for none); the records between two folders count as levels. Read from kg's PARENT_CHILD links for a
+        connector it serves (``kg.hierarchy.pc_height``), else walked."""
         org = current_org_id()
-        height = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.get_folder_subtree_height */ WITH RECURSIVE down(id, depth, seen) AS (
-              SELECT n.id, 0, ARRAY[n.id] FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $2
-              UNION ALL
-              SELECT e.to_id, down.depth + 1, down.seen || e.to_id FROM down JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations'
-                AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.from_id = down.id AND e.to_coll = 'records'
-              WHERE NOT e.to_id = ANY(down.seen) AND down.depth < $4)
-            SELECT coalesce(max(d.depth), 0) FROM down d JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'records' AND s.id = d.id
-            WHERE d.depth >= 1 AND s.doc->>'mimeType' = ANY($3::text[])""", org, folder_id, list(folder_mime_types), CONTAINMENT_MAX_DEPTH), transaction)
-        return int(height)
+
+        async def walk(tx: Tx) -> int:
+            return int(await tx.fetchval("""/* pipeshub:graph.get_folder_subtree_height */ WITH RECURSIVE down(id, depth, seen) AS (
+                  SELECT n.id, 0, ARRAY[n.id] FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $2
+                  UNION ALL
+                  SELECT e.to_id, down.depth + 1, down.seen || e.to_id FROM down JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations'
+                    AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.from_id = down.id AND e.to_coll = 'records'
+                  WHERE NOT e.to_id = ANY(down.seen) AND down.depth < $4)
+                SELECT coalesce(max(d.depth), 0) FROM down d JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'records' AND s.id = d.id
+                WHERE d.depth >= 1 AND s.doc->>'mimeType' = ANY($3::text[])""", org, folder_id, list(folder_mime_types), CONTAINMENT_MAX_DEPTH))
+        got = await kg_hier.answer(self, "pc_height", transaction,
+                                   lambda tx: kg_hier.pc_height(tx, org, folder_id, list(folder_mime_types), CONTAINMENT_MAX_DEPTH), walk=walk)
+        return got if got is not None else await self._q(walk, transaction)
 
     async def is_record_folder(self, record_id: str, transaction: str | None = None) -> bool:
         """The record's type document says it is not a file. A failed read answers False."""

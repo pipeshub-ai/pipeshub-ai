@@ -5770,6 +5770,7 @@
       "restoredMany_one": "{{count}} आइटम वापस लाया गया",
       "restoredMany_other": "{{count}} आइटम वापस लाए गए",
       "showing": "{{total}} में से {{from}}–{{to}}",
+      "showingAtLeast": "{{total, number}}+ में से {{from}}–{{to}}",
       "previous": "पिछला",
       "next": "अगला",
       "nameAndMore_one": "{{name}} और {{count}} अन्य",

@@ -28,11 +28,14 @@ BACKEND = Path(__file__).resolve().parents[5]
 TABLE = "kg.records"
 COPIED = frozenset({"rule", "model", "origin", "vrid", "external_id", "record_type"})
 LISTING = "python/app/services/graph_db/postgres/kg/listing.py"
+COUNTS = "python/app/services/graph_db/postgres/kg/counts.py"
 
 # (source, what): the reads that may take a copied column ("*": the whole row, or anything of the source)
 ALLOWED = {
     (LISTING, "record_type"),                                                       # the listing's filter: a connector kg serves only
     ("python/app/services/graph_db/postgres/kg/verify.py", "*"),                    # the verify compares the whole row with the graph: what must see the difference
+    (COUNTS, "record_type"), (COUNTS, "origin"),                                    # the counters' facets: counts.facets is read for a connector kg serves only
+    ("db/versions/kg/0015_counts.sql", "*"),                                        # the counter trigger takes each changed row whole; its facet keys are read as the line above says
 }
 # (source, tag or start of the statement): statements that name kg.records and that sqlglot does not parse, with the reason they need no reading
 UNPARSED: dict[tuple[str, str], str] = {}
@@ -492,10 +495,15 @@ HIERARCHY = "python/app/services/graph_db/postgres/kg/hierarchy.py"
 def hierarchy_statements() -> list[str]:
     """The typed graph's hierarchy reads: composed once, at import, from the module's seek builders."""
     h = importlib.import_module("app.services.graph_db.postgres.kg.hierarchy")
-    return [h.NODE, h.BELOW, h.NEST, h.GROUP_RECORDS, h.UP, h.GROUP_MEMBERS, h.APP_MEMBERS]
+    return [h.NODE, h.BELOW, h.NEST, h.GROUP_RECORDS, h.UP, h.GROUP_MEMBERS, h.APP_MEMBERS, h.PC_ANCESTOR, h.PC_DEPTH, h.PC_HEIGHT]
 
 
-RENDERED = {LISTING: listing_statements, HIERARCHY: hierarchy_statements}
+def counts_statements() -> list[str]:
+    """The counters' recount: composed once, at import, from the listing's own predicates."""
+    return [importlib.import_module("app.services.graph_db.postgres.kg.counts").RECOUNT]
+
+
+RENDERED = {LISTING: listing_statements, HIERARCHY: hierarchy_statements, COUNTS: counts_statements}
 
 
 def sources() -> dict[str, tuple[list[str], list[str]]]:

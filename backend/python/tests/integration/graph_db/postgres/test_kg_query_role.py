@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
 
-ACCESS_TABLES = ("scope_members", "principal_closure", "scope_classes", "class_literals", "scopes", "records", "links", "node_keys", "projection_state", "restamp_queue")
+ACCESS_TABLES = ("scope_members", "principal_closure", "scope_classes", "class_literals", "scopes", "records", "links", "node_keys", "projection_state", "restamp_queue", "counts")
 WRITES = {
     "INSERT": "INSERT INTO kg.{t} SELECT * FROM kg.{t} WHERE false",
     "UPDATE": "UPDATE kg.{t} SET org_id = org_id WHERE false",

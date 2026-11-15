@@ -161,6 +161,7 @@ from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
+    KB_LIST_FOLDERS_CAP,
     PATH_MAX_CANDIDATES,
     PERSON_ENTITY_TYPE,
     TRASH_LIST_OTHER_ROOT_NAMES,
@@ -704,6 +705,8 @@ def _trash_list_page_query(*, hinted: bool) -> str:
     {_trash_batch_roots(hinted=hinted)}
     WITH r.deleteBatchId AS batch, max(r.deletedAtTimestamp) AS deleted_at,
          min(r.id) AS first_id, count(r) AS root_count
+    WHERE $after_ts IS NULL OR deleted_at < $after_ts OR (deleted_at = $after_ts AND batch < $after_batch)
+    WITH batch, deleted_at, first_id, root_count
     ORDER BY deleted_at DESC, batch DESC SKIP $skip LIMIT $limit
     MATCH (r:Record {{id: first_id}})
     OPTIONAL MATCH (p:Record)-[rel:NODE_RELATION]->(r)
@@ -713,7 +716,7 @@ def _trash_list_page_query(*, hinted: bool) -> str:
     WITH batch, deleted_at, root_count, r, p, head(collect(t)) AS t
     OPTIONAL MATCH (u:User {{id: r.deletedByUserId}})
     WITH batch, deleted_at, root_count, r, p, t, head(collect(u)) AS u
-    RETURN properties(r) AS rec,
+    RETURN batch, deleted_at, properties(r) AS rec,
            p.id AS parent_id, p.recordName AS parent_name, p.isDeleted AS parent_deleted,
            t.isFile AS is_file, t.mimeType AS file_mime, t.sizeInBytes AS size,
            root_count,
@@ -14680,26 +14683,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {self._kb_best_role_rows(search_filter)}
             WHERE final_role IS NOT NULL {permission_filter}
 
-            // Get folders for all KBs (folder records linked via BELONGS_TO with mimeType = folder)
-            OPTIONAL MATCH (folderRecord:Record)-[:BELONGS_TO]->(kb)
-            WHERE folderRecord.mimeType IN $folder_mime_types
-
-            WITH kb, final_role,
-                 COLLECT(DISTINCT CASE
-                     WHEN folderRecord.id IS NOT NULL THEN {{
-                         id: folderRecord.id,
-                         name: folderRecord.recordName,
-                         createdAtTimestamp: folderRecord.createdAtTimestamp,
-                         webUrl: folderRecord.webUrl
-                     }}
-                     ELSE null
-                 END) AS allFolders
-
-            WITH kb, final_role, [f IN allFolders WHERE f IS NOT NULL] AS folders
-
+            // The page of collections first; then, for each, its folders by id, one more than the cap (whether more exist), never all of them.
+            WITH kb, final_role
             ORDER BY {sort_field} {sort_direction}, kb.id
             SKIP $skip
             LIMIT $limit
+            CALL (kb) {{
+                MATCH (folderRecord:Record)-[:BELONGS_TO]->(kb)
+                WHERE folderRecord.mimeType IN $folder_mime_types AND folderRecord.id IS NOT NULL
+                WITH DISTINCT folderRecord
+                ORDER BY folderRecord.id
+                LIMIT $folders_fetch
+                RETURN collect({{
+                    id: folderRecord.id,
+                    name: folderRecord.recordName,
+                    createdAtTimestamp: folderRecord.createdAtTimestamp,
+                    webUrl: folderRecord.webUrl
+                }}) AS folders
+            }}
 
             RETURN {{
                 id: kb.id,
@@ -14710,7 +14711,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 createdBy: kb.createdBy,
                 userRole: final_role,
                 status: kb.status,
-                folders: folders
+                folders: folders[0..$folders_cap],
+                foldersTruncated: size(folders) > $folders_cap
             }} AS result
             """
 
@@ -14729,6 +14731,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             params = {
                 "folder_mime_types": FOLDER_MIME_TYPES,
+                "folders_cap": KB_LIST_FOLDERS_CAP,
+                "folders_fetch": KB_LIST_FOLDERS_CAP + 1,
                 "user_id": user_id,
                 "org_id": org_id,
                 "kb_type": Connectors.KNOWLEDGE_BASE.value,
@@ -15450,11 +15454,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         skip: int = 0,
         limit: int = 25,
         single_file_batches_only: bool = False,
+        after: tuple[int, str] | None = None,
+        count_cap: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """See ``IGraphDBProvider.list_trashed_records``."""
         if not connector_id or not org_id or limit <= 0:
             return {"items": [], "total": 0}
+        after_ts, after_batch = after or (None, None)
         parameters = {
             "connector_id": connector_id,
             "org_id": org_id,
@@ -15469,15 +15476,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self._execute_hinted(
             _trash_list_page_query(hinted=True),
             _trash_list_page_query(hinted=False),
-            {**parameters, "names": TRASH_LIST_OTHER_ROOT_NAMES},
+            {**parameters, "names": TRASH_LIST_OTHER_ROOT_NAMES, "after_ts": after_ts, "after_batch": after_batch},
             transaction,
             index=_TRASH_LIST_INDEXES,
             warning=_TRASH_LIST_HINT_WARNING,
         )
+        capped = "" if count_cap is None else " LIMIT $count_limit"
+        count = f" WITH DISTINCT r.deleteBatchId AS batch{capped} RETURN count(batch) AS total"
         counted = await self._execute_hinted(
-            f"{_trash_batch_roots(hinted=True)} RETURN count(DISTINCT r.deleteBatchId) AS total",
-            f"{_trash_batch_roots(hinted=False)} RETURN count(DISTINCT r.deleteBatchId) AS total",
-            parameters,
+            _trash_batch_roots(hinted=True) + count,
+            _trash_batch_roots(hinted=False) + count,
+            parameters if count_cap is None else {**parameters, "count_limit": count_cap + 1},
             transaction,
             index=_TRASH_LIST_INDEXES,
             warning=_TRASH_LIST_HINT_WARNING,
@@ -15496,6 +15505,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "batchSize": row.get("batch_size") or 0,
                 "deletedByName": row.get("user_name") or None,
                 "deletedByEmail": row.get("user_email"),
+                "batchId": row.get("batch"),
+                "batchDeletedAt": row.get("deleted_at"),
             }
             for row in rows or []
         ]
