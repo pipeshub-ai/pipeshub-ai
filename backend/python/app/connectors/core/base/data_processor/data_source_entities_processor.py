@@ -3379,6 +3379,8 @@ class DataSourceEntitiesProcessor:
         self,
         record: Record,
         permissions: list[Permission] | None = None,
+        *,
+        content_changed: bool = True,
     ) -> None:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         narrowed_connectors: set[str] = set()
@@ -3406,7 +3408,11 @@ class DataSourceEntitiesProcessor:
                     f"Skipping content update event for record {record.id} with AUTO_INDEX_OFF status"
                 )
             elif processed_record is not None:
-                should_publish = True
+                # A caller that says the content did not change (a write only to keep the stored grants) gets the
+                # event only when the save asked for indexing, as on_new_records does; a kept outcome would only
+                # repeat work. Callers that do not say keep publishing: several store the new revision through a
+                # metadata update first, so the save alone cannot tell their content changed.
+                should_publish = content_changed or _requests_index_event(processed_record)
 
         await self._publish_record_titles(title_changes.values())
         await self._publish_membership_sync(moved_virtual_record_ids)

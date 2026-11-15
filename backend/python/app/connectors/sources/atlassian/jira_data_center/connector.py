@@ -3874,7 +3874,8 @@ class JiraDataCenterConnector(BaseConnector):
             rest = []
             for item in batch:
                 if await self._keeps_stored_grants(item[0]):
-                    await self.data_entities_processor.on_record_content_update(item[0])
+                    # Here to keep its grants: no reindex unless the save sees a new revision.
+                    await self.data_entities_processor.on_record_content_update(item[0], content_changed=False)
                 else:
                     rest.append(item)
             if rest:
