@@ -138,8 +138,9 @@ async def test_another_organisations_connector_is_never_read(pg_db) -> None:
         page = await p.get_knowledge_hub_connector_page_v3(**asks(theirs), limit=10)       # asks for an org that is not the session's
     assert page["rows"] == [] and not page["hasMore"]
     other = new_org()
-    with ctx(other), pytest.raises(KnowledgeHubListingNotReady):      # the session's org holds no such connector: nothing of the other's is found
-        await p.get_knowledge_hub_connector_page_v3(**asks(other), limit=10)
+    with ctx(other):      # the session's org holds no such connector and nothing of it: nothing of the other's is found, an empty page
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(other), limit=10)
+    assert page["rows"] == [] and page["total"] == 0 and not page["hasMore"]
 
 
 async def test_a_connector_kg_serves_has_an_exact_total_beyond_the_scan_and_one_it_does_not_has_a_lower_bound(pg_db, monkeypatch) -> None:
