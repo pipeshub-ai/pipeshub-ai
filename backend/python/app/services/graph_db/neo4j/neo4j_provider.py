@@ -21029,11 +21029,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _kh_v3_frontiers(
         self, ids: list[str], params: dict[str, Any], *, probe: dict[str, Any] | None, state: bool, grant_once: bool,
-        transaction: str | None,
-    ) -> dict[str, list[str]]:
-        """The frontier (`_kh_v3_frontier`) of each node of ``ids``, read from its own reach: what the check decides when it is opened. One
-        statement for the rows that ask, apart from the page's, so that a page with none plans and runs no frontier. ``params``: the page
-        statement's, for the grants and the declared scope its rule reads."""
+        transaction: str | None, access: dict[str, Any], org_id: str,
+    ) -> tuple[dict[str, list[str]], set[str]]:
+        """The frontier (`_kh_v3_frontier`) of each node of ``ids``, read from its own reach: what the check decides when it is opened, and the
+        nodes of ``ids`` that list something by the chain-top rule (a placeholder group on the frontier's walk that a browse of it places a
+        chain-top under: opening it lists that). One statement for the rows that ask, apart from the page's, so that a page with none plans and
+        runs no frontier. ``params``: the page statement's, for the grants and the declared scope its rule reads."""
         hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
         walked = self._kh_v3_row_from_app(
             "node", hop=self._kh_v3_granted_hop("kh_oc", "kh_op", state=state, grant_once=grant_once, opens=_CYPHER_APP_OPENS), hierarchy=hierarchy)
@@ -21042,7 +21043,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         MATCH (node:Record|RecordGroup {{id: kh_id}})
         MATCH (app:App {{id: $app_id}})
         WITH node, app, {walked} AS kh_rfa
-        RETURN node.id AS id, {self._kh_v3_frontier("node", "kh_rfa", state=state, grant_once=grant_once)} AS kids
+        RETURN node.id AS id, {self._kh_v3_frontier("node", "kh_rfa", state=state, grant_once=grant_once)} AS kids,
+               {self._kh_v3_frontier("node", "kh_rfa", state=state, grant_once=grant_once, held=True)} AS held
         """
         # ``kh_cross``: the other connectors' granted nodes, as the page reads them (`_kh_grants_cross`).
         bind = {k: params[k] for k in ("app_id", "org_id", "declaredScope", "grantedIds", "kh_conn", "kh_grantees", "kh_cross") if k in params}
@@ -21051,15 +21053,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = self._kh_grants_by_probe(query)
             bind.pop("grantedIds", None)
         rows = await self._kh_query(query, parameters={**bind, "kh_ids": ids}, txn_id=transaction)
-        return {r["id"]: r["kids"] or [] for r in rows or []}
+        held = sorted({g for r in rows or [] for g in r["held"] or []})
+        lists = dict(zip(held, await asyncio.gather(
+            *(self._kh_v3_lists_a_chain_top(params["app_id"], org_id, g, access, transaction) for g in held)), strict=True))
+        return {r["id"]: r["kids"] or [] for r in rows or []}, {r["id"] for r in rows or [] if any(lists[g] for g in r["held"] or [])}
 
-    def _kh_v3_frontier(self, v: str, from_app: str, *, state: bool, grant_once: bool) -> str:
+    def _kh_v3_frontier(self, v: str, from_app: str, *, state: bool, grant_once: bool, held: bool = False) -> str:
         """The children of ``v`` whose listing the batch check decides when ``v`` is opened: those a browse of ``v`` asks it about
         (`_kh_v3_undecided`: the first ``_KH_UNDECIDED_MAX`` by id), and those a browse of each stub it lists on the way down
         asks about (a stub below ``v`` by hops through stubs alone, each passing the browse rule read from ``from_app``). Opening ``v`` lists
         something where the check admits one of them and its own rules list nothing, so an arrow, the sidebar and a stub's listing ask the check
         about these and nothing else. A stub child of ``v`` its own walk from the App reaches is listed whatever the hop from ``v`` says, so what lies
-        below it counts too, read from that stub's reach. ``app`` must be in scope."""
+        below it counts too, read from that stub's reach. ``app`` must be in scope. ``held``: instead, the placeholder groups on that walk that
+        hold a record the viewer is granted (`_cypher_kh_held`), whose browse may list it as a chain-top."""
         hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
         rule = self._kh_v3_child_rule("kh_fs", "kh_fp", from_app="kh_fa", opens=_CYPHER_APP_OPENS, state=state, grant_once=grant_once)
         walked = self._kh_v3_row_from_app(
@@ -21071,7 +21077,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return (f"COLLECT {{ WITH * UNWIND {starts} AS kh_fz WITH app, kh_fz[0] AS kh_fv, kh_fz[1] AS kh_fa"
                 f" MATCH (kh_fv) ((kh_fp)-[kh_fr:NODE_RELATION]->(kh_fs) WHERE kh_fr.relationshipType {hierarchy}"
                 f" AND {self._kh_placeholder('kh_fs', state=state)} AND {rule}){{0,50}} (kh_fy)"
-                f" WITH DISTINCT kh_fy UNWIND {self._kh_v3_undecided('kh_fy')} AS kh_fk RETURN DISTINCT kh_fk }}")
+                + (f" WITH DISTINCT kh_fy WHERE {self._kh_held_stub('kh_fy', state=state)} RETURN kh_fy.id }}" if held else
+                   f" WITH DISTINCT kh_fy UNWIND {self._kh_v3_undecided('kh_fy')} AS kh_fk RETURN DISTINCT kh_fk }}"))
+
+    def _kh_held_stub(self, v: str, *, state: bool) -> str:
+        """Whether ``v`` is a placeholder group holding a record the viewer is granted (no stub itself): only its chain-tops can make opening it
+        list something it has no hierarchy child for."""
+        return (f"({v}:RecordGroup AND {self._kh_placeholder(v, state=state)} AND "
+                f"{_cypher_kh_held(v, lambda r: f'AND NOT {self._kh_placeholder(r, state=state)}', 'true')})")
 
     async def _kh_v3_declared_scope(
         self, declared: list[str], app_id: str, granted: list[str], probe: dict[str, Any] | None, transaction: str | None,
@@ -21818,7 +21831,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return f"AND (NOT {stub} OR {stub_way(v, reached)})"
             # Kept with any child until its way is read with the row (`khProbe`): one with a way is listed, one without asks the check about its
             # frontier (`_kh_v3_frontiers`); the way is read once, not here and again there.
-            return f"AND (NOT {stub} OR {v}.id IN $kh_kept OR (NOT {v}.id IN $kh_asked AND {has_child(v)}))"
+            return f"AND (NOT {stub} OR {v}.id IN $kh_kept OR (NOT {v}.id IN $kh_asked AND ({has_child(v)} OR {by_probe(self._kh_held_stub(v, state=state))})))"
 
         def has_child(v: str) -> str:
             """Whether ``v`` has a hierarchy child: only such a node has a frontier (`_kh_v3_frontier`)."""
@@ -22698,13 +22711,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             again = False
             # The rows the statement kept for their frontier (`khProbe`): the next read keeps only those whose frontier the check admits a child of.
             asked = [i for i in payload.get("khProbes") or [] if i not in params["kh_asked"]]
-            probes = await self._kh_v3_frontiers(asked, params, probe=probe, state=state, grant_once=grant_once,
-                                                 transaction=transaction) if asked else {}
+            probes, leads = await self._kh_v3_frontiers(asked, params, probe=probe, state=state, grant_once=grant_once,
+                                                        transaction=transaction, access=access, org_id=org_id) if asked else ({}, set())
             probes = {i: probes.get(i, []) for i in asked}
             if probes:
                 admitted = await self._kh_v3_admitted(
                     {k for kids in probes.values() for k in kids}, org_id=org_id, transaction=transaction, access=access)
-                kept = [i for i, kids in probes.items() if any(k in admitted for k in kids)]
+                kept = [i for i, kids in probes.items() if i in leads or any(k in admitted for k in kids)]
                 params["kh_asked"] = [*params["kh_asked"], *probes]
                 params["kh_kept"] = [*params["kh_kept"], *kept]
                 again = again or len(kept) < len(probes)
@@ -22721,10 +22734,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # (`_kh_v3_settle_held_arrows`), read apart for those rows alone.
         rows_ = payload.get("rows") or []
         ask = [r["id"] for r in rows_ if r.pop("khAsk", False)]
-        kids = await self._kh_v3_frontiers(ask, params, probe=probe, state=state, grant_once=grant_once,
-                                           transaction=transaction) if ask else {}
+        kids, leads = await self._kh_v3_frontiers(ask, params, probe=probe, state=state, grant_once=grant_once,
+                                                  transaction=transaction, access=access, org_id=org_id) if ask else ({}, set())
         for r in rows_:
             r["khKids"] = kids.get(r["id"], [])
+            if r["id"] in leads:      # a stub group below it lists a chain-top
+                r["hasChildren"] = True
         if scope_query is not None and scope_mode == "verify":
             await self._kh_scope_verify(app_id, payload, scope_query, scope_params, scope_info, transaction)
         elif use_scope:

@@ -7995,14 +7995,8 @@ class IGraphDBProvider(ABC):
         if access is None:
             return
 
-        async def lists_a_chain_top(row: dict[str, Any]) -> bool:
-            probe = access.get("probe")
-            by_groups = await self._kh_v3_chain_top_groups_by_probe(
-                app_id, org_id, row["id"], probe["grantees"], transaction) if probe else None
-            return bool((await self._kh_v3_chain_tops(
-                app_id, org_id, access, transaction, only_group=row["id"], by_groups=by_groups)).get(row["id"]))
-
-        for row, lists in zip(asked, await asyncio.gather(*(lists_a_chain_top(r) for r in asked)), strict=True):
+        for row, lists in zip(asked, await asyncio.gather(
+                *(self._kh_v3_lists_a_chain_top(app_id, org_id, r["id"], access, transaction) for r in asked)), strict=True):
             row["hasChildren"] = lists
         # A row with no child the rules select still has an arrow when the check admits one of its children (a second parent's walk, an App
         # member, below a seed): the browse of the row lists it (`_kh_v3_undecided`). A row the walk does not reach has an arrow only if the
@@ -8306,6 +8300,16 @@ class IGraphDBProvider(ABC):
         hidden = await self._kh_v3_chain_top_hidden(app_id, [c["id"] for c in tops], transaction)
         tops = [c for c in tops if c["id"] not in hidden]
         return place_chain_tops(tops, open_groups | open_parents, app_id)
+
+    async def _kh_v3_lists_a_chain_top(
+        self, app_id: str, org_id: str, group_id: str, access: dict[str, Any], transaction: str | None,
+    ) -> bool:
+        """Whether a browse of the group ``group_id`` places a chain-top under it (``_kh_v3_chain_tops`` with ``only_group``)."""
+        probe = access.get("probe")
+        by_groups = await self._kh_v3_chain_top_groups_by_probe(
+            app_id, org_id, group_id, probe["grantees"], transaction) if probe else None
+        return bool((await self._kh_v3_chain_tops(
+            app_id, org_id, access, transaction, only_group=group_id, by_groups=by_groups)).get(group_id))
 
     async def _kh_v3_chain_top_groups(
         self,
