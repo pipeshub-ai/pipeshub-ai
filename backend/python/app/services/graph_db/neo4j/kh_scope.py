@@ -8,15 +8,16 @@ request, the open scopes come from the scope tree and the user's grants, and the
 What the walk does, per hop from parent p to child c (``_kh_v3_granted_hop`` plus the flatten's declared stop):
 - dead:  c deleted, p hides its children, or p is a RECORD_GROUP_LEVEL group of this App;
 - free:  c inherits from p and its rule is STRICT/OPEN;
-- gate:  c is STRICT/OPEN without inheriting, or RESTRICTED and inheriting;
+- gate:  c is STRICT/OPEN without inheriting, or RESTRICTED/PARENT_AND_GRANT and inheriting;
 - block: anything else.
 The walk stops after ``MAX_DEPTH`` hops from the App, so a node deeper than that is never in a scope.
 
 A connector is listed this way only when the precomputation says exactly what the walk would: a RECORD_LEVEL App,
 no RECORD_GROUP_LEVEL group, no node that hides its children, no node with several parents, and no child that
 belongs to another connector. The seed arms (granted OPEN nodes the walk does not reach, and the OPEN nodes below
-them) depend on the user's grants and stay a walk per request. Any other case, a stale stamp, or any error falls
-back to the full query, and the reason is returned so the caller can log it.
+them, or PARENT_AND_GRANT ones that inherit and are granted) depend on the user's grants and stay a walk per
+request. Any other case, a stale stamp, or any error falls back to the full query, and the reason is returned so
+the caller can log it.
 
 Freshness: a sync marks its connector stale before it writes and re-stamps when it ends. The stamp sets ``fresh``
 only if no sync started in the meantime (``generation`` is compared and set), and refuses to run while one is.
@@ -113,8 +114,10 @@ WHERE sd.connectorId = $c AND NOT sd:KhDeleted AND coalesce(sd.accessRule, 'OPEN
                      AND all(h IN relationships(above) WHERE h.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']) }
 OPTIONAL MATCH (sd) ((pc)-[h:NODE_RELATION]->(cc)
       WHERE h.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND NOT cc:KhDeleted AND NOT pc:KhHidesChildren
-        AND coalesce(cc.accessRule, 'OPEN') = 'OPEN'
-        AND (EXISTS { (cc)-[:INHERIT_PERMISSIONS]->(pc) } OR cc.id IN $granted)){1,50} (nc)
+        AND (coalesce(cc.accessRule, 'OPEN') = 'OPEN'
+             OR (coalesce(cc.accessRule, 'OPEN') = 'PARENT_AND_GRANT' AND cc.id IN $granted))
+        AND (EXISTS { (cc)-[:INHERIT_PERMISSIONS]->(pc) }
+             OR (coalesce(cc.accessRule, 'OPEN') = 'OPEN' AND cc.id IN $granted))){1,50} (nc)
 WITH collect(DISTINCT sd) + collect(DISTINCT nc) AS xs
 UNWIND xs AS x
 WITH DISTINCT x
@@ -319,7 +322,7 @@ def _classify(c: tuple, p: tuple) -> str:
     inherits, rule = c[INH], c[RULE]
     if inherits and rule in ("STRICT", "OPEN"):
         return "free"
-    if (not inherits and rule in ("STRICT", "OPEN")) or (inherits and rule == "RESTRICTED"):
+    if (not inherits and rule in ("STRICT", "OPEN")) or (inherits and rule in ("RESTRICTED", "PARENT_AND_GRANT")):
         return "gate"
     return "block"
 
