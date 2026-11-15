@@ -100,6 +100,13 @@ async def _left_by_a_stopped_consumer(consumer, count: int, name: str = "replace
     await asyncio.sleep(_stopped_for(consumer))
 
 
+async def _a_live_peer(consumer: IndexingRedisStreamsConsumer) -> None:
+    """Another consumer in the group, holding one entry on the lane the tests do not count. Holding nothing, it would
+    stop counting as a peer once silent past the claim time (20 ms), which a slow runner reaches during setup."""
+    await consumer.redis.xadd(OTHER_LANE, _fields("peer's", "conn-peer"))
+    await consumer.redis.xreadgroup(GROUP, "live-peer", {OTHER_LANE: ">"}, count=1)
+
+
 async def _look(consumer: IndexingRedisStreamsConsumer) -> None:
     consumer._last_reclaim = 0.0
     await consumer._IndexingRedisStreamsConsumer__reclaim_while_reading()
@@ -466,7 +473,11 @@ class TestRetryOrder:
         """Entries with a body, pending here, held by no one, and remembered;
         beside a live peer, so read-time own-pending recovery stays off and
         only the retry can bring them back."""
-        await consumer.redis.xreadgroup(GROUP, "live-peer", {LANE: ">"}, count=1)
+        await _a_live_peer(consumer)
+        # With room in the buffer, own-pending recovery offers them too, beside a peer or not, and it runs first; a
+        # slow runner that puts a second between passes lets it run on each, and the order checks then pass without
+        # the retry.
+        consumer._IndexingRedisStreamsConsumer__recover_while_reading = AsyncMock()
         for i in range(count):
             await consumer.redis.xadd(LANE, _fields(f"waiting-{i}", f"conn-{i}"))
         read = await consumer.redis.xreadgroup(GROUP, consumer.consumer_name, {LANE: ">"}, count=count)
@@ -556,7 +567,7 @@ class TestEveryRememberedIdIsExamined:
         if path == "fifo":
             consumer = await _fifo_consumer(provider)
         rng = random.Random(seed)
-        await consumer.redis.xreadgroup(GROUP, "live-peer", {LANE: ">"}, count=1)
+        await _a_live_peer(consumer)
         n = rng.randint(1, 35)
         ids = await self._owned_ids(consumer, n)
         kinds = {message_id: rng.choice(("trimmed", "body", "failing")) for message_id in ids}
@@ -577,7 +588,7 @@ class TestEveryRememberedIdIsExamined:
         assert not {m for m, k in kinds.items() if k == "trimmed"} & mine
 
     async def test_a_trimmed_entry_behind_ten_failing_checks_is_acknowledged(self, consumer) -> None:
-        await consumer.redis.xreadgroup(GROUP, "live-peer", {LANE: ">"}, count=1)
+        await _a_live_peer(consumer)
         ids = await self._owned_ids(consumer, 11)
         failing, trimmed = set(ids[:10]), ids[10]
         await consumer.redis.xdel(LANE, trimmed)
