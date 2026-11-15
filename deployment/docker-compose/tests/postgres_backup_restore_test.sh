@@ -259,14 +259,21 @@ for major in ${DRILL_MAJORS:-17 18}; do
   $DOCKER exec "$proj-pg-backup-1" rm -f /var/run/postgresql/pgbackrest-wal-gap.d/drill
 
   # Losing the machine, as the docs describe it: everything but the repository is gone (here the repository is the local directory on
-  # 17 and the named volume on 18, standing in for off-machine storage). With no stack started, restore in place to the time of "the
-  # other stores' backup", then start the stack: the data is that moment's.
+  # 17 and the named volume on 18, standing in for off-machine storage). The regular backup was taken with the application stopped,
+  # after reading the WAL location and making a restore point and `pgbackrest check` (which archives it); with no stack started,
+  # restore in place to that location, then start the stack: the data is that quiet moment's.
+  change 4
+  quiet_lsn="$(sql -c 'select pg_current_wal_lsn()')"
+  sql -c "select pg_create_restore_point('drill-regular-backup')" >/dev/null
+  dc exec -T pg-backup pgbackrest check > "$work/check.log" 2>&1 || { echo "FAIL $major: pgbackrest check at the restore point"; tail -5 "$work/check.log"; fail=1; }
+  at_loss="$(sql -c "$checksums")"
+  # why not a time: with no commit after the quiet moment, recovery to its time cannot stop and the server shuts down
+  copy="${proj}_pg_restore_quiet_time_$$"; copies+=("$copy"); rc=0
+  scripts/pg-restore.sh "$(sql -c 'select clock_timestamp()')" --into "$copy" > "$work/quiet-time.log" 2>&1 || rc=$?
+  check "$major: a time after the last commit cannot be reached" \
+    "$rc $(grep -q 'recovery ended before configured recovery target was reached' "$work/quiet-time.log" && echo ended)" "1 ended"
   # the restored copies run as one-off pg-backup containers, which mount the data volume too: they go first, as the docs say
   for c in "${copies[@]}"; do $DOCKER rm -f "$c" >/dev/null 2>&1 || true; $DOCKER volume rm "$c" >/dev/null 2>&1 || true; done; copies=()
-  change 4
-  at_loss="$(sql -c "$checksums")"
-  loss_target="$(sql -c "select clock_timestamp()")"
-  sleep 2
   change 5
   seg="$(sql -c 'select pg_walfile_name(pg_current_wal_lsn())')"; sql -c "select pg_switch_wal()" >/dev/null
   for _ in $(seq 1 60); do [ "$(sql -c "select coalesce(last_archived_wal >= '$seg', false) from pg_stat_archiver")" = t ] && break; sleep 2; done
@@ -274,11 +281,12 @@ for major in ${DRILL_MAJORS:-17 18}; do
   for v in postgres_data pg_backup_socket pgbouncer_auth; do $DOCKER volume rm "${proj}_$v" >/dev/null || true; done
   check "$major: the lost machine has no database volume left" "$($DOCKER volume ls -q | grep -cx "${proj}_postgres_data")" 0
   t0=$(now)
-  if scripts/pg-restore.sh "$loss_target" --in-place > "$work/loss.log" 2>&1; then
+  if scripts/pg-restore.sh "lsn:$quiet_lsn" --in-place > "$work/loss.log" 2>&1; then
     dc up -d --no-build postgres > /dev/null 2>&1
     for _ in $(seq 1 600); do [ "$(sql -c 'select pg_is_in_recovery()' 2>/dev/null)" = f ] && break; sleep 1; done
     echo "info $major: restore after losing the machine, server accepting writes: $(secs "$t0" "$(now)")s"
-    check "$major: after losing the machine: rows and checksums per schema equal those at the chosen time" "$(sql -c "$checksums")" "$at_loss"
+    check "$major: after losing the machine: rows and checksums per schema equal those at the regular backup's restore point" \
+      "$(sql -c "$checksums")" "$at_loss"
     dc up -d --no-build pg-backup > /dev/null 2>&1
     check "$major: and archiving and backups go on" \
       "$(dc exec -T pg-backup pgbackrest check > "$work/check.log" 2>&1 && echo ok || tail -5 "$work/check.log")" ok

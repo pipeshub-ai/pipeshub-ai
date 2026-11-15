@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Restores the PostgreSQL profile's database from the pgBackRest repository of docker-compose.postgres-backup.yml.
 #
-#   scripts/pg-restore.sh <time|latest> [--into <volume>] [--set <label>]   restore into a NEW volume and start it as a separate server
-#   scripts/pg-restore.sh <time|latest> --in-place [--set <label>]          restore over the stack's own data volume (stack stopped)
+#   scripts/pg-restore.sh <time|lsn:L|latest> [--into <volume>] [--set <label>]   restore into a NEW volume, started as a separate server
+#   scripts/pg-restore.sh <time|lsn:L|latest> --in-place [--set <label>]          restore over the stack's own data volume (stack stopped)
 #
 # <time> is a PostgreSQL timestamp with a time zone, for example "2026-11-15 09:30:00+00": the restore keeps every transaction committed
 # up to it and nothing after (recovery_target_time, https://www.postgresql.org/docs/17/runtime-config-wal.html 19.5.6). `latest` replays
-# every archived WAL segment. pgBackRest picks the backup that can reach the time (https://pgbackrest.org/user-guide.html, "Point-in-Time
-# Recovery"). Run it from deployment/docker-compose with the compose files, project and profiles of the stack, given as COMPOSE_FILE,
+# every archived WAL segment. `lsn:<location>` stops just after the first WAL record at or after that location (recovery_target_lsn,
+# inclusive): with the location read before a restore point is made on a quiet database, that is exactly the quiet state, and unlike a
+# time it needs no later commit to stop at. pgBackRest picks the backup that can reach the time or location ("a backup that contains the
+# requested time or lsn", https://pgbackrest.org/user-guide.html).
+# Run it from deployment/docker-compose with the compose files, project and profiles of the stack, given as COMPOSE_FILE,
 # COMPOSE_PROJECT_NAME and COMPOSE_PROFILES (environment or .env), for example
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.postgres-docstore.yml:docker-compose.postgres-backup.yml COMPOSE_PROJECT_NAME=pipeshub-ai \
 #   COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate scripts/pg-restore.sh latest
@@ -52,7 +55,11 @@ grep -qx pg-backup <<<"$services" \
   || { echo "pg-restore: the pg-backup service is not in this stack; add docker-compose.postgres-backup.yml and the postgres profile" >&2; exit 2; }
 
 restore=(pgbackrest restore ${set_label:+"--set=$set_label"})
-if [ "$target" != latest ]; then restore+=(--type=time "--target=$target" --target-action=promote); fi
+case "$target" in
+  latest) ;;
+  lsn:*) restore+=(--type=lsn "--target=${target#lsn:}" --target-action=promote) ;;
+  *) restore+=(--type=time "--target=$target" --target-action=promote) ;;
+esac
 if [ "$in_place" = 1 ]; then
   volume="${project}_postgres_data"
   # pgBackRest also refuses while the server runs (postmaster.pid); this stops earlier and says what to do
