@@ -17,7 +17,7 @@ from app.modules.pipeline.worker import StageFailed, StagePaused
 from app.services.extraction.client import ExtractionClient
 from app.services.llm_gateway.gateway import LLMGateway, ProviderUnavailableError
 from app.utils.llm import LLMUnavailableError
-from tests.unit.modules.pipeline.test_worker import _BudgetHarness, _job
+from tests.support.stage_worker_harness import BudgetHarness, make_job
 
 pytestmark = pytest.mark.timeout(300)
 HOUR = 3600.0
@@ -44,7 +44,7 @@ async def test_a_lone_job_survives_an_outage_in_remote_mode(fleet, hours: float)
     async def down() -> None:
         raise ConnectionError("provider down")
 
-    h, job = _BudgetHarness(fleet), _job()
+    h, job = BudgetHarness(fleet), make_job()
     h.seed(job)
     elapsed = 0.0
     while elapsed < hours * HOUR:
@@ -67,3 +67,4 @@ async def test_a_lone_job_survives_an_outage_in_remote_mode(fleet, hours: float)
     assert h.state(job).status is ProgressStatus.PAUSED
     state = await h.pause_state(job)
     assert state is not None and state.sends <= 20 and state.charged == 0
+

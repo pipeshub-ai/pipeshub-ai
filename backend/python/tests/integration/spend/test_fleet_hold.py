@@ -78,10 +78,10 @@ async def test_redrives_are_spread_over_the_release_cooldown(fleet, sim_clock) -
     judge = PauseJudge(PauseStore(), clock_ms=sim_clock, breaker=breaker)
     pk = provider_pk(LABEL)
     jitters = []
-    from tests.unit.modules.pipeline.test_hold_ledger import _job  # a StageJob factory
+    from tests.support.stage_worker_harness import make_job
 
     for i in range(40):
-        job = _job().model_copy(update={"virtual_record_id": f"vr-{i}"})
+        job = make_job().model_copy(update={"virtual_record_id": f"vr-{i}"})
         # each is at 5 charged sends already; the sixth reaches the cap
         from app.modules.pipeline.pause_budget import PauseState
 

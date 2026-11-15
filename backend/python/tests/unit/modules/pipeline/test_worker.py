@@ -11,21 +11,14 @@ import pytest
 from app.config.constants.arangodb import ProgressStatus
 from app.exceptions.indexing_exceptions import ProcessingError
 from app.modules.pipeline.connector_gate import ConnectorBeingDeleted
-from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.models import (
-    HeadlineField,
     Priority,
-    RecordView,
     StageFingerprint,
     StageJob,
     StageOutcome,
     StageResult,
-    StageState,
-    Workload,
 )
-from app.modules.pipeline.policy import DEFAULT_POLICY, PipelinePolicy
-from app.modules.pipeline.registry import StageRegistry
-from app.modules.pipeline.stage import Deadline, StageIO
+from app.modules.pipeline.stage import StageIO
 from app.modules.pipeline.worker import (
     StageFailed,
     StageHeldForDelete,
@@ -35,106 +28,15 @@ from app.modules.pipeline.worker import (
 )
 from app.services.messaging.config import IndexingEvent, StreamMessage
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
-from app.services.resource_governor.models import ParseTier
-from tests.unit.modules.pipeline.fakes import (
-    Clock,
-    InMemoryStageStateStore,
-    RecordingHeadlines,
-    RecordingProducer,
-)
+from tests.support import stage_worker_harness as _harness
 
-
-class _IO:
-    def __init__(self, job: StageJob, deadline: Deadline) -> None:
-        self._deadline = deadline
-
-    @property
-    def policy(self) -> PipelinePolicy:
-        return DEFAULT_POLICY
-
-    @property
-    def deadline(self) -> Deadline:
-        return self._deadline
-
-
-class _Classify:
-    name: ClassVar[str] = "classify"
-    version: ClassVar[int] = 1
-    requires: ClassVar[frozenset[str]] = frozenset({"embed"})
-    workload: ClassVar[Workload] = Workload.LLM
-    headline: ClassVar[HeadlineField | None] = HeadlineField.EXTRACTION
-    budget_s: ClassVar[float] = 5.0
-
-    def __init__(self) -> None:
-        self.config = "model-a"
-        self.result: StageResult | BaseException = StageResult(outcome=StageOutcome.COMPLETED)
-        self.delay = 0.0
-        self.runs = 0
-
-    def applies(self, view: RecordView, policy: PipelinePolicy) -> bool:
-        return True
-
-    async def fingerprint(self, job: StageJob, io: StageIO) -> StageFingerprint:
-        return StageFingerprint(stage=self.name, stage_version=self.version, input_digest=job.text_digest, config_digest=self.config)
-
-    async def run(self, job: StageJob, io: StageIO) -> StageResult:
-        self.runs += 1
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        if isinstance(self.result, BaseException):
-            raise self.result
-        return self.result
-
-
-class _SummaryEmbed(_Classify):
-    name: ClassVar[str] = "summary-embed"
-    requires: ClassVar[frozenset[str]] = frozenset({"classify"})
-    headline: ClassVar[HeadlineField | None] = None
-
-
-def _job(**overrides: object) -> StageJob:
-    fields: dict[str, object] = {
-        "stage": "classify", "stage_version": 1, "org_id": "org-1", "virtual_record_id": "vr-1",
-        "rev": "rev-a", "record_ids": ("rec-1",), "connector_id": "conn-1", "tier": ParseTier.LIGHT,
-        "priority": Priority.BULK, "trigger": "embed", "text_digest": "t", "blocks_digest": "b",
-        "text_chars": 10, "has_tables": False, "has_images": False,
-    }
-    fields.update(overrides)
-    return StageJob.model_validate(fields)
-
-
-class _Harness:
-    def __init__(self) -> None:
-        self.clock = Clock()
-        self.states = InMemoryStageStateStore(self.clock)
-        self.headlines = RecordingHeadlines()
-        self.producer = RecordingProducer()
-        self.stage = _Classify()
-        self.registry = StageRegistry()
-        self.registry.register_external("embed")
-        self.registry.register(self.stage)
-        self.registry.register(_SummaryEmbed())
-        self.coordinator = Coordinator(
-            self.registry, self.states, self.headlines, self.producer,  # type: ignore[arg-type]
-            policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("t"), clock_ms=self.clock,
-        )
-        self.handler = StageJobHandler(
-            self.registry, self.states, self.headlines, self.coordinator, _IO,
-            logger=logging.getLogger("t"), worker_id="w1", clock_ms=self.clock,
-        )
-
-    def seed(self, job: StageJob, status: ProgressStatus = ProgressStatus.QUEUED, **fields: object) -> None:
-        self.states.put(StageState.from_job(job, status, self.clock()).model_copy(update=fields))
-
-    def state(self, job: StageJob) -> StageState:
-        return self.states.states[job.state_key]
-
-    async def deliver(self, job: StageJob) -> list[IndexingEvent]:
-        message = StreamMessage(eventType="stageJob", payload=job.model_dump(mode="json", by_alias=True))
-        return [event.event async for event in self.handler(message)]
-
-    def expected_fingerprint(self, job: StageJob) -> str:
-        return StageFingerprint(stage="classify", stage_version=1, input_digest=job.text_digest, config_digest=self.stage.config).digest()
+_BudgetHarness = _harness.BudgetHarness
+_CLS = _harness.POISON_CLS
+_Harness = _harness.WorkerHarness
+_IO = _harness.WorkerIO
+_PK = _harness.POISON_PK
+_charged_pause = _harness.charged_pause
+_job = _harness.make_job
 
 
 @pytest.mark.asyncio
@@ -704,41 +606,6 @@ from app.modules.pipeline.pause_store import PauseStore, PauseStoreUnavailable  
 from app.services.llm_gateway.fleet_breaker import FleetBreaker  # noqa: E402
 from app.services.llm_gateway.fleet_redis import FleetRedis  # noqa: E402
 
-_PK, _CLS = "pkpoison", "l"
-
-
-def _charged_pause(**overrides: object) -> StageResult:
-    """What the classify stage returns for a failed send the key's 5-minute success rate says is the document's."""
-    fields: dict[str, object] = {
-        "outcome": StageOutcome.PAUSED, "reason": "Model provider unavailable: boom", "sent": True,
-        "chargeable": True, "provider_pk": _PK, "size_class": _CLS, "provider_label": "ChatX:m@host",
-    }
-    fields.update(overrides)
-    return StageResult.model_validate(fields)
-
-
-class _BudgetHarness(_Harness):
-    """The worker with a pause budget on the fleet Redis, and a coordinator that shares its store."""
-
-    def __init__(self, fleet: FleetRedis) -> None:
-        super().__init__()
-        fleet.clock_ms = self.clock
-        self.fleet = fleet
-        self.store = PauseStore()
-        self.judge = PauseJudge(self.store, clock_ms=self.clock, limits=PauseLimits())
-        self.coordinator = Coordinator(
-            self.registry, self.states, self.headlines, self.producer,  # type: ignore[arg-type]
-            policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("t"), clock_ms=self.clock,
-            pause_store=self.store,
-        )
-        self.handler = StageJobHandler(
-            self.registry, self.states, self.headlines, self.coordinator, _IO,
-            logger=logging.getLogger("t"), worker_id="w1", clock_ms=self.clock, pause_judge=self.judge,
-        )
-
-    async def pause_state(self, job: StageJob) -> PauseState | None:
-        return await self.store.get(job.state_key)
-
 
 @pytest.mark.asyncio
 async def test_a_poison_job_fails_after_six_charged_sends(fleet: FleetRedis) -> None:
@@ -941,3 +808,4 @@ async def test_the_budget_clock_is_redis_time(fleet: FleetRedis) -> None:
     assert decision is not None
     server_ms = await FleetBreaker(fleet).now_ms()
     assert abs(decision.decision.state.since_ms - server_ms) < 5000
+
