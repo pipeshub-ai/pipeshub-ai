@@ -43,7 +43,7 @@ BATCH = 5000
 # The full walk's hop limit (``{1,50}`` in the flatten): a node deeper than this is only listed as a seed.
 MAX_DEPTH = 50
 # Bumped whenever what a stamp writes changes meaning; a meta of another version is restamped, never read.
-STAMP_VERSION = 2
+STAMP_VERSION = 3
 
 # The listing's sort fields and the stored property each reads. Dates are not here: the listing shows a
 # connector node's source date, which no stamped property holds, so a date sort is always the full query's.
