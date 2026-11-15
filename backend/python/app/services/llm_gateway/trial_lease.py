@@ -20,12 +20,25 @@ from app.services.llm_gateway.fleet_breaker import FleetBreaker, FleetBreakerUna
 from app.services.llm_gateway.fleet_redis import get_fleet_redis
 
 TRIAL_LEASE_RENEW_S = 20.0
+# A round renews its leases side by side, at most this many at once, and gives up on the rest at its deadline (they are
+# renewed next round). Rounds start every TRIAL_LEASE_RENEW_S whatever a round took, so a lease (TRIAL_LEASE_MS, 60 s)
+# goes at most TRIAL_LEASE_RENEW_S + RENEW_ROUND_DEADLINE_S between renewals, however slow Redis is.
+RENEW_CONCURRENCY = 16
+RENEW_ROUND_DEADLINE_S = 15.0
 logger = logging.getLogger(__name__)
 
 
 class TrialLeaseRenewer:
-    def __init__(self, interval_s: float = TRIAL_LEASE_RENEW_S) -> None:
+    def __init__(
+        self,
+        interval_s: float = TRIAL_LEASE_RENEW_S,
+        *,
+        concurrency: int = RENEW_CONCURRENCY,
+        round_deadline_s: float = RENEW_ROUND_DEADLINE_S,
+    ) -> None:
         self._interval = interval_s
+        self._concurrency = concurrency
+        self._round_deadline = round_deadline_s
         self._leases: dict[str, tuple[str, str]] = {}
         self._lock = threading.Lock()
         self._task: asyncio.Task[None] | None = None
@@ -59,34 +72,48 @@ class TrialLeaseRenewer:
         with self._lock:
             return len(self._leases)
 
-    async def renew_once(self) -> int:
+    async def renew_once(self, breaker: FleetBreaker | None = None) -> int:
         """Renew every registered lease; one whose holder no longer holds it is dropped. Returns how many were renewed."""
-        handle = get_fleet_redis()
-        if handle is None:
-            return 0
+        if breaker is None:
+            handle = get_fleet_redis()
+            if handle is None:
+                return 0
+            breaker = FleetBreaker(handle)
         with self._lock:
             snapshot = dict(self._leases)
-        breaker = FleetBreaker(handle)
+        gate = asyncio.Semaphore(self._concurrency)
         renewed = 0
-        for token, (pk, cls) in snapshot.items():
-            try:
-                if await breaker.renew(pk, cls, token):
-                    renewed += 1
-                else:
-                    self.unregister(token)
-            except FleetBreakerUnavailable:
-                continue  # the next round; the lease has 60 s
+
+        async def renew(token: str, pk: str, cls: str) -> None:
+            nonlocal renewed
+            async with gate:
+                try:
+                    if await breaker.renew(pk, cls, token):
+                        renewed += 1
+                    else:
+                        self.unregister(token)
+                except FleetBreakerUnavailable:
+                    pass  # the next round; the lease has 60 s
+
+        tasks = [asyncio.ensure_future(renew(token, pk, cls)) for token, (pk, cls) in snapshot.items()]
+        if tasks:
+            _, late = await asyncio.wait(tasks, timeout=self._round_deadline)
+            for task in late:
+                task.cancel()
+            await asyncio.gather(*late, return_exceptions=True)
         return renewed
 
     async def _run(self) -> None:
+        loop = asyncio.get_running_loop()
         while True:
-            await asyncio.sleep(self._interval)
+            started = loop.time()
             try:
                 await self.renew_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.warning("trial lease renewal round failed", exc_info=True)
+            await asyncio.sleep(max(0.0, self._interval - (loop.time() - started)))
 
 
 _renewer = TrialLeaseRenewer()

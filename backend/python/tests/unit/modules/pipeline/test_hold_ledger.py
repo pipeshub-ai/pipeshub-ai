@@ -149,6 +149,26 @@ async def test_the_hold_and_release_notices_go_out_once_each(fleet: FleetRedis, 
     assert entry.episode == sent[1]["payload"]["episodeId"]
 
 
+async def test_ending_a_hold_does_not_unindex_a_newer_episode_of_the_key(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    """A tick ending episode A awaits the notifier; episode B, noted at the same key meanwhile, stays indexed."""
+    breaker = FleetBreaker(fleet)
+    noting = HoldKeeper(fleet, breaker, clock_ms=sim_clock)
+    newer = HoldEntry(PK, CLS, "ep-b", "ChatX:m@host", sim_clock(), "org-1", 3)
+
+    async def send(doc: dict) -> bool:
+        if doc["payload"]["episodeId"] != newer.episode and doc["type"].endswith("RELEASED"):
+            await noting.note_hold(newer)
+        return True
+
+    keeper = HoldKeeper(fleet, breaker, sender=send, clock_ms=sim_clock)
+    await _hold(breaker, keeper, sim_clock)
+    await keeper.tick()  # the hold notice of A goes out
+    await fleet.client().delete(breaker.hold_key(PK, CLS))
+    await keeper.tick()  # A ends; B is noted while its release notice is sent
+
+    assert [entry.episode for entry in await keeper.entries()] == [newer.episode]
+
+
 async def test_no_release_notice_without_a_hold_notice(fleet: FleetRedis, sim_clock: SimClock) -> None:
     breaker = FleetBreaker(fleet)
     sent: list[dict] = []

@@ -19,7 +19,7 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.services.llm_gateway.fleet_breaker import FleetBreaker, FleetBreakerUnavailable
@@ -37,6 +37,14 @@ if TYPE_CHECKING:
 TICK_SECONDS = 10.0
 NOTICE_TTL_SECONDS = 30 * 24 * 3600
 
+# Removes an index entry only while it still holds the value the caller read: a newer hold episode noted at the
+# same scope while a tick awaited Redis or the notifier stays indexed.
+# KEYS: index  ARGV: scope, value read
+_REMOVE_IF_UNCHANGED = """
+if redis.call('HGET', KEYS[1], ARGV[1]) == ARGV[2] then return redis.call('HDEL', KEYS[1], ARGV[1]) end
+return 0
+"""
+
 # Sends one notification document to the notification topic. Returns whether the broker took it.
 NoticeSender = Callable[[dict[str, Any]], Awaitable[bool]]
 
@@ -50,6 +58,8 @@ class HoldEntry:
     since_ms: int
     org_id: str
     redriven_jobs: int
+    # The index value this entry was read from: a removal that finds another value there leaves it.
+    stored: str = field(default="", compare=False)
 
     @property
     def scope(self) -> str:
@@ -103,10 +113,11 @@ class HoldKeeper:
         found: list[HoldEntry] = []
         for value in raw.values():
             try:
-                data = json.loads(_s(value))
+                stored = _s(value)
+                data = json.loads(stored)
                 found.append(HoldEntry(
                     data["pk"], data["cls"], data["episode"], data["label"], int(data["since_ms"]),
-                    data.get("notifyOrg", ""), int(data.get("redriven", 0)),
+                    data.get("notifyOrg", ""), int(data.get("redriven", 0)), stored,
                 ))
             except (ValueError, KeyError, TypeError):
                 continue
@@ -128,7 +139,7 @@ class HoldKeeper:
             # sees a release without the hold it ends.
             if await client.exists(self._claim_key(entry.episode, "enter")):
                 await self._notify(entry, "release")
-            await client.hdel(self._index_key(), entry.scope)
+            await client.eval(_REMOVE_IF_UNCHANGED, 1, self._index_key(), entry.scope, entry.stored)
         return held
 
     async def _notify(self, entry: HoldEntry, edge: str) -> None:

@@ -340,6 +340,50 @@ async def test_the_process_renewer_keeps_a_trial_lease_alive_without_the_calls_l
         await renewer.stop()
 
 
+class _SlowRenewals:
+    """A breaker whose renewals take ``delay_s`` each (a slow Redis); ``hang`` never answers."""
+
+    def __init__(self, delay_s: float, *, hang: frozenset[str] = frozenset()) -> None:
+        self.delay_s = delay_s
+        self.hang = hang
+        self.renewed: list[str] = []
+
+    async def renew(self, pk: str, cls: str, token: str) -> bool:
+        if token in self.hang:
+            await asyncio.Event().wait()
+        await asyncio.sleep(self.delay_s)
+        self.renewed.append(token)
+        return True
+
+
+async def test_a_slow_redis_does_not_serialise_a_renewal_round() -> None:
+    """40 leases at 0.1 s a renewal take 4 s one after another; side by side the round fits well inside the lease."""
+    from app.services.llm_gateway.trial_lease import TrialLeaseRenewer
+
+    renewer = TrialLeaseRenewer(concurrency=16)
+    for i in range(40):
+        renewer.register("pk", S, f"t{i}")
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    assert await renewer.renew_once(_SlowRenewals(0.1)) == 40  # type: ignore[arg-type]
+    assert loop.time() - started < 1.0
+
+
+async def test_a_round_ends_at_its_deadline_and_keeps_the_leases_it_did_not_reach() -> None:
+    from app.services.llm_gateway.trial_lease import TrialLeaseRenewer
+
+    renewer = TrialLeaseRenewer(round_deadline_s=0.2)
+    renewer.register("pk", S, "fast")
+    renewer.register("pk", S, "stuck")
+    slow = _SlowRenewals(0.0, hang=frozenset({"stuck"}))
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    assert await renewer.renew_once(slow) == 1  # type: ignore[arg-type]
+    assert loop.time() - started < 1.0
+    assert slow.renewed == ["fast"]
+    assert renewer.held == 2, "a lease the round did not reach is renewed next round, not dropped"
+
+
 def provider_pk_for(provider: str) -> str:
     from app.services.llm_gateway.fleet_breaker import provider_pk
 
