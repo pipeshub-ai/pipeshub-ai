@@ -6,7 +6,9 @@
 #   - to the end of the archive into a new volume: they must equal the live database's;
 #   - to T in place, over the stack's own volume: equal to T again, and backups go on afterwards (pgbackrest check).
 # It prints the measured backup and restore times and the archive lag (how much a restore can lose) for the RTO/RPO table in
-# postgres/README.md. DRILL_ROWS rows per schema (default 20000). PROJECT_PREFIX and EXTRA_COMPOSE_FILE as in the other tests here.
+# postgres/README.md. Knobs: DRILL_MAJORS (17 18), DRILL_ROWS per schema (20000), DRILL_ARCHIVE_TIMEOUT (60 s), DRILL_PG_MEMORY (2G),
+# DRILL_PG_SHARED_BUFFERS (256MB), DRILL_PGBACKREST_EXTRA (more PGBACKREST_* lines, for example another repository). PROJECT_PREFIX and
+# EXTRA_COMPOSE_FILE as in the other tests here.
 # Needs docker; PG_IMAGE_17 / PG_IMAGE_18 name the built images (default: pmcompose/postgres:17-pmc and :18-pmc).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -63,7 +65,9 @@ create function drill.checksums() returns table(s text, n int, r bigint, h text)
 declare t record; c bigint; m text; begin
   create temp table if not exists acc(s text, r bigint, h text) on commit drop;
   for t in select schemaname, tablename from pg_tables where schemaname = any('{$(echo $schemas | tr ' ' ,)}') order by 1, 2 loop
-    execute format('select count(*), md5(coalesce(string_agg(x::text, E''\n'' order by x::text), '''')) from %I.%I x', t.schemaname, t.tablename)
+    -- the sum of a 64-bit hash of every row: independent of row order, and constant memory on large tables
+    execute format('select count(*), coalesce(sum((''x'' || left(md5(x::text), 16))::bit(64)::bigint::numeric), 0)::text from %I.%I x',
+                   t.schemaname, t.tablename)
       into c, m;
     insert into acc values (t.schemaname, c, m);
   end loop;

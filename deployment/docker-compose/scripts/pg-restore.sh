@@ -80,6 +80,8 @@ sizes=$(docker compose run --rm --no-deps -T -v "$volume:/pgbackrest-restore" --
     n == "max_locks_per_xact" { print "-c max_locks_per_transaction=" $2 }')
 [ "$(echo "$sizes" | grep -c .)" = 5 ] || { echo "pg-restore: could not read the restored control file:" >&2; echo "$sizes" >&2; exit 1; }
 # The preload list of postgres/pg-entrypoint.sh (pg_textsearch must be preloaded), a socket of its own, no archiving.
+# shortcut: the copy runs within the pg-backup service's memory limit (PG_BACKUP_MEMORY_LIMIT, 1G); raise it before restoring a large
+# database you want to query hard, or restore --in-place.
 # shellcheck disable=SC2086 # $sizes is "-c name=value" words
 docker compose run -d --no-deps --name "$volume" -v "$volume:/pgbackrest-restore" \
   -e PGDATA=/pgbackrest-restore -e PGBACKREST_PG1_PATH=/pgbackrest-restore --entrypoint docker-entrypoint.sh pg-backup \
