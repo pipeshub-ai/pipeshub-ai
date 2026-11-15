@@ -24,6 +24,8 @@ _NEWLINE_SEARCH_BYTES = 64 * 1024
 _UTF16_NUL_SHARE = 0.9
 _UTF16_ONE_SCRIPT_SHARE = 0.9
 _UTF16_CONTROL_SHARE = 0.01
+_UTF16_ASCII_PAIR_SHARE = 0.5
+_LEGACY_GUESS_CONFIDENCE = 0.5
 _CHARDET_MIN_CONFIDENCE = 0.8
 _CHARDET_FALLBACK_CONFIDENCE = 0.5
 _BOMS = (
@@ -67,16 +69,27 @@ def _decodes(sample: bytes, codec: str) -> bool:
 
 
 def _utf16_without_bom(sample: bytes) -> str | None:
-    """'utf-16-le' or 'utf-16-be' when a sample holding NUL bytes reads as UTF-16 text.
+    """'utf-16-le' or 'utf-16-be' when a sample reads as UTF-16 text without a byte-order mark.
 
     Text mostly in ASCII (any line length) has NULs at nearly every high byte and nearly none at
-    the low ones, and decodes. Text in other scripts (Cyrillic, CJK, emoji) leaves fewer NULs: it
-    is UTF-16 when it decodes strictly to printable text that has line breaks or spaces, which a
-    binary that only decodes by chance does not.
+    the low ones, and decodes. Text in other scripts leaves fewer NULs, or none (Thai, Arabic or
+    Han alone): it is UTF-16 when it reads as text in one byte order (see `_reads_as_text`). A
+    sample without NULs is only tried when it is not plain UTF-8: its bytes hold control codes,
+    or do not decode as UTF-8.
     """
     pairs = len(sample) // 2
-    if pairs == 0 or b"\x00" not in sample:
+    if pairs == 0:
         return None
+    if b"\x00" not in sample:
+        controls = sum(1 for b in sample if b < 0x20 and b not in (0x09, 0x0A, 0x0D))
+        if controls <= _UTF16_CONTROL_SHARE * len(sample) and _decodes(sample, "utf-8"):
+            return None
+        if _legacy_encoding(sample) is not None:
+            return None  # an 8-bit or multibyte legacy encoding reads it (Shift-JIS, GBK, ...)
+        sample = sample[:pairs * 2]
+        scores = {codec: _one_script_share(sample, codec) for codec in ("utf-16-le", "utf-16-be")}
+        best = max(scores, key=lambda codec: scores[codec] or 0.0)
+        return best if (scores[best] or 0.0) >= _UTF16_ONE_SCRIPT_SHARE else None
     sample = sample[:pairs * 2]
     odd_nul = sample[1::2].count(0)
     even_nul = sample[0::2].count(0)
@@ -88,8 +101,29 @@ def _utf16_without_bom(sample: bytes) -> str | None:
     return next((codec for codec in order if _reads_as_text(sample, codec)), None)
 
 
+def _legacy_encoding(sample: bytes) -> str | None:
+    """The legacy encoding chardet finds for *sample* with some confidence, when it decodes."""
+    import chardet
+
+    guess = chardet.detect(sample)
+    encoding, confidence = guess.get("encoding"), guess.get("confidence") or 0
+    if not encoding or confidence < _LEGACY_GUESS_CONFIDENCE or encoding.lower().startswith("utf-16"):
+        return None
+    try:
+        sample.decode(encoding)
+    except (UnicodeDecodeError, LookupError):
+        return None
+    return encoding
+
+
 def _reads_as_text(sample: bytes, codec: str) -> bool:
-    """Whether *sample* is UTF-16 text, whatever its script and line length.
+    share = _one_script_share(sample, codec)
+    return share is not None and share >= _UTF16_ONE_SCRIPT_SHARE
+
+
+def _one_script_share(sample: bytes, codec: str) -> float | None:
+    """The share of *sample*'s non-ASCII letters and symbols, read as *codec*, in its main script;
+    None when it does not read as text at all. Line length and spacing play no part.
 
     It must decode strictly (no unpaired surrogate) to characters that are assigned, printable
     and not controls (tab, CR and LF aside); and, apart from ASCII, nearly all of its letters
@@ -97,12 +131,18 @@ def _reads_as_text(sample: bytes, codec: str) -> bool:
     assortment of scripts and symbol blocks (Latin letters beside ideographs, Yi beside Hangul),
     which text does not.
     """
+    # 8-bit text read two bytes at a time gives code units whose bytes are both printable ASCII
+    # (ideographs, mostly); text in UTF-16 rarely does, as its ASCII has a NUL byte.
+    units = len(sample) // 2
+    both_ascii = sum(1 for k in range(0, units * 2, 2) if 0x20 <= sample[k] <= 0x7E and 0x20 <= sample[k + 1] <= 0x7E)
+    if both_ascii > _UTF16_ASCII_PAIR_SHARE * units:
+        return None
     try:
         text = codecs.getincrementaldecoder(codec)("strict").decode(sample, final=False)
     except UnicodeDecodeError:
-        return False
+        return None
     if not text:
-        return False
+        return None
     groups: dict[str, int] = {}
     counted = bad = 0
     for c in text:
@@ -119,8 +159,8 @@ def _reads_as_text(sample: bytes, codec: str) -> bool:
         groups[group] = groups.get(group, 0) + 1
     # Text holds next to no NUL or other control characters; a binary that decodes holds many.
     if bad > _UTF16_CONTROL_SHARE * len(text):
-        return False
-    return counted == 0 or max(groups.values()) >= _UTF16_ONE_SCRIPT_SHARE * counted
+        return None
+    return 1.0 if counted == 0 else max(groups.values()) / counted
 
 
 # Scripts that are written together count as one.
@@ -136,7 +176,7 @@ def _script_group(c: str, category: str) -> str:
         return "EMOJI"
     if category[0] != "L":
         return "SYMBOL"
-    word = unicodedata.name(c, "").split(" ", 1)[0]
+    word = unicodedata.name(c, "").split(" ", 1)[0].split("-", 1)[0]
     return _SCRIPT_FAMILIES.get(word, word)
 
 

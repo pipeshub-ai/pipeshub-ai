@@ -190,8 +190,9 @@ def test_utf16_text_with_long_lines_is_text(text: str, codec: str) -> None:
 @pytest.mark.parametrize(
     "text",
     ["name=" + "张三" * 1500 + "\n", "ข้อความภาษาไทยยาวมาก" * 400, "مرحبابالعالمالعربي" * 400,
-     "😀🎉👍🏽🇯🇵" * 1200, "名前=田中太郎、ひらがなとカタカナ" * 300],
-    ids=["CJK", "Thai", "Arabic", "emoji", "Japanese"],
+     "😀🎉👍🏽🇯🇵" * 1200, "名前=田中太郎、ひらがなとカタカナ" * 300, "设定文件服务器主机名端口号" * 600,
+     "サーバーのホスト名とポート番号" * 500],
+    ids=["CJK", "Thai", "Arabic", "emoji", "Japanese", "Han alone", "kana with a long-vowel mark"],
 )
 @pytest.mark.parametrize("codec", ["utf-16-le", "utf-16-be"])
 def test_utf16_text_on_one_long_line_without_spaces_is_text(text: str, codec: str) -> None:
@@ -200,3 +201,19 @@ def test_utf16_text_on_one_long_line_without_spaces_is_text(text: str, codec: st
     result = prepare_capped_text(text.encode(codec))
     assert isinstance(result, CappedText)
     assert result.text.startswith(text[:50])
+
+
+@pytest.mark.parametrize("text", [
+    "設定ファイル: サーバーのホスト名とポート番号を記述します。\n", "服务器配置文件，主机名和端口号。\n" * 5,
+    "Fichier de configuration du serveur: hôte et port résumé.\n" * 5, "plain ascii configuration value = 42\n",
+])
+@pytest.mark.parametrize("encoding", ["shift_jis", "gbk", "mac_roman", "cp1252", "utf-8"])
+def test_text_in_a_legacy_encoding_is_not_read_as_utf16(text: str, encoding: str) -> None:
+    from app.modules.parsers.text.capped_text import _codec
+
+    try:
+        data = text.encode(encoding)
+    except UnicodeEncodeError:
+        pytest.skip("not encodable")
+    codec = _codec(data)[0]
+    assert codec is None or not codec.startswith("utf-16")
