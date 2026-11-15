@@ -4806,7 +4806,7 @@ class JiraConnector(BaseConnector):
             # Single pass so the parent-before-child sort above survives into the batch
             # handed to on_new_records.
             to_upsert: list[tuple[Record, list[Permission]]] = []
-            changed_records: list[tuple[Record, list[Permission]]] = []
+            changed_records: list[tuple[Record, list[Permission], bool]] = []
             new_count = 0
             edge_rebuild_count = 0
             for record, record_permissions, content_changed in batch:
@@ -4816,7 +4816,7 @@ class JiraConnector(BaseConnector):
                 elif content_changed or self._keeps_stored_grants(record):
                     # The second case is an issue whose grants are kept (holders unread): the
                     # content-update path leaves them alone, where a full sync's first write would replace them.
-                    changed_records.append((record, record_permissions))
+                    changed_records.append((record, record_permissions, content_changed))
                 else:
                     to_upsert.append((record, record_permissions))
                     edge_rebuild_count += 1
@@ -4824,13 +4824,15 @@ class JiraConnector(BaseConnector):
             if to_upsert:
                 await self.data_entities_processor.on_new_records(to_upsert)
 
-            for record, record_permissions in changed_records:
+            for record, record_permissions, content_changed in changed_records:
                 # Grants only replace the stored ones when the record is flagged to rewrite
-                # them (an issue under a security scheme); other records pass none.
+                # them (an issue under a security scheme); other records pass none. An unchanged issue is here
+                # only to keep its grants, so it asks for no reindex.
                 if getattr(record, "rewrite_permissions", False):
-                    await self.data_entities_processor.on_record_content_update(record, record_permissions)
+                    await self.data_entities_processor.on_record_content_update(
+                        record, record_permissions, content_changed=content_changed)
                 else:
-                    await self.data_entities_processor.on_record_content_update(record)
+                    await self.data_entities_processor.on_record_content_update(record, content_changed=content_changed)
 
             stats["new_count"] += new_count
             stats["updated_count"] += len(changed_records)
@@ -7242,7 +7244,8 @@ class JiraConnector(BaseConnector):
         """Fetch record from source and return data for reindexing.
 
         Only a restricted comment is a record of its own; the others are Blocks within the
-        issue's BlocksContainer. A comment record is re-indexed as stored: its issue's sync keeps it current.
+        issue's BlocksContainer. A comment record is re-indexed as stored: its issue's sync keeps
+        it current, and the issue's reindex leaves an issue with restricted comments to that sync.
         """
         try:
             if record.record_type == RecordType.COMMENT:
@@ -7321,6 +7324,20 @@ class JiraConnector(BaseConnector):
                 return None
 
             self.logger.info(f"Issue {issue_id} has changed at source (timestamp: {record.source_updated_at if hasattr(record, 'source_updated_at') else 'N/A'} -> {current_updated_at})")
+
+            # The timestamp written here makes the next sync skip the issue, and a reindex does not
+            # rebuild comment records (it has not read the roles, groups and product access a sync
+            # reads). An issue that has or had a restricted comment is left for the next sync to write.
+            if self._enforces_issue_security:
+                comment_field = (await self._with_every_comment(issue_id, fields)).get("comment")
+                comments = comment_field.get("comments") or [] if isinstance(comment_field, dict) else []
+                if any(is_restricted_comment(c) for c in comments if isinstance(c, dict)) or \
+                        await self._stored_comment_records(issue_id):
+                    self.logger.info(
+                        f"Issue {issue_id}: its restricted comments are written by a sync; "
+                        "leaving the stored record for the next sync"
+                    )
+                    return None
 
             # Resolve creator/reporter/assignee emails from the synced user directory first
             # (Jira's issue GET usually omits emailAddress); an inline emailAddress, when present,
