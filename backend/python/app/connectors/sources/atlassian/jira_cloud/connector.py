@@ -5991,11 +5991,11 @@ class JiraConnector(BaseConnector):
                 return delete_ids
 
             # Case 2: filename match for removed-but-gone files + orphan ID diff
-            existing_records = await self.data_entities_processor.get_records_by_parent(
+            existing_records = list(await self.data_entities_processor.get_records_by_parent(
                 connector_id=self.connector_id,
                 parent_external_record_id=issue_id,
                 record_type=RecordType.FILE.value
-            )
+            ))
             # And the files filed under the issue's restricted comments.
             for comment in await self._stored_comment_records(str(issue_id)):
                 existing_records += await self.data_entities_processor.get_records_by_parent(
