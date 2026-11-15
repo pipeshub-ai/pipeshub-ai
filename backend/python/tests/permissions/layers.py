@@ -75,7 +75,8 @@ class GraphCheckLayer:
         """Load every not yet loaded world in one batch."""
         fresh = [w for w in dict.fromkeys(worlds) if w not in self._prefix]
         for w in fresh:
-            self._prefix[w] = f"w{next(self._counter)}"
+            # the accounts layer shares the store with the plain one in a module: its own prefix keeps the two copies of a world apart
+            self._prefix[w] = f"{'a' if self._accounts else 'w'}{next(self._counter)}"
         nodes = [n for w in fresh for n in self._compiled(w)["nodes"]]
         edges = [e for w in fresh for e in self._compiled(w)["edges"]]
         if nodes:
