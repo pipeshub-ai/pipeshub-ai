@@ -206,7 +206,10 @@ for major in ${DRILL_MAJORS:-17 18}; do
   arch=/var/lib/pgbackrest/archive/pipeshub
   mode="$($DOCKER exec "$proj-pg-backup-1" stat -c %a "$arch")"
   $DOCKER exec -u root "$proj-pg-backup-1" chmod 000 "$arch"
-  sql -c "create table platform.filler as select g, repeat(md5(g::text), 30) as pad from generate_series(1, 250000) g" -c "select pg_switch_wal()" >/dev/null
+  # many small transactions, so the dropped segments hold commits and the report can name the first lost one
+  sql -c "create table platform.filler (g int, pad text)" \
+      -c "do \$\$ begin for i in 1..250 loop insert into platform.filler select g, repeat(md5(g::text), 30) from generate_series(1, 1000) g; commit; end loop; end \$\$" \
+      -c "select pg_switch_wal()" >/dev/null
   for _ in $(seq 1 90); do dc exec -T pg-backup test -f /tmp/pg-backup.ok || break; sleep 2; done
   check "$major: dropped WAL turns pg-backup unhealthy" "$(dc exec -T pg-backup test -f /tmp/pg-backup.ok && echo healthy || echo unhealthy)" unhealthy
   check "$major: the server stays up and writable" "$(sql -c 'insert into platform.filler values (0, $$x$$) returning g')" 0
@@ -229,6 +232,33 @@ for major in ${DRILL_MAJORS:-17 18}; do
   check "$major: the healthcheck fails at once on a marked drop" "$($DOCKER exec "$proj-pg-backup-1" sh -c "$hc" && echo pass || echo fail)" fail
   $DOCKER exec "$proj-pg-backup-1" rm -f /var/run/postgresql/pgbackrest-wal-gap.d/drill
 
+  # Losing the machine, as the docs describe it: everything but the repository is gone (here the repository is the local directory on
+  # 17 and the named volume on 18, standing in for off-machine storage). With no stack started, restore in place to the time of "the
+  # other stores' backup", then start the stack: the data is that moment's.
+  # the restored copies run as one-off pg-backup containers, which mount the data volume too: they go first, as the docs say
+  for c in "${copies[@]}"; do $DOCKER rm -f "$c" >/dev/null 2>&1 || true; $DOCKER volume rm "$c" >/dev/null 2>&1 || true; done; copies=()
+  change 4
+  at_loss="$(sql -c "$checksums")"
+  loss_target="$(sql -c "select clock_timestamp()")"
+  sleep 2
+  change 5
+  seg="$(sql -c 'select pg_walfile_name(pg_current_wal_lsn())')"; sql -c "select pg_switch_wal()" >/dev/null
+  for _ in $(seq 1 60); do [ "$(sql -c "select coalesce(last_archived_wal >= '$seg', false) from pg_stat_archiver")" = t ] && break; sleep 2; done
+  dc down >/dev/null 2>&1
+  for v in postgres_data pg_backup_socket pgbouncer_auth; do $DOCKER volume rm "${proj}_$v" >/dev/null || true; done
+  check "$major: the lost machine has no database volume left" "$($DOCKER volume ls -q | grep -cx "${proj}_postgres_data")" 0
+  t0=$(now)
+  if scripts/pg-restore.sh "$loss_target" --in-place > "$work/loss.log" 2>&1; then
+    dc up -d --no-build postgres > /dev/null 2>&1
+    for _ in $(seq 1 600); do [ "$(sql -c 'select pg_is_in_recovery()' 2>/dev/null)" = f ] && break; sleep 1; done
+    echo "info $major: restore after losing the machine, server accepting writes: $(secs "$t0" "$(now)")s"
+    check "$major: after losing the machine: rows and checksums per schema equal those at the chosen time" "$(sql -c "$checksums")" "$at_loss"
+    dc up -d --no-build pg-backup > /dev/null 2>&1
+    check "$major: and archiving and backups go on" \
+      "$(dc exec -T pg-backup pgbackrest check > "$work/check.log" 2>&1 && echo ok || tail -5 "$work/check.log")" ok
+  else
+    echo "FAIL $major: restore after losing the machine:"; tail -20 "$work/loss.log"; fail=1
+  fi
 done
 
 exit $fail
