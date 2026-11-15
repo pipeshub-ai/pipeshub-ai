@@ -9,16 +9,24 @@ deltas:
   - id: DELTA-02
     public:
       connector: Google Drive
-      source: "A file shared with your whole domain, or with anyone who has the link"
-      differs: "It does not give everyone in the organisation access in PipesHub. People it is shared with directly or through a group still see it."
+      source: "A file shared by link only: anyone with the link, or anyone in your domain with the link, can open it, but it cannot be found in Drive search"
+      differs: "The link gives no one access in PipesHub. People it is shared with directly or through a group still see it. So do the people a share with your domain or with anyone reaches when the share can be found in Drive search, unless the file is in another organisation's shared drive."
     direction: under-share
-    scenarios: [DRIVE-C-08]
-    pairs: [DRIVE-C-08/mo/roadmap]
+    scenarios: [DRIVE-S-03]
+    pairs: [DRIVE-S-03/fay/notes]
     reason: >
-      The Drive team connector stores no grant for a domain share (google/drive/team/connector.py:1157-1159) and the
-      processor writes no edge for a domain or anyone entity (data_source_entities_processor.py:2317-2331), so a
-      discoverable domain share gives the org no grant. Safe but incomplete.
-    fix: "Write a discoverable domain share (and a discoverable anyone share) as an org grant after a verified-domain check; link-only shares stay ungranted."
+      Anyone who holds the link of a link-only share can open the file ("Anyone on the internet who has the link can
+      open the file", https://support.google.com/drive/answer/2494822), but the permission names no one, so the
+      connector cannot know who holds it and stores no grant for it (allowFileDiscovery false,
+      google/drive/team/connector.py:1393-1394). Google: allowFileDiscovery is "Whether the permission allows the file
+      to be discovered through search. This is only applicable for permissions of type domain or anyone."
+      (https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions). A discoverable domain or
+      anyone share is granted to its audience group since #5726 (DRIVE-C-08), so only the link-only share differs,
+      except on an item in a shared drive the account's own listing does not return (drives.list with
+      useDomainAdminAccess, connector.py:2421): there audiences_apply is false (connector.py:1817) and no audience
+      is granted, which the public text names.
+      Fail-closed by design.
+    fix: "None planned: Drive does not say who holds a link. People it is shared with directly, through a group or with a discoverable share keep their access."
   - id: DELTA-05
     public:
       connector: Confluence

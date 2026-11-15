@@ -1,6 +1,5 @@
 """The stage worker with a fake classify stage, shared by the worker's unit tests and the spend-safety integration tests."""
 
-import asyncio
 import logging
 from typing import ClassVar
 
@@ -9,75 +8,32 @@ from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.models import (
     HeadlineField,
     Priority,
-    RecordView,
     StageFingerprint,
     StageJob,
     StageOutcome,
     StageResult,
     StageState,
-    Workload,
 )
 from app.modules.pipeline.pause_budget import PauseLimits, PauseState
 from app.modules.pipeline.pause_judge import PauseJudge
 from app.modules.pipeline.pause_store import PauseStore
-from app.modules.pipeline.policy import DEFAULT_POLICY, PipelinePolicy
+from app.modules.pipeline.policy import DEFAULT_POLICY
 from app.modules.pipeline.registry import StageRegistry
-from app.modules.pipeline.stage import Deadline, StageIO
 from app.modules.pipeline.worker import StageJobHandler
 from app.services.llm_gateway.fleet_redis import FleetRedis
 from app.services.messaging.config import IndexingEvent, StreamMessage
 from app.services.resource_governor.models import ParseTier
 from tests.unit.modules.pipeline.fakes import (
+    ClassifyStage,
     Clock,
     InMemoryStageStateStore,
     RecordingHeadlines,
     RecordingProducer,
+    StubIO,
 )
 
 
-class WorkerIO:
-    def __init__(self, job: StageJob, deadline: Deadline) -> None:
-        self._deadline = deadline
-
-    @property
-    def policy(self) -> PipelinePolicy:
-        return DEFAULT_POLICY
-
-    @property
-    def deadline(self) -> Deadline:
-        return self._deadline
-
-
-class FakeClassify:
-    name: ClassVar[str] = "classify"
-    version: ClassVar[int] = 1
-    requires: ClassVar[frozenset[str]] = frozenset({"embed"})
-    workload: ClassVar[Workload] = Workload.LLM
-    headline: ClassVar[HeadlineField | None] = HeadlineField.EXTRACTION
-    budget_s: ClassVar[float] = 5.0
-
-    def __init__(self) -> None:
-        self.config = "model-a"
-        self.result: StageResult | BaseException = StageResult(outcome=StageOutcome.COMPLETED)
-        self.delay = 0.0
-        self.runs = 0
-
-    def applies(self, view: RecordView, policy: PipelinePolicy) -> bool:
-        return True
-
-    async def fingerprint(self, job: StageJob, io: StageIO) -> StageFingerprint:
-        return StageFingerprint(stage=self.name, stage_version=self.version, input_digest=job.text_digest, config_digest=self.config)
-
-    async def run(self, job: StageJob, io: StageIO) -> StageResult:
-        self.runs += 1
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        if isinstance(self.result, BaseException):
-            raise self.result
-        return self.result
-
-
-class FakeSummaryEmbed(FakeClassify):
+class FakeSummaryEmbed(ClassifyStage):
     name: ClassVar[str] = "summary-embed"
     requires: ClassVar[frozenset[str]] = frozenset({"classify"})
     headline: ClassVar[HeadlineField | None] = None
@@ -100,7 +56,7 @@ class WorkerHarness:
         self.states = InMemoryStageStateStore(self.clock)
         self.headlines = RecordingHeadlines()
         self.producer = RecordingProducer()
-        self.stage = FakeClassify()
+        self.stage = ClassifyStage()
         self.registry = StageRegistry()
         self.registry.register_external("embed")
         self.registry.register(self.stage)
@@ -110,7 +66,7 @@ class WorkerHarness:
             policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("t"), clock_ms=self.clock,
         )
         self.handler = StageJobHandler(
-            self.registry, self.states, self.headlines, self.coordinator, WorkerIO,
+            self.registry, self.states, self.headlines, self.coordinator, StubIO,
             logger=logging.getLogger("t"), worker_id="w1", clock_ms=self.clock,
         )
 
@@ -156,7 +112,7 @@ class BudgetHarness(WorkerHarness):
             pause_store=self.store,
         )
         self.handler = StageJobHandler(
-            self.registry, self.states, self.headlines, self.coordinator, WorkerIO,
+            self.registry, self.states, self.headlines, self.coordinator, StubIO,
             logger=logging.getLogger("t"), worker_id="w1", clock_ms=self.clock, pause_judge=self.judge,
         )
 

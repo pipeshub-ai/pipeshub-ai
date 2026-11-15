@@ -56,11 +56,11 @@ from app.services.model_identity.transport.instrument import instrument_model
 from app.services.resource_governor.models import ParseTier
 from app.utils.llm import LLMUnavailableError
 from tests.support.fake_llm_server import OK, FakeLLMServer, Reply
-from tests.support.stage_worker_harness import WorkerIO
 from tests.unit.modules.pipeline.fakes import (
     InMemoryStageStateStore,
     RecordingHeadlines,
     RecordingProducer,
+    StubIO,
 )
 
 pytestmark = [pytest.mark.live_smoke, pytest.mark.timeout(600)]
@@ -164,7 +164,7 @@ async def test_startup_storm_and_recovery(monkeypatch: pytest.MonkeyPatch) -> No
         registry, states, headlines, producer, policy_for=lambda _o: DEFAULT_POLICY, logger=log, pause_store=store  # type: ignore[arg-type]
     )
     handler = StageJobHandler(
-        registry, states, headlines, coordinator, WorkerIO, logger=log, clock_ms=clock, pause_judge=PauseJudge(store, limits=PauseLimits())
+        registry, states, headlines, coordinator, StubIO, logger=log, clock_ms=clock, pause_judge=PauseJudge(store, limits=PauseLimits())
     )
     results: dict[str, str] = {}
 

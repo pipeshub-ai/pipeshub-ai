@@ -29,11 +29,11 @@ from app.modules.pipeline.worker import (
 from app.services.messaging.config import IndexingEvent, StreamMessage
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from tests.support import stage_worker_harness as _harness
+from tests.unit.modules.pipeline.fakes import StubIO
 
 _BudgetHarness = _harness.BudgetHarness
 _CLS = _harness.POISON_CLS
 _Harness = _harness.WorkerHarness
-_IO = _harness.WorkerIO
 _PK = _harness.POISON_PK
 _charged_pause = _harness.charged_pause
 _job = _harness.make_job
@@ -103,7 +103,7 @@ async def test_a_missing_state_is_recreated_from_the_job() -> None:
     assert h.state(job).status is ProgressStatus.COMPLETED
 
 
-class _RecordsIO(_IO):
+class _RecordsIO(StubIO):
     """An IO that knows which of the job's records are still on its revision."""
 
     current: ClassVar[list[str]] = []
@@ -130,7 +130,7 @@ async def test_a_missing_state_is_recreated_only_while_a_record_is_left(
         assert h.handler.outcomes("classify")["stale"] == 1
 
 
-class _UnreadableIO(_IO):
+class _UnreadableIO(StubIO):
     async def current_record_ids(self, job: StageJob) -> list[str]:
         raise ConnectionError("graph 503")
 
@@ -414,7 +414,7 @@ async def test_a_final_headline_runs_the_settled_hook_and_a_failing_hook_retries
             raise RuntimeError("copies not released")
 
     h.handler = StageJobHandler(
-        h.registry, h.states, h.headlines, h.coordinator, _IO,
+        h.registry, h.states, h.headlines, h.coordinator, StubIO,
         logger=logging.getLogger("t"), worker_id="w1", clock_ms=h.clock, on_headline_settled=on_settled,
     )
     h.seed(job)
@@ -435,7 +435,7 @@ async def test_no_hook_when_no_record_is_still_on_the_revision() -> None:
         settled.append(record_ids)
 
     h.handler = StageJobHandler(
-        h.registry, h.states, h.headlines, h.coordinator, _IO,
+        h.registry, h.states, h.headlines, h.coordinator, StubIO,
         logger=logging.getLogger("t"), worker_id="w1", clock_ms=h.clock, on_headline_settled=on_settled,
     )
     h.headlines.moved_on = True
@@ -516,7 +516,7 @@ async def test_an_unchanged_completion_loses_to_a_redrive_that_finished_meanwhil
     assert h.producer.sent == []
 
 
-class _DeletingIO(_IO):
+class _DeletingIO(StubIO):
     """A stage IO whose job's connector is (or is not) being deleted."""
 
     deleting: ClassVar[set[str]] = set()
@@ -525,7 +525,7 @@ class _DeletingIO(_IO):
         return job.connector_id in self.deleting
 
 
-def _harness_with(io: type[_IO]) -> _Harness:
+def _harness_with(io: type[StubIO]) -> _Harness:
     h = _Harness()
     h.handler = StageJobHandler(
         h.registry, h.states, h.headlines, h.coordinator, io,
@@ -843,3 +843,16 @@ async def test_a_paused_job_warns_once_per_episode_not_on_every_wake() -> None:
     with pytest.raises(StagePaused) as paused:
         await h.deliver(job.model_copy(update={"force": True}))
     assert paused.value.log_level == logging.WARNING
+
+
+@pytest.mark.asyncio
+async def test_a_job_with_a_tier_and_priority_a_newer_release_added_still_runs() -> None:
+    h, job = _Harness(), _job()
+    h.seed(job)
+    payload = {**job.model_dump(mode="json", by_alias=True), "tier": "nano", "priority": "urgent"}
+
+    events = [event.event async for event in h.handler(StreamMessage(eventType="stageJob", payload=payload))]
+
+    assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+    assert h.stage.runs == 1
+    assert h.state(job).status is ProgressStatus.COMPLETED
