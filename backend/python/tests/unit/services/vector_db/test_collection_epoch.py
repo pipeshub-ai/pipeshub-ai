@@ -17,7 +17,7 @@ log = logging.getLogger("epoch-test")
 WINDOW = 5700.0
 
 
-def _epochs(clock=None, store=None):
+def _epochs(clock=None, store=None):  # noqa: ANN202
     config = ConfigurationService(log, store or InMemoryKeyValueStore(log))
     return CollectionEpochs(config, log, **({"clock": clock} if clock else {})), config
 
@@ -58,7 +58,7 @@ async def test_a_reset_whose_bump_cannot_be_written_raises_and_changes_nothing()
     before = await epochs.capture("c")
     real = store.create_key
 
-    async def failing(key, value, overwrite=True, ttl=None):
+    async def failing(key, value, overwrite=True, ttl=None):  # noqa: ANN202
         if key.endswith("/current") and overwrite:
             raise ConnectionError("kv down")
         return await real(key, value, overwrite, ttl)
@@ -77,7 +77,7 @@ async def test_a_token_that_was_created_but_is_not_yet_current_is_never_retired(
     ticket_a_holder: list = []
     real = config.store.create_key
 
-    async def pointer_write_runs_a_second_reset(key, value, overwrite=True, ttl=None):
+    async def pointer_write_runs_a_second_reset(key, value, overwrite=True, ttl=None):  # noqa: ANN202
         if key.endswith("/current") and overwrite and not ticket_a_holder:
             ticket_a_holder.append(None)
             config.store.create_key = real  # the hook runs once
@@ -189,7 +189,7 @@ async def test_a_capture_whose_promotion_cannot_be_written_raises_and_returns_no
     epochs._promoted.clear()
     real = config.store.create_key
 
-    async def failing(key, value, overwrite=True, ttl=None):
+    async def failing(key, value, overwrite=True, ttl=None):  # noqa: ANN202
         if key.endswith("/live"):
             raise ConnectionError("kv down")
         return await real(key, value, overwrite, ttl)
@@ -206,7 +206,7 @@ async def test_control_a_bump_through_set_config_swallows_the_failure_the_reset_
     epochs, config = _epochs(store=store)
     await epochs.capture("c")
 
-    async def failing(key, value, overwrite=True, ttl=None):
+    async def failing(key, value, overwrite=True, ttl=None):  # noqa: ANN202
         raise ConnectionError("kv down")
 
     store.create_key = failing
@@ -236,7 +236,7 @@ async def test_control_retiring_every_token_that_is_not_current_retires_the_one_
     real = config.store.create_key
     holder: list = []
 
-    async def second_reset_confirms_with_the_broken_rule(key, value, overwrite=True, ttl=None):
+    async def second_reset_confirms_with_the_broken_rule(key, value, overwrite=True, ttl=None):  # noqa: ANN202
         if key.endswith("/current") and overwrite and not holder:
             holder.append(1)
             config.store.create_key = real

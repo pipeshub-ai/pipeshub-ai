@@ -136,11 +136,11 @@ async def test_a_steady_state_batch_reads_the_store_four_times_and_lists_nothing
     store = world.config.store
     real_get, real_list = store.get_key, store.list_keys_in_directory
 
-    async def get_key(key, **kw):
+    async def get_key(key, **kw):  # noqa: ANN202
         reads.append(key)
         return await real_get(key, **kw)
 
-    async def list_keys(directory):
+    async def list_keys(directory):  # noqa: ANN202
         lists.append(directory)
         return await real_list(directory)
 
@@ -155,7 +155,7 @@ async def test_control_a_capture_that_listed_the_tokens_would_list_on_every_batc
     await world.batch(INT8)
     real = CollectionEpochs.capture
 
-    async def listing(self, collection):
+    async def listing(self, collection):  # noqa: ANN202
         await self.states(collection)
         return await real(self, collection)
 
@@ -163,7 +163,7 @@ async def test_control_a_capture_that_listed_the_tokens_would_list_on_every_batc
     lists: list[str] = []
     real_list = world.config.store.list_keys_in_directory
 
-    async def list_keys(directory):
+    async def list_keys(directory):  # noqa: ANN202
         lists.append(directory)
         return await real_list(directory)
 
@@ -174,7 +174,7 @@ async def test_control_a_capture_that_listed_the_tokens_would_list_on_every_batc
 
 # -- the shortcut of a store with a space per organisation ----------------------------------------------------------
 
-def _pg_guard(clock):
+def _pg_guard(clock):  # noqa: ANN202
     from app.config.configuration_service import ConfigurationService
     from app.config.providers.in_memory_store import InMemoryKeyValueStore
 

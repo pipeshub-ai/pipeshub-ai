@@ -67,7 +67,7 @@ class Standing:
 
 
 class PrecisionGuard:
-    def __init__(self, pins: CollectionPinStore, vector_db_service, logger) -> None:
+    def __init__(self, pins: CollectionPinStore, vector_db_service, logger) -> None:  # noqa: ANN001
         self._pins = pins
         self._db = vector_db_service
         self._logger = logger
@@ -171,7 +171,7 @@ class PrecisionGuard:
         """The tag a point must not carry in an index of this precision. Positive on purpose: a tag, not an absence."""
         return INT8 if pin_precision == FP32 else FP32
 
-    async def _record_filter(self, org: str | None, virtual_record_id: str, tag: str):
+    async def _record_filter(self, org: str | None, virtual_record_id: str, tag: str):  # noqa: ANN202
         must: dict = {"virtualRecordId": virtual_record_id, TAG_FIELD: [tag]}
         if org:
             must[_ORG_FIELD] = org
@@ -491,7 +491,8 @@ class PrecisionGuard:
             if standing.precision is None:
                 pin = await self._claim(collection, org, precision, fence, derived=False)
                 standing = Standing(pin.precision, "pin")
-        return self._judged(collection, standing, precision, fallback)
+        self._judged(collection, standing, precision, fallback=fallback)
+        return None
 
     async def _quiet(self, collection: str, org: str | None) -> bool:
         try:
@@ -500,7 +501,7 @@ class PrecisionGuard:
             return False
 
     @staticmethod
-    def _judged(collection: str, standing: Standing, precision: str, fallback: bool) -> None:
+    def _judged(collection: str, standing: Standing, precision: str, *, fallback: bool) -> None:
         if standing.precision != precision:
             raise PrecisionFlip(
                 f"collection '{collection}' holds {standing.precision} vectors and the embedding server now produces {precision}; "
@@ -508,4 +509,3 @@ class PrecisionGuard:
             )
         if fallback and standing.precision != FP32:
             raise PrecisionFlip(f"the embedding server fell back to {precision}; '{collection}' holds {standing.precision}")
-        return None

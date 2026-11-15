@@ -67,7 +67,7 @@ class Dead:
 
 
 class CollectionEpochs:
-    def __init__(self, config_service, logger, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, config_service, logger, *, clock: Callable[[], float] = time.time) -> None:  # noqa: ANN001
         self._config = config_service
         self._logger = logger
         self._clock = clock
@@ -90,7 +90,7 @@ class CollectionEpochs:
 
     # -- primitives ------------------------------------------------------------------------------------------
 
-    async def _read(self, key: str):
+    async def _read(self, key: str):  # noqa: ANN202
         return await self._config.get_config(key, use_cache=False, raise_on_error=True)
 
     async def _create(self, key: str, value: dict) -> bool:

@@ -54,7 +54,7 @@ class Pin:
 
 
 class CollectionPinStore:
-    def __init__(self, config_service, logger, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, config_service, logger, *, clock: Callable[[], float] = time.time) -> None:  # noqa: ANN001
         self._config = config_service
         self._logger = logger
         self._clock = clock

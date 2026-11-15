@@ -70,7 +70,12 @@ from app.modules.indexing.embed_resume import POINT_PRECISION
 from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
 from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.vector_db.collection_epoch import POINT_EPOCH, Fence
-from app.services.vector_db.collection_pin import FP32, INT8, STAMP_TAG, CollectionPinStore
+from app.services.vector_db.collection_pin import (
+    FP32,
+    INT8,
+    STAMP_TAG,
+    CollectionPinStore,
+)
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     EMBED_EPOCH_FIELD,

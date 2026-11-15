@@ -105,8 +105,8 @@ from app.services.messaging.error_classifier import format_exception_chain
 from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.resource_governor.feedback import get_default_downstream_feedback
-from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_epoch import POINT_EPOCH, Fence
+from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_pin import IMAGE_TAG, CollectionPinStore
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD

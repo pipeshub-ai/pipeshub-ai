@@ -38,27 +38,27 @@ class _Db:
                 "id": ident or f"{vrid}-{len(self.points)}-{i}", "visible": not self.lag,
             })
 
-    def get_capabilities(self):
+    def get_capabilities(self):  # noqa: ANN202
         return SimpleNamespace(spaces_per_org=False)
 
-    async def make_searchable(self, collection):
+    async def make_searchable(self, collection):  # noqa: ANN202
         self.refreshes += 1
         for p in self.points:
             p["visible"] = True
 
-    async def filter_collection(self, must=None, **_k):
+    async def filter_collection(self, must=None, **_k):  # noqa: ANN202
         return dict(must or {})
 
     def _match(self, p, expression) -> bool:
         return all((p.get(k) in v) if isinstance(v, list) else p.get(k) == v for k, v in expression.items())
 
-    async def count_points(self, collection, expression):
+    async def count_points(self, collection, expression):  # noqa: ANN202
         return sum(1 for p in self.points if p["visible"] and self._match(p, expression))
 
-    async def delete_points(self, collection, expression, refresh=False):
+    async def delete_points(self, collection, expression, refresh=False):  # noqa: ANN202
         self.points = [p for p in self.points if not self._match(p, expression)]
 
-    async def get_collection_info(self, collection):
+    async def get_collection_info(self, collection):  # noqa: ANN202
         return SimpleNamespace(exists=True, points_count=sum(1 for p in self.points if p["visible"]), dense_dimension=4)
 
     def precisions(self) -> set:
@@ -105,7 +105,7 @@ def world() -> _World:
 
 
 @pytest.fixture(autouse=True)
-def _witness():
+def _witness():  # noqa: ANN202
     witness = PrecisionWitness()
     witness.record("m", FP32)
     set_precision_witness(witness)
@@ -115,7 +115,7 @@ def _witness():
 
 def _fence_off(monkeypatch) -> None:
     """The control: the epoch never moves."""
-    async def never(self, fence):
+    async def never(self, fence):  # noqa: ANN202
         return False
 
     monkeypatch.setattr(CollectionEpochs, "moved", never)
@@ -147,7 +147,7 @@ async def test_control_without_the_fence_the_old_batch_claims_the_new_index(worl
 async def test_a_cleanup_between_the_claim_and_its_recheck_withdraws_the_claim(world) -> None:
     real = world.pins._try_create
 
-    async def create_then_cleanup(*a, **k):
+    async def create_then_cleanup(*a, **k):  # noqa: ANN202
         result = await real(*a, **k)
         await world.cleanup()
         return result
@@ -168,7 +168,7 @@ async def test_a_cleanup_after_the_write_lands_removes_the_points_and_restores_n
 @pytest.mark.asyncio
 async def test_control_a_confirm_that_restores_from_the_points_recreates_the_pin(world) -> None:
     """What the check after the write did before: the points it had just written made the pin."""
-    async def restoring(collection, org, precision, fence):
+    async def restoring(collection, org, precision, fence):  # noqa: ANN202
         if await world.pins.get(collection, None, fresh=True) is None:
             await world.pins._claim_unfenced(collection, precision, None, derived=True)
 
@@ -182,7 +182,7 @@ async def test_a_reader_never_restores_a_pin_over_an_index_reset_under_it(world)
     world.db.write(INT8, None)
     real = world.pins._try_create
 
-    async def cleanup_then_create(*a, **k):
+    async def cleanup_then_create(*a, **k):  # noqa: ANN202
         await world.cleanup()
         return await real(*a, **k)
 
@@ -193,7 +193,7 @@ async def test_a_reader_never_restores_a_pin_over_an_index_reset_under_it(world)
 
 @pytest.mark.asyncio
 async def test_a_kv_that_cannot_read_the_epoch_stops_the_batch_before_anything_is_embedded(world, monkeypatch) -> None:
-    async def down(self, collection):
+    async def down(self, collection):  # noqa: ANN202
         raise ConnectionError("kv down")
 
     monkeypatch.setattr(CollectionEpochs, "current", down)
@@ -228,7 +228,7 @@ async def test_a_new_precision_writer_running_inside_the_replacement_cannot_mix_
         except PrecisionFlip:
             ran.append("refused")
 
-    async def refresh_then_writer(collection):
+    async def refresh_then_writer(collection):  # noqa: ANN202
         await real(collection)
         if not ran:
             ran.append("running")
@@ -245,7 +245,7 @@ async def test_control_a_replacement_that_does_not_count_the_points_mixes_the_in
     now = await _stale(world)
     world.db.write(INT8, None, n=3)
 
-    async def sees_nothing(collection, org):
+    async def sees_nothing(collection, org):  # noqa: ANN202
         from app.services.vector_db.precision_guard import Standing
         return Standing(None, "none")
 
@@ -288,7 +288,7 @@ async def test_a_replacer_whose_cleanup_ran_before_its_restore_restores_nothing(
     world.db.write(INT8, None)
     real = world.pins._try_create
 
-    async def cleanup_first(*a, **k):
+    async def cleanup_first(*a, **k):  # noqa: ANN202
         await world.cleanup()
         return await real(*a, **k)
 
@@ -306,7 +306,7 @@ async def test_a_blind_delete_of_a_pin_claimed_meanwhile_churns_but_never_mixes(
     real_get = world.pins.get
     calls = {"n": 0}
 
-    async def get_then_world_moves(collection, org=None, *, fresh=False):
+    async def get_then_world_moves(collection, org=None, *, fresh=False):  # noqa: ANN202
         pin = await real_get(collection, org, fresh=fresh)
         calls["n"] += 1
         if calls["n"] == 2:  # after the replacer's second read, before its delete
@@ -344,7 +344,7 @@ async def test_control_without_the_refresh_the_claim_is_made_over_an_index_that_
     world = _World(lag=True)
     world.db.write(INT8, None)
 
-    async def no_refresh(collection):
+    async def no_refresh(collection):  # noqa: ANN202
         return None
 
     world.db.make_searchable = no_refresh
@@ -369,7 +369,7 @@ async def test_the_old_untagged_arithmetic_reads_a_dead_point_as_legacy_fp32(wor
     world.db.write(INT8, (await world.guard.capture(C)).token)
     await world.cleanup_keep_points()
 
-    async def live_only(self, collection, org):
+    async def live_only(self, collection, org):  # noqa: ANN202
         return {INT8: 0, FP32: 0, "image": 0, "stamp": 0}
 
     monkeypatch.setattr(PrecisionGuard, "tag_counts", live_only)
@@ -430,7 +430,7 @@ async def test_inside_the_window_derive_sweeps_and_counts_the_dead_and_after_it_
     counts: list[int] = []
     real = world.db.count_points
 
-    async def counting(collection, expression):
+    async def counting(collection, expression):  # noqa: ANN202
         counts.append(1)
         return await real(collection, expression)
 
@@ -451,7 +451,7 @@ async def test_control_a_sweep_that_never_marks_swept_keeps_the_six_counts_forev
     await world.batch(INT8)
     await world.cleanup_keep_points()
 
-    async def never(self, collection, token):
+    async def never(self, collection, token):  # noqa: ANN202
         return None
 
     monkeypatch.setattr(CollectionEpochs, "mark_swept", never)

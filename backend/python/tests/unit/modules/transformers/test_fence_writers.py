@@ -31,7 +31,7 @@ RECORDS = "records"
 
 def _with_epoch(store, db: _FakeDb) -> None:
     """The test store keeps the epoch tag too, and the point id."""
-    async def upsert(collection_name, points):
+    async def upsert(collection_name, points):  # noqa: ANN202
         for p in points:
             meta = p.payload["metadata"]
             db.points.append({
@@ -52,7 +52,7 @@ async def _cleanup_records(store, db: _FakeDb) -> None:
 
 
 def _fence_off(monkeypatch) -> None:
-    async def never(self, fence):
+    async def never(self, fence):  # noqa: ANN202
         return False
 
     monkeypatch.setattr(CollectionEpochs, "moved", never)
@@ -67,7 +67,7 @@ async def test_a_record_embedded_before_a_cleanup_writes_nothing_and_claims_noth
     _with_epoch(store, db)
     real = store.dense_embeddings.aembed_documents_witnessed
 
-    async def embed_then_cleanup(*a, **k):
+    async def embed_then_cleanup(*a, **k):  # noqa: ANN202
         result = await real(*a, **k)
         await _cleanup_records(store, db)  # the cleanup runs while the batch is embedded
         return result
@@ -86,7 +86,7 @@ async def test_control_without_the_fence_the_record_claims_the_recreated_index(m
     _with_epoch(store, db)
     real = store.dense_embeddings.aembed_documents_witnessed
 
-    async def embed_then_cleanup(*a, **k):
+    async def embed_then_cleanup(*a, **k):  # noqa: ANN202
         result = await real(*a, **k)
         await _cleanup_records(store, db)
         return result
@@ -104,7 +104,7 @@ async def test_a_cleanup_after_a_batch_is_written_removes_it_and_hands_the_recor
     _with_epoch(store, db)
     written = db.upsert_points
 
-    async def write_then_cleanup(collection_name, points):
+    async def write_then_cleanup(collection_name, points):  # noqa: ANN202
         await written(collection_name, points)
         await _cleanup_records(store, db)
 
@@ -143,7 +143,7 @@ async def test_every_record_that_finishes_reaches_the_leak_check(monkeypatch, re
     calls: list[str] = []
     real = store._check_for_leaks
 
-    async def counting(*a, **k):
+    async def counting(*a, **k):  # noqa: ANN202
         calls.append("checked")
         return await real(*a, **k)
 
@@ -163,7 +163,7 @@ async def test_a_reconciled_record_whose_blocks_are_all_unchanged_reaches_the_le
     calls: list[str] = []
     real = store._check_for_leaks
 
-    async def counting(*a, **k):
+    async def counting(*a, **k):  # noqa: ANN202
         calls.append("checked")
         return await real(*a, **k)
 
@@ -176,7 +176,7 @@ async def test_a_reconciled_record_whose_blocks_are_all_unchanged_reaches_the_le
 
 # -- entities ------------------------------------------------------------------------------------------------------
 
-async def _cleanup_entities(world) -> None:
+async def _cleanup_entities(world) -> None:  # noqa: F811
     ticket = await world.pins.epochs.begin_reset(ENTITIES)
     world.vdb.points[ENTITIES] = []
     await world.pins.epochs.confirm_reset(ticket)
@@ -184,13 +184,13 @@ async def _cleanup_entities(world) -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_entity_batch_embedded_before_a_cleanup_claims_nothing(world) -> None:
+async def test_an_entity_batch_embedded_before_a_cleanup_claims_nothing(world) -> None:  # noqa: F811
     world.vdb.add(ENTITIES, INT8, entityType="person", entityId="p0")
     await world.pins._claim_unfenced(ENTITIES, INT8)
     world.served["precision"] = INT8
     real_embed = world.store._embed_changed
 
-    async def embed_then_cleanup(entities, states, fingerprint, precision=None):
+    async def embed_then_cleanup(entities, states, fingerprint, precision=None):  # noqa: ANN202
         result = await real_embed(entities, states, fingerprint, precision)
         await _cleanup_entities(world)
         return result
@@ -202,13 +202,13 @@ async def test_an_entity_batch_embedded_before_a_cleanup_claims_nothing(world) -
 
 
 @pytest.mark.asyncio
-async def test_control_without_the_fence_the_entity_batch_claims_the_recreated_index(world, monkeypatch) -> None:
+async def test_control_without_the_fence_the_entity_batch_claims_the_recreated_index(world, monkeypatch) -> None:  # noqa: F811
     world.vdb.add(ENTITIES, INT8, entityType="person", entityId="p0")
     await world.pins._claim_unfenced(ENTITIES, INT8)
     world.served["precision"] = INT8
     real_embed = world.store._embed_changed
 
-    async def embed_then_cleanup(entities, states, fingerprint, precision=None):
+    async def embed_then_cleanup(entities, states, fingerprint, precision=None):  # noqa: ANN202
         result = await real_embed(entities, states, fingerprint, precision)
         await _cleanup_entities(world)
         return result
@@ -220,13 +220,13 @@ async def test_control_without_the_fence_the_entity_batch_claims_the_recreated_i
 
 
 @pytest.mark.asyncio
-async def test_an_entity_batch_written_across_a_cleanup_is_removed_and_no_pin_is_made(world) -> None:
+async def test_an_entity_batch_written_across_a_cleanup_is_removed_and_no_pin_is_made(world) -> None:  # noqa: F811
     world.vdb.add(ENTITIES, INT8, entityType="person", entityId="p0")
     await world.pins._claim_unfenced(ENTITIES, INT8)
     world.served["precision"] = INT8
     real = world.vdb.upsert_points
 
-    async def write_then_cleanup(collection_name, points):
+    async def write_then_cleanup(collection_name, points):  # noqa: ANN202
         await real(collection_name, points)
         await _cleanup_entities(world)
 
@@ -236,8 +236,8 @@ async def test_an_entity_batch_written_across_a_cleanup_is_removed_and_no_pin_is
     assert world.vdb.points[ENTITIES] == [] and await world.pins.get(ENTITIES, fresh=True) is None
 
 
-async def _stored_states(world, payloads):
-    async def fetch(collection, entities):
+async def _stored_states(world, payloads):  # noqa: ANN202, F811
+    async def fetch(collection, entities):  # noqa: ANN202
         states = {}
         for e in entities:
             pid = world.store._point_id(e.org_id, e.entity_type.value, e.entity_id)
@@ -255,13 +255,13 @@ async def _stored_states(world, payloads):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("handling", ["precision_aware", "none"])
-async def test_an_entity_left_by_a_writer_that_died_is_written_again_at_the_pinned_precision(world, handling, monkeypatch) -> None:
+async def test_an_entity_left_by_a_writer_that_died_is_written_again_at_the_pinned_precision(world, handling, monkeypatch) -> None:  # noqa: F811
     """W (int8) wrote the entity and died before it confirmed; the pin is fp32. The redelivered batch finds the stored
     content the same and must still replace the point, not keep it and not delete it."""
     payloads: dict = {}
     real = world.vdb.upsert_points
 
-    async def keep_payloads(collection_name, points):
+    async def keep_payloads(collection_name, points):  # noqa: ANN202
         for p in points:
             payloads[p.id] = p.payload
         await real(collection_name, points)
@@ -290,7 +290,7 @@ async def test_an_entity_left_by_a_writer_that_died_is_written_again_at_the_pinn
 
 
 @pytest.mark.asyncio
-async def test_a_delete_only_fix_would_lose_the_entity(world) -> None:
+async def test_a_delete_only_fix_would_lose_the_entity(world) -> None:  # noqa: F811
     """The control for the choice above: deleting the other precision's point leaves the entity in no index at all."""
     world.vdb.add(ENTITIES, INT8, entityType="record", entityId="r1")
     await world.vdb.delete_points(ENTITIES, {"entityId": ["r1"], "embedPrecision": [INT8]})
@@ -298,7 +298,7 @@ async def test_a_delete_only_fix_would_lose_the_entity(world) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_cleanup_whose_epoch_cannot_be_written_drops_nothing_and_keeps_the_pin(world, monkeypatch) -> None:
+async def test_a_cleanup_whose_epoch_cannot_be_written_drops_nothing_and_keeps_the_pin(world, monkeypatch) -> None:  # noqa: F811
     from tests.unit.services.messaging.test_precision_switch_converges import (
         RECORDS as REC,
     )
@@ -308,7 +308,7 @@ async def test_a_cleanup_whose_epoch_cannot_be_written_drops_nothing_and_keeps_t
 
     await _seed_int8_index(world)
 
-    async def failing(self, collection):
+    async def failing(self, collection):  # noqa: ANN202
         raise ConnectionError("kv down")
 
     monkeypatch.setattr(CollectionEpochs, "begin_reset", failing)
@@ -318,7 +318,7 @@ async def test_a_cleanup_whose_epoch_cannot_be_written_drops_nothing_and_keeps_t
 
 
 @pytest.mark.asyncio
-async def test_the_cleanups_tail_sweeps_the_points_of_retired_epochs(world) -> None:
+async def test_the_cleanups_tail_sweeps_the_points_of_retired_epochs(world) -> None:  # noqa: F811
     from tests.unit.services.messaging.test_precision_switch_converges import (
         RECORDS as REC,
     )

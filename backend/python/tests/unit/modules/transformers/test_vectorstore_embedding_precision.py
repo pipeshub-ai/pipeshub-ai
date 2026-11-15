@@ -5,14 +5,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langchain_core.documents import Document
 
+from app.services.vector_db.collection_epoch import Fence  # noqa: E402
 from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from tests.unit.modules.transformers.test_vectorstore_point_ids import (
     _make_vectorstore,
     _meta,
 )
-
-
-from app.services.vector_db.collection_epoch import Fence  # noqa: E402
 
 
 class _Bundled(EmbeddingServerEmbeddings):

@@ -18,7 +18,6 @@ from app.services.vector_db.collection_pin import (
     CollectionPinStore,
 )
 from app.services.vector_db.precision_guard import PrecisionGuard, PrecisionUnreadable
-
 from app.utils.precision_witness import PrecisionWitness, set_precision_witness
 
 log = logging.getLogger("pin-test")
