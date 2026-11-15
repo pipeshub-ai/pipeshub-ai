@@ -283,6 +283,8 @@ class TestAbstractMethodInventory:
         "update_indexing_status_for_record_ids",
         "reset_indexing_status_for_connector",
         "compare_and_set_indexing_status",
+        "list_unsupported_page",
+        "transition_unsupported",
         "claim_push_record",
         "retag_push_record",
         "get_existing_record_keys",
@@ -567,6 +569,12 @@ class TestAbstractMethodInventory:
         "delete_all_edges_for_node",
         "get_template",
         "clone_agent_template",
+        "get_all_agent_templates",
+        "update_agent_template",
+        "delete_agent_template",
+        "get_all_agents",
+        "update_agent",
+        "delete_agent",
     ]
 
     def test_all_expected_methods_are_abstract(self):

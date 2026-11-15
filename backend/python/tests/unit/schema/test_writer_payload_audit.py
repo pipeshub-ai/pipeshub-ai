@@ -692,7 +692,7 @@ _AUDITED_CYPHER_WRITERS = frozenset({
     'purge_trashed_records', 'record_purge_failure', 'reset_indexing_status_for_connector', 'restore_records',
     'retag_push_record', 'soft_delete_records', 'split_link_edges', 'stage_state_compare_and_set',
     'stage_state_create', 'stage_states_delete_unheld_revisions', 'store_page_token',
-    'take_back_kept_record_group', 'update_agent_permission', 'update_drive_sync_state', 'update_edge',
+    'take_back_kept_record_group', 'transition_unsupported', 'update_agent_permission', 'update_drive_sync_state', 'update_edge',
     'update_kb_permission', 'update_knowledge_base', 'update_node', 'update_node_fields_if',
     'update_node_fields_if_match', 'update_node_if_match', 'update_nodes_fields_if_match', 'update_sync_point_if',
     'update_user_sync_state', 'upsert_authenticated_as', 'upsert_person_by_email', 'upsert_person_by_source_key', 'upsert_record_under_parent',
