@@ -129,7 +129,8 @@ async def class_rows(tx: Tx, org: str, app_sk: int, classes: list[int]) -> dict[
 
 
 async def facets(tx: Tx, org: str, app_sk: int) -> dict[str, list[str]] | None:
-    """The record types and origins of a connector's live records (for a collection: the filters it offers to whoever may list it); None until it has been counted whole."""
+    """The record types and origins of a connector's live records (for a collection: the filters it offers to whoever may list it); None until it has been counted whole.
+    Only for a connector kg serves (``drainer.serves``): the projection leaves these columns empty on a row whose value the writer refused, and takes that connector off the readers."""
     if not await tx.fetchval(SEEDED, org, app_sk):
         return None
     rows = await tx.fetch(FACETS, org, app_sk)

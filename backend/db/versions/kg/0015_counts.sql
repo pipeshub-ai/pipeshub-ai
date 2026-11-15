@@ -54,7 +54,7 @@ BEGIN
   RETURN NULL;
 END $fn$;
 
-SELECT kernel.exempt_trigger('kg.count_change()', 'inserts the counter deltas of the changed kg.records rows into kg.counts as the writer of kg.records (the vetted role), in its transaction; reads nothing but its transition tables', 'security-review');
+SELECT kernel.exempt_trigger('kg.count_change()', 'inserts the counter deltas of the changed kg.records rows into kg.counts as the writer of kg.records (the vetted role), in its transaction, and reads nothing but its transition tables', 'security-review');
 
 CREATE TRIGGER kg_records_count_insert AFTER INSERT ON kg.records REFERENCING NEW TABLE AS newtab FOR EACH STATEMENT EXECUTE FUNCTION kg.count_change();
 CREATE TRIGGER kg_records_count_update AFTER UPDATE ON kg.records REFERENCING OLD TABLE AS oldtab NEW TABLE AS newtab FOR EACH STATEMENT EXECUTE FUNCTION kg.count_change();
