@@ -166,12 +166,13 @@ async def handler_run(
     ext: str | None, mime: str | None, content: bytes, *, name: str | None = None,
     size: int | None = None, attempt_final: bool = False, real_worker: bool = False,
     too_large: bool = False, download_kwargs: dict[str, object] | None = None,
-    captured: list[BlocksContainer] | None = None,
+    captured: list[BlocksContainer] | None = None, signed_url_fails: bool = False,
 ) -> tuple[dict[str, Any], bool]:
     """The record after one delivery through the real record handler, and whether it was downloaded."""
     from tests.unit.services.messaging.test_record_handler import _make_handler
 
     name = name or f"Sample.{ext}"
+    ext = None if ext == "<none>" else ext
     record = _record(ext, mime, name)
     if size is not None:
         record["sizeInBytes"] = size
@@ -182,6 +183,11 @@ async def handler_run(
     ep.stage_ingress = None
     handler = _make_handler(logger=LOGGER, event_processor=ep)
     handler.event_processor.graph_provider = store.provider
+    if signed_url_fails:
+        endpoints = {"connectors": {"endpoint": "http://connector.invalid"}}
+        handler.config_service.get_config = AsyncMock(  # type: ignore[method-assign]
+            side_effect=lambda key, *_a, **_k: endpoints if "endpoints" in key else None,
+        )
     downloads: list[str] = []
 
     async def download(**kwargs: object) -> bytes:
@@ -189,6 +195,8 @@ async def handler_run(
         if download_kwargs is not None:
             download_kwargs.clear()
             download_kwargs.update(kwargs)
+        if signed_url_fails:
+            raise RuntimeError("the signed URL did not answer")
         if too_large:
             from app.utils.api_call import ResponseTooLargeError
 

@@ -6507,10 +6507,12 @@ components:
               type: string
               nullable: true
               description: |
-                A note on how a COMPLETED record was indexed, for example that only
-                the first and last part of a large text file is indexed. Unlike
-                `reason`, it does not mean anything failed or was skipped. Absent or
-                null when there is nothing to note.
+                A note on how a COMPLETED record was indexed. The record completed
+                successfully, but the note can say that some of its content was
+                left out of the index: for example, that only the first and last
+                part of a large text file is indexed. Unlike `reason`, it never
+                reports a failure or a skipped stage. Absent or null when there is
+                nothing to note.
             isDeleted:
               type: boolean
             isArchived:

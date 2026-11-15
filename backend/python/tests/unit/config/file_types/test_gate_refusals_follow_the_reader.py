@@ -45,3 +45,21 @@ def test_a_log_main_read_as_code_is_read_as_code() -> None:
     assert decision.supported
     decision = _gate(["cfg", "text/x-c", "file.cfg", "FILE"], disabled=frozenset({"cfg"}))
     assert decision.supported
+
+
+@pytest.mark.parametrize(
+    ("extension", "mime", "off"),
+    [("py", "text/x-log", "log"), ("js", "text/x-cfg", "cfg"), ("py", "text/x-cfg", "cfg")],
+)
+def test_a_source_file_carrying_a_log_mime_is_judged_by_its_own_type(extension: str, mime: str, off: str) -> None:
+    decision = file_types.gate_decision(
+        mime=mime, extension=extension, record_name=f"a.{extension}", is_code_file=False,
+        code_file_extension=None, disabled=frozenset({off}),
+    )
+    assert decision.supported
+    assert decision.file_type is not None and decision.file_type.key == extension
+    refused = file_types.gate_decision(
+        mime=mime, extension=extension, record_name=f"a.{extension}", is_code_file=False,
+        code_file_extension=None, disabled=frozenset({extension}),
+    )
+    assert refused.refusal == "disabled"

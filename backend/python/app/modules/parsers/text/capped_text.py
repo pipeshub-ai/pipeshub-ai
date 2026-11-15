@@ -15,8 +15,9 @@ from app.config.file_types import TEXT_LOG_MAX_BYTES
 from app.modules.parsers.text_decoding import decode_text
 
 # Room in the cap for the line that says what was left out.
-_MARKER_RESERVE = 256
 _SNIFF_BYTES = 8 * 1024
+# Each end keeps at least this many bytes of text beside the marker.
+_MIN_PART_BYTES = 16
 _CHARSET_SAMPLE_BYTES = 64 * 1024
 _NEWLINE_SEARCH_BYTES = 64 * 1024
 _UTF16_NUL_SHARE = 0.9
@@ -154,9 +155,25 @@ def _line_break(codec: str | None) -> bytes:
     return b"\n"
 
 
-def _aligned(position: int, codec: str | None, bom_length: int) -> int:
+def _aligned(content: bytes, position: int, codec: str | None, bom_length: int, *, forward: bool) -> int:
+    """*position* moved to a character boundary: back for the end of the head, *forward* for the
+    start of the tail, so neither part begins or ends inside a character (a UTF-16 surrogate pair,
+    a UTF-8 sequence)."""
     unit = 4 if codec in ("utf-32-le", "utf-32-be") else 2 if codec in ("utf-16-le", "utf-16-be") else 1
-    return position - (position - bom_length) % unit
+    position -= (position - bom_length) % unit
+    if position <= bom_length or position >= len(content):
+        return position
+    if unit == 2:
+        high = content[position] if codec == "utf-16-be" else content[position + 1]
+        if 0xDC <= high <= 0xDF:  # a low surrogate: the pair starts one unit earlier
+            position += 2 if forward else -2
+    elif unit == 1 and codec in (None, "utf-8"):
+        step = 1 if forward else -1
+        for _ in range(3):
+            if not 0x80 <= content[position] <= 0xBF or not bom_length < position < len(content):
+                break
+            position += step
+    return position
 
 
 def _head_end(content: bytes, limit: int, newline: bytes) -> int:
@@ -208,6 +225,22 @@ def _trim_tail(text: str, budget: int) -> str:
     return cut[newline + 1 if newline >= 0 else 0:].decode("utf-8", errors="ignore")
 
 
+def _marker(head: str, omitted: int, total: int) -> str:
+    return (
+        f"{'' if not head or head.endswith(chr(10)) else chr(10)}[... {omitted:,} bytes omitted from "
+        f"this {total:,}-byte file; its first and last lines are kept ...]\n"
+    )
+
+
+def _longest_marker(total: int) -> int:
+    return len(_marker("x", total, total).encode("utf-8"))
+
+
+def minimum_cap() -> int:
+    """The smallest *max_bytes* that keeps a line at each end of any file whose size fits in 63 bits."""
+    return _longest_marker(2**63 - 1) + 2 * _MIN_PART_BYTES
+
+
 def _raw_length(text: str, codec: str | None) -> int:
     try:
         return len(text.encode(codec or "utf-8"))
@@ -225,7 +258,10 @@ def prepare_capped_text(
         return BinaryFile()
     codec, bom_length = _codec(content)
     total = len(content)
-    budget = max(1, (max_bytes - _MARKER_RESERVE) // 2)
+    # The marker's longest form for this size, so head + marker + tail stay within max_bytes.
+    budget = (max_bytes - _longest_marker(total)) // 2
+    if max_bytes < minimum_cap() or budget < _MIN_PART_BYTES:
+        raise ValueError(f"max_bytes {max_bytes} is too small for the omission marker (minimum {minimum_cap()})")
     if total <= max_bytes:
         text = _decode(content[bom_length:], codec)
         if len(text.encode("utf-8")) <= max_bytes:
@@ -235,15 +271,12 @@ def prepare_capped_text(
         # Only the ends are decoded: the middle of a large file is never read into a string.
         newline = _line_break(codec)
         half = max(1, max_bytes // 2)
-        head_end = _aligned(_head_end(content, half, newline), codec, bom_length)
-        tail_start = _aligned(_tail_start(content, total - half, newline), codec, bom_length)
+        head_end = _aligned(content, _head_end(content, half, newline), codec, bom_length, forward=False)
+        tail_start = _aligned(content, _tail_start(content, total - half, newline), codec, bom_length, forward=True)
         head_text = _decode(content[bom_length:head_end], codec)
         tail_text = _decode(content[tail_start:], codec)
     head = _trim_head(head_text, budget)
     tail = _trim_tail(tail_text, budget)
     omitted = max(0, total - bom_length - _raw_length(head, codec) - _raw_length(tail, codec))
-    marker = (
-        f"{'' if not head or head.endswith(chr(10)) else chr(10)}[... {omitted:,} bytes omitted from "
-        f"this {total:,}-byte file; its first and last lines are kept ...]\n"
-    )
+    marker = _marker(head, omitted, total)
     return CappedText(f"{head}{marker}{tail}", total, omitted)

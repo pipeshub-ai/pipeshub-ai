@@ -15,6 +15,7 @@ import pytest
 from app.config import file_types
 from app.config.file_types import TEXT_LOG_HARD_LIMIT_BYTES, TEXT_LOG_MAX_BYTES
 from app.modules.parsers.text.capped_text import CappedText, prepare_capped_text
+from app.modules.transformers.document_extraction import _NOT_CODE
 from app.utils.user_errors import file_too_large_to_read, partly_indexed_text
 
 from .new_type_harness import handler_run, legacy
@@ -45,10 +46,18 @@ def _import_with(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
 
 
 def test_the_limits_can_be_set_and_the_cap_may_not_exceed_the_limit() -> None:
-    ok = _import_with({"TEXT_LOG_MAX_BYTES": "1000", "TEXT_LOG_HARD_LIMIT_BYTES": "2000"})
-    assert ok.stdout.strip().endswith("1000 2000"), ok.stderr
+    ok = _import_with({"TEXT_LOG_MAX_BYTES": "1024", "TEXT_LOG_HARD_LIMIT_BYTES": "2000"})
+    assert ok.stdout.strip().endswith("1024 2000"), ok.stderr
     bad = _import_with({"TEXT_LOG_MAX_BYTES": "3000", "TEXT_LOG_HARD_LIMIT_BYTES": "2000"})
     assert bad.returncode != 0 and "must not exceed" in bad.stderr
+
+
+def test_a_cap_too_small_for_the_marker_is_refused_when_it_is_set() -> None:
+    from app.modules.parsers.text.capped_text import minimum_cap
+
+    assert minimum_cap() <= file_types.TEXT_LOG_MIN_BYTES
+    bad = _import_with({"TEXT_LOG_MAX_BYTES": "64"})
+    assert bad.returncode != 0 and "must be at least" in bad.stderr
 
 
 def _log(size: int) -> bytes:
@@ -131,7 +140,8 @@ async def test_a_log_read_as_code_is_capped_too() -> None:
     assert len(seen["bytes"]) <= TEXT_LOG_MAX_BYTES
 
 
-async def test_the_parsing_service_gets_at_most_the_cap() -> None:
+@pytest.mark.parametrize("mime", ["text/plain", "application/octet-stream"])
+async def test_the_parsing_service_gets_at_most_the_cap(mime: str) -> None:
     from app.events.events import DedupDecision, EventProcessor
     from tests.unit.events.test_events import (
         _drain,
@@ -149,13 +159,13 @@ async def test_the_parsing_service_gets_at_most_the_cap() -> None:
         return
         yield
 
-    for mime in ("text/plain", "application/octet-stream"):
-        with patch.object(EventProcessor, "_use_service_pipeline", return_value=True), \
-             patch.object(ep, "_orchestrate_via_services", side_effect=orchestrate), \
-             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
-                          return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
-            await _drain(ep.on_event(_make_event_payload(extension="log", mime_type=mime, buffer=_log(3 * 1024 * KIB))))
-        assert len(seen["file_content"]) <= TEXT_LOG_MAX_BYTES, mime  # type: ignore[arg-type]
+    with patch.object(EventProcessor, "_use_service_pipeline", return_value=True), \
+         patch.object(ep, "_orchestrate_via_services", side_effect=orchestrate), \
+         patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+                      return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
+        await _drain(ep.on_event(_make_event_payload(extension="log", mime_type=mime, buffer=_log(3 * 1024 * KIB))))
+    assert "file_content" in seen, "the parsing service was not called"
+    assert len(seen["file_content"]) <= TEXT_LOG_MAX_BYTES  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(("size", "refused"), [(TEXT_LOG_HARD_LIMIT_BYTES - 1, False),
@@ -231,10 +241,31 @@ async def test_the_in_process_extraction_skips_a_log_or_cfg(name: str, classifie
     extraction = DocumentExtraction.__new__(DocumentExtraction)
     extraction.logger = SimpleNamespace(debug=lambda *a, **k: None, info=lambda *a, **k: None,
                                         error=lambda *a, **k: None)
-    extraction.process_document = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    extraction._classify_code = AsyncMock(return_value=_NOT_CODE)  # type: ignore[method-assign]
+    extraction.extract_metadata = AsyncMock(return_value=None)  # type: ignore[method-assign]
     record = SimpleNamespace(record_name=name, block_containers=SimpleNamespace(blocks=[], block_groups=[]),
                              org_id="org-1", record_type=SimpleNamespace(value="FILE"), id="r1",
                              semantic_metadata="unset", origin=None)
     with patch("app.modules.transformers.document_extraction.record_is_push_origin", return_value=False):
         await extraction.apply(SimpleNamespace(record=record))
-    assert extraction.process_document.await_count == (1 if classified else 0)
+    assert extraction.extract_metadata.await_count == (1 if classified else 0)
+    assert record.semantic_metadata is None
+
+
+@pytest.mark.parametrize(("name", "record_type", "classified"), [
+    ("server.log", "FILE", False), ("app.CFG", "FILE", False), ("build.log", "CODE_FILE", False),
+    ("report.pdf", "FILE", True),
+])
+async def test_the_classify_endpoint_makes_no_model_call_for_a_log_or_cfg(
+    name: str, record_type: str, classified: bool,
+) -> None:
+    from app.modules.transformers.document_extraction import DocumentExtraction
+
+    extraction = DocumentExtraction.__new__(DocumentExtraction)
+    extraction.logger = SimpleNamespace(debug=lambda *a, **k: None, info=lambda *a, **k: None)
+    extraction._classify_code = AsyncMock(return_value=_NOT_CODE)  # type: ignore[method-assign]
+    extraction._classify_blocks = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    # What the standalone /classify route calls.
+    assert await extraction.classify([], "org-1", ["Engineering"], record_name=name, record_type=record_type) is None
+    calls = extraction._classify_code.await_count + extraction._classify_blocks.await_count
+    assert (calls > 0) is classified

@@ -83,3 +83,40 @@ async def test_the_limit_is_passed_only_for_capped_text() -> None:
     assert seen.get("max_bytes") is None
     await handler_run("log", None, b"line\n", download_kwargs=seen)
     assert seen.get("max_bytes") == file_types.TEXT_LOG_HARD_LIMIT_BYTES
+
+
+_UNLABELLED = ["", "<none>", "unknown"]
+
+
+@pytest.mark.parametrize("ext", _UNLABELLED)
+async def test_a_log_without_an_extension_is_held_to_the_limit_on_the_signed_url(ext: str) -> None:
+    seen: dict[str, object] = {}
+    await handler_run(ext, "text/plain", b"line\n", name="build.log", download_kwargs=seen)
+    assert seen.get("max_bytes") == file_types.TEXT_LOG_HARD_LIMIT_BYTES
+
+
+@pytest.mark.parametrize("ext", _UNLABELLED)
+async def test_a_log_without_an_extension_is_held_to_the_limit_on_the_connector_stream(ext: str) -> None:
+    with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as stream, \
+         patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock, return_value="t"):
+        stream.return_value = {"is_json": False, "data": b"line\n"}
+        await handler_run(ext, "text/plain", b"line\n", name="build.log", signed_url_fails=True)
+    stream.assert_awaited()
+    assert stream.await_args.kwargs.get("max_bytes") == file_types.TEXT_LOG_HARD_LIMIT_BYTES
+
+
+@pytest.mark.parametrize("ext", _UNLABELLED)
+async def test_a_log_without_an_extension_too_large_by_its_size_is_refused_before_download(ext: str) -> None:
+    record, downloaded = await handler_run(
+        ext, "text/plain", b"", name="build.log", size=file_types.TEXT_LOG_HARD_LIMIT_BYTES + 1,
+    )
+    assert not downloaded
+    assert record["indexingStatus"] == "FILE_TYPE_NOT_SUPPORTED"
+    assert record["reason"] == file_too_large_to_read("log")
+
+
+@pytest.mark.parametrize("ext", _UNLABELLED)
+async def test_another_file_without_an_extension_has_no_limit(ext: str) -> None:
+    seen: dict[str, object] = {}
+    await handler_run(ext, "text/plain", b"line\n", name="notes.txt", download_kwargs=seen)
+    assert seen and seen.get("max_bytes") is None

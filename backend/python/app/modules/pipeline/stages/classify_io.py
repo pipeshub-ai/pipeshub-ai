@@ -96,7 +96,8 @@ class GraphClassifyIO(RecordStageIO):
     async def classify(self, blocks: BlocksContainer, org_id: str, departments: list[str]) -> SemanticMetadata | None:
         name, record_type = await self._record_header(self._job)
         if not file_types.classifies(name):
-            return None  # the stage records "nothing to classify": no model call
+            # The classifier refuses it too; returning here also saves the call to the extraction service.
+            return None  # the stage records "nothing to classify"
         with stage("extract"):
             return await self._classifier(blocks, org_id, departments, name, record_type)
 

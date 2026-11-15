@@ -139,3 +139,85 @@ async def test_a_duplicate_takes_its_twins_note(twin_note: str | None) -> None:
         result = await ep._check_duplicate_by_md5(b"x", doc)
     assert result.skip_indexing is True
     assert doc[NOTE_FIELD] == twin_note
+
+
+def _note_writes(gp: MagicMock) -> list[dict[str, Any]]:
+    return [c.args[2] for c in gp.update_node.call_args_list if len(c.args) > 2 and NOTE_FIELD in c.args[2]]
+
+
+async def test_a_retry_that_resumes_from_stored_blocks_keeps_the_note() -> None:
+    from tests.unit.events.test_events import _drain
+    from tests.unit.events.test_events_resume import _setup
+
+    ep, processor, gp, event = _setup(node={NOTE_FIELD: partly_indexed_text()})
+    await _drain(ep.on_event(event))
+    processor.resume_from_checkpoint.assert_called_once()
+    assert _note_writes(gp) == []
+
+
+async def test_a_note_whose_clear_does_not_land_fails_the_attempt() -> None:
+    from app.events.events import DedupDecision
+    from tests.unit.events.test_events import (
+        _drain,
+        _make_event_payload,
+        _make_event_processor,
+    )
+
+    ep, _, processor, gp = _make_event_processor()
+    gp.get_document.return_value = {
+        "_key": "rec-1", "recordType": "FILE", "orgId": "org-1", NOTE_FIELD: partly_indexed_text(),
+    }
+
+    async def update(_key: str, _coll: str, fields: dict[str, Any], *_a: object, **_k: object) -> bool:
+        return NOTE_FIELD not in fields
+
+    gp.update_node = AsyncMock(side_effect=update)
+    processor.process_txt_document = MagicMock()
+    with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+                      return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+         pytest.raises(Exception, match="indexing note"):
+        await _drain(ep.on_event(_make_event_payload(
+            extension="log", mime_type="text/plain", buffer=b"one short line\n", record_name="server.log",
+        )))
+    processor.process_txt_document.assert_not_called()
+
+
+async def test_an_unchanged_note_is_not_written_again() -> None:
+    from app.events.events import DedupDecision
+    from tests.unit.events.test_events import (
+        _drain,
+        _make_event_payload,
+        _make_event_processor,
+    )
+
+    ep, _, processor, gp = _make_event_processor()
+    gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE", "orgId": "org-1"}
+    async def run(*_a: object, **_k: object) -> AsyncIterator[None]:
+        return
+        yield
+    processor.process_txt_document = MagicMock(side_effect=run)
+    with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+                      return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
+        await _drain(ep.on_event(_make_event_payload(
+            extension="log", mime_type="text/plain", buffer=b"one short line\n", record_name="server.log",
+        )))
+    processor.process_txt_document.assert_called_once()
+    assert _note_writes(gp) == []
+
+
+async def test_a_duplicate_writes_its_twins_note_whatever_its_local_copy_says() -> None:
+    from tests.unit.events.test_events import _make_event_processor
+
+    ep, _, _, gp = _make_event_processor()
+    gp.find_duplicate_records.return_value = [{
+        "_key": "twin", "virtualRecordId": "vr-shared", "recordType": "FILE",
+        "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.SKIPPED.value,
+    }]
+    # The node still holds a note this local copy has lost track of.
+    doc = {"_key": "r1", "orgId": "org-1", "virtualRecordId": "vr-shared", "md5Checksum": "abc",
+           "recordType": "FILE", "sizeInBytes": 10}
+    with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+        assert (await ep._check_duplicate_by_md5(b"x", doc)).skip_indexing is True
+    writes = _note_writes(gp)
+    assert len(writes) == 1
+    assert writes[0][NOTE_FIELD] is None

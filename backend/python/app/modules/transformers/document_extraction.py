@@ -479,10 +479,6 @@ class DocumentExtraction(Transformer):
 
     async def apply(self, ctx: TransformContext) -> None:
         record = ctx.record
-        if not file_types.classifies(record.record_name):
-            # A .log/.cfg is indexed for search only: no model call for its metadata.
-            record.semantic_metadata = None
-            return
         try:
             record.semantic_metadata = await self.process_document(
                 record.block_containers.blocks,
@@ -670,6 +666,8 @@ class DocumentExtraction(Transformer):
         DepartmentNames defaults. A code file takes the code prompt (or none, see
         ``_classify_code``), whichever path calls this.
         """
+        if not file_types.classifies(record_name):
+            return None  # indexed for search only (a .log/.cfg): no model call, on any path
         code = await self._classify_code(blocks, block_groups, record_type)
         if code is not _NOT_CODE:
             return code
@@ -862,6 +860,8 @@ class DocumentExtraction(Transformer):
         *,
         allow_remote_image_uri: bool,
     ) -> SemanticMetadata | None:
+        if not file_types.classifies(record_name):
+            return None  # indexed for search only (a .log/.cfg): no model call, on any path
         self.logger.info("🖼️ Processing blocks for semantic metadata extraction")
         code = await self._classify_code(blocks, block_groups, record_type)
         if code is not _NOT_CODE:

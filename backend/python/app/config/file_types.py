@@ -1108,6 +1108,11 @@ def _env_bytes(name: str, default: int) -> int:
 # it, so its embedding cost is bounded; one larger than the hard limit is not downloaded at all.
 TEXT_LOG_MAX_BYTES: Final = _env_bytes("TEXT_LOG_MAX_BYTES", 256 * 1024)
 TEXT_LOG_HARD_LIMIT_BYTES: Final = _env_bytes("TEXT_LOG_HARD_LIMIT_BYTES", 50 * 1024 * 1024)
+# The smallest cap that holds the omission marker and a line at each end (checked against
+# `capped_text.minimum_cap` in the tests).
+TEXT_LOG_MIN_BYTES: Final = 1024
+if TEXT_LOG_MAX_BYTES < TEXT_LOG_MIN_BYTES:
+    raise ValueError(f"TEXT_LOG_MAX_BYTES ({TEXT_LOG_MAX_BYTES}) must be at least {TEXT_LOG_MIN_BYTES}")
 if TEXT_LOG_MAX_BYTES > TEXT_LOG_HARD_LIMIT_BYTES:
     raise ValueError(
         f"TEXT_LOG_MAX_BYTES ({TEXT_LOG_MAX_BYTES}) must not exceed TEXT_LOG_HARD_LIMIT_BYTES "
@@ -1135,6 +1140,9 @@ class GateDecision:
     judged_extension: object  # the extension the refusal is reported for
     file_type: FileType | None  # the type that decides how the file is read
     refusal: GateRefusal | None = None
+    # The .log/.cfg extension the size limit applies under: the record's own, or its name's when
+    # the record carries none. None for any other file.
+    limited_as: str | None = None
 
 
 def gate_decision(
@@ -1155,6 +1163,9 @@ def gate_decision(
     larger than the hard limit (judged by its extension, whatever reads it), is refused before
     anything is downloaded.
     """
+    # The size rule follows the file's name when the record has no extension of its own (an
+    # event may carry an empty one); the reader is still chosen by the mime, as before.
+    unlabelled = extension is None or extension in ("", "unknown")
     if (extension is None or extension == "unknown") and mime is not None and mime != "unknown":
         derived = extension_for_mime(mime)  # type: ignore[arg-type]
         if derived:
@@ -1190,15 +1201,29 @@ def gate_decision(
         )
         if dispatch is not None and dispatch.file_type is not None:
             decisive = dispatch.file_type
+        elif dispatch is not None and dispatch.route is Route.CODE:
+            # Read as source because one of its labels is a source type (`reads_as_source`): that
+            # type is the reader, not the owner of the other label.
+            decisive = next((t for t in (by_ext, by_mime) if t is not None and t.route is Route.CODE), None)
         else:
             decisive = by_mime if by_mime is not None else (by_ext if ext_ok else None)
+    limited_as = _limited_as(judged, record_name if unlabelled else None)
     if not supported:
         return GateDecision(False, judged, None, "type")
     if decisive is not None and decisive.key in disabled:
         return GateDecision(False, judged, decisive, "disabled")
-    if is_bounded_text(judged) and isinstance(size_bytes, int) and size_bytes > TEXT_LOG_HARD_LIMIT_BYTES:
-        return GateDecision(False, judged, decisive, "too_large")
-    return GateDecision(True, judged, decisive)
+    if limited_as is not None and isinstance(size_bytes, int) and size_bytes > TEXT_LOG_HARD_LIMIT_BYTES:
+        return GateDecision(False, judged, decisive, "too_large", limited_as)
+    return GateDecision(True, judged, decisive, None, limited_as)
+
+
+def _limited_as(judged: object, record_name: str | None) -> str | None:
+    if is_bounded_text(judged):
+        return normalize_extension(judged)  # type: ignore[arg-type]
+    if record_name is not None and not classifies(record_name):
+        # `classifies` refuses exactly the names of a .log/.cfg.
+        return normalize_extension(record_name.rsplit(".", 1)[-1])
+    return None
 
 
 FILE_TYPES_CONFIG_KEY: Final = "/services/file_types/config"

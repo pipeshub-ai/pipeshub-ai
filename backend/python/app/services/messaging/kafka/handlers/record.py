@@ -2231,7 +2231,7 @@ class RecordEventHandler(BaseEventService):
                     f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {decision.judged_extension} 🔴🔴🔴"
                 )
                 reason = (
-                    file_too_large_to_read(decision.judged_extension)
+                    file_too_large_to_read(decision.limited_as)
                     if decision.refusal == "too_large"
                     else unsupported_file_type(decision.judged_extension)
                 )
@@ -2260,7 +2260,7 @@ class RecordEventHandler(BaseEventService):
             # A .log/.cfg whose size the record does not say is held to the hard limit as it
             # downloads, whatever reads it (the gate refused the ones that say it).
             download_limit = (
-                file_types.TEXT_LOG_HARD_LIMIT_BYTES if file_types.is_bounded_text(decision.judged_extension) else None
+                file_types.TEXT_LOG_HARD_LIMIT_BYTES if decision.limited_as is not None else None
             )
 
             # Try signed URL first if available, fallback to connector streaming if it fails
@@ -2278,7 +2278,7 @@ class RecordEventHandler(BaseEventService):
                         raise Exception("Failed to download file from signed URL")
                 except ResponseTooLargeError:
                     # Refused for its size: the connector stream would only fetch the same bytes.
-                    await self._refuse_too_large(record_id, decision.judged_extension)
+                    await self._refuse_too_large(record_id, decision.limited_as)
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
@@ -2335,7 +2335,7 @@ class RecordEventHandler(BaseEventService):
                                 max_bytes=download_limit,
                             )
                     except ResponseTooLargeError:
-                        await self._refuse_too_large(record_id, decision.judged_extension)
+                        await self._refuse_too_large(record_id, decision.limited_as)
                         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         return

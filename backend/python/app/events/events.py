@@ -1342,10 +1342,8 @@ class EventProcessor:
                         "isDirty": False,
                         "indexingStatus": twin.get("indexingStatus"),
                         # The copy is indexed from the twin's content, so it says what the twin's says.
-                        **(
-                            {INDEXING_NOTE_FIELD: twin.get(INDEXING_NOTE_FIELD)}
-                            if twin.get(INDEXING_NOTE_FIELD) != doc.get(INDEXING_NOTE_FIELD) else {}
-                        ),
+                        # Always written: `doc` may not hold what the node does.
+                        INDEXING_NOTE_FIELD: twin.get(INDEXING_NOTE_FIELD),
                         **indexed_copy_fields(twin.get("indexingStatus")),
                         **_parsed_like(twin),
                         "processingStartedAt": None,
@@ -1535,8 +1533,6 @@ class EventProcessor:
                     "Failed to clear the previous failure reason for record",
                     doc,
                 )
-            if doc.get(INDEXING_NOTE_FIELD) and not store_only:
-                await self.update_record_fields(doc, {INDEXING_NOTE_FIELD: None})
 
             # Extract necessary data
             record_version = event_data.get("version", 0)
@@ -1950,9 +1946,16 @@ class EventProcessor:
                 truncated = False
             # Its own field, not `reason`: the stages after indexing write `reason` (a skipped or
             # failed classification), which would replace this note or be shown as one.
+            # Set or cleared only here, by the attempt that decided whether to cap; a resume from
+            # stored blocks keeps the note of the attempt that wrote them. Compared with the node as
+            # read, since `doc` takes a write's fields before the write lands.
             note = partly_indexed_text() if truncated else None
-            if doc.get(INDEXING_NOTE_FIELD) != note:
-                await self.update_record_fields(doc, {INDEXING_NOTE_FIELD: note})
+            if record.get(INDEXING_NOTE_FIELD) != note:
+                self._require_persisted(
+                    await self.update_record_fields(doc, {INDEXING_NOTE_FIELD: note}),
+                    "Failed to write the indexing note of record",
+                    doc,
+                )
 
             # ── New service pipeline (opt-in via USE_PARSING_SERVICE=true) ──
             if self._use_service_pipeline():
