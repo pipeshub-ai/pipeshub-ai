@@ -181,10 +181,17 @@ class CollectionEpochs:
         await self._prune(ticket.collection)
 
     async def _prune(self, collection: str) -> None:
-        swept = sorted(
-            (t for t, (state, _) in (await self.states(collection)).items() if state == SWEPT),
-        )
-        for token in swept[:-KEPT_SWEPT_TOKENS] if len(swept) > KEPT_SWEPT_TOKENS else []:
+        """Keep the most recently swept tokens; delete the others. The time is the one stored in the swept key."""
+        swept = [t for t, (state, _) in (await self.states(collection)).items() if state == SWEPT]
+        if len(swept) <= KEPT_SWEPT_TOKENS:
+            return
+        when: dict[str, float] = {}
+        for token in swept:
+            raw = await self._read(self._state_key(collection, token, SWEPT))
+            at = raw.get("at") if isinstance(raw, dict) else None
+            when[token] = float(at) if isinstance(at, (int, float)) else 0.0  # a key without a time counts as the oldest
+        oldest_first = sorted(swept, key=lambda t: (when[t], t))
+        for token in oldest_first[:-KEPT_SWEPT_TOKENS]:
             for state in _ORDER:
                 await self._config.delete_config(self._state_key(collection, token, state))
 

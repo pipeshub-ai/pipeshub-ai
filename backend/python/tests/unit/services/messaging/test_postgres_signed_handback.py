@@ -109,6 +109,65 @@ async def test_a_message_that_waits_past_the_lifetime_through_hand_backs_still_r
     queue.ack.assert_awaited_once()
 
 
+async def test_the_wait_stays_within_a_short_configured_lifetime(clock, monkeypatch) -> None:
+    monkeypatch.setenv("ENVELOPE_MAX_AGE_SECONDS", "300")
+    queue = _Queue(_signed(clock[0]))
+    consumer = _consumer(queue, hand_backs=2)
+    for _ in range(2):  # the second hand-back waits ten times the first: 600 s against a 300 s lifetime
+        await consumer._settle(_claim(queue))
+        clock[0] += queue.nacks[-1]["delay"]
+
+    assert all(n["delay"] <= 200 for n in queue.nacks)
+    await consumer._settle(_claim(queue))
+
+    consumer._abandon.assert_not_awaited()
+    consumer._drive_indexing.assert_awaited_once()
+
+
+async def test_a_message_requeued_without_an_attempt_by_the_handler_is_renewed_too(clock) -> None:
+    from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
+
+    queue = _Queue(_signed(clock[0]))
+    consumer = _consumer(queue, hand_backs=0)
+    consumer._process = AsyncMock(side_effect=RequeueWithoutAttempt("the index was reset"))
+    clock[0] += 600
+    await consumer._settle(_claim(queue))
+    assert [n["refund"] and n["reissued"] for n in queue.nacks] == [True]
+    assert json.loads(queue.value)["ctx"]["issuedAt"] == int(clock[0])
+
+
+async def test_a_long_handler_requeue_stays_within_a_short_configured_lifetime(clock, monkeypatch) -> None:
+    from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
+
+    monkeypatch.setenv("ENVELOPE_MAX_AGE_SECONDS", "300")
+    queue = _Queue(_signed(clock[0]))
+    consumer = _consumer(queue, hand_backs=0)
+    consumer._process = AsyncMock(side_effect=RequeueWithoutAttempt("the stage is paused", delay_s=600))
+    await consumer._settle(_claim(queue))
+    clock[0] += queue.nacks[-1]["delay"]
+
+    assert queue.nacks[-1]["delay"] <= 200
+    consumer._process = AsyncMock(return_value=(True, False, None, None))
+    await consumer._settle(_claim(queue))
+    consumer._abandon.assert_not_awaited()
+
+
+async def test_a_paused_consumer_resumes_before_the_requeued_message_outlives_a_short_lifetime(clock, monkeypatch) -> None:
+    import time
+
+    from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
+
+    monkeypatch.setenv("ENVELOPE_MAX_AGE_SECONDS", "300")
+    queue = _Queue(_signed(clock[0]))
+    consumer = _consumer(queue, hand_backs=0)
+    consumer.stage_admission = object()
+    consumer._process = AsyncMock(side_effect=RequeueWithoutAttempt("the stage is paused", delay_s=600))
+    before = time.monotonic()
+    await consumer._settle(_claim(queue))
+
+    assert consumer._paused_until - before <= 200 + 1
+
+
 async def test_the_renewed_message_is_signed_over_the_same_payload(clock) -> None:
     queue = _Queue(_signed(clock[0]))
     before = json.loads(queue.value)

@@ -170,6 +170,22 @@ async def test_a_pin_release_makes_the_scope_not_quiet_until_nothing_is_recorded
 
 
 @pytest.mark.asyncio
+async def test_a_pin_release_that_cannot_be_recorded_raises_so_the_release_does_not_happen() -> None:
+    store = InMemoryKeyValueStore(log)
+    epochs, _ = _epochs(store=store)
+    real = store.create_key
+
+    async def failing(key, value, overwrite=True, ttl=None):  # noqa: ANN202
+        if "/pin/" in key:
+            raise ConnectionError("kv down")
+        return await real(key, value, overwrite, ttl)
+
+    store.create_key = failing
+    with pytest.raises(ConnectionError):
+        await epochs.pin_released("c", "o1")
+
+
+@pytest.mark.asyncio
 async def test_swept_tokens_beyond_the_newest_sixteen_are_pruned() -> None:
     epochs, _ = _epochs()
     await epochs.capture("c")
@@ -180,6 +196,20 @@ async def test_swept_tokens_beyond_the_newest_sixteen_are_pruned() -> None:
     await epochs.confirm_reset(await epochs.begin_reset("c"))
     swept = [t for t, (state, _) in (await epochs.states("c")).items() if state == SWEPT]
     assert len(swept) <= 17
+
+
+@pytest.mark.asyncio
+async def test_the_swept_tokens_kept_are_the_most_recently_swept_not_the_last_by_name() -> None:
+    epochs, config = _epochs()
+    await epochs.capture("c")
+    # token names sort the opposite way to the time they were swept: "t19" was swept first, "t00" last
+    for i in range(20):
+        await config.create_config_if_absent(epochs._state_key("c", f"t{i:02d}", SWEPT), {"at": (100 - i) * 1000})
+    # a swept key written without a time (an older format) counts as the oldest and is the first to go
+    await config.create_config_if_absent(epochs._state_key("c", "tlegacy", SWEPT), {})
+    await epochs.confirm_reset(await epochs.begin_reset("c"))
+    kept = {t for t, (state, _) in (await epochs.states("c")).items() if state == SWEPT}
+    assert kept == {f"t{i:02d}" for i in range(16)}
 
 
 @pytest.mark.asyncio

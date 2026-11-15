@@ -265,6 +265,25 @@ class TestReuseAndRebuild:
         assert read_header(rebuilt)[0][name]["shape"] != header[name]["shape"]
         verify(rebuilt, identity)
 
+    def test_a_header_that_gives_a_tensor_another_dtype_over_the_same_bytes_is_rebuilt(self, model, tmp_path) -> None:
+        snap, cache = _snapshot(tmp_path, model), tmp_path / "cache"
+        identity = file_identity(snap / "model.safetensors", "org/model", "rev1")
+        path = _ensure(snap, model, cache)
+        raw = path.read_bytes()
+        length = int.from_bytes(raw[:8], "little")
+        header = json.loads(raw[8:8 + length])
+        name = next(k for k, e in header.items() if k != "__metadata__" and e["dtype"] == "F32")
+        header[name]["dtype"] = "I8"  # the same bytes and shape, read as another type
+        edited = json.dumps(header, separators=(",", ":")).encode()
+        path.write_bytes(len(edited).to_bytes(8, "little") + edited + raw[8 + length:])
+        with pytest.raises(Int8FileError, match="checksum"):
+            verify(path, identity)
+        calls: list[int] = []
+        rebuilt = _ensure(snap, model, cache, build_fn=lambda *a: (calls.append(1), build(*a))[1])
+        assert calls == [1]
+        assert read_header(rebuilt)[0][name]["dtype"] == "F32"
+        verify(rebuilt, identity)
+
     def test_a_file_checksummed_by_bytes_alone_is_not_served(self, model, tmp_path) -> None:
         """The checksum of the first format covered each tensor's bytes only; the current format never accepts it."""
         import hashlib

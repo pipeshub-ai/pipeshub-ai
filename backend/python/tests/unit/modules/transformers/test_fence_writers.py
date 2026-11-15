@@ -6,6 +6,8 @@ fence disabled as a control: the violation must then appear.
 """
 
 
+import logging
+
 import pytest
 
 from app.services.messaging.precision_flip import PrecisionFlip, precision_flip_in
@@ -333,3 +335,188 @@ async def test_the_cleanups_tail_sweeps_the_points_of_retired_epochs(world) -> N
     world.vdb.add(REC, FP32, embedEpoch=(await world.pins.epochs.capture(REC)).token)
     await world.registry.sweep_dead_epochs()
     assert {p["embedPrecision"] for p in world.vdb.points[REC]} == {FP32}
+
+
+# -- a batch that confirms against another writer's pin of its own precision ------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_record_confirmed_after_a_cleanup_and_a_claim_of_its_own_precision_is_removed() -> None:
+    db = _FakeDb()
+    store = _store(db, INT8)
+    _with_epoch(store, db)
+    written = db.upsert_points
+
+    async def cleanup_claim_then_write(collection_name, points):  # noqa: ANN202
+        await _cleanup_records(store, db)
+        await store._guard._pins._claim_unfenced(RECORDS, INT8)  # another writer's pin, of the same precision
+        await written(collection_name, points)
+
+    db.upsert_points = cleanup_claim_then_write
+    with pytest.raises(Exception) as caught:
+        await store.index_documents(_blocks("b1"), ORG, "rec-1", VRID)
+    assert precision_flip_in(caught.value) is not None
+    assert db.points == [] and (await store._guard._pins.get(RECORDS, fresh=True)).precision == INT8
+
+
+@pytest.mark.asyncio
+async def test_an_entity_batch_confirmed_after_a_cleanup_and_a_claim_of_its_own_precision_is_removed(world) -> None:  # noqa: F811
+    world.vdb.add(ENTITIES, INT8, entityType="person", entityId="p0")
+    await world.pins._claim_unfenced(ENTITIES, INT8)
+    world.served["precision"] = INT8
+    real = world.vdb.upsert_points
+
+    async def cleanup_claim_then_write(collection_name, points):  # noqa: ANN202
+        await _cleanup_entities(world)
+        await world.pins._claim_unfenced(ENTITIES, INT8)
+        await real(collection_name, points)
+
+    world.vdb.upsert_points = cleanup_claim_then_write
+    with pytest.raises(PrecisionFlip):
+        await _entity_write(world)
+    assert world.vdb.points[ENTITIES] == [] and (await world.pins.get(ENTITIES, fresh=True)).precision == INT8
+
+
+# -- what a point carries --------------------------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_every_record_point_carries_the_epoch_it_was_written_under() -> None:
+    db = _FakeDb()
+    store = _store(db, FP32)
+    _with_epoch(store, db)
+    await store.index_documents(_blocks("b1", "b2"), ORG, "rec-1", VRID)
+    current = await store._guard._pins.epochs.current(RECORDS)
+    assert current and [p["embedEpoch"] for p in db.points] == [current] * len(db.points) and db.points
+
+
+@pytest.mark.asyncio
+async def test_the_entity_index_carries_a_payload_index_on_the_epoch_tag() -> None:
+    from unittest.mock import AsyncMock
+
+    from app.modules.transformers.entity_vectorstore import EntityVectorStore
+    from app.services.vector_db.const.const import EMBED_EPOCH_FIELD
+
+    store = object.__new__(EntityVectorStore)
+    store.logger = logging.getLogger("epoch-index")
+    store.vector_db_service = AsyncMock()
+    await store._ensure_payload_indexes("entities")
+    assert EMBED_EPOCH_FIELD in [c.kwargs["field_name"] for c in store.vector_db_service.create_index.await_args_list]
+
+
+# -- the rollback of a rejected batch ---------------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_record_rollback_that_fails_still_hands_the_record_back() -> None:
+    """The delete's own error must not replace the flip: the record would be counted as written."""
+    db = _FakeDb()
+    store = _store(db, INT8)
+    _with_epoch(store, db)
+    written = db.upsert_points
+
+    async def failing_delete(collection, expression):  # noqa: ANN202
+        raise ConnectionError("vector store down")
+
+    async def write_then_cleanup(collection_name, points):  # noqa: ANN202
+        await written(collection_name, points)
+        await _cleanup_records(store, db)
+        db.delete_points = failing_delete
+
+    db.upsert_points = write_then_cleanup
+    with pytest.raises(Exception) as caught:
+        await store.index_documents(_blocks("b1"), ORG, "rec-1", VRID)
+    assert precision_flip_in(caught.value) is not None
+    # the flip is what is raised and handled: the delete's own error is logged, not the cause of the hand-back
+    link, errors = caught.value, []
+    while link is not None and len(errors) < 20:
+        errors.append(type(link))
+        link = link.__cause__
+    assert ConnectionError not in errors
+
+
+@pytest.mark.asyncio
+async def test_an_entity_rollback_leaves_the_same_entity_written_under_another_epoch(world) -> None:  # noqa: F811
+    """Same precision, same point id, but written under the epoch that replaced this batch's: not this batch's to remove."""
+    world.vdb.add(ENTITIES, INT8, entityType="person", entityId="p0")
+    await world.pins._claim_unfenced(ENTITIES, INT8)
+    world.served["precision"] = INT8
+    real = world.vdb.upsert_points
+    newer: list[str] = []
+
+    async def write_then_a_newer_writer_replaces_it(collection_name, points):  # noqa: ANN202
+        await real(collection_name, points)
+        await world.pins.epochs.confirm_reset(await world.pins.epochs.begin_reset(ENTITIES))
+        token = (await world.pins.epochs.capture(ENTITIES)).token
+        newer.append(token)
+        for point in points:
+            meta = {**point.payload["metadata"], "embedEpoch": token}
+            await real(collection_name, [type(point)(id=point.id, dense_vector=point.dense_vector, sparse_vector=None, payload={**point.payload, "metadata": meta})])
+
+    world.vdb.upsert_points = write_then_a_newer_writer_replaces_it
+    with pytest.raises(PrecisionFlip):
+        await _entity_write(world)
+    kept = [p for p in world.vdb.points[ENTITIES] if p.get("entityId") == _entity().entity_id]
+    assert [p["embedEpoch"] for p in kept] == newer
+
+
+# -- the sweep at the end of a record ----------------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_record_end_sweeps_a_straggler_of_a_retired_epoch() -> None:
+    db = _FakeDb()
+    store = _store(db, FP32)
+    _with_epoch(store, db)
+    pins = store._guard._pins
+    old = await pins.epochs.capture(RECORDS)
+    await _cleanup_records(store, db)
+    await pins._claim_unfenced(RECORDS, FP32)  # the new index is claimed: only the record's end can sweep now
+    db.points.append({"id": "s", "orgId": ORG, "virtualRecordId": "other", "embedPrecision": FP32, "embedEpoch": old.token})
+    await store.index_documents(_blocks("b1"), ORG, "rec-1", VRID)
+    assert all(p["embedEpoch"] != old.token for p in db.points) and db.points
+
+
+# -- the real drop ------------------------------------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_drop_that_fails_retires_no_token_and_releases_no_pin(world) -> None:  # noqa: F811
+    from tests.unit.services.messaging.test_precision_switch_converges import (
+        RECORDS as REC,
+    )
+    from tests.unit.services.messaging.test_precision_switch_converges import (
+        _seed_int8_index,
+    )
+
+    await _seed_int8_index(world)
+    old = await world.pins.epochs.capture(REC)
+
+    async def failing(name):  # noqa: ANN202
+        raise RuntimeError("vector store down")
+
+    world.vdb.delete_collection = failing
+    with pytest.raises(RuntimeError):
+        await world.registry.delete_collection(REC)
+    states = await world.pins.epochs.states(REC)
+    assert states[old.token][0] == "live" and await world.pins.epochs.dead(REC) == []
+    assert (await world.pins.get(REC, fresh=True)).precision == INT8 and len(world.vdb.points[REC]) == 3
+
+
+@pytest.mark.asyncio
+async def test_the_old_token_is_retired_only_after_the_drop_has_returned(world) -> None:  # noqa: F811
+    from tests.unit.services.messaging.test_precision_switch_converges import (
+        RECORDS as REC,
+    )
+    from tests.unit.services.messaging.test_precision_switch_converges import (
+        _seed_int8_index,
+    )
+
+    await _seed_int8_index(world)
+    old = await world.pins.epochs.capture(REC)
+    seen: list[tuple[str, bool]] = []
+    real = world.vdb.delete_collection
+
+    async def watching(name):  # noqa: ANN202
+        seen.append(((await world.pins.epochs.states(REC))[old.token][0], await world.pins.epochs.moved(old)))
+        await real(name)
+
+    world.vdb.delete_collection = watching
+    await world.registry.delete_collection(REC)
+    assert seen == [("live", True)]  # a new epoch is current, the old token is not yet retired
+    assert (await world.pins.epochs.states(REC))[old.token][0] == "retired"

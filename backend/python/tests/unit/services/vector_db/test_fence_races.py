@@ -501,3 +501,51 @@ async def test_control_without_a_sweep_the_straggler_stays(world) -> None:
     world.db.write(INT8, fence.token, vrid="late")
     world.db.write(FP32, (await world.guard.capture(C)).token)
     assert world.db.precisions() == {INT8, FP32}
+
+
+# -- a batch whose pin is its own precision but whose index was reset and claimed again ----------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("precision", [INT8, FP32])
+async def test_a_batch_confirming_after_a_cleanup_and_a_claim_of_its_own_precision_is_removed(world, precision) -> None:
+    """The pin is present and of the batch's precision, but it is another writer's pin over a recreated index: the batch's
+    points belong to the dropped index and must go, and the other writer's must stay."""
+    async def cleanup_then_another_writer_claims() -> None:
+        await world.cleanup()
+        await world.batch(precision, vrid="other")
+
+    with pytest.raises(FenceMoved):
+        await world.batch(precision, before_write=cleanup_then_another_writer_claims, vrid="v1")
+    assert {p["virtualRecordId"] for p in world.db.points} == {"other"}
+    assert (await world.pins.get(C, fresh=True)).precision == precision
+
+
+# -- the claim's own epoch check -----------------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_claim_whose_epoch_cannot_be_read_afterwards_is_withdrawn(world, monkeypatch) -> None:
+    fence = await world.guard.capture(C)
+    real = CollectionEpochs.moved
+    calls = {"n": 0}
+
+    async def fails_the_second_read(self, f):  # noqa: ANN202
+        calls["n"] += 1
+        if calls["n"] == 2:  # the check before the claim passes; the one after it cannot read
+            raise ConnectionError("kv down")
+        return await real(self, f)
+
+    monkeypatch.setattr(CollectionEpochs, "moved", fails_the_second_read)
+    with pytest.raises(FenceMoved):
+        await world.guard.verify_batch(C, ORG, INT8, fallback=False, fence=fence)
+    assert calls["n"] == 2 and await world.pins.get(C, fresh=True) is None
+
+
+# -- the sweep -----------------------------------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_claim_sweeps_the_points_of_retired_epochs(world) -> None:
+    fence = await world.guard.capture(C)
+    await world.cleanup()
+    world.db.write(INT8, fence.token, vrid="straggler")  # a writer of the dropped index lands late
+    await world.batch(FP32, vrid="new")  # the first claim of the new index
+    assert {p["virtualRecordId"] for p in world.db.points} == {"new"}

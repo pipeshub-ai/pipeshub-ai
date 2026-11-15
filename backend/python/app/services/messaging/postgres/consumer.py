@@ -24,6 +24,7 @@ from app.core.envelope import (
     EnvelopeRejected,
     ctx_of,
     decode_message,
+    max_age_seconds,
     open_configured,
     open_stream_message,
     refresh_envelope,
@@ -73,6 +74,15 @@ _INDEX_POOL = "pg-queue-indexing"
 _SAFETY_NET_S = 300.0  # longest an idle consumer with a LISTEN connection sleeps
 _HANDBACK_CAP_S = 60.0   # longest the per-message back-off of hand-backs grows to
 _HANDBACK_TABLE_MAX = 10_000   # hand-back counts kept in memory
+
+
+def _within_lifetime(delay: float) -> float:
+    """A refunded wait, capped at two thirds of the envelope lifetime.
+
+    The message is signed again at the nack, so the wait is its age when it is next claimed; the last third of the
+    lifetime is the margin for clock skew. The default lifetime (900 s) leaves the 600 s precision wait as it is.
+    """
+    return min(delay, max_age_seconds() * 2 / 3)
 
 
 def _handback_base_s() -> float:
@@ -410,6 +420,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                 e.delay_s if e.delay_s is not None else compute_retry_backoff_seconds(1),
                 min(_handback_base_s() * 2 ** min(n - 1, 10), _HANDBACK_CAP_S),     # grows with every hand-back of this message
             )
+            delay = _within_lifetime(delay)   # the pause too: a message due at the cap is claimed by then
             reason = type(e).__name__
             self._handback_log[reason] = self._handback_log.get(reason, 0) + 1
             self.logger.debug("%s handed back without counting an attempt (%d so far, retry in %.1fs): %s", d.message_id, n, delay, e)
@@ -475,6 +486,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         key = (d.topic, d.message_id)
         n = self._count_handback(key)
         delay = delays[0] if n == 1 else delays[0] * 10
+        delay = _within_lifetime(delay)
         self._handback_log["precision"] = self._handback_log.get("precision", 0) + 1
         await self.queue.nack(
             self.config.group_id, d, delay, "waiting for the embedding precision", refund=True, **await self._reissued(d)
