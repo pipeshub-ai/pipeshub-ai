@@ -2729,15 +2729,20 @@ class GoogleDriveTeamConnector(BaseConnector):
         )
 
     async def _shared_drive_is_gone(self, drive_id: str) -> bool:
+        return await self._shared_drive_exists(drive_id) is False
+
+    async def _shared_drive_exists(self, drive_id: str) -> bool | None:
+        """Whether a shared drive missing from the listing still exists, by drives.get as the admin: False only on
+        404, None when that could not be told."""
         try:
             await self.drive_data_source.drives_get(driveId=drive_id, useDomainAdminAccess=True)
         except Exception as e:
             if isinstance(e, HttpError) and e.resp.status == HttpStatusCode.NOT_FOUND.value:
-                return True
+                return False
             self.logger.warning(f"Could not confirm shared drive {drive_id} was deleted; keeping it: {e}")
-            return False
+            return None
         self.logger.warning(f"Shared drive {drive_id} is missing from the listing but still exists; keeping it")
-        return False
+        return True
 
     async def _create_personal_record_group(self, user: AppUser) -> None:
         """Create a personal record group for the user's My Drive."""
@@ -3645,9 +3650,18 @@ class GoogleDriveTeamConnector(BaseConnector):
         children_by_drive: dict[str, dict[str, list[Record]]] = {}
         for (drive_id, folder_id), state in sorted(pending.items(), key=lambda kv: kv[0]):
             if self._shared_drives_listed and drive_id not in self._listed_shared_drive_ids:
-                # Gone, or another organization's (queued by an earlier version): its members cannot be read here.
-                self.logger.info(f"Shared drive {drive_id} is not listed for this Workspace; folder {folder_id} is dropped")
-                continue
+                # A listing can come back short, so only a drive confirmed gone, or one with no record group (another
+                # organization's, which an earlier version queued), is dropped. One that still exists is settled.
+                group = await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, drive_id)
+                exists = await self._shared_drive_exists(drive_id) if group is not None else False
+                if exists is False:
+                    self.logger.info(f"Shared drive {drive_id} is gone or not this Workspace's; folder {folder_id} is dropped")
+                    continue
+                if exists is None:  # unknown this run: kept, and its members are not read
+                    if state.get("stripped"):  # grants to give back are waiting on it
+                        self._sync_ledger.note_incomplete()
+                    left.append({"drive": drive_id, "folder": folder_id, **state})
+                    continue
             try:
                 if drive_id not in children_by_drive:
                     children_by_drive[drive_id] = await self._stored_children_of_drive(drive_id)

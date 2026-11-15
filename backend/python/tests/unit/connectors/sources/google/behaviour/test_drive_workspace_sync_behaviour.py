@@ -3482,6 +3482,56 @@ async def test_a_folder_turning_limited_in_another_organizations_drive_leaves_th
     assert ALICE in ws.records.perm_emails("dir")
 
 
+async def _stripped_folder_waiting_on_f1(ws: Workspace) -> None:
+    """A folder in sd-1 turned limited: the members' own grants below it are gone, and f1's direct grant to Bob waits
+    to be given back, since its Manager's read keeps coming back with no list."""
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f1", "a.txt", parent="dir", perms=[reader(BOB)])
+    await ws.sync()
+    _viewer_list_for(ws, "f1", ALICE, [])
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+    assert BOB not in ws.records.perm_emails("f1")
+    assert (await ws.connector._load_limited_pending())[("sd-1", "dir")]["stripped"]
+
+
+def _drives_listing_short(ws: Workspace) -> None:
+    """The admin's drives.list answers with no drives; drives.get still finds each."""
+    ws.http.route("GET", r"/drive/v3/drives", lambda req: {"drives": []})
+
+
+async def test_a_settling_folder_outlives_a_short_drive_listing_and_gets_its_grants_back(ws: Workspace) -> None:
+    await _stripped_folder_waiting_on_f1(ws)
+    _viewer_list_for(ws, "f1", "nobody@example.com", [])  # reads answer as usual again
+    _drives_listing_short(ws)
+    await ws.sync()
+    ws.http.route("GET", r"/drive/v3/drives", ws.world._drives_list)
+    await ws.sync()
+
+    assert BOB in ws.records.perm_emails("f1"), "the list names him: his grant comes back"
+
+
+async def test_a_settling_folder_whose_drive_cannot_be_checked_waits_and_reads_no_members(ws: Workspace) -> None:
+    await _stripped_folder_waiting_on_f1(ws)
+    _drives_listing_short(ws)
+    ws.http.fail("GET", "/drive/v3/drives/sd-1", 500, "backendError")
+    before = len(ws.http.requests)
+    await ws.sync()
+
+    assert ("sd-1", "dir") in await ws.connector._load_limited_pending()
+    assert ws.incomplete, "grants to give back are waiting on it"
+    assert not [r for r in ws.http.requests[before:] if r.path == "/drive/v3/files/sd-1/permissions"]
+
+
+async def test_a_settling_folder_of_a_deleted_drive_is_dropped(ws: Workspace) -> None:
+    await _stripped_folder_waiting_on_f1(ws)
+    del ws.world.drives["sd-1"]
+    await ws.sync()
+
+    assert ("sd-1", "dir") not in await ws.connector._load_limited_pending()
+
+
 async def test_a_shared_drives_member_list_is_read_once_a_run_for_all_its_items(ws: Workspace) -> None:
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
     for i in range(4):
