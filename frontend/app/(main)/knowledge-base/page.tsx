@@ -34,7 +34,7 @@ import { FileRejectionReason, parseFileRejectionReason } from '@/lib/constants/f
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
 import { folderDepthOf, uploadPathOf } from './utils/folder-depth';
 import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
-import { usePreparingRetry } from './hooks/use-preparing-retry';
+import { preparingKey, usePreparingRetry } from './hooks/use-preparing-retry';
 import type {
   KnowledgeBaseItem,
   FolderTreeNode,
@@ -610,8 +610,10 @@ function KnowledgeBasePageContent() {
   const allRecordsEmptyHops = useRef(0);
   const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean) => Promise<void>) | null>(null);
   // A source still being prepared answers an empty page that says so: it is asked again by itself until its rows can be listed.
-  const { settle: settleAllRecordsPreparing, reset: resetAllRecordsPreparing } = usePreparingRetry();
-  const { settle: settleTablePreparing, reset: resetTablePreparing } = usePreparingRetry();
+  // One timer, for the listing on screen: leaving it (another node, the other view) cancels the retry.
+  const { settle: settlePreparing, isCurrent: isPreparingCurrent } = usePreparingRetry(
+    preparingKey(isAllRecordsMode, searchParams.get('nodeType'), searchParams.get('nodeId'))
+  );
   const fetchTableDataRef = useRef<((nodeType: string, nodeId: string, retry?: boolean) => Promise<void>) | null>(null);
   const collectionsFetchRef = useRef<AbortController | null>(null);
 
@@ -627,10 +629,7 @@ function KnowledgeBasePageContent() {
   const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number, busyRetry = false) => {
     allRecordsFetchRef.current?.abort();
     // Each request the user makes gets its own retries; only the timer's retries share them.
-    if (!busyRetry) {
-      allRecordsBusyTries.current = 0;
-      resetAllRecordsPreparing();
-    }
+    if (!busyRetry) allRecordsBusyTries.current = 0;
     const controller = new AbortController();
     allRecordsFetchRef.current = controller;
     if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
@@ -675,7 +674,8 @@ function KnowledgeBasePageContent() {
         // Root level - fetch all records
         data = await KnowledgeHubApi.getAllRootItems(params, { signal: controller.signal });
       }
-      if (controller.signal.aborted || !stillSignedIn()) return;
+      // A retry whose listing the user has left by now (another node, the Collections view) shows nothing.
+      if (controller.signal.aborted || !stillSignedIn() || (busyRetry && !isPreparingCurrent(preparingKey(true, nodeType, nodeId)))) return;
       // A page with no rows that says more follows is the server having stopped looking for the moment, not the end: go on from where it got to. A cursor that did not move, or
       // too many such pages in a row, is the end (the empty state shows), never a silent stall. The cursors this page carries are kept, so the way back is not lost.
       // It goes on the way it was asked: a page asked for with the previous page's cursor (Previous, or an empty page going back) goes on backwards.
@@ -691,7 +691,7 @@ function KnowledgeBasePageContent() {
       }
       allRecordsEmptyHops.current = 0;
       setAllRecordsTableData(data);
-      settleAllRecordsPreparing(data.preparing, () => void fetchAllRecordsTableDataRef.current?.(nodeType, nodeId, page, true));
+      settlePreparing(preparingKey(true, nodeType, nodeId), data.preparing, () => void fetchAllRecordsTableDataRef.current?.(nodeType, nodeId, page, true));
       // An app's tree lives in the app children cache, which this does not fill.
       if (nodeType && nodeId && nodeType !== 'app') {
         seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);
@@ -756,8 +756,8 @@ function KnowledgeBasePageContent() {
     setAllRecordsTableError,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
-    settleAllRecordsPreparing,
-    resetAllRecordsPreparing,
+    settlePreparing,
+    isPreparingCurrent,
     t,
   ]);
   fetchAllRecordsTableDataRef.current = fetchAllRecordsTableData;
@@ -846,14 +846,21 @@ function KnowledgeBasePageContent() {
   // Fetch table data when node is selected
   const fetchTableData = useCallback(
     async (nodeType: string, nodeId: string, retry = false) => {
-      if (!retry) resetTablePreparing();
-      collectionsFetchRef.current?.abort();
+      // A retry of a source being prepared asks quietly with its own request: it never cancels a request the user made, and its answer is
+      // dropped once the user has asked for anything else or left this node (``stale``).
+      const key = preparingKey(false, nodeType, nodeId);
       const controller = new AbortController();
-      collectionsFetchRef.current = controller;
-      const fetchGeneration = ++collectionsFetchGeneration;
+      if (!retry) {
+        collectionsFetchRef.current?.abort();
+        collectionsFetchRef.current = controller;
+      }
+      const fetchGeneration = retry ? collectionsFetchGeneration : ++collectionsFetchGeneration;
+      const stale = () => retry && (fetchGeneration !== collectionsFetchGeneration || !key || !isPreparingCurrent(key));
       const stillSignedIn = kbSessionToken();
-      setIsLoadingTableData(true);
-      setTableDataError(null);
+      if (!retry) {
+        setIsLoadingTableData(true);
+        setTableDataError(null);
+      }
 
       try {
         // Get the latest state from store to avoid stale closure
@@ -887,12 +894,12 @@ function KnowledgeBasePageContent() {
           params,
           { suppressErrorToast: suppressNotFoundToast, signal: controller.signal }
         );
-        if (controller.signal.aborted || !stillSignedIn()) return;
+        if (controller.signal.aborted || !stillSignedIn() || stale()) return;
 
         pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
 
         setTableData(data);
-        settleTablePreparing(data.preparing, () => void fetchTableDataRef.current?.(nodeType, nodeId, true));
+        if (key) settlePreparing(key, data.preparing, () => void fetchTableDataRef.current?.(nodeType, nodeId, true));
         seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);
         // The rows are ready: the sidebar path opened below is separate work and
         // must not hold the table's loader.
@@ -957,7 +964,7 @@ function KnowledgeBasePageContent() {
         if (!controller.signal.aborted && stillSignedIn()) restoreOpenFoldersInSidebar();
 
       } catch (error) {
-        if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn()) return;
+        if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn() || stale()) return;
         // A refused cursor goes back to the first page instead of erroring;
         // clearing it rewrites the URL, which re-runs this fetch without one.
         const rejectedCursor = useKnowledgeBaseStore.getState().collectionsPagination.cursor;
@@ -1035,8 +1042,8 @@ function KnowledgeBasePageContent() {
       isAllRecordsMode,
       debouncedSearchQuery,
       debouncedAllRecordsSearchQuery,
-      settleTablePreparing,
-      resetTablePreparing,
+      settlePreparing,
+      isPreparingCurrent,
     ]
   );
   useEffect(() => {
