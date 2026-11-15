@@ -1855,7 +1855,7 @@ async def test_an_issue_keeping_its_grants_is_not_replaced_by_a_full_sync() -> N
     assert (record.rewrite_permissions, changed) == (False, False)
     await c._process_new_records([(record, perms, changed)], "PROJ", {"new_count": 0, "updated_count": 0})
     c.data_entities_processor.on_new_records.assert_not_awaited()
-    c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record)
+    c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record, content_changed=False)
 
 
 class _KeptSyncPoints:
