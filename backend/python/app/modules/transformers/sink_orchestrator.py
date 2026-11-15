@@ -26,6 +26,7 @@ from app.modules.indexing.parse_now_marker import (
     current_run,
     marker_fields,
 )
+from app.modules.indexing.replay_set import note_record_completed
 from app.modules.record_metadata.builtin import ticket_metadata
 from app.modules.record_metadata.projection import (
     NOT_PROVIDED,
@@ -346,6 +347,11 @@ class SinkOrchestrator(Transformer):
                 await self._save_reconciliation_metadata(ctx)
             with stage("entities.identity"):
                 await self._sync_record_identity_entities(ctx)
+            # Every write of the run is done, so the delivery may be remembered, with the lastIndexTimestamp
+            # its COMPLETED write stored: a run that failed after that write leaves no entry, and its
+            # redelivery runs again. A call of its own; a failure only weakens the replay guard.
+            if ctx.indexed_at_ms is not None:
+                await note_record_completed(record_id, ctx.indexed_at_ms, self.logger)
         # Also reached when the record was already COMPLETED and nothing was re-indexed.
         await self._project_properties(ctx, record_doc)
 
@@ -910,6 +916,7 @@ class SinkOrchestrator(Transformer):
         self.logger.debug(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )
+        ctx.indexed_at_ms = timestamp
         # The record is only searchable now, so the accessible-record map that
         # gates search is stale. Connector records arrive in bursts, so their
         # deletes are coalesced (see `on_record_indexed`).

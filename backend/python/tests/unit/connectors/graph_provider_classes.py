@@ -25,6 +25,7 @@ READS = frozenset("""
     find_named_entities_by_alias find_named_entities_by_key_prefix find_next_queued_duplicate find_organizations find_orphan_named_entities find_people
     find_slack_burst_record_by_ts find_taxonomy_nodes find_team_by_name find_uncalled_blocks find_users get_accessible_connector_types
     get_accessible_containers get_accessible_virtual_record_ids get_account_type get_address_links_batch get_agent
+    get_all_agent_templates get_all_agents
     get_agents_by_model_key get_agents_by_web_search_provider get_all_documents get_all_orgs get_app_creator_user
     get_app_needing_vector_membership_backfill get_app_role_by_external_id get_app_user_by_email get_app_user_links get_app_users
     get_artifact_detail get_child_record_ids_by_relation_type get_connector_instances_with_filters get_connector_stats
@@ -71,6 +72,7 @@ READS = frozenset("""
 
 HARMLESS = frozenset("""
     stamp_external_org_parents
+    delete_agent delete_agent_template update_agent update_agent_template
     add_named_entity_aliases add_taxonomy_aliases add_user_to_all_team apply_verified_user_email backfill_app_org_ids
     backfill_block_name_folded backfill_indexed_copy_flags batch_create_entity_relations batch_create_user_app_edges
     batch_update_connector_status batch_update_team_member_roles batch_upsert_app_roles batch_upsert_app_users batch_upsert_orgs

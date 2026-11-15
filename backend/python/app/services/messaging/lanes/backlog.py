@@ -29,11 +29,28 @@ if TYPE_CHECKING:
 
     from app.services.messaging.lanes.assignment import LaneEntry
 
-__all__ = ["LaneBacklog", "redis_lanes_for_key"]
+__all__ = ["LaneBacklog", "StalePending", "redis_lanes_for_key"]
 
 _NO_PENDING: Mapping[str, int] = MappingProxyType({})
+_NO_TIMES: Mapping[str, float] = MappingProxyType({})
+_NO_STALE: Mapping[str, StalePending] = MappingProxyType({})
 # Nothing assigned: hashing is the whole story.
 _NO_ASSIGNMENTS: Mapping[str, LaneEntry] = MappingProxyType({})
+
+
+@dataclass(frozen=True)
+class StalePending:
+    """Pending entries on one lane that no longer hold back the stranded-record
+    sweep: their consumer stopped, or they were published longer ago than the
+    cap. They wait for a reclaim, which says nothing about when the group will
+    reach a later event."""
+
+    # Consumer name -> (entries it holds, ms since it last touched the group).
+    owners: Mapping[str, tuple[int, int]]
+    # Publish time of the lane's oldest pending entry (broker clock, epoch ms).
+    oldest_ms: float
+    # Discounted (also) for being older than the cap.
+    too_old: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,16 +68,22 @@ class LaneBacklog:
     # Lane name -> entries delivered but not yet acknowledged, where the broker
     # reports it (Redis). For the lane view on /health.
     pending: Mapping[str, int] = _NO_PENDING
+    # Lane name -> publish time of the head of its pending list (Redis).
+    oldest_pending_ms: Mapping[str, float] = _NO_TIMES
+    # As ``oldest_waiting_ms`` without the ``stale`` entries; None where the
+    # broker has no such notion (every waiting event counts).
+    oldest_live_ms: Mapping[str, float] | None = None
+    stale: Mapping[str, StalePending] = _NO_STALE
 
     def oldest_waiting_for(self, payload: Mapping[str, object]) -> float | None:
-        """Oldest event still waiting on any lane ``payload`` could be on; None if none is."""
+        """Oldest event still waiting on any lane ``payload`` could be on, leaving out
+        entries only a reclaim will move; None if none is."""
+        oldest = self.oldest_waiting_ms if self.oldest_live_ms is None else self.oldest_live_ms
         if self.lanes_for_event is None:
-            waiting = list(self.oldest_waiting_ms.values())
+            waiting = list(oldest.values())
         else:
             waiting = [
-                self.oldest_waiting_ms[lane]
-                for lane in self.lanes_for_event(payload)
-                if lane in self.oldest_waiting_ms
+                oldest[lane] for lane in self.lanes_for_event(payload) if lane in oldest
             ]
         return min(waiting, default=None)
 

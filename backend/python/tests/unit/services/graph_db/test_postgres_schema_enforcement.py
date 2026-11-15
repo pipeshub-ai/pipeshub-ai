@@ -28,6 +28,7 @@ pytest.importorskip("app.services.graph_db.postgres.provider")
 
 from app.core.org_context import OrgContext, bind
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+from app.services.graph_db.conditions import Cond
 from app.services.graph_db.postgres.base import _arango
 from app.services.graph_db.postgres.kg.registry import WRITERS
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
@@ -242,7 +243,7 @@ class _Rec:
 CLASSIFICATION: dict[str, str] = {
     **dict.fromkeys(["create_node_if_absent", "ensure_nodes", "stage_state_create"], "create"),
     **dict.fromkeys(["batch_upsert_nodes", "batch_upsert_records"], "upsert"),
-    **dict.fromkeys(["update_node", "batch_update_nodes", "update_node_fields_if_match", "update_knowledge_base", "compare_and_set_record_fields"], "update"),
+    **dict.fromkeys(["update_node", "batch_update_nodes", "update_node_fields_if_match", "update_node_fields_if", "update_knowledge_base", "compare_and_set_record_fields"], "update"),
     "update_node_if_match": "replace",
     **dict.fromkeys(["batch_update_connector_status", "compare_and_set_indexing_status", "update_indexing_status_for_record_ids",
                      "stage_state_compare_and_set", "soft_delete_records", "restore_records", "record_purge_failure", "retag_push_record",
@@ -265,7 +266,7 @@ CLASSIFICATION: dict[str, str] = {
     **dict.fromkeys([
         "backfill_block_name_folded", "backfill_indexed_copy_flags", "batch_delete_edges", "copy_document_relationships", "delete_all_edges_for_node",
         "delete_blocks_for_records", "delete_edges_between_collections", "delete_edges_by_relationship_types", "delete_edges_by_source_keys",
-        "delete_all_team_permissions", "remove_kb_permission", "delete_kb_hub_app", "delete_connector_sync_edges", "reap_stale_external_app_relations", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups", "delete_edges_touching_nodes", "delete_nodes", "delete_parent_child_edge_to_record",
+        "delete_all_team_permissions", "remove_user_access_to_connector", "remove_kb_permission", "delete_kb_hub_app", "delete_connector_sync_edges", "reap_stale_external_app_relations", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups", "delete_edges_touching_nodes", "delete_nodes", "delete_parent_child_edge_to_record",
         "delete_connector_instance", "delete_record", "delete_records_and_relations", "delete_records_recursive", "delete_single_record", "delete_team_member_edges",
         "delete_record_entity_relations",
         "increment_node_field", "purge_trash_kept_record_groups", "purge_trashed_records", "remove_authenticated_as", "remove_nodes_by_field",
@@ -323,6 +324,7 @@ INVALID: list[tuple[str, str, tuple, dict]] = [
     ("update null non-nullable", "update_node", ("r1", "records", {"recordName": None}), {}),
     ("batch_update bad member", "batch_update_nodes", ([{"id": "r1", "indexingStatus": "COMPLETED"}, {"id": "r2", "indexingStatus": "NOT_A_STATUS"}], "records"), {}),
     ("fields_if_match bad", "update_node_fields_if_match", ("r1", "records", {"indexingStatus": "NOT_A_STATUS"}, {"indexingStatus": "NOT_STARTED"}), {}),
+    ("fields_if bad", "update_node_fields_if", ("r1", "records", {"propsVer": "one"}, [Cond("propsVer", "is_null")]), {}),
     ("update_knowledge_base bad", "update_knowledge_base", ("kb1", {"scope": "NOT_A_SCOPE"}), {}),
     ("batch_update_team_member_roles bad", "batch_update_team_member_roles", ("t1", [{"userId": "u1", "role": "NOT_A_ROLE"}], 1), {}),
     ("update_edge bad role", "update_edge", ("users/u1", "records/r1", {"role": "NOT_A_ROLE"}, "permission"), {}),
@@ -333,7 +335,7 @@ INVALID: list[tuple[str, str, tuple, dict]] = [
     ("replace unknown key", "update_node_if_match", ("r1", "records", rec(bogusKey=1), "version", 1), {}),
     # targeted
     ("cas_indexing_status bad", "compare_and_set_indexing_status", (["r1"], "NOT_STARTED", "NOT_A_STATUS"), {}),
-    ("stage_state cas bad status", "stage_state_compare_and_set", ("s1", "NOT_STARTED", "NOT_A_STATUS", {}), {}),
+    ("stage_state cas bad status", "stage_state_compare_and_set", ("s1", "NOT_STARTED", 7, {}), {}),
     ("stage_state cas bad field", "stage_state_compare_and_set", ("s1", "NOT_STARTED", "IN_PROGRESS", {"attempt": "many"}), {}),
     ("reset_indexing_status bad status", "reset_indexing_status_for_connector", ("c1", "NOT_A_STATUS"), {}),
     ("update_user_sync_state bad field", "update_user_sync_state", ("a@x.io", 12345, "Drive"), {}),
@@ -378,6 +380,7 @@ VALID: list[tuple[str, str, tuple, dict]] = [
     ("update null on nullable", "update_node", ("r1", "records", {"externalParentId": None, "mimeType": None}), {}),
     ("batch_update", "batch_update_nodes", ([{"id": "r1", "indexingStatus": "COMPLETED"}, {"id": "r2", "isDeleted": True}], "records"), {}),
     ("fields_if_match", "update_node_fields_if_match", ("r1", "records", {"indexingStatus": "COMPLETED"}, {"indexingStatus": "NOT_STARTED"}), {}),
+    ("fields_if", "update_node_fields_if", ("r1", "records", {"recordProps": {"a": "1"}, "propsVer": 1}, [Cond("propsVer", "is_null")]), {}),
     ("update_knowledge_base", "update_knowledge_base", ("kb1", {"name": "KB", "scope": "personal"}), {}),
     ("batch_update_team_member_roles", "batch_update_team_member_roles", ("t1", [{"userId": "u1", "role": "OWNER"}], 1), {}),
     ("update_edge", "update_edge", ("users/u1", "records/r1", {"role": "WRITER"}, "permission"), {}),

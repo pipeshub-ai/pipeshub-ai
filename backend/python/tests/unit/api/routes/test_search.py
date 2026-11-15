@@ -290,26 +290,28 @@ class TestSearchEndpoint:
         assert call_kwargs.kwargs["filter_groups"]["kb"] == ["kb1", "kb2"]
 
     @pytest.mark.asyncio
-    async def test_search_llm_none_and_get_fails(self):
-        """When LLM is None and get_llm_instance also returns None, raise 500."""
+    async def test_search_without_chat_model_searches_query_as_typed(self):
+        """No chat model configured: the search runs on the typed query, not a 500."""
         request = self._build_request()
 
         mock_retrieval = MagicMock()
         mock_retrieval.llm = None
         mock_retrieval.get_llm_instance = AsyncMock(return_value=None)
+        mock_retrieval.search_with_filters = AsyncMock(
+            return_value={"searchResults": [], "status_code": 200}
+        )
 
-        mock_graph = MagicMock()
-        body = SearchQuery(query="hello")
-
-        with pytest.raises(HTTPException) as exc_info:
-            await search(
+        with patch("app.api.routes.search.setup_query_transformation") as mock_setup:
+            response = await search(
                 request=request,
-                body=body,
+                body=SearchQuery(query="  hello  "),
                 retrieval_service=mock_retrieval,
-                graph_provider=mock_graph,
+                graph_provider=MagicMock(),
             )
-        assert exc_info.value.status_code == 500
-        assert exc_info.value.detail == "Failed to initialize LLM service. LLM configuration is missing."
+
+        assert response.status_code == 200
+        mock_setup.assert_not_called()
+        assert mock_retrieval.search_with_filters.call_args.kwargs["queries"] == ["hello"]
 
     @pytest.mark.asyncio
     async def test_search_http_exception_keeps_its_status(self):
@@ -365,6 +367,9 @@ class TestSearchEndpoint:
 
         assert response.status_code == 200
         mock_setup.assert_called_once_with(new_llm)
+        assert mock_retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            "test", "rewritten", "exp",
+        ]
 
     @pytest.mark.asyncio
     async def test_search_exception_raises_http_500(self):

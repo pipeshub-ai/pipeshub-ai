@@ -169,7 +169,7 @@ class TestLevelChangeOnIncrementalSync:
         record, perms, changed = await _build(c, _issue({"id": "10102"}), _present(), existing)
         assert changed is True and record.version == 3
         await c._process_new_records([(record, perms, changed)], "PROJ", {"new_count": 0, "updated_count": 0})
-        c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record, perms)
+        c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record, perms, content_changed=True)
         assert perms
 
     @pytest.mark.asyncio
@@ -179,7 +179,7 @@ class TestLevelChangeOnIncrementalSync:
         record, perms, changed = await _build(c, _issue(None), _present(), existing)
         await c._process_new_records([(record, perms, changed)], "PROJ", {"new_count": 0, "updated_count": 0})
         # an explicit empty list replaces the stored grants; the rule goes back to the project's
-        c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record, [])
+        c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record, [], content_changed=True)
         assert record.access_rule == AccessRule.STRICT
 
     @pytest.mark.asyncio
@@ -190,7 +190,7 @@ class TestLevelChangeOnIncrementalSync:
             existing = MagicMock(id="rid", version=2, source_updated_at=1, is_placeholder=False)
             record, perms, changed = await _build(c, _issue(None), IssueSecurityContext(knowledge=knowledge), existing)
             await c._process_new_records([(record, perms, changed)], "PROJ", {"new_count": 0, "updated_count": 0})
-            c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record, [])
+            c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record, [], content_changed=True)
             assert record.access_rule == AccessRule.STRICT
 
     @pytest.mark.asyncio
@@ -200,7 +200,17 @@ class TestLevelChangeOnIncrementalSync:
         record, perms, changed = await _build(c, _issue(None), IssueSecurityContext(knowledge=SchemeKnowledge.NONE), existing)
         record.rewrite_permissions = False
         await c._process_new_records([(record, perms, changed)], "PROJ", {"new_count": 0, "updated_count": 0})
-        c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record)
+        c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record, content_changed=True)
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_issue_kept_for_its_grants_does_not_ask_for_a_reindex(self) -> None:
+        c = _connector()
+        existing = MagicMock(id="rid", version=2, source_updated_at=1, is_placeholder=False)
+        record, _, _ = await _build(c, _issue(None), IssueSecurityContext(knowledge=SchemeKnowledge.NONE), existing)
+        record.rewrite_permissions = False
+        c._keeps_stored_grants = lambda _record: True
+        await c._process_new_records([(record, [], False)], "PROJ", {"new_count": 0, "updated_count": 0})
+        c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record, content_changed=False)
 
 
 class TestLoadIssueSecurity:
