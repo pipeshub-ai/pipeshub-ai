@@ -1166,3 +1166,16 @@ async def test_an_owed_redrive_whose_publish_failed_is_sent_by_the_next_pass(fle
     assert await h.handler.retry_hold_redrives() == 1
     assert h.state(job).status is not ProgressStatus.FAILED, "redriven by the next pass"
     assert not await h.store.is_owed(scope, job.state_key)
+
+
+@pytest.mark.asyncio
+async def test_a_wake_that_raced_the_reset_judges_the_budget_as_stored_now(fleet: FleetRedis) -> None:
+    """The wake read charged=6, then the leader reset this episode before the wake's own reset: the wake gets ALREADY
+    and must judge the stored budget (0 charges), not its stale snapshot, so the job runs."""
+    h, job = _BudgetHarness(fleet), _job()
+    scope = f"{_PK}:{_CLS}"
+    await h.store.put(job.state_key, PauseState(since_ms=h.clock(), charged=6, sends=6, scope=scope))
+    await h.store.add_redrives(scope, [job.state_key], episode="ep-1")
+    stale = await h.pause_state(job)
+    await h.store.release_charged(job.state_key, "ep-1")  # the leader, between the wake's read and its reset
+    assert await h.judge.spent(job, stale) is None

@@ -350,6 +350,10 @@ def current_pause_fields() -> dict[str, Any]:
 def estimate_tokens(messages: object) -> int:
     """A rough input size of a call, for its size class: a quarter of a character per token, an image a fixed cost."""
 
+    def calls(value: object) -> int:
+        # Tool calls a message carries (arguments included) are sent with it, whatever its content.
+        return len(str(value)) // 4 if value else 0
+
     def size(part: object) -> int:
         if isinstance(part, str):
             return len(part) // 4
@@ -358,10 +362,13 @@ def estimate_tokens(messages: object) -> int:
             if kind in ("image", "image_url", "input_image"):
                 return _IMAGE_TOKENS
             text = part.get("text")
-            return len(text) // 4 if isinstance(text, str) else len(str(part)) // 4
+            if isinstance(text, str):
+                return len(text) // 4 + calls(part.get("tool_calls"))
+            return len(str(part)) // 4
         content = getattr(part, "content", None)
-        if content is not None:
-            return size(content)
+        tool_calls = getattr(part, "tool_calls", None)
+        if content is not None or tool_calls:
+            return (size(content) if content is not None else 0) + calls(tool_calls)
         if isinstance(part, (list, tuple)):
             return sum(size(p) for p in part)
         if part is None or isinstance(part, (int, float, bool)):

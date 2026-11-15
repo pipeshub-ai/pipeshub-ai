@@ -67,6 +67,7 @@ from app.modules.transformers.transformer import (
     Transformer,
 )
 from app.modules.transformers.vectorstore import VectorStore
+from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.featureflag.platform_settings import (
     artifact_settings,
@@ -1068,9 +1069,10 @@ class SinkOrchestrator(Transformer):
             )
             strategy = extraction.strategy
             return extraction
-        except LLMUnavailableError:
-            # The model provider behind the Extraction service could not serve the request: the stage pauses on it
-            # (every window unavailable), as it does for an in-process extraction.
+        except (LLMUnavailableError, ServiceUnavailableError):
+            # The model provider behind the Extraction service could not serve the request, or the service itself was
+            # unreachable or lost the reply (the client has charged what it may have spent): the stage pauses on it
+            # (every window unavailable), as classify does and as an in-process extraction does.
             from app.modules.named_entities.domain.models import ExtractionStats
 
             return NamedEntityExtraction(

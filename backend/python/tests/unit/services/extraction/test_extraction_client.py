@@ -516,3 +516,29 @@ async def test_a_request_that_never_reached_the_service_is_not_charged() -> None
         with pytest.raises(ServiceUnavailableError):
             await client.classify(_bc(), "org-1")
     assert trace.requests == 0
+
+
+@pytest.mark.asyncio
+async def test_a_proxy_5xx_with_no_account_of_the_work_is_charged_and_pauses() -> None:
+    """A 502 from a proxy in front of the service says nothing of what was spent: the job is charged what the service
+    recorded (else everything it allowed), and the call is an unavailable service, so the stage pauses."""
+    from app.services.llm_gateway.gateway import llm_job
+
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    proxied = AsyncMock(return_value=httpx.Response(502, text="Bad Gateway"))
+    with patch.object(client, "_post_json", new=proxied), llm_job("classify:vr-1:rev-a", allowance=4) as trace:
+        with pytest.raises(ServiceUnavailableError) as raised:
+            await client.classify(_bc(), "org-1")
+    assert raised.value.delivered is True and trace.requests == 4
+
+
+@pytest.mark.asyncio
+async def test_the_services_own_500_with_usage_is_a_retry_charged_what_it_spent() -> None:
+    from app.services.llm_gateway.gateway import llm_job
+
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    answered = AsyncMock(return_value=httpx.Response(500, json={"success": False, "error": "boom", "usage": {"failed": 1}}))
+    with patch.object(client, "_post_json", new=answered), llm_job("classify:vr-1:rev-a", allowance=4) as trace:
+        with pytest.raises(ExtractionClientError):
+            await client.classify(_bc(), "org-1")
+    assert trace.requests == 1

@@ -2,6 +2,7 @@
 attempt and per provider key, and the remaining allowance enforced on each request before it leaves."""
 
 import asyncio
+import contextlib
 
 import httpx
 import pytest
@@ -208,19 +209,24 @@ async def test_each_request_an_sdk_retried_is_settled_and_charged_on_its_own(fle
 async def test_a_cancelled_attempt_counts_its_failed_sends(fleet: FleetRedis) -> None:
     """The stage's deadline cuts off a call whose SDK has already sent and been refused: those sends still count."""
 
+    refused = asyncio.Event()
+
     class Backing:
         async def ainvoke(self, value: object, /, **kwargs: object) -> str:
             wire._request_hook(httpx.Request("POST", "http://host/v1/chat"))
             wire.note_response(429)
+            refused.set()
             await asyncio.sleep(10)  # the SDK's backoff before its retry
             return "never"
 
     with llm_job("job-1") as trace:
         task = asyncio.create_task(LLMGateway(2).invoke(Backing(), "hi", provider=PROVIDER))
-        await asyncio.sleep(0.05)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        try:
+            await asyncio.wait_for(refused.wait(), 5.0)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
     assert trace.requests == 1
 
 
@@ -237,3 +243,15 @@ def test_remote_usage_charges_each_key_its_own_share() -> None:
     assert caller.tallies[("pk-1", "s")].charged == 1
     assert caller.tallies[("pk-1", "l")].charged == 2
     assert caller.unavailable == 1
+
+
+
+def test_the_input_estimate_counts_tool_call_arguments() -> None:
+    """An assistant turn with empty content and large tool-call arguments sends those arguments: it is a large call."""
+    from types import SimpleNamespace
+
+    from app.services.llm_gateway.gateway import estimate_tokens
+
+    turn = SimpleNamespace(content="", tool_calls=[{"name": "search", "args": {"q": "x" * 12_000}}])
+    assert estimate_tokens([turn]) >= 3_000
+    assert estimate_tokens([{"type": "text", "text": "", "tool_calls": [{"args": "y" * 12_000}]}]) >= 3_000

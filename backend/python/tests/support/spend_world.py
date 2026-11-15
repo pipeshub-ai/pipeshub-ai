@@ -42,6 +42,9 @@ async def _client():  # noqa: ANN202
         import redis.asyncio as aioredis
 
         return aioredis.Redis.from_url(url, decode_responses=True), True
+    if os.environ.get("SPEND_IT_REQUIRE_REDIS") == "1":
+        # A run that requires the real Redis must not quietly fall back to fakeredis.
+        pytest.fail("SPEND_IT_REDIS_URL is not set, and this run requires the real Redis")
     import fakeredis
 
     return fakeredis.FakeAsyncRedis(decode_responses=True), False

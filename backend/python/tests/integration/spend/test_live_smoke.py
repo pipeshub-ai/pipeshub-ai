@@ -14,7 +14,7 @@ import logging
 import time
 from types import SimpleNamespace
 from typing import ClassVar
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import pytest
 from langchain_openai import ChatOpenAI
@@ -125,7 +125,13 @@ async def test_startup_storm_and_recovery(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("REDIS_MODE", "standalone")
     monkeypatch.delenv("KV_STORE_TYPE", raising=False)
     monkeypatch.delenv("MESSAGE_BROKER", raising=False)
-    config = RedisConfig(host=parsed.hostname or "127.0.0.1", port=parsed.port or 6379, db=int((parsed.path or "/0").strip("/") or 0))
+    config = RedisConfig(
+        host=parsed.hostname or "127.0.0.1",
+        port=parsed.port or 6379,
+        db=int((parsed.path or "/0").strip("/") or 0),
+        password=unquote(parsed.password) if parsed.password else None,
+        tls=parsed.scheme == "rediss",
+    )
     log = logging.getLogger("smoke")
 
     # ---- start-up, as the service does it, with the real tracker beside it -------------------------------------------------

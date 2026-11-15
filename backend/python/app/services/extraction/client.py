@@ -149,6 +149,19 @@ class ExtractionClient(BaseServiceClient):
             if exc.delivered:
                 await _charge_lost_reply(fields)
             raise
+        if response.status_code >= HTTP_SERVER_ERROR:
+            body = _json_or_none(response)
+            if not (isinstance(body, dict) and "success" in body):
+                # A 5xx that is not the service's own answer (a proxy's 502/503/504, no response body of the service's)
+                # says nothing of what was spent: charge what the service recorded, or the whole allowance, and pause
+                # the job like any lost reply. The service's own 5xx carries its usage and goes to the stage's retry.
+                await _charge_lost_reply(fields)
+                raise ServiceUnavailableError(
+                    f"{self.service_name} {operation}: status {response.status_code} with no account of the work",
+                    status_code=response.status_code,
+                    service_name=self.service_name,
+                    delivered=True,
+                )
         if response.status_code == HTTP_CONFLICT:
             body = response.json()
             if isinstance(body, dict) and body.get("error_code") == REPLAYED:
@@ -246,6 +259,14 @@ class ExtractionClient(BaseServiceClient):
 
 
 HTTP_CONFLICT = 409
+HTTP_SERVER_ERROR = 500
+
+
+def _json_or_none(response: object) -> object:
+    try:
+        return response.json()  # type: ignore[attr-defined]
+    except ValueError:
+        return None
 REPLAYED = "REPLAYED"
 
 

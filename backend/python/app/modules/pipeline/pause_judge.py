@@ -153,9 +153,11 @@ class PauseJudge:
             await self._store.redrive_done(prior.scope, job.state_key)
             if reset is ResetResult.RESET:
                 prior = replace(prior, charged=0)
-                verdict = counters_spent(prior, limits)
-            # ALREADY: this episode's reset was done before, so the charges stored now are the new run's own and are
-            # judged as they are.
+            else:
+                # ALREADY: the reset was done before, possibly after ``prior`` was read, so judge the budget as stored
+                # now: what it holds is the new run's own.
+                prior = await self._store.get(job.state_key) or replace(prior, charged=0)
+            verdict = counters_spent(prior, limits)
         if verdict is None:
             ledger = await self._ledger(prior.scope)
             verdict = budget_spent(prior, await self._now(), ledger, limits)
