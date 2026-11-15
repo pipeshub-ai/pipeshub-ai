@@ -239,6 +239,63 @@ async def test_a_token_whose_creator_is_not_a_verified_member_of_a_complete_list
     assert conn.notify.await_args.kwargs["recipient_user_ids"] == ["u-alice"]
 
 
+def _people_page(people: list[dict[str, Any]], has_more: bool, cursor: str | None) -> MagicMock:
+    return _make_api_response(data={"results": people, "has_more": has_more, "next_cursor": cursor})
+
+
+@pytest.mark.parametrize("first_page", [
+    _people_page([], True, "c1"),  # an empty page that still has more
+    _people_page([{"id": "n-x", "type": "person", "name": "X", "person": {"email": "x@example.com",
+                                                                         "email_verified": True}}], True, None),
+])
+@pytest.mark.asyncio
+async def test_a_member_walk_notion_did_not_finish_keeps_the_token_of_a_creator_it_did_not_reach(
+        first_page: MagicMock) -> None:
+    conn = _connector(_datasource(_bot(), _search("p1")))
+    alice = {"id": ALICE_ID, "type": "person", "name": "Alice", "person": {"email": ALICE, "email_verified": True}}
+    users = MagicMock()
+    users.list_users = AsyncMock(side_effect=[first_page, _people_page([alice], False, None)])
+    conn._get_fresh_datasource = AsyncMock(return_value=users)
+    conn.data_entities_processor.on_new_app_users = AsyncMock()
+    conn._remove_departed_workspace_users = AsyncMock()
+    conn._member_ids, conn._members_complete = {}, False
+    await conn._sync_users()
+    assert conn._members_complete is False
+    conn._remove_departed_workspace_users.assert_not_awaited()
+    await _link(conn)
+    await conn._load_personal_access()
+    entry = conn.config_service.values[personal_tokens.token_path(conn.connector_id, "u-alice")]
+    assert entry["status"] == personal_tokens.LINKED and entry["token"], "a short walk must not delete the secret"
+    conn.notify.assert_not_awaited()
+
+
+_STOPPED_SHORT = [
+    {"results": [], "has_more": True, "next_cursor": "c1"},
+    {"results": [{"id": "b1", "type": "paragraph", "object": "block"}], "has_more": True, "next_cursor": None},
+]
+
+
+@pytest.mark.parametrize("page", _STOPPED_SHORT)
+@pytest.mark.parametrize("read", ["block children", "attachments", "comments", "table rows"])
+@pytest.mark.asyncio
+async def test_a_listing_notion_stopped_short_fails_instead_of_passing_for_the_whole(read: str, page: dict) -> None:
+    conn = _connector()
+    ds = MagicMock()
+    ds.retrieve_block_children = AsyncMock(return_value=_make_api_response(data=page))
+    ds.retrieve_comments = AsyncMock(return_value=_make_api_response(data=page))
+    ds.retrieve_data_source_by_id = AsyncMock(return_value=_make_api_response(data={"object": "data_source", "id": "ds1"}))
+    ds.query_data_source_by_id = AsyncMock(return_value=_make_api_response(data=page))
+    conn._get_fresh_datasource = AsyncMock(return_value=ds)
+    calls = {
+        "block children": lambda: conn._fetch_block_children_recursive("p1"),
+        "attachments": lambda: conn._fetch_attachment_blocks_and_block_ids_recursive("p1"),
+        "comments": lambda: conn._fetch_comments_for_block("p1"),
+        "table rows": lambda: conn._fetch_data_source_as_blocks("ds1", NotionBlockParser(MagicMock())),
+    }
+    with pytest.raises(Exception):  # noqa: B017 - a stream error or a sync failure, never a partial result
+        await calls[read]()
+
+
 @pytest.mark.asyncio
 async def test_a_token_relinked_while_the_sync_checked_the_old_one_is_kept() -> None:
     conn = _connector(_datasource(_bot(owner_id="notion-bob"), _search("p1")))
