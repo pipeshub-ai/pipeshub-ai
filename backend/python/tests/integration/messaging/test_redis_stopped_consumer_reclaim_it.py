@@ -376,7 +376,9 @@ class TestUnderMemoryPressure:
             governor.stop()
             governing.cancel()
 
-        assert moved >= 150, f"only {moved} stranded records processed in 20s"
+        # Relative, not a rate: a slow runner managed about 125 here, while a
+        # stalled drain moves about one record every two seconds (10 in 20s).
+        assert moved >= 5 * 10, f"only {moved} stranded records processed in 20s, as if stalled"
 
 
 class TestIdleDrainPastHeldEntries:
