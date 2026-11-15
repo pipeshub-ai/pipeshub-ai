@@ -87,7 +87,7 @@ export class TokenExchangeService {
     @inject('DelegationService') private delegationService: DelegationService,
     /**
      * Whether this edition offers delegation at all. Injected rather than
-     * imported so the Enterprise behaviour stays testable from the edition
+     * imported so the enabled behaviour stays testable from the edition
      * that does not ship it: the logic below is shared, and only this value
      * differs.
      */
@@ -101,7 +101,7 @@ export class TokenExchangeService {
       throw new TokenExchangeError(
         'unsupported_grant_type',
         'Delegation — a service account acting on behalf of a named person — ' +
-          'is an Enterprise capability and is not available in this edition. ' +
+          'is not available in this edition. ' +
           'Service accounts acting with their own access are.',
       );
     }

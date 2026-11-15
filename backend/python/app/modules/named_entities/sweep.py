@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 NAMED_ENTITY_VECTOR_TYPE = "named_entity"
 DEFAULT_GRACE_MS = 24 * 60 * 60 * 1000
 DEFAULT_BATCH = 200
-# A bound per org per pass, so one tenant with a large backlog cannot hold the loop.
+# A bound per org per pass, so one org with a large backlog cannot hold the loop.
 MAX_BATCHES_PER_PASS = 50
 
 logger = logging.getLogger(__name__)

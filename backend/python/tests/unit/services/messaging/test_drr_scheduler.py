@@ -304,7 +304,7 @@ class TestHierarchicalFairness:
         return DRRScheduler(_config(**defaults))
 
     def test_orgs_split_evenly_despite_uneven_connector_counts(self):
-        """The headline multi-tenant property. Org A runs five connectors,
+        """The headline multi-org property. Org A runs five connectors,
         Org B one; they must still split capacity in half."""
         scheduler = self._two_level()
         for connector in range(5):

@@ -1,6 +1,6 @@
 """Unit tests for app.services.redis.connection_provider_factory.
 
-Covers the extension seam a separate EE repo relies on to add AWS MemoryDB
+Covers the extension seam a separate extension repo relies on to add AWS MemoryDB
 support (register + REDIS_MODE + REDIS_PROVIDER_MODULE) with zero changes to
 this module, plus the process-level singleton cache (R11).
 """
@@ -213,7 +213,7 @@ class TestCredentialsOverUnverifiedTls:
 
     A MITM can present any certificate, terminate the session, and harvest the
     password. The guard lives in the factory rather than in each provider so an
-    EE-registered provider is covered by the same rule.
+    extension-registered provider is covered by the same rule.
     """
 
     @staticmethod

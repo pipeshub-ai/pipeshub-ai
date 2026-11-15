@@ -1,6 +1,6 @@
-"""OSS connector edition resolvers — pass-through / single-tenant behavior.
+"""OSS connector edition resolvers — pass-through / single-org behavior.
 
-EE counterparts live in ``app.ee.connectors.api.connector_resolvers``.
+Other builds may provide counterparts in ``app.ee.connectors.api.connector_resolvers``.
 Shared router imports these via ``edition_config`` (comment-flip).
 """
 

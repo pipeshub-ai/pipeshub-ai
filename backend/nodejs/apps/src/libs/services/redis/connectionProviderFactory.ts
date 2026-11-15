@@ -1,7 +1,7 @@
 /**
  * Factory + process-level singleton registry for `IRedisConnectionProvider`.
  *
- * An EE repo adds MemoryDB support entirely through this module's
+ * An extension repo adds MemoryDB support entirely through this module's
  * extension points, with zero changes to any file in this package:
  *
  * 1. Implement `IRedisConnectionProvider` (or extend `ClusterRedisProvider`).
@@ -63,7 +63,7 @@ export class RedisConnectionProviderFactory {
     if (!providerFactory) {
       throw new Error(
         `Unknown REDIS_MODE '${resolvedMode}'; registered modes: ` +
-          `${this.registeredModes().join(', ')}. If this mode ships in an EE ` +
+          `${this.registeredModes().join(', ')}. If this mode ships in an extension ` +
           'module, call ensureProviderModuleLoaded() during app bootstrap ' +
           'before creating the provider.',
       );
@@ -73,7 +73,7 @@ export class RedisConnectionProviderFactory {
     // verification off is encrypted but *unauthenticated*: any MITM can
     // present a self-signed cert, terminate the session, and harvest the
     // password. Enforced here rather than in each provider so every
-    // implementation -- including one registered by an EE repo -- is covered.
+    // implementation -- including one registered by an extension repo -- is covered.
     if (
       resolvedConfig.tls &&
       !resolvedConfig.tlsRejectUnauthorized &&
@@ -91,7 +91,7 @@ export class RedisConnectionProviderFactory {
     if (resolvedMode !== 'standalone' && resolvedConfig.db) {
       throw new Error(
         'REDIS_DB is not supported outside standalone mode ' +
-          `(REDIS_MODE=${resolvedMode}); use REDIS_KEY_NAMESPACE for tenant ` +
+          `(REDIS_MODE=${resolvedMode}); use REDIS_KEY_NAMESPACE for deployment ` +
           'isolation instead.',
       );
     }
@@ -100,7 +100,7 @@ export class RedisConnectionProviderFactory {
   }
 
   /**
-   * Import `REDIS_PROVIDER_MODULE` so an EE provider can self-register (R10).
+   * Import `REDIS_PROVIDER_MODULE` so an extension provider can self-register (R10).
    * Node has no dependency-free entry-point mechanism equivalent to Python's
    * `importlib.metadata.entry_points`, so this single env-driven hook is the
    * only discovery path; call it once during app bootstrap (`preInit`)
@@ -113,7 +113,7 @@ export class RedisConnectionProviderFactory {
     }
     // Same lazy semantics as the Python factory: the module's only job is to
     // register REDIS_MODE, so skip it when that mode is already registered
-    // (e.g. an EE edition switch imported the provider). The Docker image runs
+    // (e.g. an edition switch imported the provider). The Docker image runs
     // Node and Python from one .env, so this value is often a Python dotted
     // path that Node could never resolve.
     const mode = process.env.REDIS_MODE ?? 'standalone';
@@ -199,7 +199,7 @@ const preparedProviders = new WeakSet<IRedisConnectionProvider>();
  *
  * Use this from any async startup path -- `app.ts` calls it immediately
  * after `ensureProviderModuleLoaded()` and before
- * `loadConfigurationManagerConfig()` builds the KV store, so an EE provider
+ * `loadConfigurationManagerConfig()` builds the KV store, so an extension provider
  * with rotating credentials (MemoryDB IAM tokens -- R21) resolves them
  * before the first client is built. Sync call sites can keep using
  * `getRedisProvider()`; both share the same cached instance either way.

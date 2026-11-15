@@ -44,7 +44,7 @@ class LocalFsPullRequest(BaseModel):
     """One page of a server-driven sync run, relayed to the desktop by Node.
 
     ``orgId``/``userId`` are deliberately absent: Node takes them from the
-    scoped token, so a caller cannot address another tenant's desktop.
+    scoped token, so a caller cannot address another org's desktop.
     ``deviceId`` is the connector's owner device, which Node routes the pull to.
     """
 

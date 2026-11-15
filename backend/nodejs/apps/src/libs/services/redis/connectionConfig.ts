@@ -35,7 +35,7 @@ export const DEFAULT_CLIENT_OPTIONS: Required<ClientOptions> = {
  * `db` is DEPRECATED (R4): honoured only by `StandaloneRedisProvider`. The
  * factory rejects `db !== 0` when the selected mode is not `standalone` so
  * an upgrade never silently falls back to an empty database. New
- * deployments should isolate tenants via `keyNamespace` instead, applied
+ * deployments should isolate environments via `keyNamespace` instead, applied
  * inside explicit key builders (R9) -- never as an ioredis `keyPrefix`.
  */
 export interface RedisConnectionConfig {
@@ -45,7 +45,7 @@ export interface RedisConnectionConfig {
   password?: string;
   /** Rotating credentials (e.g. MemoryDB IAM auth); takes precedence over
    * username/password when set (R21). Signature intentionally stable so an
-   * EE provider never needs an interface change to support IAM rotation. */
+   * extension provider never needs an interface change to support IAM rotation. */
   credentialsProvider?: () => Promise<Credentials>;
   tls: boolean;
   tlsRejectUnauthorized: boolean;

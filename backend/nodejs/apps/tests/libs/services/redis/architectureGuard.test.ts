@@ -5,7 +5,7 @@
  * Every Redis-backed feature must depend on `IRedisConnectionProvider`
  * (obtained via `getRedisProvider` / `RedisConnectionProviderFactory`),
  * never `ioredis`'s `Redis` / `Cluster` directly. That is what lets a
- * separate EE repo add AWS MemoryDB support by registering one provider
+ * separate extension repo add AWS MemoryDB support by registering one provider
  * class -- no other file has to change.
  *
  * This mirrors
@@ -174,7 +174,7 @@ describe('Architecture guard: every process entry point imports the Redis editio
     expect(
       missing,
       `These process entry points never import src/${REDIS_EDITION_SWITCH}, so an ` +
-        'EE REDIS_MODE is unknown in that process:\n' +
+        'An extension REDIS_MODE is unknown in that process:\n' +
         missing.join('\n'),
     ).to.have.lengthOf(0);
   });

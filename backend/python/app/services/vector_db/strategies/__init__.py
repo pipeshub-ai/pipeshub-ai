@@ -1,7 +1,7 @@
 """Concrete CollectionStrategy implementations.
 
 Importing this package registers every built-in strategy with
-``CollectionStrategyFactory``. Enterprise Edition packages register
+``CollectionStrategyFactory``. Extension packages register
 additional strategies the same way from their own import path.
 
 ``single`` is the default and what most deployments should stay on;

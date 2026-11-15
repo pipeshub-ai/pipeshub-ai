@@ -1,6 +1,6 @@
 /**
  * Log-safe summary of a request to the AI service. User queries, conversation
- * history, attachments and caller context are customer content and must not
+ * history, attachments and caller context are user content and must not
  * reach logs; sizes and counts are enough to debug payload problems.
  */
 export interface AiRequestLogMetadata {

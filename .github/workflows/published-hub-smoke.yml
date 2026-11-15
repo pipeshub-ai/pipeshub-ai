@@ -6,7 +6,7 @@ name: Published Hub first-run
 # pull_request: slim (the default curl | bash path) and eval (the 8 GB laptop
 #   install, which differs from slim only in what the installer turns on).
 # schedule + workflow_dispatch: also full (Hub :latest + Kafka) and slim on
-#   ArangoDB, the graph database customers can pick instead of Neo4j.
+#   ArangoDB, the graph database users can pick instead of Neo4j.
 on:
   pull_request:
     branches:

@@ -3,14 +3,14 @@ import { Container } from 'inversify';
 import { NotImplementedError } from '../../../libs/errors/http.errors';
 
 /**
- * Community edition: delegation is an Enterprise capability, and this router
+ * Community edition: delegation is not built in, and this router
  * is the empty half of the pair.
  *
  * A service account working with its own access is free here — create one,
  * give it narrow rights, mint and revoke its tokens. Letting that account act
- * *as a named person* is the Enterprise half, and this file is where the two
- * editions part company. `config.ts` exports this router for the Community
- * build and the real one from `ee/` for Enterprise, the same way it already
+ * *as a named person* is the other half, and this file is where the two
+ * editions part company. `config.ts` exports this router for this
+ * build and a different one from an overlay elsewhere, the same way it already
  * switches the feature-flag router.
  *
  * What makes the absence real rather than cosmetic: a delegated token is only
@@ -43,7 +43,7 @@ export function createDelegationRouter(_container: Container): Router {
     next(
       new NotImplementedError(
         'Delegation — letting a service account act on behalf of a named ' +
-          'person — is an Enterprise capability and is not built into the ' +
+          'person — is not built into the ' +
           'Community edition. Service accounts acting with their own access ' +
           'are available here.',
       ),

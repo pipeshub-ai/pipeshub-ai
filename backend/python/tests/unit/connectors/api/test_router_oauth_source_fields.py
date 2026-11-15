@@ -53,7 +53,7 @@ def _app(*, org_id: str = ORG, urls: bool = True, instance_url: str | None = APP
 
 
 def _annotate_like_ee(auth: dict[str, Any], shared: dict[str, Any], org_id: str) -> None:
-    """The EE rule: name the owning org of an inherited app, else clear it (OSS only clears)."""
+    """The inheritance rule: name the owning org of an inherited app, else clear it."""
     auth.pop("orgId", None)
     if shared.get("orgId") and shared["orgId"] != org_id:
         auth["inheritedFromOrgId"] = shared["orgId"]

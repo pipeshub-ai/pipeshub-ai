@@ -35,7 +35,7 @@ describe('OIDCProviderController', () => {
     mockFirstPartyDeviceAppService = {
       getOrCreate: sinon.stub().resolves('pipeshub-agent'),
     }
-    // Built as the Enterprise edition does, so the shared discovery logic is
+    // Built with delegation enabled, so the shared discovery logic is
     // exercised; the Community answer has its own test below.
     controller = new OIDCProviderController(
       mockOAuthTokenService,

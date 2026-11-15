@@ -171,7 +171,7 @@ export class OAuthProviderContainer {
       // auth middleware read from it on every delegated request. What is not
       // bound here is the controller behind the administrator routes, which
       // is the only thing that can write an allow-list entry: it lives in the
-      // Enterprise overlay, and without it the exchange has nothing to find.
+      // optional overlay, and without it the exchange has nothing to find.
       const delegationService = new DelegationService(logger);
       container
         .bind<DelegationService>('DelegationService')

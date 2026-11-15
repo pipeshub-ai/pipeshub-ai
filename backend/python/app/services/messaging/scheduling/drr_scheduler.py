@@ -373,7 +373,7 @@ class DRRScheduler(Generic[T]):
         """Distinct keys with buffered items at ``level`` (0 = outermost).
 
         The org-level count and the connector-level count answer different
-        operational questions -- "how many customers are we serving right
+        operational questions -- "how many orgs are we serving right
         now" versus "how many syncs" -- so both are exposed.
         """
         node = self._root

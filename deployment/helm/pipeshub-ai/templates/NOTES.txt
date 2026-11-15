@@ -97,7 +97,7 @@ Your application is accessible via the configured ingress:
 
 NO ISOLATION. Code the model generates runs as a subprocess of the application
 pod, sharing its network and filesystem, bounded only by rlimits. Fine for a
-single-tenant development cluster; NOT fine for a shared or internet-reachable
+single-org development cluster; NOT fine for a shared or internet-reachable
 one.
 
   For container isolation:

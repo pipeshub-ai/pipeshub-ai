@@ -137,7 +137,7 @@ export interface FakeRedisProvider extends IRedisConnectionProvider {
 
 /** Toggle the topology a fake provider reports (T4) -- the same shape a
  * real `StandaloneRedisProvider` / `ClusterRedisProvider` (or an
- * EE `memorydb` provider) exposes via `isCluster`/`mode`, without changing
+ * extension `memorydb` provider) exposes via `isCluster`/`mode`, without changing
  * how commands behave underneath. */
 export interface FakeRedisProviderOptions {
   isCluster?: boolean;

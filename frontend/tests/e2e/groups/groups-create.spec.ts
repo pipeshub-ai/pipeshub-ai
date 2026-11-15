@@ -1,6 +1,6 @@
 import { test, expect } from '../fixtures/base.fixture';
 
-// OSS Groups page is an Enterprise placeholder — create UI lives in EE.
+// OSS Groups page is a placeholder — create UI is not part of this build.
 test.describe.skip('Groups Create', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/workspace/groups/');

@@ -1,4 +1,4 @@
-"""Toolset edition resolvers — own-org lookups; EE-only seams are no-ops."""
+"""Toolset edition resolvers — own-org lookups; extension seams are no-ops."""
 
 from __future__ import annotations
 

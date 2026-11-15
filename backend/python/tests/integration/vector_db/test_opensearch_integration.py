@@ -136,7 +136,7 @@ class TestOpenSearchUpsertQuery:
             await opensearch_service.delete_collection(col)
 
     async def test_filter_isolation(self, opensearch_service):
-        """orgId filter must isolate results per tenant."""
+        """orgId filter must isolate results per org."""
         col = make_collection("os_filter")
         cfg = make_collection_config()
         try:
@@ -167,7 +167,7 @@ class TestOpenSearchUpsertQuery:
             await opensearch_service.delete_collection(col)
 
     async def test_should_filter_with_accessible_ids(self, opensearch_service):
-        """should filter with virtualRecordId list (accessible-ID tenant separation precursor)."""
+        """should filter with virtualRecordId list (accessible-ID org separation precursor)."""
         col = make_collection("os_should")
         cfg = make_collection_config()
         try:

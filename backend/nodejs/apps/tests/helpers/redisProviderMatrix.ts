@@ -3,7 +3,7 @@
  * runs against (T4). Node has no contract suite of its own yet (Python's
  * four `test_*_contract.py` files are the template -- see
  * `backend/python/tests/support/redis_provider_matrix.py`), but this module
- * is the equivalent seam: an EE mocha root hook can `require()` this file
+ * is the equivalent seam: an extension mocha root hook can `require()` this file
  * and call `registerRedisProviderMatrixEntry()` to append a `memorydb`
  * entry before any suite built on `REDIS_PROVIDER_MATRIX` runs, so the same
  * suite exercises it with no OSS test changes.

@@ -19,7 +19,7 @@ from app.modules.named_entities.domain.values import (
     TypedValue,
 )
 
-# Legal forms across the jurisdictions customers write in. "Pty Ltd" and
+# Legal forms across the jurisdictions users write in. "Pty Ltd" and
 # "GmbH & Co. KG" are several forms in a row, so they are stripped to a fixed point.
 _LEGAL_SUFFIX = re.compile(
     r"\b(?:incorporated|inc|llc|l\.l\.c|ltd|limited|gmbh|corp|corporation|co|company"

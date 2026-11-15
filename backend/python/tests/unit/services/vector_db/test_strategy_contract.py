@@ -1,10 +1,10 @@
-"""The contract every CollectionStrategy must satisfy, OSS or Enterprise.
+"""The contract every CollectionStrategy must satisfy, OSS or an extension.
 
 Parametrized over the shipped ``single`` plus test doubles standing in for the
 strategies the design exists to enable (per-org, per-connector-type,
 per-embedding-model). A strategy that passes here can be dropped into a
 deployment without any call site knowing it exists — which is the whole claim
-the strategy abstraction makes, and the thing an EE package will rely on.
+the strategy abstraction makes, and the thing an extension package will rely on.
 
 The load-bearing property is ``required_axes`` honesty: the registry refuses a
 context missing a declared axis, and callers that hold no record at all use
@@ -45,7 +45,7 @@ from app.services.vector_db.strategy import (
 
 
 class PerOrgStrategy(CollectionStrategy):
-    """The EE multi-tenancy shape: one collection per org."""
+    """A one-collection-per-org shape."""
 
     def resolve_write_collection(self, ctx: RecordContext) -> str:
         return f"org_{ctx.org_id}_{ctx.collection_type.value}"

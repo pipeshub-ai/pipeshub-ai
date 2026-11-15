@@ -5,7 +5,7 @@ leases/retry tracking) depends on :class:`IRedisConnectionProvider`, never on
 ``redis.asyncio.Redis`` / ``RedisCluster`` directly. OSS ships
 ``StandaloneRedisProvider`` (mode ``standalone``, the default) and
 ``ClusterRedisProvider`` (mode ``cluster``, plain Redis Cluster). A separate
-EE repo can add AWS MemoryDB support by implementing
+extension repo can add AWS MemoryDB support by implementing
 :class:`IRedisConnectionProvider` (or subclassing ``ClusterRedisProvider``)
 and registering it with :class:`RedisConnectionProviderFactory` -- no core
 file in this package needs to change.

@@ -2058,9 +2058,9 @@ export function buildChatStreamUrl(
 // ---------------------------------------------------------------------------
 
 /**
- * The resolver is passed in rather than imported: the EE receiver stores the
- * matched bot in the EE registry's own AsyncLocalStorage, so reading the OSS
- * store from an EE handler would always come back empty.
+ * The resolver is passed in rather than imported: the extension receiver stores the
+ * matched bot in the extension registry's own AsyncLocalStorage, so reading the OSS
+ * store from an extension handler would always come back empty.
  */
 export async function resolveSlackBotForEvent<T extends SlackBotConfig>(
   getMatchedBot: () => T | null,

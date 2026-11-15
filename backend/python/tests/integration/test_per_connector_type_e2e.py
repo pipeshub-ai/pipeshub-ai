@@ -1,6 +1,6 @@
 """End-to-end for the shipped per_connector_type strategy.
 
-The EE gate covers a strategy nobody can select; this covers one an operator
+The extension-point test covers a strategy nobody can select; this covers one an operator
 actually can. Same machinery, different grouping axis — which is the check that
 the abstraction is not quietly specialised to per-org.
 """

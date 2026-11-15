@@ -1309,7 +1309,7 @@ jobs:
             PR_FIELD_TEXT=""
           fi
           # Name a non-default setup in the headline, so a red run isn't read as
-          # a regression on the setup most customers use.
+          # a regression on the setup most users use.
           if [ "$SETUP_IS_DEFAULT" = "false" ]; then
             TRIGGER_LABEL="${TRIGGER_LABEL} · on ${SETUP_LABEL}"
           fi

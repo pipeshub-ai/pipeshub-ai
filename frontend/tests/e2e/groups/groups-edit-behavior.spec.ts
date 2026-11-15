@@ -84,7 +84,7 @@ async function expectUserInGroup(
     .toBe(shouldExist);
 }
 
-// OSS Groups page is an Enterprise placeholder — edit sidebar lives in EE.
+// OSS Groups page is a placeholder — edit sidebar is not part of this build.
 test.describe.skip('Groups Edit Behavior', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/workspace/groups/');

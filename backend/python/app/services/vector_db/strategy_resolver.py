@@ -68,7 +68,7 @@ def _validate_registered(name: str) -> str:
     if name not in CollectionStrategyFactory.registered_names():
         raise StrategyConfigurationError(
             f"Unknown collection strategy '{name}'. Registered strategies: "
-            f"{CollectionStrategyFactory.registered_names()}. An Enterprise "
+            f"{CollectionStrategyFactory.registered_names()}. An extension "
             f"strategy must be imported before the strategy is resolved."
         )
     return name

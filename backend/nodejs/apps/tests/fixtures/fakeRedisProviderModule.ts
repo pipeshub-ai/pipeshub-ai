@@ -1,5 +1,5 @@
 /**
- * Stand-in for an EE provider module (e.g. `@pipeshub-ee/redis-memorydb`):
+ * Stand-in for an extension provider module (e.g. `@example/redis-memorydb`):
  * registers a mode as a side effect of being imported, and nothing else.
  * Loaded via `REDIS_PROVIDER_MODULE` + `ensureProviderModuleLoaded()` (R10)
  * in the `connectionProviderFactory.test.ts` success-path case (T1) --

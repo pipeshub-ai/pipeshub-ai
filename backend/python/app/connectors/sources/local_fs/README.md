@@ -75,7 +75,7 @@ If the desktop is offline, Node refuses Sync and toggle-on up front with `409 DE
 
 ## 4. Auth
 
-The pull and content routes are service-to-service. Python mints a scoped JWT with the `desktop:command` scope (`generate_jwt`), and Node guards the routes with `scopedTokenValidator(TokenScopes.DESKTOP_COMMAND)`. `orgId`/`userId` come from the token, never the request body — a body-supplied user id would be a cross-tenant targeting primitive.
+The pull and content routes are service-to-service. Python mints a scoped JWT with the `desktop:command` scope (`generate_jwt`), and Node guards the routes with `scopedTokenValidator(TokenScopes.DESKTOP_COMMAND)`. `orgId`/`userId` come from the token, never the request body — a body-supplied user id would be a cross-org targeting primitive.
 
 The desktop side authenticates separately: the renderer hands its **access token** to the Electron main process over IPC at login and again on every refresh, and main presents it on the socket handshake. Main holds it in memory only and cannot mint one itself — its `deviceId` is derived from the OS machine id, not stored, and is what the connector's `ownerDeviceId` names. Local FS therefore syncs while the app is running, not as a background daemon: a machine with no app open reports `DESKTOP_OFFLINE` and its scheduled ticks are skipped, not failed.
 

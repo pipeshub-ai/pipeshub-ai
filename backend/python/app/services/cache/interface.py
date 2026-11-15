@@ -4,7 +4,7 @@ These are deliberately *not* a thin wrapper over Redis's own API (no
 ``hget``/``hset``/``expire``): callers need "give me this computed value, or
 compute and cache it" and "drop what's cached for this scope", not a hash
 table. The Redis-backed implementation owns its key/hash layout as a private
-detail; a different cache backend (or an EE one) implements the same
+detail; a different cache backend (or an extension one) implements the same
 interface however it likes.
 """
 from __future__ import annotations

@@ -1,6 +1,6 @@
 'use client';
 
-/** Every signed-in user polls service health; the EE build narrows this. */
+/** Every signed-in user polls service health; another build may narrow this. */
 export function useShouldPollServiceHealth(): boolean {
   return true;
 }

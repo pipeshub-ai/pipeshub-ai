@@ -367,8 +367,8 @@ class MessagingFactory:
             key_extractor: Optional fairness-key extractor (INDEXING consumers only). Defaults
                       to a ``CompositeKeyExtractor`` over
                       ``fair_scheduler_config.key_fields`` (``orgId`` then
-                      ``connectorId``: fair between customers, then between each
-                      customer's individual connector syncs).
+                      ``connectorId``: fair between orgs, then between each
+                      org's individual connector syncs).
             weight_provider: Optional per-key DRR quantum provider (INDEXING consumers only),
                       for giving some keys a larger share than others. Defaults to a
                       flat quantum for every key.

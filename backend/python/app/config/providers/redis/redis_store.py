@@ -97,7 +97,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             socket_connect_timeout_seconds=connect_timeout,
         )
         # Delegates connection construction to IRedisConnectionProvider (both
-        # OSS modes -- standalone, generic cluster -- and any EE provider
+        # OSS modes -- standalone, generic cluster -- and any extension provider
         # registered via REDIS_MODE/REDIS_PROVIDER_MODULE) so this store
         # never constructs `redis.asyncio.Redis` itself.
         self._provider: "IRedisConnectionProvider" = get_redis_provider(

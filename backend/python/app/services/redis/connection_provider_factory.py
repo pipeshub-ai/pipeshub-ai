@@ -1,6 +1,6 @@
 """Factory + process-level singleton registry for :class:`IRedisConnectionProvider`.
 
-An EE repo adds MemoryDB support entirely through this module's extension
+An extension repo adds MemoryDB support entirely through this module's extension
 points, with zero changes to any file in this package:
 
 1. Implement ``IRedisConnectionProvider`` (or subclass ``ClusterRedisProvider``).
@@ -80,7 +80,7 @@ class RedisConnectionProviderFactory:
         # verification off is encrypted but *unauthenticated*: any MITM can
         # present a self-signed cert, terminate the session, and harvest the
         # password. Enforced here rather than in each provider so every
-        # implementation -- including one registered by an EE repo -- is
+        # implementation -- including one registered by an extension repo -- is
         # covered by the same rule.
         if (
             config.tls
@@ -99,7 +99,7 @@ class RedisConnectionProviderFactory:
             raise ValueError(
                 "REDIS_DB is not supported outside standalone mode "
                 f"(REDIS_MODE={resolved_mode}); use REDIS_KEY_NAMESPACE for "
-                "tenant isolation instead."
+                "deployment isolation instead."
             )
 
         return provider_factory(config)
@@ -110,7 +110,7 @@ class RedisConnectionProviderFactory:
 
         The standalone and cluster providers register themselves at the
         bottom of this module, so importing this factory is enough for the
-        OSS modes; this hook exists purely for the EE extension point.
+        OSS modes; this hook exists purely for the extension point.
         """
         module_name = os.getenv("REDIS_PROVIDER_MODULE")
         if module_name and module_name not in cls._discovered_modules:
@@ -203,7 +203,7 @@ async def get_prepared_redis_provider(
 
     Use this from any async startup path. Sync call sites can keep using
     ``get_redis_provider()``; providers whose ``prepare()`` does real work
-    (an EE MemoryDB provider resolving rotating IAM credentials -- R21) are
+    (an extension MemoryDB provider resolving rotating IAM credentials -- R21) are
     expected to be wired through an async startup that calls this first, and
     the two share the same cached instance either way.
     """
