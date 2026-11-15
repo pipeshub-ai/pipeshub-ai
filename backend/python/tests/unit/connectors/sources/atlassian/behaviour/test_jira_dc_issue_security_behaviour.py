@@ -1068,3 +1068,38 @@ class TestProductAccessRegained:
         product_group(*LICENSED)
         await sync(connector, jql_search, recent=[])
         assert ("USER", "carol@example.com") in readers(db, "2")
+
+    async def test_the_saved_accounts_stay_until_every_projects_hand_out_is_reset(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """A failure while resetting a project's handed list keeps the saved accounts: the next sync hands them out
+        again, rather than leave a stale list that would skip an account listed again later."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="carol-key", user={"key": "carol-key", "name": "carol"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="alice"))
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key", "carol-key")
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+
+        product_group(*LICENSED)
+        update = connector._update_project_sync_checkpoint
+
+        async def failing_reset(project_key: str, *args: object, **kwargs: object) -> None:
+            if kwargs.get("people_handed") == "[]":
+                raise RuntimeError("checkpoint store unavailable")
+            await update(project_key, *args, **kwargs)
+
+        connector._update_project_sync_checkpoint = failing_reset
+        with pytest.raises(RuntimeError, match="checkpoint store unavailable"):
+            await sync(connector, jql_search, recent=[])
+
+        saved = json.loads((store.values_for("people_reread") or {}).get("accounts") or "[]")
+        assert "carol-key" in saved

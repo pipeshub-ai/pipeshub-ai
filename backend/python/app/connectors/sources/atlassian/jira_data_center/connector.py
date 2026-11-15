@@ -1119,12 +1119,13 @@ class JiraDataCenterConnector(BaseConnector):
             handed_on = bool(self._newly_listed_user_keys) and not sync_stats.get("failed_project_keys") \
                 and not allowed_keys
             if handed_on:
+                # An account listed again later (withdrawn meanwhile) starts a new hand-out. The lists are reset
+                # first: a failure partway keeps the saved accounts, and the next sync hands them out again.
+                for project_key in sorted(self._handed_projects):
+                    await self._update_project_sync_checkpoint(project_key, people_handed="[]")
                 # Every project with a level map now carries the retry marker, saved before its walk. A project-key
                 # filter leaves projects out, which take the accounts when next synced (``people_handed``).
                 await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": "[]"})
-                # An account listed again later (withdrawn meanwhile) starts a new hand-out.
-                for project_key in sorted(self._handed_projects):
-                    await self._update_project_sync_checkpoint(project_key, people_handed="[]")
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
