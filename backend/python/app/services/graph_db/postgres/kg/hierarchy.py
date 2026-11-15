@@ -165,6 +165,17 @@ def _unheld_up(x: str) -> str:
             f"WHERE e.oc IN ('records', 'recordGroups', 'apps') AND {_not_held()})")
 
 
+# Each asked id's node, a record first, then a group, then an app, with a record's file type. Every read is a seek on one (collection, id) key: the typed graph's trail runs
+# this under its profile (sorts, bitmap and sequential scans off), where an id list across several collections would be a scan of the whole organisation.
+HUB_NODES = f"""/* pipeshub:graph.hub_node */ SELECT q.id AS key, coalesce(r.coll, g.coll, a.coll) AS coll, coalesce(r.doc, g.doc, a.doc) AS doc,
+    (SELECT f.doc->>'isFile' FROM (SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_id >= r.id AND e.from_id <= r.id
+        AND e.from_coll = 'records' ORDER BY e.from_id) e CROSS JOIN LATERAL {_node("'files'", "e.to_id")} f LIMIT 1) AS is_file
+  FROM unnest($2::text[]) AS q(id)
+  LEFT JOIN LATERAL {_node("'records'", "q.id")} r ON true
+  LEFT JOIN LATERAL {_node("'recordGroups'", "q.id")} g ON r.id IS NULL
+  LEFT JOIN LATERAL {_node("'apps'", "q.id")} a ON r.id IS NULL AND g.id IS NULL
+  WHERE coalesce(r.id, g.id, a.id) IS NOT NULL"""
+
 # One node of the hub's trail ($2, an sk): its row, its record parents (the primary one and the linked ones that are records), its groups (the first and the linked ones) and
 # whether an edge the trail follows up from it has an end kg does not hold.
 TRAIL_NODE = f"""/* pipeshub:kg.hier_trail_node */ SELECT r.sk, r.coll, r.id, r.app_sk, r.path IS NULL AS no_path,

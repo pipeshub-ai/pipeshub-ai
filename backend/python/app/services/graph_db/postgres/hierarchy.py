@@ -587,16 +587,6 @@ def _kh_order(a: dict, b: dict, *, ascending: bool) -> int:
 
 
 _COLL_OF_CODE = {1: "apps", 2: "recordGroups", 3: "records"}
-# Each asked id's node, a record first, then a group, then an app, with a record's file type. Every read is a seek on one (collection, id) key: the typed graph's trail runs
-# this under its profile (sorts, bitmap and sequential scans off), where an id list across several collections would be a scan of the whole organisation.
-HUB_NODES = f"""/* pipeshub:graph.hub_node */ SELECT q.id AS key, coalesce(r.coll, g.coll, a.coll) AS coll, coalesce(r.doc, g.doc, a.doc) AS doc,
-    (SELECT f.doc->>'isFile' FROM (SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_id >= r.id AND e.from_id <= r.id
-        AND e.from_coll = 'records' ORDER BY e.from_id) e CROSS JOIN LATERAL {kg_hier._node("'files'", "e.to_id")} f LIMIT 1) AS is_file
-  FROM unnest($2::text[]) AS q(id)
-  LEFT JOIN LATERAL {kg_hier._node("'records'", "q.id")} r ON true
-  LEFT JOIN LATERAL {kg_hier._node("'recordGroups'", "q.id")} g ON r.id IS NULL
-  LEFT JOIN LATERAL {kg_hier._node("'apps'", "q.id")} a ON r.id IS NULL AND g.id IS NULL
-  WHERE coalesce(r.id, g.id, a.id) IS NOT NULL"""
 
 
 class HubMixin(PgBase):
@@ -614,7 +604,7 @@ class HubMixin(PgBase):
     async def _hub_nodes(self, tx: Tx, org: str, ids: list[str]) -> dict[str, dict]:
         """The hub's node of each id (a record, else a group, else an app), shaped as a step of the trail, with its collection."""
         out: dict[str, dict] = {}
-        for n in await tx.fetch(HUB_NODES, org, ids):
+        for n in await tx.fetch(kg_hier.HUB_NODES, org, ids):
             d, coll = _doc(n["doc"]), n["coll"]
             kind = ("folder" if n["is_file"] == "false" else "record") if coll == "records" else "recordGroup" if coll == "recordGroups" else "app"
             sub = d.get("recordType") if coll == "records" else (("COLLECTION" if d.get("connectorName") == "KB" else d.get("groupType") or d.get("connectorName")) if coll == "recordGroups" else d.get("type"))

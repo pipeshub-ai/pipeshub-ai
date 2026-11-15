@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from app.services.graph_db.postgres.hierarchy import HUB_NODES
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from tests.permissions import gen
 from tests.permissions.scenario import load_all
@@ -230,7 +229,7 @@ async def test_every_trail_statement_is_answered_by_index_searches(pg_provider, 
     await _admin("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'm-' || g, jsonb_build_object('id', 'm-' || g, 'recordName', 'm' || g)
         FROM generate_series(1, 12000) g""", org)
     cases = {"node": (kg_hier.TRAIL_NODE, [row["sk"]]), "app": (kg_hier.TRAIL_APP, ["recordGroups", "g1"]),
-             "documents": (HUB_NODES, [["b", "a", "f", "g2", "g1", "app1", "missing"]])}
+             "documents": (kg_hier.HUB_NODES, [["b", "a", "f", "g2", "g1", "app1", "missing"]])}
     for state in ("fresh", "analysed"):
         if state == "analysed":
             await _admin("ANALYZE kg.records; ANALYZE kg.links; ANALYZE kg.node_keys; ANALYZE graph.nodes; ANALYZE graph.edges")
