@@ -150,12 +150,20 @@ def sign(
 
 
 def legacy_ctx(message: dict[str, Any]) -> OrgContext | None:
-    """Upgrade-window fallback: the org the producer wrote into ``payload.orgId`` (unsigned)."""
+    """Upgrade-window fallback: the org the producer wrote into ``payload.orgId`` (unsigned).
+
+    The event id the producer stamped (top-level ``eventId``) rides along as the context's identity of the event
+   ; it is not an authority, and a message from an older producer has none.
+    """
     payload = message.get("payload")
     org_id = payload.get("orgId") if isinstance(payload, dict) else None
     if not (isinstance(org_id, str) and org_id):
         return None
-    return OrgContext(org_id, None, "service", "legacy-payload", sanitize_root_id(message.get("requestId")) or "-")
+    event_id = message.get("eventId")
+    return OrgContext(
+        org_id, None, "service", "legacy-payload", sanitize_root_id(message.get("requestId")) or "-",
+        event_id=event_id if isinstance(event_id, str) and event_id else None,
+    )
 
 
 def decode_json(text: str) -> Any:  # noqa: ANN401
@@ -276,7 +284,7 @@ async def open_envelope(
     if inbox is not None and not await inbox.claim(topic, c["eventId"], c["orgId"]):
         raise DuplicateEnvelope(c["eventId"])
     ctx = OrgContext(c["orgId"], c.get("userId"), "user" if c.get("userId") else "service", "envelope",
-                     sanitize_root_id(c.get("requestId")) or "-")
+                     sanitize_root_id(c.get("requestId")) or "-", event_id=c["eventId"])
     return Opened(ctx, {**{k: v for k, v in message.items() if k not in _WIRE_ONLY}, "payload": body})
 
 
@@ -360,32 +368,43 @@ async def open_configured(topic: str, message: dict[str, Any], *, claim: bool = 
     return await open_envelope(topic, message, keys=keys, inbox=_inbox if claim else None)
 
 
+def with_event_id(message: dict[str, Any]) -> dict[str, Any]:
+    """The message with a top-level ``eventId`` (a UUID) unless it already names one."""
+    if isinstance(message.get("eventId"), str) and message["eventId"]:
+        return message
+    return {**message, "eventId": str(uuid.uuid4())}
+
+
 def sign_message(topic: str, message: dict[str, Any]) -> dict[str, Any]:
-    """Producer hook: sign the message when ``ENVELOPE_SIGN`` is on.
+    """Producer hook: sign the message when ``ENVELOPE_SIGN`` is on, and give every message an event id.
+
+    The event id names the event (a UUID at publish), whether or not the message is signed: signing adds
+    integrity, not identity. A signed message carries it in ``ctx.eventId``; any other leaves with a top-level
+    ``eventId``. Consumers use it to tell a redelivery of an event from a new event.
 
     Signed shape: every top-level field stays, ``payload`` becomes the signed JSON string, ``ctx`` is added.
-    With the flag off the message is sent unchanged (v1). With it on, a message that cannot be signed (no org
+    With the flag off the message is sent as v1, plus ``eventId``. With it on, a message that cannot be signed (no org
     bound, payload naming another org) is counted in ``pipeshub_envelope_unsigned_total{reason}`` and sent
-    unchanged; with no key it raises in enforce mode and is counted and logged in shadow mode.
+    unsigned (with ``eventId``); with no key it raises in enforce mode and is counted and logged in shadow mode.
     """
     from app.core.org_context import _ctx
 
     if not sign_enabled():
-        return message
+        return with_event_id(message)
     ctx = _ctx.get()
     payload = message.get("payload")
     if not (ctx and ctx.org_id and isinstance(payload, dict)):
         UNSIGNED.inc(topic, "no_org")
-        return message
+        return with_event_id(message)
     if payload.get("orgId") not in (None, ctx.org_id):
         UNSIGNED.inc(topic, "org_mismatch")
-        return message
+        return with_event_id(message)
     if not _sign_key:
         UNSIGNED.inc(topic, "no_key")
         if enforcing():
             raise RuntimeError(f"envelope signing is enabled but no key is available (topic={topic})")
         _log_loud(f"signkey:{topic}", "envelope signing enabled but no key is available topic=%s: sent unsigned (shadow mode)", topic)
-        return message
+        return with_event_id(message)
     event_type = message.get("eventType")
     signed = sign(_sign_key, topic, payload, ctx, event_type=event_type if isinstance(event_type, str) else "")
     return {**{k: v for k, v in message.items() if k not in ("payload", "ctx")}, **signed}
