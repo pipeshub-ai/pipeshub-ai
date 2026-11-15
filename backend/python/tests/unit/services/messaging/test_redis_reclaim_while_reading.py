@@ -720,7 +720,7 @@ class TestAScanThatRaisesPartWay:
         real = consumer.redis.xrange
         left = {"n": times}
 
-        async def xrange(topic, *args, **kwargs):  # noqa: ANN001, ANN202
+        async def xrange(topic, *args, **kwargs):  # noqa: ANN202
             if kwargs.get("min") == failing and left["n"] > 0:
                 left["n"] -= 1
                 raise ConnectionError("lost the connection")
