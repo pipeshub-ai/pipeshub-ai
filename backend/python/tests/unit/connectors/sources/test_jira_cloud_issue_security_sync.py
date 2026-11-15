@@ -120,7 +120,7 @@ class TestSecuredIssues:
         got = {(p.entity_type, p.external_id, p.email) for p in perms}
         assert got == {
             (EntityType.GROUP, "group-1", None),
-            (EntityType.USER, None, "mia@x.com"),
+            (EntityType.USER, "acc-9", "mia@x.com"),
             (EntityType.USER, None, "rep@x.com"),
             (EntityType.USER, None, "asg@x.com"),
             (EntityType.ROLE, "PROJ_projectLead", None),

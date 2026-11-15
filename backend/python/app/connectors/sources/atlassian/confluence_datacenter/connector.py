@@ -3341,6 +3341,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 if user:
                     return Permission(
                         email=user.email,
+                        external_id=principal_id,
                         type=permission_type,
                         entity_type=entity_type
                     )

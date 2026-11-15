@@ -260,7 +260,7 @@ class TestIssueAccess:
         )
         kinds = {(p.entity_type, p.external_id, p.email) for p in permissions}
         assert (EntityType.GROUP, "group-1", None) in kinds
-        assert (EntityType.USER, None, "mia@ex.com") in kinds
+        assert (EntityType.USER, "acc-1", "mia@ex.com") in kinds
         assert (EntityType.ROLE, "PROJ_100", None) in kinds
         assert (EntityType.USER, None, "rep@ex.com") in kinds
         assert (EntityType.USER, None, "asg@ex.com") in kinds
