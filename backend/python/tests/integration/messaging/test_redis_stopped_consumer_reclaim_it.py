@@ -844,3 +844,77 @@ class TestOwnEntriesBesideALivePeer:
             await trickle
             await owner.stop()
             await peer.stop()
+
+
+class TestOwnEntriesBehindOnesThatKeepFailing:
+    @pytest.mark.parametrize("fair_scheduling", [True, False], ids=["fair", "fifo"])
+    async def test_an_entry_behind_ten_that_always_fail_is_still_recovered(
+        self, redis_available, redis_client, base_stream, unique_suffix, monkeypatch, fair_scheduling
+    ) -> None:
+        """Ten entries at the head of this consumer's pending list fail their
+        handoff every time, the retry list is full, a peer is live and events
+        keep arriving. A scan from the head of the list took those ten every
+        time, so the entry behind them was never reached. Driven through the
+        running consumers' own loops."""
+        from app.services.messaging.redis_streams import indexing_consumer as module
+
+        monkeypatch.setattr(module, "_UNHANDED_LIMIT", 1)
+        host, port = redis_available
+        group = f"it-behind-{unique_suffix}"
+        topics = RedisLaneRouter(_LANES).lane_topics(base_stream)
+        await _create_groups(redis_client, topics, group)
+        lane = f"{base_stream}.0"
+        connector = _connector_on_lane(0, "own")
+        for i in range(10):
+            await redis_client.xadd(lane, _event(connector, f"poison-{i}"))
+        await redis_client.xadd(lane, _event(connector, "behind"))
+
+        config = RedisStreamsConfig(
+            host=host, port=port, client_id=f"{group}-client", group_id=group, topics=topics,
+            batch_size=10, block_ms=2000, claim_min_idle_ms=60_000,
+        )
+        fair = FairSchedulerConfig(
+            enabled=True, key_fields=("orgId", "connectorId"), max_buffered_messages=40,
+            max_per_entity_messages=40,
+        ) if fair_scheduling else None
+        done: list[str] = []
+        owner = IndexingRedisStreamsConsumer(logging.getLogger("it-behind"), config.model_copy(), fair_scheduler_config=fair)
+        peer = IndexingRedisStreamsConsumer(logging.getLogger("it-behind-peer"), config.model_copy(), fair_scheduler_config=fair)
+        read = await redis_client.xreadgroup(group, owner.consumer_name, {lane: ">"})
+        poison = {message_id for _s, entries in read for message_id, _f in entries[:10]}
+        behind = read[0][1][10][0]
+        owner._unhanded = {(lane, "0-1"): None}
+        real_check = owner._should_dead_letter
+        # The entry behind fails too until the startup drain is over, so only
+        # read-time recovery, under traffic, can bring it back.
+        behind_fails = {"on": True}
+
+        async def check(topic, message_id, *args, **kwargs):  # noqa: ANN202
+            if message_id in poison or (message_id == behind and behind_fails["on"]):
+                raise ConnectionError("retry store unreachable for this record")
+            return await real_check(topic, message_id, *args, **kwargs)
+
+        owner._should_dead_letter = check
+        await peer.start(_handler(done, seconds=0.0))
+        await owner.start(_handler(done, seconds=0.0))
+        stop = asyncio.Event()
+
+        async def keep_arriving() -> None:
+            n = 0
+            while not stop.is_set():
+                await redis_client.xadd(f"{base_stream}.1", _event("fresh", f"new-{n}"))
+                n += 1
+                await asyncio.sleep(0.3)
+
+        trickle = asyncio.create_task(keep_arriving())
+        try:
+            await asyncio.sleep(3)
+            assert "behind" not in done
+            behind_fails["on"] = False
+            await _until(lambda: _done(done, ["behind"]), "the entry behind the failing ones", timeout=20)
+        finally:
+            stop.set()
+            await trickle
+            await owner.stop()
+            await peer.stop()
+        assert not {f"poison-{i}" for i in range(10)} & set(done)

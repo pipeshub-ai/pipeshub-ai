@@ -380,6 +380,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # Of those, ids whose entry is gone: they need only an XACK, no room.
         self._unacked_gone: dict[tuple[str, str], None] = {}
         self._last_unhanded_retry = 0.0
+        # Per lane, where the next own-pending scan resumes (see
+        # __own_unheld_pending_payloads).
+        self._own_scan_resume: dict[str, str] = {}
         # Per lane, the stopped owners last logged as no longer holding back
         # the stranded-record sweep, so the line is written once per change.
         self._stale_pending_logged: dict[str, frozenset[str]] = {}
@@ -2114,41 +2117,51 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 remaining = min(remaining, max(1, limit))
         page_size = max(self.config.batch_size, _PENDING_SCAN_PAGE)
         found: list[tuple[str, dict[str, str]]] = []
-        cursor = "-"
-        for _ in range(self.__pending_scan_pages(topic)):
-            details = await self.redis.xpending_range(  # type: ignore
-                topic,
-                self.config.group_id,
-                min=cursor,
-                max="+",
-                count=page_size,
-                consumername=self.consumer_name,
-            )
-            if not isinstance(details, list) or not details:
-                break
-            last_id = cursor
-            for detail in details:
-                message_id = self._pending_detail_id(detail) if isinstance(detail, dict) else None
-                if not message_id:
-                    continue
-                last_id = message_id
-                if self.__already_held(message_id, topic):
-                    continue
-                entries = await self.redis.xrange(  # type: ignore
-                    topic, min=message_id, max=message_id, count=1
+        pages = self.__pending_scan_pages(topic)
+        # Resumed after the last entry examined, wrapping round to the head:
+        # entries at the head that keep failing their handoff would otherwise
+        # fill every scan, and one behind them would never be reached.
+        resume = self._own_scan_resume.get(topic, "-")
+        segments = [(resume, "+")] if resume == "-" else [(resume, "+"), ("-", resume[1:])]
+        for low, high in segments:
+            cursor = low
+            while pages > 0:
+                pages -= 1
+                details = await self.redis.xpending_range(  # type: ignore
+                    topic,
+                    self.config.group_id,
+                    min=cursor,
+                    max=high,
+                    count=page_size,
+                    consumername=self.consumer_name,
                 )
-                if not entries:
-                    # Trimmed or deleted: nothing left to process, and pending
-                    # under this consumer it would hold its lane's head.
-                    await self.__ack_claimed_without_body(topic, [message_id])
-                    continue
-                _entry_id, fields = entries[0]
-                found.append((message_id, fields))
-                if len(found) >= remaining:
-                    return found
-            if len(details) < page_size:
-                break
-            cursor = f"({last_id}"
+                if not isinstance(details, list) or not details:
+                    break
+                last_id = cursor
+                for detail in details:
+                    message_id = self._pending_detail_id(detail) if isinstance(detail, dict) else None
+                    if not message_id:
+                        continue
+                    last_id = message_id
+                    if self.__already_held(message_id, topic):
+                        continue
+                    entries = await self.redis.xrange(  # type: ignore
+                        topic, min=message_id, max=message_id, count=1
+                    )
+                    if not entries:
+                        # Trimmed or deleted: nothing left to process, and pending
+                        # under this consumer it would hold its lane's head.
+                        await self.__ack_claimed_without_body(topic, [message_id])
+                        continue
+                    _entry_id, fields = entries[0]
+                    found.append((message_id, fields))
+                    if len(found) >= remaining:
+                        self._own_scan_resume[topic] = f"({message_id}"
+                        return found
+                if len(details) < page_size:
+                    break
+                cursor = f"({last_id}"
+        self._own_scan_resume[topic] = "-"
         return found
 
     async def __reclaim_for_dispatch(self, topic: str, message_id: str) -> bool:
