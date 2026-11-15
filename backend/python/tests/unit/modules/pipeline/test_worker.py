@@ -1,6 +1,7 @@
 """StageJobHandler: claim, skip when current, outcomes, abandonment (UNIT-HW-01..)."""
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from typing import ClassVar
@@ -693,3 +694,250 @@ async def test_a_job_of_another_connector_runs_as_before() -> None:
     h.seed(job)
     await h.deliver(job)
     assert h.stage.runs == 1 and h.state(job).status is ProgressStatus.COMPLETED
+
+
+# ---- the pause budget: a paused job is bounded -------------------------------------------------------------
+
+from app.modules.pipeline.pause_budget import PauseLimits, PauseState  # noqa: E402
+from app.modules.pipeline.pause_judge import PauseJudge  # noqa: E402
+from app.modules.pipeline.pause_store import PauseStore, PauseStoreUnavailable  # noqa: E402
+from app.services.llm_gateway.fleet_breaker import FleetBreaker  # noqa: E402
+from app.services.llm_gateway.fleet_redis import FleetRedis  # noqa: E402
+
+_PK, _CLS = "pkpoison", "l"
+
+
+def _charged_pause(**overrides: object) -> StageResult:
+    """What the classify stage returns for a failed send the key's 5-minute success rate says is the document's."""
+    fields: dict[str, object] = {
+        "outcome": StageOutcome.PAUSED, "reason": "Model provider unavailable: boom", "sent": True,
+        "chargeable": True, "provider_pk": _PK, "size_class": _CLS, "provider_label": "ChatX:m@host",
+    }
+    fields.update(overrides)
+    return StageResult.model_validate(fields)
+
+
+class _BudgetHarness(_Harness):
+    """The worker with a pause budget on the fleet Redis, and a coordinator that shares its store."""
+
+    def __init__(self, fleet: FleetRedis) -> None:
+        super().__init__()
+        fleet.clock_ms = self.clock
+        self.fleet = fleet
+        self.store = PauseStore()
+        self.judge = PauseJudge(self.store, clock_ms=self.clock, limits=PauseLimits())
+        self.coordinator = Coordinator(
+            self.registry, self.states, self.headlines, self.producer,  # type: ignore[arg-type]
+            policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("t"), clock_ms=self.clock,
+            pause_store=self.store,
+        )
+        self.handler = StageJobHandler(
+            self.registry, self.states, self.headlines, self.coordinator, _IO,
+            logger=logging.getLogger("t"), worker_id="w1", clock_ms=self.clock, pause_judge=self.judge,
+        )
+
+    async def pause_state(self, job: StageJob) -> PauseState | None:
+        return await self.store.get(job.state_key)
+
+
+@pytest.mark.asyncio
+async def test_a_poison_job_fails_after_six_charged_sends(fleet: FleetRedis) -> None:
+    """Healthy traffic keeps the key's success rate high, so each failed send is charged to the document: at the
+    6th the job is FAILED with the reason, and its headline says so. (The main-line worker pauses for ever.)"""
+    h, job = _BudgetHarness(fleet), _job()
+    h.seed(job)
+    h.stage.result = _charged_pause()
+    for attempt in range(1, 6):
+        with pytest.raises(StagePaused):
+            await h.deliver(job)
+        state = await h.pause_state(job)
+        assert state is not None and (state.charged, state.sends) == (attempt, attempt)
+        assert h.state(job).status is ProgressStatus.PAUSED
+    with pytest.raises(StageFailed) as failed:
+        await h.deliver(job)
+    assert "Reindex failed" in str(failed.value) and "6 times" in str(failed.value)
+    assert h.state(job).status is ProgressStatus.FAILED
+    assert h.state(job).reason is not None and "Reindex failed" in h.state(job).reason
+    assert h.headlines.writes[-1][2] is ProgressStatus.FAILED
+    assert h.stage.runs == 6
+
+
+@pytest.mark.asyncio
+async def test_a_job_is_failed_at_twenty_sends_when_none_is_charged(fleet: FleetRedis) -> None:
+    h, job = _BudgetHarness(fleet), _job()
+    h.seed(job)
+    h.stage.result = _charged_pause(chargeable=False)
+    for _ in range(19):
+        with pytest.raises(StagePaused):
+            await h.deliver(job)
+    with pytest.raises(StageFailed) as failed:
+        await h.deliver(job)
+    assert "20 times" in str(failed.value)
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_by_an_open_breaker_is_not_a_send(fleet: FleetRedis) -> None:
+    h, job = _BudgetHarness(fleet), _job()
+    h.seed(job)
+    h.stage.result = _charged_pause(sent=False, chargeable=False)
+    for _ in range(30):
+        with pytest.raises(StagePaused):
+            await h.deliver(job)
+    state = await h.pause_state(job)
+    assert state is not None and (state.sends, state.charged) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_day_long_quota_outage_ends_failed_at_the_wall(fleet: FleetRedis) -> None:
+    """A persistent 429 for 25 h (every send is uncharged and the counts barely move): FAILED at 24 h with the
+    provider's reason."""
+    h, job = _BudgetHarness(fleet), _job()
+    h.seed(job)
+    # the breaker is open: refusals, no sends
+    h.stage.result = _charged_pause(sent=False, chargeable=False, reason="Model provider unavailable: ChatX:m@host is failing")
+    elapsed_h = 0
+    with pytest.raises(StagePaused):
+        await h.deliver(job)
+    while True:
+        h.clock.advance(3_600_000)
+        elapsed_h += 1
+        try:
+            await h.deliver(job)
+        except StagePaused:
+            assert elapsed_h < 24
+            continue
+        except StageFailed as failed:
+            assert "24 h" in str(failed) and "ChatX:m@host" in str(failed)
+            break
+    assert elapsed_h == 24
+    state = await h.pause_state(job)
+    assert state is not None and state.sends == 0 and state.charged == 0
+
+
+@pytest.mark.asyncio
+async def test_an_automatic_redispatch_does_not_reset_the_pause_budget(fleet: FleetRedis) -> None:
+    """A FAILED-by-budget revision gets an automatic non-forced re-dispatch: the worker FAILs it before it runs, so
+    nothing is sent. A forced redrive starts a fresh budget and runs."""
+    h, job = _BudgetHarness(fleet), _job()
+    h.seed(job)
+    h.stage.result = _charged_pause()
+    for _ in range(5):
+        with pytest.raises(StagePaused):
+            await h.deliver(job)
+    with pytest.raises(StageFailed):
+        await h.deliver(job)
+    assert h.stage.runs == 6
+
+    # the sweeper or a connector re-sync dispatches it again: claimed QUEUED, not forced
+    h.states.states[job.state_key] = h.state(job).model_copy(update={"status": ProgressStatus.QUEUED})
+    with pytest.raises(StageFailed) as failed:
+        await h.deliver(job)
+    assert h.stage.runs == 6, "the stage must not run again: an automatic re-dispatch makes 0 sends"
+    assert "Reindex failed" in str(failed.value)
+
+    # a user's forced redrive: its claim deletes the budget, and the stage runs
+    forced = _job(force=True)
+    h.stage.result = StageResult(outcome=StageOutcome.COMPLETED)
+    view = job.view
+    assert await h.coordinator.redrive(view, "classify", priority=Priority.BULK, force=True) is not None
+    assert await h.pause_state(job) is None
+    await h.deliver(forced)
+    assert h.stage.runs == 7 and h.state(job).status is ProgressStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_redis_down_defers_paused_jobs(fleet: FleetRedis, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pause KV raises while the job's state is PAUSED: StagePaused before ``stage.run``, 0 model calls, nothing
+    written. A job with no prior pause runs once."""
+    h, job = _BudgetHarness(fleet), _job()
+    h.seed(job)
+    h.stage.result = _charged_pause(chargeable=False)
+    with pytest.raises(StagePaused):
+        await h.deliver(job)
+    assert h.stage.runs == 1 and h.state(job).status is ProgressStatus.PAUSED
+    before = h.state(job)
+
+    async def broken(self, key):  # noqa: ANN202
+        raise PauseStoreUnavailable("redis is down")
+
+    monkeypatch.setattr(PauseStore, "get", broken)
+    for _ in range(3):
+        with pytest.raises(StagePaused) as deferred:
+            await h.deliver(job)
+        assert deferred.value.delay_s > 0
+    assert h.stage.runs == 1, "a paused job must not run while its budget cannot be read"
+    assert h.state(job) == before, "a deferral writes nothing"
+
+    # a job that has never paused is not blocked by the outage: it runs once
+    other = _job(virtual_record_id="vr-2")
+    h.seed(other)
+    h.stage.result = StageResult(outcome=StageOutcome.COMPLETED)
+    await h.deliver(other)
+    assert h.stage.runs == 2 and h.state(other).status is ProgressStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_completion_and_skip_delete_the_budget_and_failure_keeps_it(fleet: FleetRedis) -> None:
+    for result, kept in [
+        (StageResult(outcome=StageOutcome.COMPLETED), False),
+        (StageResult(outcome=StageOutcome.SKIPPED, reason="nothing"), False),
+        (StageResult(outcome=StageOutcome.FAILED, reason="bad"), True),
+    ]:
+        h, job = _BudgetHarness(fleet), _job(virtual_record_id=f"vr-{result.outcome.value}")
+        h.seed(job)
+        await h.store.put(job.state_key, PauseState(since_ms=h.clock(), charged=2, sends=3))
+        h.stage.result = result
+        with contextlib.suppress(StageFailed):
+            await h.deliver(job)
+        assert (await h.pause_state(job) is not None) is kept, result.outcome
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_completion_deletes_the_budget(fleet: FleetRedis) -> None:
+    h, job = _BudgetHarness(fleet), _job()
+    h.seed(job, ProgressStatus.COMPLETED, fingerprint=h.expected_fingerprint(job))
+    await h.store.put(job.state_key, PauseState(since_ms=h.clock(), charged=2, sends=3))
+    await h.deliver(job)
+    assert h.stage.runs == 0 and await h.pause_state(job) is None
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_waited_through_a_long_key_hold_is_not_failed_on_wake(fleet: FleetRedis) -> None:
+    """A long key hold, through the worker's pre-run check: the job pauses once, the key is held for 30 h while the job wakes
+    hourly (refused, nothing sent), then it runs. The wall excludes the key's hold ledger on every path."""
+    from app.services.llm_gateway.fleet_hold import HoldEntry, HoldKeeper
+
+    h, job = _BudgetHarness(fleet), _job()
+    h.seed(job)
+    h.stage.result = _charged_pause(sent=False, chargeable=False)
+    with pytest.raises(StagePaused):
+        await h.deliver(job)
+    breaker = FleetBreaker(fleet)
+    keeper = HoldKeeper(fleet, breaker, clock_ms=h.clock)
+    for i in range(3):
+        capped = await breaker.register_capped(_PK, _CLS, f"o-{i}", label="ChatX:m@host", reason="charged_cap")
+    await keeper.note_hold(HoldEntry(_PK, _CLS, capped.episode, "ChatX:m@host", h.clock(), "org-1", 3))
+    for _ in range(30):
+        h.clock.advance(3_600_000)
+        assert await keeper.tick() == 1
+        with pytest.raises(StagePaused):
+            await h.deliver(job)  # the pre-run check passes (the hold is excluded) and the stage refuses again
+    assert h.stage.runs == 31, "the job ran (and paused) on every wake: it was never failed before it ran"
+    h.stage.result = StageResult(outcome=StageOutcome.COMPLETED)
+    await fleet.client().delete(breaker.hold_key(_PK, _CLS))
+    h.clock.advance(1000)
+    await keeper.tick()
+    await h.deliver(job)
+    assert h.state(job).status is ProgressStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_the_budget_clock_is_redis_time(fleet: FleetRedis) -> None:
+    """Replicas with different host clocks must agree on a job's wall: the judge reads Redis TIME, not the host clock."""
+    judge = PauseJudge(PauseStore(), limits=PauseLimits())  # no injected clock
+    fleet.clock_ms = None  # the real Redis TIME
+    job = _job()
+    decision = await judge.judge(job, _charged_pause(sent=False, chargeable=False))
+    assert decision is not None
+    server_ms = await FleetBreaker(fleet).now_ms()
+    assert abs(decision.decision.state.since_ms - server_ms) < 5000

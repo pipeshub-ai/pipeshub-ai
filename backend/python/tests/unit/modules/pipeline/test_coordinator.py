@@ -479,3 +479,70 @@ async def test_the_sweep_runs_each_follow_up_in_its_own_org_and_skips_a_state_wi
                      ("mark", "org-a"), ("mark", "org-b")}
     assert (report.republished, report.skipped_no_org) == (2, 1)
     assert h.states.states[stage_state_key("vr-None", REV, "classify")].status is ProgressStatus.PAUSED
+
+
+# ---- the pause budget survives automatic claims ---------------------------------------------------------
+
+from app.modules.pipeline.pause_budget import PauseState  # noqa: E402
+from app.modules.pipeline.pause_store import PauseStore  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_pause_budget_survives_automatic_claims(fleet) -> None:
+    """A forced claim (a user's redrive) deletes the revision's pause key, an automatic one (a dispatch after a
+    prerequisite, a connector re-sync, the sweep) keeps it: a revision whose budget is spent cannot start over by being
+    dispatched again."""
+    registry = _classify_after_embed()
+    h = _Harness(registry)
+    store = PauseStore()
+    coordinator = Coordinator(
+        registry, h.states, h.headlines, h.producer,  # type: ignore[arg-type]
+        policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("test"), clock_ms=h.clock, pause_store=store,
+    )
+    view = _view()
+    key = stage_state_key(VRID, REV, "classify")
+    spent = PauseState(since_ms=h.clock(), charged=6, sends=6)
+    await store.put(key, spent)
+    h.complete("embed")
+    h.states.put(
+        StageState.from_job(
+            StageJob.for_view(view, stage="classify", stage_version=1, priority=Priority.BULK, trigger="t", force=False),
+            ProgressStatus.FAILED, h.clock(),
+        )
+    )
+
+    # automatic: the prerequisite finished again, and the stage is dispatched without force
+    assert await coordinator.on_external_done("embed", view, priority=Priority.BULK, trigger="resync") == [f"{key}@1"]
+    assert await store.get(key) == spent
+
+    # automatic: an unforced redrive (what the sweep and a re-index event do)
+    h.states.put(h.states.states[key].model_copy(update={"status": ProgressStatus.FAILED}))
+    assert await coordinator.redrive(view, "classify", priority=Priority.BULK, force=False) == f"{key}@1"
+    assert await store.get(key) == spent
+
+    # forced: a user's redrive starts the budget over
+    h.states.put(h.states.states[key].model_copy(update={"status": ProgressStatus.FAILED}))
+    assert await coordinator.redrive(view, "classify", priority=Priority.BULK, force=True) == f"{key}@1"
+    assert await store.get(key) is None
+
+
+@pytest.mark.asyncio
+async def test_a_forced_claim_that_does_not_win_keeps_the_budget(fleet) -> None:
+    registry = _classify_after_embed()
+    h = _Harness(registry)
+    store = PauseStore()
+    coordinator = Coordinator(
+        registry, h.states, h.headlines, h.producer,  # type: ignore[arg-type]
+        policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("test"), clock_ms=h.clock, pause_store=store,
+    )
+    view = _view()
+    key = stage_state_key(VRID, REV, "classify")
+    h.states.put(
+        StageState.from_job(
+            StageJob.for_view(view, stage="classify", stage_version=1, priority=Priority.BULK, trigger="t", force=False),
+            ProgressStatus.IN_PROGRESS, h.clock(),
+        )
+    )
+    await store.put(key, PauseState(since_ms=h.clock(), charged=3, sends=4))
+    assert await coordinator.redrive(view, "classify", priority=Priority.BULK, force=True) is None  # still running
+    assert await store.get(key) is not None

@@ -25,6 +25,7 @@ from app.modules.pipeline.models import (
     StageState,
     StageStatePatch,
 )
+from app.modules.pipeline.pause_store import PauseStore
 from app.modules.pipeline.policy import PipelinePolicy
 from app.modules.pipeline.publisher import PublisherNotBoundError
 from app.modules.pipeline.registry import StageRegistry
@@ -83,8 +84,11 @@ class Coordinator:
         policy_for: Callable[[str], PipelinePolicy],
         logger: logging.Logger,
         clock_ms: Callable[[], int] = _now_ms,
+        pause_store: PauseStore | None = None,
     ) -> None:
         super().__init__()
+        # Where a revision's pause budget lives; only a forced claim starts it over (``pause_budget``).
+        self._pause_store = pause_store
         self._registry = registry
         self._states = states
         self._headlines = headlines
@@ -322,7 +326,19 @@ class Coordinator:
             )
 
     async def _claim(self, job: StageJob) -> ProgressStatus | None:
-        """Claim ``job``'s state for dispatch; returns the status it was claimed from, or None."""
+        """Claim ``job``'s state for dispatch; returns the status it was claimed from, or None.
+
+        A forced claim (a user's redrive) gives the revision a fresh pause budget; an automatic one keeps it,
+        so a revision whose budget is spent cannot start over by being dispatched again."""
+        claimed_from = await self._claim_state(job)
+        if claimed_from is not None and job.force and self._pause_store is not None:
+            try:
+                await self._pause_store.delete(job.state_key)
+            except Exception:
+                self._logger.warning("Could not reset the pause budget of %s; it expires on its own", job.state_key)
+        return claimed_from
+
+    async def _claim_state(self, job: StageJob) -> ProgressStatus | None:
         if await self._states.create_if_absent(StageState.from_job(job, ProgressStatus.QUEUED, self._clock_ms())):
             return ProgressStatus.NOT_STARTED
         existing = await self._states.get(job.state_key)

@@ -153,14 +153,11 @@ class ClassifyStage:
             return StageResult(outcome=StageOutcome.SKIPPED, reason=f"Extraction skipped: {exc}", record_view=job.view)
         except LLMUnavailableError as exc:
             # The model provider is down, not the document: wait without burning attempts.
-            return StageResult(
-                outcome=StageOutcome.PAUSED,
-                reason=f"Model provider unavailable: {exc}",
-                retry_after_s=exc.retry_after,
-            )
+            return StageResult.paused_for(exc, f"Model provider unavailable: {exc}")
         except (ServiceUnavailableError, ServiceBackpressureError) as exc:
             # The Extraction service is down, its breaker is open, or it asked callers to slow down.
-            return StageResult(outcome=StageOutcome.PAUSED, reason=f"Extraction service unavailable: {exc}")
+            # No model request of this job is known to have gone out, so it is not counted as a send.
+            return StageResult(outcome=StageOutcome.PAUSED, reason=f"Extraction service unavailable: {exc}", sent=False)
         except (ExtractionLLMError, ExtractionClientError) as exc:
             return StageResult(outcome=StageOutcome.RETRY, reason=f"Classification failed: {exc}")
         except ServiceCallError as exc:

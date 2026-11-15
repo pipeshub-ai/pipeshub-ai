@@ -105,6 +105,7 @@ def plan_deferral(
     now_ms: int,
     max_total_seconds: float,
     new_run: bool = False,
+    held_ms: int = 0,
 ) -> DeferralPlan:
     """When to send the record again, and whether waiting has gone on too long.
 
@@ -129,7 +130,8 @@ def plan_deferral(
     return DeferralPlan(
         not_before_ms=not_before,
         since_ms=since_ms,
-        give_up=not_before - since_ms > max_total_ms,
+        # ``held_ms``: time an operator hold kept indexing from spending is not the source's fault (deferral_ledger).
+        give_up=not_before - since_ms - max(0, held_ms) > max_total_ms,
     )
 
 

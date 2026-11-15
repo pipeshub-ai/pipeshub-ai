@@ -1,0 +1,224 @@
+"""The hold ledger and the hold notices: a key on hold does not use up the wall clock of the jobs waiting for it."""
+
+import logging
+
+import pytest
+
+from app.modules.pipeline.models import Priority, StageJob, StageOutcome, StageResult
+from app.modules.pipeline.pause_budget import PauseLimits, Verdict
+from app.modules.pipeline.pause_judge import PauseJudge
+from app.modules.pipeline.pause_store import PauseStore
+from app.services.llm_gateway.fleet_breaker import FleetBreaker
+from app.services.llm_gateway.fleet_hold import HoldEntry, HoldKeeper
+from app.services.llm_gateway.fleet_redis import FleetRedis
+from app.services.resource_governor.models import ParseTier
+from tests.support.spend_world import SimClock
+
+HOUR_MS = 3_600_000
+PK, CLS = "pkhold", "l"
+
+
+def _job() -> StageJob:
+    return StageJob.model_validate({
+        "stage": "classify", "stage_version": 1, "org_id": "org-1", "virtual_record_id": "vr-1", "rev": "rev-a",
+        "record_ids": ("rec-1",), "connector_id": "conn-1", "tier": ParseTier.LIGHT, "priority": Priority.BULK,
+        "trigger": "embed", "text_digest": "t", "blocks_digest": "b", "text_chars": 10, "has_tables": False,
+        "has_images": False,
+    })
+
+
+def _refusal() -> StageResult:
+    return StageResult(
+        outcome=StageOutcome.PAUSED, reason="held", sent=False, provider_pk=PK, size_class=CLS, provider_label="ChatX:m@host"
+    )
+
+
+async def _hold(breaker: FleetBreaker, keeper: HoldKeeper, clock: SimClock) -> HoldEntry:
+    for i in range(3):
+        capped = await breaker.register_capped(PK, CLS, f"job-{i}", label="ChatX:m@host", reason="charged_cap")
+    assert capped.newly_held
+    entry = HoldEntry(PK, CLS, capped.episode, "ChatX:m@host", clock(), "org-1", 3)
+    await keeper.note_hold(entry)
+    return entry
+
+
+async def test_unwoken_jobs_get_the_hold_subtracted(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    """A key on hold for 48 h while a job sleeps: the leader advances the ledger, and on wake the wall is the time
+    since it first paused minus the ledger's growth, so the job (50 h old) does not FAIL on wake."""
+    breaker = FleetBreaker(fleet)
+    keeper = HoldKeeper(fleet, breaker, clock_ms=sim_clock)
+    judge = PauseJudge(PauseStore(), clock_ms=sim_clock, limits=PauseLimits())
+    job = _job()
+
+    first = await judge.judge(job, _refusal())  # the job's first pause, before the hold
+    assert first is not None and first.decision.verdict is Verdict.PAUSE
+    sim_clock.advance(HOUR_MS)
+    await _hold(breaker, keeper, sim_clock)
+
+    # the recovery leader ticks every 10 s while the key is held: a minute of 10-s ticks, then hourly ticks
+    for _ in range(6):
+        sim_clock.advance(10_000)
+        assert await keeper.tick() == 1
+    for _ in range(48):
+        sim_clock.advance(HOUR_MS)
+        assert await keeper.tick() == 1
+    assert await breaker.ledger(f"{PK}:{CLS}") >= 48 * HOUR_MS
+
+    # the hold ends (a trial succeeded); the job wakes 50 h after it first paused
+    await fleet.client().delete(breaker.hold_key(PK, CLS))
+    sim_clock.advance(1000)
+    await keeper.tick()
+    woken = await judge.judge(job, _refusal())
+    assert woken is not None
+    assert woken.decision.verdict is Verdict.PAUSE, "a job that slept through a 48 h hold must not FAIL on wake"
+    assert woken.decision.state.since_ms == first.decision.state.since_ms
+
+
+async def test_without_the_ledger_the_same_job_fails_on_wake(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    """The control: the same 50 h with no hold recorded is a 24 h wall breach."""
+    judge = PauseJudge(PauseStore(), clock_ms=sim_clock, limits=PauseLimits())
+    job = _job()
+    assert (await judge.judge(job, _refusal())).decision.verdict is Verdict.PAUSE  # type: ignore[union-attr]
+    sim_clock.advance(50 * HOUR_MS)
+    woken = await judge.judge(job, _refusal())
+    assert woken is not None and woken.decision.verdict is Verdict.FAIL_WALL
+
+
+async def test_the_ledger_only_grows_while_the_key_is_held(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    breaker = FleetBreaker(fleet)
+    keeper = HoldKeeper(fleet, breaker, clock_ms=sim_clock)
+    entry = await _hold(breaker, keeper, sim_clock)
+    sim_clock.advance(100_000)
+    await keeper.tick()
+    grown = await breaker.ledger(entry.scope)
+    assert grown == 100_000
+    await fleet.client().delete(breaker.hold_key(PK, CLS))
+    await keeper.tick()  # ends the hold; the index entry goes
+    sim_clock.advance(HOUR_MS)
+    await keeper.tick()
+    assert await breaker.ledger(entry.scope) == grown
+    assert await keeper.entries() == []
+    # a second hold counts from its own start, not from the end of the first
+    sim_clock.advance(5 * HOUR_MS)
+    for i in range(3):
+        await breaker.register_capped(PK, CLS, f"again-{i}", label="x", reason="r")
+    await keeper.note_hold(HoldEntry(PK, CLS, "ep2", "x", sim_clock(), "org-1", 3))
+    sim_clock.advance(10_000)
+    await keeper.tick()
+    assert await breaker.ledger(entry.scope) == grown + 10_000
+
+
+async def test_a_pause_records_the_ledger_when_it_first_paused(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    breaker = FleetBreaker(fleet)
+    keeper = HoldKeeper(fleet, breaker, clock_ms=sim_clock)
+    entry = await _hold(breaker, keeper, sim_clock)
+    sim_clock.advance(HOUR_MS)
+    await keeper.tick()
+    judge = PauseJudge(PauseStore(), clock_ms=sim_clock, limits=PauseLimits())
+    decision = await judge.judge(_job(), _refusal())
+    assert decision is not None
+    assert decision.decision.state.ledger_at_since == await breaker.ledger("fleet", entry.scope) == HOUR_MS
+
+
+@pytest.mark.parametrize("second_replica", [False, True])
+async def test_the_hold_and_release_notices_go_out_once_each(fleet: FleetRedis, sim_clock: SimClock, second_replica: bool) -> None:
+    breaker = FleetBreaker(fleet)
+    sent: list[dict] = []
+
+    async def send(doc: dict) -> bool:
+        sent.append(doc)
+        return True
+
+    keepers = [HoldKeeper(fleet, breaker, sender=send, clock_ms=sim_clock, logger=logging.getLogger("t"))]
+    if second_replica:
+        keepers.append(HoldKeeper(fleet, breaker, sender=send, clock_ms=sim_clock))
+    entry = await _hold(breaker, keepers[0], sim_clock)
+    for keeper in keepers * 2:
+        sim_clock.advance(10_000)
+        await keeper.tick()
+    assert [d["type"] for d in sent] == ["INDEXING_PROVIDER_ON_HOLD"]
+    doc = sent[0]
+    assert doc["payload"]["providerLabel"] == "ChatX:m@host" and doc["payload"]["sizeClass"] == "large"
+    assert PK not in str(doc), "the provider key digest never leaves the service"
+    assert doc["recipientRoles"] == ["admin"] and doc["orgId"] == "org-1"
+
+    await fleet.client().delete(breaker.hold_key(PK, CLS))
+    for keeper in keepers * 2:
+        await keeper.tick()
+    assert [d["type"] for d in sent] == ["INDEXING_PROVIDER_ON_HOLD", "INDEXING_PROVIDER_HOLD_RELEASED"]
+    assert entry.episode == sent[1]["payload"]["episodeId"]
+
+
+async def test_no_release_notice_without_a_hold_notice(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    breaker = FleetBreaker(fleet)
+    sent: list[dict] = []
+
+    async def refuse(doc: dict) -> bool:
+        return False  # the broker does not take it
+
+    async def take(doc: dict) -> bool:
+        sent.append(doc)
+        return True
+
+    entry = await _hold(breaker, HoldKeeper(fleet, breaker, clock_ms=sim_clock), sim_clock)
+    await HoldKeeper(fleet, breaker, sender=refuse, clock_ms=sim_clock).tick()  # the claim is freed
+    await fleet.client().delete(breaker.hold_key(PK, CLS))
+    await HoldKeeper(fleet, breaker, sender=take, clock_ms=sim_clock).tick()
+    assert sent == [], "the hold notice was never sent, so no release notice is"
+    assert entry.episode
+
+
+async def test_only_the_leader_ticks_and_a_failing_tick_does_not_stop_the_loop(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    """The recovery leader ticks every interval; a replica without the lease does not; a tick that raises is logged and retried."""
+    import asyncio
+
+    from app.services.llm_gateway.fleet_hold import run_hold_leader
+
+    breaker = FleetBreaker(fleet)
+    ticks: list[str] = []
+
+    class Counting(HoldKeeper):
+        async def tick(self) -> int:
+            ticks.append("tick")
+            if len(ticks) == 2:
+                raise RuntimeError("redis hiccup")
+            return 0
+
+    keeper = Counting(fleet, breaker, clock_ms=sim_clock)
+    leader = {"yes": False}
+
+    async def is_leader() -> bool:
+        return leader["yes"]
+
+    task = asyncio.create_task(run_hold_leader(keeper, is_leader, logger=logging.getLogger("t"), interval_s=0.01))
+    await asyncio.sleep(0.05)
+    assert ticks == [], "a replica without the lease never ticks"
+    leader["yes"] = True
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(ticks) >= 3, "the loop goes on after a tick raised"
+
+
+async def test_a_record_deferral_does_not_count_an_operator_hold(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    """The record's rate-limit allowance (24 h) excludes the time the fleet was on hold, through the deferral ledger."""
+    from app.modules.indexing import deferral_ledger
+    from app.modules.indexing.rate_limit_deferral import plan_deferral
+
+    breaker = FleetBreaker(fleet)
+    since = sim_clock()
+    assert await deferral_ledger.held_ms("rec-1", since) == 0  # the first wait of a run: nothing held yet
+    await breaker.start_ledger("fleet")
+    sim_clock.advance(30 * HOUR_MS)  # a 30 h operator hold, the leader ticking
+    await breaker.advance_ledger("fleet", held=True)
+    held = await deferral_ledger.held_ms("rec-1", since)
+    assert held == 30 * HOUR_MS
+    now = sim_clock()
+    record = {"rateLimitedSince": since, "retryNotBefore": now - 1000}
+    without = plan_deferral(record, 60.0, now_ms=now, max_total_seconds=24 * 3600)
+    with_hold = plan_deferral(record, 60.0, now_ms=now, max_total_seconds=24 * 3600, held_ms=held)
+    assert without.give_up is True and with_hold.give_up is False
+    # a new run of waits starts a new ledger
+    assert await deferral_ledger.held_ms("rec-1", now + 5) == 0
+    await deferral_ledger.clear("rec-1")
