@@ -37,7 +37,7 @@ RECORD_PROPERTIES = frozenset({
     "embedKey", "embedRev", "embedSeconds", "embedStartedMs", "embedTotal", "embedUncounted", "embedVrid",
     "entityExtractionStatus", "entityExtractionStrategy", "entityExtractorVersion", "externalGroupId",
     "externalParentId", "externalRecordId", "externalRevisionId", "externalRootGroupId", "extractionDeferred",
-    "extractionStatus", "hasIndexedCopy", "hideWeburl", "indexingStatus", "isArchived", "isDeleted",
+    "extractionStatus", "hasIndexedCopy", "hideWeburl", "indexingNote", "indexingStatus", "isArchived", "isDeleted",
     "isDependentNode", "isDirty", "isInternal", "isLatestVersion", "isPlaceholder", "isShared",
     "isVLMOcrProcessed", "lastEntityExtractionTimestamp", "lastExtractionTimestamp", "lastIndexTimestamp",
     "lastRepublishedAt", "lastSyncTimestamp", "md5Checksum", "mimeType", "orgId", "origin", "parentNodeId",
@@ -50,6 +50,10 @@ RECORD_PROPERTIES = frozenset({
     "summaryDocumentId", "trashedExternalRecordId", "updatedAtTimestamp", "uploadSourceCreatedAtTimestamp",
     "uploadSourceLastModifiedTimestamp", "uploadSourceTimestampOrigin", "uploadedBy", "version",
     "virtualRecordId", "webUrl",
+    # Record processing diagnostics: facts about how a record's processing went, not pipeline state. This release
+    # only accepts them and writes none; the schema carries them first so a process on the older schema never
+    # meets a key it rejects once a later release writes them.
+    "failedAt", "firstQueuedAt", "indexingAttempts", "pageCount",
 })
 
 

@@ -17,12 +17,14 @@ from app.services.graph_db.common.team_grant_role import (
 )
 from app.services.graph_db.interface.graph_db_provider import (
     STRICT_SCOPE_FILTER_KEY,
+    AccessibleContainers,
     _distinct_connector_types,
+    _unsupported_container_filters,
     requested_scope_ids,
 )
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
-from app.services.graph_db.postgres.identity import _soft
+from app.services.graph_db.postgres.identity import _AGENT_CAN, _soft
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.taxonomy import own_record_labels
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -36,7 +38,6 @@ _NO_ACCESS: dict[str, Any] = {"grantee_ids": [], "gated_app_ids": [], "by_connec
 
 
 _ROLE_RANK = {"OWNER": 4, "WRITER": 3, "READER": 2}
-_AGENT_CAN = {"can_edit": ("OWNER", "WRITER", "ORGANIZER"), "can_delete": ("OWNER",), "can_share": ("OWNER", "ORGANIZER")}
 _KB_TYPE = Connectors.KNOWLEDGE_BASE.value
 _CTX_RANK = {"OWNER": 6, "ADMIN": 5, "EDITOR": 4, "WRITER": 3, "READER": 1}
 _DETAIL_RANK = {"OWNER": 3, "WRITER": 2, "READER": 1}      # the roles a record's access details name
@@ -292,6 +293,14 @@ class PermissionsMixin(PgBase):
         if record:
             await self.delete_edge(user_id, "users", record.id, "records", "permission", transaction)
 
+    async def remove_user_access_to_connector(self, connector_id: str, user_id: str, transaction: str | None = None) -> int:
+        """The user's own grants on the connector's records and record groups, and their memberships of its user groups, go; grants held by a
+        group, a team or the organization stay. Returns how many edges went."""
+        return int(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.remove_user_access_to_connector */ WITH d AS (DELETE FROM graph.edges e
+            USING graph.nodes n WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = $2
+              AND e.to_coll IN ('records', 'recordGroups', 'groups') AND n.org_id = $1 AND n.coll = e.to_coll AND n.id = e.to_id
+              AND n.doc->>'connectorId' = $3 RETURNING 1) SELECT count(*) FROM d""", current_org_id(), user_id, connector_id), transaction, write=True) or 0)
+
     # ---- teams ---------------------------------------------------------------------------------------------------
     async def batch_update_team_member_roles(self, team_id: str, user_roles: list[dict[str, str]], timestamp: int, transaction: str | None = None) -> list[dict]:
         """Sets the role on each listed user's edge to the team (a user with no edge is skipped); the updated edges come back. A user named twice gets the last role."""
@@ -329,7 +338,7 @@ class PermissionsMixin(PgBase):
         return await self._q(go, transaction)
 
     # ---- agents, apps and the knowledge hub ----------------------------------------------------------------------
-    async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str) -> dict | None:
+    async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None) -> dict | None:
         """How the user reaches the agent: their own grant, else their organization's; None for neither, for a deleted agent, and for another org."""
         if org_id != current_org_id():
             return None
@@ -339,7 +348,7 @@ class PermissionsMixin(PgBase):
                   AND ((p.from_coll = 'users' AND p.from_id = $3 AND p.doc->>'type' = 'USER') OR (p.from_coll = 'organizations' AND p.from_id = $1 AND p.doc->>'type' = 'ORG'))
                 JOIN graph.nodes g ON g.org_id = $1 AND g.coll = p.from_coll AND g.id = p.from_id
                 WHERE a.org_id = $1 AND a.coll = 'agentInstances' AND a.id = $2 AND a.doc->>'isDeleted' IS DISTINCT FROM 'true'
-                ORDER BY (p.doc->>'type' = 'USER') DESC LIMIT 1""", org_id, agent_id, user_id), None)
+                ORDER BY (p.doc->>'type' = 'USER') DESC LIMIT 1""", org_id, agent_id, user_id), transaction)
         except Exception as e:
             self.logger.error("Failed to check agent permission: %s", e)
             return None
@@ -362,6 +371,15 @@ class PermissionsMixin(PgBase):
             WHERE a.doc->>'orgId' = $1 AND a.doc->>'isHidden' IS DISTINCT FROM 'true'""", org_id, user_key), transaction)
         return [r["id"] for r in rows]
 
+    async def get_hidden_app_ids(self, app_ids: list[str], transaction: str | None = None) -> list[str]:
+        """The Apps of this org among ``app_ids`` whose ``isHidden`` is true (a project's own file collection), as Neo4j and ArangoDB answer."""
+        if not app_ids:
+            return []
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_hidden_app_ids */ SELECT id FROM graph.nodes
+            WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[]) AND doc->'isHidden' = 'true'::jsonb ORDER BY id""",
+                                                 current_org_id(), list(app_ids)), transaction)
+        return [r["id"] for r in rows]
+
     async def get_gated_apps(self, user_key: str, org_id: str, transaction: str | None = None) -> list[dict]:
         return await self.get_user_apps(user_key, transaction) if org_id == current_org_id() else []
 
@@ -375,6 +393,47 @@ class PermissionsMixin(PgBase):
             gate = await self._gate(tx, org, user_key)
             return {"grantee_ids": list(dict.fromkeys(gate[0])), "gated_app_ids": list(dict.fromkeys(gate[1]))} if gate else {"grantee_ids": [], "gated_app_ids": []}
         return await self._q(go, transaction)
+
+    async def get_accessible_containers(self, user_id: str, org_id: str, filters: dict[str, list[str]] | None = None,
+                                        time_range: dict[str, int] | None = None) -> AccessibleContainers:
+        """The Apps the permission gate lets the user reach, and nothing trusted, as Neo4j's and ArangoDB's: a search scopes by them and the verifier (the batch access
+        check on the hits) decides every record, so the search never enumerates what the user may read (the record-id path is O(org): past 20 s at 1M records).
+        See the interface for the contract. A request for another org reaches nothing."""
+        unsupported = _unsupported_container_filters(filters, time_range)
+        if unsupported:
+            return AccessibleContainers(fallback_reason=unsupported)
+        scope = requested_scope_ids(filters)
+        scope_set = frozenset(scope) if scope is not None else None
+        if scope_set is not None and not scope_set:
+            return AccessibleContainers(scope_connector_ids=scope_set)
+        # a project-scoped chat that selected nothing reaches nothing, as on the record-id path
+        if scope_set is None and bool((filters or {}).get(STRICT_SCOPE_FILTER_KEY)):
+            return AccessibleContainers(scope_connector_ids=None)
+        if not user_id:
+            return AccessibleContainers(fallback_reason="no_user_or_client")
+        org = current_org_id()
+        if org_id != org:
+            return AccessibleContainers(scope_connector_ids=scope_set)
+        try:
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+            user_key = (user or {}).get("id") or (user or {}).get("_key")
+            if not user_key:
+                return AccessibleContainers(fallback_reason="user_not_found")
+            access = await self.get_knowledge_hub_access_context_v2(user_key, org)
+            # unscoped, a project's hidden Collection stays out of search, as on the record-id path; a scoped request reaches one only by naming it
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.accessible_container_apps */ SELECT a.id,
+                  coalesce((a.doc->>'vectorMembershipBackfilled')::boolean, false) AND NOT coalesce((a.doc->>'vectorMembershipBackfillExhausted')::boolean, false) AS ready
+                FROM graph.nodes a WHERE a.org_id = $1 AND a.coll = 'apps' AND a.id = ANY($2::text[])
+                  AND ($3::text[] IS NULL OR a.id = ANY($3::text[])) AND (NOT coalesce((a.doc->>'isHidden')::boolean, false) OR $3::text[] IS NOT NULL)""",
+                                                     org, list(access["gated_app_ids"]), sorted(scope_set) if scope_set is not None else None), None)
+        except Exception as exc:
+            self.logger.error("get_accessible_containers: failed — %s", exc)
+            return AccessibleContainers(fallback_reason="query_failed")
+        # points of an App whose membership arrays were never written carry no connectorIds, so a container filter cannot see them at all
+        unready = sorted(r["id"] for r in rows if not r["ready"])
+        if unready:
+            return AccessibleContainers(fallback_reason=f"membership_not_backfilled:{unready[0]}")
+        return AccessibleContainers(app_ids=frozenset(r["id"] for r in rows), scope_connector_ids=scope_set)
 
     async def get_accessible_connector_types(self, user_id: str, org_id: str) -> list[str]:
         """Types of the apps the user passes the gate for. A failed read widens the search (an empty list), it never narrows it."""

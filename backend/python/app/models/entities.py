@@ -346,6 +346,8 @@ class Record(BaseModel):
     source_timestamp_origin: str | None = Field(default=None, description="Knowledge-base uploads only: what set the source timestamps (app.models.source_dates.SourceTimestampOrigin)")
     processing_started_at: int | None = Field(default=None, description="Epoch ms when parse/index processing began for the current attempt; null when idle")
     queued_at: int | None = Field(default=None, description="Epoch ms the platform last put this record in line for indexing. Platform-owned, unlike updated_at, which connectors may fill with source-system time; the stranded-record sweep ages on it")
+    first_queued_at: int | None = Field(default=None, description="Epoch ms the record first went in line for its current processing run. Internal: never returned by the API; set by the writer, not read back from the stored doc, so an entity round-trip does not write it")
+    indexing_attempts: int | None = Field(default=None, description="How many times processing has been attempted for the record. Internal: never returned by the API; set by the writer, not read back from the stored doc, so an entity round-trip does not write it")
 
     # Source information
     weburl: str | None = None
@@ -525,6 +527,10 @@ class Record(BaseModel):
         # key deletes the stored value, and most writers never set this field.
         if self.queued_at is not None:
             base["queuedAtTimestamp"] = self.queued_at
+        if self.first_queued_at is not None:
+            base["firstQueuedAt"] = self.first_queued_at
+        if self.indexing_attempts is not None:
+            base["indexingAttempts"] = self.indexing_attempts
         # Only written once set: a pod still on the old strict Arango schema
         # rejects these keys, even as null, during a rolling upgrade.
         delete_state = {

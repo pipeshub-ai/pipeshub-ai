@@ -5437,6 +5437,7 @@
       "noRecordMetadata": "이 항목에 대한 추가 레코드 메타데이터가 없습니다."
     },
     "indexingReasonAria": "인덱싱 실패 상세 정보",
+    "indexingNoteAria": "인덱싱 참고",
     "stageTrackLabel": "파이프라인",
     "stageParsed": "파싱됨",
     "stageSearchable": "검색 가능",

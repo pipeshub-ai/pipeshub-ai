@@ -1887,10 +1887,13 @@ export const navigateKnowledgeGraph =
         createdBefore,
         modifiedAfter,
         modifiedBefore,
+        cursor,
       } = req.query;
 
       const queryParams = new URLSearchParams();
       if (nodeId) queryParams.append('node_id', String(nodeId));
+      if (typeof cursor === 'string' && cursor !== '')
+        queryParams.append('cursor', cursor);
       if (page) queryParams.append('page', String(page));
       if (limit) queryParams.append('limit', String(limit));
       if (depth) queryParams.append('depth', String(depth));

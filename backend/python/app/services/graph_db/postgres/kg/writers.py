@@ -175,5 +175,13 @@ class KgWriter:
         """Rows other transactions left, by their ids."""
         return sum([await self.tx.fetchval("/* pipeshub:kg.w_changes_delete */ SELECT kg.w_changes_delete($1::bigint[], $2)", p, CODE_EPOCH) for p in _chunks(sorted(ids))])
 
+    async def counts_add(self, rows: list[tuple]) -> int:
+        """Folded counter rows: (app_sk, facet, class_id, kind, folder, record_type, origin, n)."""
+        return sum([await self.tx.fetchval("/* pipeshub:kg.w_counts_add */ SELECT kg.w_counts_add($1::bigint[], $2::smallint[], $3::bigint[], $4::smallint[], $5::boolean[], $6::text[], $7::text[], $8::bigint[])",
+                                           *[[r[i] for r in p] for i in range(8)]) for p in _chunks(rows)])
+
+    async def counts_delete(self, ids: list[int]) -> int:
+        return sum([await self.tx.fetchval("/* pipeshub:kg.w_counts_delete */ SELECT kg.w_counts_delete($1::bigint[])", p) for p in _chunks(sorted(ids))])
+
     async def projection_set(self, app_sk: int, *, epoch: int, mode: str, digest: str | None, cursor: str | None, verified_at: datetime | None) -> bool:
         return await self.tx.fetchval("/* pipeshub:kg.w_projection_set */ SELECT kg.w_projection_set($1, $2, $3, $4, $5, $6)", app_sk, epoch, mode, digest, cursor, verified_at)

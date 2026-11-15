@@ -5436,6 +5436,7 @@
       "noRecordMetadata": "No hay metadatos adicionales para este elemento."
     },
     "indexingReasonAria": "Detalles del error de indexación",
+    "indexingNoteAria": "Nota de indexación",
     "stageTrackLabel": "Canalización",
     "stageParsed": "Analizado",
     "stageSearchable": "Buscable",
