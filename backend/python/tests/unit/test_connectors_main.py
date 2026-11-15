@@ -389,10 +389,15 @@ class TestStartMessagingProducer:
         with (
             patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.connectors_main.MessagingUtils.create_producer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.connectors_main.MessagingFactory.create_producer", return_value=mock_producer),
+            patch("app.connectors_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_producer", return_value=mock_producer) as create_producer,
+            patch("app.connectors_main.RecordOrderingStore") as ordering_store_factory,
         ):
             await start_messaging_producer(mock_container)
 
+        assert create_producer.call_args.kwargs["record_ordering_store"] is (
+            ordering_store_factory.return_value
+        )
         mock_producer.initialize.assert_awaited_once()
         assert mock_container.messaging_producer is mock_producer
         mock_kafka_service.set_producer.assert_called_once_with(mock_producer)

@@ -76,6 +76,7 @@ from app.edition_services import (
 from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.record_ordering_store import RecordOrderingStore
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
@@ -462,11 +463,17 @@ async def start_messaging_producer(app_container: ConnectorAppContainer) -> None
         logger.info(f"🚀 Starting Messaging Producer (broker: {broker_type})...")
 
         producer_config = await MessagingUtils.create_producer_config(app_container)
+        redis_config = await MessagingUtils._get_redis_config(app_container)
+        record_ordering_store = RecordOrderingStore(
+            logger,
+            redis_config=redis_config,
+        )
 
         messaging_producer = MessagingFactory.create_producer(
             broker_type=broker_type,
             logger=logger,
-            config=producer_config
+            config=producer_config,
+            record_ordering_store=record_ordering_store,
         )
         await messaging_producer.initialize()
 

@@ -38,6 +38,10 @@ from app.services.messaging.config import (
     StreamMessage,
     messaging_env,
 )
+from app.services.messaging.record_ordering_store import (
+    RECORD_ORDER_BIT_FIELD,
+    RecordOrderingStore,
+)
 from app.services.messaging.lease import DEADLINE_LOSS_REASON, LeaseRenewer
 from app.services.messaging.redis_streams.indexing_consumer import (
     _BUSYGROUP_ERROR,
@@ -805,6 +809,220 @@ class TestStartProcessingTask:
 
 
 class TestProcessMessageWrapper:
+    @pytest.mark.asyncio
+    async def test_matching_record_bit_reaches_handler(self, consumer):
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+        ordering_store.defer_bit_if_mismatched.return_value = None
+        consumer.record_ordering_store = ordering_store
+        consumer._ack_message = AsyncMock()
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        handled = []
+
+        async def handler(message):
+            handled.append(message)
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
+
+        consumer.message_handler = handler
+        fields = _valid_fields(
+            event_type="newRecord",
+            payload={
+                "recordId": "r1",
+                RECORD_ORDER_BIT_FIELD: False,
+            },
+        )
+
+        result = await consumer._process_message_wrapper(
+            "stream-a", "1-0", fields
+        )
+
+        assert result is True
+        assert len(handled) == 1
+        ordering_store.defer_bit_if_mismatched.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_flips_ordering_bit_before_retry(self, consumer):
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+        ordering_store.defer_bit_if_mismatched.return_value = None
+
+        async def flip_failed_payload(payload, _failure_token):
+            payload[RECORD_ORDER_BIT_FIELD] = True
+            return True
+
+        ordering_store.flip_event_after_failure.side_effect = flip_failed_payload
+        consumer.record_ordering_store = ordering_store
+        consumer.retry_manager = AsyncMock()
+        consumer.retry_manager.get_count.return_value = 0
+        consumer._increment_retry_and_check = AsyncMock(return_value=(2, False))
+        consumer._requeue_message = AsyncMock()
+        consumer._ack_message = AsyncMock()
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+
+        async def failing_handler(_message):
+            raise RuntimeError("temporary processing failure")
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
+
+        consumer.message_handler = failing_handler
+        fields = _valid_fields(
+            event_type="newRecord",
+            payload={
+                "recordId": "r1",
+                RECORD_ORDER_BIT_FIELD: False,
+                "_retry_tracking_id": "stable-id",
+            },
+        )
+
+        await consumer._process_message_wrapper("stream-a", "1-0", fields)
+
+        ordering_store.flip_event_after_failure.assert_awaited_once_with(
+            {
+                "recordId": "r1",
+                RECORD_ORDER_BIT_FIELD: True,
+                "_retry_tracking_id": "stable-id",
+            },
+            "stable-id:2",
+        )
+        consumer._requeue_message.assert_awaited_once()
+        requeued_message = consumer._requeue_message.await_args.args[1]
+        assert requeued_message.payload[RECORD_ORDER_BIT_FIELD] is True
+
+    @pytest.mark.asyncio
+    async def test_stale_record_bit_is_requeued_without_failure_retry(self, consumer):
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+        ordering_store.defer_bit_if_mismatched.return_value = True
+        consumer.record_ordering_store = ordering_store
+        consumer.retry_manager = AsyncMock()
+        consumer._increment_retry_and_check = AsyncMock()
+        consumer._requeue_message = AsyncMock()
+        consumer._ack_message = AsyncMock()
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        fields = _valid_fields(
+            payload={
+                "recordId": "r1",
+                RECORD_ORDER_BIT_FIELD: False,
+            }
+        )
+
+        result = await consumer._process_message_wrapper("stream-a", "1-0", fields)
+
+        assert result is False
+        consumer._requeue_message.assert_awaited_once()
+        assert consumer._requeue_message.await_args.kwargs["retry_count"] == 0
+        deferred_message = consumer._requeue_message.await_args.args[1]
+        assert deferred_message.payload[RECORD_ORDER_BIT_FIELD] is True
+        consumer._ack_message.assert_awaited_once_with("stream-a", "1-0")
+        consumer._increment_retry_and_check.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ordering_lookup_failure_leaves_redis_entry_pending(self, consumer):
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+        ordering_store.defer_bit_if_mismatched.side_effect = RuntimeError("redis down")
+        consumer.record_ordering_store = ordering_store
+        consumer._pending_message_is_owned = AsyncMock(return_value=True)
+        consumer._ack_message = AsyncMock()
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.message_handler = AsyncMock()
+        fields = _valid_fields(payload={"recordId": "r1"})
+
+        result = await consumer._process_message_wrapper("stream-a", "1-0", fields)
+
+        assert result is False
+        consumer.message_handler.assert_not_awaited()
+        consumer._ack_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stale_event_requeue_failure_leaves_redis_entry_pending(self, consumer):
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+        ordering_store.defer_bit_if_mismatched.return_value = True
+        consumer.record_ordering_store = ordering_store
+        consumer._pending_message_is_owned = AsyncMock(return_value=True)
+        consumer._requeue_message = AsyncMock(side_effect=RuntimeError("broker down"))
+        consumer._ack_message = AsyncMock()
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        fields = _valid_fields(
+            payload={"recordId": "r1", RECORD_ORDER_BIT_FIELD: False}
+        )
+
+        result = await consumer._process_message_wrapper("stream-a", "1-0", fields)
+
+        assert result is False
+        consumer._requeue_message.assert_awaited_once()
+        consumer._ack_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_event_requeue_error_leaves_redis_entry_pending(self, consumer):
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+        ordering_store.defer_bit_if_mismatched.return_value = None
+        consumer.record_ordering_store = ordering_store
+        consumer.retry_manager = AsyncMock()
+        consumer.retry_manager.get_count.return_value = 0
+        consumer._increment_retry_and_check = AsyncMock(return_value=(1, False))
+        consumer._requeue_message = AsyncMock(side_effect=RuntimeError("broker down"))
+        consumer._ack_message = AsyncMock()
+        consumer._pending_message_is_owned = AsyncMock(return_value=True)
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+
+        async def failing_handler(_message):
+            raise RuntimeError("temporary processing failure")
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
+
+        consumer.message_handler = failing_handler
+        fields = _valid_fields(
+            payload={
+                "recordId": "r1",
+                RECORD_ORDER_BIT_FIELD: False,
+                "_retry_tracking_id": "stable-id",
+            }
+        )
+
+        result = await consumer._process_message_wrapper("stream-a", "1-0", fields)
+
+        assert result is False
+        ordering_store.flip_event_after_failure.assert_awaited_once()
+        consumer._requeue_message.assert_awaited_once()
+        consumer._ack_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_terminal_failure_does_not_flip_ordering_bit(self, consumer):
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+        ordering_store.defer_bit_if_mismatched.return_value = None
+        consumer.record_ordering_store = ordering_store
+        consumer.retry_manager = AsyncMock()
+        consumer._pending_message_is_owned = AsyncMock(return_value=True)
+        consumer._abandon_message = AsyncMock()
+        consumer._clear_retry_tracking = AsyncMock()
+        consumer._increment_retry_and_check = AsyncMock()
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+
+        async def invalid_handler(_message):
+            raise ValueError("invalid record")
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
+
+        consumer.message_handler = invalid_handler
+        fields = _valid_fields(
+            payload={
+                "recordId": "r1",
+                RECORD_ORDER_BIT_FIELD: False,
+            }
+        )
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.MessageErrorClassifier.classify_by_exception",
+            return_value="terminal",
+        ):
+            result = await consumer._process_message_wrapper("stream-a", "1-0", fields)
+
+        assert result is False
+        consumer._abandon_message.assert_awaited_once()
+        ordering_store.flip_event_after_failure.assert_not_awaited()
+        consumer._increment_retry_and_check.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_no_semaphores_returns_false(self, consumer):
         consumer.parsing_semaphore = None

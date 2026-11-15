@@ -17,7 +17,10 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
 )
+from app.services.messaging.lanes.interface import LaneConfig
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.record_ordering_producer import RecordOrderingProducer
+from app.services.messaging.record_ordering_store import RecordOrderingStore
 
 
 def _unwrap(producer):
@@ -62,6 +65,23 @@ def consumer_config():
 
 class TestCreateProducer:
     """MessagingFactory.create_producer()"""
+
+    def test_record_ordering_store_wraps_broker_producer(self, logger, producer_config):
+        ordering_store = MagicMock(spec=RecordOrderingStore)
+        producer = MessagingFactory.create_producer(
+            logger,
+            config=producer_config,
+            broker_type=MessageBrokerType.KAFKA,
+            lane_config=LaneConfig(lane_count=1),
+            record_ordering_store=ordering_store,
+        )
+
+        assert isinstance(producer, RecordOrderingProducer)
+        from app.services.messaging.kafka.producer.producer import (
+            KafkaMessagingProducer,
+        )
+
+        assert isinstance(producer.inner, KafkaMessagingProducer)
 
     def test_kafka_broker_returns_kafka_producer(self, logger, producer_config):
         producer = MessagingFactory.create_producer(

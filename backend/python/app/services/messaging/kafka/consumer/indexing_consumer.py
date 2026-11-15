@@ -51,6 +51,10 @@ from app.services.messaging.kafka.consumer.remembered import (
 )
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.lease import LeaseRenewer
+from app.services.messaging.record_ordering_store import (
+    RECORD_ORDER_BIT_FIELD,
+    RecordOrderingStore,
+)
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
     EnqueueResult,
@@ -199,6 +203,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         weight_provider: WeightProvider | None = None,
         disposition_sink: Optional[AbandonedMessageSink] = None,
         connector_off_filter: ConnectorOffFilter | None = None,
+        record_ordering_store: RecordOrderingStore | None = None,
     ) -> None:
         self.logger = logger
         self.consumer: AIOKafkaConsumer | None = None
@@ -213,6 +218,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # because their connector is off or gone -- see connector_off.py.
         self.connector_off_filter = connector_off_filter
         self.producer = producer
+        self.record_ordering_store = record_ordering_store
         self.concurrency_manager = concurrency_manager
         # When set, node-local parsing/indexing admission is delegated to the
         # ResourceGovernor's adaptive gates instead of the static semaphores
@@ -2174,7 +2180,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         return f"{message.topic}-{message.partition}-{message.offset}"
 
     async def _requeue_message(
-        self, topic: str, message: StreamMessage, stable_message_id: str, retry_count: int = 1
+        self,
+        topic: str,
+        message: StreamMessage,
+        stable_message_id: str,
+        retry_count: int = 1,
+        key: str | None = None,
     ) -> None:
         """Re-publish a failed message to the same topic for retry.
         
@@ -2204,19 +2215,28 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             backoff_seconds = _compute_retry_backoff_seconds(retry_count)
             payload["_retry_not_before"] = time.time() + backoff_seconds
 
-            await self._run_on_main_loop(
+            accepted = await self._run_on_main_loop(
                 self.producer.send_event(
                     topic=topic,
                     event_type=message.eventType,
                     payload=payload,
+                    key=key,
                 )
             )
+            if accepted is False:
+                raise RuntimeError(f"Producer refused to re-queue message to {topic}")
             self.logger.debug(
                 f"Re-queued {stable_message_id} with {backoff_seconds:.0f}s backoff (attempt {retry_count})"
             )
         except Exception as e:
             self.logger.error(f"Failed to re-queue message to {topic}: {e}")
             raise
+
+    @staticmethod
+    def _kafka_message_key(message: ConsumerRecord) -> str | None:
+        if message.key is None:
+            return None
+        return message.key.decode("utf-8")
 
     async def __abandon_message(
         self,
@@ -2326,7 +2346,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             else:
                 # RE-QUEUE: Publish back to same topic for retry
                 try:
-                    await self._requeue_message(message.topic, parsed_message, stable_message_id, retry_count=count)
+                    if self.record_ordering_store is not None:
+                        await self.record_ordering_store.flip_event_after_failure(
+                            parsed_message.payload,
+                            f"{stable_message_id}:{count}",
+                        )
+                    await self._requeue_message(
+                        message.topic,
+                        parsed_message,
+                        stable_message_id,
+                        retry_count=count,
+                        key=self._kafka_message_key(message),
+                    )
                     self.logger.info(
                         f"Re-queued {message_id} (tracking ID: {stable_message_id}) for retry (attempt {count}/"
                         f"{messaging_env.max_delivery_attempts})"
@@ -2466,6 +2497,42 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             return False
 
         stable_message_id = self._get_stable_message_id(message, parsed_message)
+
+        if self.record_ordering_store is not None:
+            try:
+                defer_bit = await self.record_ordering_store.defer_bit_if_mismatched(
+                    parsed_message.payload
+                )
+            except Exception:
+                self.logger.exception(
+                    "Could not check record ordering for %s; leaving it uncommitted",
+                    message_id,
+                )
+                await self.__resolve_offset(in_flight, done=False)
+                return False
+            if defer_bit is not None:
+                parsed_message.payload[RECORD_ORDER_BIT_FIELD] = defer_bit
+                try:
+                    await self._requeue_message(
+                        message.topic,
+                        parsed_message,
+                        stable_message_id,
+                        retry_count=0,
+                        key=self._kafka_message_key(message),
+                    )
+                except Exception:
+                    self.logger.exception(
+                        "Could not defer stale ordering event %s; leaving it uncommitted",
+                        message_id,
+                    )
+                    await self.__resolve_offset(in_flight, done=False)
+                    return False
+                await self.__settle_done(message, in_flight)
+                self.logger.debug(
+                    "Deferred %s because its record ordering bit was stale",
+                    message_id,
+                )
+                return False
 
         # Delivery-count backstop, the Kafka counterpart of the Redis
         # consumer's times_delivered check: the failure counter below is
@@ -2753,7 +2820,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if parsed_message is not None:
                 try:
                     await self._requeue_message(
-                        topic, parsed_message, stable_message_id, retry_count=0
+                        topic,
+                        parsed_message,
+                        stable_message_id,
+                        retry_count=0,
+                        key=self._kafka_message_key(message),
                     )
                 except Exception as requeue_error:
                     self.logger.error(
@@ -2839,5 +2910,3 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 distributed_leases.discard(pool)
                 if release_leases:
                     await self._release_distributed_slot(pool, owner)
-
-

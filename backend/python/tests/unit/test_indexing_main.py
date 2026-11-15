@@ -1041,10 +1041,11 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer) as create_producer,
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
+            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer) as create_consumer,
+            patch("app.indexing_main.RecordOrderingStore") as ordering_store_factory,
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
         ):
             consumers = await start_kafka_consumers(mock_container)
@@ -1053,6 +1054,9 @@ class TestStartKafkaConsumers:
         assert consumers[0][0] == "record"
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
+        ordering_store = ordering_store_factory.return_value
+        assert create_producer.call_args.kwargs["record_ordering_store"] is ordering_store
+        assert create_consumer.call_args.kwargs["record_ordering_store"] is ordering_store
 
     async def test_success_neo4j(self) -> None:
         """Startup under Neo4j is now ordinary.

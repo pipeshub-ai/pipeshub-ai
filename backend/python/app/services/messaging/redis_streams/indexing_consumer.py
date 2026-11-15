@@ -47,6 +47,10 @@ from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_ke
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.redis_streams.backlog import read_stream_backlog_detail
 from app.services.messaging.redis_streams.stream_read_planner import StreamReadPlanner
+from app.services.messaging.record_ordering_store import (
+    RECORD_ORDER_BIT_FIELD,
+    RecordOrderingStore,
+)
 from app.services.messaging.retry_manager import RetryManager
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
@@ -139,6 +143,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         disposition_sink: Optional[AbandonedMessageSink] = None,
         provider: "IRedisConnectionProvider | None" = None,
         connector_off_filter: ConnectorOffFilter | None = None,
+        record_ordering_store: RecordOrderingStore | None = None,
     ) -> None:
         self.logger = logger
         self.config = config
@@ -157,6 +162,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # because their connector is off or gone -- see connector_off.py.
         self.connector_off_filter = connector_off_filter
         self.producer = producer
+        self.record_ordering_store = record_ordering_store
         self.concurrency_manager = concurrency_manager
         # When set, node-local parsing/indexing admission is delegated to the
         # ResourceGovernor's adaptive gates instead of the static semaphores
@@ -2271,13 +2277,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             payload["_retry_tracking_id"] = stable_message_id
             payload["_retry_not_before"] = time.time() + compute_retry_backoff_seconds(retry_count)
 
-            await self._run_on_main_loop(
+            accepted = await self._run_on_main_loop(
                 self.producer.send_event(
                     topic=self._retry_topic(stream_name),
                     event_type=message.eventType,
                     payload=payload,
                 )
             )
+            if accepted is False:
+                raise RuntimeError(
+                    f"Producer refused to re-queue message to {stream_name}"
+                )
         except Exception as e:
             self.logger.error(f"Failed to re-queue message to {stream_name}: {e}")
             raise
@@ -2446,6 +2456,35 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             )
             return False
         record_claim_held = True
+
+        if self.record_ordering_store is not None:
+            try:
+                defer_bit = await self.record_ordering_store.defer_bit_if_mismatched(
+                    parsed_message.payload
+                )
+            except Exception:
+                self.logger.exception(
+                    "Could not check record ordering for %s; leaving it in PEL",
+                    message_id,
+                )
+                return False
+            if defer_bit is not None:
+                parsed_message.payload[RECORD_ORDER_BIT_FIELD] = defer_bit
+                try:
+                    await self._requeue_message(
+                        stream_name,
+                        parsed_message,
+                        stable_message_id,
+                        retry_count=0,
+                    )
+                    await self._ack_message(stream_name, message_id)
+                    acked = True
+                except Exception:
+                    self.logger.exception(
+                        "Could not defer stale ordering event %s; leaving it in PEL",
+                        message_id,
+                    )
+                return False
 
         # Route the active-pipeline permit by tier, from the record event's own
         # extension/mimeType. The permit is held for the record's whole
@@ -2775,6 +2814,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 else:
                     # RE-QUEUE: Publish back to same stream for retry, then ACK
                     try:
+                        if self.record_ordering_store is not None:
+                            await self.record_ordering_store.flip_event_after_failure(
+                                parsed_message.payload,
+                                f"{stable_message_id}:{failure_count}",
+                            )
                         await self._requeue_message(
                             stream_name, parsed_message, stable_message_id, retry_count=failure_count
                         )

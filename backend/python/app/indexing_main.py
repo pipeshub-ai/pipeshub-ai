@@ -58,6 +58,7 @@ from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.lanes.assignment import lane_assignments_in_use
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.record_ordering_store import RecordOrderingStore
 from app.services.messaging.utils import MessagingUtils
 from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
@@ -1367,6 +1368,10 @@ async def start_kafka_consumers(
         retry_manager = MessagingFactory.create_retry_manager(logger, redis_config)
         await retry_manager.initialize()
         logger.info("✅ RetryManager initialized for %s consumer", broker_type.value)
+        record_ordering_store = RecordOrderingStore(
+            logger,
+            redis_config=redis_config,
+        )
 
         if messaging_env.distributed_concurrency_enabled:
             concurrency_manager = DistributedConcurrencyManager(
@@ -1401,6 +1406,7 @@ async def start_kafka_consumers(
             logger=logger,
             config=producer_config,
             broker_type=broker_type,
+            record_ordering_store=record_ordering_store,
         )
         await retry_producer.initialize()
         logger.info("✅ Retry producer initialized for %s", broker_type.value)
@@ -1431,6 +1437,7 @@ async def start_kafka_consumers(
             backpressure_coordinator=get_default_backpressure_coordinator(),
             disposition_sink=record_event_handler,
             connector_off_filter=connector_off_filter,
+            record_ordering_store=record_ordering_store,
         )
         consumers.append(("record", record_kafka_consumer, retry_producer))
 

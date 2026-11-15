@@ -59,6 +59,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     FolderChangedDuringDelete,
 )
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.record_ordering_store import RecordOrderingStore
 from app.telemetry.modules.soft_delete_metrics import record_restored, record_soft_deleted
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.membership import record_group_id_from_edge
@@ -308,9 +309,15 @@ class DataSourceEntitiesProcessor:
         config = await MessagingUtils.create_producer_config_from_service(
             self.config_service, "connectors"
         )
+        redis_config = await self.config_service.get_redis_config()
+        record_ordering_store = RecordOrderingStore(
+            self.logger,
+            redis_config=redis_config,
+        )
         self.messaging_producer: IMessagingProducer = MessagingFactory.create_producer(
             logger=self.logger,
             config=config,
+            record_ordering_store=record_ordering_store,
         )
         await self.messaging_producer.initialize()
         if org_id:

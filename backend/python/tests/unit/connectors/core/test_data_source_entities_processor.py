@@ -3777,6 +3777,47 @@ class TestInitialize:
         assert proc.org_id == "my-org"
 
     @pytest.mark.asyncio
+    async def test_initialize_wires_record_ordering_store_into_producer(self):
+        proc = _make_processor()
+        redis_config = object()
+        proc.config_service.get_redis_config.return_value = redis_config
+        tx_store = _make_tx_store()
+        tx_store.get_all_orgs.return_value = [{"_key": "my-org", "id": "my-org"}]
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        ordering_store = MagicMock()
+        mock_producer = AsyncMock()
+
+        with (
+            patch(
+                "app.connectors.core.base.data_processor.data_source_entities_processor.MessagingFactory"
+            ) as mock_factory,
+            patch(
+                "app.connectors.core.base.data_processor.data_source_entities_processor.RecordOrderingStore",
+                return_value=ordering_store,
+            ) as ordering_store_factory,
+            patch(
+                "app.services.messaging.utils.MessagingUtils.create_producer_config_from_service",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+        ):
+            mock_factory.create_producer.return_value = mock_producer
+
+            await proc.initialize()
+
+        ordering_store_factory.assert_called_once_with(
+            proc.logger,
+            redis_config=redis_config,
+        )
+        mock_factory.create_producer.assert_called_once_with(
+            logger=proc.logger,
+            config={},
+            record_ordering_store=ordering_store,
+        )
+        mock_producer.initialize.assert_awaited_once()
+        assert proc.messaging_producer is mock_producer
+
+    @pytest.mark.asyncio
     async def test_initialize_no_orgs_warns_and_returns(self):
         """initialize() logs a warning and returns when no organizations found."""
         proc = _make_processor()

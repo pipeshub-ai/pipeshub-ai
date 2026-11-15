@@ -35,6 +35,10 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
     _compute_retry_backoff_seconds,
 )
+from app.services.messaging.record_ordering_store import (
+    RECORD_ORDER_BIT_FIELD,
+    RecordOrderingStore,
+)
 from app.services.messaging.lease import DEADLINE_LOSS_REASON, LeaseRenewer
 from app.services.resource_governor import Pool
 from app.services.resource_governor.models import ParseTier
@@ -56,12 +60,13 @@ def logger():
     return logging.getLogger("test_indexing_cov")
 
 
-def _make_message(topic="test-topic", partition=0, offset=0, value=None):
+def _make_message(topic="test-topic", partition=0, offset=0, value=None, key=None):
     msg = MagicMock()
     msg.topic = topic
     msg.partition = partition
     msg.offset = offset
     msg.value = value
+    msg.key = key
     return msg
 
 
@@ -310,6 +315,268 @@ class TestParseMessageAdditional:
 class TestProcessMessageWrapperExtended:
 
     @pytest.mark.asyncio
+    async def test_matching_record_bit_reaches_handler(self, logger, plain_config) -> None:
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+        ordering_store.defer_bit_if_mismatched.return_value = None
+        consumer = IndexingKafkaConsumer(
+            logger,
+            plain_config,
+            record_ordering_store=ordering_store,
+        )
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        handled: list[StreamMessage] = []
+
+        async def handler(message):
+            handled.append(message)
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
+
+        consumer.message_handler = handler
+        message = _make_message(
+            topic="record-events",
+            value=json.dumps(
+                {
+                    "eventType": "newRecord",
+                    "payload": {
+                        "recordId": "r1",
+                        RECORD_ORDER_BIT_FIELD: False,
+                    },
+                }
+            ).encode(),
+        )
+
+        result = await consumer._IndexingKafkaConsumer__process_message_wrapper(
+            message
+        )
+
+        assert result is True
+        assert len(handled) == 1
+        ordering_store.defer_bit_if_mismatched.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_flips_ordering_bit_before_retry(
+        self, logger, plain_config
+    ) -> None:
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+
+        async def flip_failed_payload(payload, _failure_token):
+            payload[RECORD_ORDER_BIT_FIELD] = True
+            return True
+
+        ordering_store.flip_event_after_failure.side_effect = flip_failed_payload
+        consumer = IndexingKafkaConsumer(
+            logger,
+            plain_config,
+            retry_manager=AsyncMock(),
+            producer=AsyncMock(),
+            record_ordering_store=ordering_store,
+        )
+        consumer._increment_retry_and_check = AsyncMock(return_value=(2, False))
+        consumer._requeue_message = AsyncMock()
+        consumer._IndexingKafkaConsumer__settle_done = AsyncMock()
+        message = _make_message(
+            topic="record-events",
+            value=b"",
+            key=b"connector-1",
+        )
+        parsed_message = StreamMessage(
+            eventType="newRecord",
+            payload={
+                "recordId": "r1",
+                RECORD_ORDER_BIT_FIELD: False,
+                "_retry_tracking_id": "stable-id",
+            },
+        )
+
+        await consumer._IndexingKafkaConsumer__commit_if_appropriate(
+            message,
+            parsed_message,
+            success=False,
+        )
+
+        ordering_store.flip_event_after_failure.assert_awaited_once_with(
+            parsed_message.payload, "stable-id:2"
+        )
+        assert parsed_message.payload[RECORD_ORDER_BIT_FIELD] is True
+        assert consumer._requeue_message.await_args.args[1] is parsed_message
+
+    @pytest.mark.asyncio
+    async def test_stale_record_bit_is_requeued_without_delivery_attempt(
+        self, logger, plain_config
+    ) -> None:
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+        ordering_store.defer_bit_if_mismatched.return_value = True
+        retry_manager = AsyncMock()
+        consumer = IndexingKafkaConsumer(
+            logger,
+            plain_config,
+            retry_manager=retry_manager,
+            producer=AsyncMock(),
+            record_ordering_store=ordering_store,
+        )
+        consumer._requeue_message = AsyncMock()
+        consumer._commit_offset = AsyncMock()
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        message = _make_message(
+            topic="record-events",
+            value=json.dumps(
+                {
+                    "eventType": "newRecord",
+                    "payload": {
+                        "recordId": "r1",
+                        RECORD_ORDER_BIT_FIELD: False,
+                    },
+                }
+            ).encode(),
+            key=b"connector-1",
+        )
+
+        result = await consumer._IndexingKafkaConsumer__process_message_wrapper(
+            message
+        )
+
+        assert result is False
+        consumer._requeue_message.assert_awaited_once()
+        assert consumer._requeue_message.await_args.kwargs["retry_count"] == 0
+        assert consumer._requeue_message.await_args.kwargs["key"] == "connector-1"
+        deferred_message = consumer._requeue_message.await_args.args[1]
+        assert deferred_message.payload[RECORD_ORDER_BIT_FIELD] is True
+        retry_manager.record_delivery.assert_not_awaited()
+        retry_manager.increment_and_check.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ordering_lookup_failure_leaves_kafka_offset_uncommitted(
+        self, logger, plain_config
+    ) -> None:
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+        ordering_store.defer_bit_if_mismatched.side_effect = RuntimeError("redis down")
+        consumer = IndexingKafkaConsumer(
+            logger,
+            plain_config,
+            producer=AsyncMock(),
+            record_ordering_store=ordering_store,
+        )
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer._IndexingKafkaConsumer__resolve_offset = AsyncMock()
+        consumer.message_handler = AsyncMock()
+        message = _make_message(
+            topic="record-events",
+            value=json.dumps(
+                {"eventType": "newRecord", "payload": {"recordId": "r1"}}
+            ).encode(),
+        )
+
+        result = await consumer._IndexingKafkaConsumer__process_message_wrapper(message)
+
+        assert result is False
+        consumer.message_handler.assert_not_awaited()
+        consumer._IndexingKafkaConsumer__resolve_offset.assert_awaited_once_with(
+            None, done=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_stale_event_requeue_failure_leaves_kafka_offset_uncommitted(
+        self, logger, plain_config
+    ) -> None:
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+        ordering_store.defer_bit_if_mismatched.return_value = True
+        consumer = IndexingKafkaConsumer(
+            logger,
+            plain_config,
+            producer=AsyncMock(),
+            record_ordering_store=ordering_store,
+        )
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer._requeue_message = AsyncMock(side_effect=RuntimeError("broker down"))
+        consumer._IndexingKafkaConsumer__resolve_offset = AsyncMock()
+        consumer._IndexingKafkaConsumer__settle_done = AsyncMock()
+        message = _make_message(
+            topic="record-events",
+            value=json.dumps(
+                {
+                    "eventType": "newRecord",
+                    "payload": {
+                        "recordId": "r1",
+                        RECORD_ORDER_BIT_FIELD: False,
+                    },
+                }
+            ).encode(),
+        )
+
+        result = await consumer._IndexingKafkaConsumer__process_message_wrapper(message)
+
+        assert result is False
+        consumer._IndexingKafkaConsumer__resolve_offset.assert_awaited_once_with(
+            None, done=False
+        )
+        consumer._IndexingKafkaConsumer__settle_done.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_event_requeue_error_does_not_commit_kafka_offset(
+        self, logger, plain_config
+    ) -> None:
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+        consumer = IndexingKafkaConsumer(
+            logger,
+            plain_config,
+            retry_manager=AsyncMock(),
+            producer=AsyncMock(),
+            record_ordering_store=ordering_store,
+        )
+        consumer._increment_retry_and_check = AsyncMock(return_value=(1, False))
+        consumer._requeue_message = AsyncMock(side_effect=RuntimeError("broker down"))
+        consumer._IndexingKafkaConsumer__settle_done = AsyncMock()
+        message = _make_message(topic="record-events", key=b"record-1")
+        parsed_message = StreamMessage(
+            eventType="newRecord",
+            payload={"recordId": "record-1", RECORD_ORDER_BIT_FIELD: False},
+        )
+
+        with pytest.raises(RuntimeError, match="broker down"):
+            await consumer._IndexingKafkaConsumer__commit_if_appropriate(
+                message,
+                parsed_message,
+                success=False,
+            )
+
+        ordering_store.flip_event_after_failure.assert_awaited_once()
+        consumer._requeue_message.assert_awaited_once()
+        consumer._IndexingKafkaConsumer__settle_done.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_terminal_failure_does_not_flip_ordering_bit(
+        self, logger, plain_config
+    ) -> None:
+        ordering_store = AsyncMock(spec=RecordOrderingStore)
+        consumer = IndexingKafkaConsumer(
+            logger,
+            plain_config,
+            retry_manager=AsyncMock(),
+            producer=AsyncMock(),
+            record_ordering_store=ordering_store,
+        )
+        consumer._IndexingKafkaConsumer__abandon_message = AsyncMock()
+        consumer._IndexingKafkaConsumer__settle_done = AsyncMock()
+        message = _make_message(topic="record-events", key=b"record-1")
+        parsed_message = StreamMessage(
+            eventType="newRecord",
+            payload={"recordId": "record-1", RECORD_ORDER_BIT_FIELD: False},
+        )
+
+        await consumer._IndexingKafkaConsumer__commit_if_appropriate(
+            message,
+            parsed_message,
+            success=False,
+            is_terminal_error=True,
+        )
+
+        ordering_store.flip_event_after_failure.assert_not_awaited()
+        consumer._IndexingKafkaConsumer__settle_done.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_delivery_backstop_abandons_a_message_that_keeps_coming_back(
         self, logger, plain_config
     ) -> None:
@@ -424,6 +691,12 @@ class TestRetryDelayBeforeSemaphore:
         assert _compute_retry_backoff_seconds(3) == pytest.approx(240.0)
         assert _compute_retry_backoff_seconds(10) == pytest.approx(300.0)
 
+    def test_kafka_message_key_decodes_original_key(self, logger, plain_config):
+        consumer = IndexingKafkaConsumer(logger, plain_config)
+        message = _make_message(key=b"original-key")
+
+        assert consumer._kafka_message_key(message) == "original-key"
+
     @pytest.mark.asyncio
     async def test_requeue_message_stamps_not_before(self, logger, plain_config):
         """_requeue_message stamps an absolute _retry_not_before sized by retry_count."""
@@ -433,10 +706,17 @@ class TestRetryDelayBeforeSemaphore:
         message = StreamMessage(eventType="newRecord", payload={"recordId": "r1"})
         before = time.time()
 
-        await consumer._requeue_message("record-events", message, "stable-id", retry_count=2)
+        await consumer._requeue_message(
+            "record-events",
+            message,
+            "stable-id",
+            retry_count=2,
+            key="original-key",
+        )
 
         consumer.producer.send_event.assert_awaited_once()
         sent_payload = consumer.producer.send_event.await_args.kwargs["payload"]
+        assert consumer.producer.send_event.await_args.kwargs["key"] == "original-key"
         assert sent_payload["_retry_tracking_id"] == "stable-id"
         # retry_count=2 -> ~60s backoff
         assert before + 59.0 <= sent_payload["_retry_not_before"] <= before + 61.0
@@ -725,12 +1005,13 @@ def consumer(logger_fullcov, plain_config):
     return IndexingKafkaConsumer(logger_fullcov, plain_config)
 
 
-def _make_message(topic="test-topic", partition=0, offset=0, value=None):
+def _make_message(topic="test-topic", partition=0, offset=0, value=None, key=None):
     msg = MagicMock()
     msg.topic = topic
     msg.partition = partition
     msg.offset = offset
     msg.value = value
+    msg.key = key
     return msg
 
 

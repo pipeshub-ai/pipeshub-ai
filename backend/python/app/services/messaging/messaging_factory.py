@@ -37,6 +37,8 @@ from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
 )
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
+from app.services.messaging.record_ordering_producer import RecordOrderingProducer
+from app.services.messaging.record_ordering_store import RecordOrderingStore
 from app.services.distributed.interface import (
     IDistributedLeaseManager,
     IRetryTracker,
@@ -202,12 +204,15 @@ class MessagingFactory:
         config: KafkaProducerConfig | RedisStreamsConfig | None = None,
         broker_type: MessageBrokerType | None = None,
         lane_config: LaneConfig | None = None,
+        record_ordering_store: RecordOrderingStore | None = None,
     ) -> IMessagingProducer:
         """Create a messaging producer based on broker type.
 
         Args:
             lane_config: Optional lane routing config; defaults to the
                 env-driven one. Laning is off unless ``lane_count > 1``.
+            record_ordering_store: Optional Redis-backed state used to add
+                ordering bits to record-events messages.
         """
         if broker_type is None:
             broker_type = get_message_broker_type()
@@ -232,19 +237,24 @@ class MessagingFactory:
                 )
             producer = RedisStreamsProducer(logger, config)
 
-        # Wrapping here is what routes all twelve existing publish sites
-        # without editing any of them -- including the two that publish with
-        # no key at all. With laning off the producer is returned unwrapped,
-        # so the publish path stays exactly what it is today.
+        if record_ordering_store is not None:
+            producer = RecordOrderingProducer(
+                logger,
+                producer,
+                record_ordering_store,
+            )
+
+        # Wrapping here routes existing publish sites without requiring each
+        # caller to know about lane assignment.
         lane_config = lane_config or lane_config_from_env()
-        if not lane_config.enabled:
-            return producer
-        return LaneAwareProducer(
-            logger,
-            producer,
-            _build_producer_lane_router(logger, lane_config, broker_type, config),
-            lane_config,
-        )
+        if lane_config.enabled:
+            producer = LaneAwareProducer(
+                logger,
+                producer,
+                _build_producer_lane_router(logger, lane_config, broker_type, config),
+                lane_config,
+            )
+        return producer
 
     @staticmethod
     def create_consumer(
@@ -262,6 +272,7 @@ class MessagingFactory:
         weight_provider: WeightProvider | None = None,
         disposition_sink: "AbandonedMessageSink | None" = None,
         connector_off_filter: "ConnectorOffFilter | None" = None,
+        record_ordering_store: RecordOrderingStore | None = None,
     ) -> IMessagingConsumer:
         """Create a messaging consumer based on broker type.
 
@@ -332,6 +343,7 @@ class MessagingFactory:
                     weight_provider=weight_provider,
                     disposition_sink=disposition_sink,
                     connector_off_filter=connector_off_filter,
+                    record_ordering_store=record_ordering_store,
                 )
             return KafkaMessagingConsumer(logger, config, retry_manager)
         else:
@@ -355,5 +367,6 @@ class MessagingFactory:
                     weight_provider=weight_provider,
                     disposition_sink=disposition_sink,
                     connector_off_filter=connector_off_filter,
+                    record_ordering_store=record_ordering_store,
                 )
             return RedisStreamsConsumer(logger, config, retry_manager)
