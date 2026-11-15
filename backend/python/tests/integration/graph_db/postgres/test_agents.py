@@ -352,3 +352,25 @@ async def test_an_agent_is_deleted_only_by_its_owner_and_the_delete_is_soft(w: W
     assert "mine" not in [a["_key"] for a in await p.get_all_agents("boss", w.org)]
     assert sorted(a["_key"] for a in await p.get_all_agents("boss", w.org, is_deleted=True)) == ["gone", "mine"]
     assert await p.delete_agent("mine", "boss", w.org) is False                                      # already deleted
+
+
+async def test_an_agents_permission_check_reads_through_the_callers_transaction(w: World) -> None:
+    """A grant written earlier in the caller's transaction counts for an edit in it; one removed in it no longer allows a delete."""
+    await listing_world(w)
+    p = w.p
+    t = await p.begin_transaction([], [])
+    try:
+        assert await p.check_agent_permission("private", "boss", w.org, transaction=t) is None
+        await p.batch_create_edges([{"from_collection": "users", "from_id": "boss", "to_collection": "agentInstances", "to_id": "private", "type": "USER", "role": "OWNER"}],
+                                   "permission", transaction=t)
+        assert (await p.check_agent_permission("private", "boss", w.org, transaction=t))["user_role"] == "OWNER"
+        assert await p.check_agent_permission("private", "boss", w.org) is None                     # outside it, not yet
+        assert await p.update_agent("private", {"name": "Renamed"}, "boss", w.org, transaction=t) is True
+        assert await p.delete_edge("boss", "users", "mine", "agentInstances", "permission", transaction=t)
+        assert await p.check_agent_permission("mine", "boss", w.org, transaction=t) is None
+        assert await p.delete_agent("mine", "boss", w.org, transaction=t) is False
+        assert (await p.check_agent_permission("mine", "boss", w.org))["user_role"] == "OWNER"         # outside it, still there
+    finally:
+        await p.rollback_transaction(t)
+    assert (await p.get_document("private", "agentInstances"))["name"] == "Ann private" and not (await p.get_document("mine", "agentInstances")).get("isDeleted")
+
