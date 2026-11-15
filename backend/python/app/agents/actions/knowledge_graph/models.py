@@ -53,8 +53,12 @@ class PaginationInfo(BaseModel):
     page: int
     limit: int
     total: int
+    # `total` is a lower bound: the listing stopped counting at a cap.
+    total_capped: bool = False
     has_next: bool
     has_prev: bool
+    # Pass back as `cursor` for the next page; None when there is none, or nothing could sign one.
+    next_cursor: str | None = None
 
 
 class NavigationView(BaseModel):

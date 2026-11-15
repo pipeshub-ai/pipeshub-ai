@@ -255,7 +255,7 @@ def render_navigation_view_with_ids(
         if pag:
             shown_start = (pag.page - 1) * pag.limit + 1
             shown_end = shown_start + len(view.rows) - 1
-            total_label = f" of {pag.total}" if pag.total > 0 else ""
+            total_label = f" of {'at least ' if pag.total_capped else ''}{pag.total}" if pag.total > 0 else ""
             lines.append(f"\nChildren {shown_start}-{shown_end}{total_label}:")
         else:
             lines.append("\nChildren:")
@@ -308,11 +308,12 @@ def render_navigation_view_with_ids(
         hints.append(
             f'navigate(node_id="{_short(parent.id, shortener)}") to see siblings'
         )
-    if pag and pag.has_next and view.current:
-        hints.append(
-            f'navigate(node_id="{_short(view.current.id, shortener)}", page={pag.page + 1}) for more'
-        )
-    if pag and pag.has_prev and view.current and page > 2:
+    if pag and pag.has_next:
+        # The cursor resumes where this page ended, at any depth; page numbers stop at 50.
+        at = f'node_id="{_short(view.current.id, shortener)}", ' if view.current else ""
+        more = f'cursor="{pag.next_cursor}"' if pag.next_cursor else f"page={pag.page + 1}"
+        hints.append(f"navigate({at}{more}) for more")
+    if pag and pag.has_prev and view.current and page > 2 and not pag.next_cursor:
         hints.append(
             f'navigate(node_id="{_short(view.current.id, shortener)}", page={pag.page - 1}) to go back'
         )
