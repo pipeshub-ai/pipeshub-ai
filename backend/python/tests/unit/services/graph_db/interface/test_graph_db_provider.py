@@ -567,6 +567,12 @@ class TestAbstractMethodInventory:
         "delete_all_edges_for_node",
         "get_template",
         "clone_agent_template",
+        "get_all_agent_templates",
+        "update_agent_template",
+        "delete_agent_template",
+        "get_all_agents",
+        "update_agent",
+        "delete_agent",
     ]
 
     def test_all_expected_methods_are_abstract(self):
