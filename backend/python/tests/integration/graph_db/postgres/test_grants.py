@@ -303,6 +303,17 @@ async def test_the_apps_a_user_holds_through_a_grant_or_a_team_and_no_other(w: W
     assert sorted(await w.p.get_user_permission_app_ids("m1", w.org)) == ["direct", "viaOtherTeam"]        # a removed member loses the team's apps, not their own
 
 
+async def test_the_hidden_apps_are_the_asked_ones_flagged_hidden_in_this_org(w: World) -> None:
+    await w.nodes("apps", {"_key": "shown", "type": "KB"}, {"_key": "projectFiles", "type": "KB", "isHidden": True},
+                  {"_key": "flaggedOff", "type": "KB", "isHidden": False})
+    p = w.p
+    assert await p.get_hidden_app_ids(["shown", "projectFiles", "flaggedOff", "missing"]) == ["projectFiles"]
+    assert await p.get_hidden_app_ids(["shown"]) == []                  # only the asked ones
+    assert await p.get_hidden_app_ids([]) == []
+    with in_org(_org()):
+        assert await p.get_hidden_app_ids(["projectFiles"]) == []       # another org's app is not this org's
+
+
 async def test_the_gate_and_the_connector_types_come_from_the_apps_a_user_passes_and_widen_when_unreadable(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await w.nodes("users", {"_key": "u", "userId": "uid-u"}, {"_key": "other", "userId": "uid-other"})
     await w.nodes("apps", {"_key": "slack", "type": "SLACK", "orgId": w.org}, {"_key": "jira", "type": "JIRA", "orgId": w.org})

@@ -362,6 +362,15 @@ class PermissionsMixin(PgBase):
             WHERE a.doc->>'orgId' = $1 AND a.doc->>'isHidden' IS DISTINCT FROM 'true'""", org_id, user_key), transaction)
         return [r["id"] for r in rows]
 
+    async def get_hidden_app_ids(self, app_ids: list[str], transaction: str | None = None) -> list[str]:
+        """The Apps of this org among ``app_ids`` whose ``isHidden`` is true (a project's own file collection), as Neo4j and ArangoDB answer."""
+        if not app_ids:
+            return []
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_hidden_app_ids */ SELECT id FROM graph.nodes
+            WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[]) AND doc->'isHidden' = 'true'::jsonb ORDER BY id""",
+                                                 current_org_id(), list(app_ids)), transaction)
+        return [r["id"] for r in rows]
+
     async def get_gated_apps(self, user_key: str, org_id: str, transaction: str | None = None) -> list[dict]:
         return await self.get_user_apps(user_key, transaction) if org_id == current_org_id() else []
 
