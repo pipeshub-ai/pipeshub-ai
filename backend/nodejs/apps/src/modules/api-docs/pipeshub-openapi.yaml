@@ -5671,6 +5671,10 @@ components:
                   knowledge base that has not been processed yet.
               folders:
                 type: array
+                maxItems: 100
+                description: |
+                  The knowledge base's folders, at most 100, the first by id. When `foldersTruncated` is true
+                  it has more; browse the knowledge base to page through them all.
                 items:
                   type: object
                   additionalProperties: false
@@ -5687,6 +5691,11 @@ components:
                       format: int64
                     path:
                       type: string
+              foldersTruncated:
+                type: boolean
+                description: |
+                  True when the knowledge base has more than the 100 folders `folders` holds. Servers that do not
+                  cap the list leave it out.
         pagination:
           type: object
           additionalProperties: false
@@ -6505,6 +6514,16 @@ components:
             reason:
               type: string
               nullable: true
+            indexingNote:
+              type: string
+              nullable: true
+              description: |
+                A note on how a COMPLETED record was indexed. The record completed
+                successfully, but the note can say that some of its content was
+                left out of the index: for example, that only the first and last
+                part of a large text file is indexed. Unlike `reason`, it never
+                reports a failure or a skipped stage. Absent or null when there is
+                nothing to note.
             isDeleted:
               type: boolean
             isArchived:
@@ -7237,15 +7256,40 @@ components:
       properties:
         page:
           type: integer
+          nullable: true
+          description: >-
+            The page number asked for. Null on a page reached by `cursor`: such a
+            page has a position (`start_index`), not a number.
         limit:
           type: integer
+        start_index:
+          type: integer
+          nullable: true
+          description: >-
+            1-based position of the page's first row in the listing. Null when
+            the listing does not report it.
         total:
           type: integer
-          description: Total children of the current node, ignoring pagination.
+          description: >-
+            Total children of the current node, ignoring pagination. A lower
+            bound when `total_capped` is `true`.
+        total_capped:
+          type: boolean
+          description: >-
+            `true` when the listing stopped counting at a cap, so `total` is a
+            lower bound and more children exist. Page with `has_next` and
+            `next_cursor`, not with the total.
         has_next:
           type: boolean
         has_prev:
           type: boolean
+        next_cursor:
+          type: string
+          nullable: true
+          description: >-
+            Pass as `cursor` to get the next page. Null on the last page, and
+            for a root that lists the items a connection's limit names, which
+            pages by `page` only.
     NavigateKnowledgeGraphResponseSchema:
       type: object
       additionalProperties: false
@@ -8539,14 +8583,15 @@ components:
               type: boolean
               description: |
                 `true` when `totalItems` may not be exact. Only the PostgreSQL graph store
-                sets it. Usually `totalItems` is then lower than the real number: the count
-                stops at 10,000, or covers only part of a very large or slow-to-check
-                connector, folder or group. In the sidebar (`onlyContainers`) it can rarely
-                include an item that a finished check would leave out. Page with `hasNext`
-                and `nextCursor`; don't use `totalItems` or `totalPages` to detect the end.
-                Totals across connectors are added, so they can exceed 10,000 while capped.
-                Absent on older servers, which count exactly: treat a missing value as
-                `false`.
+                sets it. Usually `totalItems` is then lower than the real number: the part
+                of the count checked item by item stops at 10,000, or covers only part of a
+                very large or slow-to-check connector, folder or group. In the sidebar
+                (`onlyContainers`) it can rarely include an item that a finished check would
+                leave out. Page with `hasNext` and `nextCursor`; don't use `totalItems` or
+                `totalPages` to detect the end. Items counted another way, and totals across
+                connectors, are added on top, so a capped total can exceed 10,000. The counts
+                by type add up to `totalItems`. Absent on older servers, which count exactly:
+                treat a missing value as `false`.
             totalPages:
               type: integer
               nullable: true
@@ -55705,7 +55750,11 @@ paths:
         `GET /connectors/record/{recordId}/content` to read it.
 
         **Paging and depth:** results are paginated; `pagination.has_next`
-        tells you whether to request the next `page`. `depth` above 1 returns
+        tells you whether there is a next page. Request it by passing
+        `pagination.next_cursor` as `cursor`: a cursor resumes after the last
+        row of the page it came with, while `page` numbers stop at 50.
+        `pagination.total` is a lower bound when `pagination.total_capped` is
+        `true`. `depth` above 1 returns
         all descendants down to that level as one flat list, each row carrying
         its own `level`, instead of only direct children.
 
@@ -55780,11 +55829,27 @@ paths:
         - name: page
           in: query
           required: false
-          description: Page number, 1-indexed.
+          description: >-
+            Page number, 1-indexed. Pages past 50 are refused with `400`; use
+            `cursor` to go further. Ignored when `cursor` is sent.
           schema:
             type: integer
             minimum: 1
             default: 1
+        - name: cursor
+          in: query
+          required: false
+          description: >-
+            `pagination.next_cursor` from the previous page, copied exactly,
+            sent with the same `nodeId` and `depth`. It chooses the page, and
+            the filters and order are the ones the first page was listed with:
+            `page` and the date and type filters of this request are ignored.
+            A cursor that does not verify, was issued to another user, for
+            another node or for other sources is refused with `400`.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 4096
         - name: limit
           in: query
           required: false
@@ -55877,7 +55942,9 @@ paths:
             other than `nodeTypes` sent more than once. Refused by the connector
             service (`HTTP_BAD_REQUEST`): a date that is not ISO 8601, carries no
             timezone offset, is not a calendar date, forms an inverted range, or
-            has `createdAfter` in the future.
+            has `createdAfter` in the future; a `page` above 50 sent without a
+            `cursor`; a `cursor` that does not verify or was issued to another
+            user, for another node or for other sources.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:

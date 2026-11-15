@@ -5378,6 +5378,7 @@
       "noRecordMetadata": "इस आइटम के लिए कोई अतिरिक्त मेटाडेटा नहीं है।"
     },
     "indexingReasonAria": "अनुक्रमण विफलता विवरण",
+    "indexingNoteAria": "इंडेक्सिंग नोट",
     "stageTrackLabel": "पाइपलाइन",
     "stageParsed": "पार्स किया गया",
     "stageSearchable": "खोजने योग्य",

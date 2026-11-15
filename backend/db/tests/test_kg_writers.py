@@ -45,8 +45,11 @@ CALLS = {   # name -> (arguments of one call, the table, a count query for one o
     "kg.w_scopes_set": (([11], [3], [5], [True], [True], [False], [False]), "kg.scopes"),
     "kg.w_scopes_delete": (([11],), "kg.scopes"),
     "kg.w_listing_set": (([11], [3], ["rec"], [3], [True], [False], [False], [b"\x00r"]), "kg.records"),
+    "kg.w_counts_add": (([5], [1], [7], [3], [False], [None], [None], [2]), "kg.counts"),
+    "kg.w_counts_delete": (([1],), "kg.counts"),
 }
 CASTS = {   # the arguments psycopg cannot type from a list of Nones, or that are not what it sends
+    "kg.w_counts_add": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::smallint[]", "%s::boolean[]", "%s::text[]", "%s::text[]", "%s::bigint[]"],
     "kg.w_listing_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::bytea[]"],
     "kg.w_r13_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]"],
     "kg.w_scopes_set": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]"],
@@ -79,7 +82,7 @@ def rows(c, table: str, org: str) -> list:
 
 
 def clean(c) -> None:
-    for t in sorted({v[1] for v in CALLS.values()}):
+    for t in sorted({v[1] for v in CALLS.values()}, key=lambda t: t != "kg.records"):      # the records first: their delete adds counter deltas (kg_0015)
         c.execute(f"DELETE FROM {t}")
 
 
@@ -97,7 +100,7 @@ def test_every_kg_table_requires_the_per_org_policy_and_is_plain_with_org_first_
     with conn(pdb) as c:
         tables = c.execute("SELECT c.oid::regclass::text, c.relkind::text, c.relispartition, COALESCE(r.vetted_org_policy, false), r.class FROM pg_class c "
                            "LEFT JOIN kernel.rls_registry r ON r.rel = c.oid WHERE c.relnamespace = 'kg'::regnamespace AND c.relkind IN ('r', 'p')").fetchall()
-        assert len(tables) == 11, tables
+        assert len(tables) == 12, tables
         assert [t[0] for t in tables if not t[3]] == [], "kg tables without kernel.require_vetted_org_policy"
         # rule 128 exempts a table the vetted role also reads unbound; no kg table is one (its vetted functions read through the per-org policy), and one that set the flag
         # would slip past 128 with the policy missing
@@ -225,6 +228,10 @@ BAD = {
                         ([11], [4], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([11], [3], [""], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [9], [True]), ([11], [3], ["rec"], [3], [None], [None], [None], [False], [False], [False], [None], [True]),
                         (None, [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True])],
+    "kg.w_counts_add": [([5, 6], [1], [7], [3], [False], [None], [None], [2]), ([None], [1], [7], [3], [False], [None], [None], [2]), ([5], [3], [7], [3], [False], [None], [None], [2]),
+                        ([5], [1], [7], [4], [False], [None], [None], [2]), ([5], [2], [None], [None], [None], ["x" * 65], [None], [2]), ([5], [2], [None], [None], [None], [None], ["bogus"], [2]),
+                        ([5], [1], [7], [3], [False], [None], [None], [None]), (None, [1], [7], [3], [False], [None], [None], [2])],
+    "kg.w_counts_delete": [([None],), (None,), ([1] * 5001,)],
     "kg.w_projection_set": [(-1, 1, "shadow", None, None, None), (5, 1, "bogus", None, None, None), (5, -1, "shadow", None, None, None), (5, 1, "shadow", "x" * 129, None, None), (None, 1, "shadow", None, None, None)],
 }
 
@@ -356,7 +363,7 @@ def test_a_closed_set_refuses_a_value_outside_it_in_a_record(pdb, column, value)
 
 @pytest.mark.parametrize("rule", ["OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT", None])
 def test_every_access_rule_a_connector_writes_is_stored(pdb, rule):
-    """PARENT_AND_GRANT is one of them (kg_0015): a record with it once refused its whole batch."""
+    """PARENT_AND_GRANT is one of them (kg_0016): a record with it once refused its whole batch."""
     with conn(pdb) as c:
         clean(c)
         assert call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values(rule=rule)))) == [(1,)]
@@ -591,4 +598,28 @@ def test_r13_is_written_to_the_row_of_the_session_org_and_the_other_stamps_stay(
         assert tuple(got) == (True, b"\x00\x01", True, 4)
         call(c, "kg.w_r13_set", ORG_B, ([11], [3], ["rec-1"], [3], [False]))                                                    # another org's call makes a row of its own
         assert c.execute("SELECT r13 FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] is True
+        clean(c)
+
+
+def counters(c, org: str) -> list[tuple]:
+    return [tuple(r) for r in c.execute("SELECT facet, record_type, origin, n, folded FROM kg.counts WHERE org_id = %s ORDER BY id", (org,))]
+
+
+def test_a_write_of_the_records_adds_its_counter_deltas_in_the_writers_org_and_the_fold_writers_replace_them(pdb):
+    """kg_0015: the trigger on kg.records runs as the vetted writer, in its transaction, under the per-org policy; a live record of a connector adds a facet 2 delta, an
+    unchanged repeat adds none, its delete takes it back. The fold's writers delete the deltas by id in the session org only and insert folded rows."""
+    with conn(pdb) as c:
+        clean(c)
+        live = rec_args((11, rec_values(deleted=False)))
+        call(c, "kg.w_records_upsert", ORG_A, live)
+        call(c, "kg.w_records_upsert", ORG_A, live)
+        call(c, "kg.w_records_upsert", ORG_B, rec_args((11, rec_values(deleted=True))))          # not live: counts nowhere
+        assert counters(c, ORG_A) == [(2, "FILE", "CONNECTOR", 1, False)] and counters(c, ORG_B) == []
+        call(c, "kg.w_records_delete", ORG_A, ([11],))
+        assert counters(c, ORG_A) == [(2, "FILE", "CONNECTOR", 1, False), (2, "FILE", "CONNECTOR", -1, False)]
+        ids = [r[0] for r in c.execute("SELECT id FROM kg.counts WHERE org_id = %s", (ORG_A,))]
+        assert call(c, "kg.w_counts_delete", ORG_B, (ids,)) == [(0,)]                                # another org's ids are not theirs to delete
+        assert call(c, "kg.w_counts_delete", ORG_A, (ids,)) == [(2,)]
+        assert call(c, "kg.w_counts_add", ORG_A, ([5], [0], [None], [None], [None], [None], [None], [0])) == [(1,)]
+        assert counters(c, ORG_A) == [(0, None, None, 0, True)]
         clean(c)

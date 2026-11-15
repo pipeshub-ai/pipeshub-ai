@@ -96,7 +96,7 @@ async def flip(db, org: str) -> tuple[int, int]:
     return done, len(ids)
 
 
-KG_TABLES = ("records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "scopes", "restamp_queue", "graph_changes", "projection_state", "node_keys")
+KG_TABLES = ("records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "scopes", "restamp_queue", "graph_changes", "projection_state", "node_keys", "counts")      # counts after records: deleting records adds counter deltas
 
 
 class KgLayer(PgLayer):

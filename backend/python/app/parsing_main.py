@@ -31,6 +31,7 @@ from app.modules.parsers.blocks.blocks_parser import BlocksParser
 from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
+from app.modules.parsers.email.msg_parser import MsgParser
 from app.modules.parsers.epub.epub_parser import EPUBParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
@@ -42,6 +43,7 @@ from app.modules.parsers.json.json_parser import JSONParser
 from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
 from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
+from app.modules.parsers.ooxml.ooxml_package_parser import OoxmlPackageParser
 from app.modules.parsers.parse_pool import (
     set_resource_governor as set_parse_pool_governor,
 )
@@ -65,6 +67,7 @@ from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.sql.sql_table_parser import SQLTableParser
 from app.modules.parsers.sql.sql_view_parser import SQLViewParser
+from app.modules.parsers.text.plain_text_parser import PlainTextParser
 from app.modules.parsers.yaml.yaml_parser import YAMLParser
 from app.services.docling.client import DoclingClient
 from app.services.llm_gateway.gateway import get_llm_gateway
@@ -193,6 +196,21 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     registry.register("docx", ParserProvider.DEFAULT, local_docling_parser)
     registry.register("doc", ParserProvider.DOCLING, doc_parser)
     registry.register("doc", ParserProvider.DEFAULT, doc_parser)
+    odt_parser = DocParser(local_docling_parser, input_ext="odt")
+    registry.register("odt", ParserProvider.DOCLING, odt_parser)
+    registry.register("odt", ParserProvider.DEFAULT, odt_parser)
+    rtf_parser = DocParser(local_docling_parser, input_ext="rtf")
+    registry.register("rtf", ParserProvider.DOCLING, rtf_parser)
+    registry.register("rtf", ParserProvider.DEFAULT, rtf_parser)
+    # A macro-enabled document or a template, rewritten as the plain package it holds.
+    word_package_parser = OoxmlPackageParser(local_docling_parser, "word")
+    registry.register("docm", ParserProvider.DOCLING, word_package_parser)
+    registry.register("docm", ParserProvider.DEFAULT, word_package_parser)
+    registry.register("dotx", ParserProvider.DOCLING, word_package_parser)
+    registry.register("dotx", ParserProvider.DEFAULT, word_package_parser)
+    slides_package_parser = OoxmlPackageParser(local_docling_parser, "slides")
+    registry.register("potx", ParserProvider.DOCLING, slides_package_parser)
+    registry.register("potx", ParserProvider.DEFAULT, slides_package_parser)
 
 
     # ----------------------------------------------------------------
@@ -226,6 +244,16 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     # ----------------------------------------------------------------
     registry.register("html", ParserProvider.DEFAULT, default_html_parser)
     registry.register("html", ParserProvider.DOCLING, docling_html_parser)
+
+    # ----------------------------------------------------------------
+    # Outlook mail; logs and configuration files (plain text, never Markdown)
+    # ----------------------------------------------------------------
+    msg_parser = MsgParser(SelectolaxHtmlParser(allow_remote_fetch=False))
+    registry.register("msg", ParserProvider.DEFAULT, msg_parser)
+    registry.register("msg", ParserProvider.DOCLING, MsgParser(DoclingHtmlParser(allow_remote_fetch=False)))
+    plain_text_parser = PlainTextParser()
+    registry.register("log", ParserProvider.DEFAULT, plain_text_parser)
+    registry.register("cfg", ParserProvider.DEFAULT, plain_text_parser)
 
     # ----------------------------------------------------------------
     # CSV / TSV

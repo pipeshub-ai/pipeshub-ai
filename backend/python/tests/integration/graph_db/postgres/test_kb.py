@@ -19,6 +19,7 @@ from app.config.constants.arangodb import Connectors, MimeTypes
 from app.core import org_context
 from app.core.org_context import MissingOrgContext, OrgContext, bind
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.common.utils import KB_LIST_FOLDERS_CAP
 from app.services.graph_db.postgres.kb import KbMixin
 
 from .test_access import APP, World
@@ -206,7 +207,25 @@ async def test_the_list_pages_searches_sorts_filters_and_names_the_folders(w: Wo
     assert by["k3"]["name"] == "Untitled" and by["k0"]["userRole"] == "OWNER"
     assert by["k0"]["folders"] == [{"id": "f1", "name": "f1", "createdAtTimestamp": 5, "webUrl": "/f1"}, {"id": "f2", "name": "f2", "createdAtTimestamp": 5, "webUrl": "/f2"}]
     assert by["k1"]["folders"] == []
-    assert set(by["k0"]) == {"id", "name", "description", "createdAtTimestamp", "updatedAtTimestamp", "createdBy", "userRole", "status", "folders"}
+    assert set(by["k0"]) == {"id", "name", "description", "createdAtTimestamp", "updatedAtTimestamp", "createdBy", "userRole", "status", "folders", "foldersTruncated"}
+
+
+async def test_a_collection_lists_its_first_100_folders_by_id_and_says_when_there_are_more(w: World, pg_db) -> None:
+    await users(w, "me")
+    sizes = {"over": KB_LIST_FOLDERS_CAP + 1, "at": KB_LIST_FOLDERS_CAP, "empty": 0}
+    for key, n in sizes.items():
+        await kb(w, key, orgId=w.org)
+        await grant(w, "me", "READER", key)
+        for i in reversed(range(n)):                                    # written last first: the order is the id's, not the write's
+            await folder(w, f"{key}-{i:03}", key)
+
+    async def dup(tx) -> None:                                          # 101 edges to 100 folders: not more than the cap
+        await tx.execute("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) VALUES ($1, 'belongsTo', 'records', 'at-000', 'apps', 'at', 'dup', '{}'::jsonb)", w.org)
+    await pg_db.run(dup, write=True)
+    by = {k["id"]: k for k in (await w.p.list_user_knowledge_bases("me", w.org, 0, 10))[0]}
+    for key, n in sizes.items():
+        assert [f["id"] for f in by[key]["folders"]] == [f"{key}-{i:03}" for i in range(min(n, KB_LIST_FOLDERS_CAP))], key
+        assert by[key]["foldersTruncated"] is (n > KB_LIST_FOLDERS_CAP), key
 
 
 async def test_a_failed_list_raises_and_the_next_call_answers(w: World, monkeypatch: pytest.MonkeyPatch) -> None:

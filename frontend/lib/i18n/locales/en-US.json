@@ -5468,6 +5468,7 @@
       "noRecordMetadata": "No additional record metadata for this item."
     },
     "indexingReasonAria": "Indexing failure details",
+    "indexingNoteAria": "Indexing note",
     "stageTrackLabel": "Pipeline",
     "stageParsed": "Parsed",
     "stageSearchable": "Searchable",

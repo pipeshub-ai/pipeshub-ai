@@ -52,6 +52,7 @@ async def _call_navigate(*, graph_provider: Any, request: Any | None = None, **o
         "created_before": None,
         "modified_after": None,
         "modified_before": None,
+        "cursor": None,
     }
     kwargs.update(overrides)
     return await knowledge_graph_navigate(
