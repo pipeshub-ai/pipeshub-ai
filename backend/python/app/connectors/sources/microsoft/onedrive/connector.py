@@ -78,6 +78,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
     map_msgraph_roles_to_permission_type,
 )
+from app.connectors.sources.microsoft.common.msgraph_client import list_deleted_users
 from app.connectors.sources.microsoft.common.sharepoint_permission_scope import (
     ListUniquePermissions,
     SharePointAccessError,
@@ -567,7 +568,9 @@ class OneDriveConnector(BaseConnector):
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
         self.connector_id = connector_id
-        self.source_accounts = data_entities_processor.source_accounts(connector_id)
+        self.source_accounts = data_entities_processor.source_accounts(
+            connector_id, deleted_users=lambda: list_deleted_users(self.msgraph_client.client)
+        )
 
         # Batch processing configuration
         self.batch_size = 100

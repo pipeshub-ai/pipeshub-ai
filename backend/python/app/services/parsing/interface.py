@@ -12,6 +12,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import BlocksContainer
 
 
@@ -137,3 +138,35 @@ class UnsupportedFormatError(ParseError):
 
     def __init__(self, extension: str, message: str) -> None:
         super().__init__(ParseErrorCode.UNSUPPORTED_FORMAT, message, details={"extension": extension})
+
+
+class UnreadableFileError(ParseError, NonRetryableError):
+    """A file that is damaged or is not what its name says: it fails the same way on every attempt.
+
+    A ``NonRetryableError`` so the message error classifier stops at it wherever it sits in the
+    exception chain (it is usually raised while handling the library's own error, which the
+    classifier would otherwise judge by). ``details["user_reason"]`` is the reason stored on the
+    record, and the class pickles whole, so it survives the trip back from a parse worker.
+    """
+
+    status_code = 422
+
+    def __init__(self, extension: str, user_reason: str) -> None:
+        ParseError.__init__(
+            self,
+            ParseErrorCode.PARSE_FAILED,
+            user_reason,
+            details={"extension": extension, "user_reason": user_reason},
+        )
+
+    def __reduce__(self) -> tuple[type[UnreadableFileError], tuple[str, str]]:
+        return (type(self), (self.details["extension"], self.message))
+
+
+def damaged_file_reason(extension: str) -> str:
+    """What to tell someone whose file could not be read because it is damaged or mislabelled."""
+    ext = extension.lstrip(".").lower()
+    return (
+        f"This .{ext} file is damaged or isn't really a .{ext} file. Open it in the app that made "
+        "it, save a fresh copy, and upload it again."
+    )

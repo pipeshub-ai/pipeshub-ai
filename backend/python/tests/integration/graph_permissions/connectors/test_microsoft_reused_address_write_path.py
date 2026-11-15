@@ -11,6 +11,7 @@ import pytest
 
 from app.config.constants.arangodb import Connectors
 from app.models.entities import AppUser
+from tests.support.in_memory_config import InMemoryConfigService
 
 from . import test_onedrive_inheritance_write_path as onedrive
 from .test_onedrive_inheritance_write_path import Drive

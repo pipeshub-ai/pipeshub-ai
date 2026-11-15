@@ -7,6 +7,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import logging
 import random
 from typing import Any
 
@@ -332,6 +333,39 @@ async def test_an_unsupported_parent_is_refused_and_a_failed_read_gives_the_lowe
     assert await ctx(w, "gm", "rg", "recordGroup") == LOW
     monkeypatch.setattr(w.p, "_q", real)
     assert await ctx(w, "gm", "rg", "recordGroup") == abilities("WRITER")
+
+
+async def test_the_hidden_apps_are_the_asked_ones_marked_hidden_in_this_org(w: World) -> None:
+    """The knowledge hub's root listing asks this to leave a project's own collection out (knowledge_hub_service.get_nodes)."""
+    await world(w)
+    await w.nodes("apps", {"_key": "kbtext", "type": "KB", "isHidden": "true"}, {"_key": "kbfalse", "type": "KB", "isHidden": False})      # only a boolean true hides, as on Neo4j
+    assert await w.p.get_hidden_app_ids(["kb1", "kb2", "kb3", APP, "missing", "kbtext", "kbfalse", "kb2"]) == ["kb2"]
+    assert await w.p.get_hidden_app_ids(["kb1"]) == []
+    assert await w.p.get_hidden_app_ids([]) == []
+    with in_org(_org()):
+        assert await w.p.get_hidden_app_ids(["kb2"]) == []
+
+
+async def test_the_root_listings_leave_a_hidden_collection_out_and_keep_the_others(w: World, pg_db) -> None:
+    """All Records, the sidebar root and a global search are KnowledgeHubService.get_nodes with no parent: each asks which of the viewer's Apps are hidden. The
+    hidden collection is still opened by id."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+    from tests.permissions.kh_layer import _Config
+
+    from .test_kg_read import flip
+    await world(w)
+    await flip(pg_db, w.org)
+    kh = KnowledgeHubService(logging.getLogger("hidden-apps"), w.p, _Config())
+    for args in ({}, {"flattened": True}, {"only_containers": True}, {"q": "k"}):
+        page = await kh.get_nodes(user_id="uid-kbu", org_id=w.org, **args)
+        assert page.success, (args, page.error)
+        ids = {i.id for i in page.items}
+        assert "kb2" not in ids and "k2" not in ids, (args, ids)
+        assert {"kb1"} <= ids or "k1" in ids, (args, ids)
+    opened = await kh.get_nodes(user_id="uid-kbu", org_id=w.org, parent_id="kb2", parent_type="app")
+    assert opened.success and {i.id for i in opened.items} == {"k2"}
 
 
 async def test_other_orgs_see_none_of_this(w: World) -> None:

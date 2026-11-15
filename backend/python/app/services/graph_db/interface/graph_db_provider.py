@@ -702,6 +702,38 @@ class IGraphDBProvider(ABC):
         """Clone an agent template"""
         pass
 
+    @abstractmethod
+    async def get_all_agent_templates(self, user_id: str, transaction: str | None=None) -> list[dict]:
+        """The live templates the user reaches by their own grant or a team's, with their access."""
+        pass
+
+    @abstractmethod
+    async def update_agent_template(self, template_id: str, template_updates: dict[str, Any], user_id: str, transaction: str | None=None) -> bool | None:
+        """Update a template the user owns; False otherwise."""
+        pass
+
+    @abstractmethod
+    async def delete_agent_template(self, template_id: str, user_id: str, transaction: str | None=None) -> bool | None:
+        """Soft-delete a template the user owns; False otherwise."""
+        pass
+
+    @abstractmethod
+    async def get_all_agents(self, user_id: str, org_id: str, page: int | None=None, limit: int | None=None, search: str | None=None,
+                             sort_by: str | None=None, sort_order: str | None=None, is_deleted: bool=False,  # noqa: FBT001, FBT002 - positional, as the stores take it
+                             transaction: str | None=None) -> list[dict] | dict[str, Any]:
+        """The agents the user reaches (own grant or the org's share), searched, sorted and paged (``{agents, totalItems}`` with ``page`` and ``limit``)."""
+        pass
+
+    @abstractmethod
+    async def update_agent(self, agent_id: str, agent_updates: dict[str, Any], user_id: str, org_id: str, transaction: str | None=None) -> bool | None:
+        """Update an agent the user may edit; False otherwise."""
+        pass
+
+    @abstractmethod
+    async def delete_agent(self, agent_id: str, user_id: str, org_id: str, transaction: str | None=None) -> bool | None:
+        """Soft-delete an agent the user owns; False otherwise."""
+        pass
+
     # ==================== Connection Management ====================
 
     @abstractmethod
@@ -3719,8 +3751,9 @@ class IGraphDBProvider(ABC):
     ) -> list[dict]:
         """Every user of the org linked to the connector with a source user id, guests
         included (``get_app_users`` lists org members only). Each item is
-        ``{"id": <user key>, "sourceUserId": <id at the source>}``. Used to find the links
-        to withdraw. Reads inside ``transaction`` when given. A failed read raises.
+        ``{"id": <user key>, "sourceUserId": <id at the source>, "email": <the user's address>}``.
+        Used to find the links to withdraw, and which account an address was linked to.
+        Reads inside ``transaction`` when given. A failed read raises.
         """
         pass
 
@@ -3753,7 +3786,9 @@ class IGraphDBProvider(ABC):
             transaction: Optional transaction ID
 
         Returns:
-            Tuple of (list of KB dicts, total count, available_filters dict)
+            Tuple of (list of KB dicts, total count, available_filters dict). Each KB's
+            ``folders`` holds at most ``KB_LIST_FOLDERS_CAP`` of its folders, the first
+            by id, and ``foldersTruncated`` is True when it has more.
         """
         pass
 
@@ -5861,7 +5896,7 @@ class IGraphDBProvider(ABC):
         user_id: str,
         transaction: str | None = None,
     ) -> int:
-        """Delete the user's own PERMISSION edges to the connector's records, record groups, user groups and roles,
+        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups,
         for a person the source no longer lets in (a suspended or deleted account). Grants through groups,
         teams or the organization are left alone. Returns how many edges were deleted."""
         raise NotImplementedError
@@ -6013,6 +6048,8 @@ class IGraphDBProvider(ABC):
         skip: int = 0,
         limit: int = 25,
         single_file_batches_only: bool = False,
+        after: tuple[int, str] | None = None,
+        count_cap: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """One page of what delete actions put in the trash in one connector (a KB), newest first.
@@ -6026,6 +6063,10 @@ class IGraphDBProvider(ABC):
         one file are listed (what a file organizer may restore). Sorted by the
         batch's ``deletedAtTimestamp``, then batch id, both descending, and
         paged inside the query; ``total`` counts batches in a separate read.
+        ``after`` is a keyset: the ``(batchDeletedAt, batchId)`` of the last
+        batch already listed, so the page starts strictly after it in that
+        order (``skip`` still applies on top). With ``count_cap``, ``total``
+        stops counting at ``count_cap + 1`` batches.
         Each read walks only this connector's trash, through an index that
         holds only the trash, at a fixed cost per record, so a deleted folder's
         files never cost a read of their whole batch.
@@ -6037,9 +6078,11 @@ class IGraphDBProvider(ABC):
         root), ``isFile``, ``fileMimeType`` and ``sizeInBytes`` from its type
         doc, ``rootCount`` (the batch's roots), ``otherRootNames`` (up to
         ``TRASH_LIST_OTHER_ROOT_NAMES`` other roots' names, by key),
-        ``batchSize`` (records in the batch in this connector) and
+        ``batchSize`` (records in the batch in this connector),
         ``deletedByName`` and ``deletedByEmail`` for the user in
-        ``deletedByUserId`` (None when unknown). A failed read raises.
+        ``deletedByUserId`` (None when unknown), and ``batchId`` and
+        ``batchDeletedAt``, the batch's sort key, for ``after``. A failed read
+        raises.
         """
         raise NotImplementedError
 
@@ -7444,7 +7487,7 @@ class IGraphDBProvider(ABC):
 
     @abstractmethod
     async def check_agent_permission(
-        self, agent_id: str, user_id: str, org_id: str
+        self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None
     ) -> dict | None:
         """
         Lightweight permission check: returns the caller's access rights on an
@@ -7461,6 +7504,8 @@ class IGraphDBProvider(ABC):
             agent_id: The agent key / ID.
             user_id:  The internal user key (_key in ArangoDB, id in Neo4j).
             org_id:   The organisation key.
+            transaction: Optional transaction ID; a check before a write in a
+                         transaction reads the grants as that transaction sees them.
 
         Returns:
             Dict with keys ``{user_role, can_edit, can_delete, can_share,

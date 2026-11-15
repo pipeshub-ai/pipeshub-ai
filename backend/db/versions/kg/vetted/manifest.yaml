@@ -8,8 +8,8 @@
 # permission type), `role` and `record_type` are named by the connectors and stay open. A malformed organisation in the session raises the table's
 # format check (23514) on a write and finds nothing on a delete.
 # p_projector_epoch (kg_0013): the writers of stamps and fences and those that take work off the change log or the restamp queue take the caller's projection code
-# epoch and refuse one below 5. Code of an older release calls them without it and finds no such function: it wrote stamps without the access lists (kg.scopes)
-# and r13, and would take work off the log or the queue without writing them.
+# epoch and refuse one below 6. Code of an older release calls them without it and finds no such function: it wrote stamps without the access lists (kg.scopes)
+# and r13, and would take work off the log or the queue without writing them. Epoch 5 (kg_0014) is refused too: it wrote no PARENT_CHILD links (kind 3).
 functions:
   - name: kg.w_nodes_upsert
     class: write
@@ -112,7 +112,7 @@ functions:
     pins: [{"op": "upsert", "rel": "kg.links", "set": []}]
     args:
       - {"name": "p_parents", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
-      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 2]}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
       - {"name": "p_children", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
     returns: "int"
     no_org: "0"
@@ -140,7 +140,7 @@ functions:
     pins: [{"op": "delete", "rel": "kg.links", "key": ["parent_sk", "kind", "child_sk"]}]
     args:
       - {"name": "p_parents", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
-      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 2]}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
       - {"name": "p_children", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
     returns: "int"
     no_org: "0"
@@ -280,7 +280,7 @@ functions:
     callers: ["python/app/services/graph_db/postgres/kg"]
     pins: [{"op": "delete", "rel": "kg.graph_changes", "txn": "txid"}]
     args:
-      - {"name": "p_projector_epoch", "type": "int", "range": [5, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [6, 1000000]}
     returns: "int"
     no_org: "0"
     body: |
@@ -300,7 +300,7 @@ functions:
     pins: [{"op": "delete", "rel": "kg.graph_changes", "key": ["id"]}]
     args:
       - {"name": "p_ids", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
-      - {"name": "p_projector_epoch", "type": "int", "range": [5, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [6, 1000000]}
     returns: "int"
     no_org: "0"
     body: |
@@ -467,7 +467,7 @@ functions:
       - {"name": "p_under_deleted", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
       - {"name": "p_legacy", "type": "smallint[]", "max_items": 5000, "item_range": [0, 8]}
       - {"name": "p_leaves", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
-      - {"name": "p_projector_epoch", "type": "int", "range": [5, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [6, 1000000]}
     returns: "int"
     no_org: "0"
     reads: ["kg.records"]
@@ -496,7 +496,7 @@ functions:
       - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
       - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
       - {"name": "p_jobs", "type": "bigint[]", "max_items": 5000}
-      - {"name": "p_projector_epoch", "type": "int", "range": [5, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [6, 1000000]}
     returns: "int"
     no_org: "0"
     reads: ["kg.records"]
@@ -549,7 +549,7 @@ functions:
       - {"name": "p_worker", "type": "text", "length": [1, 128]}
       - {"name": "p_attempts", "type": "int", "range": [0, 1000000]}
       - {"name": "p_cursor", "type": "text", "nullable": true, "length": [0, 512]}
-      - {"name": "p_projector_epoch", "type": "int", "range": [5, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [6, 1000000]}
     returns: "bigint"
     no_org: "0"
     reads: ["kg.restamp_queue"]
@@ -595,7 +595,7 @@ functions:
     pins: [{"op": "delete", "rel": "kg.restamp_queue", "key": ["id"]}]
     args:
       - {"name": "p_id", "type": "bigint", "range": [1, 9223372036854775807]}
-      - {"name": "p_projector_epoch", "type": "int", "range": [5, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [6, 1000000]}
     returns: "boolean"
     no_org: "false"
     reads: ["kg.restamp_queue"]
@@ -712,6 +712,58 @@ functions:
         END IF;
         INSERT INTO kg.records (org_id, sk, coll, id, kind, folder, hide_children, alien, name_sort) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f, k.g, k.h FROM unnest(p_sks, p_colls, p_ids, p_kinds, p_folders, p_hide_children, p_aliens, p_name_sorts) AS k(a, b, c, d, e, f, g, h)
           ON CONFLICT (org_id, sk) DO UPDATE SET folder = excluded.folder, hide_children = excluded.hide_children, alien = excluded.alien, name_sort = excluded.name_sort;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  # kg_0015: the fold of the counters (kg/counts.py). The trigger on kg.records adds a delta row per key a statement changed (folded false); the fold takes a batch of them
+  # with the folded rows of the same keys, deletes those rows and inserts one folded row per key with their sum, in one unit under the org's counters lock.
+  - name: kg.w_counts_add
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "insert", "rel": "kg.counts"}]
+    args:
+      - {"name": "p_apps", "type": "bigint[]", "max_items": 5000, "item_not_null": true, "item_range": [0, 9223372036854775807]}
+      - {"name": "p_facets", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [0, 2]}
+      - {"name": "p_classes", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_range": [2, 3]}
+      - {"name": "p_folders", "type": "boolean[]", "max_items": 5000}
+      - {"name": "p_record_types", "type": "text[]", "max_items": 5000, "item_length": [0, 64]}
+      - {"name": "p_origins", "type": "text[]", "max_items": 5000, "item_enum": ["CONNECTOR", "UPLOAD"]}
+      - {"name": "p_ns", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_facets) <> cardinality(p_apps) OR cardinality(p_classes) <> cardinality(p_apps) OR cardinality(p_kinds) <> cardinality(p_apps) OR cardinality(p_folders) <> cardinality(p_apps) OR cardinality(p_record_types) <> cardinality(p_apps) OR cardinality(p_origins) <> cardinality(p_apps) OR cardinality(p_ns) <> cardinality(p_apps) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.counts (org_id, app_sk, facet, class_id, kind, folder, record_type, origin, n, folded) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f, k.g, k.h, true FROM unnest(p_apps, p_facets, p_classes, p_kinds, p_folders, p_record_types, p_origins, p_ns) AS k(a, b, c, d, e, f, g, h);
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_counts_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.counts", "key": ["id"]}]
+    args:
+      - {"name": "p_ids", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1) INTO p_ids FROM (SELECT DISTINCT ON (k.c1) k.c1 FROM unnest(p_ids) WITH ORDINALITY AS k(c1, n) ORDER BY k.c1, k.n DESC) s;
+        DELETE FROM kg.counts t USING unnest(p_ids) AS k(a) WHERE t.org_id = v_org AND t.id = k.a;
         GET DIAGNOSTICS v_n = ROW_COUNT;
         RETURN v_n;
       END;

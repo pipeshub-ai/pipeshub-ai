@@ -2500,3 +2500,19 @@ class TestReusedAddress:
         with pytest.raises(RuntimeError):
             await connector._sharepoint_principal_permissions(rest_user, PermissionType.READ, "site-1")
         assert not connector.source_accounts.may_grant("bo@x.com", None)
+
+    @pytest.mark.asyncio
+    async def test_owner_and_directory_role_members_are_held_to_the_same_object_id_check(self) -> None:
+        """sh7f: an expanded M365 owner or directory role member that names the deleted account gets no grant."""
+        connector, *_ = _make_connector()
+        connector.source_accounts.reused = {"ana@x.com": "new-oid"}
+        members = [{"id": "old-oid", "email": "ana@x.com"}, {"id": "new-oid", "email": "ana@x.com"},
+                   {"id": "bo-oid", "email": "bo@x.com"}, {"id": "x-oid", "email": None}]
+        connector._fetch_graph_group_members = AsyncMock(return_value=members)
+        owners = await connector._m365_owner_permissions("g-1", PermissionType.READ)
+        assert [(p.external_id, p.email) for p in owners] == [("new-oid", "ana@x.com"), ("bo-oid", "bo@x.com")]
+
+        connector._get_directory_object_type = AsyncMock(return_value="#microsoft.graph.directoryRole")
+        connector._get_directory_role_member_users = AsyncMock(return_value=members)
+        role = await connector._tenant_claim_permissions("c:0t.c|tenant|11111111-2222-3333-4444-555555555555", PermissionType.READ)
+        assert [(p.external_id, p.email) for p in role] == [("new-oid", "ana@x.com"), ("bo-oid", "bo@x.com")]

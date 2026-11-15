@@ -2,12 +2,13 @@ import asyncio
 import contextlib
 import contextvars
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, Optional
 
+from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AccessRule,
@@ -472,13 +473,16 @@ class DataSourceEntitiesProcessor:
         self._full_sync_runs: dict[str, FullSyncSeen] = {}
         self._source_accounts: dict[str, SourceAccounts] = {}
 
-    def source_accounts(self, connector_id: str) -> SourceAccounts:
-        """Which source account holds each address this connector's users were linked by (see SourceAccounts)."""
+    def source_accounts(self, connector_id: str, *, deleted_users: Callable[[], Awaitable[dict[str, str]]] | None = None) -> SourceAccounts:
+        """Which source account holds each address this connector's users were linked by (see SourceAccounts). A
+        connector whose source lists deleted accounts passes ``deleted_users`` (read once per connector)."""
         accounts = self._source_accounts.get(connector_id)
         if accounts is None:
             accounts = self._source_accounts[connector_id] = SourceAccounts(
                 self, connector_id, self.config_service, self.logger
             )
+        if deleted_users is not None:
+            accounts.deleted_users = deleted_users
         return accounts
 
     async def _holds_address(self, connector_id: str | None, email: str, source_id: str | None, user_id: str) -> bool:
@@ -2810,6 +2814,8 @@ class DataSourceEntitiesProcessor:
                 record.record_name, existing_record.id,
             )
             return _not_stored(record, SkipReason.OWNED_ELSEWHERE)
+        if existing_record is not None:
+            self._keep_the_stored_text_mime(record, existing_record)
         if record.is_placeholder:
             # Stubs are never published, so a stub left at the model's QUEUED
             # default (connector placeholder sweeps) would stay QUEUED forever.
@@ -2843,6 +2849,15 @@ class DataSourceEntitiesProcessor:
                     "Not storing %s (%s): %s", record.record_name, record.external_record_id, skip_reason
                 )
                 return _not_stored(record, SkipReason.NOT_CONTENT)
+        if existing_record is None:
+            # One rule for every connector: a client's stamp or a guessed text/plain must not put a
+            # new .log/.cfg on the old text path. A row stored under this id keeps its mime.
+            stored_mime = (
+                same_id.get("mimeType") if isinstance(same_id, dict) else getattr(same_id, "mime_type", None)
+            )
+            record.mime_type = file_types.mime_to_store(
+                record.mime_type, record.record_name, stored_mime, existing=same_id is not None
+            )
         restored_from_trash = reindex_restored = False
         if existing_record is not None and not is_live_record(existing_record):
             # A user's delete holds until the purge even though the source still
@@ -3556,6 +3571,20 @@ class DataSourceEntitiesProcessor:
         )
 
     @staticmethod
+    def _keep_the_stored_text_mime(new_record: Record, old_record: Record) -> None:
+        """The mime to save for a file already stored (file_types.mime_to_store).
+
+        A .log/.cfg stored as text/plain keeps it and the text reader it had; one stored
+        under its own mime keeps that when its connector sends text/plain again.
+        """
+        new_record.mime_type = file_types.mime_to_store(
+            getattr(new_record, "mime_type", None),
+            getattr(new_record, "record_name", None),
+            getattr(old_record, "mime_type", None),
+            existing=True,
+        )
+
+    @staticmethod
     def _file_type_changed(new_record: Record, old_record: Record) -> bool:
         """A rename to another file type (.txt to .md) needs a new parse of the same bytes."""
         if (
@@ -3827,6 +3856,7 @@ class DataSourceEntitiesProcessor:
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
                     )
+                    self._keep_the_stored_text_mime(new_record, old_record)
                     needs_reindex = self._content_changed(
                         new_record, old_record
                     ) or self._code_path_changed(new_record, old_record)
@@ -6072,7 +6102,7 @@ class DataSourceEntitiesProcessor:
         failed read raises."""
         async with self.data_store_provider.transaction() as tx_store:
             links = await tx_store.get_app_user_links(self.org_id, connector_id)
-        return [SimpleNamespace(id=link["id"], source_user_id=link["sourceUserId"]) for link in links]
+        return [SimpleNamespace(id=link["id"], source_user_id=link["sourceUserId"], email=link.get("email")) for link in links]
 
     async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[AppUserGroup]:
         async with self.data_store_provider.transaction() as tx_store:

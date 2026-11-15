@@ -92,6 +92,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     read_user_status,
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.sources.microsoft.common.msgraph_client import list_deleted_users
 from app.connectors.sources.microsoft.common.outlook_constants import (
     MessagesDeltaResult,
     OutlookAPIFields,
@@ -359,6 +360,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             org_id=self.data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
             data_store_provider=self.data_store_provider
+        )
+        self.data_entities_processor.source_accounts(
+            self.connector_id, deleted_users=lambda: list_deleted_users(self.external_users_client.client)
         )
 
         self.sync_filters: FilterCollection = FilterCollection()
