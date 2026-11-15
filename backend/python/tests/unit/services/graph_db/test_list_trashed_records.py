@@ -68,6 +68,41 @@ async def test_the_page_and_the_total_are_two_scoped_reads(backend) -> None:
 
 
 @pytest.mark.parametrize("backend", ["arango", "neo4j"])
+async def test_the_keyset_goes_to_the_page_and_the_cap_bounds_the_count(backend) -> None:
+    provider = _arango() if backend == "arango" else _neo4j()
+    query = _query(provider)
+    query.side_effect = [[], [10_001]] if backend == "arango" else [[], [{"total": 10_001}]]
+
+    found = await provider.list_trashed_records("kb1", "o1", limit=3, after=(1_790_000_000_000, "b9"), count_cap=10_000)
+
+    assert found["total"] == 10_001
+    page, count = query.await_args_list
+    key = "bind_vars" if backend == "arango" else "parameters"
+    assert (page.kwargs[key]["after_ts"], page.kwargs[key]["after_batch"]) == (1_790_000_000_000, "b9")
+    assert count.kwargs[key]["count_limit"] == 10_001
+    statement = page.args[0] if page.args else page.kwargs.get("query", "")
+    assert "batch < @after_batch" in statement if backend == "arango" else "batch < $after_batch" in statement
+    counted = count.args[0] if count.args else count.kwargs.get("query", "")
+    assert ("LIMIT @count_limit" in counted) if backend == "arango" else ("LIMIT $count_limit" in counted)
+
+
+@pytest.mark.parametrize("backend", ["arango", "neo4j"])
+async def test_no_keyset_and_no_cap_read_from_the_start_and_count_everything(backend) -> None:
+    provider = _arango() if backend == "arango" else _neo4j()
+    query = _query(provider)
+    query.side_effect = [[], [3]] if backend == "arango" else [[], [{"total": 3}]]
+
+    await provider.list_trashed_records("kb1", "o1")
+
+    page, count = query.await_args_list
+    key = "bind_vars" if backend == "arango" else "parameters"
+    assert (page.kwargs[key]["after_ts"], page.kwargs[key]["after_batch"]) == (None, None)
+    assert "count_limit" not in count.kwargs[key]
+    counted = count.args[0] if count.args else count.kwargs.get("query", "")
+    assert "count_limit" not in counted
+
+
+@pytest.mark.parametrize("backend", ["arango", "neo4j"])
 async def test_an_empty_answer_is_an_empty_page(backend) -> None:
     provider = _arango() if backend == "arango" else _neo4j()
     _query(provider).side_effect = [[], []]
@@ -77,7 +112,7 @@ async def test_an_empty_answer_is_an_empty_page(backend) -> None:
 async def test_neo4j_shapes_each_item() -> None:
     provider = _neo4j()
     rows = [
-        {"rec": {"id": "new", "recordName": "Sub"}, "parent_id": "p1", "parent_name": "Docs", "parent_deleted": True,
+        {"batch": "b2", "deleted_at": 20, "rec": {"id": "new", "recordName": "Sub"}, "parent_id": "p1", "parent_name": "Docs", "parent_deleted": True,
          "is_file": False, "file_mime": None, "size": None, "batch_size": 3,
          "root_count": 2, "other_names": ["b.pdf", None],
          "user_name": "Ada Admin", "user_email": "ada@acme.test"},
@@ -99,6 +134,7 @@ async def test_neo4j_shapes_each_item() -> None:
     assert (old["parentId"], old["parentIsDeleted"], old["deletedByName"], old["sizeInBytes"]) == (None, None, None, 10)
     assert (new["rootCount"], new["otherRootNames"]) == (2, ["b.pdf"])
     assert (old["rootCount"], old["otherRootNames"]) == (1, [])
+    assert (new["batchId"], new["batchDeletedAt"]) == ("b2", 20)
 
 
 @pytest.mark.parametrize("backend", ["arango", "neo4j"])

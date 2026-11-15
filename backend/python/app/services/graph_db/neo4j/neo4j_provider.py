@@ -704,6 +704,8 @@ def _trash_list_page_query(*, hinted: bool) -> str:
     {_trash_batch_roots(hinted=hinted)}
     WITH r.deleteBatchId AS batch, max(r.deletedAtTimestamp) AS deleted_at,
          min(r.id) AS first_id, count(r) AS root_count
+    WHERE $after_ts IS NULL OR deleted_at < $after_ts OR (deleted_at = $after_ts AND batch < $after_batch)
+    WITH batch, deleted_at, first_id, root_count
     ORDER BY deleted_at DESC, batch DESC SKIP $skip LIMIT $limit
     MATCH (r:Record {{id: first_id}})
     OPTIONAL MATCH (p:Record)-[rel:NODE_RELATION]->(r)
@@ -713,7 +715,7 @@ def _trash_list_page_query(*, hinted: bool) -> str:
     WITH batch, deleted_at, root_count, r, p, head(collect(t)) AS t
     OPTIONAL MATCH (u:User {{id: r.deletedByUserId}})
     WITH batch, deleted_at, root_count, r, p, t, head(collect(u)) AS u
-    RETURN properties(r) AS rec,
+    RETURN batch, deleted_at, properties(r) AS rec,
            p.id AS parent_id, p.recordName AS parent_name, p.isDeleted AS parent_deleted,
            t.isFile AS is_file, t.mimeType AS file_mime, t.sizeInBytes AS size,
            root_count,
@@ -15450,11 +15452,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         skip: int = 0,
         limit: int = 25,
         single_file_batches_only: bool = False,
+        after: tuple[int, str] | None = None,
+        count_cap: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """See ``IGraphDBProvider.list_trashed_records``."""
         if not connector_id or not org_id or limit <= 0:
             return {"items": [], "total": 0}
+        after_ts, after_batch = after or (None, None)
         parameters = {
             "connector_id": connector_id,
             "org_id": org_id,
@@ -15469,15 +15474,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self._execute_hinted(
             _trash_list_page_query(hinted=True),
             _trash_list_page_query(hinted=False),
-            {**parameters, "names": TRASH_LIST_OTHER_ROOT_NAMES},
+            {**parameters, "names": TRASH_LIST_OTHER_ROOT_NAMES, "after_ts": after_ts, "after_batch": after_batch},
             transaction,
             index=_TRASH_LIST_INDEXES,
             warning=_TRASH_LIST_HINT_WARNING,
         )
+        capped = "" if count_cap is None else " LIMIT $count_limit"
+        count = f" WITH DISTINCT r.deleteBatchId AS batch{capped} RETURN count(batch) AS total"
         counted = await self._execute_hinted(
-            f"{_trash_batch_roots(hinted=True)} RETURN count(DISTINCT r.deleteBatchId) AS total",
-            f"{_trash_batch_roots(hinted=False)} RETURN count(DISTINCT r.deleteBatchId) AS total",
-            parameters,
+            _trash_batch_roots(hinted=True) + count,
+            _trash_batch_roots(hinted=False) + count,
+            parameters if count_cap is None else {**parameters, "count_limit": count_cap + 1},
             transaction,
             index=_TRASH_LIST_INDEXES,
             warning=_TRASH_LIST_HINT_WARNING,
@@ -15496,6 +15503,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "batchSize": row.get("batch_size") or 0,
                 "deletedByName": row.get("user_name") or None,
                 "deletedByEmail": row.get("user_email"),
+                "batchId": row.get("batch"),
+                "batchDeletedAt": row.get("deleted_at"),
             }
             for row in rows or []
         ]
