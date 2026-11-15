@@ -34,7 +34,7 @@ from app.utils.int8_linear import Int8WeightLinear, quantize_rows
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-FORMAT_VERSION = "1"
+FORMAT_VERSION = "2"  # 2: the checksum covers each tensor's dtype and shape, not only its bytes
 BUILD_TIMEOUT_SECONDS = 600.0
 _SCALE_SUFFIX = ".weight_scale"
 _DTYPES = {"I8": (torch.int8, 1), "F32": (torch.float32, 4)}
@@ -122,8 +122,10 @@ def _tensor_hash(path: Path, header: dict, start: int) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as f:
         for name in sorted(k for k in header if k != "__metadata__"):
-            begin, end = header[name]["data_offsets"]
-            digest.update(name.encode())
+            entry = header[name]
+            begin, end = entry["data_offsets"]
+            # What a tensor is, not only its bytes: a header edited to give the same bytes another shape or type must not verify.
+            digest.update(json.dumps([name, entry.get("dtype"), entry.get("shape")]).encode() + b"\0")
             f.seek(start + begin)
             left = end - begin
             while left:

@@ -192,9 +192,9 @@ class TestReuseAndRebuild:
     def test_a_file_built_for_another_format_version_is_rebuilt(self, model, tmp_path) -> None:
         snap, cache = _snapshot(tmp_path, model), tmp_path / "cache"
         old = _ensure(snap, model, cache)
-        with patch.object(int8_file, "FORMAT_VERSION", "2"):
+        with patch.object(int8_file, "FORMAT_VERSION", "99"):
             new = _ensure(snap, model, cache)
-        assert new != old and "-v2" in new.name
+        assert new != old and "-v99" in new.name
 
     def test_a_stale_identity_inside_the_file_is_rebuilt(self, model, tmp_path) -> None:
         snap, cache = _snapshot(tmp_path, model), tmp_path / "cache"
@@ -245,6 +245,48 @@ class TestReuseAndRebuild:
         rebuilt = _ensure(snap, model, cache, build_fn=lambda *a: (calls.append(1), build(*a))[1])
         assert calls == [1]
         verify(rebuilt, file_identity(snap / "model.safetensors", "org/model", "rev1"))
+
+    def test_a_header_that_gives_a_tensor_another_shape_of_the_same_size_is_rebuilt(self, model, tmp_path) -> None:
+        snap, cache = _snapshot(tmp_path, model), tmp_path / "cache"
+        identity = file_identity(snap / "model.safetensors", "org/model", "rev1")
+        path = _ensure(snap, model, cache)
+        raw = path.read_bytes()
+        length = int.from_bytes(raw[:8], "little")
+        header = json.loads(raw[8:8 + length])
+        name = next(k for k, e in header.items() if k != "__metadata__" and len(e["shape"]) == 2 and e["shape"][0] != e["shape"][1])
+        header[name]["shape"] = header[name]["shape"][::-1]  # the same bytes, read as another matrix
+        edited = json.dumps(header, separators=(",", ":")).encode()
+        path.write_bytes(len(edited).to_bytes(8, "little") + edited + raw[8 + length:])
+        with pytest.raises(Int8FileError, match="checksum"):
+            verify(path, identity)
+        calls: list[int] = []
+        rebuilt = _ensure(snap, model, cache, build_fn=lambda *a: (calls.append(1), build(*a))[1])
+        assert calls == [1]
+        assert read_header(rebuilt)[0][name]["shape"] != header[name]["shape"]
+        verify(rebuilt, identity)
+
+    def test_a_file_checksummed_by_bytes_alone_is_not_served(self, model, tmp_path) -> None:
+        """The checksum of the first format covered each tensor's bytes only; the current format never accepts it."""
+        import hashlib
+
+        snap, cache = _snapshot(tmp_path, model), tmp_path / "cache"
+        identity = file_identity(snap / "model.safetensors", "org/model", "rev1")
+        path = _ensure(snap, model, cache)
+        header, start = read_header(path)
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for name in sorted(k for k in header if k != "__metadata__"):
+                begin, end = header[name]["data_offsets"]
+                digest.update(name.encode())
+                f.seek(start + begin)
+                digest.update(f.read(end - begin))
+        header["__metadata__"]["tensors_sha256"] = digest.hexdigest()
+        raw = path.read_bytes()
+        length = int.from_bytes(raw[:8], "little")
+        edited = json.dumps(header).encode()
+        path.write_bytes(len(edited).to_bytes(8, "little") + edited + raw[8 + length:])
+        with pytest.raises(Int8FileError, match="checksum"):
+            verify(path, identity)
 
     def test_an_entry_that_is_not_an_object_is_rebuilt(self, model, tmp_path) -> None:
         snap, cache = _snapshot(tmp_path, model), tmp_path / "cache"
