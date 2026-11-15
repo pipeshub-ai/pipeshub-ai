@@ -1,6 +1,7 @@
 """Unit tests for app.modules.transformers.sink_orchestrator.SinkOrchestrator."""
 
 import logging
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -800,7 +801,7 @@ class TestTheReplaySetIsWrittenAfterTheCompletedWrite:
     """The delivery that completes the record is remembered, as a call of its own and best effort."""
 
     @pytest.fixture(autouse=True)
-    def _no_delivery_left_bound(self):
+    def _no_delivery_left_bound(self) -> Iterator[None]:
         from app.modules.indexing import replay_set
 
         replay_set.end_delivery()

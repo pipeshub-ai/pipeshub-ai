@@ -41,45 +41,13 @@ from app.services.messaging.kafka.handlers.record import (
 )
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
 from app.utils import user_errors
+from tests.support.record_handler import make_record_handler
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_handler(logger=None, config_service=None, event_processor=None, producer=None):
-    """Create a RecordEventHandler with mock dependencies."""
-    from app.services.messaging.kafka.handlers.record import RecordEventHandler
-
-    logger = logger or MagicMock()
-    config_service = config_service or AsyncMock()
-    event_processor = event_processor or MagicMock()
-    producer = producer if producer is not None else AsyncMock()
-
-    # Ensure event_processor has the nested objects the handler expects
-    if not hasattr(event_processor, "graph_provider") or event_processor.graph_provider is None:
-        event_processor.graph_provider = AsyncMock()
-    elif not isinstance(event_processor.graph_provider, AsyncMock):
-        event_processor.graph_provider = AsyncMock()
-    if not hasattr(event_processor, "processor") or event_processor.processor is None:
-        event_processor.processor = MagicMock()
-        event_processor.processor.indexing_pipeline = AsyncMock()
-    # Mirrors EventProcessor's real default (None) — a bare MagicMock would
-    # auto-vivify `.sink_orchestrator.entity_vector_store` as a truthy
-    # MagicMock, which the handler would then try to `await` a method call
-    # on. Tests that need entity-vector-store behaviour set this explicitly
-    # afterwards via `handler.event_processor.sink_orchestrator = ...`.
-    event_processor.sink_orchestrator = None
-    # Same reason: no stage runtime unless a test binds one (an auto-vivified
-    # MagicMock would be awaited). Tests that need it set it afterwards.
-    if "stage_ingress" not in vars(event_processor) and isinstance(event_processor, MagicMock):
-        event_processor.stage_ingress = None
-
-    return RecordEventHandler(
-        logger=logger,
-        config_service=config_service,
-        event_processor=event_processor,
-        producer=producer,
-    )
+_make_handler = make_record_handler
 
 
 async def _collect_events(handler, event_type, payload):

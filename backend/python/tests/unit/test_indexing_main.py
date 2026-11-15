@@ -1830,7 +1830,7 @@ class TestRedisEvictionPolicyWiring:
     """The start-up check reads the Redis the replay set uses, and /health reports what it found."""
 
     @pytest.fixture(autouse=True)
-    def _reset(self):
+    def _reset(self) -> "Iterator[None]":
         from app.modules.indexing import replay_set
 
         replay_set._eviction_warning = None

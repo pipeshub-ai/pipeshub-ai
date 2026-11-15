@@ -46,6 +46,7 @@ from tests.integration.messaging.conftest import (
     create_kafka_topic,
     delete_kafka_topic,
 )
+from tests.support.record_handler import make_record_handler
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -135,9 +136,7 @@ async def test_redelivery_keeps_the_delivery_id_kafka(kafka_available, topic, un
 
 def _record_handler(downloads: list[str]):  # noqa: ANN202
     """The real RecordEventHandler over a COMPLETED record, with a real Redis for the replay set."""
-    from tests.unit.services.messaging.test_record_handler import _make_handler
-
-    handler = _make_handler()
+    handler = make_record_handler()
     gp = handler.event_processor.graph_provider
     gp.get_document = AsyncMock(return_value={
         "_key": "r1", "virtualRecordId": "vr1", "contentRev": "rev-1", "mimeType": "application/pdf",
@@ -166,8 +165,8 @@ async def test_window_of_two_events_for_one_record_kafka(
     updates = [(EventTypes.UPDATE_RECORD.value, {"recordId": record_id, "orgId": "org-1", "virtualRecordId": "vr1",
                                                   "mimeType": "application/pdf", "extension": "pdf", "n": n})
                for n in (1, 2)]
-    # A default install: nothing is signed, and each message still carries the event id the producer stamped
-    #, which is what identifies a replay.
+    # A default install: nothing is signed, and each message still carries the event id the producer
+    # stamped, which is what identifies a replay.
     await _publish(kafka_available, topic, updates)
     group = f"it-replay-window-{unique_suffix}"
     first_downloads: list[str] = []
@@ -203,7 +202,7 @@ async def test_window_of_two_events_for_one_record_kafka(
     stored = await redis.hgetall(replay_set.hash_key(record_id))
     assert len(first_downloads) == 2 and set(first_downloads) <= set(stored), (first_downloads, stored)
 
-    # The group's committed offset goes back to before U1 (a lost commit, then a rebalance): R1-4's window.
+    # The group's committed offset goes back to before U1 (a lost commit, then a rebalance).
     from aiokafka import AIOKafkaConsumer, TopicPartition
 
     rewind = AIOKafkaConsumer(bootstrap_servers=kafka_available, group_id=group, enable_auto_commit=False)

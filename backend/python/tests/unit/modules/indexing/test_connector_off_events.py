@@ -707,7 +707,10 @@ def test_read_time_filter_passes_replayed_deliveries(state: ConnectorState) -> N
     """A replay of a delivery that completed the record is the handler's: it acknowledges it before anything
     else, so the read-time filter must not settle it first. The record is COMPLETED, which the filter already
     leaves alone (its queued copies are released from the handler); this pins that for the replay guard."""
-    from app.modules.indexing.connector_off_events import ReadTimeOutcome, read_time_outcome
+    from app.modules.indexing.connector_off_events import (
+        ReadTimeOutcome,
+        read_time_outcome,
+    )
 
     record = {
         "id": "r1", "connectorId": "conn-off", "origin": "CONNECTOR", "indexingStatus": ProgressStatus.COMPLETED.value,
@@ -719,7 +722,10 @@ def test_read_time_filter_passes_replayed_deliveries(state: ConnectorState) -> N
 
 
 def test_replayed_delivery_needs_a_completed_record_an_event_id_and_covering_flags() -> None:
-    from app.modules.indexing.connector_off_events import replay_candidate, replayed_delivery
+    from app.modules.indexing.connector_off_events import (
+        replay_candidate,
+        replayed_delivery,
+    )
     from app.modules.indexing.replay_set import StoredDelivery
 
     done = {"indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value}
