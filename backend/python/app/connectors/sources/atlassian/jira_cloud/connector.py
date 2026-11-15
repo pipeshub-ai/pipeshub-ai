@@ -287,8 +287,8 @@ SUBTASK_REREAD_CHUNK: int = 50
 # Accounts per JQL when re-reading the issues that name newly listed accounts.
 # Seconds to wait for the search made with no credentials that tells whether a project is public.
 ANONYMOUS_READ_TIMEOUT_S: float = 20.0
-# Pages of that search followed past empty ones before the project counts as not public.
-ANONYMOUS_READ_PAGES: int = 3
+# Pages of that search followed past empty ones; reaching it on a fresh token is no answer, and the gate stays as it is.
+ANONYMOUS_READ_PAGES: int = 20
 PEOPLE_REREAD_CHUNK: int = 20  # kept small: a clause's argument limit is not published
 # The connector's sync point holding newly listed accounts not yet handed to every project.
 PEOPLE_REREAD_KEY: str = "people_reread"
@@ -2864,16 +2864,23 @@ class JiraConnector(BaseConnector):
         if self.scope != ConnectorScope.TEAM.value:
             return
         public = [group for group, perms in projects if any(p.entity_type == EntityType.ORG for p in perms or [])]
-        if written_in_full and public and all([await self._read_anonymously(group.short_name) for group in public]):
-            await self.data_entities_processor.open_app_to_org_team(self.connector_id)
-        else:
+        answers = [await self._read_anonymously(group.short_name) for group in public] if written_in_full else []
+        if not written_in_full or not public or False in answers:
             await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
+        elif None in answers:
+            # A search with no answer is not proof either way: an open gate stays open, a closed one closed.
+            self.logger.warning("Could not tell whether every public Jira project is public; org access kept as is")
+        else:
+            await self.data_entities_processor.open_app_to_org_team(self.connector_id)
 
-    async def _read_anonymously(self, project_key: str | None) -> bool:
-        """Whether a search with no credentials returns an issue of the project. POST /rest/api/3/search/jql: "This
-        operation can be accessed anonymously." Issues are included "where the user has: Browse projects project
-        permission" (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/). Any other
-        answer, or none, reads as not public: a project with no issue has nothing to read anyway."""
+    async def _read_anonymously(self, project_key: str | None) -> bool | None:
+        """Whether a search with no credentials returns an issue of the project; None when it gave no answer. POST
+        /rest/api/3/search/jql: "This operation can be accessed anonymously." Issues are included "where the user
+        has: Browse projects project permission"; nextPageToken: "If this result represents the last or the only page
+        this token will be null" (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/).
+        A terminal page with no issue, a refusal (401, 400) or any answer the docs do not describe reads as not
+        public: a project with no issue has nothing to read anyway. No response, or the page bound reached while the
+        token is still new, is no answer."""
         if not self.site_url or not project_key:
             return False
         jql = 'project = "{}"'.format(project_key.replace("\\", "\\\\").replace('"', '\\"'))
@@ -2882,7 +2889,7 @@ class JiraConnector(BaseConnector):
         try:
             async with httpx.AsyncClient(timeout=ANONYMOUS_READ_TIMEOUT_S) as client:
                 for _ in range(ANONYMOUS_READ_PAGES):
-                    body: dict[str, Any] = {"jql": jql, "maxResults": 1, "fields": ["id"]}
+                    body: dict[str, Any] = {"jql": jql, "maxResults": ISSUE_ID_LISTING_PAGE_SIZE, "fields": ["id"]}
                     if token:
                         body["nextPageToken"] = token
                     response = await client.post(
@@ -2901,9 +2908,15 @@ class JiraConnector(BaseConnector):
                     if data.get("isLast") is True or not token or token in used:
                         return False
                     used.add(token)
-        except (httpx.HTTPError, ValueError, AttributeError) as e:
+        except httpx.HTTPError as e:
             self.logger.warning("Could not check whether project %s is public: %s", project_key, e)
-        return False
+            return None
+        except (ValueError, AttributeError) as e:
+            self.logger.warning("Could not check whether project %s is public: %s", project_key, e)
+            return False
+        self.logger.warning("Signed-out search of project %s still had pages after %s; asking again next sync",
+                            project_key, ANONYMOUS_READ_PAGES)
+        return None
 
     async def _fallback_permissions_for_forbidden_scheme(
         self,

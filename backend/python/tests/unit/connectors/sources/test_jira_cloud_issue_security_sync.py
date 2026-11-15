@@ -24,6 +24,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
 )
 from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
 from app.connectors.sources.atlassian.jira_cloud.connector import (
+    ANONYMOUS_READ_PAGES,
     ISSUE_PLACEMENT,
     ISSUE_SEARCH_FIELDS,
     JiraConnector,
@@ -1949,7 +1950,7 @@ class TestAnonymousBrowseReachesEveryone:
                                                          type=PermissionType.READ)])]
 
     @staticmethod
-    def _gated(scope: str = "team", *, readable: bool = True) -> JiraConnector:
+    def _gated(scope: str = "team", *, readable: bool | None = True) -> JiraConnector:
         c = _connector()
         c.scope = scope
         c.data_entities_processor.open_app_to_org_team = AsyncMock()
@@ -1979,6 +1980,24 @@ class TestAnonymousBrowseReachesEveryone:
         c.data_entities_processor.withdraw_team_app_edge.assert_awaited_once_with("conn-sec")
 
     @pytest.mark.asyncio
+    async def test_a_signed_out_search_without_an_answer_leaves_the_gate_as_it_is(self) -> None:
+        """A search cut short (page bound hit on a fresh token, or no response) neither opens the gate nor removes
+        an open one; the next sync asks again."""
+        c = self._gated(readable=None)
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
+        c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_project_signed_out_visitors_cannot_read_closes_the_gate_whatever_the_others(self) -> None:
+        c = self._gated()
+        other = [(MagicMock(short_name="PUB2"), self.PUBLIC[0][1])]
+        c._read_anonymously = AsyncMock(side_effect=[None, False])
+        await c._admit_everyone_to_public_projects(self.PUBLIC + other, written_in_full=True)
+        c.data_entities_processor.withdraw_team_app_edge.assert_awaited_once_with("conn-sec")
+        c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_no_public_project_closes_the_gate(self) -> None:
         c = self._gated()
         await c._admit_everyone_to_public_projects(self.PRIVATE, written_in_full=True)
@@ -1998,12 +2017,16 @@ class TestAnonymousBrowseReachesEveryone:
         ([{"issues": [], "isLast": True}], False),
         ([{"issues": [], "isLast": False, "nextPageToken": "t"}, {"issues": [], "isLast": False, "nextPageToken": "t"}],
          False),
-        ([{"issues": [], "isLast": False, "nextPageToken": f"t{i}"} for i in range(5)], False),
-    ], ids=["issue_on_a_later_page", "terminal_empty_page", "repeated_token", "page_bound"])
+        ([{"issues": [], "isLast": False, "nextPageToken": f"t{i}"} for i in range(5)] + [{"issues": [{"id": "1"}]}],
+         True),
+        ([{"issues": [], "isLast": False, "nextPageToken": f"t{i}"} for i in range(ANONYMOUS_READ_PAGES)], None),
+    ], ids=["issue_on_a_later_page", "terminal_empty_page", "repeated_token", "five_empty_pages_then_an_issue",
+            "page_bound_is_unknown"])
     async def test_the_signed_out_search_follows_empty_pages_that_are_not_the_last(
         self, monkeypatch: pytest.MonkeyPatch, pages: list, public: bool,
     ) -> None:
-        """Enhanced search can answer an empty page with isLast false and a nextPageToken before a page with issues."""
+        """Enhanced search can answer an empty page with isLast false and a nextPageToken before a page with issues:
+        only a terminal page or a repeated token is an answer; the page bound reached on a fresh token is none."""
         import httpx
 
         from app.connectors.sources.atlassian.jira_cloud import connector as module
@@ -2021,6 +2044,7 @@ class TestAnonymousBrowseReachesEveryone:
         c.site_url = "https://acme.atlassian.net"
         assert await c._read_anonymously("PUB") is public
         assert len(sent) <= module.ANONYMOUS_READ_PAGES
+        assert {body["maxResults"] for body in sent} == {module.ISSUE_ID_LISTING_PAGE_SIZE}
         if len(sent) > 1:
             assert sent[1]["nextPageToken"] == pages[0]["nextPageToken"]
 
@@ -2049,6 +2073,22 @@ class TestAnonymousBrowseReachesEveryone:
         assert str(seen[0].url) == "https://acme.atlassian.net/rest/api/3/search/jql"
         assert "authorization" not in {k.lower() for k in seen[0].headers}
         assert json.loads(seen[0].content)["jql"] == 'project = "PUB"'
+
+
+    @pytest.mark.asyncio
+    async def test_a_signed_out_search_with_no_response_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import httpx
+
+        from app.connectors.sources.atlassian.jira_cloud import connector as module
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectTimeout("timed out", request=request)
+
+        real = httpx.AsyncClient
+        monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(answer), **kw))
+        c = _connector()
+        c.site_url = "https://acme.atlassian.net"
+        assert await c._read_anonymously("PUB") is None
 
 
 class TestSweepAncestorReads:
