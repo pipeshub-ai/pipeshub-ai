@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.core.org_context import MissingOrgContext, SystemContextNotAllowed
+from app.services.graph_db.conditions import Cond
 from app.services.graph_db.postgres.base import (
     TransactionClosed,
     TransactionOrgMismatch,
@@ -150,6 +151,8 @@ CALLS = [
     ("store_time", (), {}),
     ("batch_update_nodes", ([{"_key": "k", "v": 1}], "things"), {}),
     ("update_node_fields_if_match", ("k", "things", {"v": 1}, {"v": 0}), {}),
+    ("update_node_fields_if", ("k", "things", {"v": 1}, [Cond("v", "is_null")]), {}),
+    ("set_record_properties", ("k",), {"values": {}, "previous_names": (), "controls": {"propsVer": 1}, "conditions": [Cond("propsVer", "is_null")]}),
     ("delete_nodes", (["k"], "things"), {}),
     ("delete_nodes_and_edges", (["k"], "things"), {}),
     ("batch_create_edges", ([_EDGE], "belongsTo"), {}),

@@ -28,6 +28,7 @@ pytest.importorskip("app.services.graph_db.postgres.provider")
 
 from app.core.org_context import OrgContext, bind
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+from app.services.graph_db.conditions import Cond
 from app.services.graph_db.postgres.base import _arango
 from app.services.graph_db.postgres.kg.registry import WRITERS
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
@@ -242,7 +243,7 @@ class _Rec:
 CLASSIFICATION: dict[str, str] = {
     **dict.fromkeys(["create_node_if_absent", "ensure_nodes", "stage_state_create"], "create"),
     **dict.fromkeys(["batch_upsert_nodes", "batch_upsert_records"], "upsert"),
-    **dict.fromkeys(["update_node", "batch_update_nodes", "update_node_fields_if_match", "update_knowledge_base", "compare_and_set_record_fields"], "update"),
+    **dict.fromkeys(["update_node", "batch_update_nodes", "update_node_fields_if_match", "update_node_fields_if", "update_knowledge_base", "compare_and_set_record_fields"], "update"),
     "update_node_if_match": "replace",
     **dict.fromkeys(["batch_update_connector_status", "compare_and_set_indexing_status", "update_indexing_status_for_record_ids",
                      "stage_state_compare_and_set", "soft_delete_records", "restore_records", "record_purge_failure", "retag_push_record",
@@ -323,6 +324,7 @@ INVALID: list[tuple[str, str, tuple, dict]] = [
     ("update null non-nullable", "update_node", ("r1", "records", {"recordName": None}), {}),
     ("batch_update bad member", "batch_update_nodes", ([{"id": "r1", "indexingStatus": "COMPLETED"}, {"id": "r2", "indexingStatus": "NOT_A_STATUS"}], "records"), {}),
     ("fields_if_match bad", "update_node_fields_if_match", ("r1", "records", {"indexingStatus": "NOT_A_STATUS"}, {"indexingStatus": "NOT_STARTED"}), {}),
+    ("fields_if bad", "update_node_fields_if", ("r1", "records", {"propsVer": "one"}, [Cond("propsVer", "is_null")]), {}),
     ("update_knowledge_base bad", "update_knowledge_base", ("kb1", {"scope": "NOT_A_SCOPE"}), {}),
     ("batch_update_team_member_roles bad", "batch_update_team_member_roles", ("t1", [{"userId": "u1", "role": "NOT_A_ROLE"}], 1), {}),
     ("update_edge bad role", "update_edge", ("users/u1", "records/r1", {"role": "NOT_A_ROLE"}, "permission"), {}),
@@ -378,6 +380,7 @@ VALID: list[tuple[str, str, tuple, dict]] = [
     ("update null on nullable", "update_node", ("r1", "records", {"externalParentId": None, "mimeType": None}), {}),
     ("batch_update", "batch_update_nodes", ([{"id": "r1", "indexingStatus": "COMPLETED"}, {"id": "r2", "isDeleted": True}], "records"), {}),
     ("fields_if_match", "update_node_fields_if_match", ("r1", "records", {"indexingStatus": "COMPLETED"}, {"indexingStatus": "NOT_STARTED"}), {}),
+    ("fields_if", "update_node_fields_if", ("r1", "records", {"recordProps": {"a": "1"}, "propsVer": 1}, [Cond("propsVer", "is_null")]), {}),
     ("update_knowledge_base", "update_knowledge_base", ("kb1", {"name": "KB", "scope": "personal"}), {}),
     ("batch_update_team_member_roles", "batch_update_team_member_roles", ("t1", [{"userId": "u1", "role": "OWNER"}], 1), {}),
     ("update_edge", "update_edge", ("users/u1", "records/r1", {"role": "WRITER"}, "permission"), {}),

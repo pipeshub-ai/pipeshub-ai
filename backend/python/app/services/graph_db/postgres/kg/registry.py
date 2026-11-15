@@ -60,6 +60,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "update_indexing_status_for_record_ids": (NO_PROJECTION, _STATUS),
     "update_knowledge_base": (PROJECTED, ""),
     "update_node": (PROJECTED, ""),
+    "update_node_fields_if": (PROJECTED, ""),
     "update_node_fields_if_match": (PROJECTED, ""),
     "update_sync_point_if": (NO_PROJECTION, _SYNC),
     "upsert_authenticated_as": (PROJECTED, ""),
