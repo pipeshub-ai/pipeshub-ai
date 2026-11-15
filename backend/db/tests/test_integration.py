@@ -857,6 +857,7 @@ KV_MATRIX = [
                                               "/services/oauth/jira", "/services/toolsets/i1/u1", "/services/mcp/credentials/i1/u1",
                                               "/services/api-toolsets/credentials/i1/u1", "/services/webSearch", "/services/smtp")],
     ("indexing", "/services/aiGateway/identityPolicy", True, False), ("indexing", "/services/redis", True, False),
+    ("indexing", "/services/file_types/config", True, False), ("kv", "/services/file_types/config", False, False),
     *[("indexing", k, False, False) for k in ("/services/deployment", "/services/aiGateway/other", "/migrations/node_relation_v1",
                                               "/services/platform/other", "/services/someNewProvider")],
     ("kv", "/services/aiModels", True, False), ("kv", "/services/secretKeys", True, False),
@@ -916,7 +917,7 @@ def test_in_enforce_each_service_role_reads_and_writes_only_its_prefixes(kv_db):
     assert wrong == []
 
 
-def test_in_enforce_a_new_key_outside_the_prefixes_is_refused_and_a_dead_row_is_purged_by_any_writer(kv_db):
+def test_in_enforce_a_new_key_outside_the_prefixes_is_refused_and_a_dead_row_is_purged_only_where_the_writer_can_read(kv_db):
     cluster, name = kv_db
     _set_mode(cluster, name, True)
     with _as(cluster, name, "query") as c:
@@ -934,6 +935,11 @@ def test_in_enforce_a_new_key_outside_the_prefixes_is_refused_and_a_dead_row_is_
     with connect(cluster, name) as c:
         left = {k for (k,) in c.execute("SELECT key FROM platform.kv_entries WHERE expires_at IS NOT NULL")}
     assert left == {"/services/smtp"}
+    with _as(cluster, name, "node") as c:                # the node role reads every key, so its purge takes the rest
+        c.execute("DELETE FROM platform.kv_entries WHERE key IN (SELECT key FROM platform.kv_entries WHERE expires_at <= now() LIMIT 1000)")
+        c.commit()
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT count(*) FROM platform.kv_entries WHERE expires_at IS NOT NULL").fetchone()[0] == 0
 
 
 def test_in_shadow_every_access_is_admitted_and_one_outside_the_prefixes_is_logged_without_its_value(kv_db):
