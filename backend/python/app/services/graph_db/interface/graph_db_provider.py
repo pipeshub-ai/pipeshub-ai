@@ -7740,7 +7740,8 @@ class IGraphDBProvider(ABC):
         """Rows ``{docId, recordId, kind, origin, connectorName, connectorId}`` naming any of ``doc_ids``.
 
         ``kind`` is ``externalRecordId`` (a record) or ``files.path`` (a file whose path is ``storage://<id>``).
-        Any org, live or trashed: "linked" is global; only readability is org-scoped. The cap is per document
+        Any org, live or trashed: "linked" is global; only readability is org-scoped. PostgreSQL reads the caller's org only (row-level
+        security), which answers the same for every document the caller's org holds in storage: another org cannot link it. The cap is per document
         (``REF_LINKS_PER_DOC`` rows, platform upload links first), never over the whole call: a document that many
         other documents' links crowd out would otherwise look unlinked, and its uploader would pass on the initiator check.
         """

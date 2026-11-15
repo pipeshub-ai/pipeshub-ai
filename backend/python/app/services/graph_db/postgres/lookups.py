@@ -13,6 +13,7 @@ from app.config.constants.arangodb import (
     FOLDER_MIME_TYPES,
     CollectionNames,
     Connectors,
+    OriginTypes,
     ProgressStatus,
 )
 from app.core.org_context import current_or_system, current_org_id
@@ -29,6 +30,7 @@ from app.services.graph_db.common.utils import (
     jira_issue_browse_url_regex,
     record_status_field,
 )
+from app.services.graph_db.interface.graph_db_provider import REF_LINKS_PER_DOC
 from app.services.graph_db.postgres.base import (
     _LINK_COLLS,
     _VALIDATOR,
@@ -764,6 +766,14 @@ class LookupsMixin(PgBase):
         except Exception:
             self.logger.exception("Get record key by external id failed")
             return None
+
+    async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
+        # The org's links only: a storage document belongs to one org (the storage service reads it by org and id, and the push asks it in the
+        # caller's org first), and a record of another org naming its id is not a link the platform wrote to it.
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.ref_links */ SELECT doc_id, kind, node_id, origin, connector_name, connector_id
+            FROM graph.ref_links($1::text[], $2, $3, $4)""", doc_ids, OriginTypes.UPLOAD.value, Connectors.KNOWLEDGE_BASE.value, REF_LINKS_PER_DOC), None)
+        return [{"docId": r["doc_id"], "recordId": r["node_id"], "kind": r["kind"], "origin": r["origin"],
+                 "connectorName": r["connector_name"], "connectorId": r["connector_id"]} for r in rows]
 
     async def get_key_by_external_file_id(self, external_file_id: str) -> str | None:
         """The key of a record of this org by external id, whatever its connector. With no connector named there is no index for it."""
