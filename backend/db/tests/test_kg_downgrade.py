@@ -255,10 +255,10 @@ def test_downgrading_the_projector_epoch_gives_the_writers_back_their_earlier_si
     def present(c, sigs: list[str]) -> list[bool]:
         return [c.execute("SELECT to_regprocedure(%s) IS NOT NULL", (s,)).fetchone()[0] for s in sigs]
 
-    def clean_catalog(c) -> None:
+    def clean_catalog(c, pinned: int) -> None:
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
         assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
-        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 28
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == pinned
 
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
@@ -268,9 +268,9 @@ def test_downgrading_the_projector_epoch_gives_the_writers_back_their_earlier_si
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         assert present(c, old) == [True] * 6 and present(c, new) == [False] * 6
-        clean_catalog(c)
+        clean_catalog(c, 26)                                                # the counters' two writers (kg_0015) went down too
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         assert present(c, old) == [False] * 6 and present(c, new) == [True] * 6
-        clean_catalog(c)
+        clean_catalog(c, 28)
