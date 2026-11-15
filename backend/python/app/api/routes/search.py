@@ -58,6 +58,7 @@ from app.modules.retrieval.selection_scope import (
     within_connection,
 )
 from app.modules.retrieval.title_hits import UnindexedMatch, find_unindexed_matches
+from app.services.graph_db.common.utils import api_records
 from app.services.graph_db.interface.graph_db_provider import (
     STRICT_SCOPE_FILTER_KEY,
     IGraphDBProvider,
@@ -359,6 +360,9 @@ async def _rewritten_queries(
 ) -> list[str]:
     """The query rewritten and expanded by the model, for retrieval."""
     llm = await resolve_llm_for_search(request, retrieval_service)
+    if llm is None:
+        # Retrieval needs only the embedding model, so search runs on the typed query.
+        return _queries_for_search(query, None, None)
     rewrite_chain, expansion_chain = setup_query_transformation(llm)
 
     # OpikTracer is invoke-config only (not a constructor callback); without
@@ -665,6 +669,12 @@ async def search(
                     request, graph_provider, request.state.user.get("orgId"), request.state.user.get("userId"), results,
                 )
                 hide_record_source_paths(request, results)
+                for key in ("records", "virtual_to_record_map"):
+                    if results.get(key):
+                        results[key] = api_records(results[key])
+                outside_dates = results.get("outsideDates")
+                if isinstance(outside_dates, dict) and outside_dates.get("records"):
+                    results["outsideDates"] = {**outside_dates, "records": api_records(outside_dates["records"])}
                 timer.mark("retrieval")
                 timer.emit(
                     logger, "search", detail=format_spans(stages),

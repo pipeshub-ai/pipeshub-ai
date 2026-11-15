@@ -216,6 +216,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     KH_LISTING_STATE_FLAG,
     REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
+    UNSUPPORTED_PAGE_FIELDS,
     AccessibleContainers,
     CodeFileInfo,
     IGraphDBProvider,
@@ -751,6 +752,12 @@ _INDEX_NOT_FOUND = "Neo.ClientError.Schema.IndexNotFound"
 # statistics the planner can prefer (orgId, recordType) and then sort every page.
 _RECORD_ORG_ID_INDEX = "record_org_id_key"
 _RECORD_ORG_ID_HINT = "USING INDEX record:Record(orgId, id)"
+# The file-type re-queue's paging index, created by ensure_schema.
+_UNSUPPORTED_PAGE_INDEX = "record_connector_status_id"
+_UNSUPPORTED_PAGE_HINT = "USING INDEX r:Record(connectorId, indexingStatus, id)"
+_UNSUPPORTED_PAGE_HINT_WARNING = (
+    "The file-type re-queue's index %s is not ready; paging records without it until it is: %s"
+)
 _RECORD_ORG_ID_HINT_WARNING = (
     "The record-people backfill's index %s is not ready; paging records without it until it is: %s"
 )
@@ -1385,6 +1392,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_parked_while_off IF NOT EXISTS "
             "FOR (n:Record) ON (n.connectorId, n.indexingStatus, n.reason, n.id)"
+        )
+
+        # COMPOSITE: a connector's records in one status, in a keyset on id: the
+        # file-type re-queue pages FILE_TYPE_NOT_SUPPORTED by it. The parked-while-off
+        # index holds the reason before id, so it cannot serve this seek.
+        indexes.append(
+            "CREATE INDEX record_connector_status_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.connectorId, n.indexingStatus, n.id)"
         )
 
         # COMPOSITE: "did this connector index anything since?", asked for a
@@ -9428,6 +9443,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_ids: list[str],
         org_id: str,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their record IDs (node id property).
@@ -9477,6 +9494,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch records by record IDs: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
+            if raise_on_error:
+                raise
             return []
 
     # ==================== Permission Operations ====================
@@ -16803,6 +16822,77 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 expected, new_status, str(e),
             )
             raise
+
+    async def list_unsupported_page(
+        self,
+        org_id: str,
+        connector_id: str,
+        after_key: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        projection = ", ".join(f".{f}" for f in UNSUPPORTED_PAGE_FIELDS)
+
+        # A seek of record_connector_status_id that reads the page in the index's order and stops at the
+        # limit. The hint: with orgId also filtered the planner otherwise seeks the org's index and sorts
+        # every match. ORDER BY names the index's properties in sequence, or Neo4j sorts. "" rather than
+        # null for the first page: the composite index needs a predicate on each of its properties.
+        def page(hint: str) -> str:
+            return f"""
+            MATCH (r:Record)
+            {hint}
+            WHERE r.connectorId = $connector_id AND r.indexingStatus = $status AND r.id > $after
+              AND r.orgId = $org_id AND {cypher_live_record("r")}
+            WITH r ORDER BY r.connectorId, r.indexingStatus, r.id LIMIT $limit
+            RETURN r{{_key: r.id, {projection}}} AS r
+            """
+
+        rows = await self._execute_hinted(
+            page(_UNSUPPORTED_PAGE_HINT),
+            page(""),
+            {
+                "connector_id": connector_id,
+                "status": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                "after": after_key or "",
+                "org_id": org_id,
+                "limit": max(1, int(limit)),
+            },
+            None,
+            index=_UNSUPPORTED_PAGE_INDEX,
+            warning=_UNSUPPORTED_PAGE_HINT_WARNING,
+        )
+        return [row["r"] for row in rows or []]
+
+    async def transition_unsupported(self, record_ids: list[str], to_status: str) -> list[str]:
+        keys = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not keys:
+            return []
+        now = get_epoch_timestamp_in_ms()
+        written: dict[str, Any] = {"indexingStatus": to_status}
+        if to_status == ProgressStatus.QUEUED.value:
+            written["queuedAtTimestamp"] = now
+        self.validator.validate_node_update(CollectionNames.RECORDS.value, written)
+        stamp = ", n.queuedAtTimestamp = $now" if to_status == ProgressStatus.QUEUED.value else ""
+        # Locked before the status is read, as compare_and_set_indexing_status does, so a status the
+        # indexing service committed while this waited is the one compared.
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{collection_to_label(CollectionNames.RECORDS.value)})
+            WHERE n.id IN $keys
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            WHERE n.indexingStatus = $expected AND {cypher_live_record("n")}
+            SET n.indexingStatus = $to, n.reason = null{stamp}
+            RETURN n.id AS id
+            """,
+            parameters={
+                "keys": keys,
+                "expected": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                "to": to_status,
+                "now": now,
+            },
+        )
+        return [row["id"] for row in rows or [] if row.get("id")]
 
     # ==================== Pipeline stage states ====================
 
@@ -26980,7 +27070,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
     async def check_agent_permission(
-        self, agent_id: str, user_id: str, org_id: str
+        self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None
     ) -> dict | None:
         try:
             agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
@@ -27000,7 +27090,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LIMIT 1
             """
             ind_result = await self.client.execute_query(
-                individual_query, parameters={"user_key": user_key, "agent_id": agent_id}
+                individual_query, parameters={"user_key": user_key, "agent_id": agent_id}, txn_id=transaction
             )
             if ind_result:
                 role = ind_result[0]["role"]
@@ -27022,7 +27112,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LIMIT 1
             """
             org_result = await self.client.execute_query(
-                org_query, parameters={"org_key": org_key, "agent_id": agent_id}
+                org_query, parameters={"org_key": org_key, "agent_id": agent_id}, txn_id=transaction
             )
             if org_result:
                 role = org_result[0]["role"]
@@ -27324,7 +27414,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             # get_agent(agent_id, org_id, transaction) — do not pass user_id positionally (that was
             # misread as org_id and broke transaction=). Use check_agent_permission for ACL.
-            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -27408,7 +27498,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.logger.warning(f"Agent {agent_id} not found")
                 return False
 
-            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -27855,7 +27945,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, role: str, transaction: str | None = None) -> dict | None:
         """Update permission role for users and teams on an agent (only OWNER can do this)"""
         try:
-            perm = await self.check_agent_permission(agent_id, owner_user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, owner_user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
                 return {"success": False, "reason": "Agent not found or no permission"}
@@ -27998,8 +28088,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     template["permission_id"] = row.get("permission_id")
                     template["permission_created_at"] = row.get("permission_created_at")
                     template["permission_updated_at"] = row.get("permission_updated_at")
-                    template["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
-                    template["can_delete"] = row["role"] == "OWNER"
+                    # edit and delete need the user's own OWNER grant (update_agent_template, delete_agent_template)
+                    template["can_edit"] = template["can_delete"] = row["role"] == "OWNER"
                     template["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
                     template["can_view"] = True
                     templates.append(template)
@@ -28034,8 +28124,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         template["permission_id"] = row.get("permission_id")
                         template["permission_created_at"] = row.get("permission_created_at")
                         template["permission_updated_at"] = row.get("permission_updated_at")
-                        template["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
-                        template["can_delete"] = row["role"] == "OWNER"
+                        template["can_edit"] = template["can_delete"] = False  # a team's grant edits or deletes nothing
                         template["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
                         template["can_view"] = True
                         templates.append(template)
@@ -28120,8 +28209,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 template["permission_id"] = row.get("permission_id")
                 template["permission_created_at"] = row.get("permission_created_at")
                 template["permission_updated_at"] = row.get("permission_updated_at")
-                template["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
-                template["can_delete"] = row["role"] == "OWNER"
+                # edit and delete need the user's own OWNER grant (update_agent_template, delete_agent_template)
+                template["can_edit"] = template["can_delete"] = row["role"] == "OWNER"
                 template["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
                 template["can_view"] = True
                 return template
@@ -28153,8 +28242,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     template["permission_id"] = row.get("permission_id")
                     template["permission_created_at"] = row.get("permission_created_at")
                     template["permission_updated_at"] = row.get("permission_updated_at")
-                    template["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
-                    template["can_delete"] = row["role"] == "OWNER"
+                    template["can_edit"] = template["can_delete"] = False  # a team's grant edits or deletes nothing
                     template["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
                     template["can_view"] = True
                     return template

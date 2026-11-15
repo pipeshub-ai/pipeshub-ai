@@ -16,6 +16,7 @@ describe('resolveConnectorType', () => {
     expect(resolveConnectorType('PayPal')).toBe('paypal');
     expect(resolveConnectorType('gitlab')).toBe('gitlab');
     expect(resolveConnectorType('GitLab')).toBe('gitlab');
+    expect(resolveConnectorType('egnyte')).toBe('egnyte');
   });
 
   it('maps the bare Google toolset slugs to their logos', () => {
