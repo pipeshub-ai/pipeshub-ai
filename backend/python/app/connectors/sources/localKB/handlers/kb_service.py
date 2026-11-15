@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import json
 import uuid
 import weakref
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Literal, Optional, Union
@@ -117,6 +119,18 @@ TRASH_NEEDS_EDIT_ACCESS_REASON = (
 )
 DEFAULT_TRASH_PAGE_SIZE = 25
 MAX_TRASH_PAGE_SIZE = 100
+# The trash list counts this many delete batches at most, and page numbers reach no further; nextCursor goes on.
+TRASH_TOTAL_CAP = 10_000
+MAX_TRASH_CURSOR_LENGTH = 1024
+PAGE_BEYOND_LIMIT = "PAGE_BEYOND_LIMIT"
+TRASH_PAGE_BEYOND_LIMIT_REASON = (
+    f"Page numbers reach the first {TRASH_TOTAL_CAP:,} deleted items. "
+    "To go further, ask for the next page with the nextCursor of the page before it."
+)
+TRASH_CURSOR_REFUSED_REASON = (
+    "This cursor is not one this list gave you, or your access to the collection changed. "
+    "Start again from the first page."
+)
 RESTORE_CHANGED_REASON = (
     "This item changed while it was being restored, so nothing was restored. "
     "Refresh the page and try again."
@@ -297,6 +311,34 @@ def _ambient_org() -> str | None:
         return current_org_id()
     except Exception:  # no org bound (a job): the caller's global bump is the safe answer
         return None
+
+
+
+# No signature: a trash cursor names only a position (the delete time and batch id of the last
+# item on a page the caller was shown), and every page is read again with the caller's own role
+# filter, so an edited cursor can move where a page starts, never widen what it may hold. It is
+# bound to the collection and to the listing kind (single files only, or every batch) so that a
+# cursor from another list is refused rather than read as a position in this one.
+def _trash_cursor(kb_id: str, deleted_at: int, batch_id: str, *, files_only: bool) -> str:
+    raw = json.dumps({"kb": kb_id, "f": files_only, "t": deleted_at, "b": batch_id}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+
+def _trash_cursor_position(cursor: str, kb_id: str, *, files_only: bool) -> tuple[int, str] | None:
+    """The ``(batchDeletedAt, batchId)`` a cursor of this listing names, or None for any other string."""
+    try:
+        wire = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+    except ValueError:  # bad base64, non-ASCII, bad UTF-8 and bad JSON are all ValueErrors
+        return None
+    if not isinstance(wire, dict) or wire.get("kb") != kb_id or wire.get("f") is not files_only:
+        return None
+    deleted_at, batch_id = wire.get("t"), wire.get("b")
+    if isinstance(deleted_at, bool) or not isinstance(deleted_at, int) or not isinstance(batch_id, str) or not batch_id:
+        return None
+    # What a store cannot bind (past int64, a NUL in text) would fail the read as a 500.
+    if not 0 <= deleted_at < 2**63 or "\x00" in batch_id:
+        return None
+    return deleted_at, batch_id
 
 
 class KnowledgeBaseService:
@@ -2416,7 +2458,8 @@ class KnowledgeBaseService:
         }
 
     async def list_trash(
-        self, kb_id: str, user_id: str, org_id: str, page: int = 1, limit: int = DEFAULT_TRASH_PAGE_SIZE
+        self, kb_id: str, user_id: str, org_id: str, page: int = 1, limit: int = DEFAULT_TRASH_PAGE_SIZE,
+        cursor: str | None = None,
     ) -> dict:
         """One page of the collection's "Recently deleted" list: what this user may restore.
 
@@ -2425,17 +2468,24 @@ class KnowledgeBaseService:
         says where it was, who deleted it and from when the purge may remove it
         for good. Owners and writers see every item; a
         file organizer only single files, as those are all they may restore.
+
+        ``cursor`` (a page's ``nextCursor``) starts the page after the last item
+        of that page; ``page`` is then only echoed. Without it, page numbers
+        reach the first ``TRASH_TOTAL_CAP`` items, and the total stops there.
         """
         if (
             isinstance(page, bool) or isinstance(limit, bool)
             or not isinstance(page, int) or not isinstance(limit, int)
             or page < 1 or not 1 <= limit <= MAX_TRASH_PAGE_SIZE
+            or (cursor is not None and (not isinstance(cursor, str) or not 1 <= len(cursor) <= MAX_TRASH_CURSOR_LENGTH))
         ):
             return {
                 "success": False,
                 "code": 400,
                 "reason": f"Ask for a page from 1 up, with 1 to {MAX_TRASH_PAGE_SIZE} items per page.",
             }
+        if cursor is None and (page - 1) * limit >= TRASH_TOTAL_CAP:
+            return {"success": False, "code": 400, "errorCode": PAGE_BEYOND_LIMIT, "reason": TRASH_PAGE_BEYOND_LIMIT_REASON}
         try:
             if not await is_soft_delete_enabled(self.config_service):
                 return {"success": False, "code": 403, "reason": TRASH_TURNED_OFF_REASON}
@@ -2447,22 +2497,38 @@ class KnowledgeBaseService:
             )
             if err:
                 return err
+            files_only = user_role not in RESTORE_BATCH_ROLES
+            after = None
+            if cursor is not None:
+                after = _trash_cursor_position(cursor, kb_id, files_only=files_only)
+                if after is None:
+                    return {"success": False, "code": 400, "reason": TRASH_CURSOR_REFUSED_REASON}
+            # One row more than the page says whether a next page exists, whatever the capped total says.
             found = await self.graph_provider.list_trashed_records(
                 kb_id, org_id,
-                skip=(page - 1) * limit, limit=limit,
-                single_file_batches_only=user_role not in RESTORE_BATCH_ROLES,
+                skip=0 if after else (page - 1) * limit, limit=limit + 1,
+                single_file_batches_only=files_only,
+                after=after, count_cap=TRASH_TOTAL_CAP,
             )
             min_age_ms = await self._trash_min_age_ms()
+            rows = found.get("items") or []
+            last = rows[limit - 1] if len(rows) > limit else None
             total = found.get("total") or 0
+            capped = total > TRASH_TOTAL_CAP
+            total = min(total, TRASH_TOTAL_CAP)
             return {
                 "success": True,
                 "code": 200,
-                "items": [self._trash_item(item, min_age_ms) for item in found.get("items") or []],
+                "items": [self._trash_item(item, min_age_ms) for item in rows[:limit]],
                 "pagination": {
                     "page": page,
                     "limit": limit,
                     "totalCount": total,
                     "totalPages": -(-total // limit),
+                    "totalCapped": capped,
+                    "nextCursor": (
+                        _trash_cursor(kb_id, last["batchDeletedAt"], last["batchId"], files_only=files_only) if last else None
+                    ),
                 },
                 "retention": None if min_age_ms is None else {"minAgeMs": min_age_ms},
             }

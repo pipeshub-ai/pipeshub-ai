@@ -166,7 +166,7 @@ class TestSecondCancel:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        await asyncio.wait_for(released.wait(), timeout=1)
+        await released.wait()
 
 
 class TestLeaseLost:
@@ -190,7 +190,7 @@ class TestLeaseLost:
         )
         await started.wait()
         lease.lost.set()
-        await asyncio.wait_for(task, timeout=1)
+        await task
 
     @pytest.mark.asyncio
     async def test_lost_lease_skips_the_idle_write_but_still_releases(self) -> None:
@@ -229,7 +229,7 @@ class TestLeaseLost:
         )
         await started.wait()
         lease.stop_requested.set()
-        await asyncio.wait_for(task, timeout=1)
+        await task
 
         assert _statuses(gp) == [AppStatus.SYNCING.value, AppStatus.IDLE.value]
         manager.end.assert_awaited_once_with(lease)

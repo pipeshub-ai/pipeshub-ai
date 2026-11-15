@@ -3,7 +3,7 @@
 import asyncio
 import contextlib
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -41,45 +41,13 @@ from app.services.messaging.kafka.handlers.record import (
 )
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
 from app.utils import user_errors
+from tests.support.record_handler import make_record_handler
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_handler(logger=None, config_service=None, event_processor=None, producer=None):
-    """Create a RecordEventHandler with mock dependencies."""
-    from app.services.messaging.kafka.handlers.record import RecordEventHandler
-
-    logger = logger or MagicMock()
-    config_service = config_service or AsyncMock()
-    event_processor = event_processor or MagicMock()
-    producer = producer if producer is not None else AsyncMock()
-
-    # Ensure event_processor has the nested objects the handler expects
-    if not hasattr(event_processor, "graph_provider") or event_processor.graph_provider is None:
-        event_processor.graph_provider = AsyncMock()
-    elif not isinstance(event_processor.graph_provider, AsyncMock):
-        event_processor.graph_provider = AsyncMock()
-    if not hasattr(event_processor, "processor") or event_processor.processor is None:
-        event_processor.processor = MagicMock()
-        event_processor.processor.indexing_pipeline = AsyncMock()
-    # Mirrors EventProcessor's real default (None) — a bare MagicMock would
-    # auto-vivify `.sink_orchestrator.entity_vector_store` as a truthy
-    # MagicMock, which the handler would then try to `await` a method call
-    # on. Tests that need entity-vector-store behaviour set this explicitly
-    # afterwards via `handler.event_processor.sink_orchestrator = ...`.
-    event_processor.sink_orchestrator = None
-    # Same reason: no stage runtime unless a test binds one (an auto-vivified
-    # MagicMock would be awaited). Tests that need it set it afterwards.
-    if "stage_ingress" not in vars(event_processor) and isinstance(event_processor, MagicMock):
-        event_processor.stage_ingress = None
-
-    return RecordEventHandler(
-        logger=logger,
-        config_service=config_service,
-        event_processor=event_processor,
-        producer=producer,
-    )
+_make_handler = make_record_handler
 
 
 async def _collect_events(handler, event_type, payload):
@@ -1973,6 +1941,376 @@ class TestAlreadyIndexed:
             await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
         ingress.handoff_lost.assert_awaited_once()
         assert not self._logged_already_done(handler)
+
+    _XLSX = {
+        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "extension": "xlsx",
+    }
+
+    def _indexed_xlsx(self, *, handoff_lost: bool) -> tuple[RecordEventHandler, MagicMock]:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={
+            "_key": "r1", "virtualRecordId": "vr1", "contentRev": "rev-1", **self._XLSX,
+            "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value,
+        })
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
+        ingress = MagicMock()
+        ingress.handoff_lost = AsyncMock(return_value=handoff_lost)
+        handler.event_processor.stage_ingress = ingress
+        pipeline = AsyncMock()
+        handler.event_processor.processor.indexing_pipeline = pipeline
+        return handler, pipeline
+
+    @pytest.mark.asyncio
+    async def test_a_replayed_unforced_reindex_of_an_indexed_xlsx_makes_no_vector_store_call(self) -> None:
+        handler, pipeline = self._indexed_xlsx(handoff_lost=False)
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", **self._XLSX}
+
+        events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        # Neither the embedding delete, nor the point delete, nor any call on the vector store.
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
+        pipeline.delete_points_for_virtual_record.assert_not_awaited()
+        assert pipeline.vector_db_service.mock_calls == []
+        assert pipeline.mock_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_lost_hand_off_still_reconciles_before_running(self) -> None:
+        handler, pipeline = self._indexed_xlsx(handoff_lost=True)
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", **self._XLSX}
+
+        # The full path runs into the bare test doubles further on; what matters is the reconciliation.
+        with contextlib.suppress(Exception):
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        pipeline.bulk_delete_embeddings.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_forced_reindex_of_an_indexed_xlsx_still_reconciles(self) -> None:
+        handler, pipeline = self._indexed_xlsx(handoff_lost=False)
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "forceReindex": True, **self._XLSX}
+
+        with contextlib.suppress(Exception):
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        pipeline.bulk_delete_embeddings.assert_awaited_once()
+
+    # ---- the replay set: an exact replay of a delivery that completed the record -----------------
+
+    @staticmethod
+    async def _until_it_starts_work(handler, event_type: str, payload: dict) -> list[IndexingEvent]:
+        """What the handler yields up to the first sign it is about to download: a replay ends before it."""
+        seen: list[IndexingEvent] = []
+        try:
+            async for event in handler.process_event(event_type, payload):
+                seen.append(event.event)
+                if event.event == IndexingEvent.START_DOWNLOAD:
+                    break
+        except Exception:  # the full path runs into the bare test doubles
+            pass
+        return seen
+
+    #: What the handler yields when it acknowledges an event without work.
+    _ACK = [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+
+    @staticmethod
+    async def _completed_by(redis, record_id: str = "r1", *deliveries: tuple[str, str, str]) -> None:
+        """Each delivery completed the record in turn, at 1, 2, ...: the last one is the record's ``lastIndexTimestamp``."""
+        from app.modules.indexing import replay_set
+
+        for at, (event_id, delivery_id, flags) in enumerate(deliveries, start=1):
+            await replay_set.record_delivery(
+                redis, record_id, event_id=event_id, delivery_id=delivery_id or None, flags=flags, completed_at_ms=at
+            )
+
+    def _completed_record_handler(self, redis, indexed_at: int = 1) -> RecordEventHandler:
+        """A handler over a record whose last COMPLETED write was at ``indexed_at``."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={
+            "_key": "r1", "virtualRecordId": "vr1", "contentRev": "rev-1", "mimeType": "application/pdf",
+            "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value,
+            "lastIndexTimestamp": indexed_at,
+        })
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
+        handler.event_processor.processor.indexing_pipeline = AsyncMock()
+        handler._redis_client = AsyncMock(return_value=redis)
+        return handler
+
+    @staticmethod
+    def _update(**extra: object) -> dict:
+        return {"recordId": "r1", "virtualRecordId": "vr1", "mimeType": "application/pdf", "extension": "pdf", **extra}
+
+    @pytest.fixture
+    async def redis(self) -> AsyncIterator[Any]:
+        import fakeredis.aioredis
+
+        client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        yield client
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_a_replayed_update_of_a_completed_delivery_does_no_work(self, redis) -> None:
+        await self._completed_by(redis, "r1", ("evt-42", "t-0-42", ""))
+        handler = self._completed_record_handler(redis)
+
+        events = await self._until_it_starts_work(
+            handler, EventTypes.UPDATE_RECORD.value, self._update(_event_id="evt-42", _delivery_id="t-0-42")
+        )
+
+        assert events == self._ACK
+        handler.event_processor.processor.indexing_pipeline.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_replay_is_identified_by_the_envelope_event_id(self, redis) -> None:
+        await self._completed_by(redis, "r1", ("evt-9", "t-0-9", ""))
+        update = EventTypes.UPDATE_RECORD.value
+
+        # The event id alone is enough (a replay that carries no delivery id).
+        handler = self._completed_record_handler(redis)
+        assert await self._until_it_starts_work(handler, update, self._update(_event_id="evt-9")) == self._ACK
+        # The same event id under another delivery id is not the stored delivery: it runs.
+        handler = self._completed_record_handler(redis)
+        assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
+            handler, update, self._update(_event_id="evt-9", _delivery_id="t-7-1")
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_new_event_on_a_reused_delivery_id_runs(self, redis) -> None:
+        # After a broker offset reset (a recreated topic, a recreated queue table) a genuine new update can
+        # carry a delivery id the set already holds for an older event: it must run, not be skipped.
+        await self._completed_by(redis, "r1", ("evt-E1", "t-0-42", ""))
+        handler = self._completed_record_handler(redis)
+
+        events = await self._until_it_starts_work(
+            handler, EventTypes.UPDATE_RECORD.value, self._update(_event_id="evt-E2", _delivery_id="t-0-42")
+        )
+
+        assert IndexingEvent.START_DOWNLOAD in events
+
+    @pytest.mark.asyncio
+    async def test_a_delivery_id_alone_never_acknowledges(self, redis) -> None:
+        # No envelope, so no event id: nothing was remembered for it and nothing can match it.
+        await self._completed_by(redis, "r1", ("evt-E1", "t-0-42", ""))
+        handler = self._completed_record_handler(redis)
+
+        events = await self._until_it_starts_work(
+            handler, EventTypes.UPDATE_RECORD.value, self._update(_delivery_id="t-0-42")
+        )
+
+        assert IndexingEvent.START_DOWNLOAD in events
+
+    @staticmethod
+    async def _consumed(message: dict, delivery_id: str) -> dict:
+        """What the handler is given for a message a producer sent: the consumer's own opening and stamping."""
+        from app.core import envelope
+        from app.modules.indexing.embed_resume import stamp_delivery_id
+
+        opened = await envelope.open_envelope("record-events", message, keys=())
+        payload = dict(opened.message["payload"])
+        stamp_delivery_id(payload, delivery_id, opened.ctx)
+        return payload
+
+    @pytest.mark.asyncio
+    async def test_an_unsigned_default_install_remembers_and_acknowledges_a_replay(self, redis, monkeypatch) -> None:
+        # No signing (the default install): the producer's event id still identifies the event.
+        from app.core import envelope
+
+        monkeypatch.delenv("ENVELOPE_SIGN", raising=False)
+        sent = envelope.sign_message(
+            "record-events", {"eventType": "updateRecord", "payload": self._update(orgId="org-1")}
+        )
+        payload = await self._consumed(sent, "t-0-42")
+        assert payload["_event_id"] == sent["eventId"]
+        handler = self._completed_record_handler(redis)
+
+        # The sink remembers the delivery when the run wrote COMPLETED ...
+        await handler._replay_ref(payload).remember("r1", 1)
+        # ... and the broker redelivers the same message.
+        replay = await self._consumed(sent, "t-0-42")
+        events = await self._until_it_starts_work(handler, EventTypes.UPDATE_RECORD.value, replay)
+
+        assert events == self._ACK
+
+    @pytest.mark.asyncio
+    async def test_a_message_from_an_older_producer_with_no_event_id_runs_normally(self, redis) -> None:
+        old = {"eventType": "updateRecord", "payload": self._update(orgId="org-1")}  # no eventId anywhere
+        payload = await self._consumed(old, "t-0-42")
+        assert "_event_id" not in payload
+        handler = self._completed_record_handler(redis)
+
+        await handler._replay_ref(payload).remember("r1", 1)  # nothing is remembered without an event id
+        assert await redis.dbsize() == 0
+        events = await self._until_it_starts_work(handler, EventTypes.UPDATE_RECORD.value, payload)
+
+        assert IndexingEvent.START_DOWNLOAD in events
+
+    @pytest.mark.asyncio
+    async def test_the_replay_guard_applies_only_to_completed_deliveries(self, redis) -> None:
+        await self._completed_by(redis, "r1", ("evt-42", "t-0-42", ""))
+        update = EventTypes.UPDATE_RECORD.value
+
+        # A different delivery runs.
+        handler = self._completed_record_handler(redis)
+        assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
+            handler, update, self._update(_event_id="evt-43", _delivery_id="t-0-43")
+        )
+        # A vector-store rebuild runs.
+        handler = self._completed_record_handler(redis)
+        assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
+            handler, update, self._update(_event_id="evt-42", _delivery_id="t-0-42", vectorDbOnly=True)
+        )
+        # Enrichment that was cut short runs.
+        handler = self._completed_record_handler(redis)
+        handler.event_processor.graph_provider.get_document.return_value["extractionStatus"] = (
+            ProgressStatus.IN_PROGRESS.value
+        )
+        assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
+            handler, update, self._update(_event_id="evt-42", _delivery_id="t-0-42")
+        )
+        # A record that is not COMPLETED (a newer update is in flight) runs.
+        handler = self._completed_record_handler(redis)
+        handler.event_processor.graph_provider.get_document.return_value["indexingStatus"] = (
+            ProgressStatus.IN_PROGRESS.value
+        )
+        assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
+            handler, update, self._update(_event_id="evt-42", _delivery_id="t-0-42")
+        )
+        # A lost hand-off runs.
+        handler = self._completed_record_handler(redis)
+        ingress = MagicMock()
+        ingress.handoff_lost = AsyncMock(return_value=True)
+        handler.event_processor.stage_ingress = ingress
+        assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
+            handler, update, self._update(_event_id="evt-42", _delivery_id="t-0-42")
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_completed_forced_reindex_redelivered_is_acknowledged(self, redis) -> None:
+        await self._completed_by(redis, "r1", ("evt-50", "t-0-50", "F"))
+        handler = self._completed_record_handler(redis)
+
+        events = await self._until_it_starts_work(
+            handler, EventTypes.REINDEX_RECORD.value, self._update(_event_id="evt-50", _delivery_id="t-0-50", forceReindex=True)
+        )
+
+        assert events == self._ACK
+        handler.event_processor.processor.indexing_pipeline.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_replayed_window_of_two_completed_updates_does_no_work(self, redis) -> None:
+        # U1 and U2 both completed, then a rebalance replays the window from before U1.
+        await self._completed_by(redis, "r1", ("evt-10", "t-0-10", ""), ("evt-15", "t-0-15", ""))
+        handler = self._completed_record_handler(redis, indexed_at=2)
+
+        for delivery_id in ("t-0-10", "t-0-15"):
+            events = await self._until_it_starts_work(
+                handler, EventTypes.UPDATE_RECORD.value, self._update(_event_id=delivery_id.replace("t-0-", "evt-"), _delivery_id=delivery_id)
+            )
+            assert events == self._ACK, delivery_id
+
+    @pytest.mark.asyncio
+    async def test_a_forced_original_runs_after_a_non_forced_recovery_with_the_same_id(self, redis) -> None:
+        # Stale recovery republished the interrupted run as a non-forced event carrying its delivery id; it
+        # completed. The PEL-reclaimed forced original has that id and asks for more: it runs.
+        await self._completed_by(redis, "r1", ("evt-60", "t-0-60", ""))
+        handler = self._completed_record_handler(redis)
+
+        events = await self._until_it_starts_work(
+            handler, EventTypes.REINDEX_RECORD.value, self._update(_event_id="evt-60", _delivery_id="t-0-60", forceReindex=True)
+        )
+
+        assert IndexingEvent.START_DOWNLOAD in events
+
+    @pytest.mark.asyncio
+    async def test_a_different_stage_set_runs(self, redis) -> None:
+        from app.modules.indexing import replay_set
+
+        flags = replay_set.flags_of({"forceReindex": True, "stages": ["classify"]})
+        await self._completed_by(redis, "r1", ("evt-70", "t-0-70", flags))
+        handler = self._completed_record_handler(redis)
+
+        events = await self._until_it_starts_work(
+            handler, EventTypes.REINDEX_RECORD.value,
+            self._update(_event_id="evt-70", _delivery_id="t-0-70", forceReindex=True, stages=["entities"]),
+        )
+
+        assert IndexingEvent.START_DOWNLOAD in events
+
+    @pytest.mark.asyncio
+    async def test_without_the_set_a_replay_does_what_it_always_did(self, redis, monkeypatch) -> None:
+        # The set is an optimisation: absent, evicted, unreachable or switched off, nothing else changes.
+        await self._completed_by(redis, "r1", ("evt-42", "t-0-42", ""))
+        update = EventTypes.UPDATE_RECORD.value
+
+        # Evicted: the entry is gone.
+        await redis.flushall()
+        handler = self._completed_record_handler(redis)
+        assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
+            handler, update, self._update(_event_id="evt-42", _delivery_id="t-0-42")
+        )
+        # Unreachable: the read raises.
+        broken = MagicMock()
+        broken.hgetall = AsyncMock(side_effect=ConnectionError("down"))
+        handler = self._completed_record_handler(broken)
+        assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
+            handler, update, self._update(_event_id="evt-42", _delivery_id="t-0-42")
+        )
+        # Switched off, with the entry present.
+        await self._completed_by(redis, "r1", ("evt-42", "t-0-42", ""))
+        monkeypatch.setenv("REPLAY_SET", "off")
+        handler = self._completed_record_handler(redis)
+        assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
+            handler, update, self._update(_event_id="evt-42", _delivery_id="t-0-42")
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_older_update_that_ran_again_makes_the_newer_one_run(self, redis) -> None:
+        # U1 then U2 of one record: U1's entry was never written (or was trimmed), U2's was, and a replay
+        # of the window follows. U1 is unknown, so it runs again, and it may index U1's bytes (a signed URL
+        # names that version). U2 must then run too, or the record is left on U1's content.
+        from app.modules.indexing import replay_set
+
+        await replay_set.record_delivery(redis, "r1", event_id="evt-15", delivery_id="t-0-15", flags="", completed_at_ms=2)
+        handler = self._completed_record_handler(redis, indexed_at=2)
+        assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
+            handler, EventTypes.UPDATE_RECORD.value, self._update(_event_id="evt-10", _delivery_id="t-0-10")
+        )
+
+        # U1's run completes the record again; its entry is written, or that write fails as well.
+        for remembered in (True, False):
+            await redis.flushall()
+            await replay_set.record_delivery(redis, "r1", event_id="evt-15", delivery_id="t-0-15", flags="", completed_at_ms=2)
+            if remembered:
+                await replay_set.record_delivery(
+                    redis, "r1", event_id="evt-10", delivery_id="t-0-10", flags="", completed_at_ms=3
+                )
+            handler = self._completed_record_handler(redis, indexed_at=3)
+            events = await self._until_it_starts_work(
+                handler, EventTypes.UPDATE_RECORD.value, self._update(_event_id="evt-15", _delivery_id="t-0-15")
+            )
+            assert IndexingEvent.START_DOWNLOAD in events, f"U1 re-ran (entry written: {remembered}); U2 must run"
+
+    @pytest.mark.asyncio
+    async def test_a_replayed_stage_reindex_that_ran_in_full_redrives_nothing(self, redis) -> None:
+        # The first delivery found no stage state for the revision and fell back to a full reindex, which
+        # completed the record and dispatched every stage. Its replay must not redrive the stages again.
+        from app.modules.indexing import replay_set
+
+        payload = self._update(_event_id="evt-80", _delivery_id="t-0-80", forceReindex=True, stages=["classify"])
+        await self._completed_by(redis, "r1", ("evt-80", "t-0-80", replay_set.flags_of(payload)))
+        handler = self._completed_record_handler(redis)
+        ingress = MagicMock()
+        ingress.handoff_lost = AsyncMock(return_value=False)
+        ingress.redrive = AsyncMock(return_value=["classify"])
+        handler.event_processor.stage_ingress = ingress
+
+        events = await self._until_it_starts_work(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+        ingress.redrive.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_new_record_already_completed(self):
@@ -6090,7 +6428,10 @@ class TestStageRedrive:
         handler, gp, ingress = self._handler(None)
         # The full path ends by promoting the record's queued copies; it has none.
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
-        await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload())
+        # A reindex the connector publishes is forced; one that is not is a replay, which is acknowledged.
+        # The full path runs into the bare test doubles further on; what matters is what came first.
+        with contextlib.suppress(Exception):
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(forceReindex=True))
         ingress.redrive.assert_awaited_once()
         # Past the stage branch: the regular reindex path clears the old vectors.
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id=None)

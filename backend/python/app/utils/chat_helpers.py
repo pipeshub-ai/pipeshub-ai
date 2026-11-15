@@ -16,6 +16,7 @@ from uuid import uuid4
 if TYPE_CHECKING:
     from jinja2 import Template
 
+from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.config.constants.service import config_node_constants
@@ -3951,16 +3952,18 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
             extension = meta.get("extension")
             if extension is None:
                 extension = get_extension_from_mimetype(mime_type)
+            # An .xlsm's rows are cited as an .xlsx's are, a .docm's text as a .docx's.
+            cited_as = file_types.blocks_like(extension)
 
             block_num = meta.get("blockNum")
             if block_num is None:
-                if extension == "xlsx" or extension == "tsv":
+                if cited_as == "xlsx" or cited_as == "tsv":
                     # Guard against non-dict data
                     if isinstance(data, dict):
                         block_num = [data.get("row_number", 1)]
                     else:
                         block_num = [1]
-                elif extension == "csv":
+                elif cited_as == "csv":
                     if isinstance(data, dict):
                         block_num = [data.get("row_number", 1)-1]
                     else:
@@ -4032,12 +4035,12 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
                         "hideWeburl": hide_weburl,
                         "updatedAt": record_updated_at_iso,
                     }
-            if extension == "xlsx" or meta.get("sheetName"):
+            if cited_as == "xlsx" or meta.get("sheetName"):
                 if isinstance(data, dict):
                     enhanced_metadata["sheetName"] = data.get("sheet_name", "")
                 else:
                     enhanced_metadata["sheetName"] = meta.get("sheetName", "")
-            if extension == "xlsx" or meta.get("sheetNum"):
+            if cited_as == "xlsx" or meta.get("sheetNum"):
                 if isinstance(data, dict):
                     enhanced_metadata["sheetNum"] = data.get("sheet_number", 1)
                 else:
@@ -4352,7 +4355,7 @@ def create_block_from_metadata(metadata: dict[str, Any],page_content: str) -> di
             # _process_flattened_results takes its existing "missing uri" skip
             # path instead of crashing on `str.get`.
             data = {"uri": None, "description": page_content}
-        elif extension == "docx":
+        elif file_types.blocks_like(extension) == "docx":
             data = page_content
         else:
             data = metadata.get("blockText",page_content)

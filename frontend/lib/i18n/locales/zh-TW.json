@@ -70,6 +70,7 @@
       "restoredMany_one": "已還原 {{count}} 個項目",
       "restoredMany_other": "已還原 {{count}} 個項目",
       "showing": "第 {{from}}–{{to}} 項，共 {{total}} 項",
+      "showingAtLeast": "第 {{from}}–{{to}} 項，共 {{total, number}}+ 項",
       "previous": "上一頁",
       "next": "下一頁",
       "nameAndMore_one": "{{name}} 及另外 {{count}} 項",
@@ -5436,6 +5437,7 @@
       "noRecordMetadata": "此項目沒有其他記錄中繼資料。"
     },
     "indexingReasonAria": "索引失敗詳細資訊",
+    "indexingNoteAria": "索引說明",
     "stageTrackLabel": "處理流程",
     "stageParsed": "已解析",
     "stageSearchable": "可搜尋",

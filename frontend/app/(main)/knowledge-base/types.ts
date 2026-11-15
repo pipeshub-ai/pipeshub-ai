@@ -579,6 +579,8 @@ export interface RecordDetailsResponse {
     isArchived: boolean;
     indexingStatus: IndexingStatus;
     reason?: string;
+    // How a COMPLETED record was indexed (e.g. only part of a large text file); not a failure.
+    indexingNote?: string | null;
     // Set while the record waits out its source's rate limit (epoch ms).
     retryNotBefore?: number | null;
     connectorName?: string;

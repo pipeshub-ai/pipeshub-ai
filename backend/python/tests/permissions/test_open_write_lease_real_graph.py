@@ -172,3 +172,53 @@ async def test_the_store_clock_is_close_to_this_hosts_and_a_skewed_sweeper_leave
     monkeypatch.setattr(sg, "time", SimpleNamespace(time=lambda: time.time() + 3600))      # a sweeper host an hour ahead
     assert await recover_expired_writes(backend.provider, conn) == 0
     assert unclosed_writes(await app_of(backend, conn)) == 1
+
+
+async def test_a_compare_and_set_is_refused_once_the_stores_clock_is_past_the_callers_bound(backend) -> None:
+    """A lease computed from a clock read is written only while the store's clock, read by the write itself, is within the bound."""
+    _, conn, *_ = await _world(backend)
+    app = await app_of(backend, conn)
+    now = await backend.provider.store_time()
+    assert not await backend.provider.update_node_fields_if_match(conn, CollectionNames.APPS.value, {OPEN_WRITES_KEY: "late"},
+                                                                  {OPEN_WRITES_KEY: app.get(OPEN_WRITES_KEY)}, clock_at_most=now - 1)
+    assert (await app_of(backend, conn)).get(OPEN_WRITES_KEY) == app.get(OPEN_WRITES_KEY)
+    assert await backend.provider.update_node_fields_if_match(conn, CollectionNames.APPS.value, {OPEN_WRITES_KEY: "{}"},
+                                                              {OPEN_WRITES_KEY: app.get(OPEN_WRITES_KEY)}, clock_at_most=now + 60)
+    assert (await app_of(backend, conn))[OPEN_WRITES_KEY] == "{}"
+
+
+async def test_a_write_that_waits_for_a_lock_past_its_bound_is_refused_on_arangodb(arango_provider, arango_settings) -> None:
+    """ArangoDB folds `DATE_NOW()` into a constant when it compiles a statement, before the statement waits for a collection lock: a write that
+    waited for another transaction's exclusive lock past its bound would apply on a clock read before the wait. The clock is read after the write
+    holds the document's lock instead, so it is refused; the same wait with a bound past it applies (the wait alone refuses nothing)."""
+    from tests.integration.graph_permissions.write_path_support import (
+        _ArangoBackend,
+        _seed_app,
+        _suffix,
+    )
+
+    store = _ArangoBackend(arango_provider, arango_settings)
+    conn = f"conn-{_suffix()}"
+    await _seed_app(store, conn)
+    http = arango_provider.http_client
+
+    async def behind_an_exclusive_lock(value: str, bound_after: float) -> bool:
+        before = (await app_of(store, conn)).get(OPEN_WRITES_KEY)
+        holder = await http.begin_transaction([], [], exclusive=[CollectionNames.APPS.value])
+        try:
+            now = await arango_provider.store_time()
+            write = asyncio.ensure_future(arango_provider.update_node_fields_if_match(
+                conn, CollectionNames.APPS.value, {OPEN_WRITES_KEY: value}, {OPEN_WRITES_KEY: before}, clock_at_most=now + bound_after))
+            await asyncio.sleep(3.0)
+            assert not write.done()                                            # it is still waiting for the lock: what it answers comes after
+        finally:
+            await http.abort_transaction(holder)
+        return await write
+
+    assert not await behind_an_exclusive_lock("late", 1.0)                     # bound 1 s, released after 3 s: refused
+    assert (await app_of(store, conn)).get(OPEN_WRITES_KEY) is None
+    assert await behind_an_exclusive_lock("{}", 60.0)                          # the same wait within its bound: applied
+    assert (await app_of(store, conn))[OPEN_WRITES_KEY] == "{}"
+    with pytest.raises(ValueError, match="transaction of its own"):
+        await arango_provider.update_node_fields_if_match(conn, CollectionNames.APPS.value, {OPEN_WRITES_KEY: "{}"}, {OPEN_WRITES_KEY: "{}"},
+                                                          transaction="t", clock_at_most=0)

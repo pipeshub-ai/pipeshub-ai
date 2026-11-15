@@ -1,3 +1,4 @@
+import functools
 import json
 from collections.abc import Awaitable, Callable
 from enum import Enum
@@ -16,6 +17,7 @@ from app.telemetry.identity import domain_from_email
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.containers.connector import ConnectorAppContainer
+from app.core.org_jobs import for_each_org, of_org
 from app.models.entities import RecordType
 from app.services.graph_db.common.utils import (
     ROOT_SCOPED_CONNECTOR_TYPES,
@@ -705,11 +707,25 @@ class ConnectorRegistry:
         """
         try:
             graph_provider = await self._get_graph_provider()
-
-            # Get all connector instances from database
-            all_documents = await graph_provider.get_all_documents(
-                self._collection_name
+            # Org by org: on PostgreSQL every read and write runs under one org.
+            failed = await for_each_org(
+                graph_provider, "connector_registry_sync",
+                functools.partial(self._sync_org_with_database, graph_provider), self.logger,
             )
+        except Exception as e:
+            self.logger.error(f"Error syncing registry with database: {e}")
+            return False
+        if failed:
+            return False
+        self.logger.info("Successfully synced registry with database")
+        return True
+
+    async def _sync_org_with_database(self, graph_provider: IGraphDBProvider, org_id: str) -> None:
+        """One org's part of ``sync_with_database``, called under that org."""
+        try:
+            all_documents = of_org(await graph_provider.get_all_documents(
+                self._collection_name
+            ), org_id)
 
             # Collect keys of instances that need to be deactivated
             keys_to_deactivate = []
@@ -800,12 +816,9 @@ class ConnectorRegistry:
                     f"Backfilled permissionModel on {len(stale_permission_models)} connector instances"
                 )
 
-            self.logger.info("Successfully synced registry with database")
-            return True
-
         except Exception as e:
-            self.logger.error(f"Error syncing registry with database: {e}")
-            return False
+            self.logger.error(f"Error syncing registry with database org={org_id}: {e}")
+            raise
 
     def _build_connector_info(
         self,

@@ -392,6 +392,8 @@ record_schema = {
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
+            # How the record was indexed, e.g. that only part of a large text file is (not a failure).
+            "indexingNote": {"type": ["string", "null"]},
             # Credentials redacted from the content before indexing (S-2).
             "secretsRedacted": {"type": ["integer", "null"], "minimum": 0},
             # Promoted duplicates of this record still need its taxonomy copied.
@@ -488,6 +490,13 @@ record_schema = {
 # ``_key`` is ``{virtualRecordId}:{rev}:{stage}``; see app/modules/pipeline/models.py.
 STAGE_TIERS = ["heavy", "light"]
 STAGE_PRIORITIES = ["interactive", "bulk"]
+#
+# Forward-compatible (expand-then-contract): a later release may add a field, or a status, tier or
+# priority value, and a pod still on this schema must accept the row. So unknown properties are
+# allowed and ``status``, ``tier`` and ``priority`` are plain strings; ``StageState`` keeps the closed
+# sets in code. Required fields and the types of the declared ones are still checked. Record nodes
+# (``record_schema``) stay strict. Once a later release has written a new field or value, rolling back
+# past the release that carries this schema is unsupported for the stage collections.
 stage_state_schema = {
     "rule": {
         "type": "object",
@@ -496,12 +505,12 @@ stage_state_schema = {
             "virtualRecordId": {"type": "string"},
             "rev": {"type": "string"},
             "stage": {"type": "string"},
-            "status": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
+            "status": {"type": "string"},
             "stageVersion": {"type": "integer", "minimum": 1},
             "recordIds": {"type": "array", "items": {"type": "string"}, "minItems": 1},
             "connectorId": {"type": "string"},
-            "tier": {"type": "string", "enum": STAGE_TIERS},
-            "priority": {"type": "string", "enum": STAGE_PRIORITIES},
+            "tier": {"type": "string"},
+            "priority": {"type": "string"},
             "trigger": {"type": "string"},
             "force": {"type": "boolean"},
             "mimeType": {"type": ["string", "null"]},
@@ -539,7 +548,7 @@ stage_state_schema = {
             "hasImages",
             "updatedAtMs",
         ],
-        "additionalProperties": False,
+        "additionalProperties": True,
     },
     "level": "strict",
     "message": "Document does not match the stage state schema.",
