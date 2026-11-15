@@ -111,3 +111,18 @@ async def test_an_agents_permission_check_reads_through_the_callers_transaction(
         await graph.rollback_transaction(txn)
     agent = await graph.get_document(ids["agent"], AGENTS)
     assert agent["name"] == "agent" and not agent.get("isDeleted")                                         # rolled back: nothing kept
+
+
+async def test_an_agents_permission_update_checks_the_owner_in_the_callers_transaction(world: tuple[IGraphDBProvider, dict[str, str]]) -> None:
+    graph, ids = world
+    txn = await graph.begin_transaction(read=[USERS, ORGS, AGENTS, PERMISSION, TEAMS], write=[AGENTS, PERMISSION], explicit=True)
+    try:
+        assert await graph.batch_create_edges([_edge(USERS, ids["writer"], AGENTS, ids["agent"], "USER", "OWNER"),
+                                               _edge(USERS, ids["teamowner"], AGENTS, ids["agent"], "USER", "READER")], PERMISSION, transaction=txn)
+        granted = await graph.update_agent_permission(ids["agent"], ids["writer"], ids["org"], [f"uid-{ids['teamowner']}"], [], "WRITER", transaction=txn)
+        assert granted and granted.get("reason") != "Agent not found or no permission", granted          # an owner grant written earlier in the transaction counts
+        assert await graph.delete_edge(ids["writer"], USERS, ids["agent"], AGENTS, PERMISSION, transaction=txn)
+        refused = await graph.update_agent_permission(ids["agent"], ids["writer"], ids["org"], [f"uid-{ids['teamowner']}"], [], "READER", transaction=txn)
+        assert refused == {"success": False, "reason": "Agent not found or no permission"}               # and one removed in it does not
+    finally:
+        await graph.rollback_transaction(txn)
