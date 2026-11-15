@@ -195,8 +195,6 @@ RAISING_DEFAULTS_NOT_ON_POSTGRES = {
     # shortcut: get_ref_access (a knowledge-base push that inlines stored images) raises on PostgreSQL; "linked" is read across orgs, which needs
     # a vetted cross-org read here. Implement it and drop this entry
     "_ref_link_rows",
-    # implemented in the sibling fix
-    "get_hidden_app_ids",
 }
 
 
