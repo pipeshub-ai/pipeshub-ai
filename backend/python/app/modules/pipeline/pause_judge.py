@@ -151,7 +151,7 @@ class PauseJudge:
         kwargs = {
             "sent": result.sent, "trial": result.trial, "chargeable": result.chargeable,
             "now_ms": now, "ledger_now": ledger, "limits": await self.limits(), "provider": result.provider_label,
-            "scope": scope, "scope_ledger_now": scope_ledger, "requests": result.requests,
+            "scope": scope, "scope_ledger_now": scope_ledger, "requests": result.requests, "charged": result.charged,
         }
         decision = pause_verdict(prior, **kwargs)
         redrive: tuple[str, ...] = ()

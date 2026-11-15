@@ -279,7 +279,7 @@ def test_classify_refusal_is_not_answered_as_retryable() -> None:
     assert response.status_code == 422
     assert response.status_code not in TRANSIENT_STATUS_CODES
     assert response.json() == {
-        "success": False, "classification": None, "error": "over budget", "error_code": None,
+        "success": False, "classification": None, "error": "over budget", "error_code": None, "usage": None,
     }
 
 
@@ -672,3 +672,28 @@ def test_the_424_body_carries_the_key_digest_size_class_and_requests() -> None:
         "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123"}
     ).json()
     assert (body["pk"], body["size_class"], body["provider"], body["requests"]) == ("abc123", "l", "ChatX:m@host", 3)
+
+
+def test_entities_answers_a_provider_outage_with_a_424_and_what_it_spent(entities_app) -> None:
+    """An outage of the model provider behind entity extraction is a 424 with the job's spend, not a 500: the caller
+    pauses its job and counts the sends, instead of retrying the document until it dead-letters."""
+    from app.services.llm_gateway.gateway import current_job_trace
+    from app.utils.llm import LLMUnavailableError
+
+    app, _, extract = entities_app
+
+    async def outage(_request: object) -> object:
+        trace = current_job_trace()
+        assert trace is not None and trace.meter.allowance == 4, "the job's remaining allowance bounds the service's calls"
+        trace.meter.failed += 2
+        trace.note_attempt("pk-1", "l", "P", chargeable=True, trial=False)
+        raise LLMUnavailableError("provider down", pk="pk-1", size_class="l", requests=2, chargeable=True)
+
+    extract.side_effect = outage
+    response = _post_entities(app, org_id="org-123", job_key="entities:vr:rev", send_allowance=4)
+
+    assert response.status_code == 424
+    body = response.json()
+    assert body["error_code"] == "LLM_UNAVAILABLE"
+    assert (body["usage"]["failed"], body["usage"]["charged"], body["usage"]["pk"]) == (2, 1, "pk-1")
+    assert not app.state.entity_extraction_semaphore.locked()

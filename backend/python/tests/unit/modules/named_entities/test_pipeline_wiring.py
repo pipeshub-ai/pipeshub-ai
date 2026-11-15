@@ -199,6 +199,22 @@ async def test_extraction_failure_returns_failed_and_does_not_raise(caplog):
     assert _SECRET_NAME not in caplog.text
 
 
+async def test_a_provider_outage_behind_the_extraction_service_is_reported_as_unavailable():
+    """The service's 424 reaches the stage as every window unavailable, so the stage pauses on it (and counts the sends
+    the service made) instead of retrying the document as a model failure."""
+    from app.modules.pipeline.stages.entities import _provider_down
+    from app.utils.llm import LLMUnavailableError
+
+    sink = _sink()
+    with patch(
+        "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
+        AsyncMock(return_value=True),
+    ), patch.object(stage, "extract_named_entities", AsyncMock(side_effect=LLMUnavailableError("provider down"))):
+        result = await sink.extract_named_entities(SimpleNamespace(record=_record()))
+    assert result.status == "FAILED"
+    assert _provider_down(result)
+
+
 @pytest.mark.parametrize("config", [{"budgets": {"max_turns": "lots"}}, {"tz": 7}])
 async def test_a_malformed_config_blob_runs_with_the_defaults(config):
     sink = _sink()

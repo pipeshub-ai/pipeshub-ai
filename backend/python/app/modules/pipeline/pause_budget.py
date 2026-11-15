@@ -131,6 +131,7 @@ def pause_verdict(
     scope: str = "",
     scope_ledger_now: int = 0,
     requests: int | None = None,
+    charged: int | None = None,
 ) -> PauseDecision:
     """The state after one PAUSED outcome, and what to do about it.
 
@@ -148,7 +149,9 @@ def pause_verdict(
         state,
         sends=state.sends + ((requests if requests is not None else 1) if sent else 0),
         trials=state.trials + (1 if sent and trial else 0),
-        charged=state.charged + (1 if sent and chargeable and not trial else 0),
+        # ``charged``: the outcome's chargeable failed sends, each judged on its own (trials already left out); None
+        # for one when the outcome was a chargeable send that was not a trial.
+        charged=state.charged + (charged if charged is not None else (1 if sent and chargeable and not trial else 0)),
     )
     if wall_seconds_used(state, now_ms, ledger_now) >= limits.wall_seconds:
         return PauseDecision(Verdict.FAIL_WALL, state, fail_reason(Verdict.FAIL_WALL, state, limits, provider))

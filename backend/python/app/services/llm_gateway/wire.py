@@ -7,7 +7,9 @@ exception a LangChain wrapper raises: wrappers name the same failure differently
 The gateway opens a ``WireOutcome`` for each call (a contextvar). One hook pair is installed on every
 httpx client a model holds: the **request** event marks "sent" and caps the connect timeout, the
 **response** event records the status. Bedrock goes through botocore events. Hooks only read the
-contextvar and never raise, so a model call is never failed by them.
+contextvars and never raise, with one exception: a stage job's ``SendMeter`` refuses a request before it
+leaves once the job has no failed sends left (``SendAllowanceSpent``), so an SDK's own retries cannot take a
+job past its absolute cap.
 
 Judging a finished call (``WireOutcome.judge``):
 
@@ -50,6 +52,8 @@ class WireOutcome:
     responses: int = 0
     error: str | None = None
     statuses: list[int] = field(default_factory=list)
+    # A request of this call was refused before it left: its job had no failed sends left (``SendMeter``).
+    allowance_refused: bool = False
 
     def judge(self, *, raised: BaseException | None, caller_budget_expired: bool = False) -> str:
         """``ok`` / ``ok_unrated`` (the request's fault) / ``fail`` / ``neutral`` / ``unsent`` (no wire evidence)."""
@@ -80,6 +84,58 @@ def _is_transport_failure(exc: BaseException) -> bool:
 
 
 _current: ContextVar[WireOutcome | None] = ContextVar("llm_wire_outcome", default=None)
+
+
+class SendAllowanceSpent(Exception):
+    """Raised by the request hook instead of sending: the stage job has used its failed sends (``SendMeter``)."""
+
+
+@dataclass
+class SendMeter:
+    """The failed sends of one stage job's run, and how many more it may make.
+
+    A failed send is a request that did not bring back a usable answer: a failed attempt, or a request an SDK
+    retried. ``allowance`` is what the job's pause budget has left (``absolute cap - sends so far``); None is no
+    bound. The request hook refuses a request when this run's failed sends, plus the requests the current call
+    has already made (each one an SDK retry would supersede), reach it.
+    """
+
+    allowance: int | None = None
+    failed: int = 0
+
+    def remaining(self, in_call: int = 0) -> int | None:
+        if self.allowance is None:
+            return None
+        return max(0, self.allowance - self.failed - in_call)
+
+
+_meter: ContextVar[SendMeter | None] = ContextVar("llm_send_meter", default=None)
+
+
+@contextlib.contextmanager
+def metered(meter: SendMeter) -> Iterator[SendMeter]:
+    """Count the failed sends of the calls made inside this block against ``meter``."""
+    token = _meter.set(meter)
+    try:
+        yield meter
+    finally:
+        _meter.reset(token)
+
+
+def current_meter() -> SendMeter | None:
+    return _meter.get()
+
+
+def admit_request() -> None:
+    """Raise ``SendAllowanceSpent`` when the request about to leave would take its job past its allowance."""
+    meter = _meter.get()
+    if meter is None or meter.allowance is None:
+        return
+    outcome = _current.get()
+    if meter.remaining(outcome.requests if outcome is not None else 0) == 0:
+        if outcome is not None:
+            outcome.allowance_refused = True
+        raise SendAllowanceSpent("the stage job has used its sends; this request was not sent")
 
 
 @contextlib.contextmanager
@@ -131,6 +187,7 @@ def cap_connect_timeout(request: httpx.Request, cap: float = CONNECT_TIMEOUT_CAP
 
 
 def _request_hook(request: httpx.Request) -> None:
+    admit_request()
     with contextlib.suppress(Exception):
         note_request_sent()
         cap_connect_timeout(request)
@@ -294,6 +351,7 @@ def install_boto_hooks(client: Any) -> bool:  # noqa: ANN401 - botocore client
     events = client.meta.events
 
     def before_send(**_: object) -> None:
+        admit_request()
         with contextlib.suppress(Exception):
             note_request_sent()
 

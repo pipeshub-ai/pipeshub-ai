@@ -372,3 +372,56 @@ async def test_a_busy_extraction_service_is_waited_out_without_tripping_the_brea
 
     assert result.status == "COMPLETED"
     failure.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# What the service spends for the caller's job reaches the job's pause budget
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_job_sends_its_remaining_allowance_and_counts_what_the_service_spent() -> None:
+    """The service is told how many failed sends the job has left, and the job adds what the service reports it spent,
+    on a served call as on an outage."""
+    from app.services.llm_gateway.gateway import llm_job
+
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    usage = {"failed": 2, "charged": 1, "trials": 0, "unavailable": 0, "pk": "pk-1", "size_class": "s", "provider": "P"}
+    served = _make_response(200, {"success": True, "classification": None, "usage": usage})
+    mock_post = AsyncMock(return_value=served)
+    with patch.object(client, "_post_json", new=mock_post), llm_job("classify:vr-1:rev-a", allowance=5) as trace:
+        await client.classify(_bc(), "org-1")
+    assert mock_post.call_args[0][1]["send_allowance"] == 5
+    assert (trace.requests, trace.charged) == (2, 1)
+    assert trace.meter.remaining() == 3
+
+
+@pytest.mark.asyncio
+async def test_an_entities_outage_behind_the_service_is_a_provider_outage_the_job_counts() -> None:
+    """``POST /entities`` answers a provider outage with the 424 classify uses: the client raises the typed error the
+    stage pauses on, and the job counts the sends the service made."""
+    from app.services.llm_gateway.gateway import llm_job
+
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    # The service's own trace saw no outage (its extractor raised a plain error): the 424 itself is one.
+    usage = {"failed": 3, "charged": 2, "trials": 0, "unavailable": 0, "pk": "pk-1", "size_class": "l", "provider": "P"}
+    body = {**_UNAVAILABLE, "sent": True, "requests": 3, "usage": usage}
+    with patch.object(client, "_post_json", new=AsyncMock(return_value=httpx.Response(424, json=body))), llm_job(
+        "entities:vr-1:rev-a", allowance=10
+    ) as trace, pytest.raises(LLMUnavailableError):
+        await client.extract_entities(_bc(), "org-1")
+    fields = trace.pause_fields()
+    assert (fields["requests"], fields["charged"], fields["provider_pk"]) == (3, 2, "pk-1")
+
+
+@pytest.mark.asyncio
+async def test_an_outage_from_a_service_without_usage_is_counted_from_its_424() -> None:
+    from app.services.llm_gateway.gateway import llm_job
+
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    body = {**_UNAVAILABLE, "sent": True, "requests": 2, "chargeable": True, "pk": "pk-1", "size_class": "s"}
+    with patch.object(client, "_post_json", new=AsyncMock(return_value=httpx.Response(424, json=body))), llm_job(
+        "classify:vr-1:rev-a"
+    ) as trace, pytest.raises(LLMUnavailableError):
+        await client.classify(_bc(), "org-1")
+    assert (trace.requests, trace.charged, trace.unavailable) == (2, 1, 1)

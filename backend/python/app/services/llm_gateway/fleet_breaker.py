@@ -115,9 +115,15 @@ def _cloud_identity(value: object) -> str | None:
 
 
 def credential_of(model: object) -> str:
-    """The credentials a model object holds, as one string to feed the key digest (never stored or logged).
+    """The credential a model's background requests carry, as one string to feed the key digest (never stored or logged).
 
-    Looks at the model's own attributes and one level of the clients and wrapped models it holds."""
+    When identity forwarding sends background traffic with the connection's own service key in place of the model's
+    (``ConnectionForwardingSettings.background_api_key``), that key is what the provider counts quota and outages by, so it
+    alone is the credential. Otherwise it is what the model holds: its own attributes and one level of the clients and
+    wrapped models it holds."""
+    forwarded = _forwarded_background_key(model)
+    if forwarded is not None:
+        return f"forwarded={forwarded}"
     found: list[str] = []
 
     def scan(obj: object, depth: int) -> None:
@@ -143,6 +149,19 @@ def credential_of(model: object) -> str:
     except Exception:
         return ""
     return "|".join(sorted(found))
+
+
+def _forwarded_background_key(model: object) -> str | None:
+    """The service key the identity hook on any of ``model``'s httpx clients puts on background requests."""
+    from app.services.model_identity.transport.client_paths import iter_http_clients
+    from app.services.model_identity.transport.httpx_hook import background_api_key
+
+    try:
+        keys = {key for client in iter_http_clients(model) if (key := background_api_key(client))}
+    except Exception:
+        return None
+    # A model whose clients carry different service keys is keyed by all of them.
+    return "|".join(sorted(keys)) if keys else None
 
 
 def provider_pk(provider: str, credential: str = "") -> str:

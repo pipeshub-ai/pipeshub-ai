@@ -95,7 +95,15 @@ class ServiceCallError(Exception):
 
 
 class ServiceUnavailableError(ServiceCallError):
-    """Raised when the remote service is unreachable or persistently 5xx."""
+    """Raised when the remote service is unreachable or persistently 5xx.
+
+    ``delivered``: a request may have reached the service (it answered 5xx, or the connection broke or timed out
+    after the request was written), so it may have done paid work. False only when no attempt got that far (an open
+    circuit, a refused or timed-out connection); a caller that cannot tell reads True."""
+
+    def __init__(self, message: str, *args: Any, delivered: bool = True, **kwargs: Any) -> None:  # noqa: ANN401
+        super().__init__(message, *args, **kwargs)
+        self.delivered = delivered
 
 
 class ServiceAuthRefusedError(ServiceCallError):
@@ -454,6 +462,7 @@ class BaseServiceClient:
                 f"{self.service_name} is currently unavailable (circuit breaker open)",
                 status_code=503,
                 service_name=self.service_name,
+                delivered=False,
             )
 
         attempt_limit = self.max_retries
@@ -463,6 +472,8 @@ class BaseServiceClient:
         last_exc: Exception | None = None
         last_status: int | None = None
         transient_attempts = 0
+        # Whether any attempt may have reached the service (see ``ServiceUnavailableError.delivered``).
+        delivered = False
         backpressure_attempts = 0
         last_error_message: str | None = None
         started_at = time.monotonic()
@@ -496,6 +507,7 @@ class BaseServiceClient:
 
                     response = await client.request(method, url, **kwargs)
                     last_status = response.status_code
+                    delivered = True
 
                     if response.status_code not in TRANSIENT_STATUS_CODES:
                         # Service responded — even a 4xx means it's reachable.
@@ -578,6 +590,8 @@ class BaseServiceClient:
                     httpx.WriteError,
                 ) as exc:
                     transient_attempts += 1
+                    # A connection that was never made carried no request; any later failure may have.
+                    delivered = delivered or not isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
                     self.logger.debug(
                         "[%s] %s transport error on attempt %d: %s",
                         self.service_name, operation, transient_attempts, exc,
@@ -640,6 +654,7 @@ class BaseServiceClient:
             raise ServiceUnavailableError(
                 f"{self.service_name} {operation} failed after {attempted} attempts: {last_exc}",
                 service_name=self.service_name,
+                delivered=delivered,
             ) from last_exc
 
         message = f"{self.service_name} {operation} failed with status {last_status}"

@@ -59,6 +59,7 @@ class LLMUnavailableError(Exception):
         size_class: str | None = None,
         requests: int | None = None,
         provider: str | None = None,
+        charged: int | None = None,
     ) -> None:
         super().__init__(message)
         # The provider's readable key (class, model, endpoint host), for reasons and notices; never a credential.
@@ -76,6 +77,9 @@ class LLMUnavailableError(Exception):
         # A failed send made with the breaker closed while the provider was evidently serving others,
         # so the job's document is the likely cause: it counts toward the job's charged cap.
         self.chargeable = chargeable
+        # How many of this outcome's failed sends were charged (each failed attempt is judged on its own); None: one
+        # when ``chargeable``.
+        self.charged = charged if charged is not None else (1 if chargeable else 0)
         # The provider key digest and size class of the breaker involved, to read its hold ledger.
         self.pk = pk
         self.size_class = size_class

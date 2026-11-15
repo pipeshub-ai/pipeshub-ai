@@ -33,7 +33,7 @@ from app.modules.pipeline.models import (
     StageState,
     StageStatePatch,
 )
-from app.modules.pipeline.pause_budget import Verdict
+from app.modules.pipeline.pause_budget import PauseState, Verdict
 from app.modules.pipeline.pause_judge import PauseJudge
 from app.modules.pipeline.pause_store import PauseStoreUnavailable
 from app.modules.pipeline.registry import StageRegistry
@@ -314,7 +314,7 @@ class StageJobHandler:
                 last = f" Last status: {state.reason}" if state.reason else ""
                 result = StageResult(outcome=StageOutcome.FAILED, reason=f"{refusal[1]}{last}")
             else:
-                with llm_job(job.state_key):
+                with llm_job(job.state_key, allowance=await self._send_allowance(prior)):
                     async with asyncio.timeout(stage.budget_s):
                         result = await stage.run(job, io)
         except TimeoutError:
@@ -462,6 +462,13 @@ class StageJobHandler:
             except Exception:
                 self._logger.exception("Stage job %s failed and its follow-up could not run", job.job_id)
         raise StageFailed(reason, record_id=job.job_id)
+
+    async def _send_allowance(self, prior: PauseState | None) -> int | None:
+        """The failed sends this run may make before its pause budget's absolute cap; None without a pause budget."""
+        if self._pause is None:
+            return None
+        limits = await self._pause.limits()
+        return max(0, limits.absolute_sends - (prior.sends if prior is not None else 0))
 
     async def _clear_pause(self, job: StageJob) -> None:
         """A COMPLETED or SKIPPED revision starts its pause budget over."""

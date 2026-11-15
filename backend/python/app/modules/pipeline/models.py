@@ -265,6 +265,8 @@ class StageResult(BaseModel):
     trial: bool = False
     # A failed send made with the breaker closed while the provider was serving others.
     chargeable: bool = False
+    # How many of the run's failed sends were chargeable (None: one when ``chargeable``).
+    charged: int | None = None
     # Digest and size class of the provider key's breaker, for its hold ledger.
     provider_pk: str | None = None
     size_class: str | None = None
@@ -272,17 +274,24 @@ class StageResult(BaseModel):
     provider_label: str | None = None
 
     @classmethod
-    def paused_for(cls, exc: BaseException, reason: str) -> "StageResult":
-        """A PAUSED outcome for a model call the provider could not serve (``LLMUnavailableError``),
-        carrying what the pause budget needs to count it. An error that does not say counts as a send."""
+    def paused_for(
+        cls, exc: BaseException | None, reason: str, *, traced: Mapping[str, object] | None = None
+    ) -> "StageResult":
+        """A PAUSED outcome for model calls the provider could not serve, carrying what the pause budget needs to count
+        them. ``traced`` is the run's own count (the job trace's ``pause_fields``), which wins over what one exception
+        says; without it, ``exc`` (``LLMUnavailableError``) is read, and an error that does not say counts as a send."""
+        retry_after = getattr(exc, "retry_after", None)
+        if traced:
+            return cls(outcome=StageOutcome.PAUSED, reason=reason, retry_after_s=retry_after, **traced)  # type: ignore[arg-type]
         return cls(
             outcome=StageOutcome.PAUSED,
             reason=reason,
-            retry_after_s=getattr(exc, "retry_after", None),
+            retry_after_s=retry_after,
             sent=getattr(exc, "sent", True),
             requests=getattr(exc, "requests", None),
             trial=getattr(exc, "trial", False),
             chargeable=getattr(exc, "chargeable", False),
+            charged=getattr(exc, "charged", None),
             provider_pk=getattr(exc, "pk", None),
             size_class=getattr(exc, "size_class", None),
             provider_label=getattr(exc, "provider", None),

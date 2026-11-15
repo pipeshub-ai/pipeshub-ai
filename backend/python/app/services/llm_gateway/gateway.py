@@ -21,7 +21,7 @@ import threading
 from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, TypedDict, TypeVar, cast
 
 from app.core.org_context import spawn_in_request
@@ -99,15 +99,16 @@ class ProviderUnavailableError(LLMUnavailableError):
         pk: str | None = None,
         size_class: str | None = None,
         requests: int | None = None,
+        charged: int | None = None,
     ) -> None:
         super().__init__(
             message, retry_after=retry_after, sent=sent, trial=trial, chargeable=chargeable, pk=pk,
-            size_class=size_class, requests=requests,
+            size_class=size_class, requests=requests, charged=charged,
         )
         self.provider = provider
         trace = _job_trace.get()
         if trace is not None:
-            trace.note(self)
+            trace.note_unavailable(pk, size_class, provider)
 
 
 class Invocable(Protocol):
@@ -170,44 +171,142 @@ def current_call_site() -> str:
 
 
 @dataclass
-class JobTrace:
-    """What the model calls of one stage run said when the provider could not serve them. A stage that
-    folds several calls into one PAUSED outcome (named entities) reads it instead of one exception."""
+class ScopeTally:
+    """One provider key and size class's share of a stage run's failures."""
 
+    charged: int = 0
+    trials: int = 0
     unavailable: int = 0
-    requests: int = 0
-    sent: bool = False
-    trial: bool = False
-    chargeable: bool = False
-    pk: str | None = None
-    size_class: str | None = None
     label: str | None = None
 
-    def note(self, error: LLMUnavailableError) -> None:
+
+# What a remote service reports of the calls it made for a job (the Extraction service's ``usage``).
+JobUsage = dict[str, Any]
+
+
+@dataclass
+class JobTrace:
+    """What the model calls of one stage run cost, for its pause budget, counted where each thing happens.
+
+    * Failed sends (the budget's sends): by the run's ``SendMeter`` in the wire hooks, plus what a remote service
+      reports it made for this job (``note_remote``). Successful requests are not sends of a pause.
+    * Charged sends and trials: one per failed attempt, kept per ``(pk, size class)`` (``note_attempt``), so a later
+      attempt or a call on another key never overwrites them.
+    * Which key the pause is about: the one charged most (the latest to be unavailable on a tie, or when none is).
+    """
+
+    meter: wire.SendMeter = field(default_factory=wire.SendMeter)
+    tallies: dict[tuple[str, str], ScopeTally] = field(default_factory=dict)
+    unavailable: int = 0
+    _latest: tuple[str, str] | None = None
+
+    def _tally(self, pk: str | None, cls: str | None, label: str | None) -> ScopeTally | None:
+        if not pk or not cls:
+            return None
+        tally = self.tallies.setdefault((pk, cls), ScopeTally())
+        tally.label = label or tally.label
+        return tally
+
+    def note_attempt(self, pk: str | None, cls: str | None, label: str | None, *, chargeable: bool, trial: bool) -> None:
+        """A failed attempt on the wire: a trial is never charged."""
+        tally = self._tally(pk, cls, label)
+        if tally is None:
+            return
+        tally.trials += 1 if trial else 0
+        tally.charged += 1 if chargeable and not trial else 0
+
+    def note_unavailable(self, pk: str | None, cls: str | None, label: str | None) -> None:
+        """A call ended because the provider could not serve it (refused, failed or the sends were used)."""
         self.unavailable += 1
-        self.requests += error.requests
-        self.sent = self.sent or error.sent
-        self.trial = self.trial or (error.sent and error.trial)
-        self.chargeable = self.chargeable or error.chargeable
-        self.pk = error.pk or self.pk
-        self.size_class = error.size_class or self.size_class
-        self.label = getattr(error, "provider", None) or self.label
+        tally = self._tally(pk, cls, label)
+        if tally is not None:
+            tally.unavailable += 1
+            self._latest = (pk, cls)  # type: ignore[assignment]
+
+    def note_remote(self, usage: JobUsage | None) -> None:
+        """Add what a remote service reports it spent for this job (its own trace's ``usage``)."""
+        if not isinstance(usage, dict):
+            return
+
+        def count(name: str) -> int:
+            value = usage.get(name)
+            return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+        self.meter.failed += count("failed")
+        tally = self._tally(usage.get("pk"), usage.get("size_class"), usage.get("provider"))
+        if tally is not None:
+            tally.charged += count("charged")
+            tally.trials += count("trials")
+        for _ in range(count("unavailable")):
+            self.note_unavailable(usage.get("pk"), usage.get("size_class"), usage.get("provider"))
+
+    @property
+    def requests(self) -> int:
+        return self.meter.failed
+
+    @property
+    def charged(self) -> int:
+        return sum(t.charged for t in self.tallies.values())
+
+    @property
+    def trials(self) -> int:
+        return sum(t.trials for t in self.tallies.values())
+
+    def scope(self) -> tuple[str, str] | None:
+        if not self.tallies:
+            return None
+        return max(self.tallies, key=lambda key: (self.tallies[key].charged, key == self._latest))
+
+    def usage(self) -> JobUsage:
+        """This trace as a remote caller adds it to its own (``note_remote``)."""
+        scope = self.scope()
+        tally = self.tallies.get(scope) if scope else None
+        return {
+            "failed": self.requests, "charged": self.charged, "trials": self.trials, "unavailable": self.unavailable,
+            "pk": scope[0] if scope else None, "size_class": scope[1] if scope else None,
+            "provider": tally.label if tally else None,
+        }
+
+    def pause_fields(self) -> dict[str, Any]:
+        """``StageResult`` fields of a PAUSED outcome; empty when no call of the run was unavailable."""
+        if not self.unavailable:
+            return {}
+        scope = self.scope()
+        tally = self.tallies.get(scope) if scope else None
+        return {
+            "sent": self.requests > 0,
+            "requests": self.requests,
+            "trial": self.trials > 0,
+            "chargeable": self.charged > 0,
+            "charged": self.charged,
+            "provider_pk": scope[0] if scope else None,
+            "size_class": scope[1] if scope else None,
+            "provider_label": tally.label if tally else None,
+        }
 
 
 _job_trace: ContextVar[JobTrace | None] = ContextVar("llm_job_trace", default=None)
 
 
 @contextmanager
-def llm_job(job_key: str) -> Generator[JobTrace, None, None]:
-    """Attribute the calls made inside this block to one stage job (its state key)."""
-    trace = JobTrace()
+def llm_job(job_key: str, *, allowance: int | None = None) -> Generator[JobTrace, None, None]:
+    """Attribute the calls made inside this block to one stage job (its state key). ``allowance``: the failed sends
+    the job's pause budget has left; a request beyond it is refused before it is sent (None: no bound)."""
+    trace = JobTrace(meter=wire.SendMeter(allowance=allowance))
     key_token = _job_key.set(job_key)
     trace_token = _job_trace.set(trace)
     try:
-        yield trace
+        with wire.metered(trace.meter):
+            yield trace
     finally:
         _job_trace.reset(trace_token)
         _job_key.reset(key_token)
+
+
+def _note_failed_sends(count: int) -> None:
+    meter = wire.current_meter()
+    if meter is not None and count > 0:
+        meter.failed += count
 
 
 def current_job_key() -> str:
@@ -216,6 +315,12 @@ def current_job_key() -> str:
 
 def current_job_trace() -> JobTrace | None:
     return _job_trace.get()
+
+
+def current_pause_fields() -> dict[str, Any]:
+    """The run's pause fields (``JobTrace.pause_fields``); empty outside a stage job or when nothing was unavailable."""
+    trace = _job_trace.get()
+    return trace.pause_fields() if trace is not None else {}
 
 
 def estimate_tokens(messages: object) -> int:
@@ -268,8 +373,8 @@ def _record_tokens(call_site: str, result: object) -> None:
     if not isinstance(usage, dict):
         return
     counts = cast("dict[str, object]", usage)
-    for direction, field in (("input", "input_tokens"), ("output", "output_tokens")):
-        count = counts.get(field)
+    for direction, usage_key in (("input", "input_tokens"), ("output", "output_tokens")):
+        count = counts.get(usage_key)
         if isinstance(count, int) and count > 0:
             LLM_TOKENS.inc(call_site, direction, value=float(count))
 
@@ -384,8 +489,10 @@ class LLMGateway:
         pk = provider_pk(provider, credential)
         cls = size_class(est_tokens)
         job = current_job_key()
+        trace = _job_trace.get()
         sent_any = False
         requests_total = 0
+        charged_total = 0
         breaker = self.breaker(provider)
         # Per-process breaker, only where no fleet Redis is bound. The one caller allowed through after a cooldown
         # makes the real call as the probe: a health endpoint cannot tell whether the provider serves completions.
@@ -398,16 +505,20 @@ class LLMGateway:
                 sent=False,
             )
         for attempt in range(RATE_LIMIT_ATTEMPTS):
+            self._refuse_if_sends_used(provider, site, pk, cls, sent_any=sent_any, requests=requests_total, charged=charged_total)
             policy: GatewayPolicyError | None = None
             admission = None
-            if fleet is not None:
-                admission = await self._admit(
-                    fleet, provider, pk, cls, job, site, sent_any=sent_any, requests=requests_total
-                )
-            trial = admission is not None and admission.trial
-            lease = self._start_lease(fleet, pk, cls, admission) if trial and fleet and admission else None
+            lease = None
             try:
                 async with self._limiter.slot():
+                    # Admitted with the slot held, right before the request: a call that waited for a slot while others
+                    # opened the breaker must see the breaker as it is now.
+                    if fleet is not None:
+                        admission = await self._admit(
+                            fleet, provider, pk, cls, job, site, sent_any=sent_any, requests=requests_total
+                        )
+                    trial = admission is not None and admission.trial
+                    lease = self._start_lease(fleet, pk, cls, admission) if trial and fleet and admission else None
                     with wire.wire_scope() as seen:
                         try:
                             result = await asyncio.wait_for(make_call(), call_timeout)
@@ -415,6 +526,7 @@ class LLMGateway:
                             # Neither the provider's failure nor one to retry: the caller must not fall back.
                             LLM_CALLS.inc(site, "error")
                             sent_any = sent_any or seen.sent
+                            _note_failed_sends(max(0, seen.requests - 1))
                             await self._settle_outcome(
                                 fleet, breaker, pk, cls, admission, wire.OK_UNRATED if seen.sent else wire.UNSENT
                             )
@@ -424,23 +536,44 @@ class LLMGateway:
                                 await self._release_trial(fleet, pk, cls, admission.token)
                             raise
                         except Exception as exc:
+                            if seen.allowance_refused:
+                                sent_any = sent_any or seen.sent
+                                requests_total += seen.requests
+                                _note_failed_sends(seen.requests)
+                                await self._end_refused_attempt(fleet, breaker, pk, cls, admission, seen)
+                                LLM_CALLS.inc(site, "sends_used")
+                                raise self._sends_used(
+                                    provider, pk, cls, sent_any=sent_any, requests=requests_total, charged=charged_total
+                                ) from exc
                             caller_expired = caller_budget and isinstance(exc, TimeoutError)
                             policy = policy_error_from_exception(exc)
                             if policy is not None and _is_background_call():
                                 report_background_refusal(policy)
                             judged = self._judge(seen, exc, policy, caller_expired=caller_expired)
                             sent_any = sent_any or seen.sent or judged == wire.FAIL
-                            requests_total += seen.requests or (1 if judged == wire.FAIL else 0)
+                            failed_here = seen.requests or (1 if judged == wire.FAIL else 0)
+                            requests_total += failed_here
+                            provider_failed = judged in (wire.FAIL, wire.NEUTRAL)
+                            _note_failed_sends(failed_here if provider_failed else max(0, seen.requests - 1))
                             retry = (
                                 _is_rate_limited(exc, policy) or seen.status == _TOO_MANY_REQUESTS
                             ) and attempt < RATE_LIMIT_ATTEMPTS - 1 and (policy is None or policy.retryable)
                             settlement = await self._settle_outcome(fleet, breaker, pk, cls, admission, judged)
+                            if judged == wire.FAIL:
+                                # Each failed attempt is charged on its own settlement: a later, unchargeable one
+                                # does not take back the charge of an earlier one.
+                                chargeable = bool(settlement and settlement.chargeable and not trial)
+                                charged_total += 1 if chargeable else 0
+                                if trace is not None:
+                                    trace.note_attempt(pk, cls, provider, chargeable=chargeable, trial=trial)
                             if not retry:
                                 self._raise_for(
-                                    exc, judged, provider, site, breaker, admission, settlement, pk, cls, sent_any=sent_any, requests=requests_total
+                                    exc, judged, provider, site, breaker, admission, settlement, pk, cls,
+                                    sent_any=sent_any, requests=requests_total, charged=charged_total,
                                 )
                         else:
                             sent_any = sent_any or seen.sent
+                            _note_failed_sends(max(0, seen.requests - 1))
                             await self._settle_outcome(fleet, breaker, pk, cls, admission, wire.OK)
                             LLM_BREAKER_OPEN.set(provider, value=0.0)
                             note_llm_call()
@@ -459,6 +592,42 @@ class LLMGateway:
                 delay = max(delay, min(policy.retry_after, MAX_GATEWAY_RETRY_AFTER_SECONDS))
             await asyncio.sleep(delay)
         raise AssertionError("unreachable: the last attempt returns or raises")
+
+    # ---- the job's sends -----------------------------------------------------------------------
+
+    def _refuse_if_sends_used(
+        self, provider: str, site: str, pk: str, cls: str, *, sent_any: bool, requests: int, charged: int
+    ) -> None:
+        """Before an attempt: a job whose pause budget has no failed sends left sends nothing more."""
+        meter = wire.current_meter()
+        if meter is not None and meter.remaining() == 0:
+            LLM_CALLS.inc(site, "sends_used")
+            raise self._sends_used(provider, pk, cls, sent_any=sent_any, requests=requests, charged=charged)
+
+    @staticmethod
+    def _sends_used(provider: str, pk: str, cls: str, *, sent_any: bool, requests: int, charged: int) -> "ProviderUnavailableError":
+        return ProviderUnavailableError(
+            f"{provider}: this job has used the sends its pause budget allows; not calling the model",
+            provider=provider,
+            sent=sent_any,
+            chargeable=charged > 0,
+            charged=charged,
+            pk=pk,
+            size_class=cls,
+            requests=requests,
+        )
+
+    async def _end_refused_attempt(
+        self, fleet: FleetBreaker | None, breaker: CircuitBreaker, pk: str, cls: str, admission: Admission | None,
+        seen: wire.WireOutcome,
+    ) -> None:
+        """An attempt whose next request the send meter refused: the requests it did send were retried, so they failed;
+        a trial that never got its answer is handed back."""
+        if admission is not None and admission.trial and fleet is not None:
+            await self._release_trial(fleet, pk, cls, admission.token)
+            return
+        if seen.sent:
+            await self._settle_outcome(fleet, breaker, pk, cls, admission, wire.FAIL)
 
     # ---- the fleet breaker ---------------------------------------------------------------------
 
@@ -582,6 +751,7 @@ class LLMGateway:
         *,
         sent_any: bool,
         requests: int,
+        charged: int = 0,
     ) -> None:
         if isinstance(exc, TimeoutError) and judged == wire.NEUTRAL:
             # The caller's budget ran out: a slow call, not evidence the provider is down.
@@ -600,7 +770,8 @@ class LLMGateway:
                 retry_after=breaker.retry_after() if admission is None else None,
                 sent=True,
                 trial=trial,
-                chargeable=bool(settlement and settlement.chargeable and not trial),
+                chargeable=charged > 0,
+                charged=charged,
                 pk=pk,
                 size_class=cls,
                 requests=requests,

@@ -37,7 +37,7 @@ from app.modules.named_entities.domain.kinds import EntityKind, default_enabled_
 from app.modules.transformers.document_extraction import (
     ExtractionLLMError,
 )
-from app.services.llm_gateway.gateway import llm_job
+from app.services.llm_gateway.gateway import JobTrace, llm_job
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
 from app.utils.env_utils import env_positive_int
@@ -79,6 +79,8 @@ class ClassifyRequest(BaseModel):
     # The caller's stage job (its state key). The model calls are admitted as that job, so the half-open trials of an
     # open breaker rotate over the waiting jobs instead of one job carrying them all.
     job_key: str | None = Field(default=None, max_length=256)
+    # The failed sends the caller's job has left (its pause budget); this service sends no more than that.
+    send_allowance: int | None = Field(default=None, ge=0)
 
 
 class ClassifyResponse(BaseModel):
@@ -86,6 +88,8 @@ class ClassifyResponse(BaseModel):
     classification: dict | None = None
     error: str | None = None
     error_code: str | None = None
+    # What the model calls of this request cost the caller's job (``JobTrace.usage``), whatever the outcome.
+    usage: dict | None = None
 
 
 class UnavailableResponse(ClassifyResponse):
@@ -100,6 +104,32 @@ class UnavailableResponse(ClassifyResponse):
     provider: str | None = None
     trial: bool | None = None
     chargeable: bool | None = None
+    charged: int | None = None
+
+
+def _unavailable_response(exc: LLMUnavailableError, usage: dict | None) -> JSONResponse:
+    """424, not 5xx: this service is up and its model provider is not. A 5xx would be retried and counted by the
+    caller's breaker, whose health probe cannot see the provider; the code tells the caller to pause the work instead."""
+    retry_after = getattr(exc, "retry_after", None)
+    return JSONResponse(
+        status_code=status.HTTP_424_FAILED_DEPENDENCY,
+        # Set while the provider's circuit is open: how long the caller's job should wait.
+        headers={"Retry-After": str(math.ceil(retry_after))} if retry_after else None,
+        content=UnavailableResponse(
+            success=False,
+            error=str(exc),
+            error_code=LLMUnavailableError.code,
+            usage=usage,
+            sent=getattr(exc, "sent", True),
+            requests=getattr(exc, "requests", None),
+            pk=getattr(exc, "pk", None),
+            size_class=getattr(exc, "size_class", None),
+            provider=getattr(exc, "provider", None),
+            trial=getattr(exc, "trial", False),
+            chargeable=getattr(exc, "chargeable", False),
+            charged=getattr(exc, "charged", None),
+        ).model_dump(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +159,7 @@ async def classify(
     """
     org_id = service_token_org(claims, body.org_id)
     document_extraction = request.app.state.document_extraction
+    trace: JobTrace | None = None
 
     try:
         async with scope_from_claims(
@@ -137,7 +168,7 @@ async def classify(
             fallback_service="extraction",
             config_service=_config_service(request),
         ):
-            with llm_job(body.job_key or ""):
+            with llm_job(body.job_key or "", allowance=body.send_allowance) as trace:
                 metadata = await document_extraction.classify(
                     blocks=body.block_container.blocks,
                     org_id=org_id,
@@ -156,9 +187,6 @@ async def classify(
             ).model_dump(),
         )
     except LLMUnavailableError as exc:
-        # 424, not 5xx: this service is up and its model provider is not. A 5xx would be
-        # retried and counted by the caller's breaker, whose health probe cannot see the
-        # provider; the code tells the caller to pause the work instead.
         # A refusal by an open breaker sent nothing: every paused job meets it on every wake, so it is not news.
         logger.log(
             logging.WARNING if getattr(exc, "sent", True) else logging.DEBUG,
@@ -166,24 +194,7 @@ async def classify(
             org_id,
             exc,
         )
-        retry_after = getattr(exc, "retry_after", None)
-        return JSONResponse(
-            status_code=status.HTTP_424_FAILED_DEPENDENCY,
-            # Set while the provider's circuit is open: how long the caller's job should wait.
-            headers={"Retry-After": str(math.ceil(retry_after))} if retry_after else None,
-            content=UnavailableResponse(
-                success=False,
-                error=str(exc),
-                error_code=LLMUnavailableError.code,
-                sent=getattr(exc, "sent", True),
-                requests=getattr(exc, "requests", None),
-                pk=getattr(exc, "pk", None),
-                size_class=getattr(exc, "size_class", None),
-                provider=getattr(exc, "provider", None),
-                trial=getattr(exc, "trial", False),
-                chargeable=getattr(exc, "chargeable", False),
-            ).model_dump(),
-        )
+        return _unavailable_response(exc, trace.usage() if trace is not None else None)
     except ExtractionLLMError as exc:
         # The model answered but produced nothing usable for this document: retried a few times.
         logger.warning("LLM failed to classify a document for org '%s': %s", org_id, exc)
@@ -210,16 +221,11 @@ async def classify(
             content=ClassifyResponse(success=False, error=str(exc)).model_dump(),
         )
 
-    if metadata is None:
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content=ClassifyResponse(success=True, classification=None).model_dump(),
-        )
-
+    usage = trace.usage() if trace is not None else None
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content=ClassifyResponse(
-            success=True, classification=metadata.model_dump()
+            success=True, classification=metadata.model_dump() if metadata is not None else None, usage=usage
         ).model_dump(),
     )
 
@@ -233,6 +239,9 @@ class ExtractEntitiesRequest(BaseModel):
     tz: str = "UTC"
     enabled_kinds: list[str] = []
     budgets: NamedEntityBudgets | None = None
+    # As for classify: the caller's stage job, and the failed sends it has left.
+    job_key: str | None = Field(default=None, max_length=256)
+    send_allowance: int | None = Field(default=None, ge=0)
 
 
 # How long a request waits for an extraction slot before it is shed with a 429.
@@ -243,6 +252,7 @@ class ExtractEntitiesResponse(BaseModel):
     success: bool
     extraction: dict | None = None
     error: str | None = None
+    usage: dict | None = None
 
 
 @router.post("/entities", response_model=ExtractEntitiesResponse, summary="Typed named-entity extraction")
@@ -253,6 +263,7 @@ async def extract_entities(
 ) -> JSONResponse:
     """Extract typed entities. The model is loaded per request, not at startup."""
     org_id = service_token_org(claims, body.org_id)
+    trace: JobTrace | None = None
     semaphore = getattr(request.app.state, "entity_extraction_semaphore", None)
     if semaphore is not None:
         try:
@@ -289,39 +300,52 @@ async def extract_entities(
             fallback_service="extraction",
             config_service=config_service,
         ):
-            llm, transport, provider, model, enabled = await indexing_llm_or_none(
-                config_service,
-                enabled if enabled is not None else default_enabled_kinds(),
-                org_id=org_id,
-                shard_key=body.record_name,
-            )
-            extraction = await NamedEntityExtractor().extract(
-                NamedEntityRequest(
-                    blocks=body.block_container.blocks,
+            with llm_job(body.job_key or "", allowance=body.send_allowance) as trace:
+                llm, transport, provider, model, enabled = await indexing_llm_or_none(
+                    config_service,
+                    enabled if enabled is not None else default_enabled_kinds(),
                     org_id=org_id,
-                    record_name=body.record_name,
-                    record_type=body.record_type,
-                    reference_time_ms=body.reference_time_ms,
-                    tz=body.tz,
-                    enabled=enabled,
-                    budgets=body.budgets,
-                    llm=llm,
-                    transport=transport,
-                    provider_name=provider,
-                    model_name=model,
+                    shard_key=body.record_name,
                 )
-            )
+                extraction = await NamedEntityExtractor().extract(
+                    NamedEntityRequest(
+                        blocks=body.block_container.blocks,
+                        org_id=org_id,
+                        record_name=body.record_name,
+                        record_type=body.record_type,
+                        reference_time_ms=body.reference_time_ms,
+                        tz=body.tz,
+                        enabled=enabled,
+                        budgets=body.budgets,
+                        llm=llm,
+                        transport=transport,
+                        provider_name=provider,
+                        model_name=model,
+                    )
+                )
+    except LLMUnavailableError as exc:
+        logger.log(
+            logging.WARNING if getattr(exc, "sent", True) else logging.DEBUG,
+            "Model provider unavailable while extracting entities for org '%s': %s", org_id, type(exc).__name__,
+        )
+        return _unavailable_response(exc, trace.usage() if trace is not None else None)
     except Exception as exc:
         # The exception text can quote document content; report the type only.
         logger.warning("Named-entity extraction failed for org '%s': %s", org_id, type(exc).__name__)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content=ExtractEntitiesResponse(success=False, error=type(exc).__name__).model_dump(),
+            content=ExtractEntitiesResponse(
+                success=False, error=type(exc).__name__, usage=trace.usage() if trace is not None else None
+            ).model_dump(),
         )
     finally:
         if semaphore is not None:
             semaphore.release()
     return JSONResponse(
         status_code=status.HTTP_200_OK,
-        content=ExtractEntitiesResponse(success=True, extraction=extraction.model_dump(mode="json")).model_dump(),
+        content=ExtractEntitiesResponse(
+            success=True,
+            extraction=extraction.model_dump(mode="json"),
+            usage=trace.usage() if trace is not None else None,
+        ).model_dump(),
     )

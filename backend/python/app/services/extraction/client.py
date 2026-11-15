@@ -26,7 +26,7 @@ from app.modules.transformers.document_extraction import (
     classify_request_blocks,
 )
 from app.services.base_client import BaseServiceClient, parse_retry_after
-from app.services.llm_gateway.gateway import current_job_key
+from app.services.llm_gateway.gateway import current_job_trace
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
@@ -108,8 +108,7 @@ class ExtractionClient(BaseServiceClient):
             "record_name": record_name,
             "record_type": record_type,
         }
-        if job_key := current_job_key():
-            payload["job_key"] = job_key
+        payload.update(_job_fields())
 
         response = await self._post_json(
             "/api/v1/extract/classify",
@@ -119,27 +118,14 @@ class ExtractionClient(BaseServiceClient):
         )
 
         body = response.json()
+        _note_remote_usage(body)
 
         if not body.get("success"):
             error_msg = body.get("error") or "Classification failed"
             if body.get("error_code") == LLMNotConfiguredError.code:
                 raise LLMNotConfiguredError(error_msg)
             if body.get("error_code") == LLMUnavailableError.code:
-                # Set while the provider's circuit is open behind that service.
-                retry_after = parse_retry_after(response.headers.get("Retry-After"))
-                sent = body.get("sent")
-                raise LLMUnavailableError(
-                    error_msg,
-                    retry_after=retry_after,
-                    # A body that does not say counts as a send.
-                    sent=True if sent is None else bool(sent),
-                    trial=bool(body.get("trial")),
-                    chargeable=bool(body.get("chargeable")),
-                    pk=body.get("pk"),
-                    size_class=body.get("size_class"),
-                    requests=body.get("requests"),
-                    provider=body.get("provider"),
-                )
+                raise _unavailable_error(error_msg, body, response)
             raise ExtractionClientError(message=error_msg)
 
         classification_dict = body.get("classification")
@@ -215,6 +201,7 @@ class ExtractionClient(BaseServiceClient):
             "tz": tz,
             "enabled_kinds": enabled_kinds or [],
             "budgets": budgets,
+            **_job_fields(),
         }
         response = await self._post_json(
             "/api/v1/extract/entities",
@@ -223,10 +210,76 @@ class ExtractionClient(BaseServiceClient):
             org_id=org_id,
         )
         body = response.json()
+        _note_remote_usage(body)
         if not body.get("success"):
-            raise ExtractionClientError(message=body.get("error") or "Entity extraction failed")
+            error_msg = body.get("error") or "Entity extraction failed"
+            if body.get("error_code") == LLMUnavailableError.code:
+                raise _unavailable_error(error_msg, body, response)
+            raise ExtractionClientError(message=error_msg)
         # The service can be a newer build than this one.
         extraction = read_stored_extraction(body.get("extraction"))
         if extraction is None:
             return NamedEntityExtraction(status="FAILED", termination_reason="llm_error")
         return extraction
+
+
+def _job_fields() -> dict[str, object]:
+    """The caller's stage job and the failed sends it has left, so the service admits and bounds its calls as that job."""
+    trace = current_job_trace()
+    if trace is None:
+        return {}
+    from app.services.llm_gateway.gateway import current_job_key
+
+    fields: dict[str, object] = {}
+    if job_key := current_job_key():
+        fields["job_key"] = job_key
+    if (remaining := trace.meter.remaining()) is not None:
+        fields["send_allowance"] = remaining
+    return fields
+
+
+def _note_remote_usage(body: object) -> None:
+    """Add what the service spent for the caller's job to the job's own trace. A service too old to report ``usage``
+    reports a provider outage in the 424 body alone, which is read the same way (a missing ``sent`` counts as a send)."""
+    trace = current_job_trace()
+    if trace is None or not isinstance(body, dict):
+        return
+    outage = body.get("error_code") == LLMUnavailableError.code
+    usage = body.get("usage")
+    if isinstance(usage, dict):
+        unavailable = usage.get("unavailable")
+        # A 424 is the provider being unavailable, whatever raised it behind the service.
+        if outage and not (isinstance(unavailable, int) and unavailable > 0):
+            usage = {**usage, "unavailable": 1}
+        trace.note_remote(usage)
+        return
+    if not outage:
+        return
+    sent = body.get("sent") is not False
+    requests = body.get("requests")
+    trace.note_remote({
+        "failed": requests if isinstance(requests, int) else (1 if sent else 0),
+        "charged": 1 if body.get("chargeable") and not body.get("trial") else 0,
+        "trials": 1 if sent and body.get("trial") else 0,
+        "unavailable": 1,
+        "pk": body.get("pk"), "size_class": body.get("size_class"), "provider": body.get("provider"),
+    })
+
+
+def _unavailable_error(message: str, body: dict, response: object) -> LLMUnavailableError:
+    """The service's provider outage (its 424), rebuilt for the caller's stage to pause on."""
+    sent = body.get("sent")
+    return LLMUnavailableError(
+        message,
+        # Set while the provider's circuit is open behind that service.
+        retry_after=parse_retry_after(getattr(response, "headers", {}).get("Retry-After")),
+        # A body that does not say counts as a send.
+        sent=True if sent is None else bool(sent),
+        trial=bool(body.get("trial")),
+        chargeable=bool(body.get("chargeable")),
+        charged=body.get("charged") if isinstance(body.get("charged"), int) else None,
+        pk=body.get("pk"),
+        size_class=body.get("size_class"),
+        requests=body.get("requests"),
+        provider=body.get("provider"),
+    )

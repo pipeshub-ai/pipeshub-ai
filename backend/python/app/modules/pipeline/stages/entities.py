@@ -35,30 +35,13 @@ from app.modules.pipeline.models import (
 )
 from app.modules.pipeline.policy import PipelinePolicy
 from app.modules.pipeline.stage import StageIO
-from app.services.llm_gateway.gateway import current_job_trace
+from app.services.llm_gateway.gateway import current_pause_fields
 
 # Bump when the extraction prompt, its strategies or the stored section's shape change.
 ENTITIES_PROMPT_VERSION = 1
 
 
 _PROVIDER_DOWN = "Named-entity model provider unavailable"
-
-
-def _pause_fields() -> dict[str, object]:
-    """What the run's model calls said about the pause (see ``StageResult.sent``). With no trace (a run outside a
-    stage job) the pause counts as a send, like any outcome that does not say."""
-    trace = current_job_trace()
-    if trace is None or not trace.unavailable:
-        return {}
-    return {
-        "sent": trace.sent,
-        "requests": trace.requests,
-        "trial": trace.trial,
-        "chargeable": trace.chargeable,
-        "provider_pk": trace.pk,
-        "size_class": trace.size_class,
-        "provider_label": trace.label,
-    }
 
 
 def _provider_down(extraction: NamedEntityExtraction) -> bool:
@@ -139,7 +122,7 @@ class EntitiesStage:
         if extraction.status == "FAILED":
             # The model failed; the record keeps its last good entities meanwhile.
             if _provider_down(extraction):
-                return StageResult(outcome=StageOutcome.PAUSED, reason=_PROVIDER_DOWN, **_pause_fields())
+                return StageResult.paused_for(None, _PROVIDER_DOWN, traced=current_pause_fields())
             return StageResult(
                 outcome=StageOutcome.RETRY,
                 reason=f"Named-entity extraction failed ({extraction.termination_reason})",
@@ -160,8 +143,8 @@ class EntitiesStage:
             # What was found is saved, or the last good entities kept; settling now would store
             # the fingerprint, and the record would never get the names the model missed.
             if _provider_down(extraction):
-                return StageResult(
-                    outcome=StageOutcome.PAUSED, reason=f"{_PROVIDER_DOWN}; saved what was found", **_pause_fields()
+                return StageResult.paused_for(
+                    None, f"{_PROVIDER_DOWN}; saved what was found", traced=current_pause_fields()
                 )
             return StageResult(
                 outcome=StageOutcome.RETRY,
