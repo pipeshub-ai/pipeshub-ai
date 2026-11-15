@@ -110,7 +110,8 @@ async def test_both_readers_get_at_most_the_cap_and_the_record_says_so(mime: str
     text = "\n".join(all_text(c) for c in containers)
     assert len(text.encode("utf-8")) <= TEXT_LOG_MAX_BYTES
     assert "bytes omitted" in text
-    assert record["indexingNote"] == partly_indexed_text()
+    # The record schema accepts `indexingNote`; a later release writes it (expand, then write).
+    assert "indexingNote" not in record
 
 
 async def test_a_log_read_as_code_is_capped_too() -> None:

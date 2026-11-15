@@ -112,12 +112,7 @@ from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_errors import (
-    INDEXING_NOTE_FIELD,
-    RETRY_SCHEDULED,
-    binary_text_file,
-    partly_indexed_text,
-)
+from app.utils.user_errors import RETRY_SCHEDULED, binary_text_file
 
 # The readers that take a file's bytes as text, which the .log/.cfg size cap applies to.
 _TEXT_ROUTES = frozenset({Route.TXT, Route.MD, Route.MDX, Route.CODE})
@@ -1341,9 +1336,6 @@ class EventProcessor:
                     {
                         "isDirty": False,
                         "indexingStatus": twin.get("indexingStatus"),
-                        # The copy is indexed from the twin's content, so it says what the twin's says.
-                        # Always written: `doc` may not hold what the node does.
-                        INDEXING_NOTE_FIELD: twin.get(INDEXING_NOTE_FIELD),
                         **indexed_copy_fields(twin.get("indexingStatus")),
                         **_parsed_like(twin),
                         "processingStartedAt": None,
@@ -1936,26 +1928,11 @@ class EventProcessor:
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
                 file_content, extension, mime_type = prepared.content, prepared.extension, prepared.mime_type
-                truncated = prepared.truncated
             elif route in _TEXT_ROUTES and file_types.is_bounded_text(code_ext) and file_content:
                 # A .log/.cfg read as text (the text path, Markdown, the code parser) has the same
                 # cap, so its embedding cost is bounded. One whose content is a PDF, an image, JSON
                 # and so on reaches its own parser with its own bytes; the hard limit bounds it.
-                file_content, truncated = await bound_text(file_content)
-            else:
-                truncated = False
-            # Its own field, not `reason`: the stages after indexing write `reason` (a skipped or
-            # failed classification), which would replace this note or be shown as one.
-            # Set or cleared only here, by the attempt that decided whether to cap; a resume from
-            # stored blocks keeps the note of the attempt that wrote them. Compared with the node as
-            # read, since `doc` takes a write's fields before the write lands.
-            note = partly_indexed_text() if truncated else None
-            if record.get(INDEXING_NOTE_FIELD) != note:
-                self._require_persisted(
-                    await self.update_record_fields(doc, {INDEXING_NOTE_FIELD: note}),
-                    "Failed to write the indexing note of record",
-                    doc,
-                )
+                file_content, _truncated = await bound_text(file_content)
 
             # ── New service pipeline (opt-in via USE_PARSING_SERVICE=true) ──
             if self._use_service_pipeline():

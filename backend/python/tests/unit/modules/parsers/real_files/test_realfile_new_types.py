@@ -237,8 +237,6 @@ async def test_a_text_plain_log_keeps_main_s_text_reader_with_the_size_cap(
     """A .log/.cfg stored as text/plain is still read as text (Markdown), but only its first and
     last lines are indexed when it is over the cap, and the record says so."""
     from app.modules.parsers.text import capped_text
-    from app.utils.user_errors import partly_indexed_text
-
     monkeypatch.setattr(capped_text.prepare_capped_text, "__kwdefaults__", {"max_bytes": 2_000, "refuse_binary": True})
     data = samples.make_log(SENTINEL, lines=200)
     containers, _, record = await legacy(ext, "text/plain", data)
@@ -247,7 +245,8 @@ async def test_a_text_plain_log_keeps_main_s_text_reader_with_the_size_cap(
     assert data.decode().rstrip("\n").rsplit("\n", 1)[-1] in text
     assert "worker-0 handled request 0" in text
     assert len(text.encode()) <= 2_000
-    assert record["indexingNote"] == partly_indexed_text()
+    # The record schema accepts `indexingNote`; a later release writes it (expand, then write).
+    assert "indexingNote" not in record
 
 
 @pytest.mark.parametrize("ext", ["log", "cfg"])
