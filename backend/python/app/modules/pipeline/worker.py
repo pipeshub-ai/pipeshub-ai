@@ -35,7 +35,7 @@ from app.modules.pipeline.models import (
 )
 from app.modules.pipeline.pause_budget import PauseState, Verdict
 from app.modules.pipeline.pause_judge import PauseJudge
-from app.modules.pipeline.pause_store import PauseStoreUnavailable, ResetResult
+from app.modules.pipeline.pause_store import PauseStoreUnavailable
 from app.modules.pipeline.registry import StageRegistry
 from app.modules.pipeline.stage import (
     Deadline,
@@ -556,9 +556,10 @@ class StageJobHandler:
                 return True
             if other.status is not ProgressStatus.FAILED:
                 return True
-            if await self._pause.release_charged(key, episode) is ResetResult.ALREADY:
-                # This episode's redrive already went out and that run failed on its own: not the key's doing.
-                return True
+            # Still owed means the redrive has not gone out (a refused publish, or a crash after the reset), so it is
+            # sent even when this episode's reset was already done. A run that has since reached its cap on its own is
+            # refused by the pre-run check before it sends, so a redrive here never buys it more sends.
+            await self._pause.release_charged(key, episode)
             with for_org(other.org_id, job="stage_hold_redrive"):
                 await self._coordinator.redrive(other.to_job().view, other.stage, priority=other.priority, force=False)
             return True

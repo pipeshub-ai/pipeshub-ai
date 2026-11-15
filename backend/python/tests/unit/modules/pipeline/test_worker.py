@@ -1140,3 +1140,29 @@ async def test_a_wake_after_this_episodes_reset_judges_the_new_runs_charges(flee
     await h.store.apply(job.state_key, attempt=3, sends=6, charged=6, trials=0, since_ms=h.clock(), ledger_at_since=0, scope=scope)
     refusal = await h.judge.spent(job, await h.pause_state(job))
     assert refusal is not None and refusal[0] is Verdict.FAIL_CHARGED
+
+
+@pytest.mark.asyncio
+async def test_an_owed_redrive_whose_publish_failed_is_sent_by_the_next_pass(fleet: FleetRedis, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pass reset the job's charges for this episode, then the redrive's publish was refused and the job went back
+    to FAILED. The job is still owed, so the next pass redrives it, although this episode's reset was already done."""
+    h, job = _BudgetHarness(fleet), _job()
+    scope = f"{_PK}:{_CLS}"
+    h.seed(job, ProgressStatus.FAILED)
+    await h.store.put(job.state_key, PauseState(since_ms=h.clock(), charged=6, sends=6, scope=scope))
+    await h.store.add_redrives(scope, [job.state_key], episode="ep-1")
+    real_redrive = h.coordinator.redrive
+    calls = {"n": 0}
+
+    async def refused_once(*args, **kwargs):  # noqa: ANN202
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("broker refused the publish")
+        return await real_redrive(*args, **kwargs)
+
+    monkeypatch.setattr(h.coordinator, "redrive", refused_once)
+    assert await h.handler.retry_hold_redrives() == 0
+    assert h.state(job).status is ProgressStatus.FAILED and await h.store.is_owed(scope, job.state_key)
+    assert await h.handler.retry_hold_redrives() == 1
+    assert h.state(job).status is not ProgressStatus.FAILED, "redriven by the next pass"
+    assert not await h.store.is_owed(scope, job.state_key)
