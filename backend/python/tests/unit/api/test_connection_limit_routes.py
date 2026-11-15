@@ -276,7 +276,7 @@ class TestBrowsing:
             return await knowledge_graph_navigate(
                 request=request, graph_provider=graph, node_id=node_id, page=1, limit=50, depth=1,
                 node_types=None, created_after=None, created_before=None,
-                modified_after=None, modified_before=None,
+                modified_after=None, modified_before=None, cursor=None,
             )
 
     @pytest.mark.asyncio
@@ -320,7 +320,7 @@ class TestBrowsing:
             result = await knowledge_graph_navigate(
                 request=_request(), graph_provider=graph, node_id=None, page=1, limit=50, depth=1,
                 node_types=None, created_after=None, created_before=None,
-                modified_after=None, modified_before=None,
+                modified_after=None, modified_before=None, cursor=None,
             )
         assert navigator.return_value.navigate.call_args.kwargs["connector_ids"] == ["app-in"]
         assert [row["id"] for row in result["rows"]] == ["rec-in"]

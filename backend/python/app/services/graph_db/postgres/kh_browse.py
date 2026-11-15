@@ -23,7 +23,6 @@ from app.exceptions.graph_db_exceptions import (
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase, _doc
 from app.services.graph_db.postgres.kg import listing as kgl
-from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.model import CODE_COLL
 from app.services.graph_db.postgres.kh_listing import (
     ADMIT_CHUNK,
@@ -39,6 +38,7 @@ from app.services.graph_db.postgres.kh_listing import (
     WINDOW_MAX,
     LeadBudget,
     _node_type,
+    capped_counts,
     chain_tops_apply,
     filtered_out,
     head,
@@ -404,11 +404,10 @@ class KhBrowseMixin(PgBase):
                 sql = kgl.browse_count_sql(where, c.add(sorted(sets["plain"])), c.add(sorted(sets["own"])), c.add(sorted(gset)), c.add(sorted(sets["unvouched"])),
                                            c.add(sets["app_sk"]), links)
                 listed, n = await self._kh_listed(left, *walk)
-                counts = self._kh_counts(listed)
-                for r in await self._kq(lambda tx, s=sql, v=tuple(c.values): tx.fetch(s, *v), transaction):
-                    counts["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += r["n"]
-                total = sum(counts.values())
-                return min(total, COUNT_CAP), counts, total > COUNT_CAP or n < len(left)
+                counts, capped = capped_counts(await self._kq(lambda tx, s=sql, v=tuple(c.values): tx.fetch(s, *v), transaction))
+                for k, v in self._kh_counts(listed).items():
+                    counts[k] += v
+                return sum(counts.values()), counts, capped or n < len(left)
         c = kgl.Params(list(p.values))
         c.values[2] = COUNT_SCAN + 1
         first = list(await self._kq(lambda tx, s=kgl.children_sql(where, links), v=tuple(c.values): tx.fetch(s, *v), transaction))
@@ -477,9 +476,7 @@ class KhBrowseMixin(PgBase):
             app = await tx.fetchval("/* pipeshub:kg.chain_app */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = $2", org, app_id)
             if app is None or not chain_tops_apply(_doc(app)):
                 return []
-            was = await tx.fetchval(kg_read.SORTS_OFF)
             rows = await tx.fetch(kgl.CHAIN_GRANTED, org, sorted(set(granted_ids)), app_id)
-            await tx.fetchval(kg_read.SORTS_BACK, was)
             nodes = await _chain_nodes(tx, org, rows)
             by: dict[tuple[str, ...], list[str]] = {}
             for n in nodes.values():

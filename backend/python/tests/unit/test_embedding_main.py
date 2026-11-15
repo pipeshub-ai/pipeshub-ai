@@ -1434,22 +1434,22 @@ class TestAbandonedRequests:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("left", [True, False])
     async def test_disconnect_check_sees_a_client_that_left_behind_the_telemetry_middleware(self, left) -> None:
+        """The route's check is ``Request.is_disconnected``, under the telemetry middleware as in the service."""
         from fastapi import FastAPI, Request
 
-        from app import embedding_main
         from app.telemetry.middleware import MetricsMiddleware
 
         probe = FastAPI()
         probe.add_middleware(MetricsMiddleware, service_name="probe")
         seen: list[bool] = []
-        queued = asyncio.Event()
+        queued, decided = asyncio.Event(), asyncio.Event()
 
         @probe.post("/p")
         async def handler(request: Request) -> dict:
             await request.body()
             queued.set()
-            await asyncio.sleep(0.05)  # stands in for waiting in the gate queue
-            seen.append(await embedding_main._client_gone(request))
+            await decided.wait()  # in the gate queue while the client leaves, or stays
+            seen.append(await request.is_disconnected())
             return {}
 
         inbox: asyncio.Queue = asyncio.Queue()
@@ -1467,6 +1467,7 @@ class TestAbandonedRequests:
         await queued.wait()
         if left:
             inbox.put_nowait({"type": "http.disconnect"})
+        decided.set()
         await run
         assert seen == [left]
 

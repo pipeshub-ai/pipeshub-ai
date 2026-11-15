@@ -5378,6 +5378,7 @@
       "noRecordMetadata": "Für dieses Element liegen keine zusätzlichen Metadaten vor."
     },
     "indexingReasonAria": "Details zur Indexierung",
+    "indexingNoteAria": "Hinweis zur Indexierung",
     "stageTrackLabel": "Pipeline",
     "stageParsed": "Geparst",
     "stageSearchable": "Durchsuchbar",

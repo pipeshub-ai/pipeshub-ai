@@ -37,7 +37,7 @@ RECORD_PROPERTIES = frozenset({
     "embedKey", "embedRev", "embedSeconds", "embedStartedMs", "embedTotal", "embedUncounted", "embedVrid",
     "entityExtractionStatus", "entityExtractionStrategy", "entityExtractorVersion", "externalGroupId",
     "externalParentId", "externalRecordId", "externalRevisionId", "externalRootGroupId", "extractionDeferred",
-    "extractionStatus", "hasIndexedCopy", "hideWeburl", "indexingStatus", "isArchived", "isDeleted",
+    "extractionStatus", "hasIndexedCopy", "hideWeburl", "indexingNote", "indexingStatus", "isArchived", "isDeleted",
     "isDependentNode", "isDirty", "isInternal", "isLatestVersion", "isPlaceholder", "isShared",
     "isVLMOcrProcessed", "lastEntityExtractionTimestamp", "lastExtractionTimestamp", "lastIndexTimestamp",
     "lastRepublishedAt", "lastSyncTimestamp", "md5Checksum", "mimeType", "orgId", "origin", "parentNodeId",
