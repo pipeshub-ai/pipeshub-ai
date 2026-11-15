@@ -254,7 +254,29 @@ class TestWithdrawnAccounts:
         c._stored_app_users = [_user("gone", "g@x.com"), _user("kept", "k@x.com"), _user("moved", "m@x.com")]
         c._listed_user_keys = {"kept", "moved-new"}
         c.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        c.hold = {}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: c.hold.get(k))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: c.hold.__setitem__(k, v))
         return c._stored_app_users
+
+    @pytest.mark.parametrize("listed", [{"gone", "kept", "moved-new"}, {"kept", "moved-new"}],
+                             ids=["none_missing", "one_missing"])
+    async def test_a_complete_read_with_few_or_none_missing_clears_a_held_set(self, listed: set) -> None:
+        c = _connector()
+        self._stored(c)
+        c.hold["withdrawals_held"] = {"accounts": '["a", "b"]', "seen": 2, "since": 1}
+        c._listed_user_keys = c._seen_user_keys = listed
+        await c._withdraw_unlisted_app_users([])
+        assert c.hold["withdrawals_held"]["seen"] == 0
+
+    async def test_a_read_not_complete_leaves_a_held_set_alone(self) -> None:
+        c = _connector()
+        self._stored(c)
+        c.hold["withdrawals_held"] = held = {"accounts": '["a", "b"]', "seen": 2, "since": 1}
+        c._user_read_unfinished = True
+        await c._withdraw_unlisted_app_users([])
+        assert c.hold["withdrawals_held"] is held
 
     async def test_an_unlisted_account_is_withdrawn_with_its_grants(self) -> None:
         c = _connector()
