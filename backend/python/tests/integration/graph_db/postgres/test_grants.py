@@ -17,9 +17,11 @@ from app.core.org_context import OrgContext, bind, pop, push
 from app.services.graph_db.interface.graph_db_provider import (
     PermissionVerificationUnavailableError,
 )
+from app.services.graph_db.postgres.kg.drainer import drain_org
 
 from .test_access import APP, World, _org, rec
 from .test_access import w as w
+from .test_kg_read import KG_TABLES, _admin, _decide, flip
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -159,6 +161,83 @@ async def test_a_trashed_record_loses_the_users_grant_too(w: World) -> None:
     await grant(w, "u", "records", "t")
     await w.p.remove_user_access_to_record(APP, "ext", "u")
     assert not await w.p.get_users_with_permission_to_node("t", "records")
+
+
+OTHER_APP = "app2"
+
+
+async def suspended_world(w: World) -> None:
+    """``u`` holds its own grants on the connector, a membership of one of its groups, and grants through a team, the organization, a group of
+    another connector and on another connector; ``other`` holds a grant of its own on the same record."""
+    await w.nodes("apps", {"_key": OTHER_APP, "type": "CONNECTOR", "isActive": True})
+    await w.edge("permission", ("users", "u"), ("apps", OTHER_APP), type="USER", role="READER")
+    await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
+    await w.nodes("groups", {"_key": "grp", "connectorId": APP}, {"_key": "grp2", "connectorId": OTHER_APP})
+    await w.nodes("teams", {"_key": "tm"})
+    await w.nodes("organizations", {"_key": "o1"})
+    await w.nodes("records", rec("direct"), rec("in_g"), rec("via_grp"), rec("both"), rec("via_org"), rec("via_grp2", connectorId=OTHER_APP),
+                  rec("elsewhere", connectorId=OTHER_APP))
+    await w.child(("recordGroups", "g"), ("records", "in_g"))
+    for key in ("direct", "both"):
+        await grant(w, "u", "records", key)
+    await grant(w, "u", "recordGroups", "g")
+    await grant(w, "u", "records", "elsewhere")
+    await grant(w, "other", "records", "direct")
+    await w.member("u", "grp")
+    await w.member("u", "grp2")
+    await w.member("u", "tm", "teams")
+    await w.edge("belongsTo", ("users", "u"), ("organizations", "o1"), entityType="ORGANIZATION")
+    await grant(w, "grp", "records", "via_grp", from_coll="groups", type_="GROUP")
+    await grant(w, "grp2", "records", "via_grp2", from_coll="groups", type_="GROUP")
+    await grant(w, "tm", "records", "both", from_coll="teams", type_="TEAM")
+    await grant(w, "o1", "records", "via_org", from_coll="organizations", type_="ORG")
+
+
+ALL = ("direct", "in_g", "via_grp", "both", "via_org", "via_grp2", "elsewhere")
+
+
+async def test_a_user_the_source_no_longer_lets_in_loses_only_their_own_grants_on_the_connector(w: World) -> None:
+    """A suspended account: its own grants on the connector's records and record groups and its membership of the connector's groups go;
+    what a team, the organization or another connector's group grants it stays, and so does every other user's grant and every other org's."""
+    await suspended_world(w)
+    other = _org()
+    with in_org(other):
+        ow = World(w.p, other)
+        await ow.nodes("users", {"_key": "u"})
+        await ow.nodes("records", rec("direct"))
+        await grant(ow, "u", "records", "direct")
+    assert await w.allowed("u", *ALL) == set(ALL)
+    assert await w.p.remove_user_access_to_connector(APP, "u") == 4          # direct, both, the record group g and the membership of grp
+    assert await w.allowed("u", *ALL) == {"both", "via_org", "via_grp2", "elsewhere"}
+    assert keys(await w.p.get_users_with_permission_to_node("direct", "records")) == {"other"}          # another user's grant on the record stays
+    assert keys(await w.p.get_users_with_permission_to_node("both", "records")) == set()      # the team's grant is left, the user's own is gone
+    assert await w.p.remove_user_access_to_connector(APP, "u") == 0          # a repeat finds nothing
+    assert await w.p.remove_user_access_to_connector(APP, "nobody") == 0
+    assert await w.p.remove_user_access_to_connector("", "u") == 0
+    with in_org(other):
+        assert keys(await w.p.get_users_with_permission_to_node("direct", "records")) == {"u"}     # another org's same keys are untouched
+
+
+async def test_a_suspended_users_grants_leave_the_typed_graph_once_drained_and_a_team_grant_still_admits(w: World, pg_db) -> None:
+    """The removal reaches the typed graph through the change capture: until the drain the connector is answered by the walk, and after it
+    kg itself denies what the user held alone and still admits what the team grants."""
+    await suspended_world(w)
+    try:
+        assert await flip(pg_db, w.org) == (2, 2)
+        access = await w.p.get_knowledge_hub_access_v3("u", w.org)
+        assert {"direct", "both"} <= set((await _decide(pg_db, w.org, ["direct", "both"], access)).admit)
+        await w.p.remove_user_access_to_connector(APP, "u")
+        access = await w.p.get_knowledge_hub_access_v3("u", w.org)
+        waiting = await _decide(pg_db, w.org, ["direct", "both"], access)
+        assert not waiting.admit and set(waiting.walk) == {"direct", "both"}            # behind the log: the walk answers
+        assert await w.allowed("u", "direct", "both") == {"both"}
+        await drain_org(pg_db, w.org)
+        drained = await _decide(pg_db, w.org, ["direct", "both"], access)
+        assert set(drained.admit) == {"both"} and not drained.walk and drained.denied == 1
+        assert await w.allowed("u", "direct", "both") == {"both"}
+    finally:
+        for t in KG_TABLES:
+            await _admin(f"DELETE FROM kg.{t} WHERE org_id = $1", w.org)
 
 
 async def test_a_record_inherits_its_groups_grants_only_once_the_inherit_edge_is_written(w: World) -> None:

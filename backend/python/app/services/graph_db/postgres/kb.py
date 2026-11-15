@@ -23,6 +23,7 @@ from app.services.graph_db.common.team_grant_role import (
 )
 from app.services.graph_db.common.utils import (
     CONTAINMENT_MAX_DEPTH,
+    KB_LIST_FOLDERS_CAP,
     uploaded_document_id,
 )
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
@@ -72,10 +73,11 @@ class KbMixin(PgBase):
             SELECT s.total, s.roles, p.doc, p.role, p.folders FROM
               (SELECT (SELECT count(*) FROM kept) AS total, (SELECT coalesce(array_agg(DISTINCT role), '{}') FROM base) AS roles) s
               LEFT JOIN LATERAL (SELECT f.id, f.doc, f.role, (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'name', r.doc->'recordName',
-                    'createdAtTimestamp', r.doc->'createdAtTimestamp', 'webUrl', r.doc->'webUrl') ORDER BY r.id), '[]'::jsonb)
-                  FROM (SELECT DISTINCT n.id, n.doc FROM graph.edges be JOIN graph.nodes n ON n.org_id = be.org_id AND n.coll = 'records' AND n.id = be.from_id
+                    'createdAtTimestamp', r.doc->'createdAtTimestamp', 'webUrl', r.doc->'webUrl') ORDER BY r.id COLLATE "C"), '[]'::jsonb)
+                  FROM (SELECT n.id, n.doc FROM graph.edges be JOIN graph.nodes n ON n.org_id = be.org_id AND n.coll = 'records' AND n.id = be.from_id
                         WHERE be.org_id = $1 AND be.coll = 'belongsTo' AND be.from_coll = 'records' AND be.to_coll = 'apps' AND be.to_id = f.id
-                          AND n.doc->>'mimeType' = ANY($14::text[])) r) AS folders
+                          AND n.doc->>'mimeType' = ANY($14::text[])
+                        GROUP BY n.id, n.doc ORDER BY n.id COLLATE "C" LIMIT $15) r) AS folders
                 FROM kept f
                 ORDER BY (CASE WHEN $10::int = 1 AND $13::boolean THEN f.doc->>'name' END) COLLATE "C" ASC, (CASE WHEN $10::int = 1 AND NOT $13::boolean THEN f.doc->>'name' END) COLLATE "C" DESC,
                          (CASE WHEN $10::int = 2 AND $13::boolean THEN f.doc->'createdAtTimestamp' END) ASC, (CASE WHEN $10::int = 2 AND NOT $13::boolean THEN f.doc->'createdAtTimestamp' END) DESC,
@@ -83,15 +85,17 @@ class KbMixin(PgBase):
                          (CASE WHEN $10::int = 4 AND $13::boolean THEN f.role END) COLLATE "C" ASC, (CASE WHEN $10::int = 4 AND NOT $13::boolean THEN f.role END) COLLATE "C" DESC, f.id
                 OFFSET $11 LIMIT $12) p ON true""",
                                                   org, user_id, org_id, TEAM_GRANT_ROLE_CAP, sorted(RETIRED_ROLES), _ROLES, _KB, search or None, permissions or None,
-                                                  key, skip, limit, sort_order.upper() != "DESC", FOLDER_MIME_TYPES), transaction)
+                                                  key, skip, limit, sort_order.upper() != "DESC", FOLDER_MIME_TYPES, KB_LIST_FOLDERS_CAP + 1), transaction)
         kbs = []
         for r in rows:
             if r["doc"] is None:
                 continue
             d = _doc(r["doc"])
+            folders = _doc_list(r["folders"])
             kbs.append({"id": d.get("id"), "name": d.get("name") if d.get("name") is not None else "Untitled", "description": d.get("description"),
                         "createdAtTimestamp": d.get("createdAtTimestamp"), "updatedAtTimestamp": d.get("updatedAtTimestamp"), "createdBy": d.get("createdBy"),
-                        "userRole": r["role"], "status": d.get("status"), "folders": _doc_list(r["folders"])})
+                        "userRole": r["role"], "status": d.get("status"), "folders": folders[:KB_LIST_FOLDERS_CAP],
+                        "foldersTruncated": len(folders) > KB_LIST_FOLDERS_CAP})
         return kbs, rows[0]["total"], {"permissions": sorted(rows[0]["roles"]), "sortFields": list(_SORTS), "sortOrders": ["asc", "desc"]}
 
     # ---- who holds a role on a knowledge base --------------------------------------------------------------------

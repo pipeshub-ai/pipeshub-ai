@@ -393,6 +393,15 @@ class ExtensionTypes(Enum):
     JSON = "json"
     YAML = "yaml"
     YML = "yml"
+    MSG = "msg"
+    ODT = "odt"
+    RTF = "rtf"
+    XLSM = "xlsm"
+    LOG = "log"
+    CFG = "cfg"
+    DOCM = "docm"
+    DOTX = "dotx"
+    POTX = "potx"
 
 # Common file types PipesHub cannot index. Sync filters offer them so a user can
 # exclude them (Not in); they are kept out of ExtensionTypes because that enum
@@ -461,6 +470,26 @@ class MimeTypes(Enum):
     SQL_TABLE = "application/vnd.sql.table"  
     SQL_VIEW = "application/vnd.sql.view"  
     SQL_COLUMN = "application/vnd.sql.column"
+    MSG = "application/vnd.ms-outlook"
+    ODT = "application/vnd.oasis.opendocument.text"
+    RTF = "application/rtf"
+    XLSM = "application/vnd.ms-excel.sheet.macroEnabled.12"
+    DOCM = "application/vnd.ms-word.document.macroEnabled.12"
+    DOTX = "application/vnd.openxmlformats-officedocument.wordprocessingml.template"
+    POTX = "application/vnd.openxmlformats-officedocument.presentationml.template"
+    LOG = "text/x-log"
+    CFG = "text/x-cfg"
+
+    @classmethod
+    def _missing_(cls, value: object) -> "MimeTypes | None":
+        # Mime types are case-insensitive, and connectors build members from guessed or
+        # server-sent spellings ("application/vnd.ms-excel.sheet.macroenabled.12").
+        if isinstance(value, str):
+            lowered = value.lower()
+            for member in cls:
+                if member.value.lower() == lowered:
+                    return member
+        return None
 
 
 # Every mimeType a folder record has been written with. Folders are written as
