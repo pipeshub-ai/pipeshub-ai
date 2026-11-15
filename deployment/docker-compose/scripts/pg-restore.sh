@@ -22,11 +22,8 @@
 # `docker rm -f <volume> && docker volume rm <volume>`. To put the stack itself back to that time, stop the stack and use --in-place.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# install.sh passes its extra compose files with -f and keeps them in .env as PIPESHUB_COMPOSE_OVERRIDES, not as COMPOSE_FILE
-if [ -z "${COMPOSE_FILE:-}" ] && [ -f .env ] && ! grep -q '^COMPOSE_FILE=' .env; then
-  overrides="$(grep '^PIPESHUB_COMPOSE_OVERRIDES=' .env | tail -1 | cut -d= -f2- || true)"   # no match is not an error (as install.sh)
-  if [ -n "$overrides" ]; then export COMPOSE_FILE="docker-compose.yml:$overrides"; fi
-fi
+# every compose call through scripts/pipeshub-compose.sh: the stack's files also when install.sh manages it (PIPESHUB_COMPOSE_OVERRIDES)
+compose() { scripts/pipeshub-compose.sh "$@"; }
 
 usage() { sed -n '4,5p' "$0" >&2; exit 2; }
 [ $# -ge 1 ] || usage
@@ -46,9 +43,9 @@ done
 [ "$in_place" = 1 ] && [ -n "$into" ] && { echo "pg-restore: --in-place and --into exclude each other" >&2; exit 2; }
 
 # read whole outputs first: with pipefail, a reader that stops early (grep -q, head) fails the pipeline when compose gets SIGPIPE
-config="$(docker compose config)" || {
+config="$(compose config)" || {
   echo "pg-restore: Compose rejected the project (above): COMPOSE_FILE, COMPOSE_PROJECT_NAME and COMPOSE_PROFILES must be the stack's own" >&2; exit 2; }
-services="$(docker compose config --services)"
+services="$(compose config --services)"
 project="$(sed -n '1s/^name: //p' <<<"$config")"
 [ -n "$project" ] || { echo "pg-restore: could not read the compose project; set COMPOSE_FILE and COMPOSE_PROJECT_NAME" >&2; exit 2; }
 grep -qx pg-backup <<<"$services" \
@@ -63,8 +60,8 @@ esac
 if [ "$in_place" = 1 ]; then
   volume="${project}_postgres_data"
   # pgBackRest also refuses while the server runs (postmaster.pid); this stops earlier and says what to do
-  if [ -n "$(docker compose ps -q --status running postgres)" ]; then
-    echo "pg-restore: the postgres service is running; stop the stack first (docker compose stop)" >&2; exit 3
+  if [ -n "$(compose ps -q --status running postgres)" ]; then
+    echo "pg-restore: the postgres service is running; stop the stack first (./install.sh --stop or scripts/pipeshub-compose.sh stop)" >&2; exit 3
   fi
   # --delta keeps the files that already match the backup; archiving stays on, so the restored server continues the backup history
   restore+=(--delta)
@@ -82,14 +79,14 @@ start=$(date +%s)
 echo "pg-restore: restoring ${target} into volume ${volume}"
 # A new named volume takes the owner of the image's /pgbackrest-restore (postgres); one that does not (another volume driver, or a volume
 # made elsewhere) is handed to postgres here, as root, so that pgBackRest itself never runs as root.
-docker compose run --rm --no-deps -T -u root -v "$volume:/pgbackrest-restore" --entrypoint sh pg-backup \
+compose run --rm --no-deps -T -u root -v "$volume:/pgbackrest-restore" --entrypoint sh pg-backup \
   -c 'chown postgres:postgres /pgbackrest-restore && chmod 0700 /pgbackrest-restore'
 # pg1-path through the environment, not the command line: pgBackRest copies command-line options into the restored restore_command, and
 # the server that replays the WAL has its data at another path (the stack's server at /var/lib/postgresql/data)
-docker compose run --rm --no-deps -T -v "$volume:/pgbackrest-restore" -e PGBACKREST_PG1_PATH=/pgbackrest-restore pg-backup "${restore[@]}"
+compose run --rm --no-deps -T -v "$volume:/pgbackrest-restore" -e PGBACKREST_PG1_PATH=/pgbackrest-restore pg-backup "${restore[@]}"
 
 if [ "$in_place" = 1 ]; then
-  echo "pg-restore: restored in $(( $(date +%s) - start ))s. Start the stack (docker compose up -d); the server replays WAL to the target first."
+  echo "pg-restore: restored in $(( $(date +%s) - start ))s. Start the stack (./install.sh --no-pull or scripts/pipeshub-compose.sh up -d); the server replays WAL to the target first."
   exit 0
 fi
 
@@ -97,7 +94,7 @@ fi
 # hot-standby.html, 26.4.3), so the copy takes them from the restored control file.
 # shortcut: a size raised on the original after this backup pauses recovery (below: the script stops and shows the log naming it);
 # restart the copy with that setting raised.
-sizes=$(docker compose run --rm --no-deps -T -v "$volume:/pgbackrest-restore" --entrypoint pg_controldata pg-backup /pgbackrest-restore |
+sizes=$(compose run --rm --no-deps -T -v "$volume:/pgbackrest-restore" --entrypoint pg_controldata pg-backup /pgbackrest-restore |
   awk -F': *' '{ n = $1; sub(/ setting$/, "", n) }
     n ~ /^max_(connections|worker_processes|wal_senders)$/ { print "-c " n "=" $2 }
     n == "max_prepared_xacts" { print "-c max_prepared_transactions=" $2 }
@@ -107,7 +104,7 @@ sizes=$(docker compose run --rm --no-deps -T -v "$volume:/pgbackrest-restore" --
 # shortcut: the copy runs within the pg-backup service's memory limit (PG_BACKUP_MEMORY_LIMIT, 1G); raise it before restoring a large
 # database you want to query hard, or restore --in-place.
 # shellcheck disable=SC2086 # $sizes is "-c name=value" words
-docker compose run -d --no-deps --name "$volume" -v "$volume:/pgbackrest-restore" \
+compose run -d --no-deps --name "$volume" -v "$volume:/pgbackrest-restore" \
   -e PGDATA=/pgbackrest-restore -e PGBACKREST_PG1_PATH=/pgbackrest-restore --entrypoint docker-entrypoint.sh pg-backup \
   postgres -c shared_preload_libraries=pg_stat_statements,auto_explain,pg_textsearch -c unix_socket_directories=/tmp \
   -c archive_mode=off $sizes >/dev/null

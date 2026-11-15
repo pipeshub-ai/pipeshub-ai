@@ -235,8 +235,9 @@ for major in ${DRILL_MAJORS:-17 18}; do
   [ -n "$lost" ] && { scripts/pg-restore.sh "$lost" --into "$copy" > "$work/gap-t.log" 2>&1 || rc=$?; }
   check "$major: a restore to the first lost commit fails, recovery ending at the gap" \
     "$rc $(grep -q 'recovery ended before configured recovery target was reached' "$work/gap-t.log" 2>/dev/null && echo ended)" "1 ended"
+  # the outage's first gap (a drop during the gap-closing backup can open a second one, held with a later backup)
   check "$major: the backup before the outage is held against expiry" \
-    "$(dc exec -T pg-backup sh -c 'cut -d" " -f1 /var/run/postgresql/pgbackrest-gap-hold')" "$label_pre"
+    "$(dc exec -T pg-backup sh -c 'cd /var/run/postgresql/pgbackrest-gap-hold.d && cat "$(ls | head -1)"')" "$label_pre"
   copy="${proj}_pg_restore_upto_gap_$$"; copies+=("$copy")
   if scripts/pg-restore.sh latest --set "$label_pre" --into "$copy" > "$work/gap-l.log" 2>&1; then
     check "$major: the end of the archive from the backup before the gap: the schemas the outage did not write are as before it" \
@@ -250,7 +251,7 @@ for major in ${DRILL_MAJORS:-17 18}; do
     echo "FAIL $major: pg-restore.sh latest --set $label_pre:"; tail -20 "$work/gap-l.log"; fail=1
   fi
   check "$major: clear-gap-hold removes the hold and expires by retention" \
-    "$(dc exec -T pg-backup pg-backup.sh clear-gap-hold > "$work/clear.log" 2>&1 && dc exec -T pg-backup sh -c '! test -e /var/run/postgresql/pgbackrest-gap-hold' && grep -q 'expire command end: completed successfully' "$work/clear.log" && echo ok)" ok
+    "$(dc exec -T pg-backup pg-backup.sh clear-gap-hold > "$work/clear.log" 2>&1 && dc exec -T pg-backup sh -c 'test -z "$(ls -A /var/run/postgresql/pgbackrest-gap-hold.d)"' && grep -q 'expire command end: completed successfully' "$work/clear.log" && echo ok)" ok
   # the healthcheck itself fails as soon as a drop is marked, even while the last backup's success is still recorded
   hc="$($DOCKER inspect -f '{{index .Config.Healthcheck.Test 1}}' "$proj-pg-backup-1")"
   check "$major: the healthcheck passes with no drop marked" "$($DOCKER exec "$proj-pg-backup-1" sh -c "$hc" && echo pass || echo fail)" pass
@@ -263,9 +264,12 @@ for major in ${DRILL_MAJORS:-17 18}; do
   # after reading the WAL location and making a restore point and `pgbackrest check` (which archives it); with no stack started,
   # restore in place to that location, then start the stack: the data is that quiet moment's.
   change 4
-  quiet_lsn="$(sql -c 'select pg_current_wal_lsn()')"
-  sql -c "select pg_create_restore_point('drill-regular-backup')" >/dev/null
-  dc exec -T pg-backup pgbackrest check > "$work/check.log" 2>&1 || { echo "FAIL $major: pgbackrest check at the restore point"; tail -5 "$work/check.log"; fail=1; }
+  # the documented mark, through scripts/pipeshub-compose.sh, into the regular backup's directory; the restore below reads only that
+  backup_dir="$work/regular-backup"; mkdir -p "$backup_dir"
+  scripts/pipeshub-compose.sh exec -T postgres psql -U postgres -d pipeshub -Atc "select pg_current_wal_lsn()" > "$backup_dir/pg-restore-point.txt"
+  scripts/pipeshub-compose.sh exec -T postgres psql -U postgres -d pipeshub -c "select pg_create_restore_point('regular-backup')" >/dev/null
+  scripts/pipeshub-compose.sh exec -T pg-backup pgbackrest check > "$work/check.log" 2>&1 \
+    || { echo "FAIL $major: pgbackrest check at the restore point"; tail -5 "$work/check.log"; fail=1; }
   at_loss="$(sql -c "$checksums")"
   # why not a time: with no commit after the quiet moment, recovery to its time cannot stop and the server shuts down
   copy="${proj}_pg_restore_quiet_time_$$"; copies+=("$copy"); rc=0
@@ -281,7 +285,7 @@ for major in ${DRILL_MAJORS:-17 18}; do
   for v in postgres_data pg_backup_socket pgbouncer_auth; do $DOCKER volume rm "${proj}_$v" >/dev/null || true; done
   check "$major: the lost machine has no database volume left" "$($DOCKER volume ls -q | grep -cx "${proj}_postgres_data")" 0
   t0=$(now)
-  if scripts/pg-restore.sh "lsn:$quiet_lsn" --in-place > "$work/loss.log" 2>&1; then
+  if scripts/pg-restore.sh "lsn:$(cat "$backup_dir/pg-restore-point.txt")" --in-place > "$work/loss.log" 2>&1; then
     dc up -d --no-build postgres > /dev/null 2>&1
     for _ in $(seq 1 600); do [ "$(sql -c 'select pg_is_in_recovery()' 2>/dev/null)" = f ] && break; sleep 1; done
     echo "info $major: restore after losing the machine, server accepting writes: $(secs "$t0" "$(now)")s"
