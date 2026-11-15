@@ -2937,6 +2937,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return False
         return True
 
+    async def __hand_back_fifo_read(self, stream_name: str, message_id: str, fields: dict[str, str]) -> bool:
+        """The no-scheduler loop's read-time check; True when the entry was handled here (handed back or left pending)."""
+        if self.precision_filter is None:
+            return False
+        parsed = await self._parse_message(message_id, fields, stream_name)
+        delay = self.__precision_delay(parsed)
+        if delay is None or parsed is None:
+            return False
+        await self.__hand_back_entry(stream_name, message_id, parsed, delay)
+        return True
+
     def __rebuffer_failed_hand_back(
         self,
         stream_name: str,
@@ -3193,6 +3204,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                     stream_name,
                                     message_id,
                                 )
+                                # A vector-writing event under a precision mismatch goes back before a
+                                # handler downloads or parses anything. A failed publish leaves it pending
+                                # (not acknowledged), where recovery reads it again.
+                                if await self.__hand_back_fifo_read(stream_name, message_id, fields):
+                                    continue
                                 await self._start_processing_task(
                                     stream_name, message_id, fields
                                 )

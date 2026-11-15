@@ -256,3 +256,35 @@ class TestFailedHandBack:
         assert handler.seen == []
         assert len(consumer._held_entries) == 1 and consumer._scheduler.pending_count == 1
         assert producer.send_event.await_count == 1  # waiting out its delay, not retried in a loop
+
+
+class TestFifoLoop:
+    """Fair scheduling off: a fresh read is checked before the handler starts, as the scheduler path does."""
+
+    async def test_a_fresh_vector_writing_event_is_handed_back_and_the_handler_never_runs(self, harness) -> None:
+        await harness.produce(_envelope("n1", ON), _envelope("d1", ON, "deleteRecord"))
+        consumer, producer = _build(harness, _verdict(True), enabled=False)
+        handler = Handler()
+        await consumer.start(handler)
+        await _until(lambda: handler.seen == ["d1"] and len(producer.sent) == 1)
+        assert [p["recordId"] for p in producer.sent] == ["n1"] and producer.sent[0][HANDBACKS_KEY] == 1
+        assert handler.seen == ["d1"]  # the delete passes; nothing of n1 was downloaded or parsed
+
+    async def test_a_failed_publish_leaves_the_fresh_entry_pending_and_the_handler_never_runs(self, harness) -> None:
+        await harness.produce(_envelope("n1", ON))
+        consumer, producer = _build(harness, _verdict(True), enabled=False)
+        producer.send_event = AsyncMock(side_effect=RuntimeError("broker down"))
+        handler = Handler()
+        await consumer.start(handler)
+        await _until(lambda: producer.send_event.await_count >= 1)
+        await asyncio.sleep(0.2)
+        assert handler.seen == []
+        assert int((await harness.client.xpending(TOPIC, GROUP))["pending"]) == 1  # not acknowledged
+
+    async def test_a_match_verdict_still_runs_the_handler(self, harness) -> None:
+        await harness.produce(_envelope("n1", ON))
+        consumer, producer = _build(harness, _verdict(False), enabled=False)
+        handler = Handler()
+        await consumer.start(handler)
+        await _until(lambda: handler.seen == ["n1"])
+        assert producer.sent == []
