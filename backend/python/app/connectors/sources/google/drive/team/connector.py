@@ -270,6 +270,16 @@ UNDECIDED_KEPT_KEY = f"{UNDECIDED_REMOVALS_SYNC_POINT_PREFIX}kept"
 KEPT_RECORDS_BATCH = 100
 # The ids of the items that failed in the listing this task is reading (each user's sync runs in its own task).
 _failed_items: ContextVar[set[str] | None] = ContextVar("drive_failed_items", default=None)
+# Per user sync (its own task): the items this sync withdrew (trashed, removed, out of scope) since a new record of
+# each last joined its batch. The batch is written later, and a removal finds nothing stored yet, so the flush leaves
+# them out instead of writing access just withdrawn.
+_withdrawn_items: ContextVar[set[str] | None] = ContextVar("drive_withdrawn_items", default=None)
+
+
+def _note_withdrawn(file_id: str | None) -> None:
+    withdrawn = _withdrawn_items.get()
+    if withdrawn is not None and file_id:
+        withdrawn.add(file_id)
 FILTER_CLEANUP_PAGE_SIZE = 500
 
 
@@ -2873,6 +2883,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 await self._handle_record_updates(update)
                 continue
             else:
+                if (withdrawn := _withdrawn_items.get()) is not None:
+                    withdrawn.discard(record.external_record_id)  # read again after it was withdrawn: written
                 batch_records.append((record, perms))
                 batch_count += 1
                 total_counter += 1
@@ -2882,20 +2894,22 @@ class GoogleDriveTeamConnector(BaseConnector):
                     self.logger.info(
                         f"💾 Processing batch of {len(batch_records)} records from {context_name}"
                     )
-                    await self.data_entities_processor.on_new_records(batch_records)
+                    await self._flush_batch(batch_records)
                     batch_records = []
                     batch_count = 0
                     await asyncio.sleep(0.1)
 
         return batch_records, batch_count, total_counter
 
-    @staticmethod
-    def _drop_buffered(batch_records: list, file_id: str | None) -> tuple[list, int]:
-        """The batch without the new records of an item the user's feed now reports removed: unwritten yet, the
-        removal finds nothing stored, and the flush would write the access the user just lost. Returns the batch
-        and how many it dropped. Another user who still opens the item writes it on their own read."""
-        kept = [(record, perms) for record, perms in batch_records if record.external_record_id != file_id]
-        return kept, len(batch_records) - len(kept)
+    async def _flush_batch(self, batch_records: list) -> None:
+        """Write a batch of new records, but none of an item this sync withdrew after the record joined the batch.
+        Another user who still opens the item writes it on their own read."""
+        withdrawn = _withdrawn_items.get()
+        kept = [(record, perms) for record, perms in batch_records if record.external_record_id not in withdrawn] if (
+            withdrawn
+        ) else batch_records
+        if kept:
+            await self.data_entities_processor.on_new_records(kept)
 
     async def _process_remaining_batch_records(
         self,
@@ -2916,7 +2930,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info(
                 f"💾 Processing final batch of {len(batch_records)} records from {context_name}"
             )
-            await self.data_entities_processor.on_new_records(batch_records)
+            await self._flush_batch(batch_records)
 
         return [], 0
 
@@ -3103,6 +3117,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         A scope exit is a source-side move, so it applies to every user; whichever
         user's changes feed reports it first performs the delete and the rest no-op.
         """
+        _note_withdrawn(file_id)
         exited_scope, existing_record = await has_exited_scope(
             self.data_entities_processor, self.connector_id, file_id, tracked_folder_ids
         )
@@ -3281,6 +3296,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         stay. At the limit the file is kept, listed under `undecided_key` to be checked again on later runs, and
         the checkpoint may move on: one file nobody answers for must not hold every later change. The reporting
         user's own grant is already gone. Any other failure raises, so the change is read again."""
+        _note_withdrawn(file_id)
         if not file_id:
             await apply()
             return None
@@ -3945,6 +3961,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _delete_gone_item(self, file_id: str | None) -> None:
         """Delete the record of a file that is in the trash or deleted, if one was synced."""
+        _note_withdrawn(file_id)
         if not file_id:
             return
         record = await self.data_entities_processor.get_record_by_external_id(
@@ -4999,6 +5016,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             user: AppUser object containing email, source_user_id, etc.
         """
         try:
+            _withdrawn_items.set(set())  # this user's own: a task of its own, so other users' syncs keep theirs
             self.logger.info(f"Starting Google Drive sync for user {user.email}")
 
             # 1-2. Create a Drive data source impersonating this user
@@ -5349,8 +5367,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                     file_metadata = change.get("file")
 
                     if is_removed:
-                        batch_records, dropped = self._drop_buffered(batch_records, change.get("fileId"))
-                        batch_count -= dropped
                         error = await self._apply_removed_change(
                             change, user, owner_sources, held_removals, sync_point_key
                         )
@@ -6114,10 +6130,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                                         file_metadata = change.get("file")
 
                                         if is_removed:
-                                            batch_records, dropped = self._drop_buffered(
-                                                batch_records, change.get("fileId")
-                                            )
-                                            batch_count -= dropped
                                             # Deleted, moved to another drive, or only this user lost
                                             # access: removed only once no synced user can open it.
                                             error = await self._bounded_removal(
