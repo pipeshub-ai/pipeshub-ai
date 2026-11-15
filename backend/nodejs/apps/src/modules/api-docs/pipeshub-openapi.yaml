@@ -5671,6 +5671,10 @@ components:
                   knowledge base that has not been processed yet.
               folders:
                 type: array
+                maxItems: 100
+                description: |
+                  The knowledge base's folders, at most 100, the first by id. When `foldersTruncated` is true
+                  it has more; browse the knowledge base to page through them all.
                 items:
                   type: object
                   additionalProperties: false
@@ -5687,6 +5691,11 @@ components:
                       format: int64
                     path:
                       type: string
+              foldersTruncated:
+                type: boolean
+                description: |
+                  True when the knowledge base has more than the 100 folders `folders` holds. Servers that do not
+                  cap the list leave it out.
         pagination:
           type: object
           additionalProperties: false

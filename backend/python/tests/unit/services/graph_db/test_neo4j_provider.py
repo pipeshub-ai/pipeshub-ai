@@ -4748,6 +4748,21 @@ class TestListUserKnowledgeBases:
             assert "kb2" not in query
 
     @pytest.mark.asyncio
+    async def test_folders_are_the_first_100_by_id_and_say_when_there_are_more(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[], [{"total": 0}], []])
+
+        await neo4j_provider.list_user_knowledge_bases("user1", "org1", skip=0, limit=10)
+
+        call = neo4j_provider.client.execute_query.call_args_list[0]
+        query, params = call[0][0], call[1]["parameters"]
+        assert params["folders_cap"] == 100
+        assert query.index("ORDER BY folderRecord.id") < query.index("COLLECT(DISTINCT CASE")
+        assert "folders: folders[0..$folders_cap]" in query
+        assert "foldersTruncated: size(folders) > $folders_cap" in query
+
+    @pytest.mark.asyncio
     async def test_exception_raises(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=Exception("neo4j error")

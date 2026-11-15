@@ -191,9 +191,14 @@ class KnowledgeBaseFiltersResponse(BaseModel):
     available: Dict[str, List[str]] = Field(..., description="Available filter options")
 
 
+class KnowledgeBaseListItem(KnowledgeBaseResponse):
+    """A knowledge base in the list: at most 100 of its folders, the first by id"""
+    foldersTruncated: bool = Field(False, description="Whether the knowledge base has more folders than the list returns")
+
+
 class ListKnowledgeBaseResponse(BaseModel):
     """Response model for paginated knowledge base listing"""
-    knowledgeBases: List[KnowledgeBaseResponse] = Field(..., description="List of knowledge bases")
+    knowledgeBases: List[KnowledgeBaseListItem] = Field(..., description="List of knowledge bases")
     pagination: KnowledgeBasePaginationResponse = Field(..., description="Pagination information")
     filters: KnowledgeBaseFiltersResponse = Field(..., description="Filter information")
 

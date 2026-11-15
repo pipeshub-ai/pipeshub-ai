@@ -161,6 +161,7 @@ from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
+    KB_LIST_FOLDERS_CAP,
     PATH_MAX_CANDIDATES,
     PERSON_ENTITY_TYPE,
     TRASH_LIST_OTHER_ROOT_NAMES,
@@ -14684,6 +14685,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             OPTIONAL MATCH (folderRecord:Record)-[:BELONGS_TO]->(kb)
             WHERE folderRecord.mimeType IN $folder_mime_types
 
+            // Sorted before the collect so the cap keeps the first folders by id.
+            WITH kb, final_role, folderRecord
+            ORDER BY folderRecord.id
             WITH kb, final_role,
                  COLLECT(DISTINCT CASE
                      WHEN folderRecord.id IS NOT NULL THEN {{
@@ -14710,7 +14714,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 createdBy: kb.createdBy,
                 userRole: final_role,
                 status: kb.status,
-                folders: folders
+                folders: folders[0..$folders_cap],
+                foldersTruncated: size(folders) > $folders_cap
             }} AS result
             """
 
@@ -14729,6 +14734,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             params = {
                 "folder_mime_types": FOLDER_MIME_TYPES,
+                "folders_cap": KB_LIST_FOLDERS_CAP,
                 "user_id": user_id,
                 "org_id": org_id,
                 "kb_type": Connectors.KNOWLEDGE_BASE.value,

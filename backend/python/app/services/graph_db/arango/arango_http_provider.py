@@ -201,6 +201,7 @@ from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
+    KB_LIST_FOLDERS_CAP,
     KB_MAX_FOLDER_DEPTH,
     PERSON_ENTITY_TYPE,
     SOFT_DELETE_CHUNK,
@@ -15349,28 +15350,26 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     }}
             )
 
-            LET kb_ids = kb_roles[*].kb_doc._id
-            LET all_folders = (
-                FOR edge IN @@belongs_to_kb
-                    FILTER edge._to IN kb_ids
-                    LET folder = DOCUMENT(edge._from)
-                    FILTER folder != null && folder.mimeType IN {_FOLDER_MIMES_AQL}
-                    RETURN {{
-                        kb_id: edge._to,
-                        folder: {{
+            FOR kb_role IN kb_roles
+                LET kb = kb_role.kb_doc
+                SORT {sort_field} {sort_direction}, kb._key
+                LIMIT @skip, @limit
+                // One more than the cap tells whether more exist; a folder with two edges counts once.
+                LET folders = (
+                    FOR edge IN @@belongs_to_kb
+                        FILTER edge._to == kb._id
+                        COLLECT folder_from = edge._from
+                        LET folder = DOCUMENT(folder_from)
+                        FILTER folder != null && folder.mimeType IN {_FOLDER_MIMES_AQL}
+                        SORT folder._key
+                        LIMIT @folders_fetch
+                        RETURN {{
                             id: folder._key,
                             name: folder.recordName,
                             createdAtTimestamp: folder.createdAtTimestamp,
                             webUrl: folder.webUrl
                         }}
-                    }}
-            )
-
-            FOR kb_role IN kb_roles
-                LET kb = kb_role.kb_doc
-                LET folders = all_folders[* FILTER CURRENT.kb_id == kb._id].folder
-                SORT {sort_field} {sort_direction}, kb._key
-                LIMIT @skip, @limit
+                )
                 RETURN {{
                     id: kb._key,
                     name: kb.name,
@@ -15380,7 +15379,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     createdBy: kb.createdBy,
                     userRole: kb_role.userRole,
                     status: kb.status,
-                    folders: folders
+                    folders: SLICE(folders, 0, @folders_cap),
+                    foldersTruncated: LENGTH(folders) > @folders_cap
                 }}
             """
 
@@ -15540,6 +15540,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "kb_roles": list(TEAM_GRANT_ROLES),
                 "@permissions_collection": CollectionNames.PERMISSION.value,
                 "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                "folders_cap": KB_LIST_FOLDERS_CAP,
+                "folders_fetch": KB_LIST_FOLDERS_CAP + 1,
             }
             if search:
                 main_bind_vars["search_term"] = f"%{search}%"
