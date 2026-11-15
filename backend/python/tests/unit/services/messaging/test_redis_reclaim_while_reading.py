@@ -466,7 +466,10 @@ class TestRetryOrder:
         """Entries with a body, pending here, held by no one, and remembered;
         beside a live peer, so read-time own-pending recovery stays off and
         only the retry can bring them back."""
-        await consumer.redis.xreadgroup(GROUP, "live-peer", {LANE: ">"}, count=1)
+        # The peer holds an entry: an empty one silent past the claim time no longer counts as a peer, and on a slow
+        # runner that is a few milliseconds from here.
+        await consumer.redis.xadd(OTHER_LANE, _fields("peer's", "conn-peer"))
+        await consumer.redis.xreadgroup(GROUP, "live-peer", {OTHER_LANE: ">"}, count=1)
         for i in range(count):
             await consumer.redis.xadd(LANE, _fields(f"waiting-{i}", f"conn-{i}"))
         read = await consumer.redis.xreadgroup(GROUP, consumer.consumer_name, {LANE: ">"}, count=count)
