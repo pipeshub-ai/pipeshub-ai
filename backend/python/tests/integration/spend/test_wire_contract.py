@@ -158,7 +158,7 @@ def test_bedrock_is_built_with_a_ten_second_connect_timeout() -> None:
     assert client.meta.config.connect_timeout == 10
 
 
-def _service_account_json() -> str:
+def _service_account_json(email: str = "sa@p.iam.gserviceaccount.com") -> str:
     """A throw-away service account key (never used against Google: nothing here sends a request to it)."""
     import json
 
@@ -171,7 +171,7 @@ def _service_account_json() -> str:
     ).decode()
     return json.dumps({
         "type": "service_account", "project_id": "p", "private_key_id": "k", "private_key": pem,
-        "client_email": "sa@p.iam.gserviceaccount.com", "client_id": "1", "token_uri": "https://oauth2.googleapis.com/token",
+        "client_email": email, "client_id": "1", "token_uri": "https://oauth2.googleapis.com/token",
     })
 
 
@@ -262,3 +262,69 @@ def test_a_model_that_cannot_be_observed_is_refused_only_on_paid_background_work
     status = hook_status()
     assert status["warning"] is True and status["unhooked"] == [{"provider": "openAI", "model": "FakeListChatModel", "count": 1}]
     wire._unhooked.clear()
+
+
+# Providers that take no credential: the endpoint, already in the provider key, is the identity.
+NO_CREDENTIAL = {"ollama": "Ollama takes no credential"}
+
+
+def _build_with_credential(provider: str, tag: str) -> object:
+    from app.utils.aimodels import get_generator_model
+
+    configuration = {
+        **BASE, "apiKey": f"key-{tag}", "awsAccessKeyId": f"AKIA{tag}", "awsAccessSecretKey": f"secret-{tag}",
+        "serviceAccountJson": _service_account_json(f"sa-{tag}@p.iam.gserviceaccount.com"),
+    }
+    return get_generator_model(provider, {"configuration": configuration, "isDefault": True}, "m")
+
+
+@pytest.mark.parametrize("provider", sorted(p.value for p in LLMProvider))
+def test_every_provider_mixes_its_credential_into_the_breaker_key(provider: str) -> None:
+    """Two credentials on one model and endpoint get two breakers, so one credential's quota or denial does not pause the
+    other's jobs; the same credential built twice gets the same breaker. Bedrock's credentials live in the botocore
+    client's signer and Vertex AI's in a google-auth credentials object, not in string attributes."""
+    a, again, b = (_build_with_credential(provider, tag) for tag in ("A", "A", "B"))
+    pk_a, pk_again, pk_b = (provider_pk(provider_key(m), credential_of(m)) for m in (a, again, b))
+    assert pk_a == pk_again, f"{provider}: one credential gives two breakers"
+    if provider in NO_CREDENTIAL:
+        assert credential_of(a) == "", f"{provider}: {NO_CREDENTIAL[provider]}, yet a credential was found"
+        return
+    assert pk_a != pk_b, f"{provider}: two credentials share one breaker"
+
+
+def test_a_bedrock_role_is_its_identity_without_refreshing_the_credentials() -> None:
+    """Credentials from a role refresh themselves, and reading their keys can call STS. The role is the identity: two
+    roles get two breakers, and building the key never triggers a refresh."""
+    import boto3
+    from botocore.credentials import RefreshableCredentials
+
+    refreshes: list[str] = []
+
+    class _RoleFetcher:
+        def __init__(self, role_arn: str) -> None:
+            self._role_arn = role_arn
+
+        def fetch_credentials(self) -> dict[str, str]:
+            refreshes.append(self._role_arn)
+            return {"access_key": "AKIA", "secret_key": "s", "token": "t", "expiry_time": "2000-01-01T00:00:00Z"}
+
+    def client_for(role_arn: str) -> object:
+        client = boto3.Session(aws_access_key_id="x", aws_secret_access_key="y", region_name="us-east-1").client(
+            "bedrock-runtime"
+        )
+        fetcher = _RoleFetcher(role_arn)
+        client._request_signer._credentials = RefreshableCredentials.create_from_metadata(
+            fetcher.fetch_credentials(), refresh_using=fetcher.fetch_credentials, method="assume-role"
+        )
+        refreshes.clear()
+        return client
+
+    one, other = client_for("arn:aws:iam::1:role/a"), client_for("arn:aws:iam::1:role/b")
+
+    class _Model:
+        def __init__(self, client: object) -> None:
+            self.client = client
+
+    assert credential_of(_Model(one)) != credential_of(_Model(other))
+    assert credential_of(_Model(one)) == credential_of(_Model(one))
+    assert refreshes == []

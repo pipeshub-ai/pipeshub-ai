@@ -89,6 +89,31 @@ _CREDENTIAL_WORDS = ("api_key", "apikey", "secret", "token", "credential", "pass
 _NESTED = ("client", "_client", "async_client", "root_client", "llm", "_llm", "model", "_model", "bound")
 
 
+def _aws_identity(credentials: object) -> str:
+    """A botocore client's identity: its static key pair, or for credentials that refresh themselves (a role), the
+    method and the role ARN. Reading a refreshing credential's keys can call STS, and the keys rotate, so they are not read."""
+    if credentials is None:
+        return "aws:none"
+    refresh = getattr(credentials, "_refresh_using", None)
+    if refresh is not None:
+        fetcher = getattr(refresh, "__self__", None)
+        role = getattr(fetcher, "_role_arn", None) or ""
+        return f"aws-role:{getattr(credentials, 'method', '')}:{role}"
+    return f"aws:{getattr(credentials, 'access_key', '')}:{getattr(credentials, 'secret_key', '')}"
+
+
+def _cloud_identity(value: object) -> str | None:
+    """The identity of a cloud SDK object that keeps its credentials outside string attributes: a botocore client
+    (Bedrock), or a google-auth service-account credentials object (Vertex AI), whose quota is per service account."""
+    signer = getattr(value, "_request_signer", None)
+    if signer is not None:
+        return _aws_identity(getattr(signer, "_credentials", None))
+    email = getattr(value, "service_account_email", None)
+    if isinstance(email, str) and email:
+        return f"gcp:{email}:{getattr(value, 'project_id', None) or ''}"
+    return None
+
+
 def credential_of(model: object) -> str:
     """The credentials a model object holds, as one string to feed the key digest (never stored or logged).
 
@@ -102,7 +127,10 @@ def credential_of(model: object) -> str:
                 continue
             for name, value in list(source.items()):
                 lowered = str(name).lower()
-                if any(word in lowered for word in _CREDENTIAL_WORDS):
+                identity = None if isinstance(value, (str, int, float, bool)) or value is None else _cloud_identity(value)
+                if identity is not None:
+                    found.append(f"{name}={identity}")
+                elif any(word in lowered for word in _CREDENTIAL_WORDS):
                     getter = getattr(value, "get_secret_value", None)
                     text = getter() if callable(getter) else value
                     if isinstance(text, str) and text:
