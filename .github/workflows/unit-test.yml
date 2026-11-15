@@ -21,6 +21,12 @@ on:
       - 'frontend/app/(main)/knowledge-base/sort-fields.json'
       - 'scripts/unit_shards.py'
       - 'scripts/unit_shard_durations.json'
+      - 'deployment/docker-compose/docker-compose.yml'
+      - 'deployment/docker-compose/env.template'
+      - 'deployment/docker-compose/tests/capacity_blank_env_test.sh'
+      - 'deployment/helm/pipeshub-ai/templates/deployment.yaml'
+      - 'deployment/helm/pipeshub-ai/values.yaml'
+      - 'deployment/process_monitor.sh'
       - 'deployment/docker-compose/docker-compose.integration.redis-cluster.yml'
       - 'scripts/pr_changes.py'
       - '.github/actions/pr-changes/**'
@@ -252,6 +258,14 @@ jobs:
           mapfile -t shard_args <<< "$args"
           pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 --cov --cov-report= --durations=15 \
             --junitxml="junit-$SHARD.xml"
+
+      # Every capacity knob blank, as compose and Helm deliver an unset one: each service's start-up import must
+      # succeed and log its capacity line. The image run of the same script is a live check (IMAGE=...).
+      - name: Capacity knobs blank
+        if: ${{ matrix.shard == 'services' }}
+        env:
+          CAPACITY_TEST_LOCAL: '1'
+        run: bash deployment/docker-compose/tests/capacity_blank_env_test.sh
 
       # The pgvector building blocks run again on their own, with a report of their own, so that a collection error or a skipped case
       # in them fails the build, whatever else the shard skips: every case must have run, and the counts must be the files' counts.
