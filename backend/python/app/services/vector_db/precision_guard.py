@@ -129,11 +129,15 @@ class PrecisionGuard:
         counts = await self.tag_counts(collection, org)
         if counts[INT8] and counts[FP32]:
             raise PrecisionUnreadable(f"collection '{collection}' holds points of both precisions")
+        # Text points with no tag were written before the tags existed, by weights that were never int8: fp32.
+        untagged = await self._points_count(collection) - counts[INT8] - counts[FP32] - counts[IMAGE_TAG] - counts[STAMP_TAG]
         if counts[INT8]:
+            if untagged > 0:
+                raise PrecisionUnreadable(f"collection '{collection}' holds int8 points and untagged (fp32) points")
             return Standing(INT8, "derived")
         if counts[FP32]:
             return Standing(FP32, "derived")
-        if await self._points_count(collection) > counts[IMAGE_TAG] + counts[STAMP_TAG]:
+        if untagged > 0:
             return Standing(FP32, "legacy")
         return Standing(None, "none")
 

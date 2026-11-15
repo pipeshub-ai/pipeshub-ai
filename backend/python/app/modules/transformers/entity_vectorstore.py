@@ -72,6 +72,7 @@ from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.vector_db.collection_pin import STAMP_TAG, CollectionPinStore
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
+    EMBED_PRECISION_FIELD,
     RECORD_GROUP_IDS_FIELD,
 )
 from app.services.vector_db.models import (
@@ -895,6 +896,8 @@ class EntityVectorStore:
             ("metadata.entityId", {"type": "keyword"}),
             ("metadata.level", {"type": "keyword"}),
             ("metadata.kind", {"type": "keyword"}),
+            # The guard counts points by this tag; Redis cannot filter a field its index does not have.
+            (EMBED_PRECISION_FIELD, {"type": "keyword"}),
             (CONNECTOR_IDS_FIELD, {"type": "keyword"}),
             (RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),
         ]:
@@ -1290,12 +1293,31 @@ class EntityVectorStore:
             try:
                 await self._guard().confirm_after_write(collection, org, precision)
             except PrecisionFlip:
-                by_type: dict[str, list[str]] = {}
-                for entity in written:
-                    by_type.setdefault(entity.entity_type.value, []).append(entity.entity_id)
-                for entity_type, ids in by_type.items():
-                    await self.delete_entities(org, entity_type, ids)
+                await self._remove_written(org, precision, witnessed, written)
                 raise
+
+    async def _remove_written(
+        self, org: str, precision: str, witnessed: dict[str, tuple[str, bool] | None], written: list[EntityRecord],
+    ) -> None:
+        """Remove the points this batch wrote at *precision*, and only those.
+
+        The filter carries the precision tag as well as the ids: another replica's replacement of the same entity at
+        the pin's precision is a valid point and must stay. A delete that fails is logged and does not replace the
+        ``PrecisionFlip`` the caller is about to raise: the record must be handed back, not counted as a failed write.
+        """
+        by_type: dict[str, list[str]] = {}
+        for entity in written:
+            point = witnessed.get(self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id))
+            if point is not None and point[0] == precision:
+                by_type.setdefault(entity.entity_type.value, []).append(entity.entity_id)
+        for entity_type, ids in by_type.items():
+            try:
+                await self.delete_entities(org, entity_type, ids, precision=precision)
+            except Exception:
+                self.logger.error(
+                    "Could not remove the %s entity points of a rejected batch (org %s, type %s); handing the batch back anyway",
+                    precision, org, entity_type, exc_info=True,
+                )
 
     async def _embed_changed(
         self, entities: list[EntityRecord], states: dict[str, dict[str, Any]], fingerprint: str,
@@ -1536,9 +1558,11 @@ class EntityVectorStore:
             self.logger.error("Failed to delete entity %s: %s", entity_id, exc)
 
     async def delete_entities(
-        self, org_id: str, entity_type: str, entity_ids: list[str],
+        self, org_id: str, entity_type: str, entity_ids: list[str], *, precision: str | None = None,
     ) -> None:
         """Delete ``entity_ids`` of one type in one org. Raises on failure.
+
+        With *precision*, only the points that carry that precision's tag go.
 
         Needs no embeddings."""
         ids = [i for i in entity_ids if i]
@@ -1549,7 +1573,7 @@ class EntityVectorStore:
         if collection is None:
             return
         await self.vector_db_service.delete_points(
-            collection, await self._entities_filter(org_id, entity_type, ids),
+            collection, await self._entities_filter(org_id, entity_type, ids, precision=precision),
         )
 
     async def delete_unreached_entities(
@@ -1963,15 +1987,16 @@ class EntityVectorStore:
         return to_delete
 
     async def _entities_filter(
-        self, org_id: str, entity_type: str, entity_ids: list[str],
+        self, org_id: str, entity_type: str, entity_ids: list[str], *, precision: str | None = None,
     ) -> FilterExpression:
-        return await self.vector_db_service.filter_collection(
-            must={
-                "metadata.orgId": org_id,
-                "metadata.entityType": entity_type,
-                "metadata.entityId": entity_ids,
-            },
-        )
+        must: dict[str, Any] = {
+            "metadata.orgId": org_id,
+            "metadata.entityType": entity_type,
+            "metadata.entityId": entity_ids,
+        }
+        if precision:
+            must[EMBED_PRECISION_FIELD] = [precision]
+        return await self.vector_db_service.filter_collection(must=must)
 
     # ------------------------------------------------------------------
     # Public API — search
