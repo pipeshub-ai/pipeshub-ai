@@ -75,7 +75,7 @@ def test_a_downgrade_takes_the_schema_away_and_an_upgrade_brings_it_back(db):
 
 
 def test_the_records_carry_the_three_counter_triggers(rdb):
-    """kg_0015: statement triggers on kg.records for the counter deltas; the function is a reviewed exemption pinned to its body."""
+    """kg_0014: statement triggers on kg.records for the counter deltas; the function is a reviewed exemption pinned to its body."""
     cluster, name = rdb
     with connect(cluster, name) as c:
         rows = {tuple(r) for r in c.execute("SELECT tgname, tgfoid::regprocedure::text FROM pg_trigger WHERE tgrelid = 'kg.records'::regclass AND NOT tgisinternal")}

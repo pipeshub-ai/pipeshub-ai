@@ -268,7 +268,7 @@ def test_downgrading_the_projector_epoch_gives_the_writers_back_their_earlier_si
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         assert present(c, old) == [True] * 6 and present(c, new) == [False] * 6
-        clean_catalog(c, 26)                                                # the counters' two writers (kg_0015) went down too
+        clean_catalog(c, 26)                                                # the counters' two writers (kg_0014) went down too
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:

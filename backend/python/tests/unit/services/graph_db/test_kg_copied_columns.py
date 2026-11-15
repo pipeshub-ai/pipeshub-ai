@@ -35,7 +35,7 @@ ALLOWED = {
     (LISTING, "record_type"),                                                       # the listing's filter: a connector kg serves only
     ("python/app/services/graph_db/postgres/kg/verify.py", "*"),                    # the verify compares the whole row with the graph: what must see the difference
     (COUNTS, "record_type"), (COUNTS, "origin"),                                    # the counters' facets: counts.facets is read for a connector kg serves only
-    ("db/versions/kg/0015_counts.sql", "*"),                                        # the counter trigger takes each changed row whole; its facet keys are read as the line above says
+    ("db/versions/kg/0014_counts.sql", "*"),                                        # the counter trigger takes each changed row whole; its facet keys are read as the line above says
 }
 # (source, tag or start of the statement): statements that name kg.records and that sqlglot does not parse, with the reason they need no reading
 UNPARSED: dict[tuple[str, str], str] = {}

@@ -716,7 +716,7 @@ functions:
         RETURN v_n;
       END;
 
-  # kg_0015: the fold of the counters (kg/counts.py). The trigger on kg.records adds a delta row per key a statement changed (folded false); the fold takes a batch of them
+  # kg_0014: the fold of the counters (kg/counts.py). The trigger on kg.records adds a delta row per key a statement changed (folded false); the fold takes a batch of them
   # with the folded rows of the same keys, deletes those rows and inserts one folded row per key with their sum, in one unit under the org's counters lock.
   - name: kg.w_counts_add
     class: write

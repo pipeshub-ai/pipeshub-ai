@@ -82,7 +82,7 @@ def rows(c, table: str, org: str) -> list:
 
 
 def clean(c) -> None:
-    for t in sorted({v[1] for v in CALLS.values()}, key=lambda t: t != "kg.records"):      # the records first: their delete adds counter deltas (kg_0015)
+    for t in sorted({v[1] for v in CALLS.values()}, key=lambda t: t != "kg.records"):      # the records first: their delete adds counter deltas (kg_0014)
         c.execute(f"DELETE FROM {t}")
 
 
@@ -596,7 +596,7 @@ def counters(c, org: str) -> list[tuple]:
 
 
 def test_a_write_of_the_records_adds_its_counter_deltas_in_the_writers_org_and_the_fold_writers_replace_them(pdb):
-    """kg_0015: the trigger on kg.records runs as the vetted writer, in its transaction, under the per-org policy; a live record of a connector adds a facet 2 delta, an
+    """kg_0014: the trigger on kg.records runs as the vetted writer, in its transaction, under the per-org policy; a live record of a connector adds a facet 2 delta, an
     unchanged repeat adds none, its delete takes it back. The fold's writers delete the deltas by id in the session org only and insert folded rows."""
     with conn(pdb) as c:
         clean(c)

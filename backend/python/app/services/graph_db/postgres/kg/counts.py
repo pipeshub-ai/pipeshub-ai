@@ -1,4 +1,4 @@
-"""The counters of the typed graph (``kg.counts``, kg_0015): per connector, the rows each class holds of what a listing counts by class, and the live records by record type
+"""The counters of the typed graph (``kg.counts``, kg_0014): per connector, the rows each class holds of what a listing counts by class, and the live records by record type
 and origin (the filters of a collection).
 
 A trigger on ``kg.records`` adds a delta row per key in the writer's own transaction, so the rows of a key, summed, are ``count(*)`` at every snapshot. The projection worker
