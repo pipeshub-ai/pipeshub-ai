@@ -448,6 +448,19 @@ def _email_of(user_by_id: dict[str, Any], identifier: str | None) -> str | None:
     return None
 
 
+def _user_ref(user: object) -> str | None:
+    """The id a Jira user object names its account by: the id the connectors list users with. Cloud's user
+    objects carry accountId ("`id` (for account ID) used instead of `name` for user fields, such as `reporter`
+    and `assignee`", https://developer.atlassian.com/cloud/jira/platform/deprecation-notice-user-privacy-api-migration-guide/);
+    Data Center's carry the user key (UserJsonBean `key`, in the 8.20, 9.12, 10.0 and 11.0 REST references,
+    https://docs.atlassian.com/software/jira/docs/api/REST/8.20.0/ and
+    https://developer.atlassian.com/server/jira/platform/jira_software_dc_11000_swagger.v3.json)."""
+    if not isinstance(user, dict):
+        return None
+    ref = user.get("accountId") or user.get("key") or user.get("name")
+    return str(ref) if ref else None
+
+
 def _holder_user_email(holder: dict[str, Any], user_by_id: dict[str, Any]) -> tuple[str | None, bool]:
     """Return ``(email, skip_because_inactive)``."""
     user = holder.get("user") if isinstance(holder.get("user"), dict) else {}
@@ -536,11 +549,11 @@ def _permissions_for_holder(
         return grants, False, None
 
     if holder_type == HOLDER_REPORTER:
-        add_user(reporter_email)
+        add_user(reporter_email, _user_ref(fields.get("reporter")))
         return grants, False, None
 
     if holder_type == HOLDER_ASSIGNEE:
-        add_user(assignee_email)
+        add_user(assignee_email, _user_ref(fields.get("assignee")))
         return grants, False, None
 
     if holder_type == HOLDER_PROJECT_LEAD:
@@ -587,7 +600,7 @@ def _permissions_for_holder(
             else:
                 email, inactive = _holder_user_email({"user": entry, "parameter": entry.get("accountId")}, user_by_id)
                 if not inactive:
-                    add_user(email)
+                    add_user(email, _user_ref(entry))
                     unresolved = unresolved or not email
         return grants, False, holder_type if unresolved else None
 

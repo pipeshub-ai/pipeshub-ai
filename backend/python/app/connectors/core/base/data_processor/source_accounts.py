@@ -85,6 +85,7 @@ class SourceAccounts:
         self._read: set[int] = set()
         self._linked: dict[int, dict[str, str]] = {}
         self._reused: dict[int, dict[str, str]] = {}
+        self._other: dict[int, dict[str, list[str]]] = {}
         self._legacy: dict[str, str] = {}     # re-used addresses an earlier version saved in one value
 
     # Flat views, for reading and for tests that set a state directly.
@@ -116,6 +117,7 @@ class SourceAccounts:
             ) or {}
             self._linked[bucket] = {e.lower(): sid for e, sid in (stored.get("linked") or {}).items()}
             self._reused[bucket] = {e.lower(): sid for e, sid in (stored.get("reused") or {}).items()}
+            self._other[bucket] = {e.lower(): ids for e, ids in (stored.get("other") or {}).items()}
             self._read.add(bucket)
         await asyncio.gather(*(one(b) for b in set(buckets)))
 
@@ -141,7 +143,8 @@ class SourceAccounts:
         for bucket in sorted(set(buckets)):
             saved = await self.config_service.set_config(
                 source_accounts_key(self.connector_id, bucket),
-                {"linked": self._linked.get(bucket, {}), "reused": self._reused.get(bucket, {})},
+                {"linked": self._linked.get(bucket, {}), "reused": self._reused.get(bucket, {}),
+                 "other": self._other.get(bucket, {})},
             )
             if not saved:
                 raise RuntimeError(f"Could not save which accounts the users of connector {self.connector_id} were linked to")
@@ -203,6 +206,7 @@ class SourceAccounts:
                 if before - {None, account}:
                     removed = await self.processor.remove_user_access_to_connector(self.connector_id, user.email)
                     self._reused.setdefault(bucket, {})[email] = account
+                    self._other.get(bucket, {}).pop(email, None)
                     self.logger.info(
                         "The address of user %s belongs to a new account now; removed %d grant(s) of the previous one",
                         pipeshub_user.id, removed,
@@ -222,7 +226,7 @@ class SourceAccounts:
         bucket = _bucket(email)
         if not self.loaded and bucket not in self._read:
             return False
-        if self._holder(email) is not None:
+        if self.holder(email) is not None:
             return self.holds(email, object_id)
         linked = self._linked.get(bucket, {}).get(email)
         if object_id is not None and linked is not None:
@@ -231,10 +235,35 @@ class SourceAccounts:
 
     def holds(self, email: str, source_id: str | None) -> bool:
         """For a loaded state: whether a grant naming ``email`` and ``source_id`` reaches the account holding the
-        address. Only a re-used address is checked; there the grant must name the current account by id."""
-        holder = self._holder(email.lower())
-        return holder is None or (source_id is not None and source_id == holder)
+        address. Only a re-used address is checked; there the grant must name the current account by id, either
+        the id users are listed with or the other id noted for that account (``note_other_ids``)."""
+        email = email.lower()
+        holder = self.holder(email)
+        if holder is None:
+            return True
+        return source_id is not None and (
+            source_id == holder or self._other.get(_bucket(email), {}).get(email) == [holder, source_id]
+        )
 
-    def _holder(self, email: str) -> str | None:
+    def holder(self, email: str) -> str | None:
+        """For a loaded bucket: the listed id of the account that took over ``email``, or None for an address no
+        other account held before."""
+        email = email.lower()
         part = self._reused.get(_bucket(email), {})
         return part[email] if email in part else self._legacy.get(email)
+
+    async def note_other_ids(self, ids: dict[str, tuple[str, str]]) -> None:
+        """Per address, ``(account, other_id)``: the account listed as ``account`` appears on grants as
+        ``other_id``, an id from another part of the source's API (Google Drive names a grantee by its
+        permissionId, not its Directory id). Kept only for a re-used address held by ``account``, and taken by
+        ``holds`` only while ``account`` holds it, so it can never pass a grant of the earlier account."""
+        wanted = {e.lower(): pair for e, pair in ids.items()}
+        await self._load({_bucket(e) for e in wanted})     # fresh: another process may have written
+        changed: set[int] = set()
+        for email, (account, other_id) in wanted.items():
+            bucket = _bucket(email)
+            if self.holder(email) != account or self._other.get(bucket, {}).get(email) == [account, other_id]:
+                continue
+            self._other.setdefault(bucket, {})[email] = [account, other_id]
+            changed.add(bucket)
+        await self._save(changed)

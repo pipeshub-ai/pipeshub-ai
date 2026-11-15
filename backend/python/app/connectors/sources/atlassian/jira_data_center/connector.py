@@ -2311,9 +2311,11 @@ class JiraDataCenterConnector(BaseConnector):
                         resolved_email = user_email
 
                     if resolved_email:
+                        # The user key lets the processor tell a re-used address's new holder from the old account.
                         permissions.append(Permission(
                             entity_type=EntityType.USER,
                             email=resolved_email,
+                            external_id=holder_param,
                             type=PermissionType.READ
                         ))
                     else:

@@ -93,6 +93,7 @@ from app.connectors.sources.dropbox.weblinks import WebLinks
 from app.connectors.sources.dropbox.shared_folders import (
     SharedFolder,
     folder_grants,
+    member_grant_id,
     outside_namespace,
     parents_first,
     plan_shared_folders,
@@ -1028,7 +1029,7 @@ class DropboxConnector(BaseConnector):
                         continue
 
                     permissions.append(Permission(
-                        external_id=user_info.account_id,
+                        external_id=member_grant_id(user_info),
                         email=email,
                         type=permission_type,
                         entity_type=EntityType.USER
@@ -2564,6 +2565,7 @@ class DropboxConnector(BaseConnector):
 
                 user_permission = Permission(
                     email=user_info.user.email,
+                    external_id=member_grant_id(user_info.user),
                     type=permission_type,
                     entity_type=EntityType.USER
                 )
@@ -2617,6 +2619,7 @@ class DropboxConnector(BaseConnector):
             # Create permission for the user (OWNER)
             user_permission = Permission(
                 email=user.email,
+                external_id=user.source_user_id,
                 type=PermissionType.OWNER,
                 entity_type=EntityType.USER
             )

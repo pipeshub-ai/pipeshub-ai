@@ -103,6 +103,14 @@ def parents_first(folders: dict[str, SharedFolder]) -> list[SharedFolder]:
     return sorted(folders.values(), key=lambda folder: (depth(folder), folder.folder_id))
 
 
+def member_grant_id(user: object) -> str:
+    """The id a member's grant names: the team member id users are listed with, so the account that holds a
+    re-used address now gets its own grants. Sharing's UserInfo carries it beside account_id: "team_member_id
+    String? The team member ID of the shared folder member. Only present if same_team is true."
+    (https://github.com/dropbox/dropbox-api-spec/blob/master/sharing_folders.stone, struct UserInfo)."""
+    return getattr(user, "team_member_id", None) or user.account_id
+
+
 def folder_grants(users: Iterable, groups: Iterable, invitees: Iterable) -> list[Permission]:
     """A shared folder's own members as grants. Members it inherits stay on the parent folder."""
     grants: list[Permission] = []
@@ -112,7 +120,7 @@ def folder_grants(users: Iterable, groups: Iterable, invitees: Iterable) -> list
         level = _permission(membership)
         if getattr(membership, "is_inherited", False) is True or not email or email.endswith("#") or level is None:
             continue
-        grants.append(Permission(external_id=user.account_id, email=email, type=level, entity_type=EntityType.USER))
+        grants.append(Permission(external_id=member_grant_id(user), email=email, type=level, entity_type=EntityType.USER))
     for membership in groups:
         level = _permission(membership)
         if getattr(membership, "is_inherited", False) is True or level is None:

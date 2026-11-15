@@ -94,7 +94,7 @@ def _withdraw(directory: _Directory, sid: str) -> None:
 
 def _saved(config: _Config) -> dict:
     """Every bucket of the saved state, merged."""
-    merged: dict[str, dict] = {"linked": {}, "reused": {}}
+    merged: dict[str, dict] = {"linked": {}, "reused": {}, "other": {}}
     for bucket in range(BUCKETS):
         for part, values in (config.saved.get(source_accounts_key(CONNECTOR, bucket)) or {}).items():
             merged[part].update(values)
@@ -158,7 +158,7 @@ async def test_the_first_run_looks_nobody_up_and_notes_who_holds_each_address(wo
     await _admit(directory, accounts, [_user("ana@x.com", "a"), _user("bo@x.com", "b")])
     directory.processor.get_user_by_email.assert_not_awaited()
     directory.processor.remove_user_access_to_connector.assert_not_awaited()
-    assert _saved(config) == {"reused": {}, "linked": {"ana@x.com": "a", "bo@x.com": "b"}}
+    assert _saved(config) == {"reused": {}, "other": {}, "linked": {"ana@x.com": "a", "bo@x.com": "b"}}
 
 
 @pytest.mark.asyncio
@@ -405,3 +405,42 @@ async def test_an_account_withdrawn_before_it_was_ever_listed_again_is_compared_
     await _admit(directory, accounts, [_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
 
     assert directory.calls[0] == ("remove", "ana@x.com")
+
+
+@pytest.mark.asyncio
+async def test_an_other_id_noted_for_the_new_holder_passes_its_grants_and_never_the_old_accounts(world) -> None:
+    """Google Drive names a grantee by its permissionId, not the Directory id users are listed with."""
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
+
+    await accounts.note_other_ids({
+        "Ana@x.com": ("new-oid", "perm-new"),
+        "bo@x.com": ("bo-oid", "perm-bo"),          # never re-used: nothing to keep
+        "cy@x.com": ("cy-oid", "perm-cy"),          # not held by that account: ignored
+    })
+    await accounts.ensure_loaded()
+
+    assert accounts.holds("ana@x.com", "perm-new")
+    assert accounts.holds("ana@x.com", "new-oid")
+    assert not accounts.holds("ana@x.com", "perm-old")
+    assert not accounts.holds("ana@x.com", None)
+    assert _saved(config)["other"] == {"ana@x.com": ["new-oid", "perm-new"]}
+
+    restarted = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))
+    await restarted.ensure_loaded(["ana@x.com"])
+    assert restarted.holds("ana@x.com", "perm-new")
+
+
+@pytest.mark.asyncio
+async def test_an_other_id_stops_passing_once_the_address_changes_hands_again(world) -> None:
+    directory, accounts, _ = world
+    await _admit(directory, accounts, [_user("ana@x.com", "a1")])
+    await _admit(directory, accounts, [_user("ana@x.com", "a2")])
+    await accounts.note_other_ids({"ana@x.com": ("a2", "perm-a2")})
+
+    await _admit(directory, accounts, [_user("ana@x.com", "a3")])
+    await accounts.ensure_loaded()
+
+    assert not accounts.holds("ana@x.com", "perm-a2")
+    assert accounts.holds("ana@x.com", "a3")
