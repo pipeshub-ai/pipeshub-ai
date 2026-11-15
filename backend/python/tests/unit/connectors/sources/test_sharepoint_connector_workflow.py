@@ -37,6 +37,9 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 # ===========================================================================
 # Helpers
@@ -85,7 +88,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs, tx = _make_mock_deps()
-    connector = SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "user-1")
+    connector = stub_source_accounts(SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "user-1"))
     return connector, dep, dsp, cs, tx
 
 
@@ -2454,3 +2457,19 @@ class TestHandleRecordUpdatesDeep:
         dep.on_updated_record_permissions.assert_called_once_with(mock_record, new_perms)
         dep.on_record_metadata_update.assert_not_called()
         dep.on_record_content_update.assert_not_called()
+
+
+class TestReusedAddress:
+    """A SharePoint principal carries no Entra object id, so for an address a new account took over it may be the old
+    account's entry in the site's UserInfo list: no grant. A Graph identity is judged by its object id."""
+
+    def test_grants_to_a_reused_address(self) -> None:
+        connector, *_ = _make_connector()
+        connector.source_accounts.current = {"ana@x.com": "new-oid"}
+        connector.source_accounts.reused = {"ana@x.com"}
+        assert not connector._user_may_be_granted("ana@x.com")
+        assert not connector._user_may_be_granted("ana@x.com", "old-oid")
+        assert connector._user_may_be_granted("ANA@x.com", "new-oid")
+        assert connector._user_may_be_granted("bo@x.com")
+        old = MagicMock(id="old-oid", additional_data={"email": "ana@x.com"})
+        assert connector._is_inactive_identity(old)

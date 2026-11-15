@@ -29,6 +29,9 @@ from app.connectors.sources.microsoft.outlook.connector import (
     OutlookUserListing,
 )
 from tests.support.data_store import runs_in_its_transaction
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 # Backwards compatibility aliases for tests
 STANDARD_OUTLOOK_FOLDERS = OutlookFolders.STANDARD_FOLDERS
@@ -82,7 +85,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1", "team", "user-1")
+    return stub_source_accounts(OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1", "team", "user-1"))
 
 
 def _delta_pages(*results) -> Callable[..., AsyncIterator[object]]:
@@ -2485,7 +2488,7 @@ def _make_mock_deps_fullcov():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps_fullcov()
-    return OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1", "team", "test-user-id")
+    return stub_source_accounts(OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1", "team", "test-user-id"))
 
 
 def _make_graph_response(success=True, data=None, error=None):

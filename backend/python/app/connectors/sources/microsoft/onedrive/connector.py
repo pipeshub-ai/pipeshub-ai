@@ -78,6 +78,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
     map_msgraph_roles_to_permission_type,
 )
+from app.connectors.sources.microsoft.common.source_accounts import SourceAccounts
 from app.connectors.sources.microsoft.common.sharepoint_permission_scope import (
     ListUniquePermissions,
     SharePointAccessError,
@@ -567,6 +568,7 @@ class OneDriveConnector(BaseConnector):
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
         self.connector_id = connector_id
+        self.source_accounts = SourceAccounts(data_entities_processor, connector_id, config_service, logger)
 
         # Batch processing configuration
         self.batch_size = 100
@@ -1121,6 +1123,11 @@ class OneDriveConnector(BaseConnector):
             self._queue_unknown_inheritance(item.parent_reference.drive_id if item.parent_reference else None, item.id)
             return None
 
+    def _names_current_account(self, user: object) -> bool:
+        """Whether a Graph identity is the account that holds its address now (see SourceAccounts)."""
+        email = (getattr(user, 'additional_data', None) or {}).get("email")
+        return not isinstance(email, str) or self.source_accounts.may_grant(email, getattr(user, 'id', None))
+
     async def _convert_to_permissions(self, msgraph_permissions: List) -> List[Permission]:
         """
         Convert Microsoft Graph permissions to our Permission model.
@@ -1132,7 +1139,7 @@ class OneDriveConnector(BaseConnector):
             try:
                 # Handle user permissions
                 if hasattr(perm, 'granted_to_v2') and perm.granted_to_v2:
-                    if hasattr(perm.granted_to_v2, 'user') and perm.granted_to_v2.user:
+                    if hasattr(perm.granted_to_v2, 'user') and perm.granted_to_v2.user and self._names_current_account(perm.granted_to_v2.user):
                         user = perm.granted_to_v2.user
                         permissions.append(Permission(
                             external_id=user.id,
@@ -1161,7 +1168,7 @@ class OneDriveConnector(BaseConnector):
                                 type=map_msgraph_roles_to_permission_type(perm.roles),
                                 entity_type=EntityType.GROUP
                             ))
-                        elif hasattr(identity, 'user') and identity.user:
+                        elif hasattr(identity, 'user') and identity.user and self._names_current_account(identity.user):
                             user = identity.user
                             permissions.append(Permission(
                                 external_id=user.id,
@@ -2703,7 +2710,7 @@ class OneDriveConnector(BaseConnector):
                     continue
             gone.append(u)
         if gone:
-            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            await self.source_accounts.withdraw(gone)
 
     async def _sync_users(self) -> List[AppUser]:
         """
@@ -2715,7 +2722,7 @@ class OneDriveConnector(BaseConnector):
             # saves the user, and the access, again); its drive is still synced, because
             # what it shared with others stays visible to them.
             enabled = [u for u in users if u.is_active is not False]
-            await self.data_entities_processor.on_new_app_users(enabled)
+            await self.source_accounts.admit(enabled)
             if getattr(users, "complete", True):
                 await self._withdraw_unlisted_app_users(users)
             else:

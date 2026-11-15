@@ -411,6 +411,53 @@ async def test_a_withdrawn_user_gets_the_link_back_when_the_next_listing_shows_t
     assert await links() == {"m"}
 
 
+
+async def test_a_new_account_that_takes_an_address_reads_nothing_the_old_one_was_granted(w: World) -> None:
+    """A Microsoft account deleted and re-created with the same address has a new object id: the PipesHub user keeps
+    no grant of this connector written for the old one, after the link moves to the new id. Another user's grant and
+    another connector's records stay; ``remove_user_access_to_connector`` runs on PostgreSQL too."""
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+    from app.connectors.sources.microsoft.common.source_accounts import SourceAccounts
+
+    class Config:
+        data: dict[str, object] = {}
+
+        async def get_config(self, key: str, default: object = None, **_: object) -> object:
+            return self.data.get(key, default)
+
+        async def set_config(self, key: str, value: object, **_: object) -> bool:
+            self.data[key] = value
+            return True
+
+    await member(w, "m", userId="um", email="m@x.com")
+    await member(w, "k", userId="uk", email="k@x.com")
+    await w.nodes("apps", {"_key": "other-app", "type": "JIRA", "isActive": True})
+    await w.nodes("records", rec("mine"), rec("kept"), {**rec("elsewhere"), "connectorId": "other-app"})
+    for target in (("records", "mine"), ("records", "elsewhere")):
+        await w.edge("permission", ("users", "m"), target, type="USER", role="READER")
+    await w.edge("permission", ("users", "k"), ("records", "kept"), type="USER", role="READER")
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), MagicMock())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    accounts = SourceAccounts(processor, APP, Config(), logging.getLogger("t"))
+    await accounts.admit([app_user("m@x.com", "m"), app_user("k@x.com", "k")])
+    assert await w.allowed("m", "mine") == {"mine"}
+
+    renewed = app_user("m@x.com", "m").model_copy(update={"source_user_id": "src-m-new"})
+    await accounts.admit([renewed, app_user("k@x.com", "k")])
+
+    assert {u.source_user_id for u in await processor.get_app_user_links(APP)} == {"src-m-new", "src-k"}
+    assert await w.allowed("m", "mine", "kept") == set()
+    assert await w.allowed("k", "kept") == {"kept"}
+    targets = {e["_to"] for e in await w.p.get_edges_from_node("users/m", "permission")}
+    assert "records/elsewhere" in targets and "records/mine" not in targets
+
 async def test_a_link_written_in_an_open_transaction_is_read_inside_it(w: World) -> None:
     await member(w, "m", userId="um", email="m@x.com")
     txn = await w.p.begin_transaction(read=[], write=[], explicit=True)
