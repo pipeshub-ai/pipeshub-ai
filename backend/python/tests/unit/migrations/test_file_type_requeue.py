@@ -286,7 +286,7 @@ async def test_an_unreadable_off_switch_runs_nothing() -> None:
 
 
 async def test_only_what_the_old_gate_refused_and_the_new_one_reads_is_selected() -> None:
-    over = file_types.TEXT_MAX_DOWNLOAD_BYTES + 1
+    over = file_types.TEXT_LOG_HARD_LIMIT_BYTES + 1
     records = [
         _file("a-zip", "bundle.zip", ext="zip"),
         _file("b-pdf", "Report.PDF", ext="PDF"),
@@ -667,7 +667,7 @@ async def test_a_failed_read_of_an_outbox_entry_keeps_it() -> None:
 def test_logs_and_configs_stored_under_their_own_mime_are_selected_as_their_type() -> None:
     from app.migrations.file_type_requeue.migration import is_selected
 
-    over = file_types.TEXT_MAX_DOWNLOAD_BYTES + 1
+    over = file_types.TEXT_LOG_HARD_LIMIT_BYTES + 1
     cases = {
         ("log", "text/x-log", "app.log", 100): True,
         ("cfg", "text/x-cfg", "app.cfg", 100): True,
@@ -684,3 +684,21 @@ def test_logs_and_configs_stored_under_their_own_mime_are_selected_as_their_type
         assert is_selected(record, row, frozenset())[0] is expected, (ext, mime)
         assert gate_v1.supported(extension=ext, mime=mime, record_name=name, is_code_file=False) is (not expected and mime == "text/plain"), (ext, mime)
     assert is_selected(_file("r", "app.log", ext="log", mime="text/x-log"), {"mimeType": "text/x-log"}, frozenset({"log"})) == (False, "log")
+
+
+async def test_a_log_refused_as_too_large_with_no_stored_size_is_not_requeued() -> None:
+    """Its size was not stored, so the gate cannot see it is too large; the reason it was refused
+    with decides. A log with no size and another reason is re-queued as before."""
+    from app.utils.user_errors import file_too_large_to_read
+
+    records = [
+        _file("big", "huge.log", ext="log", size=None, reason=file_too_large_to_read("log")),
+        _file("big-cfg", "huge.cfg", ext="cfg", size=None, reason=file_too_large_to_read("cfg")),
+        _file("plain", "app.log", ext="log", size=None),
+    ]
+    graph = FakeGraph([DRIVE], records)
+
+    _, _, kafka = await _run(graph)
+
+    assert kafka.ids() == ["plain"]
+    assert graph.status("big") == FTNS and graph.status("big-cfg") == FTNS
