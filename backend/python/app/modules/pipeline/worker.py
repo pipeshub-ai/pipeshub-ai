@@ -316,7 +316,9 @@ class StageJobHandler:
                 # Another run owns the job now; this delivery has nothing left to report.
                 return
             raise
-        await self._apply(job, stage, result, fingerprint, attempt=run_attempt)
+        await self._apply(
+            job, stage, result, fingerprint, attempt=run_attempt, was_paused=state.status is ProgressStatus.PAUSED
+        )
 
     async def _state_for(self, job: StageJob, io: StageIO) -> StageState | None:
         """The job's state, recreated when its claim is missing; None when its records are gone.
@@ -378,7 +380,8 @@ class StageJobHandler:
         await self._finish(job, stage, result)
 
     async def _apply(
-        self, job: StageJob, stage: Stage[Any], result: StageResult, fingerprint: str, *, attempt: int
+        self, job: StageJob, stage: Stage[Any], result: StageResult, fingerprint: str, *, attempt: int,
+        was_paused: bool = False,
     ) -> None:
         outcome = result.outcome
         self._count(job.stage, outcome.value)
@@ -423,7 +426,12 @@ class StageJobHandler:
                 delay += judgement.jitter_s
             elif self._pause is not None:
                 delay += await self._pause.hold_jitter(result)
-            raise StagePaused(result.reason or f"stage {job.stage} is paused", delay_s=delay)
+            # One WARNING per episode: a job that was already PAUSED and pauses again repeats what its first pause said.
+            raise StagePaused(
+                result.reason or f"stage {job.stage} is paused",
+                delay_s=delay,
+                log_level=logging.DEBUG if was_paused else logging.WARNING,
+            )
         else:
             reason = result.reason or f"stage {job.stage} failed"
             await self._fail(job, stage, reason, attempt=attempt)

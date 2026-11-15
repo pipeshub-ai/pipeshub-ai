@@ -823,3 +823,23 @@ async def test_the_budget_clock_is_redis_time(fleet: FleetRedis, monkeypatch: py
     assert server_ms - host_ms > 3_500_000
     assert abs(decision.decision.state.since_ms - server_ms) < 5000
 
+
+@pytest.mark.asyncio
+async def test_a_paused_job_warns_once_per_episode_not_on_every_wake() -> None:
+    """The first pause of an episode is a WARNING; a wake that pauses again is routine. After the job completes, the
+    next pause starts a new episode and warns again."""
+    h, job = _Harness(), _job()
+    h.seed(job)
+    h.stage.result = StageResult(outcome=StageOutcome.PAUSED, reason="Model provider unavailable: down")
+    levels = []
+    for _ in range(3):
+        with pytest.raises(StagePaused) as paused:
+            await h.deliver(job)
+        levels.append(paused.value.log_level)
+    assert levels == [logging.WARNING, logging.DEBUG, logging.DEBUG]
+    h.stage.result = StageResult(outcome=StageOutcome.COMPLETED)
+    await h.deliver(job.model_copy(update={"force": True}))
+    h.stage.result = StageResult(outcome=StageOutcome.PAUSED, reason="Model provider unavailable: down")
+    with pytest.raises(StagePaused) as paused:
+        await h.deliver(job.model_copy(update={"force": True}))
+    assert paused.value.log_level == logging.WARNING

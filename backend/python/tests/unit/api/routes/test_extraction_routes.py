@@ -639,6 +639,26 @@ def test_the_424_body_says_whether_a_request_reached_the_provider() -> None:
         assert (body["sent"], body["trial"], body["chargeable"]) == expected
 
 
+def test_an_open_breaker_refusal_is_not_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """While the breaker is open every paused job's wake is refused without a request: logging each at WARNING would
+    write one line per job per wake. A request that reached the provider and failed is still a WARNING."""
+    from app.services.llm_gateway.gateway import ProviderUnavailableError
+
+    caplog.set_level(logging.DEBUG, logger="app.api.routes.extraction")
+    for error in (
+        ProviderUnavailableError("circuit open", provider="p", sent=False),
+        ProviderUnavailableError("failed", provider="p", sent=True),
+        LLMUnavailableError("bare"),
+    ):
+        mock_extraction = MagicMock()
+        mock_extraction.classify = AsyncMock(side_effect=error)
+        TestClient(_build_app(mock_extraction)).post(
+            "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123"}
+        )
+    levels = [r.levelno for r in caplog.records if "Model provider unavailable" in r.getMessage()]
+    assert levels == [logging.DEBUG, logging.WARNING, logging.WARNING]
+
+
 def test_the_424_body_carries_the_key_digest_size_class_and_requests() -> None:
     """The indexing side needs them to charge, hold and read the key's ledger."""
     from app.services.llm_gateway.gateway import ProviderUnavailableError

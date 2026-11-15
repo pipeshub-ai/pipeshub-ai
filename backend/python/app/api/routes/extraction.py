@@ -159,7 +159,13 @@ async def classify(
         # 424, not 5xx: this service is up and its model provider is not. A 5xx would be
         # retried and counted by the caller's breaker, whose health probe cannot see the
         # provider; the code tells the caller to pause the work instead.
-        logger.warning("Model provider unavailable while classifying for org '%s': %s", org_id, exc)
+        # A refusal by an open breaker sent nothing: every paused job meets it on every wake, so it is not news.
+        logger.log(
+            logging.WARNING if getattr(exc, "sent", True) else logging.DEBUG,
+            "Model provider unavailable while classifying for org '%s': %s",
+            org_id,
+            exc,
+        )
         retry_after = getattr(exc, "retry_after", None)
         return JSONResponse(
             status_code=status.HTTP_424_FAILED_DEPENDENCY,
