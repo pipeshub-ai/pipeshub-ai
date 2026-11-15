@@ -30,6 +30,7 @@ from msgraph_core.middleware.async_graph_transport import AsyncGraphTransport
 from packaging.version import Version
 from requests.structures import CaseInsensitiveDict
 
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 from app.services.graph_db.common.record_visibility import is_live_record
 
 if TYPE_CHECKING:
@@ -470,8 +471,6 @@ class FakeRecordsDb:
 
     def source_accounts(self, connector_id: str) -> Any:  # noqa: ANN401
         """A new one per connector, as a new process starts with nothing loaded."""
-        from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
-
         return SourceAccounts(self, connector_id, FakeConfigService(connector_id, {}), logging.getLogger("t"))
 
     async def get_user_by_email(self, email: str, **_: object) -> object | None:
