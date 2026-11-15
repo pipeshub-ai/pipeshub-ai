@@ -16,10 +16,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import current_org_id
-from app.exceptions.graph_db_exceptions import (
-    KnowledgeHubListingNotReady,
-    KnowledgeHubListingTooLarge,
-)
+from app.exceptions.graph_db_exceptions import KnowledgeHubListingTooLarge
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase, _doc
 from app.services.graph_db.postgres.kg import listing as kgl
@@ -161,7 +158,7 @@ class KhBrowseMixin(PgBase):
         if u == "refused":
             return refused()
         if u == "not_ready":
-            raise KnowledgeHubListingNotReady
+            return await self._kh_not_ready(org, start_id, at_app=at_app, access=access, transaction=transaction, include_scope=include_scope, include_total=include_total)
         app_id, app_sk, app_doc, hidden, served, sets = (u[k] for k in ("app_id", "app_sk", "app_doc", "hidden", "served", "sets"))
         if grants_out is not None:
             grants_out[app_id] = granted

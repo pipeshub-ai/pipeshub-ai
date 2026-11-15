@@ -143,6 +143,11 @@ class TestRenderFlatText:
         resp = _response(items=[])
         assert _render_flat_text(resp, "test") == 'No items found matching "test".'
 
+    def test_a_source_still_being_prepared_says_so_instead_of_no_items(self) -> None:
+        resp = _response(items=[])
+        resp.preparing = True
+        assert "still being prepared" in _render_flat_text(resp, None)
+
     def test_none_items_no_query(self) -> None:
         resp = _response(items=None)
         assert _render_flat_text(resp, None) == "No items found."

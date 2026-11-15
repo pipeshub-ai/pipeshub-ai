@@ -3,16 +3,20 @@ All Records and the search list what the live walk admits, the same rows, totals
 lists nothing before any copy. One that holds nodes and whose copy is unfinished, or whose copy differs from the graph, is refused as not ready."""
 from __future__ import annotations
 
+import logging
 import os
 
 import asyncpg
 import pytest
 
 from app.connectors.sources.localKB.handlers.kh_search import search_page
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import KnowledgeHubService
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
+
+from tests.permissions.kh_layer import _Config
 
 from .pg_support import new_org
 from .test_kh_listing_flat import _admin, ctx, edge, flip, prov
@@ -37,7 +41,7 @@ async def world(p, org: str) -> None:
                                     *(edge("fold", "records", k, "records", relationshipType="PARENT_CHILD") for k in KIDS)], "nodeRelations")
         await p.batch_create_edges([edge("g1", "recordGroups", "app1", "apps"), edge("hid", "recordGroups", "app1", "apps"), edge("r9", "records", "g1", "recordGroups"),
                                     *(edge(k, "records", "hid" if k in ("c4", "c5") else "g1", "recordGroups") for k in KIDS)], "belongsTo")
-        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com", "userId": "u1"}], "users")
         await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
         await p.batch_create_edges([edge("u1", "users", k, "records", type="USER", role="READER") for k in READ], "permission")
 
@@ -130,6 +134,28 @@ async def test_a_connector_whose_copy_is_unfinished_is_refused_until_the_copy_en
     with ctx(org):
         page = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=READ, limit=50)
     assert sorted(r["id"] for r in page["rows"]) == ["c0", "c1", "c2", "fold", "r9"]
+
+
+async def test_the_knowledge_hub_answers_a_source_still_being_copied_as_preparing_never_a_503(pg_db) -> None:
+    """The listing a person or an agent asks for (``get_nodes``): while the copy is unfinished, browsing the App or a folder they may open and All Records answer an empty
+    page marked ``preparing``, with nothing to page on to; a node they may not open stays the not-found one. Once the copy ends, the rows."""
+    p, org = prov(pg_db), new_org()
+    await world(p, org)
+    await copy(pg_db, org, page=2, max_batches=1)
+    service = KnowledgeHubService(logging.getLogger("kh-preparing"), p, _Config())
+
+    async def nodes(**kw: object):  # noqa: ANN202
+        with ctx(org):
+            return await service.get_nodes(user_id="u1", org_id=org, limit=50, sort_by="name", sort_order="asc", include=["counts"], **kw)
+    for kw in ({"parent_id": "app1", "parent_type": "app"}, {"parent_id": "fold", "parent_type": "folder"}, {"flattened": True}):
+        page = await nodes(**kw)
+        assert (page.success, page.errorCode, page.preparing, page.items) == (True, None, True, []), kw      # on main: success False, errorCode 503
+        assert (page.pagination.totalItems, page.pagination.hasNext, page.pagination.nextCursor, page.counts.total) == (0, False, None, 0), kw
+    hidden = await nodes(parent_id="c3", parent_type="record")
+    assert (hidden.success, hidden.errorCode, hidden.preparing) == (False, 404, None)
+    await copy(pg_db, org, page=2)
+    done = await nodes(parent_id="fold", parent_type="folder")
+    assert done.preparing is None and [i.id for i in done.items] == ["c0", "c1", "c2"]
 
 
 async def test_a_copy_whose_verify_finds_a_difference_is_not_listed_from(pg_db) -> None:

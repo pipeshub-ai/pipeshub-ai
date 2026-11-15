@@ -34,6 +34,7 @@ import { FileRejectionReason, parseFileRejectionReason } from '@/lib/constants/f
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
 import { folderDepthOf, uploadPathOf } from './utils/folder-depth';
 import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
+import { usePreparingRetry } from './hooks/use-preparing-retry';
 import type {
   KnowledgeBaseItem,
   FolderTreeNode,
@@ -608,6 +609,10 @@ function KnowledgeBasePageContent() {
   const allRecordsBusyTries = useRef(0);
   const allRecordsEmptyHops = useRef(0);
   const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean) => Promise<void>) | null>(null);
+  // A source still being prepared answers an empty page that says so: it is asked again by itself until its rows can be listed.
+  const { settle: settleAllRecordsPreparing, reset: resetAllRecordsPreparing } = usePreparingRetry();
+  const { settle: settleTablePreparing, reset: resetTablePreparing } = usePreparingRetry();
+  const fetchTableDataRef = useRef<((nodeType: string, nodeId: string, retry?: boolean) => Promise<void>) | null>(null);
   const collectionsFetchRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -622,7 +627,10 @@ function KnowledgeBasePageContent() {
   const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number, busyRetry = false) => {
     allRecordsFetchRef.current?.abort();
     // Each request the user makes gets its own retries; only the timer's retries share them.
-    if (!busyRetry) allRecordsBusyTries.current = 0;
+    if (!busyRetry) {
+      allRecordsBusyTries.current = 0;
+      resetAllRecordsPreparing();
+    }
     const controller = new AbortController();
     allRecordsFetchRef.current = controller;
     if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
@@ -683,6 +691,7 @@ function KnowledgeBasePageContent() {
       }
       allRecordsEmptyHops.current = 0;
       setAllRecordsTableData(data);
+      settleAllRecordsPreparing(data.preparing, () => void fetchAllRecordsTableDataRef.current?.(nodeType, nodeId, page, true));
       // An app's tree lives in the app children cache, which this does not fill.
       if (nodeType && nodeId && nodeType !== 'app') {
         seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);
@@ -747,6 +756,8 @@ function KnowledgeBasePageContent() {
     setAllRecordsTableError,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
+    settleAllRecordsPreparing,
+    resetAllRecordsPreparing,
     t,
   ]);
   fetchAllRecordsTableDataRef.current = fetchAllRecordsTableData;
@@ -834,7 +845,8 @@ function KnowledgeBasePageContent() {
 
   // Fetch table data when node is selected
   const fetchTableData = useCallback(
-    async (nodeType: string, nodeId: string) => {
+    async (nodeType: string, nodeId: string, retry = false) => {
+      if (!retry) resetTablePreparing();
       collectionsFetchRef.current?.abort();
       const controller = new AbortController();
       collectionsFetchRef.current = controller;
@@ -880,6 +892,7 @@ function KnowledgeBasePageContent() {
         pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
 
         setTableData(data);
+        settleTablePreparing(data.preparing, () => void fetchTableDataRef.current?.(nodeType, nodeId, true));
         seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);
         // The rows are ready: the sidebar path opened below is separate work and
         // must not hold the table's loader.
@@ -1022,8 +1035,13 @@ function KnowledgeBasePageContent() {
       isAllRecordsMode,
       debouncedSearchQuery,
       debouncedAllRecordsSearchQuery,
+      settleTablePreparing,
+      resetTablePreparing,
     ]
   );
+  useEffect(() => {
+    fetchTableDataRef.current = fetchTableData;
+  }, [fetchTableData]);
 
   // Helper to build navigation URLs that preserve view mode
   const buildNavUrl = useCallback(
@@ -3181,6 +3199,13 @@ function KnowledgeBasePageContent() {
         {isAllRecordsMode && (allRecordsTableData?.notReady?.length ?? 0) > 0 && (
           <Flex role="status" px="4" py="2">
             <Text size="2" color="gray">{t('kb.sourcesNotReady', { count: allRecordsTableData?.notReady?.length ?? 0 })}</Text>
+          </Flex>
+        )}
+
+        {/* A source still being prepared has nothing to list yet: say so instead of an empty list; the page asks again by itself. */}
+        {(isAllRecordsMode ? allRecordsTableData : tableData)?.preparing && (
+          <Flex role="status" px="4" py="2">
+            <Text size="2" color="gray">{t('kb.sourcePreparing')}</Text>
           </Flex>
         )}
 

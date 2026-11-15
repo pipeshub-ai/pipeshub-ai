@@ -297,7 +297,7 @@ async def test_a_stub_is_listed_under_a_declaration_exactly_when_opening_it_list
 
 
 async def test_a_connector_with_no_copy_is_refused_not_listed_as_empty(pg_provider, pg_db) -> None:
-    """The listing of a connector the typed graph has never copied raises the refusal the service answers with a 503 (retry in a moment)."""
+    """The listing of a connector the typed graph has never copied raises the refusal the service answers as an empty page marked ``preparing`` (ask again in a moment)."""
     from app.connectors.sources.localKB.handlers.kh_search import search_page
     lay = KhPgLayer(pg_provider, pg_db, not_current=False)
     world = KH_WORLDS[0]

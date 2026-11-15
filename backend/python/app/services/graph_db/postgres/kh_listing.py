@@ -3,8 +3,9 @@
 The structure of a page (which rows, their order, the keyset) comes from ``kg.records``; who may see a row is asked of the access check for every row a page keeps, so an answer is never
 older than the check (kg classes for a connector kg serves, the live walk otherwise). A listing therefore works while a connector syncs: structure may lag the drain, access never does.
 A connector is listed once kg has finished copying it, before the copy is verified or promoted (``head``); one that holds no node yet lists nothing.
-shortcut: a connector that holds nodes and whose copy is not finished (an existing connector's first copy, or one kg took back after a difference) is refused as not ready, not
-listed as empty: PostgreSQL keeps no other structure of a connector to list from. Upgrade to a listing over ``graph.edges`` if such copies are long enough to matter.
+shortcut: a connector that holds nodes and whose copy is not finished (an existing connector's first copy, or one kg took back after a difference) is refused as not ready
+(``_kh_not_ready``), which the knowledge hub answers as an empty page marked ``preparing``: PostgreSQL keeps no other structure of a connector to list from. Upgrade to a
+listing over ``graph.edges`` if such copies are long enough to matter.
 
 A page scans windows of the sort order until it has the rows asked for, the end, or a bound (time or rows looked at). At a bound it hands back the position it reached (``resume``), so that
 a page with no rows can still be continued. The total counts the rows the check admits among the first :data:`COUNT_SCAN` candidates: exact when that was all of them, else a lower bound
@@ -221,7 +222,7 @@ class KhListingMixin(PgBase):
 
         app_sk, app_doc, hidden, served, sets = await self._kq(lambda tx: head(tx, org, app_id, held, by_class=snapshot), transaction)
         if app_sk is None:
-            raise KnowledgeHubListingNotReady
+            return await self._kh_not_ready(org, start_id, at_app=not scoped, access=access, transaction=transaction, include_scope=include_scope, include_total=include_total)
         admit = self._kh_admitter(org, access, transaction, served=served)
         scope: list[int] | None = None
         crumbs: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None = None
@@ -335,6 +336,14 @@ class KhListingMixin(PgBase):
         if len(seen) + len(unplaced) > SCOPE_MAX:
             raise KnowledgeHubListingTooLarge
         return sorted((seen - {app_sk}) | {r["sk"] for r in unplaced})
+
+    async def _kh_not_ready(self, org: str, start_id: str, *, at_app: bool, access: dict[str, Any], transaction: str | None, include_scope: bool, include_total: bool) -> dict[str, Any]:
+        """A start of a connector that holds nodes kg has not finished copying (``head``): nothing can be listed below it yet, which the caller answers as a source being prepared.
+        Refused as not ready only when the viewer may open the start (the App itself is gated already); a start they may not open is the not-found page, so the answer says
+        nothing of a node they cannot see."""
+        if not at_app and start_id not in await self._kh_admitter(org, access, transaction, served=False)([start_id]):
+            return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=False)
+        raise KnowledgeHubListingNotReady
 
     def _kh_admitter(self, org: str, access: dict[str, Any], transaction: str | None, *, served: bool) -> Callable[[list[str]], Awaitable[set[str]]]:
         """The access check for a list of ids: kg first for a connector it serves, the live walk otherwise."""
