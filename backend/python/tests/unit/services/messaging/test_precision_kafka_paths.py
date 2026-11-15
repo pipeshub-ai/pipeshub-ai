@@ -277,3 +277,38 @@ class TestHandBackOffsets:
         consumer.consumer.commit.assert_not_awaited()
         assert consumer._requeue_message.await_count == 1  # the rest of the stale batch is not published
         assert not consumer._offset_tracker._outstanding.get(tp) and tp not in consumer._offset_tracker._committed
+
+
+class TestReachedHandBackIsTrackedBeforeLaterOffsets:
+    @pytest.mark.asyncio
+    async def test_an_unparseable_message_behind_a_hand_back_cannot_commit_past_it(self) -> None:
+        consumer = _consumer(_verdict(True), scheduler=True)
+        tp = TopicPartition(TOPIC, 0)
+        poison = _record(1)
+        poison.value = b"{not json"
+        consumer._requeue_message = AsyncMock()
+        seen: list[tuple[int, int]] = []  # (offset committed, hand-backs published at that moment)
+
+        async def commit(offsets):  # noqa: ANN202
+            seen.append((offsets[tp], consumer._requeue_message.await_count))
+
+        consumer.consumer.commit = AsyncMock(side_effect=commit)
+        consumer.consumer.getmany = AsyncMock(return_value={tp: [_record(0), poison]})
+        await consumer._IndexingKafkaConsumer__read_phase()
+
+        # Nothing is committed past the hand-back before it is published.
+        assert seen and all(offset <= 0 for offset, published in seen if published == 0)
+        assert seen[-1] == (2, 1)
+
+    @pytest.mark.asyncio
+    async def test_the_hand_back_floors_the_watermark_while_the_poison_resolves(self) -> None:
+        consumer = _consumer(_verdict(True), scheduler=True)
+        tp = TopicPartition(TOPIC, 0)
+        poison = _record(1)
+        poison.value = b"{not json"
+        consumer._requeue_message = AsyncMock(side_effect=RuntimeError("broker down"))
+        consumer.consumer.getmany = AsyncMock(return_value={tp: [_record(0), poison]})
+        await consumer._IndexingKafkaConsumer__read_phase()
+        # the hand-back never published: nothing may be committed past offset 0
+        for call in consumer.consumer.commit.await_args_list:
+            assert call.args[0][tp] <= 0

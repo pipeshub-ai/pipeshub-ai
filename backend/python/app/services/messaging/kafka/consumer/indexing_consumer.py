@@ -2017,6 +2017,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     break
                 position = (tp, message.offset)
                 if position in settled or position in handed_back:
+                    # Tracked as soon as it is reached, not when it is published: a later offset of this
+                    # partition (an unparseable one resolves inline) must not commit past it first.
+                    if self._offset_tracker is not None:
+                        self._offset_tracker.track(tp, message.offset)
                     settled_reached.append(position)
                     continue
                 try:
