@@ -104,7 +104,7 @@ class KhBrowseMixin(PgBase):
             """Everything up to the page, in one read: the listing state, the breadcrumbs' trail, the children of a node held whole, and the access check's answer for the start,
             its ancestors and the children the classes do not decide."""
             app_sk, app_doc, hidden, served, sets = await head(tx, org, aid, held, by_class=by_class)
-            if app_sk is None:      # a connector the viewer may browse that kg holds no current copy of: not ready, as the flat listing says
+            if app_sk is None:      # a connector the viewer may browse that holds nodes kg has not finished copying: not ready, as the flat listing says
                 return "not_ready"
             # a start of this connector that kg holds and no group above hides (else the browse's 404)
             if not at_app and (start is None or start["app_sk"] != app_sk or start["deleted"] or start["alien"] or start["sk"] in set(hidden)):

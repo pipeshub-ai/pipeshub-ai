@@ -128,8 +128,8 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
                 after = _parse(cursor)
                 nodes = await (app_nodes(tx, org, app_id, after, page) if app_id else principal_page(tx, org, after, page))
                 w = KgWriter(tx)
-                if not nodes:
-                    await w.projection_set(app_sk, epoch=0, mode="legacy", digest=None, cursor="done", verified_at=None)
+                if not nodes:      # the copy is finished, by this code: the listing reads it from here on (kh_listing.head), the access check only once it is verified and promoted
+                    await w.projection_set(app_sk, epoch=CODE_EPOCH, mode="legacy", digest=None, cursor="done", verified_at=None)
                     return False
                 await project(tx, org, set(nodes), lock_for={app_id} if app_id else None, expand_neighbours=False, stamps=False)     # locks first, reads after; the stamps come once the connector is copied
                 await w.projection_set(app_sk, epoch=0, mode="legacy", digest=None, cursor=_fmt(nodes[-1]), verified_at=None)
@@ -235,6 +235,8 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
             if not res.ok:
                 if mode != "legacy":      # nothing waits and kg still differs: back to the walk for readers, and the next backfill starts over
                     await modes.demote(tx, org, app_sk)
+                else:      # a copy never served: it keeps its cursor, and loses this code's epoch so that the listing does not read it either
+                    await KgWriter(tx).projection_set(app_sk, epoch=0, mode="legacy", digest=None, cursor=cursor, verified_at=None)
                 return Outcome(False, n, res, 0, "differs")
             await KgWriter(tx).projection_set(app_sk, epoch=CODE_EPOCH, mode="enforce" if mode == "enforce" else "shadow", digest=res.digest, cursor="done", verified_at=dt.datetime.now(dt.timezone.utc))
             return Outcome(True, n, res, 0)

@@ -19,11 +19,15 @@ LIVE = "r.kind IN (2, 3) AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien
 NAME_PREFIX = 1024
 COLS = "r.sk, r.coll, r.id, r.kind, r.folder, r.placeholder, r.hide_children, r.parent_sk, r.group_sk, r.name_key, r.name_sort, r.updated_ms, r.created_ms, r.size_bytes, r.r13, r.path IS NOT NULL AS has_path, r.class_id, r.fence_job IS NOT NULL AS fenced, r.app_sk, r.deleted, r.alien"
 
-# The copy state of a connector: its node key and the mode of its projection ('legacy' is a connector kg has never copied).
+# The copy state of a connector: its node key, the code epoch of its copy and the copy's cursor ('done' once every node is copied).
 # One row, with the connector's document (``app_doc``) beside it; ``sk`` is NULL when kg holds no key for the connector.
-STATE = """/* pipeshub:kg.listing_state */ SELECT k.sk, coalesce(s.mode, 'legacy') AS mode, s.code_epoch, s.verified_at, n.doc AS app_doc FROM (SELECT $1::text AS org_id, $2::text AS id) q
+STATE = """/* pipeshub:kg.listing_state */ SELECT k.sk, s.code_epoch, s.backfill_cursor, n.doc AS app_doc FROM (SELECT $1::text AS org_id, $2::text AS id) q
     LEFT JOIN kg.node_keys k ON k.org_id = q.org_id AND k.coll = 1 AND k.id = q.id LEFT JOIN kg.projection_state s ON s.org_id = k.org_id AND s.app_sk = k.sk
     LEFT JOIN graph.nodes n ON n.org_id = q.org_id AND n.coll = 'apps' AND n.id = q.id"""
+# Whether the connector has a record or a record group in the graph, live or deleted (what its copy would hold besides the connector itself). Read only for a connector kg has not
+# finished copying: the records by their index on the connector, the groups (no such index) by the org's groups, which are few beside its records.
+HOLDS = """/* pipeshub:kg.listing_holds */ SELECT EXISTS (SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND doc->>'connectorId' = $2)
+    OR EXISTS (SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups' AND doc->>'connectorId' = $2)"""
 
 # Rows a group that hides its children hides from a listing: what lies below it by the hierarchy (the primary parent and the non-primary links), and the members of it or of a group below it.
 # The hider itself is listed. Empty when no group of the connector hides.

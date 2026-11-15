@@ -1,6 +1,7 @@
 """The Knowledge Hub layer (``tests/permissions/kh_layer.py``) on the PostgreSQL provider: the rows, totals, counts, facets and arrows of every golden, adversarial and generated world
-against the access oracle, with the world's connectors served from kg ("current") and with kg not trusted for them ("not current": the listing's access is then the live walk's).
-The two states must answer the same rows and arrows; the totals are exact in both for the worlds of these sizes."""
+against the access oracle, with the world's connectors served from kg ("current"), with kg not trusted for them ("not current": the listing's access is then the live walk's), and
+copied by kg but neither stamped, verified nor promoted ("copied": what a new connector is until the bootstrap promotes it; the structure is kg's, the access the walk's).
+The states must answer the same rows and arrows; the totals are exact in all of them for the worlds of these sizes."""
 from __future__ import annotations
 
 import logging
@@ -15,6 +16,8 @@ from app.connectors.sources.localKB.handlers.kh_merge import key_for
 from app.core.org_context import OrgContext, bind
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
 from app.services.graph_db.postgres import kh_browse
+from app.services.graph_db.postgres.kg import backfill as bf
+from app.services.graph_db.postgres.kg.drainer import drain_org
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
 from tests.permissions.kh_layer import (
@@ -87,14 +90,32 @@ async def _decorate_names(org: str) -> None:
         await con.close()
 
 
-class KhPgLayer(KgLayer):
-    """``KgLayer`` whose worlds are listed through the product's own listing; ``not_current`` takes kg off every connector of the world after it was copied and verified."""
+async def _copy(db, org: str) -> None:
+    """What the bootstrap does first for each connector of the org: the log drained, the principals and the connector copied. No stamps, no verify, no promotion. A world with a value the
+    projection refuses is left uncopied (``flip`` does the same)."""
+    async def apps(tx) -> list[str]:
+        return [r["id"] for r in await tx.fetch("SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' ORDER BY id", org)]
+    with bind(OrgContext(org, None, "job", "job:test", "t")):
+        ids = await db.run(apps)
+    try:
+        await drain_org(db, org)
+        await bf.backfill_scope(db, org, None)
+        for a in ids:
+            await bf.backfill_scope(db, org, a)
+    except asyncpg.exceptions.InvalidParameterValueError:
+        pass
 
-    def __init__(self, provider, db, *, not_current: bool) -> None:
+
+class KhPgLayer(KgLayer):
+    """``KgLayer`` whose worlds are listed through the product's own listing; ``not_current`` takes kg off every connector of the world after it was copied and verified; ``copied``
+    only copies them."""
+
+    def __init__(self, provider, db, *, not_current: bool, copied: bool = False) -> None:
         super().__init__(provider, db)
         self.not_current = not_current
+        self.copied = copied
         self.not_ready = 0
-        self.name = f"postgres-kg-{'walk' if not_current else 'kg'}"
+        self.name = f"postgres-kg-{'copied' if copied else 'walk' if not_current else 'kg'}"
 
     async def preload(self, worlds) -> None:
         new = [w for w in dict.fromkeys(worlds) if w not in self._prefix]
@@ -102,6 +123,9 @@ class KhPgLayer(KgLayer):
         for w in new:
             org = _hex(Namespace(self._prefix[w]).org)
             await _decorate_names(org)
+            if self.copied:
+                await _copy(self._db, org)
+                continue
             done, total = await flip(self._db, org)
             self.promoted.update(promoted=done, connectors=total)
         if self.not_current:
@@ -113,9 +137,9 @@ class KhPgLayer(KgLayer):
         return _Ns(self._prefix[world])
 
 
-@pytest.fixture(params=[False, True], ids=["current", "not_current"])
+@pytest.fixture(params=["current", "not_current"])
 async def kh_layer(request, pg_provider, pg_db) -> AsyncIterator[KhPgLayer]:
-    lay = KhPgLayer(pg_provider, pg_db, not_current=request.param)
+    lay = KhPgLayer(pg_provider, pg_db, not_current=request.param == "not_current", copied=request.param == "copied")
     yield lay
     await lay.release(list(lay._prefix))
 
@@ -149,6 +173,7 @@ def _bad(found: list[KhFinding]) -> list[KhFinding]:
     return [f for f in found if f.kind not in GAPS]
 
 
+@pytest.mark.parametrize("kh_layer", ["current", "not_current", "copied"], indirect=True)
 async def test_golden_and_adversarial_worlds_list_what_the_viewer_may_read(kh_layer) -> None:
     worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
     bad: list[KhFinding] = []

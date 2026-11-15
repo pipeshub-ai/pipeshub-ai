@@ -2,7 +2,9 @@
 
 The structure of a page (which rows, their order, the keyset) comes from ``kg.records``; who may see a row is asked of the access check for every row a page keeps, so an answer is never
 older than the check (kg classes for a connector kg serves, the live walk otherwise). A listing therefore works while a connector syncs: structure may lag the drain, access never does.
-A connector with no copy in kg yet is not listed as empty: it is refused as not ready.
+A connector is listed once kg has finished copying it, before the copy is verified or promoted (``head``); one that holds no node yet lists nothing.
+shortcut: a connector that holds nodes and whose copy is not finished (an existing connector's first copy, or one kg took back after a difference) is refused as not ready, not
+listed as empty: PostgreSQL keeps no other structure of a connector to list from. Upgrade to a listing over ``graph.edges`` if such copies are long enough to matter.
 
 A page scans windows of the sort order until it has the rows asked for, the end, or a bound (time or rows looked at). At a bound it hands back the position it reached (``resume``), so that
 a page with no rows can still be continued. The total counts the rows the check admits among the first :data:`COUNT_SCAN` candidates: exact when that was all of them, else a lower bound
@@ -53,6 +55,9 @@ LEAD_NODES = 5_000
 LEAD_DEPTH = 50
 LEAD_PER = 1_000
 ANY_GROUP = ""      # ``only_group`` of the chain-top walk for the records of every group at once (``_kh_tops_under``): each is placed under its own groups, as for one
+# The key a connector that holds no node is listed by before kg has copied it: no row of kg has it, so its listing is the empty one its copy would give (a new collection opened
+# the moment it is created).
+NOTHING = -1
 
 @dataclass
 class LeadBudget:
@@ -90,18 +95,25 @@ async def class_sets(tx: Tx, org: str, app_sk: int, held: set[str]) -> dict[str,
 
 
 async def head(tx: Tx, org: str, app_id: str, held: set[str], *, by_class: bool) -> tuple[int | None, dict, list[int], bool, dict[str, set[int]] | None]:
-    """A connector's listing state: its node key (None when kg holds no current copy of it), its document, the rows groups that hide their children hide, whether kg serves it, and
-    what the viewer's grants open of it by class (None unless ``by_class``: the page reads one snapshot, so the stamps it admits by are the ones the currency check saw). ``held``:
-    every grant of every gated connector, since a clause's literals are the nodes a walk passes through, of any connector; a row's own grant is still the App's."""
+    """A connector's listing state: its node key (None when kg holds no finished copy of it and it holds a node; :data:`NOTHING` when it holds none), its document, the rows groups
+    that hide their children hide, whether kg serves it, and what the viewer's grants open of it by class (None unless ``by_class``: the page reads one snapshot, so the stamps it
+    admits by are the ones the currency check saw). ``held``: every grant of every gated connector, since a clause's literals are the nodes a walk passes through, of any connector;
+    a row's own grant is still the App's."""
     k = await tx.fetchrow(kgl.STATE, org, app_id)
     hidden: list[int] = []
-    ready = bool(k["sk"] is not None and k["mode"] != "legacy" and k["code_epoch"] == CODE_EPOCH and k["verified_at"] is not None)      # a copy of an older code lacks the listing columns: it is not listed from
-    if ready and await tx.fetchval(kgl.HAS_HIDER, org, k["sk"]):
+    # A finished copy made by this code is listed from whether or not it is verified yet: every change since the copy is in the log the drain projects, so its structure lags the graph
+    # by the drain, as an enforced connector's does while it syncs, and who may see a row stays the live walk's until kg serves the connector. A copy of an older code lacks the
+    # listing columns, and a copy whose verify found a difference is set back to epoch 0 (``backfill.backfill``): neither is listed from.
+    ready = bool(k["sk"] is not None and k["code_epoch"] == CODE_EPOCH and k["backfill_cursor"] == "done")
+    if not ready:
+        holds = await tx.fetchval(kgl.HOLDS, org, app_id)
+        return (None if holds else NOTHING), (_doc(k["app_doc"]) if k["app_doc"] else {}), [], False, None
+    if await tx.fetchval(kgl.HAS_HIDER, org, k["sk"]):
         hidden = list(await tx.fetchval(kgl.HIDDEN, org, k["sk"]))
         if len(hidden) > HIDDEN_MAX:
             raise KnowledgeHubListingTooLarge
-    served = ready and kg_read.enabled() and await kg_read.serves(tx, org, app_id)      # PG_KG_READ=0, or a connector this process distrusts (as ``read.decide``): every row is the live check's
-    return (k["sk"] if ready else None), (_doc(k["app_doc"]) if k["app_doc"] else {}), hidden, served, (await class_sets(tx, org, k["sk"], held) if served and by_class else None)
+    served = kg_read.enabled() and await kg_read.serves(tx, org, app_id)      # PG_KG_READ=0, or a connector this process distrusts (as ``read.decide``): every row is the live check's
+    return k["sk"], (_doc(k["app_doc"]) if k["app_doc"] else {}), hidden, served, (await class_sets(tx, org, k["sk"], held) if served and by_class else None)
 
 
 def origin_of(app_doc: dict) -> str:
