@@ -7,7 +7,9 @@ off sends the connectors back to the walk, because the take-back deletes the onl
 from __future__ import annotations
 
 import asyncio
+import os
 
+import asyncpg
 import pytest
 
 from app.core.org_context import spawn_detached
@@ -37,6 +39,14 @@ def projection_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PG_KG_PROJECT", "1")
     monkeypatch.delenv("PG_KG_FLUSH", raising=False)
     monkeypatch.setenv("PG_KG_STRICT", "1")
+
+
+async def analyze_requests(org: str) -> list[int]:
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        return [r["app_sk"] for r in await con.fetch("SELECT app_sk FROM kg.analyze_requests WHERE org_id = $1", org)]
+    finally:
+        await con.close()
 
 
 async def run_in(db, org: str, fn, *, write: bool = False) -> object:
@@ -344,8 +354,11 @@ async def test_promotion_needs_shadow_a_clean_verify_and_an_empty_log_and_demoti
     with pytest.raises(bf.Refused, match="waiting in the log"):
         await bf.promote(pg_db, org, "app1")
     await drain_org(pg_db, org)
+    assert await analyze_requests(org) == []                                 # a backfill alone asks nothing: the connector is not served yet
     res = await bf.promote(pg_db, org, "app1")
     assert res.ok and (await state(pg_db, org, "app1"))[1] == "enforce"
+    sks = await run_in(pg_db, org, lambda tx: load_sks(tx, org, {("apps", "app1")}))
+    assert await analyze_requests(org) == [sks[("apps", "app1")]]            # the first load asks the worker to analyze kg (kg.analyze_requests)
     again = await bf.backfill(pg_db, org, "app1", page=4)                    # a second backfill of an enforced connector keeps it enforced
     assert again.flipped and (await state(pg_db, org, "app1"))[1] == "enforce"
     await bf.demote(pg_db, org, "app1")

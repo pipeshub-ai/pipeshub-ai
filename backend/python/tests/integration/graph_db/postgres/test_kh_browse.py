@@ -6,6 +6,9 @@ import asyncio
 import json
 import os
 import re
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -434,12 +437,27 @@ CUSTOM_ONLY = ("wide ", "children ", "undecided ", "count ")
 NODE_COND = re.compile(r"\b(parent_sk|sk|child_sk|id|app_sk|group_sk)\b\)?(::text)?\s*>?=")
 
 
-@pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
+def run_kg_analyze() -> None:
+    """The maintenance worker's analyze job (``python -m db.maintain analyze``) as it runs in a deployment: the migrate login as the owner role, the jobs login for the
+    requests. With no interval between two ANALYZEs, so every run of the test is served (the worker waits 10 minutes)."""
+    need = ("PG_TEST_MIGRATE_URL", "PG_TEST_JOBS_URL")
+    assert all(os.environ.get(k) for k in need), f"set {need} (scripts/prepare_pg_test_db.sh prints them)"
+    env = {**os.environ, "PG_MIGRATE_URL": os.environ["PG_TEST_MIGRATE_URL"], "PG_JOBS_URL": os.environ["PG_TEST_JOBS_URL"], "PG_KG_ANALYZE_EVERY_S": "0"}
+    ran = subprocess.run([os.environ.get("PG_TEST_MAINTAIN_PYTHON") or sys.executable, "-m", "db.maintain", "analyze"], cwd=Path(__file__).parents[5],
+                         env=env, capture_output=True, text=True, timeout=300, check=False)
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+
+
+# after_first_load: the statistics are those the worker took when the connectors' first loads asked for them (kg.analyze_requests), and the org has grown tenfold since.
+# Before the request, an org the statistics did not know was put at one row, and the plan of a page could read every kg row of the org (records_pkey bounded by
+# the org alone, then a sort) instead of the parent's range of a children index: a near tie the planner broke either way.
+@pytest.mark.parametrize("analyzed", [False, True], ids=["after_first_load", "after_analyze"])
 async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_organisation(pg_db, analyzed) -> None:
     p, org = prov(pg_db), new_org()
     await seed_folder(p, pg_db, org, 400, readable_kids=[])
     for _ in range(2):
         await seed_folder(p, pg_db, new_org(), 50, readable_kids=[])
+    run_kg_analyze()                                    # each seed promoted its connector, which asked for the statistics
     # every child also hangs under a second parent (a hierarchy link), so a read of the links that is not by the parent walks all of them
     await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT r.org_id, g.sk, 1, r.sk FROM kg.records r JOIN kg.node_keys g ON g.org_id = r.org_id AND g.coll = 2 AND g.id = 'g1' "
                  "WHERE r.org_id = $1 AND r.parent_sk IS NOT NULL", org)
@@ -499,7 +517,7 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
             if not name.startswith(CUSTOM_ONLY):
                 plans.append(("generic", await _generic_plan(con, sql)))
             for kind, plan in plans:
-                at = f"{name} {kind} ({'after' if analyzed else 'before'} ANALYZE)"
+                at = f"{name} {kind} ({'after ANALYZE' if analyzed else 'after the first load'})"
                 seq = [n["Relation Name"] for n in _nodes(plan) if n.get("Node Type") == "Seq Scan" and n.get("Relation Name") in ("records", "links", "node_keys")]
                 assert not seq, f"{at}: sequential scan of {seq}"
                 # once analyzed, every read of the org's rows and links is bounded by the nodes it asks about, never a walk of the org's index (with no statistics the planner may

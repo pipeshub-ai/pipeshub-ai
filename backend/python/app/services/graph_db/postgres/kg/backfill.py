@@ -265,7 +265,9 @@ async def promote(db: KernelDB, org: str, app_id: str) -> Result:
                 raise Refused(f"{app_id} was demoted while it was verified")
             if not res.ok:
                 raise Refused(f"{app_id} differs from the graph: {res.summary()}")
-            await KgWriter(tx).projection_set(app_sk, epoch=CODE_EPOCH, mode="enforce", digest=res.digest, cursor="done", verified_at=dt.datetime.now(dt.timezone.utc))
+            w = KgWriter(tx)
+            await w.projection_set(app_sk, epoch=CODE_EPOCH, mode="enforce", digest=res.digest, cursor="done", verified_at=dt.datetime.now(dt.timezone.utc))
+            await w.analyze_request(app_sk)
             return res
         return await db.run(go, write=True)
 
