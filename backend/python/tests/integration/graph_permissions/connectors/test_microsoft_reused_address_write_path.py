@@ -82,6 +82,5 @@ async def test_the_old_accounts_role_memberships_go_with_its_grants(drive: Drive
         return {e.get("_to") or e.get("to_id") for e in edges if CollectionNames.ROLES.value in str(e.get("_to") or e.get("to_collection"))}
 
     assert await ben_roles()
-    accounts = SourceAccounts(drive.processor, drive.connector_id, InMemoryConfigService(), logging.getLogger("t"))
-    await accounts.admit(_listing(drive, "u-ben-new"))
+    await drive.processor.on_new_app_users(_listing(drive, "u-ben-new"))
     assert await ben_roles() == set()
