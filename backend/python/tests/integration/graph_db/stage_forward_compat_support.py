@@ -8,14 +8,20 @@ context the caller bound.
 from __future__ import annotations
 
 import copy
+import json
+import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.models import Priority, StageJob, StageState
+from app.modules.pipeline.policy import DEFAULT_POLICY
+from app.modules.pipeline.registry import StageRegistry
 from app.modules.pipeline.state import GraphStageStateStore
+from app.modules.pipeline.worker import StageJobHandler
 from app.schema.arango.documents import (
     PROGRESS_STATUS_VALUES,
     STAGE_PRIORITIES,
@@ -24,7 +30,10 @@ from app.schema.arango.documents import (
 )
 from app.schema.node_validator import SchemaValidationError
 from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+from app.services.messaging.config import StreamMessage
 from app.services.resource_governor.models import ParseTier
+from tests.unit.modules.pipeline.fakes import RecordingHeadlines, RecordingProducer
+from tests.unit.modules.pipeline.test_worker import _IO, _Classify
 
 if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -84,11 +93,11 @@ async def unknown_field_and_value_accepted(graph: IGraphDBProvider, org: str) ->
     store = GraphStageStateStore(graph)
     state = await store.get(key)
     assert state is not None
-    # An unknown status reads back as not settled: never an error, and never a settled status.
-    assert state.status is ProgressStatus.NOT_STARTED
+    # An unknown status reads back as foreign: never an error, and never a status this release acts on.
+    assert not isinstance(state.status, ProgressStatus) and state.status.value == "SPLIT"
     assert state.attempt == 1
     by_stage = await store.get_many(document["virtualRecordId"], document["rev"])
-    assert by_stage[document["stage"]].status is ProgressStatus.NOT_STARTED
+    assert not isinstance(by_stage[document["stage"]].status, ProgressStatus)
     # The sweep's own read still finds the row's other fields.
     assert (await graph.stage_state_get(other["id"]))["tier"] == "nano"
     return key
@@ -152,3 +161,49 @@ async def unknown_tier_and_priority_read_tolerantly(graph: IGraphDBProvider, org
     assert states[good["stage"]].tier is ParseTier.LIGHT, "a known value is read as stored"
     one = await GraphStageStateStore(graph).get(odd_tier["id"])
     assert one is not None and one.tier is ParseTier.HEAVY
+
+
+
+async def a_foreign_row_is_left_byte_identical(graph: IGraphDBProvider, org: str) -> None:
+    """A row a newer release left in a status this release does not know: this release's coordinator, worker
+    and sweep read it without raising and never write it, and its siblings stay readable."""
+    done = stage_document(org)
+    vrid, rev = done["virtualRecordId"], done["rev"]
+    done.update(stage="embed", id=f"{vrid}:{rev}:embed", status="COMPLETED")
+    foreign = {**stage_document(org, vrid=vrid), "status": "SPLIT", "attempt": 2, "sweepAtMs": 7, "updatedAtMs": 1}
+    for document in (done, foreign):
+        assert await graph.stage_state_create(document)
+    key = foreign["id"]
+    before = json.dumps(await graph.stage_state_get(key), sort_keys=True)
+
+    store = GraphStageStateStore(graph)
+    stage = _Classify()
+    registry = StageRegistry()
+    registry.register_external("embed")
+    registry.register(stage)
+    producer = RecordingProducer()
+    coordinator = Coordinator(
+        registry, store, RecordingHeadlines(), producer,  # type: ignore[arg-type]
+        policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("t"),
+    )
+    handler = StageJobHandler(
+        registry, store, RecordingHeadlines(), coordinator, _IO, logger=logging.getLogger("t"), worker_id="older"
+    )
+    state = await store.get(key)
+    assert state is not None
+    job = state.to_job()
+    message = StreamMessage(eventType="stageJob", payload=job.model_dump(mode="json", by_alias=True))
+
+    assert await coordinator.on_external_done("embed", job.view, priority=Priority.BULK, trigger="t") == []
+    assert await coordinator.redrive(job.view, "classify", priority=Priority.INTERACTIVE, force=True) is None
+    assert [event async for event in handler(message)]
+    await handler.on_message_abandoned(message, reason="poison", attempts=5)
+    stale = await store.stale(statuses=list(ProgressStatus), updated_before_ms=2, limit=10_000)
+
+    assert key not in {s.key for s in stale}
+    assert (stage.runs, producer.sent) == (0, [])
+    assert handler.outcomes("classify")["foreign"] == 1
+    assert json.dumps(await graph.stage_state_get(key), sort_keys=True) == before
+    states = await store.get_many(vrid, rev)
+    assert states["embed"].status is ProgressStatus.COMPLETED
+    assert not isinstance(states["classify"].status, ProgressStatus)

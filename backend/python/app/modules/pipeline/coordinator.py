@@ -17,6 +17,7 @@ from typing import Any, Protocol
 from app.config.constants.arangodb import ProgressStatus
 from app.core.org_context import for_org
 from app.modules.pipeline.models import (
+    ForeignStatus,
     Priority,
     RecordView,
     StageJob,
@@ -117,7 +118,8 @@ class Coordinator:
         state = StageState.from_job(job, ProgressStatus.COMPLETED, self._clock_ms())
         if not await self._states.create_if_absent(state):
             existing = await self._states.get(state.key)
-            if existing is not None and existing.status not in _DONE:
+            # A row a newer release owns is left as it is, even by the prerequisite that names it.
+            if existing is not None and not isinstance(existing.status, ForeignStatus) and existing.status not in _DONE:
                 _ = await self._states.cas(
                     state.key,
                     expected=existing.status,
@@ -137,7 +139,8 @@ class Coordinator:
         return await self._dispatch_after(job.stage, result.record_view, priority=job.priority, force=job.force)
 
     async def redrive(self, view: RecordView, stage: str, *, priority: Priority, force: bool) -> str | None:
-        """Re-dispatch one stage for one revision; None when it is already queued or running."""
+        """Re-dispatch one stage for one revision; None when it is already queued or running, or a newer
+        release owns its state."""
         target = self._registry.get(stage)
         job = self._job_for(target.name, target.version, view, priority=priority, trigger="redrive", force=force)
         claimed_from = await self._claim(job)
@@ -326,7 +329,7 @@ class Coordinator:
         if await self._states.create_if_absent(StageState.from_job(job, ProgressStatus.QUEUED, self._clock_ms())):
             return ProgressStatus.NOT_STARTED
         existing = await self._states.get(job.state_key)
-        if existing is None or existing.status not in _CLAIMABLE:
+        if existing is None or isinstance(existing.status, ForeignStatus) or existing.status not in _CLAIMABLE:
             return None
         if await self._states.cas(
             job.state_key,

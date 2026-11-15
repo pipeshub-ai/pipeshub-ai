@@ -36,21 +36,50 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 logger = logging.getLogger("stage-forward-compat-it")
 STAGES = CollectionNames.STAGE_STATES.value
 ORG = f"org-sfc-{uuid.uuid4().hex[:8]}"
+ARANGO_DB = "stage_forward_compat_it"
+# The rollback test swaps the collection's schema while it runs, so on ArangoDB it owns a database no other
+# test uses, and drops it afterwards: a test on another xdist worker never writes under the strict schema.
+ARANGO_ROLLBACK_DB = "stage_forward_compat_rollback_it"
 
 
-@pytest.fixture(params=["neo4j", "arango"])
-async def graph(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[IGraphDBProvider]:
+async def _connected(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, arango_db: str, *, drop: bool = False
+) -> AsyncIterator[IGraphDBProvider]:
     async with contextlib.AsyncExitStack() as cleanup:
         try:
             if request.param == "neo4j":
                 provider = await connect_neo4j(logger, monkeypatch)
             else:
-                provider = await connect_arango(logger, "stage_forward_compat_it")
+                provider = await connect_arango(logger, arango_db)
         except Exception as exc:
             backend_unavailable(request.param, exc)
         cleanup.push_async_callback(provider.disconnect)
+        if drop and request.param == "arango":
+            # Before the disconnect, which closes the session the drop uses.
+            cleanup.push_async_callback(_drop_database, provider, arango_db)
         yield provider
         await provider.stage_states_delete_for_virtual_records(list(support.CREATED_VRIDS))
+
+
+async def _drop_database(provider: IGraphDBProvider, name: str) -> None:
+    client = provider.http_client  # type: ignore[attr-defined]
+    session = await client._get_session()
+    async with session.delete(f"{client.base_url}/_api/database/{name}") as response:
+        assert response.status in (200, 404), await response.text()
+
+
+@pytest.fixture(params=["neo4j", "arango"])
+async def graph(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[IGraphDBProvider]:
+    async for provider in _connected(request, monkeypatch, ARANGO_DB):
+        yield provider
+
+
+@pytest.fixture(params=["neo4j", "arango"])
+async def rollback_graph(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[IGraphDBProvider]:
+    async for provider in _connected(request, monkeypatch, ARANGO_ROLLBACK_DB, drop=True):
+        yield provider
 
 
 async def test_unknown_stage_field_and_value_accepted(graph: IGraphDBProvider) -> None:
@@ -61,9 +90,14 @@ async def test_unknown_tier_and_priority_read_tolerantly(graph: IGraphDBProvider
     await support.unknown_tier_and_priority_read_tolerantly(graph, ORG)
 
 
+async def test_a_foreign_row_is_left_byte_identical(graph: IGraphDBProvider) -> None:
+    await support.a_foreign_row_is_left_byte_identical(graph, ORG)
+
+
 async def test_records_strict_types_checked_and_rollback_floor(
-    graph: IGraphDBProvider, monkeypatch: pytest.MonkeyPatch
+    rollback_graph: IGraphDBProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    graph = rollback_graph
     await support.record_nodes_stay_strict(graph, ORG)
     await support.stage_types_still_checked(graph, ORG)
 

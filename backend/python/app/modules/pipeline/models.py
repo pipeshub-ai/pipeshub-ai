@@ -8,10 +8,18 @@ the job envelope and the graph's record fields; parsing accepts either spelling.
 import hashlib
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_serializer,
+    field_validator,
+)
 from pydantic.alias_generators import to_camel
 
 from app.config.constants.arangodb import ProgressStatus
@@ -24,6 +32,21 @@ _KNOWN_STATUSES = frozenset(status.value for status in ProgressStatus)
 _logger = logging.getLogger(__name__)
 #: Unknown stored values already reported, so a row's value is logged once per process and not once per read.
 _REPORTED: set[tuple[str, str]] = set()
+
+
+#: What a reader reports for a row whose status a newer release wrote.
+FOREIGN_REASON = "handled by a newer release"
+
+
+@dataclass(frozen=True)
+class ForeignStatus:
+    """A stage status this release does not know: a newer release wrote it, and that release owns the row.
+
+    Never mapped to a known status, because acting on a guess is how a row gets stuck or overwritten. This
+    release reads such a row but never compares-and-sets, sweeps or reclaims it.
+    """
+
+    value: str
 
 
 def _report_unknown(field: str, value: str, mapped_to: str) -> None:
@@ -220,7 +243,7 @@ class StageState(BaseModel):
     virtual_record_id: str
     rev: str
     stage: str
-    status: ProgressStatus
+    status: ProgressStatus | ForeignStatus
     stage_version: int = Field(ge=1)
     record_ids: tuple[str, ...] = Field(min_length=1)
     connector_id: str
@@ -250,13 +273,22 @@ class StageState(BaseModel):
 
     @field_validator("status", mode="before")
     @classmethod
-    def _unknown_status_is_not_settled(cls, value: object) -> object:
-        """A status this release does not know, written by a later one (the stored schema accepts any
-        string), reads as ``NOT_STARTED``: not settled, so the sweep decides, and the read never fails."""
+    def _unknown_status_is_foreign(cls, value: object) -> object:
+        """A status a later release wrote (the stored schema accepts any string) reads as foreign: the read
+        never fails, and nothing in this release acts on the row."""
         if isinstance(value, str) and value not in _KNOWN_STATUSES:
-            _report_unknown("status", value, ProgressStatus.NOT_STARTED.value)
-            return ProgressStatus.NOT_STARTED
+            _report_unknown("status", value, f"foreign ({FOREIGN_REASON})")
+            return ForeignStatus(value)
         return value
+
+    @field_serializer("status", when_used="json")
+    def _status_as_stored(self, status: ProgressStatus | ForeignStatus) -> str:
+        return status.value
+
+    @property
+    def foreign(self) -> bool:
+        """Whether a newer release owns this row (its status is one this release does not know)."""
+        return isinstance(self.status, ForeignStatus)
 
     @field_validator("tier", mode="before")
     @classmethod
@@ -334,7 +366,8 @@ class StageStateSummary(BaseModel):
     model_config = _WIRE
 
     stage: str
-    status: ProgressStatus
+    # A string for a row a newer release owns, whose status this release does not know.
+    status: ProgressStatus | str
     reason: str | None = None
     attempt: int = 0
     started_at_ms: int | None = None
@@ -343,10 +376,14 @@ class StageStateSummary(BaseModel):
 
     @classmethod
     def of(cls, state: StageState) -> "StageStateSummary":
+        if isinstance(state.status, ForeignStatus):
+            status, reason = state.status.value, FOREIGN_REASON
+        else:
+            status, reason = state.status, state.reason
         return cls(
             stage=state.stage,
-            status=state.status,
-            reason=state.reason,
+            status=status,
+            reason=reason,
             attempt=state.attempt,
             started_at_ms=state.started_at_ms,
             finished_at_ms=state.finished_at_ms,

@@ -46,6 +46,11 @@ async def test_unknown_tier_and_priority_read_tolerantly(pg_provider, org, org_c
         await support.unknown_tier_and_priority_read_tolerantly(pg_provider, org)
 
 
+async def test_a_foreign_row_is_left_byte_identical(pg_provider, org, org_ctx) -> None:
+    with org_ctx(org):
+        await support.a_foreign_row_is_left_byte_identical(pg_provider, org)
+
+
 async def test_records_strict_types_checked_and_rollback_floor(
     pg_provider, org, org_ctx, monkeypatch: pytest.MonkeyPatch
 ) -> None:

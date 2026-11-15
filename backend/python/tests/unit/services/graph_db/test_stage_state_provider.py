@@ -494,13 +494,13 @@ class TestAStatusThisReleaseDoesNotKnow:
         }
         return {**document, **overrides}
 
-    def test_reads_as_not_started_and_ignores_unknown_fields(self) -> None:
-        from app.config.constants.arangodb import ProgressStatus
+    def test_reads_as_foreign_and_ignores_unknown_fields(self) -> None:
+        from app.modules.pipeline.models import ForeignStatus
         from app.modules.pipeline.state import _from_document
 
         state = _from_document(self._document(status="SPLIT"))
 
-        assert state.status is ProgressStatus.NOT_STARTED
+        assert state.status == ForeignStatus("SPLIT")
         assert state.attempt == 0
 
     def test_a_known_status_is_unchanged(self) -> None:
