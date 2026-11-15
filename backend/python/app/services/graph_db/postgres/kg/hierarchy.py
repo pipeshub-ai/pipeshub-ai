@@ -147,6 +147,91 @@ APP_MEMBERS = f"""/* pipeshub:kg.hier_app_members */ SELECT c.sk FROM unnest($2:
                ORDER BY e.from_id) e WHERE e.from_coll = 'records' AND e.to_coll = 'apps' AND e.to_id = $4)"""
 
 
+def _pc_unheld(x: str, *, up: bool) -> str:
+    """Whether a PARENT_CHILD relation between records into the record of id ``x`` (``up``) or out of it has an end kg does not hold as a record. The move guards follow
+    exactly these relations, to whatever is at their end; kg follows its kind-3 links, which name only the records it holds."""
+    end, other = ("to_id", "from_id") if up else ("from_id", "to_id")
+    return (f"EXISTS (SELECT 1 FROM (SELECT e.{other} AS oi FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.{end} >= {x} AND e.{end} <= {x} "
+            f"AND e.from_coll = 'records' AND e.to_coll = 'records' AND e.doc->>'relationshipType' = 'PARENT_CHILD' ORDER BY e.{end}) e "
+            f"WHERE NOT EXISTS (SELECT 1 FROM {_id('3', 'e.oi')} k))")
+
+
+def _pc_up(x: str) -> str:
+    """The record parents of ``x`` by a PARENT_CHILD relation (kind-3 links), as rows ``p``."""
+    return f"{_links_up(x, 3)} l CROSS JOIN LATERAL {_sk('l.parent_sk')} p"
+
+
+def _pc_down(x: str) -> str:
+    """The record children of ``x`` by a PARENT_CHILD relation (kind-3 links), as rows ``p``."""
+    return (f"(SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND (l.parent_sk, l.kind) >= ({x}, 3) AND (l.parent_sk, l.kind) <= ({x}, 3) "
+            f"ORDER BY l.parent_sk, l.kind, l.child_sk) l CROSS JOIN LATERAL {_sk('l.child_sk')} p")
+
+
+# The facts every move guard holds its rows to: a row of another connector than $3 (its copy is not the one checked), and a PARENT_CHILD relation the guard follows from a
+# visited record (``v``, with ``id``) to a node kg does not hold.
+def _pc_checks(*, up: bool) -> str:
+    return (f"(SELECT coalesce(bool_or(v.app_sk IS DISTINCT FROM $3), false) FROM v) AS untrusted, "
+            f"EXISTS (SELECT 1 FROM v WHERE {_pc_unheld('v.id', up=up)}) AS unheld")
+
+
+# The record $2 (an sk) and its ancestors by PARENT_CHILD relations between records, to a fixpoint (a cycle ends where it closes): is the record of id $4 among the ancestors?
+PC_ANCESTOR = f"""/* pipeshub:kg.hier_pc_ancestor */ WITH RECURSIVE up(sk) AS (
+    SELECT p.sk FROM {_pc_up("$2::bigint")} WHERE p.coll = 3
+    UNION SELECT p.sk FROM up CROSS JOIN LATERAL {_pc_up("up.sk")} WHERE p.coll = 3),
+  v AS MATERIALIZED (SELECT r.sk, r.id, r.app_sk FROM (SELECT $2::bigint AS sk UNION SELECT sk FROM up) q CROSS JOIN LATERAL {_sk("q.sk")} r)
+SELECT {_pc_checks(up=True)}, EXISTS (SELECT 1 FROM up JOIN v ON v.sk = up.sk WHERE v.id = $4) AS found"""
+
+# The longest chain of PARENT_CHILD record parents above the record $2 (an sk) that repeats no record, at most $4 long, as the walk counts it.
+PC_DEPTH = f"""/* pipeshub:kg.hier_pc_depth */ WITH RECURSIVE up(sk, depth, seen) AS (
+    SELECT $2::bigint, 0, ARRAY[$2::bigint]
+    UNION ALL SELECT p.sk, up.depth + 1, up.seen || p.sk FROM up CROSS JOIN LATERAL {_pc_up("up.sk")} WHERE p.coll = 3 AND NOT p.sk = ANY(up.seen) AND up.depth < $4),
+  v AS MATERIALIZED (SELECT r.sk, r.id, r.app_sk FROM (SELECT DISTINCT sk FROM up) q CROSS JOIN LATERAL {_sk("q.sk")} r)
+SELECT {_pc_checks(up=True)}, (SELECT max(depth) FROM up) AS depth"""
+
+# The longest chain of PARENT_CHILD record children below the record $2 (an sk) that repeats no record, at most $4 long, ending at a record whose document's mimeType is
+# one of $5 (a folder): its length, 0 when there is none.
+PC_HEIGHT = f"""/* pipeshub:kg.hier_pc_height */ WITH RECURSIVE down(sk, depth, seen) AS (
+    SELECT $2::bigint, 0, ARRAY[$2::bigint]
+    UNION ALL SELECT p.sk, down.depth + 1, down.seen || p.sk FROM down CROSS JOIN LATERAL {_pc_down("down.sk")} WHERE p.coll = 3 AND NOT p.sk = ANY(down.seen) AND down.depth < $4),
+  v AS MATERIALIZED (SELECT r.sk, r.id, r.app_sk FROM (SELECT DISTINCT sk FROM down) q CROSS JOIN LATERAL {_sk("q.sk")} r)
+SELECT {_pc_checks(up=False)}, (SELECT coalesce(max(d.depth), 0) FROM down d JOIN v ON v.sk = d.sk CROSS JOIN LATERAL {_node("'records'", "v.id")} n
+    WHERE d.depth >= 1 AND n.doc->>'mimeType' = ANY($5::text[])) AS height"""
+
+
+async def _pc_start(tx: Tx, org: str, record_id: str) -> tuple[int, int]:
+    """The record's sk and the sk of the connector kg serves it for. Raises Fallback."""
+    start = await tx.fetchrow(NODE, org, 3, record_id)
+    if start is None:
+        raise Fallback("unknown")                       # the walk still follows the relations into an id kg holds no record for
+    return start["sk"], await _served(tx, org, start["app_id"])
+
+
+def _pc_held(row: Any) -> Any:  # noqa: ANN401
+    if row["untrusted"]:
+        raise Fallback("reach")
+    if row["unheld"]:
+        raise Fallback("unheld")
+    return row
+
+
+async def pc_ancestor(tx: Tx, org: str, record_id: str, ancestor_id: str) -> bool:
+    """``is_record_descendant_of``: whether ``ancestor_id`` is above the record by PARENT_CHILD relations between records. Raises Fallback."""
+    sk, app_sk = await _pc_start(tx, org, record_id)
+    return bool(_pc_held(await tx.fetchrow(PC_ANCESTOR, org, sk, app_sk, ancestor_id))["found"])
+
+
+async def pc_depth(tx: Tx, org: str, folder_id: str, bound: int) -> int:
+    """``get_folder_depth``: 1 for a record with no PARENT_CHILD record parent, else one more than the longest chain above it. Raises Fallback."""
+    sk, app_sk = await _pc_start(tx, org, folder_id)
+    return int(_pc_held(await tx.fetchrow(PC_DEPTH, org, sk, app_sk, bound))["depth"] or 0) + 1
+
+
+async def pc_height(tx: Tx, org: str, folder_id: str, folder_mime_types: list[str], bound: int) -> int:
+    """``get_folder_subtree_height``: how many PARENT_CHILD levels below the record the deepest folder is (0 for none). Raises Fallback."""
+    sk, app_sk = await _pc_start(tx, org, folder_id)
+    return int(_pc_held(await tx.fetchrow(PC_HEIGHT, org, sk, app_sk, bound, list(folder_mime_types)))["height"])
+
+
 async def _served(tx: Tx, org: str, app_id: str | None) -> int:
     """The sk of a connector kg answers for (``read.serves``, in the caller's snapshot). Raises Fallback."""
     if not app_id or not await kg_read.serves(tx, org, app_id):
