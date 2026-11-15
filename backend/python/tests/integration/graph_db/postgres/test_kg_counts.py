@@ -262,3 +262,32 @@ async def test_a_restore_keeps_no_counter_and_the_seed_counts_the_restored_rows(
     assert await counts.run(pg_db, dst)                                          # every restored connector is counted whole again
     truth, held, unfolded = await state(p, dst)
     assert truth and held == truth and unfolded == 0
+
+
+async def test_a_connector_copied_again_at_the_current_projection_epoch_keeps_its_counters_equal_to_count_star(pg_db) -> None:
+    """A connector an older projection code copied (code_epoch below CODE_EPOCH) is copied, verified and promoted again by the worker's bootstrap: every row it rewrites
+    goes through the counter trigger, so the counters it was counted whole with still equal count(*) afterwards, folded or not."""
+    from app.services.graph_db.postgres.kg import bootstrap
+    from app.services.graph_db.postgres.kg.model import CODE_EPOCH
+
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await flip(pg_db, org)
+    await counts.run(pg_db, org)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await con.execute("UPDATE kg.projection_state SET code_epoch = $2 WHERE org_id = $1 AND app_sk <> 0", org, CODE_EPOCH - 1)
+        assert await con.fetchval("SELECT count(*) FROM kg.counts WHERE org_id = $1 AND facet = 0", org)        # counted whole before the copy
+        due: dict = {}
+        with ctx(org):
+            for _ in range(20):
+                if not await bootstrap.bring_to_enforce(pg_db, org, due):
+                    break
+        assert await con.fetchval("SELECT count(*) FROM kg.projection_state WHERE org_id = $1 AND app_sk <> 0 AND code_epoch <> $2", org, CODE_EPOCH) == 0
+    finally:
+        await con.close()
+    truth, held, _ = await state(p, org)
+    assert truth and held == truth
+    await fold_all(pg_db, org)
+    truth, held, unfolded = await state(p, org)
+    assert held == truth and unfolded == 0

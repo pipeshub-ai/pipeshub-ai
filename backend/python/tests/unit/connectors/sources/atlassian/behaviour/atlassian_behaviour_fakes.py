@@ -289,7 +289,9 @@ class FakeRecordsDb:
             if record.id == record_id:
                 del self.records[external_id]
 
-    async def on_record_content_update(self, record: Record, permissions: list[Any] | None = None) -> None:
+    async def on_record_content_update(
+        self, record: Record, permissions: list[Any] | None = None, *, content_changed: bool = True,
+    ) -> None:
         self.content_updates.append(record)
         # The processor upserts the record before it publishes updateRecord.
         self.records[record.external_record_id] = record

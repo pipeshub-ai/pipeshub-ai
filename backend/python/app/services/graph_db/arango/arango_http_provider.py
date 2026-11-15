@@ -17565,11 +17565,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         skip: int = 0,
         limit: int = 25,
         single_file_batches_only: bool = False,
+        after: tuple[int, str] | None = None,
+        count_cap: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """See ``IGraphDBProvider.list_trashed_records``."""
         if not connector_id or not org_id or limit <= 0:
             return {"items": [], "total": 0}
+        after_ts, after_batch = after or (None, None)
         bind_vars = {
             "connector_id": connector_id,
             "org_id": org_id,
@@ -17588,6 +17591,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 COLLECT batch = r.deleteBatchId
                     AGGREGATE deleted_at = MAX(r.deletedAtTimestamp), first_key = MIN(r._key),
                         root_count = COUNT(1)
+                FILTER @after_ts == null OR deleted_at < @after_ts OR (deleted_at == @after_ts AND batch < @after_batch)
                 SORT deleted_at DESC, batch DESC
                 LIMIT @skip, @limit
                 LET r = DOCUMENT(@@records, first_key)
@@ -17643,7 +17647,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     ),
                     deletedByName: u == null ? null
                         : (u.fullName ? u.fullName : TRIM(CONCAT_SEPARATOR(" ", u.firstName, u.lastName))),
-                    deletedByEmail: u.email
+                    deletedByEmail: u.email,
+                    batchId: batch,
+                    batchDeletedAt: deleted_at
                 }}
             """,
             bind_vars={
@@ -17652,12 +17658,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "limit": limit,
                 "names": TRASH_LIST_OTHER_ROOT_NAMES,
                 "@users": CollectionNames.USERS.value,
+                "after_ts": after_ts,
+                "after_batch": after_batch,
             },
             transaction=transaction,
         ) or []
+        capped = "" if count_cap is None else " LIMIT @count_limit"
         counted = await self.execute_query(
-            f"{_TRASH_BATCH_ROOTS} COLLECT batch = r.deleteBatchId COLLECT WITH COUNT INTO total RETURN total",
-            bind_vars=bind_vars,
+            f"{_TRASH_BATCH_ROOTS} COLLECT batch = r.deleteBatchId{capped} COLLECT WITH COUNT INTO total RETURN total",
+            bind_vars=bind_vars if count_cap is None else {**bind_vars, "count_limit": count_cap + 1},
             transaction=transaction,
         )
         for item in rows:

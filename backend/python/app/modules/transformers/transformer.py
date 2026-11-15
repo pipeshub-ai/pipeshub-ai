@@ -48,6 +48,8 @@ class TransformContext(BaseModel):
     entity_resolution: Optional[Any] = None
     # Set when extraction was skipped by configuration (not failed), e.g. no LLM configured.
     extraction_skip_reason: str | None = None
+    # The lastIndexTimestamp the record's COMPLETED write stored; None until that write succeeds.
+    indexed_at_ms: int | None = None
 
 class Transformer(ABC):
     @abstractmethod

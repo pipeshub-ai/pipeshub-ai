@@ -1,4 +1,4 @@
-"""The counters of the typed graph (``kg.counts``, kg_0014): per connector, the rows each class holds of what a listing counts by class, and the live records by record type
+"""The counters of the typed graph (``kg.counts``, kg_0015): per connector, the rows each class holds of what a listing counts by class, and the live records by record type
 and origin (the filters of a collection).
 
 A trigger on ``kg.records`` adds a delta row per key in the writer's own transaction, so the rows of a key, summed, are ``count(*)`` at every snapshot. The projection worker
@@ -8,7 +8,7 @@ replace in one statement (one snapshot) and delete exactly the rows they read, s
 
 Reading a count is off unless ``PG_KG_COUNTERS=1``: a listing then counts what the viewer's classes open from here instead of from the rows (:func:`class_rows`). A count
 sums only the classes the caller hands in, so it says nothing about rows the viewer may not read. The fold and the seed run whatever that switch says: the trigger adds
-deltas on every write, and unfolded they would grow without bound. A restore keeps no counter row and adds no delta (kg_0014), so the seed counts each connector whole again.
+deltas on every write, and unfolded they would grow without bound. A restore keeps no counter row and adds no delta (kg_0015), so the seed counts each connector whole again.
 """
 from __future__ import annotations
 

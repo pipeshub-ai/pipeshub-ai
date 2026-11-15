@@ -3,8 +3,8 @@ from alembic import op
 from db.lib.run_sql import run_sql
 from db.lib.vetted import run_vetted
 
-revision = "kg_0014"
-down_revision = "kg_0013"
+revision = "kg_0015"
+down_revision = "kg_0014"
 branch_labels = None
 depends_on = None
 older_code_compatible = ("adds a table, its sequence, functions and a trigger on kg.records that only inserts into that table, as the writer of kg.records (whose pins give "

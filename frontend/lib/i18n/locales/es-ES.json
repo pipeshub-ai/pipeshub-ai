@@ -5837,6 +5837,7 @@
       "restoredMany_many": "Se han restaurado {{count}} de elementos",
       "restoredMany_other": "Se han restaurado {{count}} elementos",
       "showing": "Mostrando {{from}}–{{to}} de {{total}}",
+      "showingAtLeast": "Mostrando {{from}}–{{to}} de {{total, number}}+",
       "previous": "Anterior",
       "next": "Siguiente",
       "nameAndMore_one": "{{name}} y {{count}} más",

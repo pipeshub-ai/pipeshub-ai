@@ -67,7 +67,7 @@ def marks(args: tuple, name: str | None = None) -> str:
 
 # The writers that take the caller's projection code epoch last (kg_0013); call() passes it.
 GUARDED = ("kg.w_stamps_set", "kg.w_fence_rows", "kg.w_queue_touch", "kg.w_queue_done", "kg.w_changes_ack", "kg.w_changes_delete")
-EPOCH = 5
+EPOCH = 6
 
 
 def call(c, name: str, org: str | None, args: tuple, *, epoch: int | None = EPOCH):
@@ -82,7 +82,7 @@ def rows(c, table: str, org: str) -> list:
 
 
 def clean(c) -> None:
-    for t in sorted({v[1] for v in CALLS.values()}, key=lambda t: t != "kg.records"):      # the records first: their delete adds counter deltas (kg_0014)
+    for t in sorted({v[1] for v in CALLS.values()}, key=lambda t: t != "kg.records"):      # the records first: their delete adds counter deltas (kg_0015)
         c.execute(f"DELETE FROM {t}")
 
 
@@ -156,7 +156,7 @@ def test_the_change_log_is_acknowledged_by_transaction_and_by_id_and_only_in_the
         c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, ARRAY['3:mine'])", (ORG_A,))              # as the capture trigger will: this transaction's id by default
         c.execute("SET LOCAL ROLE pipeshub_connectors")
         c.execute("SELECT set_config('app.org_id', %s, true)", (ORG_A,))
-        assert c.execute("SELECT kg.w_changes_ack(5)").fetchone()[0] == 1
+        assert c.execute("SELECT kg.w_changes_ack(6)").fetchone()[0] == 1
         c.execute("COMMIT")
         assert [list(r[4]) for r in rows(c, "kg.graph_changes", ORG_A)] == [["3:other", "4:u"]]
         clean(c)
@@ -200,8 +200,8 @@ BAD = {
     "kg.w_nodes_upsert": [([0], ["x"]), ([3], [""]), ([3, 3], ["x"]), ([None], ["x"]), ([3], [None]), (None, ["x"]), ([3] * 5001, ["x"] * 5001)],
     "kg.w_records_upsert": [([11, 12], *list(R[1:])), ([None], *list(R[1:])), (*list(R[:3]), [9], *list(R[4:])), (*list(R[:2]), [""], *list(R[3:])), (None, *list(R[1:]))],
     "kg.w_records_delete": [([None],), (None,), ([1] * 5001,)],
-    "kg.w_links_set": [([1], [3], [2]), ([1, 2], [1], [2]), ([None], [1], [2])],
-    "kg.w_links_delete": [([1], [3], [2]), ([1, 2], [1], [2])],
+    "kg.w_links_set": [([1], [4], [2]), ([1, 2], [1], [2]), ([None], [1], [2])],
+    "kg.w_links_delete": [([1], [4], [2]), ([1, 2], [1], [2])],
     "kg.w_grants_set": [([1], [2], [""], [None], [None], [False]), ([1], [2], ["x" * 65], [None], [None], [False]), ([1, 2], [2], ["USER"], [None], [None], [False]),
                         ([1], [2], ["USER"], [None], [None], [None])],
     "kg.w_grants_delete": [([1], [2], [""]), ([1], [2, 3], ["USER"])],
@@ -596,7 +596,7 @@ def counters(c, org: str) -> list[tuple]:
 
 
 def test_a_write_of_the_records_adds_its_counter_deltas_in_the_writers_org_and_the_fold_writers_replace_them(pdb):
-    """kg_0014: the trigger on kg.records runs as the vetted writer, in its transaction, under the per-org policy; a live record of a connector adds a facet 2 delta, an
+    """kg_0015: the trigger on kg.records runs as the vetted writer, in its transaction, under the per-org policy; a live record of a connector adds a facet 2 delta, an
     unchanged repeat adds none, its delete takes it back. The fold's writers delete the deltas by id in the session org only and insert folded rows."""
     with conn(pdb) as c:
         clean(c)
