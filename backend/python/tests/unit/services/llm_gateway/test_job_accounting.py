@@ -6,13 +6,29 @@ import asyncio
 import httpx
 import pytest
 
-from app.modules.pipeline.pause_budget import PauseLimits, PauseState, Verdict, pause_verdict
+from app.modules.pipeline.pause_budget import (
+    PauseLimits,
+    PauseState,
+    Verdict,
+    pause_verdict,
+)
 from app.services.llm_gateway import gateway as gateway_module
 from app.services.llm_gateway import wire
-from app.services.llm_gateway.fleet_breaker import FleetBreaker, credential_of, provider_pk, size_class
+from app.services.llm_gateway.fleet_breaker import (
+    FleetBreaker,
+    credential_of,
+    provider_pk,
+    size_class,
+)
 from app.services.llm_gateway.fleet_redis import FleetRedis
-from app.services.llm_gateway.gateway import LLMGateway, ProviderUnavailableError, llm_job
-from app.services.model_identity.forwarders.litellm_headers import LiteLLMHeadersForwarder
+from app.services.llm_gateway.gateway import (
+    LLMGateway,
+    ProviderUnavailableError,
+    llm_job,
+)
+from app.services.model_identity.forwarders.litellm_headers import (
+    LiteLLMHeadersForwarder,
+)
 from app.services.model_identity.settings import ConnectionForwardingSettings
 from app.services.model_identity.transport.httpx_hook import install_identity_hook
 

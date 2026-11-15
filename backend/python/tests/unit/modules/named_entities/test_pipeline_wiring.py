@@ -199,7 +199,7 @@ async def test_extraction_failure_returns_failed_and_does_not_raise(caplog):
     assert _SECRET_NAME not in caplog.text
 
 
-async def test_a_provider_outage_behind_the_extraction_service_is_reported_as_unavailable():
+async def test_a_provider_outage_behind_the_extraction_service_is_reported_as_unavailable() -> None:
     """The service's 424 reaches the stage as every window unavailable, so the stage pauses on it (and counts the sends
     the service made) instead of retrying the document as a model failure."""
     from app.modules.pipeline.stages.entities import _provider_down
