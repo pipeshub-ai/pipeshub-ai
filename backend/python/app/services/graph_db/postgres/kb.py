@@ -249,21 +249,29 @@ class KbMixin(PgBase):
     async def find_folder_by_name_in_parent(self, kb_id: str, folder_name: str, parent_folder_id: str | None = None, exclude_folder_id: str | None = None,
                                             transaction: str | None = None, *, raise_on_error: bool = False) -> dict | None:
         """A live folder of that name (case-insensitive) directly under the parent folder, or at the root of the knowledge base (a folder
-        with no parent record)."""
+        with no parent record). Each reads from the parent's edges: the children of the folder, or the records of the knowledge base, never the organisation's records.
+        shortcut: a root check reads every record of the knowledge base (row-level security keeps a plain statement from an index on the name); a vetted name read if one grows past ~100k records."""
         org = current_org_id()
         try:
-            d = await self._one("""/* pipeshub:graph.find_folder_by_name_in_parent */ SELECT f.doc FROM graph.nodes f
-                WHERE f.org_id = $1 AND f.coll = 'records' AND f.doc->>'mimeType' = ANY($2::text[]) AND lower(f.doc->>'recordName') = lower($3::text)
-                  AND coalesce((f.doc->>'isDeleted')::boolean, false) = false AND ($4::text IS NULL OR f.id <> $4)
-                  AND CASE WHEN $5::text IS NULL
-                    THEN EXISTS (SELECT 1 FROM graph.edges b JOIN graph.nodes k ON k.org_id = b.org_id AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = $6
-                          WHERE b.org_id = f.org_id AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = f.id AND b.to_coll = 'apps' AND b.to_id = $7)
+            if parent_folder_id is None:
+                d = await self._one("""/* pipeshub:graph.find_folder_by_name_in_kb_root */ SELECT f.doc FROM graph.edges b
+                    JOIN graph.nodes k ON k.org_id = b.org_id AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = $5
+                    JOIN graph.nodes f ON f.org_id = b.org_id AND f.coll = 'records' AND f.id = b.from_id
+                    WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.to_id = $6 AND b.to_coll = 'apps' AND b.from_coll = 'records'
+                      AND f.doc->>'mimeType' = ANY($2::text[]) AND lower(f.doc->>'recordName') = lower($3::text)
+                      AND coalesce((f.doc->>'isDeleted')::boolean, false) = false AND ($4::text IS NULL OR f.id <> $4)
                       AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = f.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
                           AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = f.id)
-                    ELSE EXISTS (SELECT 1 FROM graph.edges p JOIN graph.nodes pn ON pn.org_id = p.org_id AND pn.coll = 'records' AND pn.id = p.from_id
-                          WHERE p.org_id = f.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD' AND p.from_coll = 'records' AND p.from_id = $5
-                            AND p.to_coll = 'records' AND p.to_id = f.id) END
-                ORDER BY f.id LIMIT 1""", org, FOLDER_MIME_TYPES, folder_name, exclude_folder_id, parent_folder_id, _KB, kb_id, transaction=transaction)
+                    ORDER BY f.id LIMIT 1""", org, FOLDER_MIME_TYPES, folder_name, exclude_folder_id, _KB, kb_id, transaction=transaction)
+            else:
+                d = await self._one("""/* pipeshub:graph.find_folder_by_name_in_folder */ SELECT f.doc FROM graph.edges p
+                    JOIN graph.nodes pn ON pn.org_id = p.org_id AND pn.coll = 'records' AND pn.id = p.from_id
+                    JOIN graph.nodes f ON f.org_id = p.org_id AND f.coll = 'records' AND f.id = p.to_id
+                    WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.from_id = $5 AND p.from_coll = 'records' AND p.to_coll = 'records'
+                      AND p.doc->>'relationshipType' = 'PARENT_CHILD'
+                      AND f.doc->>'mimeType' = ANY($2::text[]) AND lower(f.doc->>'recordName') = lower($3::text)
+                      AND coalesce((f.doc->>'isDeleted')::boolean, false) = false AND ($4::text IS NULL OR f.id <> $4)
+                    ORDER BY f.id LIMIT 1""", org, FOLDER_MIME_TYPES, folder_name, exclude_folder_id, parent_folder_id, transaction=transaction)
         except Exception as e:
             self.logger.error(f"❌ Failed to find folder by name: {e}")
             if raise_on_error:
