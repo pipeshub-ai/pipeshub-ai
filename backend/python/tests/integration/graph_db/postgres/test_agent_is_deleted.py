@@ -4,10 +4,14 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
-from .test_access import World
 from .test_access import w as w
+
+if TYPE_CHECKING:
+    from .test_access import World
 
 pytestmark = pytest.mark.integration
 
