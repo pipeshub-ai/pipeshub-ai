@@ -7476,7 +7476,7 @@ class IGraphDBProvider(ABC):
 
     @abstractmethod
     async def check_agent_permission(
-        self, agent_id: str, user_id: str, org_id: str
+        self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None
     ) -> dict | None:
         """
         Lightweight permission check: returns the caller's access rights on an
@@ -7493,6 +7493,8 @@ class IGraphDBProvider(ABC):
             agent_id: The agent key / ID.
             user_id:  The internal user key (_key in ArangoDB, id in Neo4j).
             org_id:   The organisation key.
+            transaction: Optional transaction ID; a check before a write in a
+                         transaction reads the grants as that transaction sees them.
 
         Returns:
             Dict with keys ``{user_role, can_edit, can_delete, can_share,

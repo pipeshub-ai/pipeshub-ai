@@ -328,7 +328,7 @@ class PermissionsMixin(PgBase):
         return await self._q(go, transaction)
 
     # ---- agents, apps and the knowledge hub ----------------------------------------------------------------------
-    async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str) -> dict | None:
+    async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None) -> dict | None:
         """How the user reaches the agent: their own grant, else their organization's; None for neither, for a deleted agent, and for another org."""
         if org_id != current_org_id():
             return None
@@ -338,7 +338,7 @@ class PermissionsMixin(PgBase):
                   AND ((p.from_coll = 'users' AND p.from_id = $3 AND p.doc->>'type' = 'USER') OR (p.from_coll = 'organizations' AND p.from_id = $1 AND p.doc->>'type' = 'ORG'))
                 JOIN graph.nodes g ON g.org_id = $1 AND g.coll = p.from_coll AND g.id = p.from_id
                 WHERE a.org_id = $1 AND a.coll = 'agentInstances' AND a.id = $2 AND a.doc->>'isDeleted' IS DISTINCT FROM 'true'
-                ORDER BY (p.doc->>'type' = 'USER') DESC LIMIT 1""", org_id, agent_id, user_id), None)
+                ORDER BY (p.doc->>'type' = 'USER') DESC LIMIT 1""", org_id, agent_id, user_id), transaction)
         except Exception as e:
             self.logger.error("Failed to check agent permission: %s", e)
             return None

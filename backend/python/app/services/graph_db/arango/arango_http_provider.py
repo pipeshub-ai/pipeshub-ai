@@ -28240,7 +28240,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
     async def check_agent_permission(
-        self, agent_id: str, user_id: str, org_id: str
+        self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None
     ) -> dict | None:
         try:
             query = f"""
@@ -28291,7 +28291,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
 
             bind_vars = {"agent_id": agent_id, "user_id": user_id, "org_id": org_id}
-            result = await self.execute_query(query, bind_vars=bind_vars)
+            result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
 
             if not result or result[0] is None:
                 return None
@@ -28733,7 +28733,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Tools, connectors, kb, vectorDBs are handled via edges, not in agent document.
         """
         try:
-            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -28828,7 +28828,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.logger.warning(f"Agent {agent_id} not found")
                 return False
 
-            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -29598,7 +29598,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN perm._to
             )
 
-            // Get templates with individual access
+            // Get templates with individual access. Edit and delete need the user's own OWNER grant
+            // (update_agent_template, delete_agent_template), so can_edit/can_delete say so; a team's grant gives neither.
             LET individual_templates = (
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
@@ -29615,7 +29616,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         permission_to: perm._to,
                         permission_created_at: perm.createdAtTimestamp,
                         permission_updated_at: perm.updatedAtTimestamp,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_edit: perm.role == "OWNER",
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
@@ -29642,8 +29643,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         permission_to: perm._to,
                         permission_created_at: perm.createdAtTimestamp,
                         permission_updated_at: perm.updatedAtTimestamp,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
+                        can_edit: false,
+                        can_delete: false,
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
                     }})
@@ -29699,7 +29700,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         permission_to: perm._to,
                         permission_created_at: perm.createdAtTimestamp,
                         permission_updated_at: perm.updatedAtTimestamp,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_edit: perm.role == "OWNER",
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
@@ -29723,8 +29724,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         permission_to: perm._to,
                         permission_created_at: perm.createdAtTimestamp,
                         permission_updated_at: perm.updatedAtTimestamp,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
+                        can_edit: false,
+                        can_delete: false,
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
                     }})

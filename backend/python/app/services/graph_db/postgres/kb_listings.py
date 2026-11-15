@@ -491,11 +491,13 @@ def _scalar(v: Any) -> Any:  # noqa: ANN401
 
 
 def _with_access(r: Any) -> dict:  # noqa: ANN401
-    """A template row with the user's access to it: how they reach it, the grant and what its role lets them do."""
+    """A template row with the user's access to it: how they reach it, the grant and what it lets them do. Edit and delete need the user's own OWNER
+    grant (``_template_owned``), so a team's grant or a direct writer's says no to both."""
     role = r["role"]
+    owner = r["access"] in ("USER", "INDIVIDUAL") and role == "OWNER"
     return {**_arango(_doc(r["doc"]), _TEMPLATES), "access_type": r["access"], "user_role": role, "permission_id": r["pid"],
-            "permission_created_at": _scalar(r["created"]), "permission_updated_at": _scalar(r["updated"]), "can_edit": role in ("OWNER", "WRITER", "ORGANIZER"),
-            "can_delete": role == "OWNER", "can_share": role in ("OWNER", "ORGANIZER"), "can_view": True}
+            "permission_created_at": _scalar(r["created"]), "permission_updated_at": _scalar(r["updated"]), "can_edit": owner,
+            "can_delete": owner, "can_share": role in ("OWNER", "ORGANIZER"), "can_view": True}
 
 
 def _doc_list(v: Any) -> list:  # noqa: ANN401

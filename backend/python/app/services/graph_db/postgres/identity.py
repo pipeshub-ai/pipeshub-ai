@@ -1277,7 +1277,7 @@ class IdentityMixin(PgBase):
     @_soft(False)
     async def update_agent(self, agent_id: str, agent_updates: dict[str, Any], user_id: str, org_id: str, transaction: str | None = None) -> bool | None:
         """Write the allowed fields of the update (``models`` as de-duplicated keys) when the user may edit the live agent; False when not."""
-        perm = await self.check_agent_permission(agent_id, user_id, org_id)
+        perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
         if not perm or not perm["can_edit"]:
             self.logger.warning("User %s may not edit agent %s", user_id, agent_id)
             return False
@@ -1293,7 +1293,7 @@ class IdentityMixin(PgBase):
     @_soft(False)
     async def delete_agent(self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None) -> bool | None:
         """Mark the live agent deleted when the user owns it (its edges stay); False when not."""
-        perm = await self.check_agent_permission(agent_id, user_id, org_id)
+        perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
         if not perm or not perm["can_delete"]:
             self.logger.warning("User %s may not delete agent %s", user_id, agent_id)
             return False
