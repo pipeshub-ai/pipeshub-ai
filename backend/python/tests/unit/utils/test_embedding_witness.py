@@ -57,6 +57,7 @@ class _Server:
             def log_message(self, *args: object) -> None:
                 pass
 
+        ThreadingHTTPServer.request_queue_size = 128  # the default backlog of 5 resets connections of 20 concurrent calls
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.httpd.server_port}"
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
