@@ -12,19 +12,18 @@ deltas:
       source: "A file shared by link only: anyone with the link, or anyone in your domain with the link, can open it, but it cannot be found in Drive search"
       differs: "The link gives no one access in PipesHub. People it is shared with directly, through a group, or with a share of your domain or of anyone that can be found in Drive search still see it."
     direction: under-share
-    scenarios: [DRIVE-C-08]
-    pairs: [DRIVE-C-08/mo/roadmap]
+    scenarios: [DRIVE-S-03]
+    pairs: [DRIVE-S-03/fay/notes]
     reason: >
-      Since #5726 the Drive team connector stores a domain or "anyone" share that Drive search can find
-      (allowFileDiscovery true) as a grant to the enabled people of its audience, and a link-only share as no grant
-      (_discoverable_audience, google/drive/team/connector.py:1388-1401, used at 1881-1886). Google: allowFileDiscovery
-      is "Whether the permission allows the file to be discovered through search. This is only applicable for
-      permissions of type domain or anyone."
-      (https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions). So the published difference is
-      the link-only share: people who can open it with the link get no access. DRIVE-C-08's world still holds the
-      graph from before #5726 (the processor writes no edge for a domain or anyone entity), so it still observes the
-      discoverable domain share as ungranted.
-    fix: "Give DRIVE-C-08 the audience-group grant the connector now writes, and pin the link-only share with its own scenario."
+      Anyone who holds the link of a link-only share can open the file ("Anyone on the internet who has the link can
+      open the file", https://support.google.com/drive/answer/2494822), but the permission names no one, so the
+      connector cannot know who holds it and stores no grant for it (allowFileDiscovery false,
+      google/drive/team/connector.py:1393-1394). Google: allowFileDiscovery is "Whether the permission allows the file
+      to be discovered through search. This is only applicable for permissions of type domain or anyone."
+      (https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions). A discoverable domain or
+      anyone share is granted to its audience group since #5726 (DRIVE-C-08), so only the link-only share differs.
+      Fail-closed by design.
+    fix: "None planned: Drive does not say who holds a link. People it is shared with directly, through a group or with a discoverable share keep their access."
   - id: DELTA-05
     public:
       connector: Confluence

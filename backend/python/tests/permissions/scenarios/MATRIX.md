@@ -190,7 +190,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | drive | limited-folder | static | DRIVE-S-01, DRIVE-S-02 |
 | drive | shared-drive-member | static | DRIVE-C-06, DRIVE-S-01 |
 | drive | multi-parent | static | **gap** |
-| drive | link-only | static | DRIVE-S-01 |
+| drive | link-only | static | DRIVE-S-01, DRIVE-S-03 |
 | drive | folder-share | change | DRIVE-C-01, DRIVE-S-01 |
 | drive | sub-folder-share | change | DRIVE-C-02, DRIVE-S-01 |
 | drive | direct-file-share | change | DRIVE-C-03, DRIVE-S-01 |
