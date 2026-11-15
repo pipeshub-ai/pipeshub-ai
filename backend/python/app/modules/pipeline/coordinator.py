@@ -156,7 +156,7 @@ class Coordinator:
         indexer's hand-off reached the runtime and its successors are the runtime's
         (or the sweeper's) to dispatch."""
         states = await self._states.get_many(virtual_record_id, rev)
-        return any(self._registry.is_external(s.stage) and s.status in _DONE for s in states.values())
+        return any(self._recorded(s) for s in states.values())
 
     async def redrive_revision(
         self, virtual_record_id: str, rev: str, stages: Sequence[str], *, priority: Priority, force: bool
@@ -165,11 +165,18 @@ class Coordinator:
         prerequisite recorded. None when it has not seen the revision: the caller reindexes
         instead, which dispatches every stage."""
         states = await self._states.get_many(virtual_record_id, rev)
-        origin = next(
-            (s for s in states.values() if self._registry.is_external(s.stage) and s.status in _DONE), None
-        )
-        if origin is None:
+        recorded = [s for s in states.values() if self._recorded(s)]
+        if not recorded:
             return None
+        origin = next((s for s in recorded if not isinstance(s.status, ForeignStatus)), None)
+        if origin is None:
+            # A newer release recorded the revision and owns its stages. None would make the caller reindex it
+            # from scratch, so this asks for nothing instead.
+            self._logger.info(
+                "Not re-running stages %s for %s:%s: a newer release recorded this revision", list(stages),
+                virtual_record_id, rev,
+            )
+            return []
         view = origin.to_job().view
         dispatched: list[str] = []
         for stage in stages:
@@ -180,6 +187,12 @@ class Coordinator:
             if job_id is not None:
                 dispatched.append(job_id)
         return dispatched
+
+    def _recorded(self, state: StageState) -> bool:
+        """An external prerequisite finished for the revision: here, or in a newer release (a foreign status)."""
+        return self._registry.is_external(state.stage) and (
+            isinstance(state.status, ForeignStatus) or state.status in _DONE
+        )
 
     async def sweep(
         self,

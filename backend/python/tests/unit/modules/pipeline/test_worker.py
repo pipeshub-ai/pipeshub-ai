@@ -651,3 +651,16 @@ async def test_a_job_of_another_connector_runs_as_before() -> None:
     h.seed(job)
     await h.deliver(job)
     assert h.stage.runs == 1 and h.state(job).status is ProgressStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_a_job_with_a_tier_and_priority_a_newer_release_added_still_runs() -> None:
+    h, job = _Harness(), _job()
+    h.seed(job)
+    payload = {**job.model_dump(mode="json", by_alias=True), "tier": "nano", "priority": "urgent"}
+
+    events = [event.event async for event in h.handler(StreamMessage(eventType="stageJob", payload=payload))]
+
+    assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+    assert h.stage.runs == 1
+    assert h.state(job).status is ProgressStatus.COMPLETED

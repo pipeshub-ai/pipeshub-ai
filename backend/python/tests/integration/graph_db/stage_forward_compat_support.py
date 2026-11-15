@@ -211,3 +211,16 @@ async def a_foreign_row_is_left_byte_identical(graph: IGraphDBProvider, org: str
     states = await store.get_many(vrid, rev)
     assert states["embed"].status is ProgressStatus.COMPLETED
     assert not isinstance(states["classify"].status, ProgressStatus)
+
+    # A revision whose prerequisite a newer release recorded is seen, and a redrive asks for nothing: an unseen
+    # revision or None would make the record handler reindex it from scratch.
+    recorded = {**stage_document(org), "stage": "embed", "status": "SPLIT", "sweepAtMs": 7}
+    recorded["id"] = f"{recorded['virtualRecordId']}:{recorded['rev']}:embed"
+    assert await graph.stage_state_create(recorded)
+    recorded_before = json.dumps(await graph.stage_state_get(recorded["id"]), sort_keys=True)
+    assert await coordinator.has_seen_revision(recorded["virtualRecordId"], recorded["rev"])
+    assert await coordinator.redrive_revision(
+        recorded["virtualRecordId"], recorded["rev"], ["classify"], priority=Priority.INTERACTIVE, force=True
+    ) == []
+    assert json.dumps(await graph.stage_state_get(recorded["id"]), sort_keys=True) == recorded_before
+    assert producer.sent == []

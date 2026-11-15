@@ -14,6 +14,7 @@ import pytest
 
 from app.config.constants.arangodb import ProgressStatus
 from app.modules.pipeline.coordinator import Coordinator
+from app.modules.pipeline.ingress import StageIngress
 from app.modules.pipeline.models import (
     Priority,
     StageJob,
@@ -253,3 +254,23 @@ async def test_a_foreign_row_is_reported_as_handled_by_a_newer_release() -> None
 
     assert summary["status"] == FOREIGN
     assert summary["reason"] == "handled by a newer release"
+
+
+@pytest.mark.asyncio
+async def test_a_revision_whose_prerequisite_a_newer_release_recorded_counts_as_seen() -> None:
+    """``None`` from a redrive, or an unseen revision, makes the record handler reindex from scratch (and delete
+    the embeddings): a revision a newer release recorded must never look unseen."""
+    h = _Harness()
+    embed, before = await h.seed_foreign("embed")
+    await h.seed("classify", ProgressStatus.FAILED.value)
+    ingress = StageIngress(h.coordinator, h.graph, logging.getLogger("t"))  # type: ignore[arg-type]
+    record = {
+        "indexingStatus": "COMPLETED", "extractionStatus": "QUEUED", "virtualRecordId": "vr-1", "contentRev": "rev-a",
+    }
+
+    assert await h.coordinator.has_seen_revision("vr-1", "rev-a")
+    assert not await ingress.handoff_lost(record)
+    assert await h.coordinator.redrive_revision("vr-1", "rev-a", ["classify"], priority=Priority.INTERACTIVE, force=True) == []
+    assert h.graph.cas_calls == []
+    assert h.producer.sent == []
+    assert h.graph.documents[embed.state_key] == before

@@ -62,6 +62,22 @@ class Priority(StrEnum):
     BULK = "bulk"
 
 
+def _tier_or_heavy(value: object) -> object:
+    """A tier a later release added reads as HEAVY, the pool that is safe for any document."""
+    if isinstance(value, str) and value not in {tier.value for tier in ParseTier}:
+        _report_unknown("tier", value, ParseTier.HEAVY.value)
+        return ParseTier.HEAVY
+    return value
+
+
+def _priority_or_bulk(value: object) -> object:
+    """A priority a later release added reads as ``bulk``: never ahead of an interactive job."""
+    if isinstance(value, str) and value not in {priority.value for priority in Priority}:
+        _report_unknown("priority", value, Priority.BULK.value)
+        return Priority.BULK
+    return value
+
+
 class Workload(StrEnum):
     """What a stage's permit is sized by; picks the governor pool its consumer admits through."""
 
@@ -136,6 +152,18 @@ class StageJob(BaseModel):
     text_chars: int = Field(ge=0)
     has_tables: bool
     has_images: bool
+
+    # A job a newer release published may carry a tier or priority this release lacks; refusing it would
+    # dead-letter the job, and only the sweep's republish backstop would bring it back.
+    @field_validator("tier", mode="before")
+    @classmethod
+    def _unknown_tier_is_heavy(cls, value: object) -> object:
+        return _tier_or_heavy(value)
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _unknown_priority_is_bulk(cls, value: object) -> object:
+        return _priority_or_bulk(value)
 
     @computed_field
     @property
@@ -293,20 +321,12 @@ class StageState(BaseModel):
     @field_validator("tier", mode="before")
     @classmethod
     def _unknown_tier_is_heavy(cls, value: object) -> object:
-        """A tier a later release added reads as HEAVY, the pool that is safe for any document."""
-        if isinstance(value, str) and value not in {tier.value for tier in ParseTier}:
-            _report_unknown("tier", value, ParseTier.HEAVY.value)
-            return ParseTier.HEAVY
-        return value
+        return _tier_or_heavy(value)
 
     @field_validator("priority", mode="before")
     @classmethod
     def _unknown_priority_is_bulk(cls, value: object) -> object:
-        """A priority a later release added reads as ``bulk``: never ahead of an interactive job."""
-        if isinstance(value, str) and value not in {priority.value for priority in Priority}:
-            _report_unknown("priority", value, Priority.BULK.value)
-            return Priority.BULK
-        return value
+        return _priority_or_bulk(value)
 
     @classmethod
     def from_job(
