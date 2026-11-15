@@ -103,14 +103,13 @@ def as_source_accounts(graph: Graph) -> Graph:
     User. A user reads such an account's grants and badges only through the link, so only its PERMISSION edges are kept:
     its organization, gates and links of its own give the user nothing (oracle R4/R5), and it is nobody's viewer."""
     connector = {e["to"]: e["props"].get("connectorId") for e in graph["edges"] if e["type"] == "AUTHENTICATED_AS"}
-    nodes: list[NodeDict] = []
-    for n in graph["nodes"]:
-        if n["id"] in connector and n["kind"] == "User":
-            p = n["props"]
-            n = {"kind": "SourceAccount", "id": n["id"], "props": {
-                "id": n["id"], "orgId": p["orgId"], "connectorId": connector[n["id"]], "sourceUserId": n["id"],
-                "email": p.get("email"), "state": "listed", "createdAtTimestamp": TS, "updatedAtTimestamp": TS}}
-        nodes.append(n)
+    def account(n: NodeDict) -> NodeDict:
+        p = n["props"]
+        return {"kind": "SourceAccount", "id": n["id"], "props": {
+            "id": n["id"], "orgId": p["orgId"], "connectorId": connector[n["id"]], "sourceUserId": n["id"],
+            "email": p.get("email"), "state": "listed", "createdAtTimestamp": TS, "updatedAtTimestamp": TS}}
+
+    nodes = [account(n) if n["id"] in connector and n["kind"] == "User" else n for n in graph["nodes"]]
     accounts = {n["id"] for n in nodes if n["kind"] == "SourceAccount"}
     edges = [e for e in graph["edges"] if e["from"] not in accounts or e["type"] == "PERMISSION"]
     return {"nodes": nodes, "edges": edges}
