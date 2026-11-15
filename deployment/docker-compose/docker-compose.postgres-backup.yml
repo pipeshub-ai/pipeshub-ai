@@ -8,11 +8,14 @@
 #     docker compose -f docker-compose.yml -f docker-compose.postgres-docstore.yml -f docker-compose.postgres-backup.yml -p pipeshub-ai up -d
 #
 # What it adds:
-#   - postgres: archives every finished WAL segment to the repository (archive_mode=on, archive_command=pgbackrest archive-push, set by
+#   - postgres: archives every finished WAL segment to the repository (archive_mode=on, archive_command=pgbackrest-archive-push.sh, set by
 #     postgres/pg-entrypoint.sh because PGBACKREST_STANZA is set) and closes a segment at least every PG_ARCHIVE_TIMEOUT seconds
 #     (default 60), which is the most a restore can lose. Turning this on or off restarts the server (archive_mode is read at start).
+#     The archive queue is capped (PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX, 4GiB unless set): an unreachable repository makes the server drop
+#     WAL beyond it instead of filling the data volume (postgres/pgbackrest-archive-push.sh).
 #   - pg-backup: a full backup every PG_BACKUP_FULL_DAYS (default 7) and an incremental one every PG_BACKUP_INCR_HOURS (default 6); the
-#     first full backup starts as soon as the service does. It is healthy once the last attempt succeeded.
+#     first full backup starts as soon as the service does. It is healthy once the last attempt succeeded. After dropped WAL it is
+#     unhealthy and takes a full backup at once: until that succeeds, point-in-time restore cannot cross the gap.
 # Restore to a point in time: scripts/pg-restore.sh (postgres/README.md, "Backups and point-in-time restore").
 #
 # pgBackRest connects as the server's `postgres` user over the Unix socket, shared through the pg_backup_socket volume, and reads the data
@@ -46,6 +49,7 @@ services:
       - PGBACKREST_LOG_LEVEL_CONSOLE=${PGBACKREST_LOG_LEVEL_CONSOLE:-info}
       - PG_BACKUP_FULL_DAYS=${PG_BACKUP_FULL_DAYS:-7}
       - PG_BACKUP_INCR_HOURS=${PG_BACKUP_INCR_HOURS:-6}
+      - PG_BACKUP_RETRY_SECS=${PG_BACKUP_RETRY_SECS:-300}
     # as in the postgres service: keeps the 18 image from creating an anonymous volume
     tmpfs:
       - /var/lib/postgresql:size=16m

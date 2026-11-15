@@ -34,8 +34,10 @@ envfile() { # major image
   { for v in $pwvars; do echo "$v=$(pw)"; done; echo "PG_MAJOR=$1"; echo "PG_IMAGE=${2%:*}"; echo "PG_IMAGE_REV=${2##*:$1-}"
     echo "REDIS_PASSWORD=x"; echo "COMPOSE_PROFILES=postgres"; echo "PGBACKREST_ENV_FILE=$work/pgbackrest.env"
     echo "PG_MEMORY_LIMIT=${DRILL_PG_MEMORY:-2G}"; echo "PG_SHARED_BUFFERS=${DRILL_PG_SHARED_BUFFERS:-256MB}"
-    echo "PG_ARCHIVE_TIMEOUT=${DRILL_ARCHIVE_TIMEOUT:-60}"; echo "PG_BACKUP_INCR_HOURS=10000"; echo "PG_BACKUP_FULL_DAYS=10000"; } > "$work/env$1"
-  printf 'PGBACKREST_REPO1_RETENTION_FULL=2\nPGBACKREST_COMPRESS_TYPE=zst\nPGBACKREST_START_FAST=y\n%s' "${DRILL_PGBACKREST_EXTRA:-}" > "$work/pgbackrest.env"
+    echo "PG_ARCHIVE_TIMEOUT=${DRILL_ARCHIVE_TIMEOUT:-60}"; echo "PG_BACKUP_INCR_HOURS=10000"; echo "PG_BACKUP_FULL_DAYS=10000"
+    echo "PG_BACKUP_RETRY_SECS=10"; } > "$work/env$1"
+  printf 'PGBACKREST_REPO1_RETENTION_FULL=2\nPGBACKREST_COMPRESS_TYPE=zst\nPGBACKREST_START_FAST=y\nPGBACKREST_ARCHIVE_PUSH_QUEUE_MAX=128MiB\n%s' \
+    "${DRILL_PGBACKREST_EXTRA:-}" > "$work/pgbackrest.env"
 }
 # scripts/pg-restore.sh reads the stack the way an operator gives it: COMPOSE_FILE, COMPOSE_PROJECT_NAME and an env file
 stack_env() {
@@ -162,6 +164,25 @@ for major in ${DRILL_MAJORS:-17 18}; do
   dc up -d --no-build pg-backup > /dev/null 2>&1
   check "$major: archiving and backups go on after an in-place restore" \
     "$(dc exec -T pg-backup pgbackrest check > "$work/check.log" 2>&1 && dc exec -T pg-backup pgbackrest backup --type=incr >> "$work/check.log" 2>&1 && echo ok || tail -5 "$work/check.log")" ok
+
+  # The repository becomes unwritable: beyond the archive queue cap (128MiB here) the server drops WAL instead of filling its volume,
+  # pg-backup turns unhealthy and says restores have a gap; once the repository is back, a full backup closes the gap.
+  arch=/var/lib/pgbackrest/archive/pipeshub
+  mode="$($DOCKER exec "$proj-pg-backup-1" stat -c %a "$arch")"
+  $DOCKER exec -u root "$proj-pg-backup-1" chmod 000 "$arch"
+  sql -c "create table platform.filler as select g, repeat(md5(g::text), 30) as pad from generate_series(1, 250000) g" -c "select pg_switch_wal()" >/dev/null
+  for _ in $(seq 1 90); do dc exec -T pg-backup test -f /tmp/pg-backup.ok || break; sleep 2; done
+  check "$major: dropped WAL turns pg-backup unhealthy" "$(dc exec -T pg-backup test -f /tmp/pg-backup.ok && echo healthy || echo unhealthy)" unhealthy
+  check "$major: the server stays up and writable" "$(sql -c 'insert into platform.filler values (0, $$x$$) returning g')" 0
+  check "$major: pg-backup logs the gap" "$(dc logs pg-backup 2>&1 | grep -c 'point-in-time restore has a gap' | awk '{print ($1 > 0)}')" 1
+  for _ in $(seq 1 75); do [ "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" = unhealthy ] && break; sleep 2; done
+  check "$major: docker reports pg-backup unhealthy" "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" unhealthy
+  $DOCKER exec -u root "$proj-pg-backup-1" chmod "$mode" "$arch"
+  for _ in $(seq 1 150); do dc exec -T pg-backup test -f /tmp/pg-backup.ok && break; sleep 2; done
+  check "$major: a full backup closes the gap once the repository is back" \
+    "$(dc exec -T pg-backup sh -c 'test -f /tmp/pg-backup.ok && ! test -e /var/run/postgresql/pgbackrest-wal-gap' && echo closed || echo open)" closed
+  check "$major: the newest backup is a full one" "$(dc exec -T pg-backup pgbackrest --output=json info | perl -MJSON::PP -e '
+    my @b = @{ decode_json(join "", <STDIN>)->[0]{backup} }; print $b[-1]{type}')" full
 
   for c in "${copies[@]}"; do $DOCKER rm -f "$c" >/dev/null 2>&1; $DOCKER volume rm "$c" >/dev/null 2>&1; done; copies=()
   dc down -v >/dev/null 2>&1; proj=""

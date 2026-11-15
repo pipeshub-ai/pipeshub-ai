@@ -58,11 +58,12 @@ if [ "$1" = postgres ]; then
       done
     ) &
   fi
-  # Backups on (docker-compose.postgres-backup.yml sets the stanza): every finished WAL segment goes to the pgBackRest repository, and
+  # Backups on (docker-compose.postgres-backup.yml sets the stanza): every finished WAL segment goes to the pgBackRest repository (with
+  # the archive queue capped, pgbackrest-archive-push.sh), and
   # archive_timeout closes a segment at least that often, which bounds how much a point-in-time restore can lose
   # (https://www.postgresql.org/docs/17/continuous-archiving.html, 25.3.1). Put before "$@" so the command line can still override them.
   if [ -n "${PGBACKREST_STANZA:-}" ]; then
-    set -- -c archive_mode=on -c 'archive_command=pgbackrest archive-push %p' -c archive_timeout="${PG_ARCHIVE_TIMEOUT:-60}" "$@"
+    set -- -c archive_mode=on -c 'archive_command=pgbackrest-archive-push.sh %p' -c archive_timeout="${PG_ARCHIVE_TIMEOUT:-60}" "$@"
   fi
   # pg_textsearch must be preloaded (pg-restore.sh starts a restored copy with the same list). shared_buffers is ~25% of PG_MEMORY_LIMIT.
   set -- postgres \
