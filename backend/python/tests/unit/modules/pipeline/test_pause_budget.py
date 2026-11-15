@@ -9,7 +9,6 @@ from app.modules.pipeline.pause_budget import (
     PauseState,
     Verdict,
     budget_spent,
-    deferral_wall_seconds,
     pause_verdict,
     wall_seconds_used,
 )
@@ -136,14 +135,6 @@ def test_limits_come_from_the_environment_and_ignore_nonsense(monkeypatch: pytes
     monkeypatch.setenv("STAGE_PAUSE_WALL_SECONDS", "-1")
     limits = PauseLimits.from_env()
     assert (limits.charged_sends, limits.wall_seconds) == (6, 86400)
-
-
-def test_a_record_deferral_spanning_a_hold_gets_the_hold_subtracted() -> None:
-    """The same rule as a job's pause, for the clock of a record that waited for a key."""
-    since = T0
-    now = T0 + 30 * HOUR_MS
-    assert deferral_wall_seconds(since, now, 0, 0) == 30 * 3600
-    assert deferral_wall_seconds(since, now, 0, 10 * HOUR_MS) == 20 * 3600
 
 
 # ---- live configuration ------------------------------------------------------------------------------------

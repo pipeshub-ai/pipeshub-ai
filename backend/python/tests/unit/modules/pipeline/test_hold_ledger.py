@@ -117,7 +117,7 @@ async def test_a_pause_records_the_ledger_when_it_first_paused(fleet: FleetRedis
     judge = PauseJudge(PauseStore(), clock_ms=sim_clock, limits=PauseLimits())
     decision = await judge.judge(_job(), _refusal())
     assert decision is not None
-    assert decision.decision.state.ledger_at_since == await breaker.ledger("fleet", entry.scope) == HOUR_MS
+    assert decision.decision.state.ledger_at_since == await breaker.ledger(entry.scope) == HOUR_MS
 
 
 @pytest.mark.parametrize("second_replica", [False, True])
@@ -201,24 +201,17 @@ async def test_only_the_leader_ticks_and_a_failing_tick_does_not_stop_the_loop(f
     assert len(ticks) >= 3, "the loop goes on after a tick raised"
 
 
-async def test_a_record_deferral_does_not_count_an_operator_hold(fleet: FleetRedis, sim_clock: SimClock) -> None:
-    """The record's rate-limit allowance (24 h) excludes the time the fleet was on hold, through the deferral ledger."""
-    from app.modules.indexing import deferral_ledger
-    from app.modules.indexing.rate_limit_deferral import plan_deferral
-
+async def test_only_the_hold_of_the_jobs_own_key_is_subtracted_from_its_wall(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    """A job's wall excludes the time its own key was on hold, which the recovery leader records. A ledger nothing in
+    the service advances (a fleet-wide scope) must not be read: whatever wrote it, the job would get time it never waited for
+    a hold."""
     breaker = FleetBreaker(fleet)
-    since = sim_clock()
-    assert await deferral_ledger.held_ms("rec-1", since) == 0  # the first wait of a run: nothing held yet
+    judge = PauseJudge(PauseStore(), clock_ms=sim_clock, limits=PauseLimits())
+    job = _job()
+    first = await judge.judge(job, _refusal())
+    assert first is not None
     await breaker.start_ledger("fleet")
-    sim_clock.advance(30 * HOUR_MS)  # a 30 h operator hold, the leader ticking
+    sim_clock.advance(30 * HOUR_MS)
     await breaker.advance_ledger("fleet", held=True)
-    held = await deferral_ledger.held_ms("rec-1", since)
-    assert held == 30 * HOUR_MS
-    now = sim_clock()
-    record = {"rateLimitedSince": since, "retryNotBefore": now - 1000}
-    without = plan_deferral(record, 60.0, now_ms=now, max_total_seconds=24 * 3600)
-    with_hold = plan_deferral(record, 60.0, now_ms=now, max_total_seconds=24 * 3600, held_ms=held)
-    assert without.give_up is True and with_hold.give_up is False
-    # a new run of waits starts a new ledger
-    assert await deferral_ledger.held_ms("rec-1", now + 5) == 0
-    await deferral_ledger.clear("rec-1")
+    woken = await judge.judge(job, _refusal())
+    assert woken is not None and woken.decision.verdict is Verdict.FAIL_WALL

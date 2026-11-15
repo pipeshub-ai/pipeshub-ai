@@ -83,7 +83,7 @@ class PauseState:
     charged: int = 0
     sends: int = 0
     trials: int = 0
-    # fleet + key hold ledger when the revision first paused; ``wall`` excludes the hold since.
+    # The key's hold ledger when the revision first paused; ``wall`` excludes the hold since.
     ledger_at_since: int = 0
     # The key whose hold ledger this wall excludes (``<pk>:<cls>``), learned from the first pause that names one.
     scope: str = ""
@@ -177,11 +177,6 @@ def fail_reason(verdict: Verdict, state: PauseState, limits: PauseLimits, provid
         f"The model kept failing on this document while serving other requests ({state.charged} times). "
         "Use Reindex failed to try again."
     )
-
-
-def deferral_wall_seconds(since_ms: int, now_ms: int, ledger_at_since: int, ledger_now: int) -> float:
-    """The wall clock of a record deferral, net of the hold ledger (the same rule as a job's pause)."""
-    return wall_seconds_used(PauseState(since_ms=since_ms, ledger_at_since=ledger_at_since), now_ms, ledger_now)
 
 
 def budget_spent(state: PauseState, now_ms: int, ledger_now: int, limits: PauseLimits = PauseLimits()) -> Verdict | None:

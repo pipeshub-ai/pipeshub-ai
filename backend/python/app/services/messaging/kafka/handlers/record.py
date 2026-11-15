@@ -55,8 +55,6 @@ from app.modules.indexing.connector_off_events import (
 from app.modules.indexing.connector_off_events import (
     resuming_enrichment as record_resuming_enrichment,
 )
-from app.modules.indexing.deferral_ledger import clear as deferral_clear
-from app.modules.indexing.deferral_ledger import held_ms as deferral_held_ms
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
 from app.modules.indexing.embed_resume import chain_end_fields, end_attempt
 from app.modules.indexing.parse_now_marker import (
@@ -1166,9 +1164,6 @@ class RecordEventHandler(BaseEventService):
 
         now = get_epoch_timestamp_in_ms()
         plan = plan_deferral(record, retry_after, now_ms=now, max_total_seconds=max_total)
-        held = await deferral_held_ms(record_id, plan.since_ms)
-        if held:
-            plan = plan_deferral(record, retry_after, now_ms=now, max_total_seconds=max_total, held_ms=held)
         graph = self.event_processor.graph_provider
         if plan.give_up and await self._connector_indexed_since(record["connectorId"], plan.since_ms):
             # The source has been serving this connector all along; the record
@@ -1181,7 +1176,6 @@ class RecordEventHandler(BaseEventService):
             plan = plan_deferral(
                 record, retry_after, now_ms=now, max_total_seconds=max_total, new_run=True
             )
-            await deferral_clear(record_id)
         try:
             if plan.give_up:
                 reason = rate_limited_gave_up(source, plan.not_before_ms, now, max_total / 3600)
@@ -1244,7 +1238,6 @@ class RecordEventHandler(BaseEventService):
             await self.event_processor.graph_provider.update_node(
                 record_id, CollectionNames.RECORDS.value, cleared_deferral()
             )
-            await deferral_clear(record_id)
         except Exception as exc:
             # Left set, the fields cost at most one spare re-send by the sweep.
             self.logger.warning("Could not clear the rate-limit wait of record %s: %s", record_id, exc)

@@ -41,9 +41,6 @@ if TYPE_CHECKING:
 
     from app.modules.pipeline.models import StageJob, StageResult
 
-FLEET_SCOPE = "fleet"
-
-
 @dataclass(frozen=True)
 class Judgement:
     decision: PauseDecision
@@ -106,15 +103,14 @@ class PauseJudge:
         except FleetBreakerUnavailable as exc:
             raise PauseStoreUnavailable(str(exc)) from exc
 
-    async def _ledger(self, pk: str | None, cls: str | None, scope: str = "") -> int:
-        """Hold time so far: the fleet's plus the key's (``scope``, or ``pk:cls``). 0 when no fleet Redis is bound."""
+    async def _ledger(self, scope: str) -> int:
+        """Hold time so far of the key ``scope`` (``pk:cls``), which the recovery leader advances while the key is held.
+        0 for no key, or when no fleet Redis is bound."""
         breaker = self._breaker()
-        if breaker is None:
+        if breaker is None or not scope:
             return 0
-        key_scope = scope or (f"{pk}:{cls}" if pk and cls else "")
-        scopes = [FLEET_SCOPE] + ([key_scope] if key_scope else [])
         try:
-            return await breaker.ledger(*scopes)
+            return await breaker.ledger(scope)
         except FleetBreakerUnavailable as exc:
             raise PauseStoreUnavailable(str(exc)) from exc
 
@@ -125,7 +121,7 @@ class PauseJudge:
         """Whether a revision that has paused before has used up its budget (judged before it runs again)."""
         if prior is None:
             return None
-        ledger = await self._ledger(None, None, prior.scope)
+        ledger = await self._ledger(prior.scope)
         verdict = budget_spent(prior, await self._now(), ledger, await self.limits())
         if verdict is None:
             return None
@@ -150,8 +146,8 @@ class PauseJudge:
         prior = await self._store.get(job.state_key)
         now = await self._now()
         scope = f"{result.provider_pk}:{result.size_class}" if result.provider_pk and result.size_class else ""
-        ledger = await self._ledger(None, None, (prior.scope if prior and prior.scope else scope))
-        scope_ledger = (await self._ledger(None, None, scope)) - (await self._ledger(None, None)) if scope else 0
+        ledger = await self._ledger(prior.scope if prior and prior.scope else scope)
+        scope_ledger = await self._ledger(scope)
         kwargs = {
             "sent": result.sent, "trial": result.trial, "chargeable": result.chargeable,
             "now_ms": now, "ledger_now": ledger, "limits": await self.limits(), "provider": result.provider_label,
