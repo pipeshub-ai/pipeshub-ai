@@ -124,7 +124,19 @@ class ExtractionClient(BaseServiceClient):
             if body.get("error_code") == LLMUnavailableError.code:
                 # Set while the provider's circuit is open behind that service.
                 retry_after = parse_retry_after(response.headers.get("Retry-After"))
-                raise LLMUnavailableError(error_msg, retry_after=retry_after)
+                sent = body.get("sent")
+                raise LLMUnavailableError(
+                    error_msg,
+                    retry_after=retry_after,
+                    # A body that does not say counts as a send.
+                    sent=True if sent is None else bool(sent),
+                    trial=bool(body.get("trial")),
+                    chargeable=bool(body.get("chargeable")),
+                    pk=body.get("pk"),
+                    size_class=body.get("size_class"),
+                    requests=body.get("requests"),
+                    provider=body.get("provider"),
+                )
             raise ExtractionClientError(message=error_msg)
 
         classification_dict = body.get("classification")

@@ -84,6 +84,20 @@ class ClassifyResponse(BaseModel):
     error_code: str | None = None
 
 
+class UnavailableResponse(ClassifyResponse):
+    """The 424 body of a provider outage: whether a request reached the model provider (an open circuit is a
+    refusal, not a send), and whether it was a half-open trial or a charged failure. A caller reads a missing
+    ``sent`` as True, so an older service never gives a paused job free sends."""
+
+    sent: bool | None = None
+    requests: int | None = None
+    pk: str | None = None
+    size_class: str | None = None
+    provider: str | None = None
+    trial: bool | None = None
+    chargeable: bool | None = None
+
+
 # ---------------------------------------------------------------------------
 # POST /api/v1/extract/classify
 # ---------------------------------------------------------------------------
@@ -146,8 +160,17 @@ async def classify(
             status_code=status.HTTP_424_FAILED_DEPENDENCY,
             # Set while the provider's circuit is open: how long the caller's job should wait.
             headers={"Retry-After": str(math.ceil(retry_after))} if retry_after else None,
-            content=ClassifyResponse(
-                success=False, error=str(exc), error_code=LLMUnavailableError.code
+            content=UnavailableResponse(
+                success=False,
+                error=str(exc),
+                error_code=LLMUnavailableError.code,
+                sent=getattr(exc, "sent", True),
+                requests=getattr(exc, "requests", None),
+                pk=getattr(exc, "pk", None),
+                size_class=getattr(exc, "size_class", None),
+                provider=getattr(exc, "provider", None),
+                trial=getattr(exc, "trial", False),
+                chargeable=getattr(exc, "chargeable", False),
             ).model_dump(),
         )
     except ExtractionLLMError as exc:

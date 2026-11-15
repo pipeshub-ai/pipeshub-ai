@@ -67,7 +67,9 @@ from app.modules.parsers.sql.sql_table_parser import SQLTableParser
 from app.modules.parsers.sql.sql_view_parser import SQLViewParser
 from app.modules.parsers.yaml.yaml_parser import YAMLParser
 from app.services.docling.client import DoclingClient
+from app.services.llm_gateway.fleet_redis import bind_fleet_redis, bind_service_fleet
 from app.services.llm_gateway.gateway import get_llm_gateway
+from app.services.llm_gateway.wire import hook_status as wire_hook_status
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParserProvider
 from app.services.parsing.providers.docling_service_parser import DoclingServiceParser
@@ -304,6 +306,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     asyncio.get_running_loop().set_default_executor(executor)
     app.state.parse_executor = executor
 
+    # The model providers' circuit breaker is the fleet's: shared with the indexing service through Redis, so every
+    # process and pod sees the same outage.
+    fleet_registry = await bind_service_fleet(config_service, app_logger)
+
     app_logger.info(
         "✅ Parsing Service started — %d formats registered | "
         "heavy_parse_ceiling=%d light_parse_ceiling=%d (worker_count=%d) | thread_pool_size=%d | "
@@ -321,6 +327,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     app_logger.info("🔄 Parsing Service shutting down")
+    bind_fleet_redis(None)
+    await fleet_registry.aclose()
     # The pool goes first: its workers hold leases and tokens of the governor's
     # lane budget, and closing the budget under them strands the waiters.
     # Cleared first, or the next submit in this process starts a new pool.
@@ -393,6 +401,7 @@ async def health_check() -> JSONResponse:
     try:
         # Table summaries, image descriptions and VLM OCR call models through this process's gateway.
         content["llm_gateway"] = get_llm_gateway().stats()
+        content["llm_wire_hooks"] = wire_hook_status()
     except Exception as stats_error:
         # Logged, not returned: exception text does not belong in /health.
         container.logger().warning("LLM gateway stats failed: %s", stats_error)

@@ -85,7 +85,21 @@ from app.services.graph_db.common.record_visibility import (
 )
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.llm_gateway.fleet_breaker import FleetBreaker, load_install_secret
+from app.services.llm_gateway.fleet_hold import (
+    TICK_SECONDS,
+    HoldKeeper,
+    run_hold_leader,
+)
+from app.services.llm_gateway.fleet_redis import (
+    FleetRedis,
+    bind_fleet_redis,
+    get_fleet_redis,
+    open_fleet_redis,
+)
 from app.services.llm_gateway.gateway import get_llm_gateway
+from app.services.llm_gateway.trial_lease import get_trial_renewer
+from app.services.llm_gateway.wire import hook_status as wire_hook_status
 from app.services.messaging.backpressure import (
     get_default_backpressure_coordinator,
 )
@@ -2280,6 +2294,7 @@ async def start_kafka_consumers(
         retry_manager = MessagingFactory.create_retry_manager(logger, redis_config)
         await retry_manager.initialize()
         logger.info("✅ RetryManager initialized for %s consumer", broker_type.value)
+        await _bind_fleet_state(app_container, redis_config, logger)
 
         if _distributed_leases_wanted():
             concurrency_manager = MessagingFactory.create_lease_manager(logger, redis_config)
@@ -2429,6 +2444,11 @@ async def start_kafka_consumers(
         stage_topics = [registry.topic_for(name) for name in registry.names()]
         stage_producer = retry_producer
         main_loop = asyncio.get_running_loop()
+        setattr(
+            app_container,
+            "provider_hold_task",
+            spawn_detached(_run_provider_hold_leader(get_fleet_redis(), concurrency_manager, retry_producer, logger)),
+        )
 
         async def start_stage_consumers() -> None:
             # Bound only once the topics exist: Kafka holds a send to a missing topic for its
@@ -2528,12 +2548,50 @@ async def _close_worker_loop(container: IndexingAppContainer) -> None:
         setattr(container, "worker_loop", None)
 
 
+async def _bind_fleet_state(app_container: Any, redis_config: Any, logger: logging.Logger) -> FleetRedis:  # noqa: ANN401
+    """Open the Redis the model providers' circuit breaker and the stage pause budget live in, and bind it.
+
+    Independent of the retry tracker, which is a Redis wrapper or a PostgreSQL one depending on the state store."""
+    await load_install_secret(app_container.config_service())
+    fleet, registry = await open_fleet_redis(logger, redis_config)
+    setattr(app_container, "fleet_redis_registry", registry)
+    bind_fleet_redis(fleet)
+    # Trial leases are renewed from this (main) loop, so a stall of the worker loop cannot lapse one.
+    get_trial_renewer().start()
+    logger.info("Fleet breaker and pause budget bound to Redis (namespace %r)", fleet.namespace)
+    return fleet
+
+
+async def _run_provider_hold_leader(
+    fleet: FleetRedis,
+    concurrency_manager: IDistributedLeaseManager | None,
+    producer: Any,  # noqa: ANN401
+    logger: logging.Logger,
+) -> None:
+    """Every 10 s, on the replica holding the lease: advance the hold ledger of the model provider keys on hold
+    and raise their admin notices (``fleet_hold``)."""
+    owner = f"provider_hold:{uuid4().hex}"
+
+    async def send(document: dict[str, Any]) -> bool:
+        key = f"{document.get('type')}-{get_epoch_timestamp_in_ms()}"
+        return bool(await producer.send_message(topic=Topic.NOTIFICATION.value, message=document, key=key))
+
+    keeper = HoldKeeper(fleet, FleetBreaker(fleet), sender=send, logger=logger)
+
+    async def is_leader() -> bool:
+        if concurrency_manager is None:
+            return True
+        return await concurrency_manager.try_acquire("provider_hold", owner, 1, TICK_SECONDS * 6)
+
+    await run_hold_leader(keeper, is_leader, logger=logger)
+
+
 async def stop_kafka_consumers(container: IndexingAppContainer, *, close_worker_loop: bool = True) -> None:
     """Stop all Kafka consumers and their associated producers"""
 
     logger = container.logger()
     # A stage start still waiting for its topics must not start consumers once these stop.
-    for attr in ("stage_startup_task", "record_title_startup_task", "priority_startup_task"):
+    for attr in ("stage_startup_task", "record_title_startup_task", "priority_startup_task", "provider_hold_task"):
         startup = getattr(container, attr, None)
         if isinstance(startup, asyncio.Task) and not startup.done():
             _ = startup.cancel()
@@ -2541,6 +2599,13 @@ async def stop_kafka_consumers(container: IndexingAppContainer, *, close_worker_
                 await startup
     consumers = getattr(container, 'kafka_consumers', [])
     await _stop_consumers_then_shared_resources(consumers, logger)
+    registry = getattr(container, "fleet_redis_registry", None)
+    if registry is not None:
+        await get_trial_renewer().stop()
+        bind_fleet_redis(None)
+        with suppress(Exception):
+            await registry.aclose()
+        setattr(container, "fleet_redis_registry", None)
 
     # Closed only once every consumer running on it has stopped; the lifespan closes it later,
     # after the clients bound to it.
@@ -3057,6 +3122,7 @@ async def health_check(request: Request) -> JSONResponse:
                 content["stages"] = {"error": "unavailable"}
         try:
             content["llm_gateway"] = get_llm_gateway().stats()
+            content["llm_wire_hooks"] = wire_hook_status()
         except Exception as stats_error:
             container.logger().warning("LLM gateway stats failed: %s", stats_error)
             content["llm_gateway"] = {"error": "unavailable"}

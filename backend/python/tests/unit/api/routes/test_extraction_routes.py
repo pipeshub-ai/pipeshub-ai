@@ -588,3 +588,35 @@ def test_an_outage_before_the_circuit_opens_names_no_wait() -> None:
     )
     assert response.status_code == 424
     assert "Retry-After" not in response.headers
+
+
+def test_the_424_body_says_whether_a_request_reached_the_provider() -> None:
+    from app.services.llm_gateway.gateway import ProviderUnavailableError
+
+    for error, expected in [
+        (ProviderUnavailableError("circuit open", provider="p", sent=False), (False, False, False)),
+        (ProviderUnavailableError("failed", provider="p", sent=True, chargeable=True), (True, False, True)),
+        (ProviderUnavailableError("trial failed", provider="p", sent=True, trial=True), (True, True, False)),
+        (LLMUnavailableError("bare"), (True, False, False)),
+    ]:
+        mock_extraction = MagicMock()
+        mock_extraction.classify = AsyncMock(side_effect=error)
+        body = TestClient(_build_app(mock_extraction)).post(
+            "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123"}
+        ).json()
+        assert (body["sent"], body["trial"], body["chargeable"]) == expected
+
+
+def test_the_424_body_carries_the_key_digest_size_class_and_requests() -> None:
+    """The indexing side needs them to charge, hold and read the key's ledger."""
+    from app.services.llm_gateway.gateway import ProviderUnavailableError
+
+    error = ProviderUnavailableError(
+        "down", provider="ChatX:m@host", sent=True, chargeable=True, pk="abc123", size_class="l", requests=3
+    )
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(side_effect=error)
+    body = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123"}
+    ).json()
+    assert (body["pk"], body["size_class"], body["provider"], body["requests"]) == ("abc123", "l", "ChatX:m@host", 3)

@@ -234,6 +234,28 @@ async def test_a_provider_outage_without_a_known_cooldown_names_no_wait() -> Non
     assert raised.value.retry_after is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extra", "sent", "trial", "chargeable"),
+    [
+        ({"sent": False}, False, False, False),  # an open circuit behind the service: a refusal, not a send
+        ({"sent": True, "trial": True}, True, True, False),
+        ({"sent": True, "chargeable": True}, True, False, True),
+        ({}, True, False, False),  # an older service names nothing: counted as a send, so no free sends
+        ({"sent": None}, True, False, False),
+    ],
+    ids=["refused", "trial", "charged", "missing", "null"],
+)
+async def test_424_carries_sent(extra: dict, sent: bool, trial: bool, chargeable: bool) -> None:
+    """The 424 body says whether a request reached the model provider; a body without it counts as a send."""
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    response = httpx.Response(424, json={**_UNAVAILABLE, **extra})
+    with patch.object(client, "_post_json", new=AsyncMock(return_value=response)), \
+            pytest.raises(LLMUnavailableError) as raised:
+        await client.classify(_bc(), "org-123")
+    assert (raised.value.sent, raised.value.trial, raised.value.chargeable) == (sent, trial, chargeable)
+
+
 # ---------------------------------------------------------------------------
 # Service token
 # ---------------------------------------------------------------------------
