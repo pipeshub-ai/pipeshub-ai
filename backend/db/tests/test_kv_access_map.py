@@ -140,11 +140,8 @@ def test_every_key_a_service_can_reach_is_readable_by_its_role_or_denied_with_a_
     for entry in SERVICES[role]:
         for k, mod in reachable_keys(entry).items():
             keys.setdefault(k, f"{entry}: {mod}")
-    refused = []
-    for key, where in sorted(keys.items()):
-        for probe in {key.replace("{x}", "x"), key.rstrip("/") + "/x"}:
-            if not matrix(role, probe) and not any(probe.startswith(p) for p in DENIED[role]):
-                refused.append((probe, where))
+    refused = [(probe, where) for key, where in sorted(keys.items()) for probe in sorted({key, key.rstrip("/") + "/x"})
+               if not matrix(role, probe) and not any(probe.startswith(p) for p in DENIED[role])]
     assert refused == [], f"pipeshub_{role} cannot read these keys and no reason is listed in DENIED: {refused}"
 
 
