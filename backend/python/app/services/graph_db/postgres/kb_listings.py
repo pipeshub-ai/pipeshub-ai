@@ -406,7 +406,7 @@ class KbListingsMixin(PgBase):
                   ORDER BY t.id, gr.ord, gr.rk DESC, gr.pid) x
                 ORDER BY x.ord, x.id""", org, user_id, _TEMPLATE_ROLES), transaction)
         except Exception as e:
-            self.logger.error("❌ Failed to get all agent templates: %s", e)
+            self.logger.error("Failed to get all agent templates: %s", e)
             return []
         return [_with_access(r) for r in rows]
 
@@ -432,7 +432,7 @@ class KbListingsMixin(PgBase):
         except SchemaValidationError:
             raise
         except Exception as e:
-            self.logger.error("❌ Failed to update agent template: %s", e)
+            self.logger.error("Failed to update agent template: %s", e)
             return False
 
     async def delete_agent_template(self, template_id: str, user_id: str, transaction: str | None = None) -> bool | None:
@@ -445,7 +445,7 @@ class KbListingsMixin(PgBase):
             return await self.update_node(template_id, _TEMPLATES, {"isDeleted": True, "deletedAtTimestamp": get_epoch_timestamp_in_ms(), "deletedByUserId": user_id},
                                           transaction=transaction)
         except Exception as e:
-            self.logger.error("❌ Failed to delete agent template: %s", e)
+            self.logger.error("Failed to delete agent template: %s", e)
             return False
 
     async def clone_agent_template(self, template_id: str, transaction: str | None = None) -> str | None:

@@ -1216,7 +1216,7 @@ class IdentityMixin(PgBase):
 
     @_soft(list)
     async def get_all_agents(self, user_id: str, org_id: str, page: int | None = None, limit: int | None = None, search: str | None = None,
-                             sort_by: str | None = None, sort_order: str | None = None, is_deleted: bool = False,
+                             sort_by: str | None = None, sort_order: str | None = None, is_deleted: bool = False,  # noqa: FBT001, FBT002
                              transaction: str | None = None) -> list[dict] | dict[str, Any]:
         """The agents the user holds a grant on, or that the org shares, with the user's access (their own grant first) and ``shareWithOrg``; only deleted ones
         with ``is_deleted``. ``search`` matches name, description or a tag, without case. Sorted on ``sort_by`` (newest first by default); with ``page`` and
