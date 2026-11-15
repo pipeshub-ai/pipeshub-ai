@@ -8,19 +8,32 @@ const REASON_STATUSES = new Set([
   'NOT_STARTED',
 ]);
 
+export interface IndexingStatusHint {
+  kind: 'reason' | 'note';
+  content: string;
+}
+
 /**
- * How a record's `reason` is shown next to its indexing status: as the reason it is not indexed,
- * as a note on a completed record (for example, that only part of a large file is indexed), or not
- * at all.
+ * What the info icon next to a record's indexing status shows: the `reason` it is not indexed, or,
+ * on a COMPLETED record, its `indexingNote` (for example, that only part of a large file is
+ * indexed). A COMPLETED record's `reason` belongs to a later stage (a skipped classification) and
+ * is not shown here.
  */
-export function indexingReasonHint(
-  status: string | undefined,
-  reason: string | undefined,
-  retryNotBefore?: number | null,
-): 'reason' | 'note' | null {
-  if (!reason?.trim()) return null;
-  if (isRateLimitPause(status, reason, retryNotBefore) || (status && REASON_STATUSES.has(status))) {
-    return 'reason';
+export function indexingStatusHint(record: {
+  indexingStatus?: string;
+  reason?: string;
+  indexingNote?: string | null;
+  retryNotBefore?: number | null;
+}): IndexingStatusHint | null {
+  const { indexingStatus: status, reason, indexingNote, retryNotBefore } = record;
+  if (
+    reason?.trim() &&
+    (isRateLimitPause(status, reason, retryNotBefore) || (status !== undefined && REASON_STATUSES.has(status)))
+  ) {
+    return { kind: 'reason', content: reason };
   }
-  return status === 'COMPLETED' ? 'note' : null;
+  if (status === 'COMPLETED' && indexingNote?.trim()) {
+    return { kind: 'note', content: indexingNote };
+  }
+  return null;
 }

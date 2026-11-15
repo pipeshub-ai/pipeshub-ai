@@ -112,7 +112,12 @@ from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_errors import RETRY_SCHEDULED, binary_text_file, partly_indexed_text
+from app.utils.user_errors import (
+    INDEXING_NOTE_FIELD,
+    RETRY_SCHEDULED,
+    binary_text_file,
+    partly_indexed_text,
+)
 
 # The readers that take a file's bytes as text, which the .log/.cfg size cap applies to.
 _TEXT_ROUTES = frozenset({Route.TXT, Route.MD, Route.MDX, Route.CODE})
@@ -1525,6 +1530,8 @@ class EventProcessor:
                     "Failed to clear the previous failure reason for record",
                     doc,
                 )
+            if doc.get(INDEXING_NOTE_FIELD) and not store_only:
+                await self.update_record_fields(doc, {INDEXING_NOTE_FIELD: None})
 
             # Extract necessary data
             record_version = event_data.get("version", 0)
@@ -1936,8 +1943,11 @@ class EventProcessor:
                 file_content, truncated = await bound_text(file_content)
             else:
                 truncated = False
-            if truncated:
-                await self.update_record_fields(doc, {"reason": partly_indexed_text()})
+            # Its own field, not `reason`: the stages after indexing write `reason` (a skipped or
+            # failed classification), which would replace this note or be shown as one.
+            note = partly_indexed_text() if truncated else None
+            if doc.get(INDEXING_NOTE_FIELD) != note:
+                await self.update_record_fields(doc, {INDEXING_NOTE_FIELD: note})
 
             # ── New service pipeline (opt-in via USE_PARSING_SERVICE=true) ──
             if self._use_service_pipeline():

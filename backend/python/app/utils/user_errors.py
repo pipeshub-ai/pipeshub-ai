@@ -191,6 +191,11 @@ def file_too_large_to_read(extension: str | None) -> str:
     )
 
 
+# The record field for a note on how a record was indexed (shown on a COMPLETED record), kept apart
+# from `reason`, which says why a record or one of its stages was not done.
+INDEXING_NOTE_FIELD = "indexingNote"
+
+
 def partly_indexed_text() -> str:
     from app.config.file_types import TEXT_LOG_MAX_BYTES
 

@@ -247,7 +247,7 @@ async def test_a_text_plain_log_keeps_main_s_text_reader_with_the_size_cap(
     assert data.decode().rstrip("\n").rsplit("\n", 1)[-1] in text
     assert "worker-0 handled request 0" in text
     assert len(text.encode()) <= 2_000
-    assert record["reason"] == partly_indexed_text()
+    assert record["indexingNote"] == partly_indexed_text()
 
 
 @pytest.mark.parametrize("ext", ["log", "cfg"])

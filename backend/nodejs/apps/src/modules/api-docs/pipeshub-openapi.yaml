@@ -6503,6 +6503,14 @@ components:
             reason:
               type: string
               nullable: true
+            indexingNote:
+              type: string
+              nullable: true
+              description: |
+                A note on how a COMPLETED record was indexed, for example that only
+                the first and last part of a large text file is indexed. Unlike
+                `reason`, it does not mean anything failed or was skipped. Absent or
+                null when there is nothing to note.
             isDeleted:
               type: boolean
             isArchived:

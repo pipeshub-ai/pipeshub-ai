@@ -392,6 +392,8 @@ record_schema = {
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
+            # How the record was indexed, e.g. that only part of a large text file is (not a failure).
+            "indexingNote": {"type": ["string", "null"]},
             # Credentials redacted from the content before indexing (S-2).
             "secretsRedacted": {"type": ["integer", "null"], "minimum": 0},
             # Promoted duplicates of this record still need its taxonomy copied.

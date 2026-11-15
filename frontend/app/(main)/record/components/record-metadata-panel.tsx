@@ -9,7 +9,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
 import { buildStageTrackSteps } from './stage-track-steps';
-import { indexingReasonHint } from './indexing-reason-hint';
+import { indexingStatusHint } from './indexing-reason-hint';
 
 interface RecordMetadataPanelProps {
   recordDetails: RecordDetailsResponse;
@@ -472,11 +472,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
     record.sourceLastModifiedTimestamp ?? record.updatedAtTimestamp,
   );
 
-  const reasonHint = indexingReasonHint(
-    record.indexingStatus,
-    record.reason,
-    record.retryNotBefore,
-  );
+  const statusHint = indexingStatusHint(record);
   const isAttachment = record.connectorName?.toUpperCase() === 'ATTACHMENTS';
   const connectorIconType = resolveConnectorType(record.connectorId || 'generic');
   const shortConnectorId =
@@ -568,10 +564,10 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                 </Text>
                 <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
                   <IndexingStatusChip status={record.indexingStatus} />
-                  {reasonHint && record.reason ? (
+                  {statusHint ? (
                     <ReasonHintButton
-                      content={record.reason}
-                      ariaLabel={t(reasonHint === 'note' ? 'recordView.indexingNoteAria' : 'recordView.indexingReasonAria')}
+                      content={statusHint.content}
+                      ariaLabel={t(statusHint.kind === 'note' ? 'recordView.indexingNoteAria' : 'recordView.indexingReasonAria')}
                     />
                   ) : null}
                 </Flex>
