@@ -8,6 +8,8 @@ from collections.abc import Iterator
 
 import pytest
 
+from tests.support.edition_defaults import unit_test_fixtures
+
 
 @pytest.fixture(autouse=True)
 def _fresh_connector_name_cache() -> None:
@@ -107,3 +109,16 @@ def _no_leaked_pipeshub_temp_files(_private_temp_dir: str) -> Iterator[None]:
         f"test left temp files behind: {leaked}. Remove them in the test "
         "(or fix the code that creates them)."
     )
+
+
+def _bind_unit_test_fixtures() -> None:
+    fixtures = unit_test_fixtures()
+    clashes = sorted(fixtures.keys() & globals().keys())
+    # Binding over a name defined above would silently replace that fixture for every test.
+    assert not clashes, (
+        f"unit_test_fixtures() redefines names in this conftest: {clashes}"
+    )
+    globals().update(fixtures)
+
+
+_bind_unit_test_fixtures()
