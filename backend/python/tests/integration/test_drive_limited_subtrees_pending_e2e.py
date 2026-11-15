@@ -6,8 +6,8 @@ Neo4j property cannot hold (``SET sp += $data`` refuses a list of maps), so it i
 write and read it through the real ``SyncPoint`` on each store: folders queued one after another all stay, a folder
 queued again starts over, and a cursor written back is read back.
 
-Runs on Neo4j, ArangoDB and PostgreSQL (backend-matrix). Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL,
-ARANGO_IT_PASSWORD, and PG_CORE_URL (a migrated database, see scripts/prepare_pg_test_db.sh) with PG_POOLER=none.
+Runs on Neo4j and ArangoDB (backend-matrix); graph_db/postgres/test_drive_limited_subtrees_pending.py runs the same
+tests on PostgreSQL (pg-runtime). Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import uuid
 from typing import TYPE_CHECKING
 
@@ -39,46 +38,30 @@ ARANGO_DB = "drive_limited_pending_it"
 logger = logging.getLogger("drive-limited-pending-it")
 
 
-async def _connect_postgres(cleanup: contextlib.AsyncExitStack) -> object:
-    from app.core.db import DbConfig, KernelDB
-    from tests.integration.graph_db.postgres.pg_support import (
-        OrgBound,
-        StandInProvider,
-        new_org,
-    )
-
-    if not os.environ.get("PG_CORE_URL"):
-        pytest.skip("postgres not available (set PG_CORE_URL to require it)")
-    db = KernelDB(DbConfig.from_env("connectors"))
-    await db.start()
-    cleanup.push_async_callback(db.close)
-    return OrgBound(StandInProvider(logger, db), new_org())
-
-
-@pytest.fixture(params=["neo4j", "arango", "postgres"])
+@pytest.fixture(params=["neo4j", "arango"])
 async def connector(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[GoogleDriveTeamConnector]:
     async with contextlib.AsyncExitStack() as cleanup:
-        if request.param == "postgres":
-            graph = await _connect_postgres(cleanup)
-        else:
-            try:
-                graph = await (
-                    connect_neo4j(logger, monkeypatch) if request.param == "neo4j" else connect_arango(logger, ARANGO_DB)
-                )
-            except Exception as exc:
-                backend_unavailable(request.param, exc)
+        try:
+            graph = await (
+                connect_neo4j(logger, monkeypatch) if request.param == "neo4j" else connect_arango(logger, ARANGO_DB)
+            )
+        except Exception as exc:
+            backend_unavailable(request.param, exc)
         disconnect = getattr(graph, "disconnect", None)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
         monkeypatch.setenv("SECRET_KEY", "limited-pending-it-secret")
-        run = uuid.uuid4().hex[:10]
-        # Only what the queue touches: its sync point and its lock.
-        drive = GoogleDriveTeamConnector.__new__(GoogleDriveTeamConnector)
-        drive.drive_delta_sync_point = SyncPoint(
-            f"drive-pending-{run}", f"org-pending-{run}", SyncDataPointType.RECORDS, GraphDataStore(logger, graph)
-        )
-        drive._limited_pending_lock = asyncio.Lock()
-        yield drive
+        yield pending_queue(graph, f"org-pending-{uuid.uuid4().hex[:10]}")
+
+
+def pending_queue(graph: object, org_id: str) -> GoogleDriveTeamConnector:
+    """A connector with only what the queue touches: its sync point on the graph store, and its lock."""
+    drive = GoogleDriveTeamConnector.__new__(GoogleDriveTeamConnector)
+    drive.drive_delta_sync_point = SyncPoint(
+        f"drive-pending-{uuid.uuid4().hex[:10]}", org_id, SyncDataPointType.RECORDS, GraphDataStore(logger, graph)
+    )
+    drive._limited_pending_lock = asyncio.Lock()
+    return drive
 
 
 async def test_folders_queued_one_after_another_all_stay(connector: GoogleDriveTeamConnector) -> None:
