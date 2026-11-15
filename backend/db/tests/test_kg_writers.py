@@ -354,6 +354,16 @@ def test_a_closed_set_refuses_a_value_outside_it_in_a_record(pdb, column, value)
         clean(c)
 
 
+@pytest.mark.parametrize("rule", ["OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT", None])
+def test_every_access_rule_a_connector_writes_is_stored(pdb, rule):
+    """PARENT_AND_GRANT is one of them (kg_0015): a record with it once refused its whole batch."""
+    with conn(pdb) as c:
+        clean(c)
+        assert call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values(rule=rule)))) == [(1,)]
+        assert c.execute("SELECT rule FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] == rule
+        clean(c)
+
+
 def test_a_closure_via_outside_the_set_is_refused(pdb):
     with conn(pdb) as c:
         clean(c)
