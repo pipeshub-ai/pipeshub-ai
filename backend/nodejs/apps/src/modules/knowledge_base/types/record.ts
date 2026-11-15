@@ -63,6 +63,8 @@ export interface IRecordDocument {
   isLatestVersion?: boolean; // default: false
   isDirty?: boolean; // default: false, indicates need for re-indexing
   reason?: string;
+  // How a COMPLETED record was indexed (e.g. only part of a large text file); not a failure.
+  indexingNote?: string | null;
   virtualRecordId?: string;
   summaryDocumentId?:string;
   webUrl?: string;

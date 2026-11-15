@@ -450,6 +450,7 @@ const navigateKnowledgeGraphSchema = z.object({
     createdBefore: z.string().min(1).optional(),
     modifiedAfter: z.string().min(1).optional(),
     modifiedBefore: z.string().min(1).optional(),
+    cursor: z.string().min(1).max(4096).optional(),
   }),
 });
 
