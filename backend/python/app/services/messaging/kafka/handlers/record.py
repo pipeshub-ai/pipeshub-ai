@@ -42,6 +42,7 @@ from app.modules.code_graph.build_state import (
     claimed_build_already_ran,
     request_is_stale,
 )
+from app.modules.indexing import replay_set
 from app.modules.indexing.connector_off_events import (
     HELD_FOR_DELETE_DELAY_S,
     ConnectorState,
@@ -51,6 +52,8 @@ from app.modules.indexing.connector_off_events import (
     connector_gated_event,
     connector_state,
     gating_connector_id,
+    replay_candidate,
+    replayed_delivery,
 )
 from app.modules.indexing.connector_off_events import (
     resuming_enrichment as record_resuming_enrichment,
@@ -247,6 +250,33 @@ class RecordEventHandler(BaseEventService):
             redis = await redis_from_config_service(self.config_service)
             self._redis_by_loop[loop] = redis
         return redis
+
+    async def _replay_entry(self, record_id: str, payload: dict) -> replay_set.StoredDelivery | None:
+        """What the replay set holds for the event; None when it holds nothing or cannot be read."""
+        try:
+            return await replay_set.read_entry(await self._redis_client(), record_id, payload)
+        except Exception as exc:
+            replay_set.REPLAY_SET_ERRORS.inc("read")
+            self.logger.warning("Replay set not read for record %s: %s", record_id, type(exc).__name__)
+            return None
+
+    def _replay_ref(self, payload: dict) -> replay_set.DeliveryRef:
+        event_id, delivery_id = payload.get(replay_set.EVENT_ID_KEY), payload.get(replay_set.DELIVERY_ID_KEY)
+        flags = replay_set.flags_of(payload)
+
+        async def remember(record_id: str) -> None:
+            await replay_set.record_delivery(
+                await self._redis_client(), record_id,
+                event_id=str(event_id) if event_id else None,
+                delivery_id=str(delivery_id) if delivery_id else None,
+                flags=flags, now_ms=int(time.time() * 1000),
+            )
+
+        return replay_set.DeliveryRef(
+            event_id=str(event_id) if event_id else None,
+            delivery_id=str(delivery_id) if delivery_id else None,
+            flags=flags, remember=remember,
+        )
 
     async def _discard_redis(self) -> None:
         redis = self._redis_by_loop.pop(asyncio.get_running_loop(), None)
@@ -1560,6 +1590,7 @@ class RecordEventHandler(BaseEventService):
         # Nothing of an earlier delivery's run survives into this one.
         end_run()
         end_attempt()
+        replay_set.end_delivery()
         try:
             if not event_type:
                 # A message with no event type is a producer bug: acking it
@@ -1923,9 +1954,16 @@ class RecordEventHandler(BaseEventService):
             # Decided before anything is taken out of the vector store: an event that is
             # acknowledged here must leave the record's points exactly as they are.
             resuming_enrichment = record_resuming_enrichment(doc)
-            if already_indexed(event_type, payload, doc) and not (
-                stage_ingress is not None and await stage_ingress.handoff_lost(doc)
-            ):
+            idle = already_indexed(event_type, payload, doc)
+            replayed = False
+            if not idle and replay_candidate(event_type, payload, doc):
+                # An exact replay of a delivery that completed this record (a lost acknowledgement, a
+                # rebalance): the replay set answers it, an optimisation that is simply absent when
+                # Redis is unreachable or evicted it.
+                replayed = idle = replayed_delivery(
+                    event_type, payload, doc, await self._replay_entry(record_id, payload)
+                )
+            if idle and not (stage_ingress is not None and await stage_ingress.handoff_lost(doc)):
                 # The finally block releases queued copies from here, and that is a write, so a
                 # delete marked since the check above is seen first: the connector's app is read
                 # again, as at the connector check below.
@@ -1936,10 +1974,22 @@ class RecordEventHandler(BaseEventService):
                         f"connector {deleting_id} of record {record_id} is being deleted",
                         delay_s=HELD_FOR_DELETE_DELAY_S,
                     )
-                self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
+                if replayed:
+                    replay_set.REPLAYS_ACKNOWLEDGED.inc("indexing")
+                    self.logger.info(
+                        f"🔁 Replay of a delivery that already completed record {record_id}: acknowledged"
+                    )
+                else:
+                    self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
+
+            if event_type in (
+                EventTypes.NEW_RECORD.value, EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value
+            ) and not payload.get("vectorDbOnly") and payload.get(replay_set.EVENT_ID_KEY):
+                # The sink remembers this delivery when it writes COMPLETED, as a call of its own.
+                replay_set.begin_delivery(self._replay_ref(payload))
 
             # Reconciliation: only an event that goes on to run touches the vector store.
             vector_db_only = bool(payload.get("vectorDbOnly"))
@@ -2566,6 +2616,7 @@ class RecordEventHandler(BaseEventService):
             # Last, so every status write above is shaped by the run.
             end_run()
             end_attempt()
+            replay_set.end_delivery()
 
     async def __update_document_status(
         self,

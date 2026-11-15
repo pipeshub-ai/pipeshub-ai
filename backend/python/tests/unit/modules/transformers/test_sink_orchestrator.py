@@ -796,6 +796,78 @@ class TestIndexedWriteWhenEnrichmentFollows:
         assert row["isVLMOcrProcessed"] is True
 
 
+class TestTheReplaySetIsWrittenAfterTheCompletedWrite:
+    """The delivery that completes the record is remembered, as a call of its own and best effort."""
+
+    @pytest.fixture(autouse=True)
+    def _no_delivery_left_bound(self):
+        from app.modules.indexing import replay_set
+
+        replay_set.end_delivery()
+        yield
+        replay_set.end_delivery()
+
+    @staticmethod
+    def _bind(remember) -> None:
+        from app.modules.indexing import replay_set
+
+        replay_set.begin_delivery(
+            replay_set.DeliveryRef(event_id="evt-1", delivery_id="t-0-1", flags="", remember=remember)
+        )
+
+    @pytest.mark.asyncio
+    async def test_replay_set_write_is_separate_and_best_effort(self) -> None:
+        order: list[str] = []
+        orch = _make_orchestrator()
+        orch.graph_provider.batch_update_nodes = AsyncMock(side_effect=lambda *a, **k: order.append("completed") or True)
+
+        async def remember(record_id: str) -> None:
+            order.append(f"remember:{record_id}")
+
+        self._bind(remember)
+        assert await orch._update_indexing_status(_make_ctx("rec-7")) is True
+        # After the COMPLETED write, and not part of it.
+        assert order == ["completed", "remember:rec-7"]
+        assert "lastDelivery" not in str(orch.graph_provider.batch_update_nodes.await_args)
+
+        # A failing write does not fail the completion.
+        async def broken(record_id: str) -> None:
+            raise ConnectionError("redis down")
+
+        self._bind(broken)
+        assert await orch._update_indexing_status(_make_ctx("rec-8")) is True
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_no_longer_exists_is_not_remembered(self) -> None:
+        orch = _make_orchestrator()
+        orch.graph_provider.batch_update_nodes = AsyncMock(return_value=False)
+        remembered: list[str] = []
+
+        async def remember(record_id: str) -> None:
+            remembered.append(record_id)
+
+        self._bind(remember)
+        assert await orch._update_indexing_status(_make_ctx()) is False
+        assert remembered == []
+
+    @pytest.mark.asyncio
+    async def test_no_delivery_bound_writes_nothing(self) -> None:
+        orch = _make_orchestrator()
+        assert await orch._update_indexing_status(_make_ctx()) is True
+
+    @pytest.mark.asyncio
+    async def test_the_switch_turns_the_write_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("REPLAY_SET", "off")
+        remembered: list[str] = []
+
+        async def remember(record_id: str) -> None:
+            remembered.append(record_id)
+
+        self._bind(remember)
+        assert await _make_orchestrator()._update_indexing_status(_make_ctx()) is True
+        assert remembered == []
+
+
 class TestStageEnrichment:
     """What the classify stage calls: resolve, then summary, taxonomy and entity points,
     never extractionStatus and never named entities."""

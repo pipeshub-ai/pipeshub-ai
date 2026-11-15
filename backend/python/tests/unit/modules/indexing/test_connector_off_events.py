@@ -700,3 +700,42 @@ async def test_an_already_indexed_reindex_sees_a_delete_marked_before_the_guard(
         assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
         assert graph.calls["update_queued_duplicates_status"] == 1
     event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
+
+
+@pytest.mark.parametrize("state", [ConnectorState.OFF, ConnectorState.REMOVED])
+def test_read_time_filter_passes_replayed_deliveries(state: ConnectorState) -> None:
+    """A replay of a delivery that completed the record is the handler's: it acknowledges it before anything
+    else, so the read-time filter must not settle it first. The record is COMPLETED, which the filter already
+    leaves alone (its queued copies are released from the handler); this pins that for the replay guard."""
+    from app.modules.indexing.connector_off_events import ReadTimeOutcome, read_time_outcome
+
+    record = {
+        "id": "r1", "connectorId": "conn-off", "origin": "CONNECTOR", "indexingStatus": ProgressStatus.COMPLETED.value,
+        "extractionStatus": ProgressStatus.COMPLETED.value,
+    }
+    payload = {"recordId": "r1", "connectorId": "conn-off", "_delivery_id": "t-0-1", "_event_id": "evt-1"}
+
+    assert read_time_outcome(UPDATE, payload, record, lambda _connector: state) is ReadTimeOutcome.PASS
+
+
+def test_replayed_delivery_needs_a_completed_record_an_event_id_and_covering_flags() -> None:
+    from app.modules.indexing.connector_off_events import replay_candidate, replayed_delivery
+    from app.modules.indexing.replay_set import StoredDelivery
+
+    done = {"indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value}
+    payload = {"_event_id": "evt-1", "_delivery_id": "t-0-1"}
+    stored = StoredDelivery(flags="", delivery_id="t-0-1")
+
+    assert replayed_delivery(UPDATE, payload, done, stored)
+    assert not replayed_delivery(UPDATE, payload, done, None)
+    assert not replayed_delivery(UPDATE, {"_delivery_id": "t-0-1"}, done, stored), "a delivery id alone is no identity"
+    assert not replayed_delivery(UPDATE, {**payload, "_delivery_id": "t-9-9"}, done, stored), "another delivery"
+    assert replayed_delivery(UPDATE, {"_event_id": "evt-1"}, done, stored)
+    assert not replayed_delivery(UPDATE, payload, {**done, "indexingStatus": "IN_PROGRESS"}, stored)
+    assert not replayed_delivery(UPDATE, payload, {**done, "extractionStatus": "IN_PROGRESS"}, stored)
+    assert not replayed_delivery(UPDATE, {**payload, "vectorDbOnly": True}, done, stored)
+    assert not replayed_delivery(UPDATE, {**payload, "forceReindex": True}, done, stored), "asks for more"
+    assert replayed_delivery(
+        UPDATE, {**payload, "forceReindex": True}, done, StoredDelivery(flags="F", delivery_id="t-0-1")
+    )
+    assert not replay_candidate("deleteRecord", payload, done)

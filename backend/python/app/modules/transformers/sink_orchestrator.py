@@ -26,6 +26,7 @@ from app.modules.indexing.parse_now_marker import (
     current_run,
     marker_fields,
 )
+from app.modules.indexing.replay_set import note_record_completed
 from app.modules.record_metadata.builtin import ticket_metadata
 from app.modules.record_metadata.projection import (
     NOT_PROVIDED,
@@ -910,6 +911,9 @@ class SinkOrchestrator(Transformer):
         self.logger.debug(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )
+        # The write above returned true, so the delivery that ran it may be remembered. A call of its own
+        # (never part of the write): a failure only weakens the replay guard and never fails the completion.
+        await note_record_completed(record.id, self.logger)
         # The record is only searchable now, so the accessible-record map that
         # gates search is stale. Connector records arrive in bursts, so their
         # deletes are coalesced (see `on_record_indexed`).
