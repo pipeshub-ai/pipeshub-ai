@@ -24,6 +24,8 @@ from app.exceptions.indexing_exceptions import ProcessingError
 from app.modules.pipeline.connector_gate import ConnectorBeingDeleted
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.models import (
+    FOREIGN_REASON,
+    ForeignStatus,
     StageJob,
     StageOutcome,
     StageResult,
@@ -97,6 +99,8 @@ SUPERSEDED = "superseded by a newer revision"
 # snapshot taken from another thread never sees a dict change size.
 OUTCOME_COUNTERS: tuple[str, ...] = (
     "completed", "unchanged", "skipped", "stale", "retry", "paused", "failed", "duplicate", "error", "abandoned",
+    # The job's state is in a status a newer release wrote: that release owns it, so nothing ran.
+    "foreign",
 )
 
 
@@ -169,7 +173,7 @@ class StageJobHandler:
         self._count(job.stage, "abandoned")
         try:
             state = await self._states.get(job.state_key)
-            if state is None or state.status in _TERMINAL:
+            if state is None or isinstance(state.status, ForeignStatus) or state.status in _TERMINAL:
                 return
             why = f"Stage job discarded after {attempts} attempt(s): {reason}"
             failed = await self._states.cas(
@@ -239,22 +243,30 @@ class StageJobHandler:
             )
             self._count(job.stage, "stale")
             return
+        if isinstance(state.status, ForeignStatus):
+            # Handing it back would pause this stage's consumer, and after a rollback no pod would ever take it.
+            self._logger.info(
+                "Stage job %s: its state is %s, %s; leaving it", job.job_id, state.status.value, FOREIGN_REASON
+            )
+            self._count(job.stage, "foreign")
+            return
+        status = state.status
         fingerprint = (await stage.fingerprint(job, io)).digest()
 
         # A fingerprint is stored only by a run that completed, and cleared when a run
         # starts, so an equal one means this revision's output is already current.
         if not job.force and state.fingerprint == fingerprint and await self._output_in_place(job, stage, io, state):
-            await self._complete_unchanged(job, stage, state, fingerprint)
+            await self._complete_unchanged(job, stage, state, status, fingerprint)
             self._count(job.stage, "unchanged")
             return
-        if state.status in _SETTLED and not job.force:
-            self._logger.info("Stage job %s is already %s; ignoring this delivery", job.job_id, state.status.value)
+        if status in _SETTLED and not job.force:
+            self._logger.info("Stage job %s is already %s; ignoring this delivery", job.job_id, status.value)
             self._count(job.stage, "duplicate")
             return
         run_attempt = state.attempt + 1
         claimed = await self._states.cas(
             job.state_key,
-            expected=state.status,
+            expected=status,
             new=ProgressStatus.IN_PROGRESS,
             patch=StageStatePatch(
                 worker_id=self._worker_id,
@@ -325,14 +337,16 @@ class StageJobHandler:
             seen.status, seen.attempt, seen.fingerprint, seen.output
         )
 
-    async def _complete_unchanged(self, job: StageJob, stage: Stage[Any], state: StageState, fingerprint: str) -> None:
+    async def _complete_unchanged(
+        self, job: StageJob, stage: Stage[Any], state: StageState, status: ProgressStatus, fingerprint: str
+    ) -> None:
         # Also when it read COMPLETED: a run claimed since must not be reported complete on its behalf.
         # The attempt it read fences that: a forced redrive that claimed (and maybe finished) in the
         # meantime has moved it on, even when the status has come back round to COMPLETED.
-        already = state.status is ProgressStatus.COMPLETED
+        already = status is ProgressStatus.COMPLETED
         if not await self._states.cas(
             job.state_key,
-            expected=state.status,
+            expected=status,
             new=ProgressStatus.COMPLETED,
             patch=StageStatePatch() if already else StageStatePatch(finished_at_ms=self._clock_ms(), reason=None),
             expected_attempt=state.attempt,
@@ -445,6 +459,7 @@ class StageJobHandler:
         current = await self._states.get(job.state_key)
         if (
             current is not None
+            and not isinstance(current.status, ForeignStatus)
             and current.status not in _TERMINAL
             and current.attempt == attempt
             and await self._states.cas(
