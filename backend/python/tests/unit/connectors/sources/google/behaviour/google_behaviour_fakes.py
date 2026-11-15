@@ -30,7 +30,11 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import httplib2
 
-from app.connectors.core.base.data_processor.source_accounts import SourceAccounts, _bucket, source_accounts_key
+from app.connectors.core.base.data_processor.source_accounts import (
+    SourceAccounts,
+    _bucket,
+    source_accounts_key,
+)
 from app.models.entities import Record
 from app.models.permission import EntityType, PermissionType
 from app.services.graph_db.common.record_visibility import (

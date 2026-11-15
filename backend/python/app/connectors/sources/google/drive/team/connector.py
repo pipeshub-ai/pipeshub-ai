@@ -1043,7 +1043,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 about = await (await self._build_user_drive_data_source(user)).about_get(fields="user(permissionId)")
             except Exception as e:
                 # Its direct shares stay unwritten (fail closed) until a run reads its permissionId.
-                self.logger.warning(f"Could not read the Drive permission id of {user.email}: {e}")
+                self.logger.warning("Could not read the Drive permission id of user %s: %s", user.source_user_id, e)
                 continue
             if permission_id := (about.get("user") or {}).get("permissionId"):
                 ids[user.email] = (user.source_user_id, permission_id)

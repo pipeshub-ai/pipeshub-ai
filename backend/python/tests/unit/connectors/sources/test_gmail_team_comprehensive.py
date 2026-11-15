@@ -19,7 +19,9 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, PermissionType
-from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 
 # ---------------------------------------------------------------------------

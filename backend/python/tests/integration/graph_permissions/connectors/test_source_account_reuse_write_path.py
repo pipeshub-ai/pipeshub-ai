@@ -87,3 +87,22 @@ async def test_a_link_already_rewritten_to_the_new_account_still_takes_the_old_a
 
     assert "ben" not in await drive.readers("Plans") and "ben" not in await drive.readers("plan.pdf")
     assert await drive.readers("budget.pdf") == {"ana", "cal"}
+
+
+async def test_a_grant_naming_the_new_accounts_other_id_is_written_and_the_old_accounts_is_not(drive: Drive) -> None:
+    """A source that names a grantee by another id than the one users are listed with (Google Drive's permissionId):
+    the connector notes the new holder's other id, and only a grant naming it reaches the user."""
+    await drive.write()
+    await _ben_reused(drive)
+    await drive.processor.source_accounts(drive.connector_id).note_other_ids(
+        {drive.emails["ben"]: ("u-ben-new", "perm-ben-new")}
+    )
+    owner = _grant(drive.emails["ana"], "u-ana", PermissionType.OWNER)
+    plans = drive.records["Plans"]
+
+    await drive.processor.on_updated_record_permissions(plans, [owner, _grant(drive.emails["ben"], "perm-ben-old")])
+    assert await drive.readers("Plans") == {"ana"}, "the deleted account's permission id"
+
+    await drive.processor.on_updated_record_permissions(plans, [owner, _grant(drive.emails["ben"], "perm-ben-new")])
+    assert await drive.readers("Plans") == {"ana", "ben"}, "the new account's permission id"
+    assert await drive.readers("budget.pdf") == {"ana", "cal"}
