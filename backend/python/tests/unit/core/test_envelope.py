@@ -51,6 +51,15 @@ async def test_valid_message_binds_signed_org() -> None:
     assert opened.message["payload"] == {"orgId": "org_b", "recordId": "r1"} and "ctx" not in opened.message
 
 
+async def test_the_verified_event_id_reaches_the_context_but_not_an_unverified_one() -> None:
+    message = _msg()
+    opened = await _open(message)
+    assert opened.ctx.event_id == message["ctx"]["eventId"]
+    # Without a key the message is processed as a legacy one: its ctx names no authority, so no event id.
+    legacy = await _open(_msg(), keys=())
+    assert legacy.ctx.event_id is None
+
+
 async def test_payload_swap_under_valid_ctx_is_rejected() -> None:
     m = _msg()
     m["payload"] = json.dumps({"orgId": "org_b", "recordId": "attacker", "action": "delete"}, separators=(",", ":"))
@@ -94,14 +103,18 @@ async def test_producer_signs_only_when_the_flag_and_a_key_are_on(monkeypatch) -
     envelope.configure(None, None, KEY)
     try:
         with bind(CTX_B):
-            assert envelope.sign_message(TOPIC, flat) == flat  # flag off: v1
+            plain = envelope.sign_message(TOPIC, flat)
+            assert {k: v for k, v in plain.items() if k != "eventId"} == flat  # flag off: v1 plus an event id
+            assert plain["eventId"]
             monkeypatch.setenv("ENVELOPE_SIGN", "true")
             signed = envelope.sign_message(TOPIC, flat)
             assert isinstance(signed["payload"], str) and signed["eventType"] == "T" and signed["ctx"]["v"] == 2
             assert (await _open(signed)).message["payload"] == flat["payload"]  # round trip
             other_org = {**flat, "payload": {"orgId": "org_x"}}
-            assert envelope.sign_message(TOPIC, other_org) == other_org  # never sign a payload for another org
-        assert envelope.sign_message(TOPIC, flat) == flat  # no org bound: v1
+            unsigned_other = envelope.sign_message(TOPIC, other_org)  # never sign a payload for another org
+            assert "ctx" not in unsigned_other and unsigned_other["payload"] == other_org["payload"]
+        unsigned = envelope.sign_message(TOPIC, flat)  # no org bound: v1 plus an event id
+        assert "ctx" not in unsigned and unsigned["payload"] == flat["payload"] and unsigned["eventId"]
     finally:
         envelope.configure(None)
 
@@ -320,11 +333,13 @@ async def test_producer_without_a_key_is_counted_and_fails_closed_in_enforce(mon
     before = counter._value.get()
     with bind(CTX_B):
         monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
-        assert envelope.sign_message(TOPIC, flat) == flat and counter._value.get() == before + 1
+        sent = envelope.sign_message(TOPIC, flat)
+        assert {k: v for k, v in sent.items() if k != "eventId"} == flat and sent["eventId"]
+        assert counter._value.get() == before + 1
         monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
         with pytest.raises(RuntimeError, match="no key"):
             envelope.sign_message(TOPIC, flat)
-    assert envelope.sign_message(TOPIC, flat) == flat  # no org bound: counted, sent as v1
+    assert "ctx" not in envelope.sign_message(TOPIC, flat)  # no org bound: counted, sent as v1 plus an event id
     assert envelope.UNSIGNED._metric.labels(TOPIC, "no_org")._value.get() >= 1
 
 
@@ -443,3 +458,34 @@ def test_decode_json_leaves_process_errors_alone(monkeypatch: pytest.MonkeyPatch
     with pytest.raises(type(error)) as e:
         envelope.decode_json("{}")
     assert e.value is error
+
+
+# ---- the event id is the identity of an event, signed or not ---------------------------------------------
+
+
+def test_every_message_gets_its_own_event_id_and_a_stamped_one_is_kept(monkeypatch) -> None:
+    monkeypatch.delenv("ENVELOPE_SIGN", raising=False)
+    flat = {"eventType": "T", "payload": {"orgId": "org_b"}}
+
+    first, second = envelope.sign_message(TOPIC, flat), envelope.sign_message(TOPIC, flat)
+
+    uuid.UUID(first["eventId"])
+    assert first["eventId"] != second["eventId"]
+    assert "eventId" not in flat, "the caller's message is not mutated"
+    assert envelope.sign_message(TOPIC, {**flat, "eventId": "evt-fixed"})["eventId"] == "evt-fixed"
+
+
+async def test_an_unsigned_message_hands_its_event_id_to_the_consumers_context(monkeypatch) -> None:
+    monkeypatch.delenv("ENVELOPE_SIGN", raising=False)
+    sent = envelope.sign_message(TOPIC, {"eventType": "T", "payload": {"orgId": "org_b", "recordId": "r1"}})
+
+    opened = await _open(sent, keys=())
+
+    assert opened.ctx.event_id == sent["eventId"]
+    assert opened.ctx.source == "legacy-payload"
+
+
+async def test_a_message_from_an_older_producer_has_no_event_id() -> None:
+    opened = await _open({"eventType": "T", "payload": {"orgId": "org_b", "recordId": "r1"}}, keys=())
+
+    assert opened.ctx.event_id is None

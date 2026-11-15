@@ -400,11 +400,20 @@ class TestStartStopWorkerThread:
 
 class TestConsumerMetadataCleanup:
     @pytest.mark.asyncio
-    async def test_deletes_only_empty_idle_consumers(self, consumer):
+    async def test_deletes_only_empty_stopped_consumers_in_one_checked_step(self, consumer):
+        """Removal of another consumer is one script that checks and deletes, so
+        one that reads in between keeps its entries; only one silent for many
+        claim windows counts as stopped."""
         consumer.redis = AsyncMock()
+        consumer.redis.eval.return_value = 1
         consumer.redis.xinfo_consumers.return_value = [
             {
                 "name": "old-empty",
+                "pending": 0,
+                "idle": consumer.stopped_consumer_after_ms() + 1,
+            },
+            {
+                "name": "recently-quiet",
                 "pending": 0,
                 "idle": consumer.config.claim_min_idle_ms,
             },
@@ -422,10 +431,10 @@ class TestConsumerMetadataCleanup:
 
         await consumer._cleanup_empty_consumers("topic-a")
 
-        consumer.redis.xgroup_delconsumer.assert_awaited_once_with(
-            "topic-a",
-            consumer.config.group_id,
-            "old-empty",
+        consumer.redis.xgroup_delconsumer.assert_not_awaited()
+        consumer.redis.eval.assert_awaited_once()
+        assert consumer.redis.eval.await_args.args[1:5] == (
+            1, "topic-a", consumer.config.group_id, "old-empty"
         )
 
 
@@ -2754,8 +2763,8 @@ class TestDrainPending:
     async def test_drain_phase2_reclaims_ownership_before_dispatch(self, consumer):
         """Phase 2 uses read-only XPENDING + XRANGE, so the entry's idle
         timer is never reset by the scan.  Before dispatching, the consumer
-        must XCLAIM JUSTID min_idle_time=0 to close the window where a peer
-        could XAUTOCLAIM the entry."""
+        reasserts ownership (XCLAIM JUSTID, only if still its own) to close
+        the window where a peer could XAUTOCLAIM the entry."""
         consumer.running = True
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
@@ -2775,12 +2784,14 @@ class TestDrainPending:
         ):
             await consumer._drain_pending()
 
-        # XCLAIM JUSTID must have been called for the recovered entry.
-        consumer.redis.xclaim.assert_awaited()
-        call_kwargs = consumer.redis.xclaim.await_args.kwargs
-        assert call_kwargs["message_ids"] == ["9-0"]
-        assert call_kwargs["justid"] is True
-        assert call_kwargs["min_idle_time"] == 0
+        # Ownership reasserted (XCLAIM JUSTID) by the check-and-claim script,
+        # for the recovered entry and this consumer.
+        consumer.redis.eval.assert_awaited()
+        script, keys, stream, group, name, message_id = consumer.redis.eval.await_args.args
+        assert "XCLAIM" in script and "JUSTID" in script
+        assert (keys, stream, group, name, message_id) == (
+            1, consumer.config.topics[0], consumer.config.group_id, consumer.consumer_name, "9-0"
+        )
 
 
 # ===================================================================

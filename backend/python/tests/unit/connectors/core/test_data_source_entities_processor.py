@@ -5190,6 +5190,26 @@ class TestOnRecordContentUpdate:
         assert call_args[0][1]["eventType"] == "updateRecord"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("content_changed", "revision", "published"), [
+        (False, "r1", False), (False, "r2", True), (True, "r1", True)],
+        ids=["said_unchanged_and_unchanged", "said_unchanged_but_new_revision", "callers_that_do_not_say"])
+    async def test_a_write_said_to_leave_content_alone_publishes_only_when_the_save_asks_for_indexing(
+        self, content_changed: bool, revision: str, published: bool,
+    ) -> None:
+        """A write only to keep an indexed record's grants keeps its outcome and sends no event, as on_new_records;
+        a new revision re-queues it whatever the caller said. Callers that do not say still publish."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        stored = _make_record(external_revision_id="r1", indexing_status=ProgressStatus.COMPLETED.value)
+        tx_store.get_record_by_external_id = AsyncMock(return_value=stored)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_record_content_update(_make_record(external_revision_id=revision), content_changed=content_changed)
+
+        events = [c.args[1]["eventType"] for c in proc.messaging_producer.send_message.call_args_list]
+        assert events == (["updateRecord"] if published else [])
+
+    @pytest.mark.asyncio
     async def test_skips_auto_index_off(self):
         """Skips content update for AUTO_INDEX_OFF records."""
         proc = _make_processor()
@@ -5210,8 +5230,11 @@ class TestOnRecordContentUpdate:
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
-        record = _make_record()
+        record = _make_record(external_revision_id="r2")
         record.indexing_status = ProgressStatus.COMPLETED.value
+        # An indexed record whose content changed (a new revision): the save re-queues it.
+        tx_store.get_record_by_external_id = AsyncMock(return_value=_make_record(
+            external_revision_id="r1", indexing_status=ProgressStatus.COMPLETED.value))
 
         with patch.object(proc, "_mark_queued_after_publish", new_callable=AsyncMock) as mock_mark:
             await proc.on_record_content_update(record)

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import inspect
 import logging
 import math
@@ -2159,6 +2160,28 @@ _TOPIC_RETRY_FIRST_S = 30.0
 _TOPIC_RETRY_MAX_S = 300.0
 
 
+async def _check_redis_eviction_policy(app_container: Any, logger: logging.Logger) -> None:  # noqa: ANN401
+    """Tell the admin when Redis may evict the keys indexing keeps there (replay set, pause counters, budgets).
+
+    Reads the Redis the replay set is written to (the configuration service's Redis config, which is also what the
+    record handler uses under the PostgreSQL broker). Best effort: a Redis that cannot be read leaves the warning
+    unset and indexing starts anyway.
+    """
+    from app.modules.indexing.replay_set import check_eviction_policy
+    from app.services.vector_db.rebuild_state import redis_from_config_service
+
+    redis = None
+    try:
+        redis = await redis_from_config_service(app_container.config_service())
+        await check_eviction_policy(redis, logger)
+    except Exception as exc:
+        logger.warning("Redis eviction policy not checked: %s", type(exc).__name__)
+    finally:
+        if redis is not None:
+            with contextlib.suppress(Exception):
+                await redis.aclose()
+
+
 async def _ensure_pipeline_schema(graph_provider: IGraphDBProvider, logger: logging.Logger) -> None:
     """Wait until the graph holds the schema indexing writes against.
 
@@ -2586,6 +2609,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Indexing writes stage states and record fields declared by the connector service's schema
     # bootstrap, which may not have run yet (a first start, or an older connector image).
     await _ensure_pipeline_schema(cast(IGraphDBProvider, graph_provider), logger)
+    await _check_redis_eviction_policy(app_container, logger)
 
     # One governor per process: derives parse/index ceilings from cgroup/CPU
     # limits (falling back to the operator's MAX_CONCURRENT_* when set) and
@@ -3041,6 +3065,10 @@ async def health_check(request: Request) -> JSONResponse:
             content["dispatch"] = dispatch
         if loop_lag:
             content["worker_loop_lag"] = loop_lag
+        from app.modules.indexing.replay_set import eviction_policy_warning
+
+        if (eviction_warning := eviction_policy_warning()) is not None:
+            content["redis"] = {"evictionPolicyWarning": eviction_warning}
         # The gateway's cap: its use, wait and hold time, rate-limit retries.
         content["indexing_llm"] = indexing_llm_stats()
         # Which connector is on which Redis Streams lane, from the last lane

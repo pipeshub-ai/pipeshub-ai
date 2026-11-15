@@ -297,15 +297,12 @@ def children_of_sql(only: str = "", *, total: bool = False) -> str:
 
 
 # The granted rows of a connector (``$3``) among ids ``$2`` that a browse may list as chain-tops: live, of the organisation, no placeholder, OPEN (``_kh_v3_chain_top_groups``).
-# The access rule is the graph's: a copied column kg may hold empty for a row it refused (kg.project).
-# Every lookup is a seek by its unique key, as kg.read's (``k >= q.k ORDER BY k LIMIT 1``, read with sorts off: ``read.SORTS_OFF``): written as a join on ``id = ANY($2)`` the
-# plan followed the statistics, and on the same rows (600 granted ids of 4,000) swung between probing the ids and reading every record or graph node of the organisation.
-CHAIN_GRANTED = """/* pipeshub:kg.chain_granted */ SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk FROM unnest($2::text[]) AS q(id)
-    CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 2 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE s.id = q.id
-        UNION ALL SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 3 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE s.id = q.id) r
-    CROSS JOIN LATERAL (SELECT * FROM (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = (CASE r.coll WHEN 2 THEN 'recordGroups' ELSE 'records' END)
-        AND n.id >= r.id ORDER BY n.id LIMIT 1) s WHERE s.id = r.id OFFSET 0) n
-    WHERE r.app_sk = (SELECT a.sk FROM (SELECT * FROM kg.node_keys k WHERE k.org_id = $1 AND k.coll = 1 AND k.id >= $3 ORDER BY k.id LIMIT 1) a WHERE a.id = $3)
+# The access rule is the graph's: a copied column kg may hold empty for a row it refused (kg.project). Each row's graph node is read by its key, in a subquery of its own (LIMIT keeps
+# it one: the planner cannot turn it into a join): as a join, the rule (an expression with no statistics, estimated at the planner's default 0.5 %) made the org's graph nodes look
+# like a few rows, and the plan read every node of the org and probed kg for each, or with no statistics for the org yet read all its nodes again for each granted row.
+CHAIN_GRANTED = """/* pipeshub:kg.chain_granted */ SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk FROM kg.records r
+    CROSS JOIN LATERAL (SELECT n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = (CASE r.coll WHEN 2 THEN 'recordGroups' ELSE 'records' END) AND n.id = r.id LIMIT 1) n
+    WHERE r.org_id = $1 AND r.coll = ANY('{2,3}'::smallint[]) AND r.id = ANY($2::text[]) AND r.app_sk = (SELECT a.sk FROM kg.node_keys a WHERE a.org_id = $1 AND a.coll = 1 AND a.id = $3)
       AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN'"""
 CHAIN_ROWS = """/* pipeshub:kg.chain_rows */ SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk, r.deleted FROM kg.records r
     WHERE r.org_id = $1 AND r.coll = ANY('{2,3}'::smallint[]) AND r.id = ANY($2::text[])"""
