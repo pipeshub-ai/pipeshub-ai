@@ -249,13 +249,15 @@ def _aligned(content: bytes, position: int, codec: str | None, bom_length: int, 
     if position <= bom_length or position >= len(content):
         return position
     if unit == 2:
+        if position + 1 >= len(content):
+            return position  # a trailing odd byte: there is no unit to look at
         high = content[position] if codec == "utf-16-be" else content[position + 1]
         if 0xDC <= high <= 0xDF:  # a low surrogate: the pair starts one unit earlier
             position += 2 if forward else -2
     elif unit == 1 and codec in (None, "utf-8"):
         step = 1 if forward else -1
         for _ in range(3):
-            if not 0x80 <= content[position] <= 0xBF or not bom_length < position < len(content):
+            if not bom_length < position < len(content) or not 0x80 <= content[position] <= 0xBF:
                 break
             position += step
     return position

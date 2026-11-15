@@ -58,3 +58,38 @@ def test_no_cut_splits_a_character(parts: list[str], repeat: int, cap: int, form
     assert isinstance(result, CappedText)
     assert "�" not in result.text
     assert len(result.text.encode("utf-8")) <= max_bytes
+
+
+@settings(max_examples=400, deadline=None)
+@given(
+    text=st.lists(_ASTRAL, min_size=0, max_size=60).map("".join),
+    form=st.sampled_from(["utf-8", "utf-16-le", "utf-16-be"]),
+    odd_byte=st.booleans(),
+    data=st.data(),
+)
+def test_a_cut_at_any_position_up_to_the_end_stays_in_bounds(
+    text: str, form: str, odd_byte: bool, data: st.DataObject
+) -> None:
+    """Moving a cut to a character boundary never reads past the end, whichever position the
+    head or tail search returns, including the last byte of an odd-length buffer."""
+    from app.modules.parsers.text.capped_text import _aligned
+
+    content = text.encode(form) + (b"x" if odd_byte else b"")
+    position = data.draw(st.integers(min_value=0, max_value=len(content)))
+    for forward in (True, False):
+        moved = _aligned(content, position, form, 0, forward=forward)
+        assert 0 <= moved <= len(content)
+
+
+@pytest.mark.parametrize("cap", [1024, 4096, 65536, 131072])
+@pytest.mark.parametrize("form", ["8-bit", "utf-16-le odd length"])
+def test_a_tail_that_starts_on_the_last_byte_is_capped(cap: int, form: str) -> None:
+    """The tail search finds its line break one byte before the end of the file: a last line
+    longer than half the cap, a line break, then one byte (a stray continuation byte in 8-bit
+    text; the odd byte of a UTF-16 buffer)."""
+    if form == "8-bit":
+        content = b"a" * (cap * 4) + b"\n" + b"b" * (cap // 2 + 10) + b"\n\xa9"
+    else:
+        content = ("a" * (cap * 2) + "\n" + "b" * (cap // 4 + 10) + "\n").encode("utf-16-le") + b"x"
+    result = prepare_capped_text(content, max_bytes=cap)
+    assert len(result.text.encode("utf-8")) <= cap
