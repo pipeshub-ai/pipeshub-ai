@@ -248,20 +248,58 @@ class TestParentKeyLookup:
         assert connector._issue_id_to_key_cache["8"] == "P-8"
 
 
+def _readable(members: dict) -> dict[str, str]:
+    """The level digests a sync saves while it reads the roles."""
+    context = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level=members)
+    return plan_level_reread(context, None, is_new_project=True, app_roles_mapping={"jira-software": [{"groupId": "g"}]})[2]
+
+
+def _refused(connector: JiraDataCenterConnector, members: dict) -> IssueSecurityContext:
+    connector._app_roles_forbidden, connector._app_roles_mapping = True, {}
+    return connector._security_with_roles(
+        IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level=members))
+
+
 class TestRefusedRoleList:
+    def test_a_copy_first_written_during_a_hold_loses_a_removed_holder_on_the_next_full_sync(self) -> None:
+        role_and_groups = [{"type": "applicationRole", "parameter": "jira-software"},
+                           {"type": "group", "value": "g-2"}, {"type": "group", "value": "g-3"}]
+        connector = _connector()
+        security = _refused(connector, {"1": role_and_groups})
+        _, _, saved = plan_level_reread(security, {}, is_new_project=False, app_roles_mapping={})
+        security = _refused(connector, {"1": role_and_groups[:2]})
+        reread, levels, _ = plan_level_reread(security, saved, is_new_project=False, app_roles_mapping={})
+        assert (reread, levels, security.held_levels) == ("levels", ["1"], set())
+        issue = _ticket()  # stored and unchanged, read again by the full sync
+        grants, _ = apply_issue_access(issue, {"security": {"id": "1"}}, is_subtask=False, project_key="P", context=security,
+                                       stored_unchanged=True)
+        assert (issue.rewrite_permissions, [g.external_id for g in grants]) == (True, ["g-2"])
+
+    def test_a_copy_held_from_a_read_state_keeps_its_roles_groups(self) -> None:
+        role_level = [{"type": "applicationRole", "parameter": "jira-software"}, {"type": "group", "value": "g-2"}]
+        connector = _connector()
+        security = _refused(connector, {"1": role_level})
+        reread, _, _ = plan_level_reread(security, _readable({"1": role_level}), is_new_project=False, app_roles_mapping={})
+        assert (reread, security.held_levels) == (None, {"1"})
+        issue = _ticket()
+        grants, _ = apply_issue_access(issue, {"security": {"id": "1"}}, is_subtask=False, project_key="P", context=security,
+                                       stored_unchanged=True)
+        assert (grants, issue.rewrite_permissions) == ([], False)
+
+
     def test_only_the_level_naming_a_role_is_held_and_a_plain_level_is_applied(self) -> None:
         """A 403 from applicationrole lasts while the account is not an administrator: only the level naming a role
         keeps its stored copy; a holder removed from a plain level loses its issues on this sync."""
         connector = _connector()
         connector._app_roles_forbidden, connector._app_roles_mapping = True, {}
         role_level = [{"type": "applicationRole", "parameter": "jira-software"}]
-        stored = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={
-            "1": role_level, "2": [{"type": "group", "value": "g-old"}]}).level_fingerprints({"jira-software": [{"groupId": "g"}]})
+        stored = _readable({"1": role_level, "2": [{"type": "group", "value": "g-old"}]})
         security = connector._security_with_roles(IssueSecurityContext(
             knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={
                 "1": role_level, "2": [{"type": "group", "value": "g-new"}]}))
         assert (security.held_levels, security.members_readable, security.defer_checkpoint) == ({"1"}, True, False)
         reread, levels, to_save = plan_level_reread(security, stored, is_new_project=False, app_roles_mapping={})
+        assert security.held_levels == {"1"}  # written while the roles were read, and its other holders unchanged
         assert (reread, levels, to_save["1"]) == ("levels", ["2"], stored["1"] + HELD_DIGEST)
         plain = _ticket()
         grants, _ = apply_issue_access(plain, {"security": {"id": "2"}}, is_subtask=False, project_key="P", context=security)

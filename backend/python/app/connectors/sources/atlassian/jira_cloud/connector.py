@@ -4548,8 +4548,10 @@ class JiraConnector(BaseConnector):
             external_id = level_group_external_id(project_id, level_id)
             if level_id in security.held_levels and await \
                     self.data_entities_processor.get_record_group_by_external_id(self.connector_id, external_id) is not None:
-                # Its roles' groups are unknown: the stored group stays, seen by a full sync. One never stored is
-                # written below with the holders that resolved (the roles' groups left out), so its issues join it.
+                # Its roles' groups are unknown (applicationrole, 403: "Returned if the user is not an administrator",
+                # https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-application-roles/): the group
+                # written while they were read stays, seen by a full sync. Any other is written below with the holders
+                # that resolve (``_held_digests``), so a holder removed from them loses it.
                 await self.data_entities_processor.note_kept_record_group(self.connector_id, external_id)
                 continue
             grants, skipped = level_group_grants(
@@ -4559,11 +4561,7 @@ class JiraConnector(BaseConnector):
             if skipped:
                 self.logger.warning(
                     f"Security level {level_id} of {project_key}: holders of type {skipped} were not granted")
-                # A refused role list (applicationrole, 403: "Returned if the user is not an administrator",
-                # https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-application-roles/) leaves the
-                # role's groups unknown, not empty, as an unread one does.
-                roles_refused = self._app_roles_forbidden and "applicationRole" in skipped
-                if (self._project_access_may_be_partial(project_key) or roles_refused) and await \
+                if self._project_access_may_be_partial(project_key) and await \
                         self.data_entities_processor.get_record_group_by_external_id(self.connector_id, external_id) is not None:
                     # A holder unread is not out of the level: the stored group keeps its grants, seen by a full sync.
                     await self.data_entities_processor.note_kept_record_group(self.connector_id, external_id)

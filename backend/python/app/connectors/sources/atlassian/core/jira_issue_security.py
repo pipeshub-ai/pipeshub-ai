@@ -908,10 +908,7 @@ def hold_levels_naming_unread_roles(
     full (unread, or refused: a 403 lasts while the account is not an administrator): its issues and group keep
     what is stored until a sync reads it (``held_levels``). The other levels are read and applied as usual."""
     if app_roles_unread:
-        security.held_levels = {
-            level_id for level_id, holders in security.members_by_level.items()
-            if any(isinstance(holder, dict) and holder.get("type") == HOLDER_APPLICATION_ROLE for holder in holders)
-        }
+        security.held_levels = {level_id for level_id, holders in security.members_by_level.items() if _names_role(holders)}
     return security
 
 
@@ -958,16 +955,17 @@ def plan_level_reread(
         closed = is_new_project or marker == "unreadable"
         return (None if closed else "leveled"), None, {**stored_real, "*": "unreadable"}
     current = security.level_fingerprints(app_roles_mapping, split=split)
-    # A held level keeps its stored digest, marked so the first sync that reads its roles reads its issues again.
-    held = {lid: v if (v := stored_real.get(lid, "")).endswith(HELD_DIGEST) else v + HELD_DIGEST
-            for lid in security.held_levels if lid in current}
+    # Without the roles' groups: what the holders that resolve without the role list name (see ``_held_digests``).
+    resolved = security.level_fingerprints({}, split=split)
+    roles = {lid for lid, holders in security.members_by_level.items() if _names_role(holders)}
+    for lid in roles - security.held_levels:
+        current[lid] = f"{current[lid]}~{resolved[lid]}"
+    held, reread_held = _held_digests(security, stored_real if stored is not None else {}, resolved)
     current.update(held)
     if is_new_project:
         return None, None, current
     if stored is None:
-        # Synced before levels were tracked: every leveled issue, holder-less levels included. Its issues were
-        # stored open, with nothing of the level to keep: a held level is applied as read (its roles left out).
-        security.held_levels = set()
+        # Synced before levels were tracked: every leveled issue, holder-less levels included.
         return "leveled", None, current
     if stored_real.keys() - current.keys():
         # A level lost its last holder or was deleted. An issue moved out of it to no level
@@ -975,8 +973,47 @@ def plan_level_reread(
         return "project", None, current
     if marker is not None:
         return "leveled", None, current
-    changed = sorted(lid for lid in current if lid not in held and stored_real.get(lid) != current[lid])
+    changed = sorted(
+        lid for lid in current if (lid in reread_held or lid not in held) and stored_real.get(lid) != current[lid])
     return ("levels" if changed else None), changed or None, current
+
+
+def _names_role(holders: list[dict[str, Any]]) -> bool:
+    return any(isinstance(holder, dict) and holder.get("type") == HOLDER_APPLICATION_ROLE for holder in holders)
+
+
+def _held_digests(
+    security: IssueSecurityContext, stored: dict[str, str], resolved: dict[str, str],
+) -> tuple[dict[str, str], set[str]]:
+    """The digests saved for the levels held this sync, and those of them whose issues are read again. Narrows
+    ``security.held_levels`` to the levels whose stored state is kept.
+
+    A level naming a role is saved as ``<digest>~<resolved>``: its digest with the roles' groups, and the one of
+    the holders that resolve without them. While the role list cannot be read, a level whose stored state was
+    written with the roles read (``<digest>`` set) and whose other holders are unchanged (``<resolved>`` equal)
+    keeps its group and its issues' copies: they still name the roles' groups. Any other held level is applied
+    with the holders that resolve, the roles' groups left out: its group is written, and its issues are read
+    again when those holders changed, so a holder removed from it loses its issues on this sync.
+
+    shortcut: a change to a held level's other holders drops the roles' groups until the roles are read (an
+    under-share of the roles' members, never more access); keeping them would need the last role list read
+    stored with the checkpoint."""
+    held: dict[str, str] = {}
+    reread: set[str] = set()
+    kept: set[str] = set()
+    for lid in security.held_levels:
+        if lid not in resolved:
+            continue
+        digest, _, before = stored.get(lid, "").removesuffix(HELD_DIGEST).rpartition("~")
+        if digest and before == resolved[lid]:
+            kept.add(lid)
+            held[lid] = f"{digest}~{before}{HELD_DIGEST}"
+        else:
+            held[lid] = f"~{resolved[lid]}{HELD_DIGEST}"
+            if before != resolved[lid]:
+                reread.add(lid)
+    security.held_levels = kept
+    return held, reread
 
 
 def closed_level_groups(stored: dict[str, str] | None, current: dict[str, str]) -> list[str]:
