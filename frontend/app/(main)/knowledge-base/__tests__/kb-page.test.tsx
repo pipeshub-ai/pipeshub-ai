@@ -385,15 +385,18 @@ describe('Knowledge base page — collections list', () => {
 describe('Knowledge base page — inside a collection', () => {
   it('says a collection is still being prepared, asks again by itself and then lists its items', async () => {
     withCollections();
-    api.hub.loadFolderData
-      .mockResolvedValueOnce({ ...engineeringContents([]), preparing: true })
-      .mockResolvedValue(engineeringContents());
+    // Preparing for every request in the first 1.5 s: the rows can only come from the page asking again by itself (after 2 s).
+    const start = Date.now();
+    api.hub.loadFolderData.mockImplementation(async () =>
+      Date.now() - start < 1_500 ? { ...engineeringContents([]), preparing: true } : engineeringContents(),
+    );
     openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
 
     expect(await screen.findByText(/Preparing this source/)).toBeTruthy();
-    expect(await screen.findByRole('row', { name: 'spec.pdf' }, { timeout: 5_000 })).toBeTruthy();
+    expect(screen.queryByText('No collection selected')).toBeNull();      // rows are coming, not missing
+    expect(screen.getByRole('status', { name: /Preparing this source/ })).toBeTruthy();
+    expect(await screen.findByRole('row', { name: 'spec.pdf' }, { timeout: 6_000 })).toBeTruthy();
     expect(screen.queryByText(/Preparing this source/)).toBeNull();
-    expect(api.hub.loadFolderData).toHaveBeenCalledTimes(2);
   });
 
   it('shows the collection name in the breadcrumb and every item in it', async () => {

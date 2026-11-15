@@ -3216,6 +3216,7 @@ function KnowledgeBasePageContent() {
           isRefreshing={isRefreshing}
           error={isAllRecordsMode ? allRecordsTableError : tableDataError}
           errorRetryable={!(isAllRecordsMode && allRecordsRefused)}
+          preparing={!!(isAllRecordsMode ? allRecordsTableData : tableData)?.preparing}
           pagination={isAllRecordsMode ? allRecordsTableData?.pagination : tableData?.pagination}
           permissions={isAllRecordsMode ? allRecordsTableData?.permissions : tableData?.permissions}
           currentNodeName={isAllRecordsMode ? currentTitle : tableData?.currentNode?.name}
