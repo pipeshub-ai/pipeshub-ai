@@ -4,12 +4,12 @@ import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties } fr
 import { Box, Flex, Tabs, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { formatDate } from '@/lib/utils/formatters';
-import { isRateLimitPause } from '@/lib/utils/rate-limit-pause';
 import { formatFileSize } from '@/app/components/file-preview/utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
 import { buildStageTrackSteps } from './stage-track-steps';
+import { indexingStatusHint } from './indexing-reason-hint';
 
 interface RecordMetadataPanelProps {
   recordDetails: RecordDetailsResponse;
@@ -233,22 +233,6 @@ function StageStep({
       <IndexingStatusChip status={status || 'NOT_STARTED'} />
       {hint ? <ReasonHintButton content={hint} ariaLabel={hintAriaLabel} /> : null}
     </Flex>
-  );
-}
-
-function shouldShowIndexingReasonTooltip(
-  status: string | undefined,
-  reason: string | undefined,
-  retryNotBefore?: number | null,
-): boolean {
-  if (!reason?.trim()) return false;
-  return (
-    isRateLimitPause(status, reason, retryNotBefore) ||
-    status === 'FAILED' ||
-    status === 'AUTO_INDEX_OFF' ||
-    status === 'FILE_TYPE_NOT_SUPPORTED' ||
-    status === 'PASSWORD_PROTECTED' ||
-    status === 'NOT_STARTED'
   );
 }
 
@@ -488,11 +472,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
     record.sourceLastModifiedTimestamp ?? record.updatedAtTimestamp,
   );
 
-  const showReasonHint = shouldShowIndexingReasonTooltip(
-    record.indexingStatus,
-    record.reason,
-    record.retryNotBefore,
-  );
+  const statusHint = indexingStatusHint(record);
   const isAttachment = record.connectorName?.toUpperCase() === 'ATTACHMENTS';
   const connectorIconType = resolveConnectorType(record.connectorId || 'generic');
   const shortConnectorId =
@@ -584,8 +564,11 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                 </Text>
                 <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
                   <IndexingStatusChip status={record.indexingStatus} />
-                  {showReasonHint && record.reason ? (
-                    <ReasonHintButton content={record.reason} ariaLabel={t('recordView.indexingReasonAria')} />
+                  {statusHint ? (
+                    <ReasonHintButton
+                      content={statusHint.content}
+                      ariaLabel={t(statusHint.kind === 'note' ? 'recordView.indexingNoteAria' : 'recordView.indexingReasonAria')}
+                    />
                   ) : null}
                 </Flex>
               </Flex>

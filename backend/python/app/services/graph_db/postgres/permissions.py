@@ -292,6 +292,14 @@ class PermissionsMixin(PgBase):
         if record:
             await self.delete_edge(user_id, "users", record.id, "records", "permission", transaction)
 
+    async def remove_user_access_to_connector(self, connector_id: str, user_id: str, transaction: str | None = None) -> int:
+        """The user's own grants on the connector's records and record groups, and their memberships of its user groups, go; grants held by a
+        group, a team or the organization stay. Returns how many edges went."""
+        return int(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.remove_user_access_to_connector */ WITH d AS (DELETE FROM graph.edges e
+            USING graph.nodes n WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = $2
+              AND e.to_coll IN ('records', 'recordGroups', 'groups') AND n.org_id = $1 AND n.coll = e.to_coll AND n.id = e.to_id
+              AND n.doc->>'connectorId' = $3 RETURNING 1) SELECT count(*) FROM d""", current_org_id(), user_id, connector_id), transaction, write=True) or 0)
+
     # ---- teams ---------------------------------------------------------------------------------------------------
     async def batch_update_team_member_roles(self, team_id: str, user_roles: list[dict[str, str]], timestamp: int, transaction: str | None = None) -> list[dict]:
         """Sets the role on each listed user's edge to the team (a user with no edge is skipped); the updated edges come back. A user named twice gets the last role."""
@@ -360,6 +368,15 @@ class PermissionsMixin(PgBase):
                 WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = $2 AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER')
             SELECT DISTINCT a.id FROM ids JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'apps' AND a.id = ids.app
             WHERE a.doc->>'orgId' = $1 AND a.doc->>'isHidden' IS DISTINCT FROM 'true'""", org_id, user_key), transaction)
+        return [r["id"] for r in rows]
+
+    async def get_hidden_app_ids(self, app_ids: list[str], transaction: str | None = None) -> list[str]:
+        """The Apps of this org among ``app_ids`` whose ``isHidden`` is true (a project's own file collection), as Neo4j and ArangoDB answer."""
+        if not app_ids:
+            return []
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_hidden_app_ids */ SELECT id FROM graph.nodes
+            WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[]) AND doc->'isHidden' = 'true'::jsonb ORDER BY id""",
+                                                 current_org_id(), list(app_ids)), transaction)
         return [r["id"] for r in rows]
 
     async def get_gated_apps(self, user_key: str, org_id: str, transaction: str | None = None) -> list[dict]:

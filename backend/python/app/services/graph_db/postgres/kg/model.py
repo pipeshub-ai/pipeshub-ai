@@ -21,9 +21,9 @@ GROUP_LIKE = ("groups", "roles", "teams")                    # what a user is a 
 PRINCIPALS = ("users", "groups", "roles", "teams", "organizations")      # the nodes a grant can come from (main's ``access_sql.PRINCIPALS``)
 HIERARCHY = ("PARENT_CHILD", "ATTACHMENT")
 EDGE_COLLS = ("permission", "belongsTo", "nodeRelations", "inheritPermissions", "userAppRelation", "authenticatedAs")
-LINK_HIERARCHY, LINK_GROUP = 1, 2                            # kg.links.kind
+LINK_HIERARCHY, LINK_GROUP, LINK_PARENT_CHILD = 1, 2, 3     # kg.links.kind; 3 (kg_0014): every PARENT_CHILD parent, the primary one too
 UAR = "@uar"                                                 # gtype of a userAppRelation row in kg.scope_members (a permission edge's gtype is its type)
-CODE_EPOCH = 5                                               # kg.projection_state.code_epoch this code writes after a verified backfill
+CODE_EPOCH = 6                                               # kg.projection_state.code_epoch this code writes after a verified backfill
 
 Key = tuple[str, str]                                        # (collection, id)
 
@@ -195,6 +195,8 @@ def record_row(k: Key, doc: dict, snap: Snapshot) -> dict:
         # a record group that hides its children: neo4j_provider._kh_v3_hidden_above (RecordGroup, coalesce(hideChildren, false))
         "hide_children": coll == "recordGroups" and flag(doc.get("hideChildren")),
         "_parents": parents[1:], "_groups": groups[1:],
+        # the parents by a PARENT_CHILD relation, which the move guards follow (ATTACHMENT is a hierarchy parent too, but not one a folder move may cycle through)
+        "_parent_child": sorted({snap.sk[e.frm] for e in parent_edges if e.doc.get("relationshipType") == "PARENT_CHILD"}),
     }
 
 
@@ -233,7 +235,8 @@ def derive(focus: set[Key], snap: Snapshot) -> Derived:
             d.records[sk] = {c: v for c, v in row.items() if not c.startswith("_")}
             d.cross_apps |= _cross_apps(k, snap)
             d.link_children.add(sk)
-            d.links |= {(p, LINK_HIERARCHY, sk) for p in row["_parents"]} | {(g, LINK_GROUP, sk) for g in row["_groups"]}
+            d.links |= ({(p, LINK_HIERARCHY, sk) for p in row["_parents"]} | {(g, LINK_GROUP, sk) for g in row["_groups"]}
+                        | {(p, LINK_PARENT_CHILD, sk) for p in row["_parent_child"]})
             d.grant_nodes.add(sk)
             for e in snap.edges_to.get(k, []):
                 if e.coll == "permission" and e.frm[0] in PRINCIPALS and snap.exists(e.frm):

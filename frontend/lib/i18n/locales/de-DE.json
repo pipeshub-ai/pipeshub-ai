@@ -5378,6 +5378,7 @@
       "noRecordMetadata": "Für dieses Element liegen keine zusätzlichen Metadaten vor."
     },
     "indexingReasonAria": "Details zur Indexierung",
+    "indexingNoteAria": "Hinweis zur Indexierung",
     "stageTrackLabel": "Pipeline",
     "stageParsed": "Geparst",
     "stageSearchable": "Durchsuchbar",
@@ -5819,6 +5820,7 @@
       "restoredMany_one": "{{count}} Element wiederhergestellt",
       "restoredMany_other": "{{count}} Elemente wiederhergestellt",
       "showing": "{{from}}–{{to}} von {{total}}",
+      "showingAtLeast": "{{from}}–{{to}} von {{total, number}}+",
       "previous": "Zurück",
       "next": "Weiter",
       "nameAndMore_one": "{{name}} und {{count}} weiteres",
