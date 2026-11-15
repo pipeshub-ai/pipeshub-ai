@@ -46,6 +46,12 @@ describe('buildInfraServices', () => {
     ]);
   });
 
+  it('draws the cache logo from the published cache mode, not the KV store type', () => {
+    const pg = { kvStoreType: 'postgres', messageBrokerType: 'postgres', graphDbType: 'postgres', vectorDbType: 'pgvector' };
+    expect(rows({ ...pg, redisMode: 'postgres' }, null)[0]).toEqual(['redis', 'postgresql']);
+    expect(rows({ ...pg, redisMode: 'standalone' }, null)[0]).toEqual(['redis', 'redis']);
+  });
+
   it('keeps the MongoDB row when the health answer is not in yet', () => {
     expect(
       rows({ kvStoreType: 'redis', messageBrokerType: 'redis', graphDbType: 'arangodb' }, null).map(([key]) => key),

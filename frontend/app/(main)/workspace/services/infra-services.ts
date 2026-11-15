@@ -13,8 +13,8 @@ export interface Deployment {
   messageBrokerType: string;
   graphDbType: string;
   vectorDbType?: string;
-  // Process-env setting (REDIS_MODE), not tied to kvStoreType -- 'standalone'
-  // (default), 'cluster', or an EE-registered mode like 'memorydb'.
+  // The cache mode the Node process runs: REDIS_MODE ('standalone', 'cluster',
+  // 'memorydb', ...), or 'postgres' when the KV store and broker are PostgreSQL.
   redisMode?: string;
 }
 
