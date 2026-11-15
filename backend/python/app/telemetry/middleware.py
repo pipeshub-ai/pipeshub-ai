@@ -7,9 +7,8 @@ drift that left the Python services entirely uninstrumented.
 
 import time
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.telemetry.identity import domain_from_email
 from app.telemetry.modules.http_metrics import (
@@ -20,23 +19,39 @@ from app.telemetry.modules.http_metrics import (
 from app.utils.route_template import route_template
 
 
-class MetricsMiddleware(BaseHTTPMiddleware):
-    """Records request count + latency for every request handled by the app."""
+class MetricsMiddleware:
+    """Records request count + latency for every request handled by the app.
+
+    Raw ASGI: behind a ``BaseHTTPMiddleware`` a route's ``Request.is_disconnected()`` always answers False.
+    """
 
     def __init__(self, app: ASGIApp, service_name: str) -> None:
-        super().__init__(app)
+        self.app = app
         self.service_name = service_name
 
-    async def dispatch(self, request: Request, call_next):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
         start = time.perf_counter()
+        elapsed: float | None = None
         status_code = 500
+
+        async def send_and_record_status(message: Message) -> None:
+            nonlocal elapsed, status_code
+            if message["type"] == "http.response.start":
+                # Latency to the response's start, not to its last byte: a stream's length is not the route's latency.
+                elapsed = time.perf_counter() - start
+                status_code = message["status"]
+            await send(message)
+
         try:
-            response = await call_next(request)
-            status_code = response.status_code
-            return response
+            await self.app(scope, receive, send_and_record_status)
         finally:
-            elapsed = time.perf_counter() - start
-            route = bound_route(route_template(request.scope))
+            if elapsed is None:
+                elapsed = time.perf_counter() - start
+            request = Request(scope)
+            route = bound_route(route_template(scope))
             org = self._org(request)
             domain = self._domain(request)
             # Never reset counters — push cumulative values, let the TSDB
