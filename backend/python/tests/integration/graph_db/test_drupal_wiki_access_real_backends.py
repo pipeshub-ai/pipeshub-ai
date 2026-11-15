@@ -21,6 +21,7 @@ from tests.integration.graph_db.drupal_wiki_world import (
     a_deleted_page_goes_on_the_next_sync,
     a_disabled_reader_loses_every_space_until_enabled_again,
     a_shared_page_reaches_the_other_spaces_readers_and_its_sub_page_does_not,
+    grants_an_older_sync_wrote_on_a_protected_space_go,
     logger,
     the_trash_personal_and_deleted_spaces_are_read_by_nobody,
 )
@@ -89,3 +90,7 @@ async def test_a_shared_page_is_read_in_both_spaces_and_its_sub_page_only_in_its
 
 async def test_the_trash_personal_and_deleted_spaces_are_read_by_nobody(world: DrupalWorld) -> None:
     await the_trash_personal_and_deleted_spaces_are_read_by_nobody(world)
+
+
+async def test_grants_an_older_sync_wrote_on_a_protected_space_go(world: DrupalWorld) -> None:
+    await grants_an_older_sync_wrote_on_a_protected_space_go(world)

@@ -908,12 +908,14 @@ class DrupalWikiConnector(BaseConnector):
         Only the space types whose readers the vendor documents are synced
         (``SYNCED_SPACE_TYPES``). An open space is read by everyone; a protected one only
         by holders of the Reader role, which no documented API names, so nobody reads it
-        here. A stored space a complete listing no longer returns, or no longer syncs, is
-        removed with its pages.
+        here. Every synced space's grants are written each run, which takes back what an
+        earlier sync granted. A stored space this run does not sync (gone, of a type no
+        longer synced, or left out by the space filter) is removed with its pages, so no
+        grant it carries is left behind.
         """
         allowed_ids, exclude_ids = self._get_space_id_filters()
         spaces: dict[int, dict[str, Any]] = {}
-        listed: set[str] = set()
+        listed_any = False
 
         page = 0
         while True:
@@ -930,9 +932,9 @@ class DrupalWikiConnector(BaseConnector):
                         "Ignoring a Drupal Wiki space that arrived without a usable id"
                     )
                     continue
+                listed_any = True
                 if (space.get("type") or "").upper() not in SYNCED_SPACE_TYPES:
                     continue
-                listed.add(str(space_id))
                 if allowed_ids and str(space_id) not in allowed_ids:
                     continue
                 if exclude_ids and str(space_id) in exclude_ids:
@@ -963,27 +965,27 @@ class DrupalWikiConnector(BaseConnector):
                 break
             page += 1
 
-        await self._run_phase("removed spaces", self._remove_spaces_gone(listed))
+        if listed_any:
+            # A listing with no space at all is a misread and removes nothing.
+            await self._run_phase("removed spaces", self._remove_spaces_gone({str(s) for s in spaces}))
         self.logger.info("Synced %d Drupal Wiki space(s)", len(spaces))
         return spaces
 
-    async def _remove_spaces_gone(self, listed: set[str]) -> None:
-        """Remove each stored space the complete listing no longer returns as a synced type,
-        with its pages: deleting a space deletes everything in it
-        (https://help.drupal-wiki.com/node/505: "Bei der Löschung eines Spaces werden der und
-        alle enthaltenen Inhalte unwiederbringlich gelöscht!"). A space the token can no
-        longer see, or of a type no longer synced (the trash, a personal space), goes too.
-        A listing with no space at all is a misread and removes nothing.
+    async def _remove_spaces_gone(self, synced: set[str]) -> None:
+        """Remove each stored space this run did not sync, with its pages: deleting a space
+        deletes everything in it (https://help.drupal-wiki.com/node/505: "Bei der Löschung
+        eines Spaces werden der und alle enthaltenen Inhalte unwiederbringlich gelöscht!").
+        A space the token can no longer see, of a type no longer synced (the trash, a
+        personal space), or left out by the space filter goes too: its stored grants were
+        written under rules that may no longer hold.
         """
-        if not listed:
-            return
         stored = await self.data_entities_processor.get_nodes_by_filters(
             CollectionNames.RECORD_GROUPS.value, {"connectorId": self.connector_id},
             return_fields=["externalGroupId"], raise_on_error=True,
         )
         for group in stored:
             external_id = str(group.get("externalGroupId") or "")
-            if not external_id or external_id in listed:
+            if not external_id or external_id in synced:
                 continue
             self.logger.info("Drupal Wiki no longer lists the space %s as one to sync; removing it", external_id)
             # False also for a group already gone; a failure leaves it for the next run.

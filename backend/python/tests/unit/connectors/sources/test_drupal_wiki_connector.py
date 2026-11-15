@@ -469,8 +469,9 @@ class TestSpaces:
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
         # Deleting a space deletes its content (node 505). A stored trash space from an
-        # older version goes too; a space only left out by the filter stays for the full
-        # sync a filter change starts.
+        # older version goes too, and so does a space the filter leaves out: the grants an
+        # earlier sync wrote on it (every role holder of a protected space) would otherwise
+        # stay with its pages.
         connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page([
             {"id": 3, "name": "Team", "type": "BASIC", "accessStatus": "AUTHENTICATED"},
             {"id": 4, "name": "Other", "type": "BASIC", "accessStatus": "AUTHENTICATED"},
@@ -486,7 +487,9 @@ class TestSpaces:
 
         await connector._sync_spaces()
 
-        assert [c.args for c in processor.on_record_group_deleted.await_args_list] == [("5", "conn-1"), ("91", "conn-1")]
+        assert [c.args for c in processor.on_record_group_deleted.await_args_list] == [
+            ("4", "conn-1"), ("5", "conn-1"), ("91", "conn-1"),
+        ]
 
     @pytest.mark.asyncio
     async def test_an_empty_space_listing_removes_nothing(

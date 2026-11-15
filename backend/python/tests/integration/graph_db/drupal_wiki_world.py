@@ -18,13 +18,31 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.config.constants.arangodb import CollectionNames, Connectors
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
-from app.connectors.core.registry.filters import FilterCollection
+from app.connectors.core.registry.filters import (
+    Filter,
+    FilterCollection,
+    FilterType,
+    MultiselectOperator,
+)
 from app.connectors.sources.drupal_wiki.connector import DrupalWikiConnector
+from app.models.entities import (
+    AppUser,
+    RecordGroup,
+    RecordGroupType,
+    RecordType,
+    WebpageRecord,
+)
+from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = logging.getLogger("drupal-wiki-access-it")
@@ -177,7 +195,11 @@ class DrupalWorld:
             send_event=AsyncMock(return_value=True),
         )
 
-    async def sync(self) -> None:
+    async def sync(self, *, excluded_spaces: tuple[int, ...] = ()) -> None:
+        filters = FilterCollection(filters=[Filter(
+            key="space_ids", type=FilterType.LIST, operator=MultiselectOperator.NOT_IN,
+            value=[str(s) for s in excluded_spaces],
+        )]) if excluded_spaces else FilterCollection()
         connector = DrupalWikiConnector(
             logger, self.processor, GraphDataStore(logger, self.graph), MagicMock(), self.connector_id, "team", "it",
         )
@@ -186,11 +208,31 @@ class DrupalWorld:
         connector.graphql = self.wiki
         connector.notify = AsyncMock()
         with patch("app.connectors.sources.drupal_wiki.connector.load_connector_filters",
-                   AsyncMock(return_value=(FilterCollection(), FilterCollection()))), \
+                   AsyncMock(return_value=(filters, FilterCollection()))), \
              patch("app.connectors.core.base.data_processor.data_source_entities_processor.is_soft_delete_enabled",
                    AsyncMock(return_value=False)):
             await connector.run_sync()
         assert connector._failures == [], connector._failures
+
+    async def store_as_an_older_sync_did(self) -> None:
+        """The protected space and its page as a sync that granted every role holder read wrote them: alice holds a
+        grant on the space, and the page inherits it."""
+        await self.processor.on_new_app_users([AppUser(
+            app_name=Connectors.DRUPAL_WIKI, connector_id=self.connector_id, org_id=self.org_id, source_user_id="1",
+            email=ALICE, full_name="alice", is_active=True,
+        )])
+        await self.processor.on_new_record_groups([(RecordGroup(
+            org_id=self.org_id, name="Private", external_group_id=str(PRIVATE_SPACE), connector_name=Connectors.DRUPAL_WIKI,
+            connector_id=self.connector_id, group_type=RecordGroupType.DRUPAL_WIKI_SPACE, inherit_permissions=False,
+        ), [Permission(external_id=None, email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER)])])
+        await self.processor.on_new_records([(WebpageRecord(
+            org_id=self.org_id, record_name="Page 10", record_type=RecordType.WEBPAGE,
+            external_record_id=f"page:{PRIVATE_PAGE}", external_revision_id="1000",
+            external_record_group_id=str(PRIVATE_SPACE), record_group_type=RecordGroupType.DRUPAL_WIKI_SPACE, version=0,
+            origin=OriginTypes.CONNECTOR, connector_name=Connectors.DRUPAL_WIKI, connector_id=self.connector_id,
+            mime_type=MimeTypes.HTML.value, weburl="https://wiki.test/node/10", inherit_permissions=True,
+        ), [])])
+        assert f"page:{PRIVATE_PAGE}" in (await self.observed())[ALICE], "control: the old grant opens the page"
 
     async def observed(self) -> dict[str, set[str]]:
         ids = {}
@@ -260,3 +302,15 @@ async def the_trash_personal_and_deleted_spaces_are_read_by_nobody(world: Drupal
     await world.sync()
     await world.check("open space deleted, with its page")
     assert await world.processor.get_record_by_external_id(world.connector_id, f"page:{OPEN_PAGE}") is None
+
+
+async def grants_an_older_sync_wrote_on_a_protected_space_go(world: DrupalWorld) -> None:
+    """Every role holder was once granted a protected space; the first sync takes that back, whether the space is
+    synced or left out by the filter."""
+    await world.store_as_an_older_sync_did()
+    await world.sync(excluded_spaces=(PRIVATE_SPACE,))
+    await world.check("protected space left out by the filter")
+    assert await world.processor.get_record_by_external_id(world.connector_id, f"page:{PRIVATE_PAGE}") is None
+    await world.store_as_an_older_sync_did()
+    await world.sync()
+    await world.check("protected space synced")
