@@ -8,6 +8,13 @@
 # When the archive queue cap made the server drop WAL (pgbackrest-archive-push.sh adds a file per drop to the gap directory in the shared
 # socket directory), restores cannot cross that point until a newer full backup exists: the service turns unhealthy, says so, and takes a
 # full backup at once. That backup removes only the files it listed before it started, so a drop during the backup keeps the gap open.
+#
+# Restoring up to a gap needs the newest backup taken before it (`pg-restore.sh latest --set <label>`), which the next full backups would
+# expire by retention. pgBackRest has no per-backup pin, so while drops are marked or a gap hold exists, backups run with --no-expire-auto
+# (expire-auto: "Automatically run the expire command after a successful backup", default y; "The no- prefix may be used to set a boolean
+# option to false on the command-line", https://pgbackrest.org/command.html): nothing expires until an operator runs
+#   pg-backup.sh clear-gap-hold
+# which removes the hold and expires by retention at once (the expire command "can also be run by the user").
 set -uo pipefail
 full_s=$(( ${PG_BACKUP_FULL_DAYS:-7} * 86400 ))
 incr_s=$(( ${PG_BACKUP_INCR_HOURS:-6} * 3600 ))
@@ -15,6 +22,22 @@ retry_s="${PG_BACKUP_RETRY_SECS:-300}"
 ok="${PG_BACKUP_OK_FILE:-/tmp/pg-backup.ok}"   # the healthcheck: present only while the last attempt succeeded and WAL has no gap
 gaps="${PG_WAL_GAP_DIR:-/var/run/postgresql/pgbackrest-wal-gap.d}"
 drops() { ls -A "$gaps" 2>/dev/null; }   # one name per dropped segment, in WAL order
+hold="${PG_WAL_GAP_HOLD:-/var/run/postgresql/pgbackrest-gap-hold}"   # "<label of the newest backup before the gap> <first dropped segment>"
+
+if [ "${1:-}" = clear-gap-hold ]; then
+  if [ -n "$(drops)" ]; then echo "pg-backup: WAL drops are still uncovered by a full backup; the hold stays" >&2; exit 1; fi
+  if [ -e "$hold" ]; then echo "pg-backup: clearing the gap hold ($(cat "$hold")); expiring by retention now"; rm -f "$hold"; fi
+  exec pgbackrest expire
+fi
+
+# The newest backup that stopped before the first drop was noticed: one that stopped later needed WAL past the gap (archive-check).
+pre_gap_label() {
+  local t; t="$(stat -c %Y "$gaps/$(drops | head -1)")" || return 1
+  pgbackrest --log-level-console=warn --output=json info | perl -MJSON::PP -e '
+    my ($t) = @ARGV; my $l = "";
+    for my $s (@{ decode_json(join "", <STDIN>) }) { for my $b (@{ $s->{backup} || [] }) { $l = $b->{label} if $b->{timestamp}{stop} < $t } }
+    print $l;' "$t"
+}
 
 # Recovery replays segments in order and cannot cross a missing one, so the gap starts at the earliest dropped segment, whatever later ones
 # hold. Its first commit, if known, is the first transaction lost; the last reachable point is the last commit before that segment.
@@ -32,8 +55,11 @@ gap_report() {
     echo "pg-backup: point-in-time restore cannot reach past segment $first until the next full backup: from segment $first" \
          "(no commit time known), so the last reachable point is before $first, possibly before the time it was noticed."
   fi
+  local label; label="$(cut -d' ' -f1 "$hold" 2>/dev/null)"
   echo "pg-backup: to restore up to the gap, restore the end of the archive from the newest backup taken before it:" \
-       "scripts/pg-restore.sh latest --set <its label from pgbackrest info>; a time target needs a later commit before the gap to stop at."
+       "scripts/pg-restore.sh latest --set ${label:-<its label from pgbackrest info>}; a time target needs a later commit before the gap to stop at."
+  echo "pg-backup: nothing is expired while this gap is held, so that backup stays; when you no longer need it:" \
+       "docker compose exec pg-backup pg-backup.sh clear-gap-hold"
   echo "pg-backup: taking a full backup now."
 }
 
@@ -57,6 +83,10 @@ done
 while :; do
   if [ -n "$(drops)" ]; then
     rm -f "$ok"
+    if [ ! -s "$hold" ]; then
+      label="$(pre_gap_label 2>/dev/null)" || label=""
+      if [ -n "$label" ]; then echo "$label $(drops | head -1)" > "$hold"; fi
+    fi
     gap_report >&2
     type=full
   elif ! read -r since_full since_any < <(ages); then
@@ -73,8 +103,16 @@ while :; do
   # the first backup of a new repository can take hours: healthy while it runs, unless WAL was dropped
   if [ "${since_any:-0}" -ge "$full_s" ] && [ "${since_full:-0}" -ge 1000000000000000 ] && [ -z "$(drops)" ]; then touch "$ok"; fi
   covered="$(drops)"
-  if pgbackrest backup --type="$type"; then
+  expire=; if [ -n "$(drops)" ] || [ -e "$hold" ]; then
+    expire=--no-expire-auto; echo "pg-backup: keeping every backup (no expire) while a WAL gap is held: $(cat "$hold" 2>/dev/null)"
+  fi
+  if pgbackrest backup --type="$type" ${expire:+"$expire"}; then
     if [ "$type" = full ] && [ -n "$covered" ]; then
+      # the hold, if the repository could not be read while the drops were noticed (the drop files date the gap)
+      if [ ! -s "$hold" ]; then
+        label="$(pre_gap_label 2>/dev/null)" || label=""
+        if [ -n "$label" ]; then echo "$label $(drops | head -1)" > "$hold"; fi
+      fi
       (cd "$gaps" && echo "$covered" | xargs rm -f --)
       echo "pg-backup: the drops before this full backup are covered by it"
     fi

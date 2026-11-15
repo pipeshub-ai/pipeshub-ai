@@ -12,12 +12,15 @@ check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got '$2',
 cat > "$work/pgbackrest" <<'EOF'
 #!/bin/sh
 case "$*" in
-  *info*) cat "$STUB_INFO" ;;
+  *info*) # STUB_INFO_FAIL_UNTIL_BACKUP: the repository cannot be read until a backup has run
+    if [ -n "${STUB_INFO_FAIL_UNTIL_BACKUP:-}" ] && ! grep -q backup "$STUB_LOG"; then exit 1; fi
+    cat "$STUB_INFO" ;;
   *backup*) # the first STUB_BACKUPS backups (default none) return; the next one ends the script
     echo "$*" >> "$STUB_LOG"; n=$(grep -c backup "$STUB_LOG")
     if [ -e "$PG_BACKUP_OK_FILE" ]; then echo "healthy during backup" >> "$STUB_LOG.health"; else echo "unhealthy during backup" >> "$STUB_LOG.health"; fi
     if [ "$n" -gt "${STUB_BACKUPS:-0}" ]; then kill -TERM "$PPID"; exit 1; fi
     [ -z "${STUB_DROP_DURING_BACKUP:-}" ] || : > "$STUB_DROP_DURING_BACKUP" ;;
+  *expire*) echo "$*" >> "$STUB_LOG" ;;
   *archive-push*)
     echo "queue max: ${PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX-unset}"
     # a warning goes to stderr when the stderr level (option over environment, default off) takes it, else to stdout when the console
@@ -35,12 +38,12 @@ chmod +x "$work/pgbackrest" "$work/sleep"
 
 decide() { # info JSON -> what the loop did first
   printf '%s' "$1" > "$work/info.json"; : > "$work/log"
-  PATH="$work:$PATH" PG_BACKUP_OK_FILE="$work/ok" PG_WAL_GAP_DIR="$work/gaps" STUB_INFO="$work/info.json" STUB_LOG="$work/log" \
+  PATH="$work:$PATH" PG_BACKUP_OK_FILE="$work/ok" PG_WAL_GAP_DIR="$work/gaps" PG_WAL_GAP_HOLD="$work/hold" STUB_INFO="$work/info.json" STUB_LOG="$work/log" \
     PG_BACKUP_FULL_DAYS="${FULL_DAYS:-7}" PG_BACKUP_INCR_HOURS=6 timeout 10 bash "$here/postgres/pg-backup.sh" >"$work/out" 2>&1 || true
   head -1 "$work/log"
 }
 now=$(date +%s)
-backup() { printf '{"type":"%s","timestamp":{"start":%d,"stop":%d}}' "$1" $((now - $2)) $((now - $2)); }
+backup() { printf '{"label":"%s-%s","type":"%s","timestamp":{"start":%d,"stop":%d}}' "$1" "$2" "$1" $((now - $2)) $((now - $2)); }
 recent="[{\"backup\":[$(backup full 86400),$(backup incr 3600)]}]"
 
 check "no backup yet: a full one" "$(decide '[{"backup":[]}]')" "backup --type=full"
@@ -63,7 +66,8 @@ check "restarted with an unreadable repository: not healthy" "$([ -e "$work/ok" 
 gaps="$work/gaps"; mkdir -p "$gaps"
 open_gap() { [ -n "$(ls -A "$gaps")" ] && echo open || echo closed; }
 touch "$work/ok"; : > "$gaps/000000010000000000000015"; echo "2026-11-15 10:01:02.123456 UTC" > "$gaps/000000010000000000000016"
-check "dropped WAL: a full backup at once" "$(decide "$recent")" "backup --type=full"
+check "dropped WAL: a full backup at once, expiring nothing" "$(decide "$recent")" "backup --type=full --no-expire-auto"
+check "dropped WAL: the newest backup before the first drop is held" "$(cat "$work/hold")" "incr-3600 000000010000000000000015"
 check "dropped WAL: unhealthy" "$([ -e "$work/ok" ] && echo healthy || echo unhealthy)" unhealthy
 check "dropped WAL: the log names the first and last dropped segment" \
   "$(grep -c 'dropped WAL segments 000000010000000000000015 to 000000010000000000000016 (noticed' "$work/out")" 1
@@ -71,7 +75,8 @@ check "dropped WAL: the log names the first and last dropped segment" \
 check "the gap starts at the earliest dropped segment even when only a later one has a commit time" \
   "$(grep -c 'cannot reach past segment 000000010000000000000015 until the next full backup: from segment 000000010000000000000015 (no commit time known), so the last reachable point is before 000000010000000000000015' "$work/out")" 1
 check "and the later segment's commit is not given as the gap's start" "$(grep -c '10:01:02' "$work/out")" 0
-check "the log says how to restore up to the gap" "$(grep -c 'scripts/pg-restore.sh latest --set <its label from pgbackrest info>' "$work/out")" 1
+check "the log says how to restore up to the gap, with the held backup" "$(grep -c 'scripts/pg-restore.sh latest --set incr-3600;' "$work/out")" 1
+check "and how to clear the hold" "$(grep -c 'docker compose exec pg-backup pg-backup.sh clear-gap-hold' "$work/out")" 1
 echo "2026-11-15 09:59:00.000001 UTC" > "$gaps/000000010000000000000015"; decide "$recent" >/dev/null 2>&1
 check "with a commit in the earliest dropped segment: that commit is the first one lost" \
   "$(grep -c 'cannot reach past the start of segment 000000010000000000000015 until the next full backup: its first transaction, committed at 2026-11-15 09:59:00.000001 UTC, is the first one lost' "$work/out")" 1
@@ -80,12 +85,31 @@ rm -f "$work/ok"
 STUB_BACKUPS=1 decide "$recent" >/dev/null 2>&1
 check "a full backup after the drops closes the gap" "$(open_gap)" closed
 check "and the service is healthy again" "$([ -e "$work/ok" ] && echo healthy || echo unhealthy)" healthy
+check "the hold outlives the gap" "$(cut -d' ' -f1 "$work/hold")" "incr-3600"
+check "a scheduled backup after the gap still expires nothing" \
+  "$(decide "[{\"backup\":[$(backup full 691200),$(backup incr 3600)]}]")" "backup --type=full --no-expire-auto"
 # WAL dropped again while that full backup ran: that drop is not removed, still unhealthy
 : > "$gaps/000000010000000000000020"
 STUB_BACKUPS=1 STUB_DROP_DURING_BACKUP="$gaps/000000010000000000000021" decide "$recent" >/dev/null 2>&1
 check "a drop during the full backup keeps the gap open" "$(ls "$gaps")" "000000010000000000000021"
 check "and the service unhealthy" "$([ -e "$work/ok" ] && echo healthy || echo unhealthy)" unhealthy
 rm -f "$gaps"/*
+
+# clearing the hold: refused while drops are uncovered; otherwise the hold goes and retention applies at once
+clear_hold() { : > "$work/log"; env PATH="$work:$PATH" PG_WAL_GAP_DIR="$gaps" PG_WAL_GAP_HOLD="$work/hold" STUB_LOG="$work/log" \
+  bash "$here/postgres/pg-backup.sh" clear-gap-hold >/dev/null 2>&1; echo "$? $(cat "$work/log")"; }
+: > "$gaps/000000010000000000000030"
+check "clear-gap-hold is refused while a drop is uncovered" "$(clear_hold)" "1 "
+check "and the hold stays" "$([ -e "$work/hold" ] && echo held)" held
+rm -f "$gaps"/*
+check "clear-gap-hold removes the hold and expires by retention" "$(clear_hold)" "0 expire"
+check "the hold is gone" "$([ -e "$work/hold" ] && echo held || echo gone)" gone
+check "without a hold or drops, backups expire as usual" "$(decide "[{\"backup\":[$(backup full 691200),$(backup incr 3600)]}]")" "backup --type=full"
+# a hold also forms when the repository could not be read while the drops were noticed: from the gap-closing full backup
+: > "$gaps/000000010000000000000040"; rm -f "$work/hold"
+STUB_INFO_FAIL_UNTIL_BACKUP=1 STUB_BACKUPS=1 decide "$recent" >/dev/null 2>&1
+check "a hold forms at the gap-closing backup when the repository was unreadable before" "$(cut -d' ' -f1 "$work/hold" 2>/dev/null)" "incr-3600"
+rm -f "$work/hold" "$gaps"/*
 
 # pg_waldump stub: the first transaction of the segment, as pg_waldump --rmgr=Transaction prints it (empty with STUB_NO_COMMIT; hangs
 # with STUB_WALDUMP_HANG); its arguments go to $STUB_WALDUMP_ARGS

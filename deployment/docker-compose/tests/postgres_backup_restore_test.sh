@@ -45,8 +45,8 @@ envfile() { # major image
     # 17: the repository in a host directory that does not exist yet, as PG_BACKUP_REPO gives it (Docker creates it, owned by root);
     # 18: the default named volume. Both are new, as on a first start.
     if [ "$1" = 17 ]; then echo "PG_BACKUP_REPO=$work/repo-$1"; fi; } > "$work/env$1"
-  # retention 5: the WAL-gap checks restore from the backup before the outage, after the full backups the outage triggers
-  printf 'PGBACKREST_REPO1_RETENTION_FULL=5\nPGBACKREST_COMPRESS_TYPE=zst\nPGBACKREST_START_FAST=y\nPGBACKREST_ARCHIVE_PUSH_QUEUE_MAX=128MiB\n%s' \
+  # the default retention: the full backups an outage triggers would expire the backup before it, but for the gap hold
+  printf 'PGBACKREST_REPO1_RETENTION_FULL=2\nPGBACKREST_COMPRESS_TYPE=zst\nPGBACKREST_START_FAST=y\nPGBACKREST_ARCHIVE_PUSH_QUEUE_MAX=128MiB\n%s' \
     "${DRILL_PGBACKREST_EXTRA:-}" > "$work/pgbackrest.env"
 }
 # the stack exactly as postgres/README.md and the docs give it (document-store file and profiles included), through COMPOSE_FILE,
@@ -235,6 +235,8 @@ for major in ${DRILL_MAJORS:-17 18}; do
   [ -n "$lost" ] && { scripts/pg-restore.sh "$lost" --into "$copy" > "$work/gap-t.log" 2>&1 || rc=$?; }
   check "$major: a restore to the first lost commit fails, recovery ending at the gap" \
     "$rc $(grep -q 'recovery ended before configured recovery target was reached' "$work/gap-t.log" 2>/dev/null && echo ended)" "1 ended"
+  check "$major: the backup before the outage is held against expiry" \
+    "$(dc exec -T pg-backup sh -c 'cut -d" " -f1 /var/run/postgresql/pgbackrest-gap-hold')" "$label_pre"
   copy="${proj}_pg_restore_upto_gap_$$"; copies+=("$copy")
   if scripts/pg-restore.sh latest --set "$label_pre" --into "$copy" > "$work/gap-l.log" 2>&1; then
     check "$major: the end of the archive from the backup before the gap: the schemas the outage did not write are as before it" \
@@ -247,6 +249,8 @@ for major in ${DRILL_MAJORS:-17 18}; do
   else
     echo "FAIL $major: pg-restore.sh latest --set $label_pre:"; tail -20 "$work/gap-l.log"; fail=1
   fi
+  check "$major: clear-gap-hold removes the hold and expires by retention" \
+    "$(dc exec -T pg-backup pg-backup.sh clear-gap-hold > "$work/clear.log" 2>&1 && dc exec -T pg-backup sh -c '! test -e /var/run/postgresql/pgbackrest-gap-hold' && grep -q 'expire command end: completed successfully' "$work/clear.log" && echo ok)" ok
   # the healthcheck itself fails as soon as a drop is marked, even while the last backup's success is still recorded
   hc="$($DOCKER inspect -f '{{index .Config.Healthcheck.Test 1}}' "$proj-pg-backup-1")"
   check "$major: the healthcheck passes with no drop marked" "$($DOCKER exec "$proj-pg-backup-1" sh -c "$hc" && echo pass || echo fail)" pass
