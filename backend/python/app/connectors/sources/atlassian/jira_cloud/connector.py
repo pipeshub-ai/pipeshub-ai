@@ -530,6 +530,9 @@ class JiraConnector(BaseConnector):
         # Keys of the projects whose scheme grants an application role the unread role list
         # could not map: their access list may be partial this sync.
         self._projects_naming_unread_roles: set[str] = set()
+        # True while sub-tasks are read again for their parents: Jira copies a parent's level onto them without
+        # moving their ``updated``, so one read this way is not known to be unchanged.
+        self._rereading_children: bool = False
         # True when the group list stopped on something other than 401/403 (rate limit, outage,
         # dropped connection): the groups are there and could not be read this time.
         self._group_fetch_interrupted: bool = False
@@ -2937,8 +2940,10 @@ class JiraConnector(BaseConnector):
 
     def _keeps_stored_grants(self, record: Record) -> bool:
         context = self._issue_security.get(getattr(record, "external_record_group_id", None))
+        # Every issue access path sets rewrite_permissions, except the ones that keep the stored grants (holders,
+        # a level or its roles unread): those must not reach a full sync's first write, which replaces them.
         return (
-            context is not None and context.enforce and context.browse_holders is None
+            context is not None and context.enforce
             and isinstance(record, TicketRecord) and not getattr(record, "rewrite_permissions", False)
         )
 
@@ -4540,10 +4545,12 @@ class JiraConnector(BaseConnector):
         none, so its issues close at once. One write per level, whatever the number of its issues."""
         groups: list[tuple[RecordGroup, list[Permission]]] = []
         for level_id in level_ids:
-            if level_id in security.held_levels:
-                # Its roles' groups are unknown: the stored group stays, seen by a full sync.
-                await self.data_entities_processor.note_kept_record_group(
-                    self.connector_id, level_group_external_id(project_id, level_id))
+            external_id = level_group_external_id(project_id, level_id)
+            if level_id in security.held_levels and await \
+                    self.data_entities_processor.get_record_group_by_external_id(self.connector_id, external_id) is not None:
+                # Its roles' groups are unknown: the stored group stays, seen by a full sync. One never stored is
+                # written below with the holders that resolved (the roles' groups left out), so its issues join it.
+                await self.data_entities_processor.note_kept_record_group(self.connector_id, external_id)
                 continue
             grants, skipped = level_group_grants(
                 security.members_by_level.get(level_id, []), project_key=project_key,
@@ -4552,7 +4559,6 @@ class JiraConnector(BaseConnector):
             if skipped:
                 self.logger.warning(
                     f"Security level {level_id} of {project_key}: holders of type {skipped} were not granted")
-                external_id = level_group_external_id(project_id, level_id)
                 # A refused role list (applicationrole, 403: "Returned if the user is not an administrator",
                 # https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-application-roles/) leaves the
                 # role's groups unknown, not empty, as an unread one does.
@@ -4649,13 +4655,17 @@ class JiraConnector(BaseConnector):
         is read by everyone who reads the story, so an epic's new level moves its stories.
         """
         ids = list(dict.fromkeys(i for i in parent_ids if i and str(i).isdigit()))
-        for start in range(0, len(ids), SUBTASK_REREAD_CHUNK):
-            async for batch, _more, _ts in self._fetch_issues_batched(
-                project_key, project_id, users, None, None, is_new_project=True,
-                stored_only=True, parent_ids=ids[start:start + SUBTASK_REREAD_CHUNK],
-            ):
-                if batch:
-                    await self._process_new_records(batch, project_key, stats)
+        self._rereading_children = True
+        try:
+            for start in range(0, len(ids), SUBTASK_REREAD_CHUNK):
+                async for batch, _more, _ts in self._fetch_issues_batched(
+                    project_key, project_id, users, None, None, is_new_project=True,
+                    stored_only=True, parent_ids=ids[start:start + SUBTASK_REREAD_CHUNK],
+                ):
+                    if batch:
+                        await self._process_new_records(batch, project_key, stats)
+        finally:
+            self._rereading_children = False
 
     async def _reread_leveled_issues(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
@@ -5432,6 +5442,7 @@ class JiraConnector(BaseConnector):
                 reporter_email=reporter_email,
                 assignee_email=assignee_email,
                 project_id=project_id,
+                stored_unchanged=not (is_new or is_placeholder or is_issue_changed or self._rereading_children),
             )
             if skipped_holders and (logged := (project_id, read_security_level(fields)[1], ",".join(skipped_holders))) \
                     not in self._skipped_holders_logged:

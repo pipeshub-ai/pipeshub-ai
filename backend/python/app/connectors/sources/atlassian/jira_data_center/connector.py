@@ -4894,6 +4894,7 @@ class JiraDataCenterConnector(BaseConnector):
                         app_roles_mapping=self._app_roles_mapping,
                         reporter_email=reporter_email,
                         assignee_email=assignee_email,
+                        stored_unchanged=not (is_new or is_placeholder or is_issue_changed or self._rereading_children),
                     )
                     if (
                         issue_record.access_rule == AccessRule.RESTRICTED and not issue_record.rewrite_permissions

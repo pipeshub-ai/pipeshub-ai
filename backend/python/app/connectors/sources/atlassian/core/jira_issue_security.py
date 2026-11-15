@@ -700,6 +700,7 @@ def apply_issue_access_settled(
     reporter_email: str | None = None,
     assignee_email: str | None = None,
     project_id: str | None = None,
+    stored_unchanged: bool = False,
 ) -> tuple[list[Permission], list[str], bool]:
     """Set the issue's access rule and return the grants to write, the holder types
     skipped, and whether the result is settled. Settled means the level (or its
@@ -742,12 +743,17 @@ def apply_issue_access_settled(
     record.inherit_permissions_from_group = False
     users = user_by_account_id or {}
     present, level_id = read_security_level(fields)
+    # A level naming an application role while the roles are unknown: an issue taking the level's group joins it as
+    # usual (the group keeps what is stored); one holding a copy of the level's holders keeps it when unchanged.
+    held = level_id in context.held_levels
+    grouped = project_id is not None and level_id in context.members_by_level and not is_subtask
     security = fields.get("security") if isinstance(fields, dict) else None
 
     def close() -> tuple[list[Permission], list[str], bool]:
         # RESTRICTED with no grant hides the issue. A transient failure is
-        # retried, so the grants already stored stay until that retry; so do a held level's.
-        keep = context.defer_checkpoint or level_id in context.held_levels
+        # retried, so the grants already stored stay until that retry; so do those of an unchanged
+        # issue on a held level that holds a copy of its level's holders.
+        keep = context.defer_checkpoint or (held and not grouped and stored_unchanged)
         if keep:
             record.access_group_external_id = None  # and so does its level's group, with its stored rule
         record.access_rule = AccessRule.RESTRICTED
@@ -794,13 +800,15 @@ def apply_issue_access_settled(
     if level_id is None:
         return project_open()
 
-    if not context.members_readable or level_id in context.held_levels:
+    if not context.members_readable:
         # Includes a Data Center that has no member route. A leveled issue stays
         # closed rather than opening to everyone who can browse the project.
         return close()
 
     holders = context.members_by_level.get(level_id, [])
-    grouped = project_id is not None and level_id in context.members_by_level and not is_subtask
+    if held and not grouped and stored_unchanged:
+        # Its stored copy names the role's groups, which this sync cannot read: keep it as it is.
+        return close()
     if grouped:
         holders = [h for h in holders if isinstance(h, dict) and h.get("type") not in _SAME_ON_EVERY_ISSUE]
     grants, unreadable, skipped = level_grants(
@@ -822,13 +830,17 @@ def apply_issue_access_settled(
         # A grant of an OPEN record admits on its own (a seed), so the issue is OPEN only when every grant it holds is to someone
         # Jira shows it to without the project: Browse named on this issue, and named by its level.
         alone_keys = {_grant_key(g) for g in alone}
+        # On a held level the issue joins the level's group as usual; not settled, so a reindex, which would write the
+        # group, leaves the stored record and group alone.
         if alone and all(_grant_key(g) in alone_keys for g in grants):
             record.access_rule = AccessRule.OPEN
-            return alone, skipped, True
+            return alone, skipped, not held
         record.access_rule = AccessRule.STRICT
-        return grants, skipped, True
+        return grants, skipped, not held
     record.access_rule = AccessRule.RESTRICTED
-    return grants, skipped, True
+    # On a held level (a new or changed issue, so nothing of this level may be stored): the holders that resolved,
+    # the role's groups left out until a sync reads them; not settled, so a reindex leaves the stored record.
+    return grants, skipped, not held
 
 
 def _grant_key(grant: Permission) -> tuple[str, str]:
@@ -867,6 +879,7 @@ def apply_issue_access(
     reporter_email: str | None = None,
     assignee_email: str | None = None,
     project_id: str | None = None,
+    stored_unchanged: bool = False,
 ) -> tuple[list[Permission], list[str]]:
     """``apply_issue_access_settled`` without the settled flag: the grants to write
     and the holder types skipped."""
@@ -874,6 +887,7 @@ def apply_issue_access(
         record, fields, is_subtask=is_subtask, project_key=project_key, context=context,
         user_by_account_id=user_by_account_id, app_roles_mapping=app_roles_mapping,
         reporter_email=reporter_email, assignee_email=assignee_email, project_id=project_id,
+        stored_unchanged=stored_unchanged,
     )
     return grants, skipped
 

@@ -267,5 +267,19 @@ class TestRefusedRoleList:
         grants, _ = apply_issue_access(plain, {"security": {"id": "2"}}, is_subtask=False, project_key="P", context=security)
         assert plain.rewrite_permissions and [g.external_id for g in grants] == ["g-new"]
         held = _ticket()
-        grants, _ = apply_issue_access(held, {"security": {"id": "1"}}, is_subtask=False, project_key="P", context=security)
-        assert (grants, held.rewrite_permissions) == ([], False)
+        grants, _ = apply_issue_access(held, {"security": {"id": "1"}}, is_subtask=False, project_key="P", context=security,
+                                       stored_unchanged=True)
+        assert (grants, held.rewrite_permissions) == ([], False)  # its stored copy names the role's groups
+
+    def test_a_new_or_moved_issue_on_a_held_level_gets_the_holders_that_resolved(self) -> None:
+        """Nothing of this level may be stored for it: its old grants must not survive. The role's groups are left out
+        (narrower) until a sync reads them; a group holder of the level is granted."""
+        connector = _connector()
+        connector._app_roles_forbidden, connector._app_roles_mapping = True, {}
+        security = connector._security_with_roles(IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={
+                "1": [{"type": "applicationRole", "parameter": "jira-software"}, {"type": "group", "value": "g-2"}]}))
+        issue = _ticket()
+        grants, _ = apply_issue_access(issue, {"security": {"id": "1"}}, is_subtask=False, project_key="P", context=security)
+        assert (issue.access_rule, issue.rewrite_permissions, [g.external_id for g in grants]) == (
+            AccessRule.RESTRICTED, True, ["g-2"])
