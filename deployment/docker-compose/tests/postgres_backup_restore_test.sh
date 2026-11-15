@@ -131,6 +131,10 @@ for major in ${DRILL_MAJORS:-17 18}; do
   healthy pg-backup || { echo "FAIL $major: pg-backup is not healthy after its first backup"; dc logs pg-backup | tail -30; fail=1; continue; }
   full_s=$(backup_secs full); echo "info $major: full backup took ${full_s}s"
   check "$major: the scheduler's first backup is a full one" "$([ "$full_s" != none ] && echo yes)" yes
+  # the documented way to confirm protection
+  check "$major: pgbackrest info shows status ok and a full backup" \
+    "$(dc exec -T pg-backup pgbackrest info | grep -E 'status:|full backup:' | sed 's/^ *//; s/: [0-9-]*F$/: <label>/' | sort -u | tr '\n' ' ')" \
+    "full backup: <label> status: ok "
 
   change 1
   at_t="$(sql -c "$checksums")"
@@ -198,6 +202,7 @@ for major in ${DRILL_MAJORS:-17 18}; do
   check "$major: pg-backup is healthy after its restart, with no new backup" "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" healthy
   # The repository becomes unwritable: beyond the archive queue cap (128MiB here) the server drops WAL instead of filling its volume,
   # pg-backup turns unhealthy and says restores have a gap; once the repository is back, a full backup closes the gap.
+  before_drop="$(sql -c "select clock_timestamp()")"
   arch=/var/lib/pgbackrest/archive/pipeshub
   mode="$($DOCKER exec "$proj-pg-backup-1" stat -c %a "$arch")"
   $DOCKER exec -u root "$proj-pg-backup-1" chmod 000 "$arch"
@@ -205,7 +210,10 @@ for major in ${DRILL_MAJORS:-17 18}; do
   for _ in $(seq 1 90); do dc exec -T pg-backup test -f /tmp/pg-backup.ok || break; sleep 2; done
   check "$major: dropped WAL turns pg-backup unhealthy" "$(dc exec -T pg-backup test -f /tmp/pg-backup.ok && echo healthy || echo unhealthy)" unhealthy
   check "$major: the server stays up and writable" "$(sql -c 'insert into platform.filler values (0, $$x$$) returning g')" 0
-  check "$major: pg-backup logs the gap" "$(dc logs pg-backup 2>&1 | grep -c 'point-in-time restore has a gap' | awk '{print ($1 > 0)}')" 1
+  check "$major: pg-backup logs the dropped segments" "$(dc logs pg-backup 2>&1 | grep -c 'dropped WAL segments [0-9A-F]\{24\} to [0-9A-F]\{24\}' | awk '{print ($1 > 0)}')" 1
+  lost="$(dc logs pg-backup 2>&1 | sed -n 's/.*cannot reach the transaction committed at \(.* UTC\) or anything after it.*/\1/p' | head -1)"
+  check "$major: and the first lost commit, read from the dropped WAL, after the outage began" \
+    "$([ -n "$lost" ] && sql -c "select '$lost'::timestamptz >= '$before_drop'::timestamptz")" t
   for _ in $(seq 1 75); do [ "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" = unhealthy ] && break; sleep 2; done
   check "$major: docker reports pg-backup unhealthy" "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" unhealthy
   $DOCKER exec -u root "$proj-pg-backup-1" chmod "$mode" "$arch"

@@ -14,7 +14,24 @@ incr_s=$(( ${PG_BACKUP_INCR_HOURS:-6} * 3600 ))
 retry_s="${PG_BACKUP_RETRY_SECS:-300}"
 ok="${PG_BACKUP_OK_FILE:-/tmp/pg-backup.ok}"   # the healthcheck: present only while the last attempt succeeded and WAL has no gap
 gaps="${PG_WAL_GAP_DIR:-/var/run/postgresql/pgbackrest-wal-gap.d}"
-drops() { ls -A "$gaps" 2>/dev/null; }   # one name per drop, oldest first
+drops() { ls -A "$gaps" 2>/dev/null; }   # one name per dropped segment, in WAL order
+
+gap_report() {
+  local d f lost=""
+  d="$(drops)"
+  for f in $d; do [ -z "$lost" ] && lost="$(head -1 "$gaps/$f" 2>/dev/null)"; done
+  echo "pg-backup: the server dropped WAL segments $(head -1 <<<"$d") to $(tail -1 <<<"$d") (noticed" \
+       "$(date -u -r "$gaps/$(head -1 <<<"$d")" '+%Y-%m-%d %H:%M:%S UTC') to $(date -u -r "$gaps/$(tail -1 <<<"$d")" '+%Y-%m-%d %H:%M:%S UTC'))" \
+       "because the archive queue exceeded PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX (the repository was unreachable or too slow)."
+  if [ -n "$lost" ]; then
+    echo "pg-backup: point-in-time restore cannot reach the transaction committed at $lost or anything after it until the next full" \
+         "backup; restore to an earlier time (a time just before it can still fail when no later transaction remains to stop at)."
+  else
+    echo "pg-backup: the dropped segments hold no commit this service could read: point-in-time restore cannot reach past segment" \
+         "$(head -1 <<<"$d"), which may hold transactions from before the time it was noticed, until the next full backup."
+  fi
+  echo "pg-backup: taking a full backup now."
+}
 
 # "<seconds since newest full> <seconds since newest backup>" from the repository; a missing backup counts as infinitely old.
 ages() {
@@ -36,9 +53,7 @@ done
 while :; do
   if [ -n "$(drops)" ]; then
     rm -f "$ok"
-    echo "pg-backup: the server dropped WAL from $(drops | head -1 | cut -d- -f1-3) to $(drops | tail -1 | cut -d- -f1-3) because the" \
-         "archive queue exceeded PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX (the repository was unreachable or too slow): point-in-time restore" \
-         "has a gap from then until the next full backup. Taking a full backup now." >&2
+    gap_report >&2
     type=full
   elif ! read -r since_full since_any < <(ages); then
     rm -f "$ok"; echo "pg-backup: could not read the repository; retrying in ${retry_s}s" >&2; sleep "$retry_s"; continue

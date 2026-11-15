@@ -19,6 +19,11 @@
 # `docker rm -f <volume> && docker volume rm <volume>`. To put the stack itself back to that time, stop the stack and use --in-place.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# install.sh passes its extra compose files with -f and keeps them in .env as PIPESHUB_COMPOSE_OVERRIDES, not as COMPOSE_FILE
+if [ -z "${COMPOSE_FILE:-}" ] && [ -f .env ] && ! grep -q '^COMPOSE_FILE=' .env; then
+  overrides="$(grep '^PIPESHUB_COMPOSE_OVERRIDES=' .env | tail -1 | cut -d= -f2-)"
+  if [ -n "$overrides" ]; then export COMPOSE_FILE="docker-compose.yml:$overrides"; fi
+fi
 
 usage() { sed -n '4,5p' "$0" >&2; exit 2; }
 [ $# -ge 1 ] || usage
