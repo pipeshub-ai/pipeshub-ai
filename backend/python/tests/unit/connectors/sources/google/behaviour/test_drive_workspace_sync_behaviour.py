@@ -3142,6 +3142,96 @@ async def test_an_empty_list_no_one_can_read_again_cuts_the_grants_to_what_is_pr
     assert {ALICE, BOB} <= ws.records.perm_emails("f"), "its owner and the reader who opened it keep it"
 
 
+def _lists_read_again(ws: Workspace) -> None:
+    """Every permission read answers as usual again."""
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern == r"^/drive/v3/files/([^/]+)/permissions$")
+    ws.http.route("GET", r"/drive/v3/files/([^/]+)/permissions", real)
+
+
+async def test_a_cut_list_is_read_again_by_id_until_a_real_list_restores_it(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    dana = "dana@example.com"
+    ws.world.add_user(dana)
+    ws.world.add_item("f", "x.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE), reader(dana)])
+    await ws.sync()
+    ws.world._mutate("f", lambda: ws.world._bump("f", name="y.txt"))  # reported once; failing, it is read each run
+    _empty_list_for(ws, "f", BOB, ALICE)
+    for _ in range(MAX_HELD_RUNS):
+        await ws.sync()
+    assert (dana, "USER", "READ") not in ws.grants("f"), "cut to what is proven"
+
+    _lists_read_again(ws)  # nothing changed at the source, so no feed reports the item
+    await ws.sync()
+
+    assert (dana, "USER", "READ") in ws.grants("f"), "she still holds it, and the real list says so"
+
+
+async def test_a_suspended_owner_gets_no_grant_from_a_cut_list(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    carol = "carol@example.com"
+    ws.world.add_user(carol, suspended=True)
+    await ws.sync()
+    connector = ws.connector
+    (await connector._load_empty_list_runs())["f"] = MAX_HELD_RUNS
+    meta = {"id": "f", "owners": [{"emailAddress": carol}]}
+
+    proven = await connector._proven_grants_after_held_runs("f", meta, BOB)
+
+    # The status pass takes a suspended user's grants off at the start of a run; this one would come back after it.
+    assert {p.email for p in proven[0]} == {BOB}
+
+
+async def test_a_cut_list_of_a_limited_folder_gives_a_reader_who_sees_its_name_only_no_grant(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    # A folder: "limited access isn't available for files"
+    # (https://developers.google.com/workspace/drive/api/guides/limited-expansive-access).
+    ws.world.folder("f", "Locked", parent="root-carol", owner=carol, perms=[reader(BOB)])
+    await ws.sync()
+    ws.world._mutate("f", lambda: ws.world._bump("f", inheritedPermissionsDisabled=True))
+    ws.world.files["f"].meta["capabilities"]["canListChildren"] = False  # he sees its name, not its content
+    _empty_list_for(ws, "f", BOB, carol)
+    for _ in range(MAX_HELD_RUNS + 1):
+        await ws.sync()
+
+    assert BOB not in ws.records.perm_emails("f")
+
+
+async def test_a_real_list_that_writes_a_new_item_clears_its_empty_list_count(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import (
+        EMPTY_LIST_RUNS_SYNC_POINT_KEY,
+    )
+
+    dana = "dana@example.com"  # not synced: Bob, its owner, is the only one who reads it
+    ws.world.add_user(dana)
+    ws.world.add_item("f", "x.txt", parent="root-bob", owner=BOB, perms=[reader(dana)])
+    ws.world.files["f"].meta.setdefault("capabilities", {})["canShare"] = True  # its owner can share it
+    _empty_list_for(ws, "f", BOB)
+    await ws.sync()
+    assert ws.incomplete, "an owner's empty list is not an answer: the item fails"
+
+    _lists_read_again(ws)
+    await ws.sync()
+
+    assert (dana, "USER", "READ") in ws.grants("f")
+    stored = await ws.connector.drive_delta_sync_point.read_sync_point(EMPTY_LIST_RUNS_SYNC_POINT_KEY) or {}
+    assert "f" not in (stored.get("runs") or "{}"), "a real list ends the count, new item or not"
+
+
+async def test_an_empty_list_after_a_real_one_in_the_same_run_counts_from_nothing(ws: Workspace) -> None:
+    await ws.sync()
+    connector = ws.connector
+    meta = {"id": "f", "owners": [{"emailAddress": BOB}]}
+    assert await connector._proven_grants_after_held_runs("f", meta, ALICE) is None
+    await connector._forget_empty_list_runs("f")  # a reader's real list
+    assert await connector._proven_grants_after_held_runs("f", meta, "carol@example.com") is None
+    assert (await connector._load_empty_list_runs())["f"] == 1
+
+
 async def test_an_empty_permission_list_for_a_new_my_drive_item_still_grants_its_reader(ws: Workspace) -> None:
     carol = "carol@example.com"  # not a synced user: Bob is the only one who reads it
     ws.world.add_user(carol)
