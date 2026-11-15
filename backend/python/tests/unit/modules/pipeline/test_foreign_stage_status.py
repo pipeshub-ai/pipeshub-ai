@@ -30,11 +30,12 @@ from app.modules.pipeline.worker import StageJobHandler
 from app.services.messaging.config import StreamMessage
 from app.services.resource_governor.models import ParseTier
 from tests.unit.modules.pipeline.fakes import (
+    ClassifyStage,
     Clock,
     RecordingHeadlines,
     RecordingProducer,
+    StubIO,
 )
-from tests.unit.modules.pipeline.test_worker import _IO, _Classify
 
 FOREIGN = "SPLIT"
 
@@ -98,7 +99,7 @@ class _Harness:
         self.states = GraphStageStateStore(self.graph, clock_ms=self.clock)  # type: ignore[arg-type]
         self.headlines = RecordingHeadlines()
         self.producer = RecordingProducer()
-        self.stage = _Classify()
+        self.stage = ClassifyStage()
         self.registry = StageRegistry()
         self.registry.register_external("embed")
         self.registry.register(self.stage)
@@ -107,7 +108,7 @@ class _Harness:
             policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("t"), clock_ms=self.clock,
         )
         self.handler = StageJobHandler(
-            self.registry, self.states, self.headlines, self.coordinator, _IO,
+            self.registry, self.states, self.headlines, self.coordinator, StubIO,
             logger=logging.getLogger("t"), worker_id="w1", clock_ms=self.clock,
         )
 

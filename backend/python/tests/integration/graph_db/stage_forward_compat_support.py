@@ -32,8 +32,12 @@ from app.schema.node_validator import SchemaValidationError
 from app.services.graph_db.arango.arango_http_client import ArangoQueryError
 from app.services.messaging.config import StreamMessage
 from app.services.resource_governor.models import ParseTier
-from tests.unit.modules.pipeline.fakes import RecordingHeadlines, RecordingProducer
-from tests.unit.modules.pipeline.test_worker import _IO, _Classify
+from tests.unit.modules.pipeline.fakes import (
+    ClassifyStage,
+    RecordingHeadlines,
+    RecordingProducer,
+    StubIO,
+)
 
 if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -177,7 +181,7 @@ async def a_foreign_row_is_left_byte_identical(graph: IGraphDBProvider, org: str
     before = json.dumps(await graph.stage_state_get(key), sort_keys=True)
 
     store = GraphStageStateStore(graph)
-    stage = _Classify()
+    stage = ClassifyStage()
     registry = StageRegistry()
     registry.register_external("embed")
     registry.register(stage)
@@ -187,7 +191,7 @@ async def a_foreign_row_is_left_byte_identical(graph: IGraphDBProvider, org: str
         policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("t"),
     )
     handler = StageJobHandler(
-        registry, store, RecordingHeadlines(), coordinator, _IO, logger=logging.getLogger("t"), worker_id="older"
+        registry, store, RecordingHeadlines(), coordinator, StubIO, logger=logging.getLogger("t"), worker_id="older"
     )
     state = await store.get(key)
     assert state is not None
