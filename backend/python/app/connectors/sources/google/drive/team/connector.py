@@ -243,6 +243,10 @@ MAX_FAILED_ITEMS = 500
 # MAX_HELD_RUNS), read again by id on later runs like FAILED_ITEMS. Kept apart from FAILED_ITEMS, which belongs to
 # the shared-with-me re-read.
 FEED_FAILED_ITEMS = "feed_failed_items"
+# Per user, on keys of their own: the items past MAX_FAILED_ITEMS still to read again by id, in turn, MAX_FAILED_ITEMS a
+# run ahead of that run's new ones, so the change feed never starts over for them. The first key holds the first part
+# and the count of parts ("parts"); the others are "<key>_part<n>".
+FEED_FAILED_QUEUE_SYNC_POINT_PREFIX = "feed_failed_queue_"
 # On the connector's checkpoint: stored My Drive items whose permission list came back empty, with the runs in a
 # row it did, as JSON text of {file id: runs}. After MAX_HELD_RUNS their grants are cut down to what is proven.
 EMPTY_LIST_RUNS_SYNC_POINT_KEY = "empty_permission_list_runs"
@@ -2445,6 +2449,38 @@ class GoogleDriveTeamConnector(BaseConnector):
         if failed:
             self.logger.warning(f"{len(failed)} item(s) could not be read; they are read again on the next runs")
         return len(failed) > MAX_FAILED_ITEMS
+
+    async def _failed_ids_to_carry(self, user: AppUser, failed: set[str], *, relisted: bool) -> list[str]:
+        """The ids the user's next run reads again by id, at most MAX_FAILED_ITEMS: those waiting from earlier runs
+        first, then this run's. The rest wait on the user's queue, so every one is read in turn and the feed's
+        position is never given up for them. A full listing (relisted) has just read everything waiting."""
+        key = f"{FEED_FAILED_QUEUE_SYNC_POINT_PREFIX}{user.source_user_id}"
+        waiting = await self._read_id_queue(key)
+        ordered = list(dict.fromkeys([*([] if relisted else waiting), *sorted(failed)]))
+        if waiting or len(ordered) > MAX_FAILED_ITEMS:
+            await self._write_id_queue(key, ordered[MAX_FAILED_ITEMS:])
+        if len(ordered) > MAX_FAILED_ITEMS:
+            self.logger.warning(
+                f"{len(ordered)} items of user {user.source_user_id} are to be read again by id; {MAX_FAILED_ITEMS} a "
+                "run, in turn"
+            )
+        return ordered[:MAX_FAILED_ITEMS]
+
+    async def _read_id_queue(self, key: str) -> list[str]:
+        first = await self.drive_delta_sync_point.read_sync_point(key) or {}
+        ids = [str(i) for i in first.get("ids") or []]
+        for part in range(1, int(first.get("parts") or 1)):
+            doc = await self.drive_delta_sync_point.read_sync_point(f"{key}_part{part}") or {}
+            ids.extend(str(i) for i in doc.get("ids") or [])
+        return ids
+
+    async def _write_id_queue(self, key: str, ids: list[str]) -> None:
+        """Parts first, then the first key, which says how many parts there are: a write that fails part way
+        leaves the earlier queue whole."""
+        chunks = [ids[i:i + MAX_FAILED_ITEMS] for i in range(0, len(ids), MAX_FAILED_ITEMS)] or [[]]
+        for part, chunk in enumerate(chunks[1:], 1):
+            await self.drive_delta_sync_point.update_sync_point(f"{key}_part{part}", {"ids": chunk})
+        await self.drive_delta_sync_point.update_sync_point(key, {"ids": chunks[0], "parts": len(chunks)})
 
     async def _keep_failed_items(self, key: str, failed: set[str]) -> bool:
         """False when too many items failed to keep by id: the checkpoint is then dropped, and its listing is read
@@ -5612,12 +5648,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             # starts every removed change's count over.
             stale_removals = {HELD_REMOVED_CHANGES: []} if (sync_point or {}).get(HELD_REMOVED_CHANGES) else {}
             reseeded = self._reseed_fields(shared_failed, asked=bool((sync_point or {}).get(RESEED_SHARED_WITH_ME)))
-            if not await self._keep_failed_items(sync_point_key, listing_failed):
-                return  # too many to keep by id: the user's Drive is listed in full again
+            # However many, the start token is saved: past the cap they wait on the user's queue.
+            carried = await self._failed_ids_to_carry(user, listing_failed, relisted=True)
             await self.drive_delta_sync_point.update_sync_point(
                 sync_point_key,
                 {"pageToken": start_page_token, **holds.checkpoint_changes(), **stale_removals,
-                 **reseeded, FEED_FAILED_ITEMS: sorted(listing_failed), **released(sync_point)}
+                 **reseeded, FEED_FAILED_ITEMS: carried, **released(sync_point)}
             )
 
             self.logger.info(f"✅ Full sync completed for user {user.email}. Processed {total_files} files. Saved page token: {start_page_token[:20]}...")
@@ -5862,10 +5898,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                     f"Some changes for {user.email} failed on {MAX_HELD_RUNS} runs in a row; moving on. They are "
                     "read again by id on later runs."
                 )
-            if not await self._keep_failed_items(sync_point_key, feed_failed):
-                return  # too many to keep by id: the user's Drive is listed in full again
-            if feed_failed or feed_retry:
-                reseeded = {**reseeded, FEED_FAILED_ITEMS: sorted(feed_failed)}
+            # Past the cap they wait on the user's queue: the feed moves on, never read again in full for them.
+            carried = await self._failed_ids_to_carry(user, feed_failed, relisted=False)
+            if carried or feed_retry:
+                reseeded = {**reseeded, FEED_FAILED_ITEMS: carried}
 
             # Update sync point with latest page token
             if current_page_token and current_page_token != page_token:
