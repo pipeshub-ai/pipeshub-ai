@@ -7,7 +7,7 @@
 --   query       reads as connectors; writes the toolset, API toolset and MCP keys, parked agent turns, the model API modes, scope fields,
 --               the vector collection settings and runtime state
 --   indexing    reads only the keys its code reads (signing keys, endpoints, storage, store connection settings, AI models, the AI gateway
---               identity policy, named-entity, telemetry and platform settings, two migration flags, connector metadata schemas); writes
+--               identity policy, named-entity, telemetry, platform and file-type settings, two migration flags, connector metadata schemas); writes
 --               runtime state, scope fields, the vector collection settings, artifact rollout membership, entity cleanup intents and its
 --               backfill flags
 --   kv          reads the AI model settings, the signing keys, the AI gateway identity policy, the telemetry settings and one migration
@@ -76,7 +76,7 @@ SELECT CASE current_user
         p_key IN ('/services/secretKeys', '/services/endpoints', '/services/storage', '/services/arangodb', '/services/kafka', '/services/redis',
                   '/services/qdrant', '/services/pgvector', '/services/opensearch', '/services/redis-vector', '/services/aiModels',
                   '/services/aiGateway/identityPolicy', '/services/namedEntities', '/services/metricsCollection', '/services/platform/settings',
-                  '/migrations/kh_listing_state_v1', '/migrations/etcd_to_redis')
+                  '/services/file_types/config', '/migrations/kh_listing_state_v1', '/migrations/etcd_to_redis')
         OR p_key OPERATOR(pg_catalog.~) '^/services/connectors/[^/]+/metadataSchemas/')))
   WHEN 'pipeshub_kv' THEN NOT p_write AND NOT platform.kv_admin_or_credential(p_key) AND p_key IN (
       '/services/aiModels', '/services/secretKeys', '/services/aiGateway/identityPolicy', '/services/metricsCollection', '/migrations/etcd_to_redis')
@@ -114,7 +114,8 @@ CREATE POLICY kv_update ON platform.kv_entries FOR UPDATE
   TO pipeshub_node, pipeshub_connectors, pipeshub_indexing, pipeshub_query, pipeshub_kv
   USING (platform.kv_may(key, true) OR platform.kv_outside(key, 'update', expires_at))
   WITH CHECK (platform.kv_may(key, true) OR platform.kv_outside(key, 'update', expires_at));
--- a dead row may be deleted by any role that sees it: every writer purges expired rows, whoever wrote them
+-- a dead row may be deleted by any role that can read its key: each writer's purge (a DELETE over a SELECT of expired keys) reaches
+-- only the expired rows that role can read, and the rest wait for the node role's purge, which reads every key
 CREATE POLICY kv_delete ON platform.kv_entries FOR DELETE
   TO pipeshub_node, pipeshub_connectors, pipeshub_indexing, pipeshub_query, pipeshub_kv
   USING (platform.kv_may(key, true) OR expires_at <= now() OR platform.kv_outside(key, 'delete', expires_at));
