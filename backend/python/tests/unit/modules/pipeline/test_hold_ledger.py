@@ -221,6 +221,36 @@ async def test_only_the_leader_ticks_and_a_failing_tick_does_not_stop_the_loop(f
     assert len(ticks) >= 3, "the loop goes on after a tick raised"
 
 
+async def test_the_leader_retries_the_owed_redrives_after_each_tick(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    """The redrives holds still owe are the leader's recovery work on its cadence; a replica without the lease does none."""
+    import asyncio
+
+    from app.services.llm_gateway.fleet_hold import run_hold_leader
+
+    passes: list[str] = []
+    leader = {"yes": False}
+
+    async def is_leader() -> bool:
+        return leader["yes"]
+
+    async def retry_redrives() -> int:
+        passes.append("pass")
+        return 0
+
+    keeper = HoldKeeper(fleet, FleetBreaker(fleet), clock_ms=sim_clock)
+    task = asyncio.create_task(
+        run_hold_leader(keeper, is_leader, logger=logging.getLogger("t"), interval_s=0.01, after_tick=retry_redrives)
+    )
+    await asyncio.sleep(0.05)
+    assert passes == []
+    leader["yes"] = True
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(passes) >= 2
+
+
 async def test_only_the_hold_of_the_jobs_own_key_is_subtracted_from_its_wall(fleet: FleetRedis, sim_clock: SimClock) -> None:
     """A job's wall excludes the time its own key was on hold, which the recovery leader records. A ledger nothing in
     the service advances (a fleet-wide scope) must not be read: whatever wrote it, the job would get time it never waited for

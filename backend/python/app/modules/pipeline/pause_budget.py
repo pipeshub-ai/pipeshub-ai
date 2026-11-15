@@ -117,6 +117,53 @@ def wall_seconds_used(state: PauseState, now_ms: int, ledger_now: int) -> float:
     return (now_ms - state.since_ms - held) / 1000.0
 
 
+@dataclass(frozen=True)
+class OutcomeCounts:
+    """What one PAUSED outcome adds to its job's budget."""
+
+    sends: int
+    charged: int
+    trials: int
+
+
+def outcome_counts(
+    *, sent: bool, trial: bool, chargeable: bool, requests: int | None = None, charged: int | None = None
+) -> OutcomeCounts:
+    """``sent``: the failed call reached the wire. ``requests``: the failed sends behind the outcome (None: one when
+    sent). ``trial``: it was a half-open trial (never charged). ``charged``: its chargeable failed sends, each judged on
+    its own with trials already left out (None: one when the outcome was a chargeable send that was not a trial)."""
+    return OutcomeCounts(
+        sends=(requests if requests is not None else 1) if sent else 0,
+        charged=charged if charged is not None else (1 if sent and chargeable and not trial else 0),
+        trials=1 if sent and trial else 0,
+    )
+
+
+def decide(
+    state: PauseState,
+    *,
+    now_ms: int,
+    ledger_now: int,
+    limits: PauseLimits = PauseLimits(),
+    capped_distinct: int | None = None,
+    provider: str | None = None,
+) -> PauseDecision:
+    """What to do about a job whose budget, after its latest outcome, is ``state``. ``capped_distinct`` is the number of
+    distinct jobs capped on the key within the hold window (this job included) once the caller has registered this one;
+    while it is None a job at the charged cap gets ``CAPPED`` so the caller can ask."""
+    if wall_seconds_used(state, now_ms, ledger_now) >= limits.wall_seconds:
+        return PauseDecision(Verdict.FAIL_WALL, state, fail_reason(Verdict.FAIL_WALL, state, limits, provider))
+    if state.sends >= limits.absolute_sends:
+        return PauseDecision(Verdict.FAIL_ABSOLUTE, state, fail_reason(Verdict.FAIL_ABSOLUTE, state, limits, provider))
+    if state.charged >= limits.charged_sends:
+        if capped_distinct is None:
+            return PauseDecision(Verdict.CAPPED, state)
+        if capped_distinct >= limits.hold_jobs:
+            return PauseDecision(Verdict.REDRIVE, replace(state, charged=0))
+        return PauseDecision(Verdict.FAIL_CHARGED, state, fail_reason(Verdict.FAIL_CHARGED, state, limits, provider))
+    return PauseDecision(Verdict.PAUSE, state)
+
+
 def pause_verdict(
     prior: PauseState | None,
     *,
@@ -133,37 +180,17 @@ def pause_verdict(
     requests: int | None = None,
     charged: int | None = None,
 ) -> PauseDecision:
-    """The state after one PAUSED outcome, and what to do about it.
-
-    ``sent``: the failed call reached the wire. ``trial``: it was a half-open trial (never charged).
-    ``chargeable``: it was made with the breaker closed while the key's fleet success rate was
-    high enough to blame the document. ``capped_distinct`` is the number of distinct jobs capped on
-    the key within the hold window (this job included) once the caller has registered this one; while it
-    is None a job at the charged cap gets ``CAPPED`` so the caller can ask.
-    """
+    """The state after one PAUSED outcome, and what to do about it: ``outcome_counts`` added to ``prior`` (the rule the
+    pause store applies atomically), then ``decide``."""
     state = prior or PauseState(since_ms=now_ms, ledger_at_since=ledger_now, scope=scope)
     if scope and not state.scope:
         # The key became known after the first pause: hold time before now is not subtracted retroactively.
         state = replace(state, scope=scope, ledger_at_since=state.ledger_at_since + scope_ledger_now)
+    counts = outcome_counts(sent=sent, trial=trial, chargeable=chargeable, requests=requests, charged=charged)
     state = replace(
-        state,
-        sends=state.sends + ((requests if requests is not None else 1) if sent else 0),
-        trials=state.trials + (1 if sent and trial else 0),
-        # ``charged``: the outcome's chargeable failed sends, each judged on its own (trials already left out); None
-        # for one when the outcome was a chargeable send that was not a trial.
-        charged=state.charged + (charged if charged is not None else (1 if sent and chargeable and not trial else 0)),
+        state, sends=state.sends + counts.sends, trials=state.trials + counts.trials, charged=state.charged + counts.charged
     )
-    if wall_seconds_used(state, now_ms, ledger_now) >= limits.wall_seconds:
-        return PauseDecision(Verdict.FAIL_WALL, state, fail_reason(Verdict.FAIL_WALL, state, limits, provider))
-    if state.sends >= limits.absolute_sends:
-        return PauseDecision(Verdict.FAIL_ABSOLUTE, state, fail_reason(Verdict.FAIL_ABSOLUTE, state, limits, provider))
-    if state.charged >= limits.charged_sends:
-        if capped_distinct is None:
-            return PauseDecision(Verdict.CAPPED, state)
-        if capped_distinct >= limits.hold_jobs:
-            return PauseDecision(Verdict.REDRIVE, replace(state, charged=0))
-        return PauseDecision(Verdict.FAIL_CHARGED, state, fail_reason(Verdict.FAIL_CHARGED, state, limits, provider))
-    return PauseDecision(Verdict.PAUSE, state)
+    return decide(state, now_ms=now_ms, ledger_now=ledger_now, limits=limits, capped_distinct=capped_distinct, provider=provider)
 
 
 def fail_reason(verdict: Verdict, state: PauseState, limits: PauseLimits, provider: str | None = None) -> str:
@@ -180,6 +207,15 @@ def fail_reason(verdict: Verdict, state: PauseState, limits: PauseLimits, provid
         f"The model kept failing on this document while serving other requests ({state.charged} times). "
         "Use Reindex failed to try again."
     )
+
+
+def counters_spent(state: PauseState, limits: PauseLimits = PauseLimits()) -> Verdict | None:
+    """The caps that need no clock or ledger: judged first, so they hold when the ledger cannot be read."""
+    if state.sends >= limits.absolute_sends:
+        return Verdict.FAIL_ABSOLUTE
+    if state.charged >= limits.charged_sends:
+        return Verdict.FAIL_CHARGED
+    return None
 
 
 def budget_spent(state: PauseState, now_ms: int, ledger_now: int, limits: PauseLimits = PauseLimits()) -> Verdict | None:

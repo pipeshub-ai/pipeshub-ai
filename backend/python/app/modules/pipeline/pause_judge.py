@@ -24,8 +24,10 @@ from app.modules.pipeline.pause_budget import (
     PauseState,
     Verdict,
     budget_spent,
+    counters_spent,
+    decide,
     fail_reason,
-    pause_verdict,
+    outcome_counts,
 )
 from app.modules.pipeline.pause_store import PauseStore, PauseStoreUnavailable
 from app.services.llm_gateway.fleet_breaker import (
@@ -50,6 +52,8 @@ class Judgement:
     jitter_s: float = 0.0
     # This verdict put the key on hold (it is the third distinct capped job): an episode begins.
     newly_held: bool = False
+    # The key scope (``pk:cls``) the redrives are owed under.
+    scope: str = ""
 
 
 class PauseJudge:
@@ -114,67 +118,94 @@ class PauseJudge:
         except FleetBreakerUnavailable as exc:
             raise PauseStoreUnavailable(str(exc)) from exc
 
+    @property
+    def available(self) -> bool:
+        """Whether a Redis is bound for the budget at all. Without one there is no budget to keep (and no fleet breaker);
+        with one that cannot be read, a job waits."""
+        return self._store.available
+
     async def prior(self, state_key: str) -> PauseState | None:
         return await self._store.get(state_key)
 
     async def spent(self, job: StageJob, prior: PauseState | None) -> tuple[Verdict, str] | None:
-        """Whether a revision that has paused before has used up its budget (judged before it runs again)."""
+        """Whether a revision that has paused before has used up its budget (judged before it runs again). The counter
+        caps are judged before the hold ledger is read, so a known cap holds even when the ledger cannot be read; that
+        read raises ``PauseStoreUnavailable``, which the caller must not take for "not spent"."""
         if prior is None:
             return None
-        ledger = await self._ledger(prior.scope)
-        verdict = budget_spent(prior, await self._now(), ledger, await self.limits())
+        limits = await self.limits()
+        verdict = counters_spent(prior, limits)
+        if verdict is None:
+            ledger = await self._ledger(prior.scope)
+            verdict = budget_spent(prior, await self._now(), ledger, limits)
         if verdict is None:
             return None
-        return verdict, fail_reason(verdict, prior, await self.limits())
+        return verdict, fail_reason(verdict, prior, limits)
 
-    async def clear(self, state_key: str) -> None:
-        """The revision completed or was skipped: its budget starts over."""
+    async def clear(self, state_key: str, *, attempt: int) -> None:
+        """The revision completed or was skipped as ``attempt``: its budget starts over, unless a later attempt has
+        written it since (a redrive that claimed the revision meanwhile keeps its own counts)."""
         try:
-            await self._store.delete(state_key)
+            await self._store.clear(state_key, attempt=attempt)
         except PauseStoreUnavailable:
             self._logger.warning("could not clear the pause budget of %s; it expires on its own", state_key)
 
-    async def judge(self, job: StageJob, result: StageResult) -> Judgement | None:
-        """The verdict of one PAUSED outcome; None when the budget cannot be read (the job just pauses)."""
+    async def judge(self, job: StageJob, result: StageResult, *, attempt: int = 0) -> Judgement | None:
+        """The verdict of one PAUSED outcome of run ``attempt``; None when the budget cannot be read (the job just pauses)."""
         try:
-            return await self._judge(job, result)
+            return await self._judge(job, result, attempt)
         except (PauseStoreUnavailable, FleetBreakerUnavailable) as exc:
             self._logger.warning("pause budget of %s not updated: %s", job.state_key, exc)
             return None
 
-    async def _judge(self, job: StageJob, result: StageResult) -> Judgement:
-        prior = await self._store.get(job.state_key)
+    async def _judge(self, job: StageJob, result: StageResult, attempt: int) -> Judgement:
         now = await self._now()
         scope = f"{result.provider_pk}:{result.size_class}" if result.provider_pk and result.size_class else ""
-        ledger = await self._ledger(prior.scope if prior and prior.scope else scope)
-        scope_ledger = await self._ledger(scope)
-        kwargs = {
-            "sent": result.sent, "trial": result.trial, "chargeable": result.chargeable,
-            "now_ms": now, "ledger_now": ledger, "limits": await self.limits(), "provider": result.provider_label,
-            "scope": scope, "scope_ledger_now": scope_ledger, "requests": result.requests, "charged": result.charged,
+        # Read only to pick the ledger a new budget starts from; the counts are added atomically below.
+        prior = await self._store.get(job.state_key)
+        counts = outcome_counts(
+            sent=result.sent, trial=result.trial, chargeable=result.chargeable, requests=result.requests,
+            charged=result.charged,
+        )
+        state = await self._store.apply(
+            job.state_key,
+            attempt=attempt,
+            sends=counts.sends,
+            charged=counts.charged,
+            trials=counts.trials,
+            since_ms=now,
+            ledger_at_since=await self._ledger(prior.scope if prior and prior.scope else scope),
+            scope=scope,
+            scope_ledger=await self._ledger(scope),
+        )
+        limits = await self.limits()
+        decide_kwargs = {
+            "now_ms": now, "ledger_now": await self._ledger(state.scope), "limits": limits, "provider": result.provider_label,
         }
-        decision = pause_verdict(prior, **kwargs)
+        decision = decide(state, **decide_kwargs)
         redrive: tuple[str, ...] = ()
         jitter = 0.0
         newly_held = False
         if decision.verdict is Verdict.CAPPED:
             breaker = self._breaker()
             if breaker is None or not result.provider_pk or not result.size_class:
-                decision = pause_verdict(prior, capped_distinct=0, **kwargs)
+                decision = decide(state, capped_distinct=0, **decide_kwargs)
             else:
                 label = result.provider_label or "model provider"
                 capped = await breaker.register_capped(
                     result.provider_pk, result.size_class, job.state_key, label=label, reason="charged_cap"
                 )
-                decision = pause_verdict(prior, capped_distinct=0 if capped.already else capped.distinct, **kwargs)
+                decision = decide(state, capped_distinct=0 if capped.already else capped.distinct, **decide_kwargs)
                 if decision.verdict is Verdict.REDRIVE:
+                    await self._store.release_charged(job.state_key)
                     redrive = capped.others
+                    # Owed until each is done: a job still running, or one whose reset or redrive fails now, is retried.
+                    await self._store.add_redrives(scope, redrive)
                     jitter = self._rng.uniform(0, HOLD_COOLDOWN_MS / 1000.0)
                     newly_held = capped.newly_held
                     if capped.newly_held:
                         await self._note_hold(breaker, job, result, capped.episode, label, len(redrive) + 1, now)
-        await self._store.put(job.state_key, decision.state)
-        return Judgement(decision, redrive, jitter, newly_held)
+        return Judgement(decision, redrive, jitter, newly_held, scope)
 
     async def _note_hold(
         self, breaker: FleetBreaker, job: StageJob, result: StageResult, episode: str, label: str, redriven: int, now: int
@@ -188,11 +219,16 @@ class PauseJudge:
         except Exception:
             self._logger.warning("could not index the provider hold %s; the next tick will not see it", episode, exc_info=True)
 
-    async def release_charged(self, state_key: str) -> None:
-        try:
-            await self._store.release_charged(state_key)
-        except PauseStoreUnavailable:
-            self._logger.warning("could not reset the charged count of %s", state_key)
+    async def release_charged(self, state_key: str) -> bool:
+        """A fresh charge count for a job a hold redrives. Raises ``PauseStoreUnavailable``: a redrive must not go out
+        with the old count, which the pre-run check would fail at once."""
+        return await self._store.release_charged(state_key)
+
+    async def pending_redrives(self) -> dict[str, list[str]]:
+        return await self._store.pending_redrives()
+
+    async def redrive_done(self, scope: str, state_key: str) -> None:
+        await self._store.redrive_done(scope, state_key)
 
     async def hold_jitter(self, result: StageResult) -> float:
         """A paused job refused by a key on hold waits a random part of the hold's cooldown on top, so the

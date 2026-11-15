@@ -6,6 +6,13 @@ it expires 8 days after its last write (longer than the 24 h wall), and only a f
 COMPLETED / SKIPPED settle deletes it: an automatic re-dispatch keeps it, so a revision whose budget is
 spent cannot start over by being dispatched again.
 
+Every write is one Lua script, so concurrent attempts of a job never lose an update: a PAUSED outcome adds its
+counts (``apply``), and the hash records the highest stage attempt that wrote it, so a clean-up by a run that finished
+(``clear``) leaves a budget a later attempt has written.
+
+The jobs a provider hold must redrive are kept here too (``add_redrives``) until each is done, so a redrive that could
+not be made at once (Redis down, the job still running) is made by a later pass.
+
 Reads raise ``PauseStoreUnavailable`` when Redis cannot be read: the worker defers a job that has
 paused before rather than run it uncounted.
 """
@@ -20,6 +27,47 @@ from app.services.llm_gateway.fleet_redis import FleetRedis, get_fleet_redis
 
 PAUSE_TTL_SECONDS = 8 * 24 * 3600
 REDIS_OP_TIMEOUT_S = 2.0
+# Redrives of a hold are retried this long after the last one was added: a job still not redriven by then is left FAILED
+# for a user's "Reindex failed".
+REDRIVE_TTL_SECONDS = 24 * 3600
+
+# KEYS: hash  ARGV: attempt, sends, charged, trials, since_ms, ledger_at_since, scope, scope_ledger, ttl
+# A new hash starts at ``since_ms`` / ``ledger_at_since``. A scope learned after the first pause adds that key's ledger
+# now to ``ledger_at_since`` (hold time before it was known is not subtracted). Returns the hash after the update.
+_APPLY = """
+local key = KEYS[1]
+if redis.call('EXISTS', key) == 0 then
+  redis.call('HSET', key, 'since_ms', ARGV[5], 'ledger_at_since', ARGV[6], 'scope', ARGV[7],
+    'charged', 0, 'sends', 0, 'trials', 0, 'attempt', 0)
+elseif ARGV[7] ~= '' then
+  local scope = redis.call('HGET', key, 'scope')
+  if (not scope) or scope == '' then
+    redis.call('HSET', key, 'scope', ARGV[7])
+    redis.call('HINCRBY', key, 'ledger_at_since', tonumber(ARGV[8]))
+  end
+end
+redis.call('HINCRBY', key, 'sends', tonumber(ARGV[2]))
+redis.call('HINCRBY', key, 'charged', tonumber(ARGV[3]))
+redis.call('HINCRBY', key, 'trials', tonumber(ARGV[4]))
+local attempt = tonumber(redis.call('HGET', key, 'attempt') or '0') or 0
+if tonumber(ARGV[1]) > attempt then redis.call('HSET', key, 'attempt', ARGV[1]) end
+redis.call('EXPIRE', key, tonumber(ARGV[9]))
+return redis.call('HGETALL', key)
+"""
+
+# KEYS: hash  ARGV: attempt. Deletes the budget unless an attempt after ``attempt`` has written it.
+_CLEAR = """
+local written = tonumber(redis.call('HGET', KEYS[1], 'attempt') or '0') or 0
+if written > tonumber(ARGV[1]) then return 0 end
+return redis.call('DEL', KEYS[1])
+"""
+
+# KEYS: hash. A fresh charge count for a redriven job; its sends and trials stay.
+_RELEASE_CHARGED = """
+if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+redis.call('HSET', KEYS[1], 'charged', 0)
+return 1
+"""
 
 
 class PauseStoreUnavailable(Exception):
@@ -57,11 +105,15 @@ class PauseStore:
         except Exception as exc:
             raise PauseStoreUnavailable(f"{type(exc).__name__}: {exc}") from exc
 
-    async def get(self, state_key: str) -> PauseState | None:
-        key = self._key(state_key)
-        raw = await self._do(self._handle().client().hgetall(key))
+    async def _eval(self, script: str, keys: list[str], *args: object) -> Any:  # noqa: ANN401
+        return await self._do(self._handle().client().eval(script, len(keys), *keys, *args))
+
+    @staticmethod
+    def _state(raw: Any, key: str) -> PauseState | None:  # noqa: ANN401
         if not raw:
             return None
+        if isinstance(raw, list):
+            raw = dict(zip(raw[::2], raw[1::2], strict=False))
         fields = {_s(k): _s(v) for k, v in raw.items()}
         try:
             return PauseState(
@@ -76,7 +128,35 @@ class PauseStore:
             # A hash that is not ours: treat it as unreadable rather than as a fresh budget.
             raise PauseStoreUnavailable(f"malformed pause state at {key}") from None
 
+    async def get(self, state_key: str) -> PauseState | None:
+        key = self._key(state_key)
+        return self._state(await self._do(self._handle().client().hgetall(key)), key)
+
+    async def apply(
+        self,
+        state_key: str,
+        *,
+        attempt: int,
+        sends: int,
+        charged: int,
+        trials: int,
+        since_ms: int,
+        ledger_at_since: int,
+        scope: str = "",
+        scope_ledger: int = 0,
+    ) -> PauseState:
+        """Add one PAUSED outcome's counts, atomically; a missing budget starts at ``since_ms``. Returns it after."""
+        key = self._key(state_key)
+        raw = await self._eval(
+            _APPLY, [key], attempt, sends, charged, trials, since_ms, ledger_at_since, scope, scope_ledger, PAUSE_TTL_SECONDS
+        )
+        state = self._state(raw, key)
+        if state is None:
+            raise PauseStoreUnavailable(f"the pause state at {key} could not be written")
+        return state
+
     async def put(self, state_key: str, state: PauseState) -> None:
+        """Write a whole state (tests and tools; the worker only ever ``apply``s)."""
         key = self._key(state_key)
         client = self._handle().client()
         mapping = {
@@ -97,15 +177,49 @@ class PauseStore:
     async def delete(self, state_key: str) -> None:
         await self._do(self._handle().client().delete(self._key(state_key)))
 
+    async def clear(self, state_key: str, *, attempt: int) -> bool:
+        """Delete the budget of a run that settled as ``attempt``, unless a later attempt has written it since."""
+        return bool(await self._eval(_CLEAR, [self._key(state_key)], attempt))
+
     async def release_charged(self, state_key: str) -> bool:
         """Give a redriven job a fresh charge count; its sends and trials stay. False when it has no state."""
-        key = self._key(state_key)
+        return bool(await self._eval(_RELEASE_CHARGED, [self._key(state_key)]))
+
+    # ---- the redrives a hold owes ------------------------------------------------------------------
+
+    def _redrive_index(self) -> str:
+        return self._handle().key("messaging:pause:redrives")
+
+    def _redrive_key(self, scope: str) -> str:
+        return self._handle().key(f"messaging:pause:redrive:{{{scope}}}")
+
+    async def add_redrives(self, scope: str, state_keys: tuple[str, ...] | list[str]) -> None:
+        """Keep the jobs a hold on ``scope`` must redrive until each is done (``redrive_done``)."""
+        if not state_keys:
+            return
         client = self._handle().client()
+        key = self._redrive_key(scope)
 
-        async def reset() -> bool:
-            if not await client.exists(key):
-                return False
-            await client.hset(key, "charged", 0)
-            return True
+        async def add() -> None:
+            await client.sadd(key, *state_keys)
+            await client.expire(key, REDRIVE_TTL_SECONDS)
+            await client.sadd(self._redrive_index(), scope)
+            await client.expire(self._redrive_index(), REDRIVE_TTL_SECONDS)
 
-        return bool(await self._do(reset()))
+        await self._do(add())
+
+    async def pending_redrives(self) -> dict[str, list[str]]:
+        """The redrives still owed, by key scope. A scope whose set has expired or emptied leaves the index."""
+        client = self._handle().client()
+        pending: dict[str, list[str]] = {}
+        for raw_scope in await self._do(client.smembers(self._redrive_index())):
+            scope = _s(raw_scope)
+            members = sorted(_s(m) for m in await self._do(client.smembers(self._redrive_key(scope))))
+            if members:
+                pending[scope] = members
+            else:
+                await self._do(client.srem(self._redrive_index(), scope))
+        return pending
+
+    async def redrive_done(self, scope: str, state_key: str) -> None:
+        await self._do(self._handle().client().srem(self._redrive_key(scope), state_key))

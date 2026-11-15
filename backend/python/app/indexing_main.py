@@ -2470,7 +2470,10 @@ async def start_kafka_consumers(
         setattr(
             app_container,
             "provider_hold_task",
-            spawn_detached(_run_provider_hold_leader(get_fleet_redis(), concurrency_manager, retry_producer, logger)),
+            spawn_detached(_run_provider_hold_leader(
+                get_fleet_redis(), concurrency_manager, retry_producer, logger,
+                after_tick=_on_worker_loop(worker, pipeline_runtime.handler.retry_hold_redrives),
+            )),
         )
 
         async def start_stage_consumers() -> None:
@@ -2585,11 +2588,25 @@ async def _bind_fleet_state(app_container: Any, redis_config: Any, logger: loggi
     return fleet
 
 
+def _on_worker_loop(worker: WorkerLoop, work: Callable[[], Awaitable[object]]) -> Callable[[], Awaitable[object]]:
+    """``work`` run on the shared worker loop, where the stage runtime's clients live, awaited from the caller's loop."""
+
+    async def run() -> object:
+        loop = worker.loop
+        if loop is None or not loop.is_running():
+            return None
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(work(), loop))  # type: ignore[arg-type]
+
+    return run
+
+
 async def _run_provider_hold_leader(
     fleet: FleetRedis,
     concurrency_manager: IDistributedLeaseManager | None,
     producer: Any,  # noqa: ANN401
     logger: logging.Logger,
+    *,
+    after_tick: Callable[[], Awaitable[object]] | None = None,
 ) -> None:
     """Every 10 s, on the replica holding the lease: advance the hold ledger of the model provider keys on hold
     and raise their admin notices (``fleet_hold``)."""
@@ -2606,7 +2623,7 @@ async def _run_provider_hold_leader(
             return True
         return await concurrency_manager.try_acquire("provider_hold", owner, 1, TICK_SECONDS * 6)
 
-    await run_hold_leader(keeper, is_leader, logger=logger)
+    await run_hold_leader(keeper, is_leader, logger=logger, after_tick=after_tick)
 
 
 async def stop_kafka_consumers(container: IndexingAppContainer, *, close_worker_loop: bool = True) -> None:

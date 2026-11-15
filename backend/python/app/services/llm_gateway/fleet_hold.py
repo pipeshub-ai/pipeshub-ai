@@ -199,12 +199,16 @@ async def run_hold_leader(
     *,
     logger: logging.Logger,
     interval_s: float = TICK_SECONDS,
+    after_tick: Callable[[], Awaitable[object]] | None = None,
 ) -> None:
-    """Tick every ``interval_s`` while this replica holds the recovery lease. Runs until cancelled."""
+    """Tick every ``interval_s`` while this replica holds the recovery lease. Runs until cancelled. ``after_tick`` is the
+    leader's other recovery work on the same cadence (the redrives holds still owe)."""
     while True:
         try:
             if await is_leader():
                 await keeper.tick()
+                if after_tick is not None:
+                    await after_tick()
         except asyncio.CancelledError:
             raise
         except FleetBreakerUnavailable as exc:

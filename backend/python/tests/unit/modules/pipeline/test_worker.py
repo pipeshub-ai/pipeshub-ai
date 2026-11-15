@@ -603,7 +603,7 @@ async def test_a_job_of_another_connector_runs_as_before() -> None:
 from app.modules.pipeline.pause_budget import PauseLimits, PauseState  # noqa: E402
 from app.modules.pipeline.pause_judge import PauseJudge  # noqa: E402
 from app.modules.pipeline.pause_store import PauseStore, PauseStoreUnavailable  # noqa: E402
-from app.services.llm_gateway.fleet_breaker import FleetBreaker  # noqa: E402
+from app.services.llm_gateway.fleet_breaker import FleetBreaker, FleetBreakerUnavailable  # noqa: E402
 from app.services.llm_gateway.fleet_redis import FleetRedis  # noqa: E402
 
 
@@ -714,8 +714,9 @@ async def test_an_automatic_redispatch_does_not_reset_the_pause_budget(fleet: Fl
 
 @pytest.mark.asyncio
 async def test_redis_down_defers_paused_jobs(fleet: FleetRedis, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The pause KV raises while the job's state is PAUSED: StagePaused before ``stage.run``, 0 model calls, nothing
-    written. A job with no prior pause runs once."""
+    """The pause KV raises: StagePaused before ``stage.run``, 0 model calls, nothing written, whatever the job's status.
+    An automatic redrive leaves a budget-failed job QUEUED with its spent budget, so an unreadable budget is never read
+    as an absent one; the job runs once Redis answers."""
     h, job = _BudgetHarness(fleet), _job()
     h.seed(job)
     h.stage.result = _charged_pause(chargeable=False)
@@ -735,10 +736,14 @@ async def test_redis_down_defers_paused_jobs(fleet: FleetRedis, monkeypatch: pyt
     assert h.stage.runs == 1, "a paused job must not run while its budget cannot be read"
     assert h.state(job) == before, "a deferral writes nothing"
 
-    # a job that has never paused is not blocked by the outage: it runs once
     other = _job(virtual_record_id="vr-2")
     h.seed(other)
     h.stage.result = StageResult(outcome=StageOutcome.COMPLETED)
+    with pytest.raises(StagePaused):
+        await h.deliver(other)
+    assert h.stage.runs == 1 and h.state(other).status is ProgressStatus.QUEUED
+
+    monkeypatch.undo()
     await h.deliver(other)
     assert h.stage.runs == 2 and h.state(other).status is ProgressStatus.COMPLETED
 
@@ -856,3 +861,84 @@ async def test_a_job_with_a_tier_and_priority_a_newer_release_added_still_runs()
     assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
     assert h.stage.runs == 1
     assert h.state(job).status is ProgressStatus.COMPLETED
+
+
+# ---- the budget is updated atomically, fenced by attempt, and a hold's redrives are kept until done -----------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_pauses_of_one_job_lose_no_send(fleet: FleetRedis) -> None:
+    """Two deliveries of one job judge their pauses at the same time: every send is counted (each is added in Redis, not
+    read, changed and written back)."""
+    h, job = _BudgetHarness(fleet), _job()
+    judge = PauseJudge(h.store, clock_ms=h.clock, limits=PauseLimits(absolute_sends=1000, charged_sends=1000))
+    pause = _charged_pause(chargeable=False, requests=1)
+    await asyncio.gather(*(judge.judge(job, pause, attempt=i) for i in range(1, 41)))
+    state = await h.pause_state(job)
+    assert state is not None and state.sends == 40
+
+
+@pytest.mark.asyncio
+async def test_a_finished_run_leaves_the_budget_a_later_attempt_wrote(fleet: FleetRedis) -> None:
+    """Run 1 completes while run 2 (a redrive that claimed the revision meanwhile) has already paused: run 1's clean-up
+    must not hand run 2 a fresh allowance."""
+    h, job = _BudgetHarness(fleet), _job()
+    await h.judge.judge(job, _charged_pause(chargeable=False, requests=3), attempt=2)
+    await h.judge.clear(job.state_key, attempt=1)
+    kept = await h.pause_state(job)
+    assert kept is not None and kept.sends == 3
+    await h.judge.clear(job.state_key, attempt=2)
+    assert await h.pause_state(job) is None
+
+
+@pytest.mark.asyncio
+async def test_a_known_cap_holds_when_the_hold_ledger_cannot_be_read(fleet: FleetRedis, monkeypatch: pytest.MonkeyPatch) -> None:
+    """20 sends are known from the budget; the ledger (needed only for the wall) is down. The job is failed, not run."""
+    h, job = _BudgetHarness(fleet), _job()
+    h.seed(job, ProgressStatus.PAUSED)
+    await h.store.put(job.state_key, PauseState(since_ms=h.clock(), sends=20, scope=f"{_PK}:{_CLS}"))
+
+    async def down(self, *scopes):  # noqa: ANN202
+        raise FleetBreakerUnavailable("ledger down")
+
+    monkeypatch.setattr(FleetBreaker, "ledger", down)
+    with pytest.raises(StageFailed):
+        await h.deliver(job)
+    assert h.stage.runs == 0 and h.state(job).status is ProgressStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_a_hold_redrive_is_owed_until_the_job_settles_and_its_reset_succeeds(
+    fleet: FleetRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hold names a capped job that is still running: it is owed, not dropped. Once it has settled FAILED, the
+    leader's pass redrives it, but only after its charge count was reset; a reset that fails leaves it owed."""
+    h, job = _BudgetHarness(fleet), _job()
+    scope = f"{_PK}:{_CLS}"
+    h.seed(job, ProgressStatus.IN_PROGRESS)
+    await h.store.put(job.state_key, PauseState(since_ms=h.clock(), charged=6, sends=6, scope=scope))
+    await h.store.add_redrives(scope, [job.state_key])
+
+    assert await h.handler.retry_hold_redrives() == 0
+    assert await h.store.pending_redrives() == {scope: [job.state_key]}, "still running: owed"
+
+    h.states.put(h.state(job).model_copy(update={"status": ProgressStatus.FAILED}))
+    real_release = PauseStore.release_charged
+    calls = {"n": 0}
+
+    async def flaky(self, key):  # noqa: ANN202
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise PauseStoreUnavailable("redis blinked")
+        return await real_release(self, key)
+
+    monkeypatch.setattr(PauseStore, "release_charged", flaky)
+    assert await h.handler.retry_hold_redrives() == 0
+    assert h.state(job).status is ProgressStatus.FAILED, "no redrive with the old charge count"
+    assert await h.store.pending_redrives() == {scope: [job.state_key]}
+
+    assert await h.handler.retry_hold_redrives() == 1
+    after = await h.pause_state(job)
+    assert after is not None and (after.charged, after.sends) == (0, 6)
+    assert h.state(job).status is not ProgressStatus.FAILED
+    assert await h.store.pending_redrives() == {}

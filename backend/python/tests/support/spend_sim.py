@@ -219,7 +219,7 @@ class World:
         )
         if ok:
             job.done, job.at = "OK", self.now
-            await self.judge.clear(self.stage_jobs[index].state_key)
+            await self.judge.clear(self.stage_jobs[index].state_key, attempt=job.sends)
             return
         if trial:
             job.trials += 1
@@ -231,7 +231,8 @@ class World:
 
     async def _paused(self, job: SimJob, result: StageResult) -> None:
         stage_job = self.stage_jobs[job.index]
-        judgement = await self.judge.judge(stage_job, result)
+        # Each send is the job's next run, so its send count serves as the stage attempt.
+        judgement = await self.judge.judge(stage_job, result, attempt=job.sends)
         assert judgement is not None, "the pause budget must be readable in the simulation"
         verdict = judgement.decision.verdict
         if verdict.is_fail:
