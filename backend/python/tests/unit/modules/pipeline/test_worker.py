@@ -799,13 +799,27 @@ async def test_a_job_that_waited_through_a_long_key_hold_is_not_failed_on_wake(f
 
 
 @pytest.mark.asyncio
-async def test_the_budget_clock_is_redis_time(fleet: FleetRedis) -> None:
-    """Replicas with different host clocks must agree on a job's wall: the judge reads Redis TIME, not the host clock."""
+async def test_the_budget_clock_is_redis_time(fleet: FleetRedis, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replicas with different host clocks must agree on a job's wall: the judge reads Redis TIME, not the host clock.
+    The Redis server here runs an hour ahead of this host, so a judge that read the host clock would be an hour off."""
+    import time
+
     judge = PauseJudge(PauseStore(), limits=PauseLimits())  # no injected clock
     fleet.clock_ms = None  # the real Redis TIME
+    client = fleet.client()
+    real_time = client.time
+
+    async def an_hour_ahead() -> tuple[int, int]:
+        seconds, micros = await real_time()
+        return int(seconds) + 3600, int(micros)
+
+    monkeypatch.setattr(client, "time", an_hour_ahead)
+    assert fleet.client().time is an_hour_ahead, "the fleet must hand out the client the skew was applied to"
     job = _job()
     decision = await judge.judge(job, _charged_pause(sent=False, chargeable=False))
     assert decision is not None
     server_ms = await FleetBreaker(fleet).now_ms()
+    host_ms = int(time.time() * 1000)
+    assert server_ms - host_ms > 3_500_000
     assert abs(decision.decision.state.since_ms - server_ms) < 5000
 
