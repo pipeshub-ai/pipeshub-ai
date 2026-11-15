@@ -916,6 +916,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     # Fetch members for this group. Unknown is not empty: a failed read keeps
                     # the stored members, while the mailbox and its conversations sync as usual.
                     try:
+                        # who holds each address now must be known before a member is written by address
+                        await self.source_accounts.ensure_loaded()
                         members = await self._get_group_members(group_id)
                     except Exception as e:
                         self.logger.error(f"Keeping stored members of group {group_id}: {e}")
@@ -932,7 +934,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                         if member_email:
                             # Look up existing user from cache
                             user_id = self._user_cache.get(member_email.lower())
-                            if user_id:
+                            if user_id and self.source_accounts.may_grant(member_email, getattr(member, "id", None)):
                                 app_user = AppUser(
                                     app_name=Connectors.OUTLOOK,
                                     connector_id=self.connector_id,

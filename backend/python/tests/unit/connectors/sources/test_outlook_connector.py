@@ -2078,6 +2078,41 @@ class TestSyncUserGroupsFilter:
         return connector
 
     @pytest.mark.asyncio
+    async def test_a_member_naming_the_deleted_account_at_a_reused_address_is_not_written(self) -> None:
+        """Outside-diff: the member's object id is checked before the cached id of its address is used; the processor
+        writes the membership by address, so the old account's membership would go to the new account."""
+        groups = [_make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com")]
+        connector = self._setup_connector(groups)
+        connector.source_accounts.reused = {"ana@contoso.com": "new-oid"}
+        connector._user_cache = {"ana@contoso.com": "new-oid", "bo@contoso.com": "bo-oid"}
+
+        def member(oid: str, email: str) -> MagicMock:
+            return MagicMock(id=oid, mail=email, user_principal_name=email, display_name=email)
+
+        connector._get_group_members = AsyncMock(return_value=[member("old-oid", "ana@contoso.com"), member("bo-oid", "bo@contoso.com")])
+        connector.data_entities_processor.on_new_user_groups = AsyncMock()
+
+        await connector._sync_user_groups()
+
+        (batch,) = connector.data_entities_processor.on_new_user_groups.await_args.args
+        ((_, members),) = batch
+        assert [m.email for m in members] == ["bo@contoso.com"]
+
+    @pytest.mark.asyncio
+    async def test_members_are_kept_as_stored_while_the_account_state_cannot_be_read(self) -> None:
+        groups = [_make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com")]
+        connector = self._setup_connector(groups)
+        connector.source_accounts.admission_failed = True
+        connector.data_entities_processor.on_new_user_groups = AsyncMock()
+        connector.data_entities_processor.note_kept_user_group = AsyncMock()
+
+        await connector._sync_user_groups()
+
+        connector.data_entities_processor.note_kept_user_group.assert_awaited_once()
+        assert not connector.data_entities_processor.on_new_user_groups.await_args or \
+            connector.data_entities_processor.on_new_user_groups.await_args.args[0] == []
+
+    @pytest.mark.asyncio
     async def test_no_filter_syncs_all_groups(self):
         """When no groups filter is set all fetched groups are synced."""
         groups = [

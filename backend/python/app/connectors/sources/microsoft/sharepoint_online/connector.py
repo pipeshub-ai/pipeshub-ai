@@ -2691,6 +2691,7 @@ class SharePointConnector(BaseConnector):
         and role assignments.
         """
         self._require_known_disabled_set()
+        await self.source_accounts.ensure_loaded()     # a member written by address must be the account holding it now
         group = self.client.groups.by_group_id(group_id)
         builder = group.owners if is_owner else group.transitive_members
         users: list[dict] = []
@@ -2705,7 +2706,7 @@ class SharePointConnector(BaseConnector):
         while response:
             for item in response.value or []:
                 user = self._graph_member_user(item)
-                if user and user['email'].lower() not in self._inactive_emails:
+                if user and user['email'].lower() not in self._inactive_emails and self._names_current_holder(user):
                     users.append(user)
             next_link = getattr(response, 'odata_next_link', None)
             if not next_link:
@@ -3037,6 +3038,7 @@ class SharePointConnector(BaseConnector):
         if role_id in self._directory_role_members:
             return self._directory_role_members[role_id]
         self._require_known_disabled_set()
+        await self.source_accounts.ensure_loaded()
         users: list[dict] = []
         members = self.client.directory_roles.by_directory_role_id(role_id).members
         async with self.rate_limiter:
@@ -3045,7 +3047,7 @@ class SharePointConnector(BaseConnector):
             for member in response.value or []:
                 user = self._graph_member_user(member)
                 if user:
-                    if user['email'].lower() not in self._inactive_emails:
+                    if user['email'].lower() not in self._inactive_emails and self._names_current_holder(user):
                         users.append(user)
                 elif 'group' in (getattr(member, 'odata_type', None) or '').lower() and getattr(member, 'id', None):
                     users.extend(await self._fetch_graph_group_members(member.id))
@@ -4296,6 +4298,8 @@ class SharePointConnector(BaseConnector):
 
             # Update DB only for records that changed at source
             if updated_records:
+                # judged while the batch was read; an account admitted meanwhile must not be handed them
+                updated_records = [(r, await self.source_accounts.recheck(p)) for r, p in updated_records]
                 await self.data_entities_processor.on_new_records(updated_records)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 
