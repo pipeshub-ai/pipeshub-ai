@@ -230,6 +230,8 @@ def run(argv: list[str]) -> None:
             _path["existing_install"] = _has_revisions(conn)
             if _path["existing_install"] and (ahead := _ahead_of_this_build(conn, cfg)):
                 log(ahead)
+                if kv_mode:            # the newer schema is compatible (checked above), and it holds the mode table this build knows
+                    _set_kv_access(conn, kv_mode)
                 return
             if _path["existing_install"]:
                 cfg.attributes["verify"] = _report

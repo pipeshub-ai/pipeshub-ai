@@ -970,3 +970,35 @@ def test_platform_0006_downgrades_and_upgrades_again(kv_db):
         assert c.execute("SELECT count(*) FROM kernel.internal_policies").fetchone()[0] == 0
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
     assert run_migrate(url).returncode == 0
+
+
+def test_pg_kv_access_is_applied_when_the_database_is_ahead_and_compatible(db):
+    """An older build against a newer, compatible schema migrates nothing, but the requested key-value access mode still applies."""
+    cluster, name = db
+    url = cluster.url(name, MIGRATE)
+    assert run_migrate(url).returncode == 0
+    _as_newer_build(cluster, name)
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0] is False
+    r = run_migrate(url, PG_KV_ACCESS="enforce")
+    assert r.returncode == 0 and "database is ahead of this build" in r.stdout, r.stdout
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0] is True
+    assert run_migrate(url, PG_KV_ACCESS="shadow").returncode == 0
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0] is False
+
+
+def test_moving_an_internal_policy_expression_between_using_and_with_check_is_detected(db):
+    """The registration fingerprint keeps each field in its place: the same text moved from USING to WITH CHECK is a different policy."""
+    cluster, name = db
+    url = cluster.url(name, MIGRATE)
+    assert run_migrate(url).returncode == 0
+    with connect(cluster, name) as c:
+        c.execute("SET ROLE pipeshub_owner")
+        c.execute("CREATE POLICY probe ON platform.queue_groups FOR ALL TO pipeshub_query USING (group_id = 'a')")
+        c.execute("SELECT kernel.register_internal_policy('platform.queue_groups', 'probe')")
+        c.execute("DROP POLICY probe ON platform.queue_groups")                         # the read restriction is gone ...
+        c.execute("CREATE POLICY probe ON platform.queue_groups FOR ALL TO pipeshub_query WITH CHECK (group_id = 'a')")  # ... same text, on writes only
+    r = run_migrate(url, PG_MIGRATE_SURFACE_CHECK="skip")
+    assert r.returncode == 4 and "141 internal policy differs from its registration: probe" in r.stdout, r.stdout
