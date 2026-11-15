@@ -67,11 +67,14 @@ check "dropped WAL: a full backup at once" "$(decide "$recent")" "backup --type=
 check "dropped WAL: unhealthy" "$([ -e "$work/ok" ] && echo healthy || echo unhealthy)" unhealthy
 check "dropped WAL: the log names the first and last dropped segment" \
   "$(grep -c 'dropped WAL segments 000000010000000000000015 to 000000010000000000000016 (noticed' "$work/out")" 1
-check "and the first transaction a restore can no longer reach, with the gap until the next full backup" \
-  "$(grep -c 'cannot reach the transaction committed at 2026-11-15 10:01:02.123456 UTC or anything after it until the next full' "$work/out")" 1
-: > "$gaps/000000010000000000000016"; decide "$recent" >/dev/null 2>&1
-check "no commit in the dropped segments: the gap is given by segment, and may start before it was noticed" \
-  "$(grep -c 'cannot reach past segment 000000010000000000000015, which may hold transactions from before the time it was noticed' "$work/out")" 1
+# recovery cannot cross the earliest missing segment (15), so a commit time read only from a later one (16) is not the gap's start
+check "the gap starts at the earliest dropped segment even when only a later one has a commit time" \
+  "$(grep -c 'cannot reach past segment 000000010000000000000015 until the next full backup: from segment 000000010000000000000015 (no commit time known), so the last reachable point is before 000000010000000000000015' "$work/out")" 1
+check "and the later segment's commit is not given as the gap's start" "$(grep -c '10:01:02' "$work/out")" 0
+check "the log says how to restore up to the gap" "$(grep -c 'scripts/pg-restore.sh latest --set <its label from pgbackrest info>' "$work/out")" 1
+echo "2026-11-15 09:59:00.000001 UTC" > "$gaps/000000010000000000000015"; decide "$recent" >/dev/null 2>&1
+check "with a commit in the earliest dropped segment: that commit is the first one lost" \
+  "$(grep -c 'cannot reach past the start of segment 000000010000000000000015 until the next full backup: its first transaction, committed at 2026-11-15 09:59:00.000001 UTC, is the first one lost' "$work/out")" 1
 # the full backup succeeds: the drops it found before it started are covered, healthy again
 rm -f "$work/ok"
 STUB_BACKUPS=1 decide "$recent" >/dev/null 2>&1
@@ -84,9 +87,12 @@ check "a drop during the full backup keeps the gap open" "$(ls "$gaps")" "000000
 check "and the service unhealthy" "$([ -e "$work/ok" ] && echo healthy || echo unhealthy)" unhealthy
 rm -f "$gaps"/*
 
-# pg_waldump stub: the first transaction of the segment, as pg_waldump --rmgr=Transaction prints it (empty with STUB_NO_COMMIT)
+# pg_waldump stub: the first transaction of the segment, as pg_waldump --rmgr=Transaction prints it (empty with STUB_NO_COMMIT; hangs
+# with STUB_WALDUMP_HANG); its arguments go to $STUB_WALDUMP_ARGS
 cat > "$work/pg_waldump" <<'EOF'
 #!/bin/sh
+echo "$*" > "${STUB_WALDUMP_ARGS:-/dev/null}"
+[ -n "${STUB_WALDUMP_HANG:-}" ] && exec /bin/sleep 60   # not the stub sleep on PATH
 [ -n "${STUB_NO_COMMIT:-}" ] && exit 0
 echo "rmgr: Transaction len (rec/tot):     98/    98, tx:          3, lsn: 0/010D26E0, prev 0/010D1570, desc: COMMIT 2026-11-15 18:35:41.608992 UTC; relcache init file inval dbid 1 tsid 1663"
 echo "rmgr: Transaction len (rec/tot):     34/    34, tx:          4, lsn: 0/010D7858, prev 0/010D6B78, desc: COMMIT 2026-11-15 18:35:42.000001 UTC"
@@ -106,8 +112,13 @@ check "a pushed segment marks no gap" "$(marked)" none
 push STUB_PUSH_OUT="$drop" >/dev/null; rc=$?
 check "a dropped segment marks the gap" "$(marked)" marked
 check "and is reported archived, as pgBackRest reports it" "$rc" 0
-check "the mark is named by the dropped segment and holds its first commit time" \
-  "$(ls "$gaps"):$(cat "$gaps"/* 2>/dev/null)" "000000010000000000000001:2026-11-15 18:35:41.608992 UTC"
+check "the mark is named by the dropped segment and holds its first commit time, in a form a restore accepts" \
+  "$(ls "$gaps"):$(cat "$gaps"/* 2>/dev/null)" "000000010000000000000001:2026-11-15 18:35:41.608992+00"
+push STUB_PUSH_OUT="$drop" STUB_WALDUMP_ARGS="$work/waldump.args" >/dev/null
+check "pg_waldump reads only the dropped segment (endseg = startseg)" "$(cat "$work/waldump.args")" \
+  "--rmgr=Transaction pg_wal/000000010000000000000001 pg_wal/000000010000000000000001"
+t0=$(date +%s); push STUB_PUSH_OUT="$drop" STUB_WALDUMP_HANG=1 >/dev/null; took=$(( $(date +%s) - t0 ))
+check "a pg_waldump that hangs is cut off, the drop still marked" "$([ "$took" -lt 30 ] && marked)" marked
 push STUB_PUSH_OUT="$drop" STUB_NO_COMMIT=1 >/dev/null
 check "a dropped segment without a commit is still marked, with no time" "$(ls "$gaps"):$(cat "$gaps"/* 2>/dev/null)" "000000010000000000000001:"
 push STUB_PUSH_OUT="$drop" PGBACKREST_LOG_LEVEL_CONSOLE=off PGBACKREST_LOG_LEVEL_STDERR=off >/dev/null
@@ -120,7 +131,7 @@ set +e; push STUB_PUSH_RC=82 >/dev/null; rc=$?; set -e
 check "a failed push fails the archive_command" "$rc" 82
 # scripts/pg-restore.sh finds the installer's compose files: a stand-in docker prints the COMPOSE_FILE it was given and fails
 mkdir -p "$work/install/scripts"; cp "$here/scripts/pg-restore.sh" "$work/install/scripts/"
-printf '#!/bin/sh\necho "COMPOSE_FILE=${COMPOSE_FILE:-}" >&2; exit 1\n' > "$work/docker"; chmod +x "$work/docker"
+printf '#!/bin/sh\necho "docker called" >&2; echo "COMPOSE_FILE=${COMPOSE_FILE:-}" >&2; exit 1\n' > "$work/docker"; chmod +x "$work/docker"
 restore_files() { (cd "$work/install" && env -u COMPOSE_FILE PATH="$work:$PATH" "$@" bash scripts/pg-restore.sh latest 2>&1 | sed -n 's/^COMPOSE_FILE=//p' | head -1); }
 printf 'PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml:docker-compose.postgres-backup.yml\n' > "$work/install/.env"
 check "pg-restore.sh takes the installer's compose files from .env" "$(restore_files)" \
@@ -128,4 +139,7 @@ check "pg-restore.sh takes the installer's compose files from .env" "$(restore_f
 check "a COMPOSE_FILE in the environment wins" "$(restore_files COMPOSE_FILE=a.yml:b.yml)" "a.yml:b.yml"
 printf 'COMPOSE_FILE=x.yml\nPIPESHUB_COMPOSE_OVERRIDES=y.yml\n' > "$work/install/.env"
 check "a COMPOSE_FILE in .env is left to Compose" "$(restore_files)" ""
+printf 'COMPOSE_PROJECT_NAME=pipeshub-ai\n' > "$work/install/.env"
+check "a .env with neither key: pg-restore.sh goes on to Compose" \
+  "$(cd "$work/install" && env -u COMPOSE_FILE PATH="$work:$PATH" bash scripts/pg-restore.sh latest 2>&1 | grep -c 'docker called')" 1
 exit $fail

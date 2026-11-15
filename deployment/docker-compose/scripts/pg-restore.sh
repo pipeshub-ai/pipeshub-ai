@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Restores the PostgreSQL profile's database from the pgBackRest repository of docker-compose.postgres-backup.yml.
 #
-#   scripts/pg-restore.sh <time|latest> [--into <volume>]   restore into a NEW volume and start it as a separate server (the default)
-#   scripts/pg-restore.sh <time|latest> --in-place          restore over the stack's own data volume (the stack must be stopped)
+#   scripts/pg-restore.sh <time|latest> [--into <volume>] [--set <label>]   restore into a NEW volume and start it as a separate server
+#   scripts/pg-restore.sh <time|latest> --in-place [--set <label>]          restore over the stack's own data volume (stack stopped)
 #
 # <time> is a PostgreSQL timestamp with a time zone, for example "2026-11-15 09:30:00+00": the restore keeps every transaction committed
 # up to it and nothing after (recovery_target_time, https://www.postgresql.org/docs/17/runtime-config-wal.html 19.5.6). `latest` replays
@@ -21,18 +21,21 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # install.sh passes its extra compose files with -f and keeps them in .env as PIPESHUB_COMPOSE_OVERRIDES, not as COMPOSE_FILE
 if [ -z "${COMPOSE_FILE:-}" ] && [ -f .env ] && ! grep -q '^COMPOSE_FILE=' .env; then
-  overrides="$(grep '^PIPESHUB_COMPOSE_OVERRIDES=' .env | tail -1 | cut -d= -f2-)"
+  overrides="$(grep '^PIPESHUB_COMPOSE_OVERRIDES=' .env | tail -1 | cut -d= -f2- || true)"   # no match is not an error (as install.sh)
   if [ -n "$overrides" ]; then export COMPOSE_FILE="docker-compose.yml:$overrides"; fi
 fi
 
 usage() { sed -n '4,5p' "$0" >&2; exit 2; }
 [ $# -ge 1 ] || usage
 target="$1"; shift
-into=""; in_place=0
+into=""; in_place=0; set_label=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --into) [ $# -ge 2 ] || usage; into="$2"; shift 2 ;;
     --in-place) in_place=1; shift ;;
+    # a backup other than pgBackRest's choice: after a WAL gap, `latest --set <newest backup before the gap>` restores up to the gap
+    # ("--set: The backup set to be restored", https://pgbackrest.org/command.html)
+    --set) [ $# -ge 2 ] || usage; set_label="$2"; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -48,7 +51,7 @@ project="$(sed -n '1s/^name: //p' <<<"$config")"
 grep -qx pg-backup <<<"$services" \
   || { echo "pg-restore: the pg-backup service is not in this stack; add docker-compose.postgres-backup.yml and the postgres profile" >&2; exit 2; }
 
-restore=(pgbackrest restore)
+restore=(pgbackrest restore ${set_label:+"--set=$set_label"})
 if [ "$target" != latest ]; then restore+=(--type=time "--target=$target" --target-action=promote); fi
 if [ "$in_place" = 1 ]; then
   volume="${project}_postgres_data"

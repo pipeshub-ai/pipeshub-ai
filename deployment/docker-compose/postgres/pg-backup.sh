@@ -16,20 +16,24 @@ ok="${PG_BACKUP_OK_FILE:-/tmp/pg-backup.ok}"   # the healthcheck: present only w
 gaps="${PG_WAL_GAP_DIR:-/var/run/postgresql/pgbackrest-wal-gap.d}"
 drops() { ls -A "$gaps" 2>/dev/null; }   # one name per dropped segment, in WAL order
 
+# Recovery replays segments in order and cannot cross a missing one, so the gap starts at the earliest dropped segment, whatever later ones
+# hold. Its first commit, if known, is the first transaction lost; the last reachable point is the last commit before that segment.
 gap_report() {
-  local d f lost=""
-  d="$(drops)"
-  for f in $d; do [ -z "$lost" ] && lost="$(head -1 "$gaps/$f" 2>/dev/null)"; done
+  local d first lost
+  d="$(drops)"; first="$(head -1 <<<"$d")"
+  lost="$(head -1 "$gaps/$first" 2>/dev/null)"
   echo "pg-backup: the server dropped WAL segments $(head -1 <<<"$d") to $(tail -1 <<<"$d") (noticed" \
        "$(date -u -r "$gaps/$(head -1 <<<"$d")" '+%Y-%m-%d %H:%M:%S UTC') to $(date -u -r "$gaps/$(tail -1 <<<"$d")" '+%Y-%m-%d %H:%M:%S UTC'))" \
        "because the archive queue exceeded PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX (the repository was unreachable or too slow)."
   if [ -n "$lost" ]; then
-    echo "pg-backup: point-in-time restore cannot reach the transaction committed at $lost or anything after it until the next full" \
-         "backup; restore to an earlier time (a time just before it can still fail when no later transaction remains to stop at)."
+    echo "pg-backup: point-in-time restore cannot reach past the start of segment $first until the next full backup: its first" \
+         "transaction, committed at $lost, is the first one lost, so the last reachable point is the last commit before it."
   else
-    echo "pg-backup: the dropped segments hold no commit this service could read: point-in-time restore cannot reach past segment" \
-         "$(head -1 <<<"$d"), which may hold transactions from before the time it was noticed, until the next full backup."
+    echo "pg-backup: point-in-time restore cannot reach past segment $first until the next full backup: from segment $first" \
+         "(no commit time known), so the last reachable point is before $first, possibly before the time it was noticed."
   fi
+  echo "pg-backup: to restore up to the gap, restore the end of the archive from the newest backup taken before it:" \
+       "scripts/pg-restore.sh latest --set <its label from pgbackrest info>; a time target needs a later commit before the gap to stop at."
   echo "pg-backup: taking a full backup now."
 }
 

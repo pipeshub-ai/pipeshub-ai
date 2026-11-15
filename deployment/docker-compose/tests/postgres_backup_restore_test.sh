@@ -45,7 +45,8 @@ envfile() { # major image
     # 17: the repository in a host directory that does not exist yet, as PG_BACKUP_REPO gives it (Docker creates it, owned by root);
     # 18: the default named volume. Both are new, as on a first start.
     if [ "$1" = 17 ]; then echo "PG_BACKUP_REPO=$work/repo-$1"; fi; } > "$work/env$1"
-  printf 'PGBACKREST_REPO1_RETENTION_FULL=2\nPGBACKREST_COMPRESS_TYPE=zst\nPGBACKREST_START_FAST=y\nPGBACKREST_ARCHIVE_PUSH_QUEUE_MAX=128MiB\n%s' \
+  # retention 5: the WAL-gap checks restore from the backup before the outage, after the full backups the outage triggers
+  printf 'PGBACKREST_REPO1_RETENTION_FULL=5\nPGBACKREST_COMPRESS_TYPE=zst\nPGBACKREST_START_FAST=y\nPGBACKREST_ARCHIVE_PUSH_QUEUE_MAX=128MiB\n%s' \
     "${DRILL_PGBACKREST_EXTRA:-}" > "$work/pgbackrest.env"
 }
 # the stack exactly as postgres/README.md and the docs give it (document-store file and profiles included), through COMPOSE_FILE,
@@ -202,7 +203,10 @@ for major in ${DRILL_MAJORS:-17 18}; do
   check "$major: pg-backup is healthy after its restart, with no new backup" "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" healthy
   # The repository becomes unwritable: beyond the archive queue cap (128MiB here) the server drops WAL instead of filling its volume,
   # pg-backup turns unhealthy and says restores have a gap; once the repository is back, a full backup closes the gap.
-  before_drop="$(sql -c "select clock_timestamp()")"
+  # before the outage: the newest backup, and every schema the outage does not write (it writes platform only)
+  label_pre="$(dc exec -T pg-backup pgbackrest --output=json info | perl -MJSON::PP -e 'print decode_json(join "", <STDIN>)->[0]{backup}[-1]{label}')"
+  untouched() { tr ' ' '\n' <<<"$1" | grep -v '^platform:' | tr '\n' ' '; }
+  pre_outage="$(untouched "$(sql -c "$checksums")")"
   arch=/var/lib/pgbackrest/archive/pipeshub
   mode="$($DOCKER exec "$proj-pg-backup-1" stat -c %a "$arch")"
   $DOCKER exec -u root "$proj-pg-backup-1" chmod 000 "$arch"
@@ -214,9 +218,8 @@ for major in ${DRILL_MAJORS:-17 18}; do
   check "$major: dropped WAL turns pg-backup unhealthy" "$(dc exec -T pg-backup test -f /tmp/pg-backup.ok && echo healthy || echo unhealthy)" unhealthy
   check "$major: the server stays up and writable" "$(sql -c 'insert into platform.filler values (0, $$x$$) returning g')" 0
   check "$major: pg-backup logs the dropped segments" "$(dc logs pg-backup 2>&1 | grep -c 'dropped WAL segments [0-9A-F]\{24\} to [0-9A-F]\{24\}' | awk '{print ($1 > 0)}')" 1
-  lost="$(dc logs pg-backup 2>&1 | sed -n 's/.*cannot reach the transaction committed at \(.* UTC\) or anything after it.*/\1/p' | head -1)"
-  check "$major: and the first lost commit, read from the dropped WAL, after the outage began" \
-    "$([ -n "$lost" ] && sql -c "select '$lost'::timestamptz >= '$before_drop'::timestamptz")" t
+  lost="$(dc logs pg-backup 2>&1 | sed -n 's/.*its first transaction, committed at \([0-9-]* [0-9:.]*+00\), is the first one lost.*/\1/p' | head -1)"
+  check "$major: and the first lost commit, read from the earliest dropped segment" "$([ -n "$lost" ] && echo yes)" yes
   for _ in $(seq 1 75); do [ "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" = unhealthy ] && break; sleep 2; done
   check "$major: docker reports pg-backup unhealthy" "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" unhealthy
   $DOCKER exec -u root "$proj-pg-backup-1" chmod "$mode" "$arch"
@@ -225,6 +228,25 @@ for major in ${DRILL_MAJORS:-17 18}; do
     "$(dc exec -T pg-backup sh -c 'test -f /tmp/pg-backup.ok && [ -z "$(ls -A /var/run/postgresql/pgbackrest-wal-gap.d)" ]' && echo closed || echo open)" closed
   check "$major: the newest backup is a full one" "$(dc exec -T pg-backup pgbackrest --output=json info | perl -MJSON::PP -e '
     my @b = @{ decode_json(join "", <STDIN>)->[0]{backup} }; print $b[-1]{type}')" full
+  # What the report promises. Recovery cannot reach the first lost commit (it ends at the gap, before the target, and the server stops:
+  # "if a recovery target is configured but the archive recovery ends before the target is reached, the server will shut down with a
+  # fatal error", PostgreSQL 19.5.6), while the end of the archive from the backup before the gap restores up to the gap.
+  copy="${proj}_pg_restore_gap_$$"; copies+=("$copy"); rc=0
+  [ -n "$lost" ] && { scripts/pg-restore.sh "$lost" --into "$copy" > "$work/gap-t.log" 2>&1 || rc=$?; }
+  check "$major: a restore to the first lost commit fails, recovery ending at the gap" \
+    "$rc $(grep -q 'recovery ended before configured recovery target was reached' "$work/gap-t.log" 2>/dev/null && echo ended)" "1 ended"
+  copy="${proj}_pg_restore_upto_gap_$$"; copies+=("$copy")
+  if scripts/pg-restore.sh latest --set "$label_pre" --into "$copy" > "$work/gap-l.log" 2>&1; then
+    check "$major: the end of the archive from the backup before the gap: the schemas the outage did not write are as before it" \
+      "$(untouched "$(copy_sql "$copy" "$checksums")")" "$pre_outage"
+    # the outage's table may not exist yet at the gap, when its creation went in the first dropped segment
+    n_copy=0
+    if [ "$(copy_sql "$copy" "select to_regclass('platform.filler') is not null")" = t ]; then n_copy="$(copy_sql "$copy" 'select count(*) from platform.filler')"; fi
+    check "$major: and it stops at the gap: fewer outage rows than the live database" \
+      "$(sql -c "select (select count(*) from platform.filler) > $n_copy")" t
+  else
+    echo "FAIL $major: pg-restore.sh latest --set $label_pre:"; tail -20 "$work/gap-l.log"; fail=1
+  fi
   # the healthcheck itself fails as soon as a drop is marked, even while the last backup's success is still recorded
   hc="$($DOCKER inspect -f '{{index .Config.Healthcheck.Test 1}}' "$proj-pg-backup-1")"
   check "$major: the healthcheck passes with no drop marked" "$($DOCKER exec "$proj-pg-backup-1" sh -c "$hc" && echo pass || echo fail)" pass
