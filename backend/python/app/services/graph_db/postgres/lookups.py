@@ -67,6 +67,35 @@ def _vis_code(v: RecordVisibility) -> int:
     return _vis(v)
 
 
+
+# The record counts of ``get_connector_stats``, one statement per kind: a collection's records belong to its app; a connector's, to the record groups that chain up to
+# its app (10 hops at most). Written as one statement with the kind as a parameter, ``e.to_id IN (SELECT id FROM g)`` sat inside an OR: a sublink is pulled up into a
+# semi-join only at the top level of WHERE, so it stayed a filter and the plan read every records->belongsTo edge of the organisation (624 ms at 1M records for a
+# connector with no groups, 0.2 ms as its own statement). Each record is read by its key (a LIMIT subquery is not flattened into a join): joined, the planner hashed
+# a scan of every record of the organisation whenever it guessed the connector held many.
+STATS_KB = """/* pipeshub:graph.get_connector_stats */ WITH r AS (SELECT DISTINCT e.from_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
+        AND e.from_coll = 'records' AND e.to_coll = 'apps' AND e.to_id = $2)
+    SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
+           s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
+    FROM r CROSS JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = 'records' AND x.id = r.id LIMIT 1) n
+    LEFT JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'stageStates' AND s.id = (n.doc->>'virtualRecordId') || ':' || (n.doc->>'contentRev') || ':entities'
+    WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
+      AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($3::text[])
+    GROUP BY 1, 2, 3, 4"""
+STATS_CONNECTOR = """/* pipeshub:graph.get_connector_stats */ WITH RECURSIVE g(id, depth) AS (
+      SELECT e.from_id, 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups' AND e.to_coll = 'apps' AND e.to_id = $2
+      UNION SELECT e.from_id, g.depth + 1 FROM g JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
+        AND e.to_coll = 'recordGroups' AND e.to_id = g.id WHERE g.depth < 10),
+    r AS (SELECT DISTINCT e.from_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records'
+        AND e.to_coll = 'recordGroups' AND e.to_id IN (SELECT id FROM g))
+    SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
+           s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
+    FROM r CROSS JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = 'records' AND x.id = r.id LIMIT 1) n
+    LEFT JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'stageStates' AND s.id = (n.doc->>'virtualRecordId') || ':' || (n.doc->>'contentRev') || ':entities'
+    WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
+      AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($3::text[])
+    GROUP BY 1, 2, 3, 4"""
+
 class LookupsMixin(PgBase):
     async def _lrows(self, sql: str, *args: Any, transaction: str | None = None, write: bool = False) -> list:  # noqa: ANN401
         return await self._q(lambda tx: tx.fetch(sql, *args), transaction, write=write)
@@ -915,20 +944,7 @@ class LookupsMixin(PgBase):
             app = await self._one("/* pipeshub:graph.get_connector_stats_app */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps' AND n.id = $2",
                                   org, connector_id, transaction=transaction)
             is_kb = bool(app) and app.get("type") == Connectors.KNOWLEDGE_BASE.value
-            rows = [] if org_id != org else await self._lrows("""/* pipeshub:graph.get_connector_stats */ WITH RECURSIVE g(id, depth) AS (
-                  SELECT e.from_id, 1 FROM graph.edges e WHERE e.org_id = $1 AND NOT $3 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
-                    AND e.to_coll = 'apps' AND e.to_id = $2
-                  UNION SELECT e.from_id, g.depth + 1 FROM g JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
-                    AND e.to_coll = 'recordGroups' AND e.to_id = g.id WHERE g.depth < 10),
-                r AS (SELECT DISTINCT e.from_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records'
-                    AND ((NOT $3 AND e.to_coll = 'recordGroups' AND e.to_id IN (SELECT id FROM g)) OR ($3 AND e.to_coll = 'apps' AND e.to_id = $2)))
-                SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
-                       s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
-                FROM r JOIN graph.nodes n ON n.org_id = $1 AND n.coll = 'records' AND n.id = r.id
-                LEFT JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'stageStates' AND s.id = (n.doc->>'virtualRecordId') || ':' || (n.doc->>'contentRev') || ':entities'
-                WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
-                  AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($4::text[])
-                GROUP BY 1, 2, 3, 4""", org, connector_id, is_kb, FOLDER_MIME_TYPES, transaction=transaction)
+            rows = [] if org_id != org else await self._lrows(STATS_KB if is_kb else STATS_CONNECTOR, org, connector_id, FOLDER_MIME_TYPES, transaction=transaction)
             result = build_connector_stats_response([dict(r) for r in rows], statuses, org_id, connector_id, origin="COLLECTION" if is_kb else "CONNECTOR")
             return {"success": True, "data": result}
         except Exception as e:
