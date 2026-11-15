@@ -480,6 +480,22 @@ describe('Connector routes over HTTP', () => {
       const forwarded = single(h.backend.calls)
       expect(forwarded.query.getAll('node_types')).to.deep.equal(['record'])
     })
+
+    it('forwards the cursor of a previous page', async () => {
+      h.backend.on('GET', '/api/v1/knowledge-graph/navigate', { status: 200, body: { rows: [] } })
+
+      const r = await call(h, 'GET', '/navigate?nodeId=grp-1&cursor=eyJ2IjoyfQ.c2ln', sessionToken(h, member))
+
+      expect(r.status).to.equal(200)
+      expect(single(h.backend.calls).query.get('cursor')).to.equal('eyJ2IjoyfQ.c2ln')
+    })
+
+    it('rejects a cursor longer than any it hands out', async () => {
+      const r = await call(h, 'GET', `/navigate?cursor=${'a'.repeat(4097)}`, sessionToken(h, member))
+
+      expect(r.status).to.equal(400)
+      expect(h.backend.calls).to.have.length(0)
+    })
   })
 
   describe('GET / list filters', () => {

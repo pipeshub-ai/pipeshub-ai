@@ -7,19 +7,15 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import pytest
 
 from app.core import org_context
 from app.core.org_context import MissingOrgContext
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
 
+from .test_access import World, _org
 from .test_identity import w as _identity_world  # noqa: F401
 from .test_kb import folder, grant, kb, other_org, team, users
-
-if TYPE_CHECKING:
-    from .test_access import World
 
 pytestmark = pytest.mark.integration
 
@@ -312,7 +308,7 @@ async def test_a_template_opens_for_its_own_grant_or_a_team_the_user_is_in_and_n
     t = await w.p.get_template("t1", "reader")
     assert (t["access_type"], t["can_edit"], t["can_delete"], t["can_share"]) == ("INDIVIDUAL", False, False, False)
     t = await w.p.get_template("t1", "member")
-    assert (t["access_type"], t["user_role"], t["can_edit"], t["can_delete"]) == ("TEAM", "WRITER", True, False)
+    assert (t["access_type"], t["user_role"], t["can_edit"], t["can_delete"]) == ("TEAM", "WRITER", False, False)      # a team's grant edits nothing
     await users(w, "odd", "oddteam")                                                                               # a grant with a role that is none of the known ones opens nothing
     await w.edge("permission", ("users", "odd"), ("agentTemplates", "t1"), type="USER", role="EDITOR")
     await w.nodes("teams", {"_key": "tx"})
@@ -324,7 +320,7 @@ async def test_a_template_opens_for_its_own_grant_or_a_team_the_user_is_in_and_n
         await w.edge("permission", ("users", "member"), ("teams", team_key), type="USER", role="READER")
         await w.edge("permission", ("teams", team_key), ("agentTemplates", "t1"), type="TEAM", role=role)
     t = await w.p.get_template("t1", "member")
-    assert (t["access_type"], t["user_role"], t["can_delete"]) == ("TEAM", "OWNER", True)
+    assert (t["access_type"], t["user_role"], t["can_delete"]) == ("TEAM", "OWNER", False)                  # not even a team owner's
     await w.p.delete_edges_from("tz", "teams", "permission")
     assert (await w.p.get_template("t1", "member"))["user_role"] == "WRITER"
     assert (await w.p.get_template("t1", "both"))["access_type"] == "INDIVIDUAL"                                    # the user's own grant first
@@ -353,6 +349,73 @@ async def test_a_clone_is_a_new_active_template_with_no_owner_and_no_grants(w: W
     assert await w.p.clone_agent_template("nope") is None
     with other_org():
         assert await w.p.clone_agent_template("t1") is None
+
+
+async def template_world(w: World) -> None:
+    """own owns t1 and t2; member reaches t1 through two teams (WRITER and READER) and t3 through one; both holds t1 directly and through a team."""
+    await users(w, "own", "member", "both", "odd")
+    await tpl(w, "t1", updatedAtTimestamp=1)
+    await tpl(w, "t2")
+    await tpl(w, "t3")
+    await tpl(w, "dead", isDeleted=True)
+    for t in ("t1", "t2", "dead"):
+        await w.edge("permission", ("users", "own"), ("agentTemplates", t), type="USER", role="OWNER", id=f"p-{t}", createdAtTimestamp=5)
+    await w.edge("permission", ("users", "both"), ("agentTemplates", "t1"), type="USER", role="READER")
+    await w.edge("permission", ("users", "odd"), ("agentTemplates", "t2"), type="USER", role="EDITOR")             # a role that is none of the known ones
+    await w.nodes("teams", {"_key": "tw"}, {"_key": "tr"}, {"_key": "towner"})
+    for tm in ("tw", "tr"):
+        await w.edge("permission", ("users", "member"), ("teams", tm), type="USER", role="READER")
+    await w.edge("permission", ("users", "both"), ("teams", "tw"), type="USER", role="READER")
+    await w.edge("permission", ("teams", "tw"), ("agentTemplates", "t1"), type="TEAM", role="WRITER")
+    await w.edge("permission", ("teams", "tr"), ("agentTemplates", "t1"), type="TEAM", role="READER")
+    await w.edge("permission", ("teams", "tr"), ("agentTemplates", "t3"), type="TEAM", role="READER")
+    await w.edge("permission", ("teams", "tr"), ("agentTemplates", "dead"), type="TEAM", role="OWNER")
+    await w.edge("permission", ("users", "member"), ("teams", "towner"), type="USER", role="READER")
+    await w.edge("permission", ("teams", "towner"), ("agentTemplates", "t2"), type="TEAM", role="OWNER")             # a team owner, not the user's own grant
+
+
+async def test_the_template_list_is_the_users_own_grants_then_their_teams_and_no_one_elses(w: World) -> None:
+    await template_world(w)
+    other = _org()
+    with other_org(other):
+        ow = World(w.p, other)
+        await users(ow, "own")
+        await tpl(ow, "t9")
+        await ow.edge("permission", ("users", "own"), ("agentTemplates", "t9"), type="USER", role="OWNER")
+    got = await w.p.get_all_agent_templates("own")
+    assert [(t["_key"], t["access_type"], t["user_role"], t["permission_id"], t["permission_created_at"], t["can_delete"]) for t in got] == [
+        ("t1", "USER", "OWNER", "p-t1", 5, True), ("t2", "USER", "OWNER", "p-t2", 5, True)]            # not the deleted one, nor another org's
+    assert got[0]["name"] == "t1" and got[0]["_id"] == "agentTemplates/t1" and (got[0]["can_edit"], got[0]["can_share"], got[0]["can_view"]) == (True, True, True)
+    got = await w.p.get_all_agent_templates("member")
+    assert [(t["_key"], t["access_type"], t["user_role"], t["can_edit"], t["can_delete"]) for t in got] == [
+        ("t1", "TEAM", "WRITER", False, False), ("t2", "TEAM", "OWNER", False, False), ("t3", "TEAM", "READER", False, False)]      # once each, the highest team role
+    assert [(t["_key"], t["access_type"], t["user_role"]) for t in await w.p.get_all_agent_templates("both")] == [("t1", "USER", "READER")]      # their own grant first
+    assert await w.p.get_all_agent_templates("odd") == [] and await w.p.get_all_agent_templates("nobody") == []
+    with other_org(other):
+        assert [t["_key"] for t in await w.p.get_all_agent_templates("own")] == ["t9"]
+    await w.p.delete_edges_from("member", "users", "permission")                                                  # leaves the teams: loses them
+    assert await w.p.get_all_agent_templates("member") == []
+
+
+async def test_a_template_is_edited_or_deleted_only_by_the_user_who_owns_it(w: World) -> None:
+    await template_world(w)
+    p = w.p
+    doc = lambda k: p.get_document(k, "agentTemplates")  # noqa: E731
+    assert await p.update_agent_template("t1", {"name": "New", "description": "d", "models": ["m"], "createdBy": "mallory", "isDeleted": True}, "own") is True
+    d = await doc("t1")
+    assert (d["name"], d["description"], d["models"], d["updatedByUserId"]) == ("New", "d", ["m"], "own") and d["updatedAtTimestamp"] > 1
+    assert d.get("createdBy") is None and not d.get("isDeleted")                                                      # fields outside the list are not written
+    for t, user in (("t1", "member"), ("t1", "both"), ("t2", "member"), ("t2", "odd"), ("dead", "own"), ("missing", "own"), ("t1", "nobody")):
+        assert await p.update_agent_template(t, {"name": "x"}, user) is False, (t, user)      # a team writer, a reader, a team owner, an unknown role, deleted, missing
+        assert await p.delete_agent_template(t, user) is False, (t, user)
+    with other_org():
+        assert await p.update_agent_template("t1", {"name": "x"}, "own") is False and await p.delete_agent_template("t1", "own") is False
+    assert (await doc("t1"))["name"] == "New" and not (await doc("t2")).get("isDeleted")
+    assert await p.delete_agent_template("t2", "own") is True
+    d = await doc("t2")
+    assert d["isDeleted"] is True and d["deletedByUserId"] == "own" and d["deletedAtTimestamp"] > 0                       # kept, marked
+    assert [t["_key"] for t in await p.get_all_agent_templates("own")] == ["t1"]
+    assert await p.delete_agent_template("t2", "own") is False and await p.update_agent_template("t2", {"name": "x"}, "own") is False
 
 
 # ---- the legacy hub app ----------------------------------------------------------------------------------------------------------------------
@@ -386,6 +449,7 @@ CALLS = {
     "get_kb_children": ("k", 0, 1), "get_folder_children": ("k", "f", 0, 1), "list_kb_records": ("k", "u", "o", 0, 1),
     "list_accessible_artifacts": ("u", "o", 0, 1, None, None, None, None, None, "name", "asc"), "get_artifact_detail": ("u", "o", "a"),
     "get_template": ("t", "u"), "clone_agent_template": ("t",), "delete_kb_hub_app": ("o",),
+    "get_all_agent_templates": ("u",), "update_agent_template": ("t", {"name": "n"}, "u"), "delete_agent_template": ("t", "u"), "_template_owned": ("t", "u", None),
 }
 
 
@@ -399,3 +463,18 @@ async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_
         await getattr(pg_provider, name)(*CALLS[name])
     with org_context.system("test.no-org"), pytest.raises(Exception, match="(?i)system|org"):
         await getattr(pg_provider, name)(*CALLS[name])
+
+
+async def test_a_templates_listed_edit_and_delete_rights_are_what_the_writes_allow(w: World) -> None:
+    """A direct writer and a team owner are told they may not edit or delete, and they may not; the owner is told they may, and they may."""
+    await template_world(w)
+    await users(w, "writer")
+    await w.edge("permission", ("users", "writer"), ("agentTemplates", "t2"), type="USER", role="WRITER")
+    for user, expected in (("writer", False), ("member", False), ("own", True)):               # member reaches t2 as a team owner
+        listed = next(t for t in await w.p.get_all_agent_templates(user) if t["_key"] == "t2")
+        opened = await w.p.get_template("t2", user)
+        assert (listed["can_edit"], listed["can_delete"], opened["can_edit"], opened["can_delete"]) == (expected,) * 4, user
+        assert await w.p.update_agent_template("t2", {"name": f"by {user}"}, user) is expected, user
+    for user in ("writer", "member"):
+        assert await w.p.delete_agent_template("t2", user) is False, user
+    assert await w.p.delete_agent_template("t2", "own") is True

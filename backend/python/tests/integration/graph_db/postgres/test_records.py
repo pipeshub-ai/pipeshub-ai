@@ -49,11 +49,13 @@ CALLS = {
     "get_record_by_external_id": ("c1", "e"), "get_record_by_id": ("r",), "get_records_by_virtual_record_id": ("v",), "get_records_by_parent": ("c1", "p"),
     "get_record_by_external_revision_id": ("c1", "rev"), "get_existing_record_keys": (["r"],), "get_records_by_record_ids": (["r"], "o"),
     "get_typed_records_batch": (["r"],), "get_virtual_record_ids_for_record_ids": (["r"],), "get_virtual_record_ids_in_use": (["v"],),
+    "get_virtual_record_holders": (["v"], "o"),
     "batch_upsert_records": ([plain("o", "r")],), "create_record_relation": ("a", "b", "BOOKMARK"),
     "compare_and_set_indexing_status": (["r"], "QUEUED", "COMPLETED"), "update_indexing_status_for_record_ids": (["r"], "QUEUED"),
     "has_records_indexed_since": ("c1", 0), "get_sync_point": ("k", "syncPoints"), "upsert_sync_point": ("k", {}, "syncPoints"),
     "remove_sync_point": ("k", "syncPoints"), "_delete_records_with_their_types": (["r"],),
     "page_record_ids_by_type": ("o", ["FILE"]),
+    "list_unsupported_page": ("o", "c1", None, 10), "transition_unsupported": (["r"], "QUEUED"),
 }
 
 
@@ -117,6 +119,28 @@ async def test_visibility_live_trashed_and_both_and_a_missing_flag_is_live(pg_db
     assert await p.get_record_by_external_revision_id("c1", "rv") is None
     assert (await p.get_record_by_external_revision_id("c1", "rv", visibility=RecordVisibility.ALL)).id == "gone"
     assert await p.get_virtual_record_ids_in_use([]) == set() and await p.get_virtual_record_ids_for_record_ids([]) == {}
+
+
+async def test_the_holders_of_shared_content_are_every_record_of_the_org_holding_it_the_trash_included(pg_db) -> None:
+    """Before a deleted connector's or record's storage goes, its shared copy is handed to a holder; a trashed holder still needs it (a restore).
+    The same answer as Neo4j and ArangoDB give (``tests/integration/test_record_visibility_e2e.py``)."""
+    p, other = bound(pg_db), bound(pg_db)
+    await p.batch_upsert_records([code(p.org, "live"), code(p.org, "gone"), code(p.org, "old", connector_id="c2", record_group_id="g1"), code(p.org, "lone")])
+    await p.batch_update_nodes([{"id": "live", "virtualRecordId": "v", "contentRev": 3, "webUrl": "https://x/live"}, {"id": "gone", "virtualRecordId": "v", "isDeleted": True},
+                                {"id": "old", "virtualRecordId": "v", "isDeleted": None}, {"id": "lone", "virtualRecordId": "w"}], "records")
+    await other.batch_upsert_records([code(other.org, "theirs")])
+    await other.batch_update_nodes([{"id": "theirs", "virtualRecordId": "v"}], "records")
+    got = await p.get_virtual_record_holders(["v", "w", "v", "nobody"], p.org)
+    assert set(got) == {"v", "w"}                                                            # an id nobody holds is absent
+    assert {h["id"]: h["isDeleted"] for h in got["v"]} == {"live": False, "gone": True, "old": False}
+    live = next(h for h in got["v"] if h["id"] == "live")
+    assert live == {"id": "live", "connectorId": "c1", "connectorName": "GITHUB", "recordGroupId": None, "recordName": "n", "webUrl": "https://x/live",
+                    "contentRev": 3, "isDeleted": False}
+    assert next(h for h in got["v"] if h["id"] == "old")["recordGroupId"] == "g1"
+    assert next(h for h in got["v"] if h["id"] == "old")["connectorId"] == "c2"
+    assert await p.get_virtual_record_holders(["v"], other.org) == {}                       # another org's id reads as nobody, never its records
+    assert [h["id"] for h in (await other.get_virtual_record_holders(["v"], other.org))["v"]] == ["theirs"]
+    assert await p.get_virtual_record_holders([], p.org) == {}
 
 
 async def test_no_list_filters_nothing_an_empty_list_returns_nothing_and_a_list_filters(pg_db) -> None:
