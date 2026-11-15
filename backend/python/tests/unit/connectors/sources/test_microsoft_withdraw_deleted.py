@@ -64,7 +64,6 @@ def _processor(stored_ids: list[str]) -> tuple[MagicMock, dict]:
             stored.pop(u.source_user_id)
 
     proc.withdraw_app_user_access = AsyncMock(side_effect=withdraw)
-    proc.get_user_by_email = AsyncMock(return_value=None)
     return proc, stored
 
 
@@ -104,7 +103,7 @@ def _direct_read(status: object) -> AsyncMock:
 
 def _outlook(stored_ids: list[str], pages: list, status: object = "gone") -> tuple[OutlookConnector, dict]:
     proc, stored = _processor(stored_ids)
-    c = stub_source_accounts(OutlookConnector(logging.getLogger("t"), proc, MagicMock(), MagicMock(), "c1", "team", "creator"))
+    c = OutlookConnector(logging.getLogger("t"), proc, MagicMock(), MagicMock(), "c1", "team", "creator")
     c.external_users_client = MagicMock()
     c.external_users_client.users_user_list_user = AsyncMock(side_effect=pages)
     c.external_users_client.client.users.by_user_id.return_value.get = _direct_read(status)
@@ -184,7 +183,6 @@ async def test_outlook_read_failure_of_stored_users_withdraws_nobody(caplog: pyt
     with caplog.at_level(logging.ERROR):
         await c._sync_users()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
-    c.data_entities_processor.on_new_app_users.assert_not_awaited()   # who held each address before is unknown
     assert any("db down" in r.message and r.levelno == logging.ERROR for r in caplog.records)
     assert set(stored) == {"a", "gone"}
 
@@ -345,7 +343,6 @@ async def test_sharepoint_read_failure_of_stored_users_withdraws_nobody(caplog: 
     with caplog.at_level(logging.ERROR):
         await c._sync_users()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
-    c.data_entities_processor.on_new_app_users.assert_not_awaited()   # who held each address before is unknown
     assert any("db down" in r.message and r.levelno == logging.ERROR for r in caplog.records)
     assert set(stored) == {"a", "gone"}
 
@@ -624,8 +621,7 @@ async def test_outlook_untrusted_listing_rewrites_no_group_and_keeps_the_last_go
     groups.assert_not_awaited()
     conversations.assert_not_awaited()
     assert c._user_cache == {"old@x.com": "old"}
-    # the listed users are still saved, unless the stored links could not be read to check who held each address
-    assert c.data_entities_processor.on_new_app_users.await_count == (0 if scenario == "stored_read_failed" else 1)
+    c.data_entities_processor.on_new_app_users.assert_awaited_once()  # the listed users are still saved
     assert c._full_sync_incomplete is True  # the skipped groups are owed, as after a failed group sync
 
 

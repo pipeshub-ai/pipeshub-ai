@@ -6,7 +6,7 @@ than by hand. A hand-built fixture can encode a graph the write path would
 never produce, so it proves the query is self-consistent, not that it works on
 real synced data.
 
-Two substitutions are needed and only two:
+Three substitutions are needed and only three:
 
 * ``initialize()`` is skipped. It builds a Kafka/Redis producer from config,
   and the graph writes never read it back — it only emits record-events. The
@@ -14,9 +14,11 @@ Two substitutions are needed and only two:
   ``messaging_producer`` after construction.
 * The producer is a recorder. Tests can assert on what would have been
   published without a broker running.
+* Config is a dict (``MemoryConfig``): the processor keeps per-connector state
+  there (which source account holds each address).
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -51,10 +53,24 @@ class RecordingProducer:
         return types
 
 
+class MemoryConfig:
+    """Stands in for ConfigurationService: what is set is what is read back."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, object] = {}
+
+    async def get_config(self, key: str, default: object = None, **_: object) -> object:
+        return self.data.get(key, default)
+
+    async def set_config(self, key: str, value: object, **_: object) -> bool:
+        self.data[key] = value
+        return True
+
+
 def build_processor(provider, org_id: str) -> tuple[DataSourceEntitiesProcessor, RecordingProducer]:
     """A processor writing through `provider` into the live graph."""
     logger = MagicMock()
-    config_service = AsyncMock()
+    config_service = MemoryConfig()
     data_store = GraphDataStore(logger, provider)
 
     processor = DataSourceEntitiesProcessor(logger, data_store, config_service)

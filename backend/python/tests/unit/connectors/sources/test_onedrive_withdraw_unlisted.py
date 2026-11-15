@@ -150,9 +150,8 @@ async def test_read_failure_of_stored_users_withdraws_nobody(caplog: pytest.LogC
     c, stored = _connector(["a", "gone"], [_user("a")])
     c.data_entities_processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("db down"))
     with caplog.at_level(logging.ERROR):
-        await c._sync_users()      # nobody is linked either: who held each address before is unknown
+        await c._sync_users()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
-    c.data_entities_processor.on_new_app_users.assert_not_awaited()
     assert any("db down" in r.message and r.levelno == logging.ERROR for r in caplog.records)
     assert set(stored) == {"a", "gone"}
 

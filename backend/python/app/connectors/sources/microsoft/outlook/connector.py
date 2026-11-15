@@ -92,7 +92,6 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     read_user_status,
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
-from app.connectors.sources.microsoft.common.source_accounts import SourceAccounts
 from app.connectors.sources.microsoft.common.outlook_constants import (
     MessagesDeltaResult,
     OutlookAPIFields,
@@ -360,9 +359,6 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             org_id=self.data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
             data_store_provider=self.data_store_provider
-        )
-        self.source_accounts = SourceAccounts(
-            self.data_entities_processor, self.connector_id, self.config_service, self.logger
         )
 
         self.sync_filters: FilterCollection = FilterCollection()
@@ -667,7 +663,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 users_to_sync = filtered_users
 
             # Sync all enterprise users to database
-            await self.source_accounts.admit(all_enterprise_users)
+            await self.data_entities_processor.on_new_app_users(all_enterprise_users)
             self._users_trusted = await self._withdraw_disabled_app_users(all_enterprise_users)
             if self._users_trusted:
                 await self._populate_user_cache(all_enterprise_users)
@@ -721,7 +717,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     continue
             gone.append(u)
         if gone:
-            await self.source_accounts.withdraw(gone)
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
         return trusted
 
     async def _get_all_users_external(self) -> OutlookUserListing:

@@ -105,7 +105,6 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
     map_msgraph_roles_to_permission_type,
 )
-from app.connectors.sources.microsoft.common.source_accounts import SourceAccounts
 from app.connectors.sources.microsoft.sharepoint_online.container_tracker import (
     ContainerTracker,
 )
@@ -666,7 +665,7 @@ class SharePointConnector(BaseConnector):
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
         self.connector_id = connector_id
-        self.source_accounts = SourceAccounts(data_entities_processor, connector_id, config_service, logger)
+        self.source_accounts = data_entities_processor.source_accounts(connector_id)
 
         self.filters = {"exclude_onedrive_sites": True, "exclude_pages": True, "exclude_lists": True, "exclude_document_libraries": False}
         # Batch processing configuration
@@ -3684,7 +3683,7 @@ class SharePointConnector(BaseConnector):
                 continue
             gone.append(u)
         if gone:
-            await self.source_accounts.withdraw(gone)
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
         return trusted
 
     async def _sync_users(self) -> None:
@@ -3707,7 +3706,7 @@ class SharePointConnector(BaseConnector):
                 recipient_user_ids=[self.created_by],
             )
             raise
-        await self.source_accounts.admit(users)
+        await self.data_entities_processor.on_new_app_users(users)
         self._confirmed_active_emails = {u.email.lower() for u in users if u.email and u.is_active is not False}
         trusted = getattr(users, "complete", True) and await self._withdraw_unlisted_app_users(users)
         stored = await self.user_sync_point.read_sync_point(INACTIVE_USERS_SYNC_POINT_KEY)

@@ -14,6 +14,7 @@ import importlib.metadata
 import inspect
 import io
 import json
+import logging
 import re
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
@@ -466,6 +467,12 @@ class FakeRecordsDb:
 
     async def get_app_user_links(self, connector_id: str) -> list[Any]:
         return list(self.app_users)
+
+    def source_accounts(self, connector_id: str) -> Any:  # noqa: ANN401
+        """A new one per connector, as a new process starts with nothing loaded."""
+        from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
+
+        return SourceAccounts(self, connector_id, FakeConfigService(connector_id, {}), logging.getLogger("t"))
 
     async def get_user_by_email(self, email: str, **_: object) -> object | None:
         from types import SimpleNamespace

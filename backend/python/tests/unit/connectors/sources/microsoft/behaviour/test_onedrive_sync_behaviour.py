@@ -2827,11 +2827,12 @@ class TestReusedAddressOutsideAUserSync:
 
     @staticmethod
     async def fresh_connector(db: FakeRecordsDb, checkpoints: FakeCheckpointStore, saved: object = None) -> OneDriveConnector:
-        from app.connectors.sources.microsoft.common.source_accounts import (
+        from app.connectors.core.base.data_processor.source_accounts import (
             source_accounts_key,
         )
 
         connector = await ready_connector(db, checkpoints)
+        connector.source_accounts.config_service = connector.config_service    # one service, as in production
         connector.config_service.saved[source_accounts_key(CONNECTOR_ID)] = (
             {"withdrawn": {}, "reused": {"bo@acme.com": "u-bo-new"}} if saved is None else saved
         )
