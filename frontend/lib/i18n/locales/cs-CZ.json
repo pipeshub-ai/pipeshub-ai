@@ -84,6 +84,7 @@
       "restoredMany_many": "Obnoveno {{count}} položky",
       "restoredMany_other": "Obnoveno {{count}} položek",
       "showing": "Zobrazeno {{from}}–{{to}} z {{total}}",
+      "showingAtLeast": "Zobrazeno {{from}}–{{to}} z {{total, number}}+",
       "previous": "Předchozí",
       "next": "Další",
       "nameAndMore_one": "{{name}} a {{count}} další",

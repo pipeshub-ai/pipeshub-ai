@@ -221,12 +221,11 @@ class TestRecoveryTakesTheLanesInTurn:
         assert _buffered_connectors(consumer) == {"big", "small-1", "small-2", "small-3"}
 
 
-class TestWithLivePeersNothingChanges:
-    async def test_recovery_does_not_run_while_another_consumer_is_live(self) -> None:
-        """A second replica reads the same group (XINFO CONSUMERS shows it
-        active within the claim window). Read-phase recovery stays off, so
-        the group behaves as before: no pending lists are read, nothing is
-        claimed, and nothing held is given up."""
+class TestWithLivePeers:
+    async def test_a_full_buffer_gives_nothing_up_while_another_consumer_is_live(self) -> None:
+        """A second replica reads the same group. Recovery while reading may
+        take back this consumer's own entries only with room: it never gives
+        up a held entry, and it never claims anyone else's."""
         consumer = _consumer(max_buffered_messages=2)
         for i in range(2):
             await consumer._IndexingRedisStreamsConsumer__enqueue_message(
@@ -234,34 +233,59 @@ class TestWithLivePeersNothingChanges:
             )
         consumer.redis.xinfo_consumers = AsyncMock(
             return_value=[
-                {"name": consumer.consumer_name, "pending": 2, "idle": 10},
+                {"name": consumer.consumer_name, "pending": 3, "idle": 10},
                 {"name": "peer", "pending": 5, "idle": 200},
             ]
         )
-        consumer.redis.xpending = AsyncMock()
+        consumer.redis.xpending = AsyncMock(
+            return_value={"pending": 3, "consumers": [{"name": consumer.consumer_name, "pending": 3}]}
+        )
         consumer.redis.xautoclaim = AsyncMock()
 
         await consumer._IndexingRedisStreamsConsumer__recover_while_reading()
 
-        consumer.redis.xpending.assert_not_awaited()
         consumer.redis.xautoclaim.assert_not_awaited()
         assert consumer._scheduler.pending_count == 2
+        assert {m for _s, m in consumer._held_entries} == {"2-0", "2-1"}
 
-    async def test_a_replaced_process_still_listed_keeps_it_off(self) -> None:
-        """A crashed or replaced process stays listed with its pending
-        entries. Recovery while reading stays off; those entries come back
-        through the startup and idle drains, as before."""
+    async def test_a_replaced_process_still_listed_does_not_stop_own_recovery(self) -> None:
+        """Its entries are not this consumer's to take here (the read-time
+        reclaim takes a stopped consumer's); this consumer's own unheld
+        entries still come back, with room."""
         consumer = _consumer()
         consumer.redis.xinfo_consumers = AsyncMock(
             return_value=[{"name": "replaced", "pending": 5, "idle": 600_000}]
         )
-        consumer.redis.xpending = AsyncMock()
+        consumer.redis.xpending = AsyncMock(
+            return_value={"pending": 6, "consumers": [
+                {"name": "replaced", "pending": 5}, {"name": consumer.consumer_name, "pending": 1},
+            ]}
+        )
+        consumer.redis.xpending_range = AsyncMock(return_value=[{"message_id": "7-0"}])
+        consumer.redis.xrange = AsyncMock(return_value=[("7-0", _fields("c", "c-0"))])
+        consumer.redis.eval = AsyncMock(return_value=1)
         consumer.redis.xautoclaim = AsyncMock()
 
         await consumer._IndexingRedisStreamsConsumer__recover_while_reading()
 
-        consumer.redis.xpending.assert_not_awaited()
         consumer.redis.xautoclaim.assert_not_awaited()
+        assert any(m == "7-0" for _s, m in consumer._held_entries)
+
+    async def test_a_peers_claim_between_scan_and_dispatch_is_never_taken_back(self) -> None:
+        """The check-and-claim script answers 0 when the entry is no longer
+        pending under this consumer: it is not buffered."""
+        consumer = _consumer()
+        consumer.redis.xinfo_consumers = AsyncMock(return_value=[{"name": "peer", "pending": 1, "idle": 10}])
+        consumer.redis.xpending = AsyncMock(
+            return_value={"pending": 1, "consumers": [{"name": consumer.consumer_name, "pending": 1}]}
+        )
+        consumer.redis.xpending_range = AsyncMock(return_value=[{"message_id": "7-0"}])
+        consumer.redis.xrange = AsyncMock(return_value=[("7-0", _fields("c", "c-0"))])
+        consumer.redis.eval = AsyncMock(return_value=0)
+
+        await consumer._IndexingRedisStreamsConsumer__recover_while_reading()
+
+        assert consumer._scheduler.pending_count == 0
 
     async def test_recovery_runs_at_most_once_a_second(self) -> None:
         consumer = _consumer()

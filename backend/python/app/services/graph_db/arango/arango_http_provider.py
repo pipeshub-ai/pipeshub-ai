@@ -642,8 +642,8 @@ def _aql_in_hidden_group(v: str, tag: str) -> str:
 def _aql_undecided(v: str, *, decided: str | None = None, hiding: bool = True) -> str:
     """The handles of the children of ``v`` a browse of it asks the batch check about, as Neo4j's ``_kh_v3_undecided``: hierarchy children of
     this App, live, of the organisation, no stub, in no group that hides its children, none when one lies above ``v``, and not ``decided`` (a
-    list of handles the browse's rules already select); the first ``_KH_UNDECIDED_MAX`` by key, and one more for a browse (``decided`` given), which
-    tells it the cap left some out (`_kh_v3_capped`)."""
+    list of handles the browse's rules already select). For an arrow the first ``_KH_UNDECIDED_MAX`` by key; for a browse (``decided`` given)
+    every one, which it asks about in the page's order (`_kh_v3_browse_undecided`)."""
     records, groups = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
     return f"""({_aql_hidden_above(v, "ku", from_depth=0)} ? [] : (
         FOR kh_uc, kh_ue IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}
@@ -655,8 +655,7 @@ def _aql_undecided(v: str, *, decided: str | None = None, hiding: bool = True) -
             // a child a browse of it would refuse takes no place under the cap
             FILTER {_aql_opens_below_hidden("kh_uc", v, "kw") if hiding else "true"}
             COLLECT kh_uk = kh_uc._key, kh_uh = kh_uc._id
-            SORT kh_uk
-            LIMIT {IGraphDBProvider._KH_UNDECIDED_MAX + (1 if decided else 0)}
+            {"" if decided else f"SORT kh_uk LIMIT {IGraphDBProvider._KH_UNDECIDED_MAX}"}
             RETURN kh_uh))"""
 
 
@@ -783,7 +782,7 @@ def _aql_has_child(v: str) -> str:
 
 def _aql_frontier(v: str, from_app: str, *, hiding: bool = True) -> str:
     """The children of ``v`` whose listing the batch check decides when ``v`` is opened, as keys: those a browse of ``v`` asks it about
-    (`_aql_undecided`: the first ``_KH_UNDECIDED_MAX`` by key, as the browse reads them), and those a browse of each stub it lists on the way down
+    (`_aql_undecided`: the first ``_KH_UNDECIDED_MAX`` by key), and those a browse of each stub it lists on the way down
     asks about: a stub below ``v`` by hops through stubs alone, each passing the browse rule read from ``from_app``, or below a stub child of ``v``
     its own walk from the App reaches (the browse lists it whatever the hop from ``v`` says), read from that stub's reach. Opening ``v`` lists
     something where the check admits one of them and its own rules list nothing, so an arrow, the sidebar and a stub's listing ask the check
@@ -6785,10 +6784,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         updates: dict[str, Any],
         expected: dict[str, Any],
         transaction: str | None = None,
+        *,
+        clock_at_most: float | None = None,
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if_match`."""
         if not expected:
             raise ValueError("update_node_fields_if_match needs an expectation")
+        if clock_at_most is not None and transaction is not None:
+            raise ValueError("update_node_fields_if_match: clock_at_most is checked in a transaction of its own on ArangoDB, not in the caller's")
         bind_vars: dict[str, Any] = {"@collection": collection, "key": key, "updates": dict(updates)}
         filters = []
         for i, (name, value) in enumerate(expected.items()):
@@ -6810,11 +6813,44 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # instead of waiting on a lock. Run its statement again, with backoff: the expectation is
         # checked against the winner's write, so it applies or is refused, as a lock would have made
         # it. Inside a transaction the owner decides, so the conflict is raised.
+        if clock_at_most is not None:
+            return bool(await self._retry_write_conflicts(lambda: self._write_then_check_clock(collection, query, bind_vars, clock_at_most), None))
         rows = await self._retry_write_conflicts(
             lambda: self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction),
             transaction,
         )
         return bool(rows)
+
+    async def _write_then_check_clock(self, collection: str, query: str, bind_vars: dict[str, Any], clock_at_most: float) -> bool:
+        """``query`` in a stream transaction of its own, then the store's clock in a second statement, committed only while the clock is not past
+        ``clock_at_most``. AQL folds `DATE_NOW()` into a constant when it compiles a statement, before the statement waits for a collection lock
+        (an exclusive one another transaction holds): read in the writing statement, the clock could be older than the write. The second statement is
+        compiled after the first holds the document's lock, which it keeps until the commit."""
+        txn = await self.http_client.begin_transaction([], [collection])
+        committed = False
+        try:
+            if not await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=txn):
+                return False
+            [late] = await self.http_client.execute_aql("RETURN DATE_NOW() > @bound * 1000", bind_vars={"bound": clock_at_most}, txn_id=txn)
+            if late:
+                return False
+            await self.http_client.commit_transaction(txn)
+            committed = True
+            return True
+        finally:
+            if not committed:
+                # Whatever ended the attempt (refused, an error, a commit that failed, a cancel), the transaction is aborted here: "There is no automatic
+                # abort!", it stays open until it has been idle for --transaction.streaming-idle-timeout (60 s by default, 120 s at most), holding the
+                # document's lock (https://docs.arango.ai/arangodb/3.12/develop/transactions/stream-transactions/). "Aborting is an idempotent
+                # operation", and an abort of one already committed is refused with 400
+                # (https://docs.arango.ai/arangodb/3.12/develop/http-api/transactions/stream-transactions/), so it is always tried, shielded from a cancel.
+                await asyncio.shield(self._abort_quietly(txn))
+
+    async def _abort_quietly(self, txn: str) -> None:
+        try:
+            await self.http_client.abort_transaction(txn)
+        except Exception:
+            self.logger.warning("could not abort stream transaction %s; ArangoDB drops it after its idle timeout", txn, exc_info=True)
 
     @staticmethod
     def _condition_filters(conditions: Sequence[Cond]) -> tuple[list[str], dict[str, Any]]:
@@ -17530,11 +17566,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         skip: int = 0,
         limit: int = 25,
         single_file_batches_only: bool = False,
+        after: tuple[int, str] | None = None,
+        count_cap: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """See ``IGraphDBProvider.list_trashed_records``."""
         if not connector_id or not org_id or limit <= 0:
             return {"items": [], "total": 0}
+        after_ts, after_batch = after or (None, None)
         bind_vars = {
             "connector_id": connector_id,
             "org_id": org_id,
@@ -17553,6 +17592,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 COLLECT batch = r.deleteBatchId
                     AGGREGATE deleted_at = MAX(r.deletedAtTimestamp), first_key = MIN(r._key),
                         root_count = COUNT(1)
+                FILTER @after_ts == null OR deleted_at < @after_ts OR (deleted_at == @after_ts AND batch < @after_batch)
                 SORT deleted_at DESC, batch DESC
                 LIMIT @skip, @limit
                 LET r = DOCUMENT(@@records, first_key)
@@ -17608,7 +17648,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     ),
                     deletedByName: u == null ? null
                         : (u.fullName ? u.fullName : TRIM(CONCAT_SEPARATOR(" ", u.firstName, u.lastName))),
-                    deletedByEmail: u.email
+                    deletedByEmail: u.email,
+                    batchId: batch,
+                    batchDeletedAt: deleted_at
                 }}
             """,
             bind_vars={
@@ -17617,12 +17659,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "limit": limit,
                 "names": TRASH_LIST_OTHER_ROOT_NAMES,
                 "@users": CollectionNames.USERS.value,
+                "after_ts": after_ts,
+                "after_batch": after_batch,
             },
             transaction=transaction,
         ) or []
+        capped = "" if count_cap is None else " LIMIT @count_limit"
         counted = await self.execute_query(
-            f"{_TRASH_BATCH_ROOTS} COLLECT batch = r.deleteBatchId COLLECT WITH COUNT INTO total RETURN total",
-            bind_vars=bind_vars,
+            f"{_TRASH_BATCH_ROOTS} COLLECT batch = r.deleteBatchId{capped} COLLECT WITH COUNT INTO total RETURN total",
+            bind_vars=bind_vars if count_cap is None else {**bind_vars, "count_limit": count_cap + 1},
             transaction=transaction,
         )
         for item in rows:
@@ -20500,6 +20545,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "granted": {g: True for ids in every.values() for g in ids},
         }
         payload: dict[str, Any] = {}
+        undecided: list[str] = []      # a browse's children its rules leave to the check
         access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": every}
         # Browse lists the user's chain-tops beside the start's own children: under
         # their own record group, else under the App.
@@ -20541,8 +20587,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 visible = _Visible(nodes=list(dict.fromkeys([
                     *await self._kh_v3_walk([start_handle], "step_browse", step_bind, max_depth, transaction), *placed])))
             else:
-                visible = _Visible(nodes=await self._kh_v3_with_admitted(
-                    "step_browse", step_bind, start_handle, placed, app_id, org_id, access, transaction, hiding=hiding))
+                nodes, undecided = await self._kh_v3_with_undecided("step_browse", step_bind, start_handle, placed, org_id, transaction, hiding=hiding)
+                visible = _Visible(nodes=nodes)
         elif flatten:
             matches = None
             # The name-restricted walks find a match's ancestors at most 50 hops up, so a
@@ -20560,40 +20606,82 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 app, bind, granted_ids, transaction, matches=matches, max_depth=max_depth,
             )
         else:
-            visible = _Visible(nodes=await self._kh_v3_with_admitted(
-                "step_app", {**bind, "kh_declared_stop": False}, app["handle"], placed, app_id, org_id, access, transaction, hiding=hiding))
-        payload.update(await self._kh_v3_page_rows(
-            visible, app_id, org_id, limit=limit, sort_field=sort_field, sort_dir=sort_dir,
-            after=after, direction=direction, filters=filters or {},
-            lists_placeholders=self._kh_lists_placeholders(flatten=flatten, filters=filters),
-            exact_arrows=not flatten,
-            row_ctx=row_ctx, start_handle=start_handle, transaction=transaction, access=access, hiding=hiding,
-        ))
+            nodes, undecided = await self._kh_v3_with_undecided(
+                "step_app", {**bind, "kh_declared_stop": False}, app["handle"], placed, org_id, transaction, hiding=hiding)
+            visible = _Visible(nodes=nodes)
+
+        def page_rows(seen: _Visible) -> Awaitable[dict[str, Any]]:
+            return self._kh_v3_page_rows(
+                seen, app_id, org_id, limit=limit, sort_field=sort_field, sort_dir=sort_dir,
+                after=after, direction=direction, filters=filters or {},
+                lists_placeholders=self._kh_lists_placeholders(flatten=flatten, filters=filters),
+                exact_arrows=not flatten,
+                row_ctx=row_ctx, start_handle=start_handle, transaction=transaction, access=access, hiding=hiding,
+            )
+        descending = self._kh_v2_sort_direction(sort_dir) == "DESC"
+        cut = resume = None
+        if undecided:
+            ordered = await self._kh_v3_undecided_order(undecided, app_id, org_id, sort_field=sort_field, descending=descending, after=after,
+                                                        direction=direction, transaction=transaction, hiding=hiding)
+            at = {u["id"]: i for i, u in enumerate(ordered)}
+            handle = {u["id"]: u["h"] for u in ordered}
+            pages: dict[int, dict[str, Any]] = {}
+
+            async def read(admitted: list[str], edge: dict[str, Any] | None, n: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+                """The page with ``admitted`` listed beside what the rules select (read again only when that grew), and ``n`` undecided
+                children past ``edge``."""
+                if len(admitted) not in pages:
+                    pages[len(admitted)] = await page_rows(_Visible(nodes=[*visible.nodes, *(handle[a] for a in admitted)]))
+                i = at[edge["id"]] + 1 if edge is not None and edge is not after else 0      # ``ordered`` begins past ``after``
+                return pages[len(admitted)], ordered[i:i + n]
+            rows, cut = await self._kh_v3_browse_undecided(
+                read, after=after, limit=limit, descending=descending, direction=direction, org_id=org_id, access=access, transaction=transaction)
+            resume = self._kh_v3_end_at(rows, cut, limit=limit, descending=descending, direction=direction)
+            payload.update(rows)
+        else:
+            payload.update(await page_rows(visible))
         self.logger.debug(
             "kh v3 page app=%s start=%s flatten=%s: %s visible (granted=%d)",
             app_id, start_id, flatten, payload.get("total"), len(granted_ids),
         )
-        return await self._kh_v3_page_result(
+        result = await self._kh_v3_page_result(
             payload, limit=limit, direction=direction, include_total=include_total,
             include_scope=include_scope, scoped_start=not start_is_app, start_id=start_id,
             app_id=app_id, via_parent_id=via_parent_id, transaction=transaction,
             org_id=org_id, listed_under=None if flatten else start_id,
             access=access, name_parents=name_parents,
         )
+        return self._kh_v3_with_cut(result, cut, resume, include_total=include_total)
 
-    async def _kh_v3_with_admitted(
-        self, step: str, bind: dict[str, Any], start: str, placed: list[str], app_id: str, org_id: str, access: dict[str, Any], transaction: str | None,
-        *, hiding: bool = True,
-    ) -> list[str]:
-        """The children of ``start`` a browse lists: those its rules select (``step``, one hop), the chain-tops ``placed`` under it, and, beside
-        them, every child they leave undecided that the batch check admits, so a browse lists every child the viewer may open, by whatever arm of
-        the check. The rules and the undecided children are read in one statement."""
+    async def _kh_v3_with_undecided(
+        self, step: str, bind: dict[str, Any], start: str, placed: list[str], org_id: str, transaction: str | None, *, hiding: bool = True,
+    ) -> tuple[list[str], list[str]]:
+        """The children of ``start`` a browse lists whatever the check says: those its rules select (``step``, one hop) and the chain-tops
+        ``placed`` under it; and every child they leave undecided, which the page lists where the batch check admits it
+        (`_kh_v3_browse_undecided`), so a browse lists every child the viewer may open, by whatever arm of the check. Read in one statement."""
         found = (await self._kh_v3_run(f"{step}_undecided", {**bind, "kh_frontier": [start], "kh_placed": placed, "org_id": org_id}, transaction,
                                        hiding=hiding)
                  or [{"walked": [], "undecided": []}])[0]
-        undecided = self._kh_v3_capped(found["undecided"], start.split("/", 1)[1])
-        admitted = await self._kh_v3_admitted([h.split("/", 1)[1] for h in undecided], org_id=org_id, access=access, transaction=transaction)
-        return list(dict.fromkeys([*(h for h in found["walked"] if h != start), *placed, *(h for h in undecided if h.split("/", 1)[1] in admitted)]))
+        return list(dict.fromkeys([*(h for h in found["walked"] if h != start), *placed])), found["undecided"]
+
+    async def _kh_v3_undecided_order(
+        self, handles: list[str], app_id: str, org_id: str, *, sort_field: str, descending: bool, after: dict[str, Any] | None, direction: str,
+        transaction: str | None, hiding: bool,
+    ) -> list[dict[str, Any]]:
+        """The undecided children ``handles`` past ``after`` in the page's order, nearest the boundary first, as ``{id, sortKey, nullRank, h}``:
+        their sort keys read as the page reads its rows' (`_kh_v3_slim_aql`). No more than the first window holds are asked about at once, in no order."""
+        if len(handles) <= self._KH_UNDECIDED_MAX:
+            return [{"id": h.split("/", 1)[1], "h": h} for h in handles]
+        slim = await self.http_client.execute_aql(
+            self._kh_v3_slim_aql((), sort_field, hiding=hiding),
+            bind_vars={"kh_nodes": handles, "kh_member_groups": [], "kh_collection": False, "org_id": org_id, "app_id": app_id,
+                       "kh_unplaced_only": False, "kh_placed": [], "kh_placed_groups": []},
+            txn_id=transaction, batch_size=_KH_V3_BATCH, options=_KH_V3_QUERY_OPTIONS,
+        ) or []
+        rows = [{"id": i, "sortKey": k, "nullRank": 1 if k is None else 0, "h": h} for i, h, _, k in _kh_v3_ordered(slim, descending=descending)]
+        if after is not None:
+            rows = [r for r in rows if self._kh_v3_past(r, after, descending=descending, direction=direction)]
+        return rows[::-1] if direction == "prev" else rows
 
     async def _kh_v3_name_matches(self, org_id: str, search: str, transaction: str | None) -> list[str] | None:
         """The org's live records and groups whose name holds ``search``, read as
@@ -21577,7 +21665,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """,
         }
         for step in ("step_browse", "step_app"):
-            # One hop of the rules from a browse's start, and the children they leave undecided (`_kh_v3_with_admitted`).
+            # One hop of the rules from a browse's start, and the children they leave undecided (`_kh_v3_with_undecided`).
             # The undecided children read the App and the grants as the step does (`_aql_opens_below_hidden`).
             step_body = queries[step].removeprefix("LET kh_opens = @kh_opens")
             queries[f"{step}_undecided"] = (f'LET kh_app = DOCUMENT("{apps}", @app_id) LET kh_opens = @kh_opens LET kh_walked = ({step_body})\n'

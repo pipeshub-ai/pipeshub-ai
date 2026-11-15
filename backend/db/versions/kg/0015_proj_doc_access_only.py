@@ -1,11 +1,12 @@
 """kg: the projection reads ``accessOnly`` of a record group (a group that carries access only is no row of a listing)"""
 from alembic import op
 
-revision = "kg_0014"
-down_revision = "kg_0013"
+revision = "kg_0015"
+down_revision = "kg_0014"
 branch_labels = None
 depends_on = None
 older_code_compatible = "adds a key to the projected subset of a document; older code reads the keys it knows and ignores the new one"
+# No new projection code epoch either: only code of this revision writes accessOnly, so no copy verified before it holds a group whose listing columns it changes.
 
 # kg_0003's kg.proj_doc with accessOnly beside hideChildren: a change to it is a change of the node, which the listing column `alien` follows.
 UPGRADE = """CREATE OR REPLACE FUNCTION kg.proj_doc(p_coll text, p_doc jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$

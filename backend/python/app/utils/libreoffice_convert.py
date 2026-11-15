@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.core.org_context import spawn_in_request
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.llm_gateway.limiter import CrossLoopSemaphore
 from app.services.parsing.interface import (
@@ -139,7 +140,28 @@ async def stop_process(process: asyncio.subprocess.Process) -> None:
     soffice.bin running, so a group is killed even when the launcher has
     already exited. A process without its own group is killed only if it
     outlives the grace period.
+
+    Callers run this while handling a cancellation, then release the
+    conversion slot and remove the temp dir. A further cancel must neither
+    abort the stop between TERM and KILL nor let the caller move on before
+    it ends, so it is waited out (bounded by two grace periods) and the
+    cancellation is raised afterwards.
     """
+    stop = spawn_in_request(_stop_process(process), name="libreoffice-stop")
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            await asyncio.shield(stop)
+            break
+        except asyncio.CancelledError as exc:
+            if stop.done():
+                raise
+            cancelled = exc
+    if cancelled is not None:
+        raise cancelled
+
+
+async def _stop_process(process: asyncio.subprocess.Process) -> None:
     group = _leads_own_group(process)
     _signal(process, signal.SIGTERM, group=group)
     try:

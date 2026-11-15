@@ -435,8 +435,38 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
       expect(Object.fromEntries(sent.query)).to.deep.equal({ page: '2', limit: '10' })
     })
 
-    for (const q of ['page=0', 'page=-1', 'page=abc', 'page=1.5', 'page=9999999999', 'limit=0', 'limit=101', 'page=1&page=2']) {
-      it(`refuses ${q} before asking the connector service`, async () => {
+    it('passes on the cursor of the page before', async () => {
+      h.backend.on('GET', TRASH, { status: 200, body: page })
+
+      const r = await call(h, 'GET', `/${KB_ID}/trash?page=3&limit=10&cursor=eyJrYiI6ImsifQ`, { token })
+
+      expect(r.status).to.equal(200)
+      expect(Object.fromEntries(forwarded('GET', TRASH)[0]!.query)).to.deep.equal({ page: '3', limit: '10', cursor: 'eyJrYiI6ImsifQ' })
+    })
+
+    it('answers a page number past the cap with its own code and the way to page further', async () => {
+      const detail = 'Page numbers reach the first 10,000 deleted items. To go further, ask for the next page with the nextCursor of the page before it.'
+      h.backend.on('GET', TRASH, { status: 400, body: { detail, errorCode: 'PAGE_BEYOND_LIMIT' } })
+
+      const r = await call(h, 'GET', `/${KB_ID}/trash?page=401`, { token })
+
+      expect(r.status).to.equal(400)
+      expect(errorMessage(r)).to.equal(detail)
+      expect(JSON.stringify(r.body)).to.include('HTTP_PAGE_BEYOND_LIMIT')
+    })
+
+    it('keeps any other 400 a plain bad request', async () => {
+      h.backend.on('GET', TRASH, { status: 400, body: { detail: 'Start again from the first page.' } })
+
+      const r = await call(h, 'GET', `/${KB_ID}/trash?cursor=abc`, { token })
+
+      expect(r.status).to.equal(400)
+      expect(JSON.stringify(r.body)).to.not.include('PAGE_BEYOND_LIMIT')
+    })
+
+    for (const q of ['page=0', 'page=-1', 'page=abc', 'page=1.5', 'page=9999999999', 'limit=0', 'limit=101', 'page=1&page=2',
+      'cursor=', `cursor=${'x'.repeat(1025)}`, 'cursor=a&cursor=b']) {
+      it(`refuses ${q.slice(0, 40)} before asking the connector service`, async () => {
         const r = await call(h, 'GET', `/${KB_ID}/trash?${q}`, { token })
         expect(r.status).to.equal(400)
         expect(h.backend.calls).to.deep.equal([])

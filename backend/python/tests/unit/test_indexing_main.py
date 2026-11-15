@@ -1826,6 +1826,68 @@ def _make_health_request(governor=None, pipeline_runtime=None):
     return request
 
 
+class TestRedisEvictionPolicyWiring:
+    """The start-up check reads the Redis the replay set uses, and /health reports what it found."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self) -> "Iterator[None]":
+        from app.modules.indexing import replay_set
+
+        replay_set._eviction_warning = None
+        yield
+        replay_set._eviction_warning = None
+
+    @staticmethod
+    def _redis(policy: str) -> MagicMock:
+        redis = MagicMock()
+        redis.info = AsyncMock(return_value={"maxmemory_policy": policy})
+        redis.aclose = AsyncMock()
+        return redis
+
+    async def test_the_check_reads_the_config_services_redis_and_closes_it(self) -> None:
+        from app.indexing_main import _check_redis_eviction_policy
+        from app.modules.indexing import replay_set
+
+        container = MagicMock()
+        redis = self._redis("volatile-lru")
+        with patch(
+            "app.services.vector_db.rebuild_state.redis_from_config_service", AsyncMock(return_value=redis)
+        ) as factory:
+            await _check_redis_eviction_policy(container, MagicMock())
+
+        factory.assert_awaited_once_with(container.config_service())
+        redis.info.assert_awaited_once_with("memory")
+        redis.aclose.assert_awaited_once()
+        assert "volatile-lru" in (replay_set.eviction_policy_warning() or "")
+
+    async def test_an_unreachable_redis_does_not_stop_the_start(self) -> None:
+        from app.indexing_main import _check_redis_eviction_policy
+        from app.modules.indexing import replay_set
+
+        with patch(
+            "app.services.vector_db.rebuild_state.redis_from_config_service", AsyncMock(side_effect=OSError("down"))
+        ):
+            await _check_redis_eviction_policy(MagicMock(), MagicMock())
+
+        assert replay_set.eviction_policy_warning() is None
+
+    async def test_health_reports_the_warning_only_when_there_is_one(self) -> None:
+        import json
+
+        from app.indexing_main import _check_redis_eviction_policy, health_check
+
+        with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1):
+            assert "redis" not in json.loads((await health_check(_make_health_request())).body)
+            with patch(
+                "app.services.vector_db.rebuild_state.redis_from_config_service",
+                AsyncMock(return_value=self._redis("allkeys-lru")),
+            ):
+                await _check_redis_eviction_policy(MagicMock(), MagicMock())
+            body = json.loads((await health_check(_make_health_request())).body)
+
+        assert "allkeys-lru" in body["redis"]["evictionPolicyWarning"]
+
+
 class TestIndexingHealthCheck:
     """Tests for health_check() endpoint."""
 
@@ -3574,6 +3636,47 @@ class TestRepublishOnlyWhatTheQueueHasPassed:
 
         producer.send_event.assert_not_awaited()
         graph.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_work_only_a_stopped_consumer_holds_does_not_keep_the_record_waiting(self) -> None:
+        """A replaced process left entries from weeks ago pending on the lane. They
+        wait for a reclaim; the record's own event is not behind them."""
+        from app.services.messaging.lanes.backlog import LaneBacklog, StalePending
+
+        record = self._queued(3)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [record]}, active_ids={"live"})
+        producer = AsyncMock()
+        weeks_ago = get_epoch_timestamp_in_ms() - 400 * HOUR_MS
+        backlog = AsyncMock(return_value=LaneBacklog(
+            "record-events",
+            {"record-events.3": weeks_ago},
+            oldest_live_ms={},
+            stale={"record-events.3": StalePending({"gone": (2000, 400 * HOUR_MS)}, weeks_ago)},
+        ))
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, read_backlog=backlog) == 1
+
+        producer.send_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_live_work_behind_a_stopped_consumers_entries_still_keeps_it_waiting(self) -> None:
+        from app.services.messaging.lanes.backlog import LaneBacklog
+
+        record = self._queued(3)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [record]}, active_ids={"live"})
+        producer = AsyncMock()
+        now = get_epoch_timestamp_in_ms()
+        backlog = AsyncMock(return_value=LaneBacklog(
+            "record-events",
+            {"record-events.3": now - 400 * HOUR_MS},
+            oldest_live_ms={"record-events.3": now - 5 * HOUR_MS},
+        ))
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, read_backlog=backlog) == 0
+
+        producer.send_event.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_lane_that_has_moved_past_the_record_means_its_event_is_not_coming(self) -> None:
