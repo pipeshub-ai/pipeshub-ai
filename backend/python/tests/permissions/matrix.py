@@ -123,7 +123,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("github", "container", CONTAINER, "github/connector.py:178"),
     Connector("gitlab", "container", CONTAINER, "gitlab/projects.py:538"),
     Connector("gitlab_personal", "container", CONTAINER, "gitlab_personal/connector.py:107"),
-    Connector("notion", "item-acl", OVERRIDE, "notion/connector.py:1401",
+    Connector("notion", "item-acl", OVERRIDE, "notion/connector.py:1436",
               "each page and data source carries its own readers: the users whose own Notion personal access token "
               "confirmed it (search lists it, retrieving it succeeds); files inherit their page; the workspace "
               "group grants nobody; publishing grants nothing"),

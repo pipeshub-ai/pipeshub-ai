@@ -690,6 +690,61 @@ async def test_a_check_notion_did_not_answer_withholds_the_page_this_sync_and_ke
     assert set(conn._readers) == {"p1", "p2"}
 
 
+HOUR = 60 * 60 * 1000
+
+
+@pytest.mark.asyncio
+async def test_hourly_syncs_keep_every_grant_of_a_large_account_with_no_full_sync(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """900 grants a full sync confirmed 22 hours ago: re-confirmed ahead of the 24-hour expiry, none lapses."""
+    clock = [NOW]
+    monkeypatch.setattr("app.connectors.sources.notion.connector.get_epoch_timestamp_in_ms", lambda: clock[0])
+    ids = [f"p{i}" for i in range(900)]
+    ds = _datasource(_bot(), _search(*ids))
+    conn = _connector(ds)
+    await _link(conn)
+    path = personal_tokens.confirmed_path(conn.connector_id, "u-alice")
+    conn.config_service.values[path] = dict.fromkeys(ids, NOW - 22 * HOUR)
+    checks = []
+    for hour in range(30):
+        clock[0] = NOW + hour * HOUR
+        ds.retrieve_page.reset_mock()
+        conn._readers = {}
+        await conn._load_personal_access()
+        assert len(conn._readers) == 900, f"grants lapsed at hour {hour}"
+        checks.append(ds.retrieve_page.await_count)
+    assert checks[0] == 900, "everything due before the next sync is re-confirmed now"
+    assert max(checks[1:]) <= 900 // 18, "afterwards they spread over the hours, not one burst a day"
+
+
+@pytest.mark.parametrize(("interval_minutes", "budget"), [(None, 5400), (30, 2700)])
+@pytest.mark.asyncio
+async def test_rechecks_per_sync_stay_within_notions_documented_rate(
+        _now: None, interval_minutes: int | None, budget: int) -> None:
+    """180 requests a minute, an average of 3 a second (developers.notion.com/reference/request-limits),
+    half of the time to the next sync, the rest left for searches and the content sync."""
+    ids = [f"p{i}" for i in range(6000)]
+    ds = _datasource(_bot(), _search(*ids))
+    conn = _connector(ds)
+    if interval_minutes:
+        conn.config_service.values[f"/services/connectors/{conn.connector_id}/config"] = {
+            "sync": {"selectedStrategy": "SCHEDULED", "scheduledConfig": {"intervalMinutes": interval_minutes}}}
+    await _link(conn)
+    path = personal_tokens.confirmed_path(conn.connector_id, "u-alice")
+    conn.config_service.values[path] = dict.fromkeys(ids, NOW - 21 * HOUR)
+    await conn._load_personal_access()
+    assert ds.retrieve_page.await_count == budget
+
+
+@pytest.mark.asyncio
+async def test_a_429s_retry_after_is_waited_in_full() -> None:
+    """Notion's per-workspace limit can ask for "longer than a minute" (developers.notion.com/reference/request-limits)."""
+    conn = _connector(_datasource(_bot(), _search()))
+    await _link(conn)
+    await conn._load_personal_access()
+    assert conn._token_resilience.backoff(0, retry_after=300) >= 300
+
+
 @pytest.mark.asyncio
 async def test_new_pages_beyond_the_per_sync_budget_wait_for_a_later_sync() -> None:
     conn = _connector(_datasource(_bot(), _search("p1", "p2", "p3")))

@@ -531,12 +531,20 @@ class NotionConnector(BaseConnector):
     # documents for plans below Business ("180 requests per minute",
     # developers.notion.com/reference/request-limits); the workspace limit is shared with the sync.
     _TOKEN_REQUESTS_PER_SECOND = 3
-    # Pages and data sources each token confirms per sync: new ones, and kept ones re-checked.
+    # Pages and data sources each token confirms for the first time per sync.
     _CONFIRM_NEW_PER_SYNC = 2000
-    _RECONFIRM_PER_SYNC = 200
     # A grant is served only this long after its token last confirmed it; past that it is withheld
     # until re-confirmed. Bounds how long a revocation search still lists can keep reaching a person.
     _CONFIRMED_TTL_MS = 24 * 60 * 60 * 1000
+    # Kept grants are re-confirmed from this age on, so a re-check that fails or waits a few syncs
+    # still lands before the TTL.
+    _REFRESH_AFTER_MS = 20 * 60 * 60 * 1000
+    # Re-checks of kept grants per sync, across all tokens: at most this share of the token request
+    # rate over the time to the next sync, the rest left for the searches and the content sync.
+    # None derives it; a number fixes it.
+    _RECONFIRM_PER_SYNC: int | None = None
+    _RECHECK_SHARE_OF_RATE = 0.5
+    _DEFAULT_SYNC_INTERVAL_MINUTES = 60
 
     def __init__(
         self,
@@ -1152,10 +1160,17 @@ class NotionConnector(BaseConnector):
         linked = await personal_tokens.entries(self.config_service, self.connector_id)
         if not linked:
             return
+        # max_delay bounds only a 429's Retry-After here (the backoff without one stays under 10 s):
+        # Notion's per-workspace limit can ask for "longer than a minute" (same page).
         self._token_resilience = ResiliencePolicy(
-            rate_limit=self._TOKEN_REQUESTS_PER_SECOND, max_retries=3, base_delay=1.0, max_delay=60.0,
+            rate_limit=self._TOKEN_REQUESTS_PER_SECOND, max_retries=3, base_delay=1.0, max_delay=900.0,
             name=f"{self.connector_name}-personal", logger=self.logger,
         )
+        self._sync_interval_ms = await self._expected_sync_interval_ms()
+        # shortcut: tokens draw on this in link order, so if it runs short the later ones' due grants
+        # wait (withheld, never kept); upgrade to one oldest-first queue across tokens if that shows.
+        self._recheck_left = self._RECONFIRM_PER_SYNC if self._RECONFIRM_PER_SYNC is not None else int(
+            self._TOKEN_REQUESTS_PER_SECOND * self._sync_interval_ms / 1000 * self._RECHECK_SHARE_OF_RATE)
         for user_id, entry in linked.items():
             if entry.get("status") != personal_tokens.LINKED or not entry.get("token"):
                 continue
@@ -1165,6 +1180,20 @@ class NotionConnector(BaseConnector):
                 self._sync_incomplete = True
                 self.logger.warning("Reading a linked Notion token failed (%s); that user gets nothing this sync",
                                     type(e).__name__)
+
+    async def _expected_sync_interval_ms(self) -> int:
+        """Time to the next scheduled sync, from the connector's schedule; an hour when it has none."""
+        config = await self.config_service.get_config(
+            f"/services/connectors/{self.connector_id}/config", use_cache=False, keep_in_cache=False
+        )
+        sync = (config or {}).get("sync") or {}
+        minutes = (sync.get("scheduledConfig") or {}).get("intervalMinutes") \
+            if str(sync.get("selectedStrategy", "")).upper() == "SCHEDULED" else None
+        try:
+            minutes = float(minutes) if minutes else self._DEFAULT_SYNC_INTERVAL_MINUTES
+        except (TypeError, ValueError):
+            minutes = self._DEFAULT_SYNC_INTERVAL_MINUTES
+        return int(max(minutes, 1) * 60 * 1000)
 
     async def _read_personal_access(self, user_id: str, entry: dict[str, Any]) -> None:
         user = await self.data_entities_processor.get_user_by_user_id(user_id, raise_on_error=True)
@@ -1206,10 +1235,12 @@ class NotionConnector(BaseConnector):
         so a page whose access was revoked can stay listed. A page or data source counts only once
         retrieving it with this token succeeded (a 404 or 403 is no access:
         developers.notion.com/reference/status-codes). Each sync confirms new ones (up to
-        ``_CONFIRM_NEW_PER_SYNC``) and re-confirms the longest-unchecked kept ones, closest to expiry
-        first (up to ``_RECONFIRM_PER_SYNC``; all of them in a full sync). Only a grant confirmed
-        within ``_CONFIRMED_TTL_MS`` is served: one the budget did not reach in time is withheld until
-        re-confirmed, so a slow re-check under-shares and never keeps a revoked grant past the TTL.
+        ``_CONFIRM_NEW_PER_SYNC``) and re-confirms kept ones oldest first (all of them in a full
+        sync): every one that reaches ``_REFRESH_AFTER_MS`` by the next expected sync, and at least
+        the share that spreads the re-checks over that window, within the per-sync budget. Only a
+        grant confirmed within ``_CONFIRMED_TTL_MS`` is served: one the budget did not reach in time
+        is withheld until re-confirmed, so a slow re-check under-shares and never keeps a revoked
+        grant past the TTL.
         Notion sends no webhook event for a sharing or permission change, and a webhook subscription
         belongs to a connection, not to a person's token
         (developers.notion.com/reference/webhooks-events-delivery, /reference/webhooks).
@@ -1223,9 +1254,13 @@ class NotionConnector(BaseConnector):
             confirmed = {i: t for i, t in (stored or {}).items() if i in listed}
             new = [i for i in listed if i not in confirmed][: self._CONFIRM_NEW_PER_SYNC]
             kept = sorted(confirmed, key=confirmed.__getitem__)
-            if not self.data_entities_processor.full_sync_running(self.connector_id):
-                kept = kept[: self._RECONFIRM_PER_SYNC]
             now = get_epoch_timestamp_in_ms()
+            if not self.data_entities_processor.full_sync_running(self.connector_id):
+                interval = self._sync_interval_ms
+                due = sum(1 for i in kept if now + interval - confirmed[i] >= self._REFRESH_AFTER_MS)
+                spread = -(-len(kept) * interval // max(self._REFRESH_AFTER_MS - interval, 1))
+                kept = kept[: max(0, min(max(due, spread), self._recheck_left))]
+                self._recheck_left -= len(kept)
             unanswered: set[str] = set()
             for object_id in (*new, *kept):
                 opens = await self._opens(datasource, object_id, listed[object_id])
