@@ -131,10 +131,11 @@ class PermissionsMixin(PgBase):
         grantees += sorted(await exist("organizations", [r["to_id"] for r in via if r["coll"] == "belongsTo" and r["to_coll"] == "organizations"]))
         if user_key not in grantees:
             return None
-        links = await tx.fetch("""/* pipeshub:graph.access_links */ SELECT e.to_id, e.doc->>'connectorId' AS cid FROM graph.edges e
-            WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'users'""", org, user_key)
-        live = await exist("users", [r["to_id"] for r in links])
-        links = [r for r in links if r["to_id"] in live]          # the source account must exist
+        links = await tx.fetch("""/* pipeshub:graph.access_links */ SELECT e.to_coll, e.to_id, e.doc->>'connectorId' AS cid FROM graph.edges e
+            WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = ANY($3::text[])""",
+                              org, user_key, list(access_sql.SOURCE_ACCOUNT_COLLS))
+        live = {(c, i) for c in access_sql.SOURCE_ACCOUNT_COLLS for i in await exist(c, [r["to_id"] for r in links if r["to_coll"] == c])}
+        links = [r for r in links if (r["to_coll"], r["to_id"]) in live]          # the source account must exist
         # A grant on a collection (an app of type KB) counts only with a role it recognises, as ``get_user_kb_permission`` reads it: a retired role is
         # READER, a role of OWNER, WRITER or READER is itself, a team's grant without a role takes the member's role in the team; any other role, or none,
         # is no grant. A connector's grant has no role to read.
@@ -170,7 +171,7 @@ class PermissionsMixin(PgBase):
                 if not lk["cid"] or lk["cid"] not in by_conn:
                     continue
                 badges = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.access_linked_groups */ SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1
-                    AND b.coll = 'permission' AND b.from_coll = 'users' AND b.from_id = $2 AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'""", org, lk["to_id"])]
+                    AND b.coll = 'permission' AND b.from_coll = $3 AND b.from_id = $2 AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'""", org, lk["to_id"], lk["to_coll"])]
                 # not from an organization here: the edges are read for the account and its groups only
                 by_conn[lk["cid"]].extend((await access_sql.granted_targets(tx, org, [lk["to_id"], *badges], []))
                                           .get(lk["cid"], []))
@@ -496,31 +497,31 @@ class PermissionsMixin(PgBase):
               UNION SELECT b.to_coll, b.to_id, 0 FROM graph.edges b JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = 'KB'
                 WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3),
             principals AS (
-              SELECT u.id FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $4
-              UNION SELECT l.to_id FROM graph.edges l JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'users' AND s.id = l.to_id
-                WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $4 AND l.to_coll = 'users'
+              SELECT u.coll, u.id FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $4
+              UNION SELECT l.to_coll, l.to_id FROM graph.edges l JOIN graph.nodes s ON s.org_id = $1 AND s.coll = l.to_coll AND s.id = l.to_id
+                WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $4 AND l.to_coll IN ('users', 'sourceAccounts')
                   AND l.doc->>'connectorId' = (SELECT x.doc->>'connectorId' FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = $2 AND x.id = $3))
             SELECT 'direct' AS kind, t.coll AS tcoll, t.id AS tid, p.doc->>'role' AS role, NULL::text AS member_role, k.doc->>'type' AS app_type
               FROM targets t JOIN principals pr ON true
-              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = pr.id AND p.to_coll = t.coll AND p.to_id = t.id
+              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = pr.coll AND p.from_id = pr.id AND p.to_coll = t.coll AND p.to_id = t.id
                 AND p.doc->>'type' = 'USER' AND coalesce(p.doc->>'role', '') <> ''
               LEFT JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = t.id AND t.coll = 'apps'
             UNION ALL
             SELECT 'group', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll IN ('groups', 'roles') AND p.to_coll = t.coll AND p.to_id = t.id AND coalesce(p.doc->>'role', '') <> ''
               JOIN graph.nodes g ON g.org_id = $1 AND g.coll = p.from_coll AND g.id = p.from_id
-              WHERE EXISTS (SELECT 1 FROM principals pr JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = pr.id
+              WHERE EXISTS (SELECT 1 FROM principals pr JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = pr.coll AND m.from_id = pr.id
                 AND m.to_coll = p.from_coll AND m.to_id = p.from_id AND m.doc->>'type' = 'USER')
             UNION ALL
             SELECT 'team', t.coll, t.id, p.doc->>'role', m.doc->>'role', NULL FROM targets t
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'teams' AND p.to_coll = t.coll AND p.to_id = t.id AND p.doc->>'type' = 'TEAM'
               JOIN graph.nodes g ON g.org_id = $1 AND g.coll = 'teams' AND g.id = p.from_id
               JOIN principals pr ON true
-              JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = pr.id AND m.to_coll = 'teams' AND m.to_id = p.from_id
+              JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = pr.coll AND m.from_id = pr.id AND m.to_coll = 'teams' AND m.to_id = p.from_id
                 AND m.doc->>'type' = 'USER'
             UNION ALL
             SELECT 'org', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t JOIN principals pr ON true
-              JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id = pr.id AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION'
+              JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = pr.coll AND b.from_id = pr.id AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION'
               JOIN graph.nodes o ON o.org_id = $1 AND o.coll = 'organizations' AND o.id = b.to_id
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = o.id AND p.to_coll = t.coll AND p.to_id = t.id
                 AND p.doc->>'type' = 'ORG' AND coalesce(p.doc->>'role', '') <> ''""", org, coll, node_id, user_key)
@@ -542,32 +543,33 @@ class PermissionsMixin(PgBase):
               SELECT origin, coll, id, depth FROM anc WHERE depth = 0 OR coll IN ('recordGroups', 'apps')
               UNION SELECT b.from_id, b.to_coll, b.to_id, 0 FROM graph.edges b JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = 'KB'
                 WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = ANY($3::text[])),
-            principals(origin, id) AS (
-              SELECT o.origin, u.id FROM o JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = $4
-              UNION SELECT o.origin, l.to_id FROM o JOIN graph.edges l ON l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $4 AND l.to_coll = 'users'
-                JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'users' AND s.id = l.to_id
+            principals(origin, coll, id) AS (
+              SELECT o.origin, u.coll, u.id FROM o JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = $4
+              UNION SELECT o.origin, l.to_coll, l.to_id FROM o JOIN graph.edges l ON l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $4
+                AND l.to_coll IN ('users', 'sourceAccounts')
+                JOIN graph.nodes s ON s.org_id = $1 AND s.coll = l.to_coll AND s.id = l.to_id
                 WHERE l.doc->>'connectorId' = (SELECT x.doc->>'connectorId' FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = $2 AND x.id = o.origin))
             SELECT t.origin, 'direct' AS kind, t.coll AS tcoll, t.id AS tid, p.doc->>'role' AS role, NULL::text AS member_role, k.doc->>'type' AS app_type
               FROM targets t JOIN principals pr ON pr.origin = t.origin
-              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = pr.id AND p.to_coll = t.coll AND p.to_id = t.id
+              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = pr.coll AND p.from_id = pr.id AND p.to_coll = t.coll AND p.to_id = t.id
                 AND p.doc->>'type' = 'USER' AND coalesce(p.doc->>'role', '') <> ''
               LEFT JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = t.id AND t.coll = 'apps'
             UNION ALL
             SELECT t.origin, 'group', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll IN ('groups', 'roles') AND p.to_coll = t.coll AND p.to_id = t.id AND coalesce(p.doc->>'role', '') <> ''
               JOIN graph.nodes g ON g.org_id = $1 AND g.coll = p.from_coll AND g.id = p.from_id
-              WHERE EXISTS (SELECT 1 FROM principals pr JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = pr.id
+              WHERE EXISTS (SELECT 1 FROM principals pr JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = pr.coll AND m.from_id = pr.id
                 AND m.to_coll = p.from_coll AND m.to_id = p.from_id AND m.doc->>'type' = 'USER' WHERE pr.origin = t.origin)
             UNION ALL
             SELECT t.origin, 'team', t.coll, t.id, p.doc->>'role', m.doc->>'role', NULL FROM targets t
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'teams' AND p.to_coll = t.coll AND p.to_id = t.id AND p.doc->>'type' = 'TEAM'
               JOIN graph.nodes g ON g.org_id = $1 AND g.coll = 'teams' AND g.id = p.from_id
               JOIN principals pr ON pr.origin = t.origin
-              JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = pr.id AND m.to_coll = 'teams' AND m.to_id = p.from_id
+              JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = pr.coll AND m.from_id = pr.id AND m.to_coll = 'teams' AND m.to_id = p.from_id
                 AND m.doc->>'type' = 'USER'
             UNION ALL
             SELECT t.origin, 'org', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t JOIN principals pr ON pr.origin = t.origin
-              JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id = pr.id AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION'
+              JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = pr.coll AND b.from_id = pr.id AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION'
               JOIN graph.nodes o2 ON o2.org_id = $1 AND o2.coll = 'organizations' AND o2.id = b.to_id
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = o2.id AND p.to_coll = t.coll AND p.to_id = t.id
                 AND p.doc->>'type' = 'ORG' AND coalesce(p.doc->>'role', '') <> ''""", org, coll, ids, user_key)
@@ -586,7 +588,7 @@ class PermissionsMixin(PgBase):
         rows = await tx.fetch("""/* pipeshub:graph.ctx_app_edges */ SELECT 'own' AS kind, NULL::text AS role, NULL::text AS member_role FROM graph.edges e
               WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'apps' AND e.to_id = $3
             UNION ALL SELECT 'own', NULL, NULL FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND e.from_coll = 'users' AND e.from_id = $2
-              AND e.to_coll = 'users' AND e.doc->>'connectorId' = $3
+              AND e.to_coll IN ('users', 'sourceAccounts') AND e.doc->>'connectorId' = $3
             UNION ALL SELECT 'team_rel', NULL, NULL FROM graph.edges m JOIN graph.nodes t ON t.org_id = m.org_id AND t.coll = 'teams' AND t.id = m.to_id
               JOIN graph.edges e ON e.org_id = m.org_id AND e.coll = 'userAppRelation' AND e.from_coll = 'teams' AND e.from_id = t.id AND e.to_coll = 'apps' AND e.to_id = $3
               WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = $2 AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER'

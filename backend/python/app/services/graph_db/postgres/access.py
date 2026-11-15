@@ -20,7 +20,10 @@ if TYPE_CHECKING:
 
 MAX_HOPS = 50  # ACCESS_WALK_MAX_DEPTH of the interface
 # The nodes a PERMISSION edge can come from and grant to a user: Neo4j matches a grantee by these labels, so an edge out of any other node is not one.
-PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
+PRINCIPALS = ["users", "sourceAccounts", "groups", "roles", "teams", "organizations"]
+# What an authenticatedAs link may point at: a User (the account a connector was authenticated as) or a SourceAccount (one account of a source
+# directory). Either one's grants and badges reach the linked user inside the link's connector only.
+SOURCE_ACCOUNT_COLLS = ("users", "sourceAccounts")
 
 
 

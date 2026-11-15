@@ -62,7 +62,7 @@ class TestAppListsIncludeLinkedConnectors:
 
         provider.client.execute_query.assert_awaited_once()
         query = provider.client.execute_query.await_args.args[0]
-        assert "OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(:User)" in query
+        assert "OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(:User|SourceAccount)" in query
         assert "OPTIONAL MATCH (app3:App {id: linked.connectorId})" in query
 
 
@@ -98,7 +98,7 @@ class TestRetrievalCountsTheLinkedAccount:
         assert result == {"v1": "r1"}
         provider.client.execute_query.assert_awaited_once()
         query = provider.client.execute_query.await_args.args[0]
-        assert "(caller)-[:AUTHENTICATED_AS {connectorId: $connectorId}]->(source_account:User)" in query
+        assert "(caller)-[:AUTHENTICATED_AS {connectorId: $connectorId}]->(source_account:User|SourceAccount)" in query
         assert "UNWIND [caller] + source_accounts AS userDoc" in query
         assert query.count("{userId: $userId}") == 1
 
@@ -167,7 +167,7 @@ class TestRoleBuildersCountTheLinkedAccount:
     def test_a_linked_connector_counts_as_the_users_own_app(self) -> None:
         """Without this the creator lists the connector but cannot open its app node."""
         neo4j_query = _neo4j()._get_permission_role_cypher("app", "app", "u")
-        assert "(u)-[linked_app:AUTHENTICATED_AS {connectorId: app.id}]->(:User)" in neo4j_query
+        assert "(u)-[linked_app:AUTHENTICATED_AS {connectorId: app.id}]->(:User|SourceAccount)" in neo4j_query
         assert "coalesce(own_app_rel, linked_app) AS user_app_rel" in neo4j_query
 
         arango_query = _arango()._get_permission_role_aql("app", "app", "u")
@@ -222,7 +222,7 @@ class TestBuilderBackedMethodsRunOnceAsTheCaller:
 class TestAccessContextCountsTheLink:
     def test_the_gate_opens_the_linked_connector(self) -> None:
         cypher = Neo4jProvider._kh_gate_cypher()
-        assert "OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(:User)" in cypher
+        assert "OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(:User|SourceAccount)" in cypher
         assert "kh_linkedApp.orgId = $org_id" in cypher
         aql = ArangoHTTPProvider._kh_gate_aql()
         assert "FOR kh_link IN authenticatedAs" in aql
@@ -233,7 +233,7 @@ class TestAccessContextCountsTheLink:
         provider.client.execute_query = AsyncMock(return_value=[])
         await provider.get_knowledge_hub_access_v3(CREATOR_KEY, ORG)
         query = provider.client.execute_query.await_args.args[0]
-        assert "OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User)" in query
+        assert "OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User|SourceAccount)" in query
         assert "kh_lg.connectorId = kh_link.connectorId" in query
 
     async def test_arango_grants_of_the_linked_account_stay_in_its_connector(self) -> None:
