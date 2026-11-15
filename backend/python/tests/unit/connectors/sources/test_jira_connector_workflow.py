@@ -76,6 +76,7 @@ def _make_mock_deps():
     mock_tx_store.get_record_by_issue_key = AsyncMock(return_value=None)
     mock_tx_store.get_records_by_parent = AsyncMock(return_value=[])
     mock_tx_store.delete_records_and_relations = AsyncMock()
+    mock_tx_store.get_sync_point = AsyncMock(return_value=None)  # nothing stored yet
 
     class FakeTxContext:
         async def __aenter__(self):

@@ -113,6 +113,7 @@ def _make_mock_deps():
     dep.initialize = AsyncMock()
 
     dsp = MagicMock()
+    dsp.transaction.return_value.__aenter__.return_value.get_sync_point = AsyncMock(return_value=None)  # nothing stored yet
     cs = MagicMock()
     cs.get_config = AsyncMock()
     return logger, dep, dsp, cs
@@ -1452,7 +1453,47 @@ class TestFetchUsersPhases:
         connector._stored_app_users = [
             AppUser(id=f"n{i}", app_name=Connectors.JIRA, connector_id="c", source_user_id=f"u{i}", email=f"u{i}@x.com",
                     full_name=str(i)) for i in range(40)]
+        connector._listed_account_ids = {f"u{i}" for i in range(11, 40)}  # a complete read
         return store
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("between", [set(), {"u20", "u21"}], ids=["none_missing", "a_few_others_missing"])
+    async def test_a_complete_read_with_few_or_none_missing_ends_the_hold(self, between: set) -> None:
+        """The reads have to agree in a row: one in between that shows the held accounts again (or misses only a
+        few others) clears the hold, so the next time the same set is missing the count starts again at one."""
+        connector = _make_connector()
+        store = self._withdrawing(connector)
+        missing = {f"u{i}" for i in range(11)}
+        listed = {f"u{i}" for i in range(40)}
+        for _ in range(2):
+            connector._seen_account_ids = listed - missing
+            await connector._withdraw_ineligible_app_users([], missing)
+        connector._seen_account_ids = listed - between
+        await connector._withdraw_ineligible_app_users([], between)
+        assert store["withdrawals_held"]["seen"] == 0
+        connector.data_entities_processor.withdraw_app_user_access.reset_mock()
+        connector._seen_account_ids = listed - missing
+        await connector._withdraw_ineligible_app_users([], missing)
+        connector.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+        assert store["withdrawals_held"]["seen"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_read_not_complete_leaves_the_hold_alone(self) -> None:
+        """With /users/search forbidden, accounts found by reverse lookup without product access are not in the
+        list; they are evidence of their own and must not replace or count a pending hold."""
+        connector = _make_connector()
+        store = self._withdrawing(connector)
+        missing = {f"u{i}" for i in range(11)}
+        connector._seen_account_ids = {f"u{i}" for i in range(11, 40)}
+        await connector._withdraw_ineligible_app_users([], missing)
+        held = dict(store["withdrawals_held"])
+        connector._user_bulk_forbidden = True
+        connector._seen_account_ids = set()
+        unlicensed = {f"u{i}" for i in range(20, 31)}
+        await connector._withdraw_ineligible_app_users([], unlicensed)
+        assert store["withdrawals_held"] == held
+        withdrawn = connector.data_entities_processor.withdraw_app_user_access.await_args.args[1]
+        assert {u.source_user_id for u in withdrawn} == unlicensed
 
     @pytest.mark.asyncio
     async def test_many_accounts_missing_from_the_list_go_after_three_reads_agree_and_the_owner_is_told_once(self) -> None:

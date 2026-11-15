@@ -112,10 +112,13 @@ async def absent_accounts_due(sync_point: SyncPoint, absent: set[str], linked: i
     just held (the connector's owner is told once). Absence is the only evidence for them, and the user list's end is
     not promised by the docs (Cloud's /users/search answers a bare array with no end marker; Data Center's /user/list
     promises only that "the same user will not be returned twice"). So many at once wait until the same accounts are
-    gone from WITHDRAW_CONFIRMATIONS complete reads; a different set starts the count again."""
-    if not withdrawals_held(len(absent), linked):
-        return True, False
+    gone from WITHDRAW_CONFIRMATIONS complete reads in a row; a different set starts the count again, and a read with
+    few or none gone ends it. Call it on every complete read, absent accounts or not, and only on one."""
     stored = (await sync_point.read_sync_point(WITHDRAW_HOLD_KEY)) or {}
+    if not withdrawals_held(len(absent), linked):
+        if stored.get("seen"):
+            await sync_point.update_sync_point(WITHDRAW_HOLD_KEY, {"accounts": "[]", "seen": 0, "since": 0})
+        return True, False
     accounts = json.dumps(sorted(absent))
     seen = int(stored.get("seen") or 0) + 1 if stored.get("accounts") == accounts else 1
     if seen >= WITHDRAW_CONFIRMATIONS:
