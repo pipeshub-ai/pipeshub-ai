@@ -1807,6 +1807,20 @@ class TestAPartialUserReadKeepsTheStoredLevelGroup:
         assert [g.external_id for g in grants] == ["group-1"]
 
     @pytest.mark.asyncio
+    async def test_a_refused_role_list_keeps_a_stored_group_naming_a_role(self) -> None:
+        """A 403 from applicationrole ("Returned if the user is not an administrator") leaves the role's groups unknown,
+        not empty: the stored group keeps them."""
+        c = _connector()
+        c._issue_security[PROJECT_ID] = _present(members={"10102": [
+            {"type": "group", "value": "group-1"}, {"type": "applicationRole", "parameter": "jira-software"}]})
+        c._app_roles_forbidden, c._app_roles_mapping = True, {}
+        c.data_entities_processor.note_kept_record_group = AsyncMock()
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id="lvl"))
+        await c._write_level_groups(PROJECT_ID, "PROJ", c._issue_security[PROJECT_ID], ["10102"], {})
+        c.data_entities_processor.on_new_record_groups.assert_not_awaited()
+        c.data_entities_processor.note_kept_record_group.assert_awaited_once_with("conn-sec", "level:p-1:10102")
+
+    @pytest.mark.asyncio
     async def test_a_finished_read_writes_the_group_without_the_holder(self) -> None:
         c = self._unread_holder()
         c._user_read_unfinished = False
