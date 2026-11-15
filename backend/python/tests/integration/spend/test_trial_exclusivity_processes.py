@@ -2,8 +2,9 @@
 
 import asyncio
 import multiprocessing as mp
-import os
 import uuid
+
+from tests.support.spend_world import require_spend_redis
 
 PROCS, JOBS = 8, 4
 PK, CLS = "pkmp", "l"
@@ -33,8 +34,7 @@ def _worker(url: str, namespace: str, index: int, barrier, out) -> None:
 
 
 async def test_exactly_one_trial_is_granted_across_processes() -> None:
-    url = os.environ.get("SPEND_IT_REDIS_URL")
-    assert url, "this test needs a real Redis: set SPEND_IT_REDIS_URL (the python-spend-redis job does)"
+    url = require_spend_redis()
     namespace = f"mp{uuid.uuid4().hex[:8]}"
     fleet, client = _fleet(url, namespace)
     try:

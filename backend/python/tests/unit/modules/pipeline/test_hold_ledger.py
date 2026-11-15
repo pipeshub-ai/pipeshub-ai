@@ -1,6 +1,9 @@
 """The hold ledger and the hold notices: a key on hold does not use up the wall clock of the jobs waiting for it."""
 
+import asyncio
+import contextlib
 import logging
+from collections.abc import Callable
 
 import pytest
 
@@ -188,67 +191,78 @@ async def test_no_release_notice_without_a_hold_notice(fleet: FleetRedis, sim_cl
     assert entry.episode
 
 
+class _Counted:
+    """Counts calls and sets ``reached`` once ``target`` calls have been made, so a test waits for iterations, not time."""
+
+    def __init__(self, target: int) -> None:
+        self.calls = 0
+        self.target = target
+        self.reached = asyncio.Event()
+
+    def hit(self) -> int:
+        self.calls += 1
+        if self.calls >= self.target:
+            self.reached.set()
+        return self.calls
+
+
+async def _run_leader(leader: object, *, until: asyncio.Event, idle_check: Callable[[], None] | None = None) -> None:
+    """Run ``leader`` until ``until`` is set (at most 5 s), always cancelling it."""
+    task = asyncio.create_task(leader)  # type: ignore[arg-type]
+    try:
+        if idle_check is not None:
+            idle_check()
+        await asyncio.wait_for(until.wait(), 5.0)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 async def test_only_the_leader_ticks_and_a_failing_tick_does_not_stop_the_loop(fleet: FleetRedis, sim_clock: SimClock) -> None:
     """The recovery leader ticks every interval; a replica without the lease does not; a tick that raises is logged and retried."""
-    import asyncio
-
     from app.services.llm_gateway.fleet_hold import run_hold_leader
 
-    breaker = FleetBreaker(fleet)
-    ticks: list[str] = []
+    ticks = _Counted(3)
+    asked = _Counted(3)
 
     class Counting(HoldKeeper):
         async def tick(self) -> int:
-            ticks.append("tick")
-            if len(ticks) == 2:
+            if ticks.hit() == 2:
                 raise RuntimeError("redis hiccup")
             return 0
 
-    keeper = Counting(fleet, breaker, clock_ms=sim_clock)
-    leader = {"yes": False}
-
     async def is_leader() -> bool:
-        return leader["yes"]
+        return asked.hit() > 3  # three passes without the lease, then it is acquired
 
-    task = asyncio.create_task(run_hold_leader(keeper, is_leader, logger=logging.getLogger("t"), interval_s=0.01))
-    await asyncio.sleep(0.05)
-    assert ticks == [], "a replica without the lease never ticks"
-    leader["yes"] = True
-    await asyncio.sleep(0.1)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert len(ticks) >= 3, "the loop goes on after a tick raised"
+    keeper = Counting(fleet, FleetBreaker(fleet), clock_ms=sim_clock)
+    await _run_leader(run_hold_leader(keeper, is_leader, logger=logging.getLogger("t"), interval_s=0.001), until=ticks.reached)
+    assert asked.calls >= ticks.calls + 3, "the passes without the lease did not tick"
+    assert ticks.calls >= 3, "the loop goes on after a tick raised"
 
 
 async def test_the_leader_retries_the_owed_redrives_after_each_tick(fleet: FleetRedis, sim_clock: SimClock) -> None:
     """The redrives holds still owe are the leader's recovery work on its cadence; a replica without the lease does none."""
-    import asyncio
-
     from app.services.llm_gateway.fleet_hold import run_hold_leader
 
-    passes: list[str] = []
-    leader = {"yes": False}
+    passes = _Counted(2)
+    asked = _Counted(3)
 
     async def is_leader() -> bool:
-        return leader["yes"]
+        asked.hit()
+        return asked.calls > 3
 
     async def retry_redrives() -> int:
-        passes.append("pass")
+        assert asked.calls > 3, "no redrive pass without the lease"
+        passes.hit()
         return 0
 
     keeper = HoldKeeper(fleet, FleetBreaker(fleet), clock_ms=sim_clock)
-    task = asyncio.create_task(
-        run_hold_leader(keeper, is_leader, logger=logging.getLogger("t"), interval_s=0.01, after_tick=retry_redrives)
+    await _run_leader(
+        run_hold_leader(keeper, is_leader, logger=logging.getLogger("t"), interval_s=0.001, after_tick=retry_redrives),
+        until=passes.reached,
     )
-    await asyncio.sleep(0.05)
-    assert passes == []
-    leader["yes"] = True
-    await asyncio.sleep(0.05)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert len(passes) >= 2
+    assert passes.calls >= 2
 
 
 async def test_only_the_hold_of_the_jobs_own_key_is_subtracted_from_its_wall(fleet: FleetRedis, sim_clock: SimClock) -> None:

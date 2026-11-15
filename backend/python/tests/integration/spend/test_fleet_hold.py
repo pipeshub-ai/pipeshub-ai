@@ -123,4 +123,5 @@ async def test_a_poison_document_alone_in_its_class_ends_at_the_absolute_cap(fle
     world.add_job("doc-poison")
     outcomes = await world.run()
     assert outcomes["doc-poison"].status == "FAILED"
-    assert world.provider.requests["doc-poison"] <= 20
+    assert world.provider.requests["doc-poison"] == 20, "it ends at the absolute cap, not before"
+    assert "20 times" in (outcomes["doc-poison"].reason or "")

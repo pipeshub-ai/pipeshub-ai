@@ -68,3 +68,17 @@ async def fleet(sim_clock: SimClock) -> AsyncIterator[FleetRedis]:
             if keys:
                 await client.delete(*keys)
         await client.aclose()
+
+
+def require_spend_redis() -> str:
+    """The real Redis a test needs (``SPEND_IT_REDIS_URL``). Without it the test is skipped, so a plain ``pytest`` run
+    passes; where the run must have it (``SPEND_IT_REQUIRE_REDIS=1``, set by the real-Redis CI job), it fails instead,
+    so a missing variable there cannot pass silently."""
+    import pytest
+
+    url = os.environ.get("SPEND_IT_REDIS_URL")
+    if url:
+        return url
+    if os.environ.get("SPEND_IT_REQUIRE_REDIS") == "1":
+        pytest.fail("SPEND_IT_REDIS_URL is not set, and this run requires the real Redis")
+    pytest.skip("needs a real Redis: set SPEND_IT_REDIS_URL")

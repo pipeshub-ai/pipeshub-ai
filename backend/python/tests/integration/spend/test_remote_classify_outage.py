@@ -60,7 +60,7 @@ async def test_a_lone_job_survives_an_outage_in_remote_mode(fleet, hours: float)
             elapsed += paused.delay_s
             h.clock.advance(int(paused.delay_s * 1000))
         except StageFailed as failed:
-            assert hours > 5.5, f"FAILED after {elapsed / HOUR:.2f} h of outage: {failed}"
+            assert elapsed / HOUR > 5.5, f"FAILED after {elapsed / HOUR:.2f} h of outage: {failed}"
             assert "20 times" in str(failed)
             return
     assert hours <= 5.5

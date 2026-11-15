@@ -11,7 +11,6 @@ the trials after it, and the breaker ends closed with no hold left. Needs ``SPEN
 
 import asyncio
 import logging
-import os
 import time
 from types import SimpleNamespace
 from typing import ClassVar
@@ -56,6 +55,7 @@ from app.services.model_identity.transport.instrument import instrument_model
 from app.services.resource_governor.models import ParseTier
 from app.utils.llm import LLMUnavailableError
 from tests.support.fake_llm_server import OK, FakeLLMServer, Reply
+from tests.support.spend_world import require_spend_redis
 from tests.unit.modules.pipeline.fakes import (
     InMemoryStageStateStore,
     RecordingHeadlines,
@@ -116,8 +116,7 @@ def _job(doc: str) -> StageJob:
 
 
 async def test_startup_storm_and_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
-    url = os.environ.get("SPEND_IT_REDIS_URL")
-    assert url, "the live smoke needs a real Redis: set SPEND_IT_REDIS_URL"
+    url = require_spend_redis()
     parsed = urlparse(url)
     monkeypatch.setenv("REDIS_MODE", "standalone")
     monkeypatch.delenv("KV_STORE_TYPE", raising=False)

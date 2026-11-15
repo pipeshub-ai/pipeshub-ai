@@ -74,6 +74,7 @@ jobs:
         working-directory: backend/python
         env:
           SPEND_IT_REDIS_URL: redis://127.0.0.1:6379/0
+          SPEND_IT_REQUIRE_REDIS: "1"
           SPEND_SIM_FULL: '1'
           SPEND_SIM_SEEDS: ${{ steps.seeds.outputs.seeds }}
         run: |
