@@ -3185,7 +3185,9 @@ async def test_the_items_below_a_folder_turning_limited_are_checked_over_several
     # Every member's own grant below the folder goes at once, so nothing a grant does not name stays open;
     # the bound only paces giving back the grants the lists name: one this run.
     assert carol not in ws.records.perm_emails("f3")
-    assert sum(BOB in ws.records.perm_emails(f) for f in ("f1", "f2")) == 1
+    # Ids are random, so which item is read first is too: at most one has his grant back.
+    assert sum(BOB in ws.records.perm_emails(f) for f in ("f1", "f2")) <= 1
+    assert (await ws.connector._load_limited_pending())[("sd-1", "dir")]["after"] is not None, "one read this run"
 
     await ws.sync()  # nothing changed at the source: the rest is read from the checkpoint, one item a run
     await ws.sync()
@@ -3230,6 +3232,30 @@ async def test_a_descendant_a_manager_got_no_list_for_waits_and_gets_its_direct_
     _viewer_list_for(ws, "f1", "nobody@example.com", [])  # reads answer as usual again
     await ws.sync()
     assert BOB in ws.records.perm_emails("f1"), "the list names him, so his grant comes back"
+
+
+async def test_a_descendant_whose_read_keeps_failing_holds_back_none_after_it(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("a", "a.txt", parent="dir", perms=[reader(BOB)])
+    ws.world.add_item("b", "b.txt", parent="dir", perms=[reader(BOB)])  # his own grants, which the limit keeps
+    await ws.sync()
+    a_id, b_id = ws.records.records["a"].id, ws.records.records["b"].id
+    first, second = sorted([("a", a_id), ("b", b_id)], key=lambda t: t[1])
+    _viewer_list_for(ws, first[0], ALICE, [])  # whichever is read first never gets a list from its Manager
+
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+
+    assert BOB in ws.records.perm_emails(second[0]), "read after the one that failed, in the same run"
+    assert BOB not in ws.records.perm_emails(first[0]), "not read yet: nothing given back from no list"
+    pending = await ws.connector._load_limited_pending()
+    assert pending[("sd-1", "dir")]["retry"] == [first[1]], "kept to read again, though the cursor went past it"
+
+    _viewer_list_for(ws, first[0], "nobody@example.com", [])  # reads answer as usual again
+    await ws.sync()
+    assert BOB in ws.records.perm_emails(first[0])
+    assert ("sd-1", "dir") not in await ws.connector._load_limited_pending()
 
 
 async def test_a_descendant_check_that_fails_still_spends_the_runs_bound(
@@ -3432,6 +3458,28 @@ async def test_a_viewer_of_another_organizations_shared_drive_keeps_the_list_the
 
     assert ALICE in ws.records.perm_emails("x")
     assert not ws.incomplete
+
+
+async def test_a_folder_turning_limited_in_another_organizations_drive_leaves_the_run_complete(ws: Workspace) -> None:
+    ws.world.add_drive("sd-x", "Partner", {ALICE: "fileOrganizer"})  # she can share it, so its list is hers to read
+    ws.world.drives["sd-x"]["foreign"] = True
+    ws.world.folder("dir", "Plans", parent="sd-x", perms=[reader(ALICE)])
+    ws.http.fail("GET", "/drive/v3/files/sd-x/permissions", 403, "insufficientFilePermissions",
+                 when=lambda r: r.query.get("useDomainAdminAccess") == "true")
+    await ws.sync()
+    ws.records.records["dir"].inherit_permissions = True  # stored while it inherited
+
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    before = len(ws.http.requests)
+    await ws.sync()
+    await ws.sync()
+
+    assert not ws.incomplete, "its members are not the admin's to read, so nothing waits on them"
+    assert not [
+        r for r in ws.http.requests[before:]
+        if r.path == "/drive/v3/files/sd-x/permissions" and r.query.get("useDomainAdminAccess") == "true"
+    ]
+    assert ALICE in ws.records.perm_emails("dir")
 
 
 async def test_a_shared_drives_member_list_is_read_once_a_run_for_all_its_items(ws: Workspace) -> None:

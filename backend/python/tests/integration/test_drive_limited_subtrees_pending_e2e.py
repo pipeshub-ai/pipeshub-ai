@@ -69,19 +69,19 @@ async def test_folders_queued_one_after_another_all_stay(connector: GoogleDriveT
     await connector._queue_limited_subtree("sd-1", "folder-b")
     await connector._queue_limited_subtree("sd-1", "folder-a")  # queued once: queued again, it starts over
 
-    fresh = {"after": None, "stripped": False}
+    fresh = {"after": None, "stripped": False, "retry": []}
     assert await connector._load_limited_pending() == {("sd-1", "folder-a"): fresh, ("sd-1", "folder-b"): fresh}
 
 
 async def test_a_cursor_written_back_is_read_back(connector: GoogleDriveTeamConnector) -> None:
     await connector._save_limited_pending([
-        {"drive": "sd-1", "folder": "folder-a", "after": "record-0042", "stripped": True},
-        {"drive": "sd-2", "folder": "folder-c", "after": None, "stripped": False},
+        {"drive": "sd-1", "folder": "folder-a", "after": "record-0042", "stripped": True, "retry": ["record-0007"]},
+        {"drive": "sd-2", "folder": "folder-c", "after": None, "stripped": False, "retry": []},
     ])
 
     assert await connector._load_limited_pending() == {
-        ("sd-1", "folder-a"): {"after": "record-0042", "stripped": True},
-        ("sd-2", "folder-c"): {"after": None, "stripped": False},
+        ("sd-1", "folder-a"): {"after": "record-0042", "stripped": True, "retry": ["record-0007"]},
+        ("sd-2", "folder-c"): {"after": None, "stripped": False, "retry": []},
     }
 
     await connector._save_limited_pending([])

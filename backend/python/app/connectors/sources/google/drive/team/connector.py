@@ -3644,6 +3644,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         budget = [LIMITED_SUBTREE_MAX_CHECKS]  # spent in place, so a check that raises still counts
         children_by_drive: dict[str, dict[str, list[Record]]] = {}
         for (drive_id, folder_id), state in sorted(pending.items(), key=lambda kv: kv[0]):
+            if self._shared_drives_listed and drive_id not in self._listed_shared_drive_ids:
+                # Gone, or another organization's (queued by an earlier version): its members cannot be read here.
+                self.logger.info(f"Shared drive {drive_id} is not listed for this Workspace; folder {folder_id} is dropped")
+                continue
             try:
                 if drive_id not in children_by_drive:
                     children_by_drive[drive_id] = await self._stored_children_of_drive(drive_id)
@@ -3669,7 +3673,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _load_limited_pending(self) -> dict[tuple[str, str], dict[str, object]]:
         """The folders waiting for their descendants to be settled: whether their members' own grants were taken
-        off yet ("stripped"), and the last descendant read since ("after")."""
+        off yet ("stripped"), the last descendant read since ("after"), and the descendants whose read failed, read
+        again first ("retry")."""
         stored = await self.drive_delta_sync_point.read_sync_point(LIMITED_SUBTREES_SYNC_POINT_KEY) or {}
         raw = stored.get("pending") or "[]"
         try:
@@ -3677,7 +3682,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         except ValueError:
             entries = []
         return {
-            (entry["drive"], entry["folder"]): {"after": entry.get("after"), "stripped": bool(entry.get("stripped"))}
+            (entry["drive"], entry["folder"]): {
+                "after": entry.get("after"), "stripped": bool(entry.get("stripped")),
+                "retry": [str(i) for i in entry.get("retry") or []],
+            }
             for entry in entries or [] if isinstance(entry, dict) and entry.get("drive") and entry.get("folder")
         }
 
@@ -3692,7 +3700,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         already waiting starts over: it turned limited again."""
         async with self._limited_pending_lock:
             pending = await self._load_limited_pending()
-            pending[(drive_id, folder_id)] = {"after": None, "stripped": False}
+            pending[(drive_id, folder_id)] = {"after": None, "stripped": False, "retry": []}
             await self._save_limited_pending(
                 [{"drive": d, "folder": f, **state} for (d, f), state in sorted(pending.items(), key=lambda kv: kv[0])]
             )
@@ -3743,8 +3751,40 @@ class GoogleDriveTeamConnector(BaseConnector):
             await self.data_entities_processor.remove_user_grants_from_records(
                 [r.id for r in below if r.id], cut, self.connector_id
             )
-            state.update(after=None, stripped=True)
+            state.update(after=None, stripped=True, retry=[])
         read_as = {"inherited_permissions_disabled": False, "inherits_from_drive": True, "item_drive_id": drive_id}
+
+        async def give_back(record: Record) -> bool:
+            """Give back the direct grants the descendant's list names. False when its read failed: it waits in
+            the retry list, and the descendants after it are still read."""
+            try:
+                # Raises when someone who can read sharing got no list: nothing is decided from it.
+                managed = await self._permissions_as_drive_manager(record.external_record_id, drive_id, None, read_as)
+                # No one can read it: a member reaches it through the drive only (decision for such drives).
+                named = [
+                    p for p in (managed[0] if managed is not None else ())
+                    if p.entity_type == EntityType.USER and (p.email or "").lower() in cut
+                ]
+                if named:
+                    await self.data_entities_processor.add_permission_to_record(record, named)
+            except Exception as e:
+                self.logger.warning(
+                    f"The grants of {record.external_record_id} below limited folder {folder_id} could not be given "
+                    f"back yet ({type(e).__name__}: {e}); it is read again next run"
+                )
+                self._sync_ledger.note_incomplete()
+                return False
+            return True
+
+        by_id = {r.id: r for r in below}
+        retry = [i for i in state.get("retry") or [] if i in by_id]  # one no longer stored is not read
+        state["retry"] = retry
+        for record_id in list(retry):
+            if budget[0] <= 0:
+                return False
+            budget[0] -= 1
+            if await give_back(by_id[record_id]):
+                retry.remove(record_id)
         for record in below:
             after = state.get("after")
             if after is not None and record.id <= after:
@@ -3752,17 +3792,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             if budget[0] <= 0:
                 return False
             budget[0] -= 1
-            # Raises when someone who can read sharing got no list, or who can is unknown: the descendant waits.
-            managed = await self._permissions_as_drive_manager(record.external_record_id, drive_id, None, read_as)
-            # No one can read it: a member reaches it through the drive only (decision for such drives).
-            named = [
-                p for p in (managed[0] if managed is not None else ())
-                if p.entity_type == EntityType.USER and (p.email or "").lower() in cut
-            ]
-            if named:
-                await self.data_entities_processor.add_permission_to_record(record, named)
+            if not await give_back(record):
+                retry.append(record.id)
             state["after"] = record.id
-        return True
+        return not retry
 
     async def _is_drive_member(self, drive_id: str, email: str) -> bool:
         """Whether the person is a member of the shared drive. Raises when they are not on its member list but a
@@ -4677,6 +4710,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 item_drive_id = metadata.get("driveId")
                 if (
                     limited_access and item_drive_id and existing_record is not None
+                    # Another organization's drive is not the admin's to list, as in the reader's read below.
+                    and item_drive_id in self._listed_shared_drive_ids
                     and metadata.get("mimeType") == MimeTypes.GOOGLE_DRIVE_FOLDER.value
                     and file_id not in self._limited_subtrees.get(item_drive_id, ())
                     and (
