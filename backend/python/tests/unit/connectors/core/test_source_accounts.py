@@ -3,6 +3,7 @@ PipesHub granted the old one, on every connector whose users are accounts of the
 account is assigned a new ID value even though the UPN is the same"
 (https://learn.microsoft.com/en-us/troubleshoot/sharepoint/sharing-and-permissions/fix-site-user-id-mismatch)."""
 
+import json
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -14,7 +15,9 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_processor.source_accounts import (
+    BUCKETS,
     SourceAccounts,
+    _bucket,
     source_accounts_key,
 )
 from app.models.entities import AppUser
@@ -53,6 +56,8 @@ class _Directory:
             SimpleNamespace(id=i, source_user_id=s) for i, s in self.links.items()])
         self.processor.get_user_by_email = AsyncMock(side_effect=self._by_email)
         self.processor.remove_user_access_to_connector = AsyncMock(side_effect=self._remove)
+        self.processor.get_all_app_users = AsyncMock(side_effect=lambda _c, **_: [
+            SimpleNamespace(email=e, source_user_id=self.links[n]) for e, n in self.nodes.items() if n in self.links])
 
     async def _by_email(self, email: str, **_: object) -> object | None:
         node = self.nodes.get(email.lower())
@@ -82,15 +87,18 @@ async def _admit(directory: _Directory, accounts: SourceAccounts, users: list[Ap
         directory.link(users)
 
 
-async def _withdraw(directory: _Directory, accounts: SourceAccounts, sid: str) -> None:
-    gone = [link for link in await directory.processor.get_app_user_links(CONNECTOR) if link.source_user_id == sid]
-    await accounts.note_withdrawn(gone)
-    for u in gone:
-        directory.links.pop(u.id, None)
+def _withdraw(directory: _Directory, sid: str) -> None:
+    """``withdraw_app_user_access``: the link goes, the grants stay (a restored account gets them back)."""
+    directory.links = {node: s for node, s in directory.links.items() if s != sid}
 
 
 def _saved(config: _Config) -> dict:
-    return config.saved.get(source_accounts_key(CONNECTOR)) or {}
+    """Every bucket of the saved state, merged."""
+    merged: dict[str, dict] = {"linked": {}, "reused": {}}
+    for bucket in range(BUCKETS):
+        for part, values in (config.saved.get(source_accounts_key(CONNECTOR, bucket)) or {}).items():
+            merged[part].update(values)
+    return merged
 
 
 @pytest.mark.asyncio
@@ -108,27 +116,25 @@ async def test_an_address_taken_by_a_new_account_in_the_same_run_loses_the_old_a
 async def test_an_address_taken_after_the_old_account_was_withdrawn_loses_its_grants_too(world) -> None:
     directory, accounts, config = world
     await _admit(directory, accounts, [_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])
-    await _withdraw(directory, accounts, "old-oid")          # deleted: a later run
+    _withdraw(directory, "old-oid")          # deleted: a later run
     await _admit(directory, accounts, [_user("bo@x.com", "bo-oid")])
     directory.calls.clear()
 
     await _admit(directory, accounts, [_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
 
     assert directory.calls[0] == ("remove", "ana@x.com")
-    assert _saved(config)["withdrawn"] == {} and _saved(config)["reused"] == {"ana@x.com": "new-oid"}
+    assert _saved(config)["reused"] == {"ana@x.com": "new-oid"}
 
 
 @pytest.mark.asyncio
 async def test_a_restored_account_keeps_its_grants(world) -> None:
     directory, accounts, config = world
     await _admit(directory, accounts, [_user("ana@x.com", "ana-oid")])
-    await _withdraw(directory, accounts, "ana-oid")
-    assert _saved(config)["withdrawn"] == {"node-ana@x.com": "ana-oid"}
+    _withdraw(directory, "ana-oid")
 
     await _admit(directory, accounts, [_user("ana@x.com", "ana-oid")])
 
     assert ("remove", "ana@x.com") not in directory.calls
-    assert _saved(config)["withdrawn"] == {}
     assert accounts.may_grant("ana@x.com", "ana-oid") and accounts.may_grant("ana@x.com", None)
 
 
@@ -137,6 +143,7 @@ async def test_a_grant_reaches_only_the_account_that_holds_the_address_now(world
     directory, accounts, _ = world
     await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
     await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+    await accounts.ensure_loaded()
 
     assert accounts.may_grant("ANA@x.com", "new-oid")
     assert not accounts.may_grant("ana@x.com", "old-oid")       # a grant to the deleted account
@@ -151,7 +158,7 @@ async def test_the_first_run_looks_nobody_up_and_notes_who_holds_each_address(wo
     await _admit(directory, accounts, [_user("ana@x.com", "a"), _user("bo@x.com", "b")])
     directory.processor.get_user_by_email.assert_not_awaited()
     directory.processor.remove_user_access_to_connector.assert_not_awaited()
-    assert _saved(config) == {"withdrawn": {}, "reused": {}, "linked": {"ana@x.com": "a", "bo@x.com": "b"}}
+    assert _saved(config) == {"reused": {}, "linked": {"ana@x.com": "a", "bo@x.com": "b"}}
 
 
 @pytest.mark.asyncio
@@ -184,14 +191,14 @@ async def test_an_address_whose_stored_link_already_names_the_new_account_still_
 async def test_a_withdrawn_account_whose_address_was_relinked_to_a_new_account_outside_the_check_is_caught(world) -> None:
     directory, accounts, config = world
     await _admit(directory, accounts, [_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])
-    await _withdraw(directory, accounts, "old-oid")
+    _withdraw(directory, "old-oid")
     directory.links["node-ana@x.com"] = "new-oid"            # linked again, as the new account, without the check
     directory.calls.clear()
 
     await _admit(directory, accounts, [_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
 
     assert directory.calls[0] == ("remove", "ana@x.com")
-    assert _saved(config)["reused"] == {"ana@x.com": "new-oid"} and _saved(config)["withdrawn"] == {}
+    assert _saved(config)["reused"] == {"ana@x.com": "new-oid"}
 
 
 @pytest.mark.asyncio
@@ -288,6 +295,7 @@ async def test_linking_a_source_account_checks_who_held_its_address_first() -> N
     config = _Config()
     processor, tx = _processor(config)
     processor.get_app_user_links = AsyncMock(return_value=[SimpleNamespace(id="u-ana", source_user_id="old")])
+    processor.get_all_app_users = AsyncMock(return_value=[])
     processor.get_user_by_email = AsyncMock(return_value=SimpleNamespace(id="u-ana"))
     processor.remove_user_access_to_connector = AsyncMock(return_value=2)
 
@@ -336,7 +344,7 @@ async def _granted(processor: DataSourceEntitiesProcessor, *permissions: Permiss
 @pytest.mark.asyncio
 async def test_a_grant_to_a_reused_address_is_written_only_for_the_account_that_holds_it() -> None:
     config = _Config()
-    config.saved[source_accounts_key(CONNECTOR)] = {"withdrawn": {}, "reused": {"ana@x.com": "new"}}
+    config.saved[source_accounts_key(CONNECTOR, _bucket("ana@x.com"))] = {"linked": {}, "reused": {"ana@x.com": "new"}}
     processor, _ = _processor(config)
 
     assert await _granted(processor, _grant("ana@x.com", "new")) == ["u-ana"]      # the current account, by id
@@ -360,3 +368,40 @@ async def test_grants_are_not_written_while_the_state_cannot_be_read() -> None:
     processor, _ = _processor(config)
     with pytest.raises(RuntimeError):
         await _granted(processor, _grant("bo@x.com", None))
+
+
+@pytest.mark.asyncio
+async def test_a_large_directory_never_writes_a_large_value_and_one_change_rewrites_one_bucket(world) -> None:
+    directory, accounts, config = world
+    people = [_user(f"person{i}@x.com", f"acc-{i}") for i in range(50_000)]
+    await _admit(directory, accounts, people)
+    biggest = max(len(json.dumps(v)) for k, v in config.saved.items() if k.startswith(source_accounts_key(CONNECTOR)))
+    assert biggest < 32_000, biggest
+
+    writes: list[str] = []
+    real_set = config.set_config
+
+    async def counting(key: str, value: object, **kw: object) -> bool:
+        writes.append(key)
+        return await real_set(key, value, **kw)
+
+    config.set_config = counting
+    people[123] = _user("person123@x.com", "acc-123-new")
+    await _admit(directory, accounts, people)
+    assert writes == [source_accounts_key(CONNECTOR, _bucket("person123@x.com"))]
+    assert accounts.reused == {"person123@x.com": "acc-123-new"}
+
+
+@pytest.mark.asyncio
+async def test_an_account_withdrawn_before_it_was_ever_listed_again_is_compared_from_the_stored_links(world) -> None:
+    """Linked by an earlier version (no state yet), withdrawn before any listing names it: the first run notes the
+    account every stored link names, so a new account on the address is still caught."""
+    directory, accounts, config = world
+    directory.link([_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])     # linked before this state
+    await _admit(directory, accounts, [_user("bo@x.com", "bo-oid")])                  # ana is not listed any more
+    _withdraw(directory, "old-oid")
+    directory.calls.clear()
+
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
+
+    assert directory.calls[0] == ("remove", "ana@x.com")
