@@ -201,7 +201,8 @@ class _FolderWalk:
         return not self.unread_items and not self.unlisted_folders
 
 
-# The OneDrives synced so far, so a drive that no user's sync reaches any more can be checked for deletion.
+# The owner of each OneDrive synced so far, as "<drive id>|<owner's user id>", so a drive that no user's sync
+# reaches any more can be checked for deletion.
 KNOWN_DRIVES_KEY = "onedrive-known-drives"
 
 
@@ -585,7 +586,7 @@ class OneDriveConnector(BaseConnector):
         self.msgraph_client: MSGraphClient | None = None
         self.scope_reader: SharePointPermissionScopeReader | None = None
         self._user_drive_ids: dict[str, str] = {}
-        self._drives_read: set[str] = set()     # the drives a user's sync reached in this run
+        self._drives_read: dict[str, str] = {}  # drive id -> owner's user id, for the drives synced in this run
         # Per drive, items written without knowing whether they inherit, until saved to be read again.
         # Kept across a run reset: a reindex running beside the sync may still be filling them.
         self._items_without_known_inheritance: dict[str, set[str]] = {}
@@ -2098,7 +2099,7 @@ class OneDriveConnector(BaseConnector):
 
             drive_id = await self._user_drive_id(user_id)
             if drive_id:
-                self._drives_read.add(drive_id)
+                self._drives_read[drive_id] = user_id
             permission_state: dict[str, Any] = {}
             if drive_id:
                 try:
@@ -2683,29 +2684,93 @@ class OneDriveConnector(BaseConnector):
             raise
     
     async def _remove_deleted_drives(self) -> None:
-        """Remove the OneDrives synced before that no user's sync reached this run and that Graph answers
-        404 for. A deleted user's OneDrive is no longer synced, but what it shares stays readable until its
-        retention period ends; then it goes to the recycle bin and "users will no longer be able to access
-        any shared content in the OneDrive" (https://learn.microsoft.com/en-us/sharepoint/retention-and-deletion).
-        Graph's answer for such a drive is not documented: only a 404 for the drive itself removes it, any
-        other answer keeps it, and it is read again on the next run."""
+        """Remove the OneDrives no user's sync reached this run whose owner was deleted and which Graph no longer has.
+
+        A deleted user's OneDrive is no longer synced, but what it shares stays readable until its retention period
+        ends; then it goes to the recycle bin and "users will no longer be able to access any shared content in the
+        OneDrive" (https://learn.microsoft.com/en-us/sharepoint/retention-and-deletion). Graph answers 404 for a
+        drive that doesn't exist (https://learn.microsoft.com/en-us/graph/api/drive-get), but also, in practice,
+        for one the app can no longer read. So a drive goes only when all of these agree: it answers 404, its owner
+        is gone from the directory (404 on the user: a deleted user is moved to deleted items,
+        https://learn.microsoft.com/en-us/graph/api/user-delete), and a drive synced in this run still answers, so
+        the app can read drives. Anything else keeps the drive, and it is read again on the next run.
+        """
         tracker = ContainerTracker(self.drive_delta_sync_point, KNOWN_DRIVES_KEY)
-        # shortcut: a drive not seen since the tracker started (installs from before it) is not checked
-        # here until a full resync, which deletes the sync points and unlinks every record it does not
-        # read; seed the tracker from the stored drive record groups once the graph stores can list them.
-        keep = set(self._drives_read)
-        for drive_id in sorted(await tracker.known() - keep):
+        owners = {drive_id: owner for drive_id, _, owner in (entry.partition("|") for entry in await tracker.known())}
+        try:
+            # Drives stored before the tracker was kept, or whose tracker a resync deleted, are checked too.
+            stored = await self.data_entities_processor.get_nodes_by_filters(
+                CollectionNames.RECORD_GROUPS.value,
+                {"connectorId": self.connector_id, "groupType": RecordGroupType.DRIVE.value},
+                return_fields=["externalGroupId"],
+                raise_on_error=True,
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not read the stored OneDrives; only the remembered ones are checked: {e}")
+            stored = []
+        for group in stored:
+            owners.setdefault(group.get("externalGroupId") or "", "")
+        owners.pop("", None)
+        keep = dict(self._drives_read)
+        app_reads_drives: bool | None = None
+        for drive_id in sorted(set(owners) - set(keep)):
+            owner = owners[drive_id]
+            keep[drive_id] = owner
+            try:
+                async with self.msgraph_client.rate_limiter:
+                    drive = await self.msgraph_client.client.drives.by_drive_id(drive_id).get()
+                user = getattr(getattr(drive, "owner", None), "user", None)
+                keep[drive_id] = getattr(user, "id", None) or owner
+                continue
+            except Exception as e:
+                if getattr(e, "response_status_code", None) != HTTPStatus.NOT_FOUND:
+                    self.logger.warning(f"Could not read OneDrive {drive_id}; keeping its records this run: {e}")
+                    continue
+            if not owner:
+                self.logger.warning(f"OneDrive {drive_id} answers 404 and its owner is not known; keeping its records")
+                continue
+            try:
+                owner_status = await self.msgraph_client.get_user_status(owner)
+            except Exception as e:
+                self.logger.warning(f"Could not read the owner of OneDrive {drive_id}; keeping its records: {e}")
+                continue
+            if owner_status != "gone":
+                self.logger.warning(
+                    f"OneDrive {drive_id} answers 404 but its owner is still in the directory; keeping its records "
+                    "(the app may have lost access to it)"
+                )
+                continue
+            if app_reads_drives is None:
+                app_reads_drives = await self._app_reads_a_drive()
+            if not app_reads_drives:
+                self.logger.warning(f"No synced OneDrive answers either; keeping OneDrive {drive_id} this run")
+                continue
+            self.logger.info(f"OneDrive {drive_id} of a deleted user is gone at the source; removing its records")
+            if await self._delete_drive_records(drive_id):
+                del keep[drive_id]
+        await tracker.remember({f"{drive_id}|{owner}" for drive_id, owner in keep.items()})
+
+    async def _app_reads_a_drive(self) -> bool:
+        """Whether a drive synced in this run answers now: a 404 on another drive is then not the app's own access."""
+        for drive_id in sorted(self._drives_read):
             try:
                 async with self.msgraph_client.rate_limiter:
                     await self.msgraph_client.client.drives.by_drive_id(drive_id).get()
+                return True
             except Exception as e:
-                if getattr(e, "response_status_code", None) == HTTPStatus.NOT_FOUND:
-                    self.logger.info(f"OneDrive {drive_id} is gone at the source; removing its records")
-                    await self.data_entities_processor.on_record_group_deleted(drive_id, self.connector_id)
-                    continue
-                self.logger.warning(f"Could not read OneDrive {drive_id}; keeping its records this run: {e}")
-            keep.add(drive_id)
-        await tracker.remember(keep)
+                self.logger.warning(f"Synced OneDrive {drive_id} does not answer: {e}")
+                return False
+        return False
+
+    async def _delete_drive_records(self, drive_id: str) -> bool:
+        """Delete a drive's record group with its records. True once it is gone (also when it already was); False
+        keeps it for the next run."""
+        if await self.data_entities_processor.on_record_group_deleted(drive_id, self.connector_id):
+            return True
+        if await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, drive_id) is None:
+            return True
+        self.logger.error(f"Deleting the records of OneDrive {drive_id} failed; it is retried on the next run")
+        return False
 
     async def _withdraw_unlisted_app_users(self, users: list[AppUser]) -> None:
         """Take the connector away from stored users (guest accounts included) that the
@@ -2887,7 +2952,7 @@ class OneDriveConnector(BaseConnector):
 
             # Step 3: Process user drives with yielding for non-blocking operation
             self.logger.info("Syncing user drives...")
-            self._drives_read = set()
+            self._drives_read = {}
             await self._process_users_in_batches(users)
             await self._remove_deleted_drives()
 
@@ -2991,7 +3056,7 @@ class OneDriveConnector(BaseConnector):
 
             # Sync all active users
             users = await self.msgraph_client.get_all_users()
-            self._drives_read = set()
+            self._drives_read = {}
             await self._process_users_in_batches(users)
             await self._remove_deleted_drives()
 
