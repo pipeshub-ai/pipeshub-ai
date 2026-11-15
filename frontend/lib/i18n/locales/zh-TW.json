@@ -5436,6 +5436,7 @@
       "noRecordMetadata": "此項目沒有其他記錄中繼資料。"
     },
     "indexingReasonAria": "索引失敗詳細資訊",
+    "indexingNoteAria": "索引說明",
     "stageTrackLabel": "處理流程",
     "stageParsed": "已解析",
     "stageSearchable": "可搜尋",

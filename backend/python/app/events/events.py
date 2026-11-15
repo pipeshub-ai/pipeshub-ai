@@ -114,6 +114,9 @@ from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import RETRY_SCHEDULED, binary_text_file, partly_indexed_text
 
+# The readers that take a file's bytes as text, which the .log/.cfg size cap applies to.
+_TEXT_ROUTES = frozenset({Route.TXT, Route.MD, Route.MDX, Route.CODE})
+
 
 def _record_key(doc: dict[str, Any] | None) -> str | None:
     """Record id from either Arango (_key) or generic graph (id) document format."""
@@ -1926,9 +1929,10 @@ class EventProcessor:
                     return
                 file_content, extension, mime_type = prepared.content, prepared.extension, prepared.mime_type
                 truncated = prepared.truncated
-            elif file_types.is_bounded_text(code_ext) and file_content:
-                # Whatever reader a .log/.cfg has (main's text path, the code parser), its indexed
-                # text has the same cap, so its embedding cost is bounded.
+            elif route in _TEXT_ROUTES and file_types.is_bounded_text(code_ext) and file_content:
+                # A .log/.cfg read as text (the text path, Markdown, the code parser) has the same
+                # cap, so its embedding cost is bounded. One whose content is a PDF, an image, JSON
+                # and so on reaches its own parser with its own bytes; the hard limit bounds it.
                 file_content, truncated = await bound_text(file_content)
             else:
                 truncated = False

@@ -5605,6 +5605,7 @@
       "noRecordMetadata": "K této položce nejsou k dispozici žádná další metadata záznamu."
     },
     "indexingReasonAria": "Podrobnosti o selhání indexování",
+    "indexingNoteAria": "Poznámka k indexování",
     "stageTrackLabel": "Zpracování",
     "stageParsed": "Parsováno",
     "stageSearchable": "Prohledávatelné",

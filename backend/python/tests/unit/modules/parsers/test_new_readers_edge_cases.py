@@ -170,3 +170,18 @@ def test_no_binary_on_this_host_reads_as_text() -> None:
         if b"\x00" in head[:8192] and not isinstance(prepare_capped_text(head), BinaryFile):
             misread.append(str(path))
     assert misread == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [("x" * 600 + "\n") * 12, "k=" + "v" * 3000 + "\n", ("y" * 200 + "\n") * 12,
+     ("имя Иван " * 80 + "\n") * 6],
+    ids=["600-char lines", "one 3000-char line", "200-char lines", "long Cyrillic lines"],
+)
+@pytest.mark.parametrize("codec", ["utf-16-le", "utf-16-be"])
+def test_utf16_text_with_long_lines_is_text(text: str, codec: str) -> None:
+    from app.modules.parsers.text.capped_text import CappedText, prepare_capped_text
+
+    result = prepare_capped_text((text * 2).encode(codec))
+    assert isinstance(result, CappedText)
+    assert result.text == text * 2

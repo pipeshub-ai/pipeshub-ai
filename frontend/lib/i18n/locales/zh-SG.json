@@ -5436,6 +5436,7 @@
       "noRecordMetadata": "此项目没有其他记录元数据。"
     },
     "indexingReasonAria": "索引失败详情",
+    "indexingNoteAria": "索引说明",
     "stageTrackLabel": "处理流程",
     "stageParsed": "已解析",
     "stageSearchable": "可搜索",

@@ -27,7 +27,7 @@ pytestmark = pytest.mark.timeout(300)
 KIB = 1024
 
 
-def test_the_limits_are_the_owner_s() -> None:
+def test_the_default_limits() -> None:
     assert TEXT_LOG_MAX_BYTES == 256 * KIB
     assert TEXT_LOG_HARD_LIMIT_BYTES == 50 * 1024 * 1024
     assert file_too_large_to_read("log") == (

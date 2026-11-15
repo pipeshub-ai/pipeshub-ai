@@ -19,7 +19,9 @@ _MARKER_RESERVE = 256
 _SNIFF_BYTES = 8 * 1024
 _CHARSET_SAMPLE_BYTES = 64 * 1024
 _NEWLINE_SEARCH_BYTES = 64 * 1024
+_UTF16_NUL_SHARE = 0.9
 _UTF16_PRINTABLE_SHARE = 0.95
+_UTF16_SPACE_SHARE = 0.05
 _UTF16_MAX_LINE = 400
 _CHARDET_MIN_CONFIDENCE = 0.8
 _CHARDET_FALLBACK_CONFIDENCE = 0.5
@@ -66,9 +68,10 @@ def _decodes(sample: bytes, codec: str) -> bool:
 def _utf16_without_bom(sample: bytes) -> str | None:
     """'utf-16-le' or 'utf-16-be' when a sample holding NUL bytes reads as UTF-16 text.
 
-    Decoded, not guessed from where its NULs sit: text of any script (Cyrillic, CJK, emoji) decodes
-    strictly and is almost all printable, a binary does neither. The byte order whose NULs fall on
-    the high bytes of ASCII is tried first.
+    Text mostly in ASCII (any line length) has NULs at nearly every high byte and nearly none at
+    the low ones, and decodes. Text in other scripts (Cyrillic, CJK, emoji) leaves fewer NULs: it
+    is UTF-16 when it decodes strictly to printable text that has line breaks or spaces, which a
+    binary that only decodes by chance does not.
     """
     pairs = len(sample) // 2
     if pairs == 0 or b"\x00" not in sample:
@@ -76,6 +79,10 @@ def _utf16_without_bom(sample: bytes) -> str | None:
     sample = sample[:pairs * 2]
     odd_nul = sample[1::2].count(0)
     even_nul = sample[0::2].count(0)
+    if odd_nul >= _UTF16_NUL_SHARE * pairs and even_nul <= (1 - _UTF16_NUL_SHARE) * pairs:
+        return "utf-16-le" if _decodes(sample, "utf-16-le") else None
+    if even_nul >= _UTF16_NUL_SHARE * pairs and odd_nul <= (1 - _UTF16_NUL_SHARE) * pairs:
+        return "utf-16-be" if _decodes(sample, "utf-16-be") else None
     order = ("utf-16-le", "utf-16-be") if odd_nul >= even_nul else ("utf-16-be", "utf-16-le")
     return next((codec for codec in order if _reads_as_text(sample, codec)), None)
 
@@ -88,9 +95,13 @@ def _reads_as_text(sample: bytes, codec: str) -> bool:
     if not text:
         return False
     printable = sum(1 for c in text if c.isprintable() or c in "\r\n\t")
-    # ASCII-heavy binary read as UTF-16 also looks printable (as CJK); text has lines.
+    if printable < _UTF16_PRINTABLE_SHARE * len(text):
+        return False
+    # ASCII-heavy binary read as UTF-16 also looks printable (as CJK runs); text has line
+    # breaks or spaces between its words.
     breaks = sum(1 for c in text if c in "\n\r")
-    return printable >= _UTF16_PRINTABLE_SHARE * len(text) and breaks >= max(1, len(text) // _UTF16_MAX_LINE)
+    spaces = text.count(" ")
+    return breaks >= max(1, len(text) // _UTF16_MAX_LINE) or spaces >= _UTF16_SPACE_SHARE * len(text)
 
 
 def _codec(content: bytes) -> tuple[str | None, int]:
