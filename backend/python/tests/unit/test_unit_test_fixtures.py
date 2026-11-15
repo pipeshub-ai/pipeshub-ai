@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -68,6 +69,15 @@ def _a_fixture(name: str | None = None) -> object:
     return probe
 
 
+def _an_older_pytest_fixture(name: str) -> object:
+    # The shape ``@pytest.fixture(name=...)`` gives a function under pytest < 8.4.
+    def probe() -> None:
+        return None
+
+    probe._pytestfixturefunction = SimpleNamespace(name=name)  # type: ignore[attr-defined]
+    return probe
+
+
 # pytest registers a fixture under its decorator's ``name=`` when it has one, else under
 # the attribute it is bound to; either way it must not take a name already registered.
 @pytest.mark.parametrize(
@@ -78,6 +88,11 @@ def _a_fixture(name: str | None = None) -> object:
             lambda: {"z_heap": _a_fixture("frozen_heap")},
             "frozen_heap",
             id="by-decorator-name",
+        ),
+        pytest.param(
+            lambda: {"z_heap": _an_older_pytest_fixture("frozen_heap")},
+            "frozen_heap",
+            id="by-decorator-name-older-pytest",
         ),
         pytest.param(
             lambda: {"first": _a_fixture("added"), "second": _a_fixture("added")},

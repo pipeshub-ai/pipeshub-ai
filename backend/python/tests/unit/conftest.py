@@ -111,12 +111,18 @@ def _no_leaked_pipeshub_temp_files(_private_temp_dir: str) -> Iterator[None]:
     )
 
 
+# Where ``@pytest.fixture`` keeps its marker: pytest >= 8.4 uses the first, older pytest
+# the second. Both markers carry the ``name=`` the decorator was given.
+_FIXTURE_MARKER_ATTRIBUTES = ("_fixture_function_marker", "_pytestfixturefunction")
+
+
 def _registered_name(attribute: str, value: object) -> str | None:
     """The name pytest registers ``value`` under when it finds it as ``attribute``; None if no fixture."""
-    marker = getattr(value, "_fixture_function_marker", None)
-    if marker is None:
-        return None
-    return marker.name or attribute
+    for marker_attribute in _FIXTURE_MARKER_ATTRIBUTES:
+        marker = getattr(value, marker_attribute, None)
+        if marker is not None:
+            return marker.name or attribute
+    return None
 
 
 def _bind_unit_test_fixtures() -> None:
