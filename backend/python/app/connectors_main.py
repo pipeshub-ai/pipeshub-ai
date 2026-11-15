@@ -1215,7 +1215,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             finally:
                 await requeue_lock.close()
         except Exception as e:
-            logger.error(f"❌ File-type re-queue failed: {e}", exc_info=True)
+            logger.error(f"File-type re-queue failed: {e}", exc_info=True)
 
     post_startup_task = spawn_detached(_post_startup(), name="connector_post_startup")
     app_container.post_startup_task = post_startup_task
