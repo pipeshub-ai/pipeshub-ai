@@ -1,9 +1,6 @@
 """Tests for app.api.routes.search_llm_resolver — LLM resolution for search routes."""
 
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
-
-import pytest
-from fastapi import HTTPException
+from unittest.mock import AsyncMock, MagicMock
 
 
 # ---------------------------------------------------------------------------
@@ -39,8 +36,8 @@ class TestResolveLlmForSearch:
         assert result is fetched_llm
         retrieval_service.get_llm_instance.assert_awaited_once()
 
-    async def test_llm_is_none_raises_http_exception(self) -> None:
-        """When llm is None and get_llm_instance returns None, raise HTTPException(500)."""
+    async def test_no_llm_configured_returns_none(self) -> None:
+        """No chat model configured: return None so search runs without a rewrite."""
         from app.api.routes.search_llm_resolver import resolve_llm_for_search
 
         request = MagicMock()
@@ -48,7 +45,4 @@ class TestResolveLlmForSearch:
         retrieval_service.llm = None
         retrieval_service.get_llm_instance = AsyncMock(return_value=None)
 
-        with pytest.raises(HTTPException) as exc_info:
-            await resolve_llm_for_search(request, retrieval_service)
-        assert exc_info.value.status_code == 500
-        assert "LLM" in str(exc_info.value.detail)
+        assert await resolve_llm_for_search(request, retrieval_service) is None

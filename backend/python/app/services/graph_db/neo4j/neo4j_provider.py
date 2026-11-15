@@ -26980,7 +26980,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
     async def check_agent_permission(
-        self, agent_id: str, user_id: str, org_id: str
+        self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None
     ) -> dict | None:
         try:
             agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
@@ -27000,7 +27000,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LIMIT 1
             """
             ind_result = await self.client.execute_query(
-                individual_query, parameters={"user_key": user_key, "agent_id": agent_id}
+                individual_query, parameters={"user_key": user_key, "agent_id": agent_id}, txn_id=transaction
             )
             if ind_result:
                 role = ind_result[0]["role"]
@@ -27022,7 +27022,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LIMIT 1
             """
             org_result = await self.client.execute_query(
-                org_query, parameters={"org_key": org_key, "agent_id": agent_id}
+                org_query, parameters={"org_key": org_key, "agent_id": agent_id}, txn_id=transaction
             )
             if org_result:
                 role = org_result[0]["role"]
@@ -27324,7 +27324,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             # get_agent(agent_id, org_id, transaction) — do not pass user_id positionally (that was
             # misread as org_id and broke transaction=). Use check_agent_permission for ACL.
-            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -27408,7 +27408,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.logger.warning(f"Agent {agent_id} not found")
                 return False
 
-            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -27855,7 +27855,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, role: str, transaction: str | None = None) -> dict | None:
         """Update permission role for users and teams on an agent (only OWNER can do this)"""
         try:
-            perm = await self.check_agent_permission(agent_id, owner_user_id, org_id)
+            perm = await self.check_agent_permission(agent_id, owner_user_id, org_id, transaction)
             if not perm:
                 self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
                 return {"success": False, "reason": "Agent not found or no permission"}
@@ -27998,8 +27998,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     template["permission_id"] = row.get("permission_id")
                     template["permission_created_at"] = row.get("permission_created_at")
                     template["permission_updated_at"] = row.get("permission_updated_at")
-                    template["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
-                    template["can_delete"] = row["role"] == "OWNER"
+                    # edit and delete need the user's own OWNER grant (update_agent_template, delete_agent_template)
+                    template["can_edit"] = template["can_delete"] = row["role"] == "OWNER"
                     template["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
                     template["can_view"] = True
                     templates.append(template)
@@ -28034,8 +28034,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         template["permission_id"] = row.get("permission_id")
                         template["permission_created_at"] = row.get("permission_created_at")
                         template["permission_updated_at"] = row.get("permission_updated_at")
-                        template["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
-                        template["can_delete"] = row["role"] == "OWNER"
+                        template["can_edit"] = template["can_delete"] = False  # a team's grant edits or deletes nothing
                         template["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
                         template["can_view"] = True
                         templates.append(template)
@@ -28120,8 +28119,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 template["permission_id"] = row.get("permission_id")
                 template["permission_created_at"] = row.get("permission_created_at")
                 template["permission_updated_at"] = row.get("permission_updated_at")
-                template["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
-                template["can_delete"] = row["role"] == "OWNER"
+                # edit and delete need the user's own OWNER grant (update_agent_template, delete_agent_template)
+                template["can_edit"] = template["can_delete"] = row["role"] == "OWNER"
                 template["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
                 template["can_view"] = True
                 return template
@@ -28153,8 +28152,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     template["permission_id"] = row.get("permission_id")
                     template["permission_created_at"] = row.get("permission_created_at")
                     template["permission_updated_at"] = row.get("permission_updated_at")
-                    template["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
-                    template["can_delete"] = row["role"] == "OWNER"
+                    template["can_edit"] = template["can_delete"] = False  # a team's grant edits or deletes nothing
                     template["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
                     template["can_view"] = True
                     return template
