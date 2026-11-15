@@ -2,11 +2,13 @@
 
 import pytest
 
+from app.services.llm_gateway.fleet_redis import FleetRedis, bind_fleet_redis
 from tests.support.gateway_world import (
     OUTAGE_KINDS,
     GatewayWorld,
     patch_gateway_ceiling,
 )
+from tests.support.spend_world import SimClock
 
 pytestmark = pytest.mark.timeout(600)
 HOUR = 3600.0
@@ -73,10 +75,15 @@ async def test_the_result_does_not_depend_on_the_worker_count(fleet, sim_clock) 
     """The same outage with 1, 2 and 4 workers puts the same number of requests on the wire for a lone job."""
     sent = []
     for workers in (1, 2, 4):
-        world = GatewayWorld(fleet, sim_clock, workers=workers)
+        # Each run from the same start: its own namespace (inside the fixture's, so its keys are cleaned) and clock.
+        clock = SimClock()
+        handle = FleetRedis(fleet.client, f"{fleet.namespace}:w{workers}", clock_ms=clock)
+        bind_fleet_redis(handle)
+        world = GatewayWorld(handle, clock, workers=workers)
         world.provider.kind = "hang"
         world.provider.outage_until_s = 4 * HOUR
         world.add_job(f"lone-{workers}")
         await world.run()
         sent.append(world.provider.requests[f"lone-{workers}"])
+    bind_fleet_redis(fleet)
     assert len(set(sent)) == 1, sent

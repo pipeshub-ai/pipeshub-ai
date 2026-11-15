@@ -29,7 +29,11 @@ from app.modules.pipeline.pause_budget import (
     fail_reason,
     outcome_counts,
 )
-from app.modules.pipeline.pause_store import PauseStore, PauseStoreUnavailable
+from app.modules.pipeline.pause_store import (
+    PauseStore,
+    PauseStoreUnavailable,
+    ResetResult,
+)
 from app.services.llm_gateway.fleet_breaker import (
     HOLD_COOLDOWN_MS,
     FleetBreaker,
@@ -145,10 +149,13 @@ class PauseJudge:
             # A hold owes this job a redrive whose reset has not happened yet: its charges were the key's, not its own.
             # The scope is indexed first, so the leader also finds the other jobs it owes, which do not wake by themselves.
             await self._store.note_owed_scope(prior.scope)
-            await self._store.release_charged(job.state_key, episode)
+            reset = await self._store.release_charged(job.state_key, episode)
             await self._store.redrive_done(prior.scope, job.state_key)
-            prior = replace(prior, charged=0)
-            verdict = counters_spent(prior, limits)
+            if reset is ResetResult.RESET:
+                prior = replace(prior, charged=0)
+                verdict = counters_spent(prior, limits)
+            # ALREADY: this episode's reset was done before, so the charges stored now are the new run's own and are
+            # judged as they are.
         if verdict is None:
             ledger = await self._ledger(prior.scope)
             verdict = budget_spent(prior, await self._now(), ledger, limits)
@@ -256,7 +263,9 @@ class PauseJudge:
         """Commit a run that did not pause: its failed sends, charged sends and trials, and release its reservation. A
         run that spent nothing creates no budget."""
         scope = trace.scope() if trace is not None else None
+        scope_key = f"{scope[0]}:{scope[1]}" if scope else ""
         try:
+            scope_ledger = await self._ledger(scope_key)
             await self._store.apply(
                 job.state_key,
                 attempt=attempt,
@@ -264,15 +273,16 @@ class PauseJudge:
                 charged=trace.charged if trace is not None else 0,
                 trials=trace.trials if trace is not None else 0,
                 since_ms=await self._now(),
-                ledger_at_since=0,
-                scope=f"{scope[0]}:{scope[1]}" if scope else "",
-                scope_ledger=await self._ledger(f"{scope[0]}:{scope[1]}") if scope else 0,
+                # A budget this commit creates starts at the key's ledger now, so hold time before it is not subtracted.
+                ledger_at_since=scope_ledger,
+                scope=scope_key,
+                scope_ledger=scope_ledger,
                 create=False,
             )
         except PauseStoreUnavailable as exc:
             self._logger.warning("the sends of %s were not committed (%s); its reservation counts them", job.state_key, exc)
 
-    async def release_charged(self, state_key: str, episode: str = "") -> bool:
+    async def release_charged(self, state_key: str, episode: str = "") -> ResetResult:
         """A fresh charge count for a job a hold redrives. Raises ``PauseStoreUnavailable``: a redrive must not go out
         with the old count, which the pre-run check would fail at once."""
         return await self._store.release_charged(state_key, episode)

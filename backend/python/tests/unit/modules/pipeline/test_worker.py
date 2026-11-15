@@ -600,7 +600,7 @@ async def test_a_job_of_another_connector_runs_as_before() -> None:
 
 # ---- the pause budget: a paused job is bounded -------------------------------------------------------------
 
-from app.modules.pipeline.pause_budget import PauseLimits, PauseState  # noqa: E402
+from app.modules.pipeline.pause_budget import PauseLimits, PauseState, Verdict  # noqa: E402
 from app.modules.pipeline.pause_judge import PauseJudge  # noqa: E402
 from app.modules.pipeline.pause_store import PauseStore, PauseStoreUnavailable  # noqa: E402
 from app.services.llm_gateway.fleet_breaker import FleetBreaker, FleetBreakerUnavailable  # noqa: E402
@@ -1110,3 +1110,33 @@ async def test_a_pause_whose_verdict_could_not_be_written_keeps_the_run_s_share(
     assert await h.judge.judge(job, _charged_pause(requests=1), attempt=1) is None
     monkeypatch.undo()
     assert await h.judge.reserve(job, attempt=2, stale_ms=60_000) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_budget_a_commit_creates_starts_at_the_keys_ledger_now(fleet: FleetRedis) -> None:
+    """The key was on hold an hour before this job's first failed send: that hour is not subtracted from its wall."""
+    from app.services.llm_gateway.gateway import JobTrace
+
+    h, job = _BudgetHarness(fleet), _job()
+    scope = f"{_PK}:{_CLS}"
+    await fleet.client().set(fleet.key(f"sg:hold:ledger:{{{scope}}}"), 3_600_000)
+    trace = JobTrace()
+    trace.meter.failed = 2
+    trace.note_attempt(_PK, _CLS, "P", chargeable=False, trial=False)
+    await h.judge.commit(job, attempt=1, trace=trace)
+    state = await h.pause_state(job)
+    assert state is not None and state.ledger_at_since == 3_600_000
+
+
+@pytest.mark.asyncio
+async def test_a_wake_after_this_episodes_reset_judges_the_new_runs_charges(fleet: FleetRedis) -> None:
+    """The job was reset and redriven for this hold episode; its new run then reached the charged cap on its own. Still
+    owed (marking it done failed), its next wake fails it at that cap instead of zeroing the count again."""
+    h, job = _BudgetHarness(fleet), _job()
+    scope = f"{_PK}:{_CLS}"
+    await h.store.put(job.state_key, PauseState(since_ms=h.clock(), charged=6, sends=6, scope=scope))
+    await h.store.add_redrives(scope, [job.state_key], episode="ep-1")
+    await h.store.release_charged(job.state_key, "ep-1")
+    await h.store.apply(job.state_key, attempt=3, sends=6, charged=6, trials=0, since_ms=h.clock(), ledger_at_since=0, scope=scope)
+    refusal = await h.judge.spent(job, await h.pause_state(job))
+    assert refusal is not None and refusal[0] is Verdict.FAIL_CHARGED

@@ -20,6 +20,7 @@ paused before rather than run it uncounted.
 from __future__ import annotations
 
 import asyncio
+from enum import IntEnum
 from typing import Any
 
 from app.modules.pipeline.pause_budget import PauseState
@@ -124,6 +125,15 @@ redis.call('HSET', KEYS[1], 'charged', 0)
 if ARGV[1] ~= '' then redis.call('HSET', KEYS[1], 'reset_episode', ARGV[1]) end
 return 1
 """
+
+
+class ResetResult(IntEnum):
+    """What a charge reset did (``_RELEASE_CHARGED``)."""
+
+    NO_BUDGET = 0
+    RESET = 1
+    # This hold episode's reset was done before: the stored charges are a later run's and stay.
+    ALREADY = 2
 
 
 class PauseStoreUnavailable(Exception):
@@ -251,10 +261,10 @@ class PauseStore:
         """Delete the budget of a run that settled as ``attempt``, unless a later attempt has written it since."""
         return bool(await self._eval(_CLEAR, [self._key(state_key), self._runs_key(state_key)], attempt))
 
-    async def release_charged(self, state_key: str, episode: str = "") -> bool:
+    async def release_charged(self, state_key: str, episode: str = "") -> ResetResult:
         """Give a job a hold redrives a fresh charge count, once per hold ``episode`` (``_RELEASE_CHARGED``); its sends
-        and trials stay. False when it has no state."""
-        return bool(await self._eval(_RELEASE_CHARGED, [self._key(state_key)], episode))
+        and trials stay."""
+        return ResetResult(int(await self._eval(_RELEASE_CHARGED, [self._key(state_key)], episode)))
 
     # ---- the redrives a hold owes ------------------------------------------------------------------
     # The owed set of a key scope is written by the breaker's script that opens the hold (``owed_key_name``), atomically

@@ -35,7 +35,7 @@ from app.modules.pipeline.models import (
 )
 from app.modules.pipeline.pause_budget import PauseState, Verdict
 from app.modules.pipeline.pause_judge import PauseJudge
-from app.modules.pipeline.pause_store import PauseStoreUnavailable
+from app.modules.pipeline.pause_store import PauseStoreUnavailable, ResetResult
 from app.modules.pipeline.registry import StageRegistry
 from app.modules.pipeline.stage import (
     Deadline,
@@ -556,7 +556,9 @@ class StageJobHandler:
                 return True
             if other.status is not ProgressStatus.FAILED:
                 return True
-            await self._pause.release_charged(key, episode)
+            if await self._pause.release_charged(key, episode) is ResetResult.ALREADY:
+                # This episode's redrive already went out and that run failed on its own: not the key's doing.
+                return True
             with for_org(other.org_id, job="stage_hold_redrive"):
                 await self._coordinator.redrive(other.to_job().view, other.stage, priority=other.priority, force=False)
             return True

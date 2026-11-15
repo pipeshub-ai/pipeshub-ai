@@ -140,7 +140,11 @@ class ExtractionClient(BaseServiceClient):
         recorded for it, or the whole allowance it was given when nothing is recorded; then the error goes on."""
         fields = _job_fields()
         try:
-            response = await self._post_json(path, {**payload, **fields}, operation=operation, org_id=org_id)
+            # Never sent twice once it may have been received: the service would refuse the copy (it claims the
+            # request id), and the job is charged for the first from what the service recorded.
+            response = await self._post_json(
+                path, {**payload, **fields}, operation=operation, org_id=org_id, retry_after_delivery=False
+            )
         except ServiceUnavailableError as exc:
             if exc.delivered:
                 await _charge_lost_reply(fields)
@@ -148,11 +152,11 @@ class ExtractionClient(BaseServiceClient):
         if response.status_code == HTTP_CONFLICT:
             body = response.json()
             if isinstance(body, dict) and body.get("error_code") == REPLAYED:
+                # A duplicate of a request already given (a redelivery, not a lost reply): charged what the first
+                # spent, and retried on the stage's own retry path, which counts the attempt.
                 await _charge_lost_reply(fields, body.get("usage"))
-                raise ServiceUnavailableError(
-                    f"{self.service_name} {operation}: the request was already delivered and its reply was lost",
-                    service_name=self.service_name,
-                    delivered=True,
+                raise ExtractionClientError(
+                    message=f"{self.service_name} {operation}: the request was already delivered"
                 )
         return response
 
@@ -298,7 +302,8 @@ def _note_remote_usage(body: object) -> None:
     requests = body.get("requests")
     trace.note_remote({
         "failed": requests if isinstance(requests, int) else (1 if sent else 0),
-        "charged": 1 if body.get("chargeable") and not body.get("trial") else 0,
+        "charged": charged if isinstance(charged := body.get("charged"), int) and charged >= 0
+        else (1 if body.get("chargeable") and not body.get("trial") else 0),
         "trials": 1 if sent and body.get("trial") else 0,
         "unavailable": 1,
         "pk": body.get("pk"), "size_class": body.get("size_class"), "provider": body.get("provider"),

@@ -408,8 +408,14 @@ class BaseServiceClient:
         operation: str = "request",
         budget_seconds: float | None = None,
         read_timeout: float | None = None,
+        retry_after_delivery: bool = True,
     ) -> httpx.Response:
         """Execute *method* request with exponential-backoff retry.
+
+        ``retry_after_delivery=False`` is for a request whose work is paid and must not be repeated: once an attempt may
+        have reached the service (a 5xx answer, or a failure after the request was written), it is not sent again. A 5xx
+        is returned to the caller; a lost reply raises ``ServiceUnavailableError(delivered=True)``. An attempt that never
+        connected, and backpressure the service asks for, are still retried.
 
         ``read_timeout`` overrides the client-wide socket read timeout for
         this call alone, for an operation whose deadline belongs to the
@@ -507,7 +513,11 @@ class BaseServiceClient:
 
                     response = await client.request(method, url, **kwargs)
                     last_status = response.status_code
-                    delivered = True
+                    # A 429 with Retry-After is the service declining before any work; every other answer may
+                    # have done some.
+                    delivered = delivered or not (
+                        response.status_code == HTTP_TOO_MANY_REQUESTS and response.headers.get("Retry-After")
+                    )
 
                     if response.status_code not in TRANSIENT_STATUS_CODES:
                         # Service responded — even a 4xx means it's reachable.
@@ -575,6 +585,10 @@ class BaseServiceClient:
                         await asyncio.sleep(wait)
                         continue
 
+                    if not retry_after_delivery:
+                        # The service may have done the work: the caller decides, nothing is sent twice.
+                        self.circuit_breaker.record_failure()
+                        return response
                     # Transient 5xx / bare 429 (no Retry-After) — retryable.
                     transient_attempts += 1
                     # Transient 5xx / 429 — retryable. Keep body message for final raise.
@@ -618,7 +632,7 @@ class BaseServiceClient:
                         service_name=self.service_name,
                     ) from exc
 
-                if transient_attempts >= attempt_limit:
+                if transient_attempts >= attempt_limit or (delivered and not retry_after_delivery):
                     break
                 delay = self.retry_delay * (2 ** (transient_attempts - 1))
                 if budget_seconds is not None:
@@ -697,6 +711,8 @@ class BaseServiceClient:
         payload: dict,
         operation: str = "POST",
         org_id: str | None = None,
+        *,
+        retry_after_delivery: bool = True,
     ) -> httpx.Response:
         url = f"{self.service_url}{path}"
         body = json.dumps(payload).encode("utf-8")
@@ -707,7 +723,8 @@ class BaseServiceClient:
         # Starlette does not auto-decompress Content-Encoding: gzip request bodies,
         # so we never compress JSON request payloads here.
         return await self._request_with_retry(
-            "POST", url, content=body, headers=headers, operation=operation
+            "POST", url, content=body, headers=headers, operation=operation,
+            retry_after_delivery=retry_after_delivery,
         )
 
     async def _post_multipart(

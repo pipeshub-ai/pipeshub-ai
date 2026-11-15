@@ -233,12 +233,30 @@ class JobTrace:
             return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
         self.meter.failed += count("failed")
-        tally = self._tally(usage.get("pk"), usage.get("size_class"), usage.get("provider"))
+        scopes = usage.get("scopes")
+        if isinstance(scopes, list) and scopes:
+            # Per key: a request whose calls fell on two keys or size classes charges each its own.
+            before = self.unavailable
+            for entry in scopes:
+                if isinstance(entry, dict):
+                    self._note_remote_scope(entry)
+            # Unavailability no key accounts for (a call with no key, or the caller's own 424 rule) still counts.
+            for _ in range(max(0, count("unavailable") - (self.unavailable - before))):
+                self.note_unavailable(None, None, None)
+            return
+        self._note_remote_scope(usage)
+
+    def _note_remote_scope(self, entry: dict[str, Any]) -> None:
+        def count(name: str) -> int:
+            value = entry.get(name)
+            return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+        tally = self._tally(entry.get("pk"), entry.get("size_class"), entry.get("provider"))
         if tally is not None:
             tally.charged += count("charged")
             tally.trials += count("trials")
         for _ in range(count("unavailable")):
-            self.note_unavailable(usage.get("pk"), usage.get("size_class"), usage.get("provider"))
+            self.note_unavailable(entry.get("pk"), entry.get("size_class"), entry.get("provider"))
 
     @property
     def requests(self) -> int:
@@ -265,6 +283,12 @@ class JobTrace:
             "failed": self.requests, "charged": self.charged, "trials": self.trials, "unavailable": self.unavailable,
             "pk": scope[0] if scope else None, "size_class": scope[1] if scope else None,
             "provider": tally.label if tally else None,
+            # Each key's own share: a caller adds these, not the totals above, to its own trace.
+            "scopes": [
+                {"pk": pk, "size_class": cls, "provider": t.label, "charged": t.charged, "trials": t.trials,
+                 "unavailable": t.unavailable}
+                for (pk, cls), t in self.tallies.items()
+            ],
         }
 
     def pause_fields(self) -> dict[str, Any]:

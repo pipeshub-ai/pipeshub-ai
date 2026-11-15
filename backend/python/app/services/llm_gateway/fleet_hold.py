@@ -40,6 +40,9 @@ TICK_SECONDS = 10.0
 RECONCILE_EVERY_TICKS = 60
 SCAN_COUNT = 500
 NOTICE_TTL_SECONDS = 30 * 24 * 3600
+# How long a notice claim stays pending while its send is in flight; it lapses if the sender never confirms.
+PENDING_CLAIM_SECONDS = 300
+_PENDING, _SENT = "pending", "sent"
 
 # Removes an index entry only while it still holds the value the caller read: a newer hold episode noted at the
 # same scope while a tick awaited Redis or the notifier stays indexed.
@@ -166,24 +169,37 @@ class HoldKeeper:
             await self._breaker.advance_ledger(entry.scope, held=False)
             # Ended: the release notice goes out only if the hold notice did, so an admin never
             # sees a release without the hold it ends.
-            if await client.exists(self._claim_key(entry.episode, "enter")):
+            if await self._delivered(entry.episode, "enter"):
                 await self._notify(entry, "release")
             await client.eval(_REMOVE_IF_UNCHANGED, 1, self._index_key(), entry.scope, entry.stored)
         return held
+
+    async def _delivered(self, episode: str, edge: str) -> bool:
+        """Whether the broker took this episode's notice: a claim still pending (its sender is in flight, or died)
+        is not a delivery."""
+        value = await self._fleet.client().get(self._claim_key(episode, edge))
+        return value is not None and _s(value) == _SENT
 
     async def _notify(self, entry: HoldEntry, edge: str) -> None:
         if self._sender is None:
             return
         client = self._fleet.client()
         claim = self._claim_key(entry.episode, edge)
-        if not await client.set(claim, "1", nx=True, ex=NOTICE_TTL_SECONDS):
+        # Pending until the broker takes it, then sent. A pending claim lapses on its own, so a sender that died or
+        # was cancelled mid-send does not suppress the notice for good.
+        if not await client.set(claim, _PENDING, nx=True, ex=PENDING_CLAIM_SECONDS):
             return
         sent = False
         try:
             sent = await self._sender(notice_document(entry, edge, now_ms=self._clock_ms()))
+        except asyncio.CancelledError:
+            await asyncio.shield(client.delete(claim))
+            raise
         except Exception:
             self._logger.warning("could not send the provider hold notice", exc_info=True)
-        if not sent:
+        if sent:
+            await client.set(claim, _SENT, ex=NOTICE_TTL_SECONDS)
+        else:
             # Not taken: free the claim so the next tick tries again.
             await client.delete(claim)
 

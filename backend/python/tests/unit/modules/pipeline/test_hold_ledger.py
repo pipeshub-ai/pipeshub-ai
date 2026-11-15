@@ -300,3 +300,26 @@ async def test_a_hold_the_index_lost_is_found_again_from_redis(fleet: FleetRedis
     [entry] = await keeper.entries()
     assert (entry.pk, entry.cls, entry.episode, entry.org_id) == (PK, CLS, capped.episode, "org-9")
     assert [doc["orgId"] for doc in sent] == ["org-9"], "the hold is announced to its org"
+
+
+async def test_a_notice_cut_off_mid_send_is_not_taken_for_delivered(fleet: FleetRedis, sim_clock: SimClock) -> None:
+    """Shutdown cancels the leader while the hold notice is being sent: the claim is freed, so the next tick sends it,
+    and no release notice goes out for a hold notice the broker never took."""
+    breaker = FleetBreaker(fleet)
+    entry = await _hold(breaker, HoldKeeper(fleet, breaker, clock_ms=sim_clock), sim_clock)
+
+    async def cut_off(doc: dict) -> bool:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await HoldKeeper(fleet, breaker, sender=cut_off, clock_ms=sim_clock).tick()
+    sent: list[str] = []
+
+    async def take(doc: dict) -> bool:
+        sent.append(doc["type"])
+        return True
+
+    await fleet.client().delete(breaker.hold_key(PK, CLS))
+    await HoldKeeper(fleet, breaker, sender=take, clock_ms=sim_clock).tick()
+    assert sent == [], "the hold notice was never delivered, so its release is not sent"
+    assert entry.episode

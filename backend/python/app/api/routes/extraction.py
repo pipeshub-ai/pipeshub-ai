@@ -159,6 +159,12 @@ async def _refuse_replay(job_key: str | None, request_id: str | None) -> JSONRes
     )
 
 
+def _usage_of(trace: JobTrace | None) -> dict | None:
+    """What the request spent for the caller's job, on every answer: a caller that retries a refused or failed
+    request must count the sends behind it."""
+    return trace.usage() if trace is not None else None
+
+
 async def _record_usage(job_key: str | None, request_id: str | None, trace: JobTrace | None) -> None:
     """Recorded whatever happens, so a caller whose reply is lost learns what this request spent."""
     await remote_usage.record(job_key or "", request_id or "", trace.usage() if trace is not None else None)
@@ -219,7 +225,7 @@ async def classify(
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 content=ClassifyResponse(
-                    success=False, error=str(exc), error_code=LLMNotConfiguredError.code
+                    success=False, error=str(exc), error_code=LLMNotConfiguredError.code, usage=_usage_of(trace)
                 ).model_dump(),
             )
         except LLMUnavailableError as exc:
@@ -237,7 +243,7 @@ async def classify(
             return JSONResponse(
                 status_code=status.HTTP_424_FAILED_DEPENDENCY,
                 content=ClassifyResponse(
-                    success=False, error=str(exc), error_code=ExtractionLLMError.code
+                    success=False, error=str(exc), error_code=ExtractionLLMError.code, usage=_usage_of(trace)
                 ).model_dump(),
             )
         except NonRetryableError as exc:
@@ -246,7 +252,7 @@ async def classify(
             logger.warning("Classification for org '%s' was refused: %s", org_id, exc)
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                content=ClassifyResponse(success=False, error=str(exc)).model_dump(),
+                content=ClassifyResponse(success=False, error=str(exc), usage=_usage_of(trace)).model_dump(),
             )
         except Exception as exc:
             logger.exception(
@@ -254,7 +260,7 @@ async def classify(
             )
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content=ClassifyResponse(success=False, error=str(exc)).model_dump(),
+                content=ClassifyResponse(success=False, error=str(exc), usage=_usage_of(trace)).model_dump(),
             )
 
         usage = trace.usage() if trace is not None else None

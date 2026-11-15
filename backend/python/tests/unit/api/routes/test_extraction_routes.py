@@ -278,9 +278,11 @@ def test_classify_refusal_is_not_answered_as_retryable() -> None:
 
     assert response.status_code == 422
     assert response.status_code not in TRANSIENT_STATUS_CODES
-    assert response.json() == {
-        "success": False, "classification": None, "error": "over budget", "error_code": None, "usage": None,
+    body = response.json()
+    assert {k: body[k] for k in ("success", "classification", "error", "error_code")} == {
+        "success": False, "classification": None, "error": "over budget", "error_code": None,
     }
+    assert isinstance(body["usage"], dict), "a refused request still says what it spent"
 
 
 def test_classify_invalid_block_container_returns_422() -> None:
@@ -736,3 +738,26 @@ def test_a_request_records_what_it_spent_whatever_its_outcome(entities_app, monk
     assert response.status_code == 500
     assert [(k, r) for k, r, _ in recorded] == [("entities:vr:rev", "req-1")]
     assert isinstance(recorded[0][2], dict) and "failed" in recorded[0][2]
+
+
+
+def test_a_model_failure_answer_carries_what_the_request_spent() -> None:
+    """A 424 for a model failure (and every other refusal) carries ``usage``: the caller retries the document and must
+    count the failed sends behind this answer."""
+    from app.modules.transformers.document_extraction import ExtractionLLMError
+    from app.services.llm_gateway.gateway import current_job_trace
+
+    async def failing(**_kwargs: object) -> None:
+        trace = current_job_trace()
+        assert trace is not None
+        trace.meter.failed += 2
+        raise ExtractionLLMError("no usable output")
+
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(side_effect=failing)
+    response = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify",
+        json={"block_container": _empty_bc_dict(), "org_id": "org-123", "job_key": "classify:vr:rev"},
+    )
+    assert response.status_code == 424
+    assert response.json()["usage"]["failed"] == 2

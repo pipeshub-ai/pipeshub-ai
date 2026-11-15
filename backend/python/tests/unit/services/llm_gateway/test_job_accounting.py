@@ -147,14 +147,17 @@ async def test_a_call_that_waited_for_a_slot_sees_the_breaker_as_it_is_now(fleet
     pk, cls = provider_pk(PROVIDER, ""), size_class(0)
     release = asyncio.Event()
 
+    holding = asyncio.Event()
+
     class Holding:
         async def ainvoke(self, value: object, /, **kwargs: object) -> str:
+            holding.set()
             await release.wait()
             return "a"
 
     waiting = _Wire(200)
     a = asyncio.create_task(gateway.invoke(Holding(), "hi", provider=PROVIDER))
-    await asyncio.sleep(0)
+    await asyncio.wait_for(holding.wait(), 5.0)  # A was admitted and holds the slot
     b = asyncio.create_task(gateway.invoke(waiting, "hi", provider=PROVIDER))
     await asyncio.sleep(0.05)
     for _ in range(5):
@@ -219,3 +222,18 @@ async def test_a_cancelled_attempt_counts_its_failed_sends(fleet: FleetRedis) ->
         with pytest.raises(asyncio.CancelledError):
             await task
     assert trace.requests == 1
+
+
+def test_remote_usage_charges_each_key_its_own_share() -> None:
+    """A remote request whose failures fell on two size classes reports each key's share; the caller adds each to that
+    key, not the total to one."""
+    with llm_job("remote") as remote:
+        remote.note_attempt("pk-1", "s", "P", chargeable=True, trial=False)
+        remote.note_attempt("pk-1", "l", "P", chargeable=True, trial=False)
+        remote.note_attempt("pk-1", "l", "P", chargeable=True, trial=False)
+        remote.note_unavailable("pk-1", "l", "P")
+    with llm_job("caller") as caller:
+        caller.note_remote(remote.usage())
+    assert caller.tallies[("pk-1", "s")].charged == 1
+    assert caller.tallies[("pk-1", "l")].charged == 2
+    assert caller.unavailable == 1

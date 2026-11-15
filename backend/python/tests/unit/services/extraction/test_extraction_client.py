@@ -455,16 +455,55 @@ async def test_a_lost_reply_is_charged_what_the_service_recorded_or_everything_i
 
 
 @pytest.mark.asyncio
-async def test_a_replayed_request_is_an_unavailable_service_charged_the_first_deliverys_usage() -> None:
+async def test_a_replayed_request_is_retried_by_the_stage_and_charged_the_first_deliverys_usage() -> None:
+    """A duplicate the service refuses is a redelivery, not a lost reply: charged what the first spent, and handed to
+    the stage's retry path (which counts the attempt), not its pause schedule."""
     from app.services.llm_gateway.gateway import llm_job
 
     client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
     body = {"success": False, "error_code": "REPLAYED", "usage": {"failed": 3, "charged": 0}}
     replayed = AsyncMock(return_value=httpx.Response(409, json=body))
     with patch.object(client, "_post_json", new=replayed), llm_job("classify:vr-1:rev-a", allowance=9) as trace:
-        with pytest.raises(ServiceUnavailableError) as raised:
+        with pytest.raises(ExtractionClientError):
             await client.classify(_bc(), "org-1")
-    assert raised.value.delivered is True and trace.requests == 3
+    assert trace.requests == 3
+
+
+@pytest.mark.asyncio
+async def test_a_paid_request_is_never_sent_twice_once_it_may_have_been_received() -> None:
+    """A 500 the service answered is handed back after one request; the client does not resend the same payload,
+    which the service would only refuse as a duplicate."""
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=3)
+    sent = 0
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        nonlocal sent
+        sent += 1
+        return httpx.Response(500, json={"success": False, "error": "boom"})
+
+    async def no_auth(_org_id: str | None) -> dict[str, str]:
+        return {}
+
+    transport = httpx.MockTransport(answer)
+    with patch.object(client, "_make_client", new=lambda: httpx.AsyncClient(transport=transport)), patch.object(
+        client, "_auth_headers", new=no_auth
+    ):
+        with pytest.raises(ExtractionClientError):
+            await client.classify(_bc(), "org-1")
+    assert sent == 1
+
+
+@pytest.mark.asyncio
+async def test_an_outage_body_without_usage_keeps_its_charged_count() -> None:
+    from app.services.llm_gateway.gateway import llm_job
+
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    body = {**_UNAVAILABLE, "sent": True, "requests": 3, "charged": 3, "chargeable": True, "pk": "pk-1", "size_class": "s"}
+    with patch.object(client, "_post_json", new=AsyncMock(return_value=httpx.Response(424, json=body))), llm_job(
+        "classify:vr-1:rev-a"
+    ) as trace, pytest.raises(LLMUnavailableError):
+        await client.classify(_bc(), "org-1")
+    assert trace.charged == 3
 
 
 @pytest.mark.asyncio
