@@ -2878,9 +2878,11 @@ class JiraConnector(BaseConnector):
         /rest/api/3/search/jql: "This operation can be accessed anonymously." Issues are included "where the user
         has: Browse projects project permission"; nextPageToken: "If this result represents the last or the only page
         this token will be null" (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/).
-        A terminal page with no issue, a refusal (401, 400) or any answer the docs do not describe reads as not
-        public: a project with no issue has nothing to read anyway. No response, or the page bound reached while the
-        token is still new, is no answer."""
+        The operation documents 200, 400 ("Returned if the search request is invalid") and 401 ("Returned if the
+        authentication credentials are incorrect or missing"). A terminal page with no issue, a 400, a 401, a body
+        that is not JSON, or any other status the docs do not describe (403, ...) reads as not public: a project with
+        no issue has nothing to read anyway. A rate limit or gateway error (429, RETRYABLE_SERVER_STATUSES), no
+        response, or the page bound reached while the token is still new is no answer."""
         if not self.site_url or not project_key:
             return False
         jql = 'project = "{}"'.format(project_key.replace("\\", "\\\\").replace('"', '\\"'))
@@ -2896,6 +2898,11 @@ class JiraConnector(BaseConnector):
                         f"{self.site_url.rstrip('/')}/rest/api/3/search/jql", json=body,
                         headers={"Accept": "application/json"},
                     )
+                    if (response.status_code == HttpStatusCode.TOO_MANY_REQUESTS.value
+                            or response.status_code in RETRYABLE_SERVER_STATUSES):
+                        self.logger.warning("Signed-out search of project %s answered %s; asking again next sync",
+                                            project_key, response.status_code)
+                        return None
                     data = response.json() if response.status_code == HttpStatusCode.OK.value else None
                     issues = data.get("issues") if isinstance(data, dict) else None
                     if not isinstance(issues, list):

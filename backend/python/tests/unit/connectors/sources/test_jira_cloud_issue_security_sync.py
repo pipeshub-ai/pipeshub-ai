@@ -2051,7 +2051,9 @@ class TestAnonymousBrowseReachesEveryone:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("status", "body", "public"), [
         (200, {"issues": [{"id": "1"}]}, True), (200, {"issues": []}, False), (401, {}, False),
-        (200, "<html>log in</html>", False)], ids=["issue_returned", "nothing_returned", "refused", "not_json"])
+        (200, "<html>log in</html>", False), (400, {}, False), (403, {}, False), (429, {}, None), (503, {}, None)],
+        ids=["issue_returned", "nothing_returned", "refused", "not_json", "invalid", "forbidden", "rate_limited",
+             "unavailable"])
     async def test_the_signed_out_search_sends_no_credentials_and_reads_public_only_from_an_issue(
         self, monkeypatch: pytest.MonkeyPatch, status: int, body: object, public: bool,
     ) -> None:
@@ -2074,6 +2076,27 @@ class TestAnonymousBrowseReachesEveryone:
         assert "authorization" not in {k.lower() for k in seen[0].headers}
         assert json.loads(seen[0].content)["jql"] == 'project = "PUB"'
 
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [429, 503])
+    async def test_a_rate_limited_or_unavailable_signed_out_search_leaves_the_gate_as_it_is(
+        self, monkeypatch: pytest.MonkeyPatch, status: int,
+    ) -> None:
+        import httpx
+
+        from app.connectors.sources.atlassian.jira_cloud import connector as module
+
+        real = httpx.AsyncClient
+        monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kw: real(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(status, json={})), **kw))
+        c = _connector()
+        c.site_url = "https://acme.atlassian.net"
+        c.scope = "team"
+        c.data_entities_processor.open_app_to_org_team = AsyncMock()
+        c.data_entities_processor.withdraw_team_app_edge = AsyncMock()
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
+        c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_signed_out_search_with_no_response_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
