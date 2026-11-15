@@ -1254,7 +1254,7 @@ class TestRecordPermissions:
         group_perm = next(p for p in perms if p.external_id == "group_7")
         assert group_perm.type == PermissionType.READ
 
-    def test_a_customer_grant_names_the_zendesk_user_the_ticket_names(self, zendesk_connector) -> None:
+    def test_an_end_user_grant_names_the_zendesk_user_the_ticket_names(self, zendesk_connector) -> None:
         """A grant to a re-used address is written only when it names the account holding it now by its user id."""
         zendesk_connector._user_data = lambda uid: {"id": uid, "email": f"cc{uid}@acme.com"}
         perms = zendesk_connector._record_permissions(
