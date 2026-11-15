@@ -115,7 +115,7 @@ async def test_an_address_taken_after_the_old_account_was_withdrawn_loses_its_gr
     await _admit(directory, accounts, [_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
 
     assert directory.calls[0] == ("remove", "ana@x.com")
-    assert _saved(config) == {"withdrawn": {}, "reused": {"ana@x.com": "new-oid"}}
+    assert _saved(config)["withdrawn"] == {} and _saved(config)["reused"] == {"ana@x.com": "new-oid"}
 
 
 @pytest.mark.asyncio
@@ -146,12 +146,62 @@ async def test_a_grant_reaches_only_the_account_that_holds_the_address_now(world
 
 
 @pytest.mark.asyncio
-async def test_the_first_run_looks_nobody_up_and_saves_nothing(world) -> None:
+async def test_the_first_run_looks_nobody_up_and_notes_who_holds_each_address(world) -> None:
     directory, accounts, config = world
     await _admit(directory, accounts, [_user("ana@x.com", "a"), _user("bo@x.com", "b")])
     directory.processor.get_user_by_email.assert_not_awaited()
     directory.processor.remove_user_access_to_connector.assert_not_awaited()
-    assert config.saved == {}
+    assert _saved(config) == {"withdrawn": {}, "reused": {}, "linked": {"ana@x.com": "a", "bo@x.com": "b"}}
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_changes_nothing_looks_nobody_up_and_saves_nothing(world) -> None:
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "a"), _user("bo@x.com", "b")])
+    directory.processor.get_user_by_email.reset_mock()
+    config.set_config = AsyncMock(side_effect=AssertionError("nothing changed, nothing saved"))
+    await _admit(directory, accounts, [_user("ana@x.com", "a"), _user("bo@x.com", "b")])
+    directory.processor.get_user_by_email.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_address_whose_stored_link_already_names_the_new_account_still_loses_the_old_grants(world) -> None:
+    """The link was rewritten to the new id outside this check (an earlier release, another writer): the id this
+    connector last linked the address to tells the change of hands, not the link."""
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])
+    directory.links["node-ana@x.com"] = "new-oid"
+    directory.calls.clear()
+
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
+
+    assert directory.calls[0] == ("remove", "ana@x.com")
+    assert _saved(config)["reused"] == {"ana@x.com": "new-oid"}
+    assert not accounts.may_grant("ana@x.com", "old-oid") and accounts.may_grant("ana@x.com", "new-oid")
+
+
+@pytest.mark.asyncio
+async def test_a_withdrawn_account_whose_address_was_relinked_to_a_new_account_outside_the_check_is_caught(world) -> None:
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])
+    await _withdraw(directory, accounts, "old-oid")
+    directory.links["node-ana@x.com"] = "new-oid"            # linked again, as the new account, without the check
+    directory.calls.clear()
+
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
+
+    assert directory.calls[0] == ("remove", "ana@x.com")
+    assert _saved(config)["reused"] == {"ana@x.com": "new-oid"} and _saved(config)["withdrawn"] == {}
+
+
+@pytest.mark.asyncio
+async def test_after_a_restart_a_grant_naming_another_account_than_the_one_linked_is_not_written(world) -> None:
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "ana-oid")])
+    again = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))   # a new process
+    await again.ensure_loaded()
+    assert again.may_grant("ana@x.com", "ana-oid")
+    assert not again.may_grant("ana@x.com", "someone-else")
 
 
 @pytest.mark.asyncio

@@ -73,3 +73,17 @@ async def test_a_group_lists_the_new_account_and_not_the_deleted_one(drive: Driv
 
     await drive.processor.on_new_user_groups([(group, [_member(drive, "ben", "u-ben-new"), _member(drive, "dee", "u-dee")])])
     assert await drive.readers("budget.pdf") == {"ana", "ben", "dee"}, "the new account as a member"
+
+
+async def test_a_link_already_rewritten_to_the_new_account_still_takes_the_old_accounts_grants(drive: Drive) -> None:
+    """The link was moved to the new account by a write that skipped the check (an earlier release linked by address
+    alone): the id this connector last linked the address to tells the change of hands."""
+    await drive.write()
+    async with drive.processor.data_store_provider.transaction() as tx:
+        await tx.batch_upsert_app_users([_member(drive, "ben", "u-ben-new")])
+    assert "ben" in await drive.readers("Plans")
+
+    await _ben_reused(drive)
+
+    assert "ben" not in await drive.readers("Plans") and "ben" not in await drive.readers("plan.pdf")
+    assert await drive.readers("budget.pdf") == {"ana", "cal"}

@@ -61,11 +61,12 @@ class SourceAccounts:
         self.config_service = config_service
         self.logger = logger
         self.loaded = False                   # until the saved state is read, no grant is written
-        self.current: dict[str, str] = {}     # address -> source id of the account listed with it in this process
+        self.current: dict[str, str] = {}     # address -> source id this connector last linked it to
         self.reused: dict[str, str] = {}      # address another account held before -> source id that holds it now
 
-    async def _state(self) -> tuple[dict[str, str], dict[str, str]]:
-        """The saved state. A failed read raises: without it no grant may be judged."""
+    async def _state(self) -> dict[str, str]:
+        """Read the saved state; returns who each withdrawn user was linked to. A failed read raises: without it no
+        grant may be judged."""
         stored = await self.config_service.get_config(
             source_accounts_key(self.connector_id), use_cache=False, raise_on_error=True
         ) or {}
@@ -73,8 +74,9 @@ class SourceAccounts:
         if not isinstance(reused, dict):     # addresses without the account now holding them: no grant reaches them
             reused = dict.fromkeys(reused, "")
         self.reused = {e.lower(): sid for e, sid in reused.items()}
+        self.current = {e.lower(): sid for e, sid in (stored.get("linked") or {}).items()}
         self.loaded = True
-        return dict(stored.get("withdrawn") or {}), dict(self.reused)
+        return dict(stored.get("withdrawn") or {})
 
     async def ensure_loaded(self) -> None:
         """Read the saved state once, before the first grant is judged in any path (a sync, a reindex, a webhook).
@@ -82,50 +84,63 @@ class SourceAccounts:
         if not self.loaded:
             await self._state()
 
-    async def _save(self, withdrawn: dict[str, str], reused: dict[str, str]) -> None:
+    async def _save(self, withdrawn: dict[str, str]) -> None:
+        # shortcut: the state holds one entry per linked address; a directory of tens of thousands of users makes a
+        # value of a few MB, over etcd's default request limit. Move it to its own store if etcd backs large ones.
         saved = await self.config_service.set_config(
-            source_accounts_key(self.connector_id), {"withdrawn": withdrawn, "reused": reused}
+            source_accounts_key(self.connector_id),
+            {"withdrawn": withdrawn, "reused": self.reused, "linked": self.current},
         )
         if not saved:
             raise RuntimeError(f"Could not save which accounts the users of connector {self.connector_id} were linked to")
 
     async def before_link(self, users: list["AppUser"]) -> bool:
         """Before ``users`` are linked, take this connector's grants from any PipesHub user whose address now belongs
-        to a different account than the one it was linked to. False when the stored links could not be read: then
-        nobody may be linked."""
-        withdrawn, _ = await self._state()
+        to a different account than the one this connector linked it to before. False when the stored links could
+        not be read: then nobody may be linked."""
+        withdrawn = await self._state()
         try:
             links = {link.id: link.source_user_id for link in await self.processor.get_app_user_links(self.connector_id)}
         except Exception as e:
             # Who held each address before is unknown, so nobody is linked; the sync goes on with the stored links.
             self.logger.error(f"Could not read the stored users; no user is linked this run: {e}")
             return False
-        state = (dict(withdrawn), dict(self.reused))
+        state = (dict(withdrawn), dict(self.reused), dict(self.current))
         linked = set(links.values())
         for user in users:
             account = _account_id(user.source_user_id)
-            if not user.email or not account or account in linked:
+            if not user.email or not account:
                 continue
-            if not links and not withdrawn:
-                break   # nobody was linked before: nothing to compare with
+            email = user.email.lower()
+            # The id this connector last linked the address to decides, not the stored link: something else may
+            # have rewritten the link to the new id already (an earlier release linked by address alone).
+            remembered = self.current.get(email)
+            if remembered == account:
+                withdrawn = {uid: sid for uid, sid in withdrawn.items() if sid != account}   # restored, if it was gone
+                continue
+            if remembered is None and not withdrawn and (not links or account in linked):
+                # shortcut: an address first seen after its link already names this account has nothing to compare
+                # with, so a change of hands made before this state existed is not caught; a full resync rewrites
+                # the old account's grants away only where the source no longer lists them.
+                self.current[email] = account
+                continue
             pipeshub_user = await self.processor.get_user_by_email(user.email, raise_on_error=True)
-            if pipeshub_user is None:
-                continue
-            before = _account_id(links.get(pipeshub_user.id) or withdrawn.get(pipeshub_user.id))
-            # shortcut: two live accounts listed with one address (Jira Data Center and Salesforce allow it) read as a
-            # change of hands on every run, so the address keeps only the last-linked account's grants and they are
-            # removed and written again each run; keying PipesHub users by source id would tell them apart.
-            if before and before != account:
-                removed = await self.processor.remove_user_access_to_connector(self.connector_id, user.email)
-                self.reused[user.email.lower()] = account
-                self.logger.info(
-                    "The address of user %s belongs to a new account now; removed %d grant(s) of the previous one",
-                    pipeshub_user.id, removed,
-                )
-            withdrawn.pop(pipeshub_user.id, None)
-        if (withdrawn, self.reused) != state:
-            await self._save(withdrawn, self.reused)
-        self.current.update({u.email.lower(): u.source_user_id for u in users if u.email and _account_id(u.source_user_id)})
+            if pipeshub_user is not None:
+                before = {_account_id(x) for x in (remembered, withdrawn.get(pipeshub_user.id), links.get(pipeshub_user.id))}
+                # shortcut: two live accounts listed with one address (Jira Data Center and Salesforce allow it) read
+                # as a change of hands on every run, so the address keeps only the last-linked account's grants and
+                # they are removed and written again each run; keying PipesHub users by source id would tell them apart.
+                if before - {None, account}:
+                    removed = await self.processor.remove_user_access_to_connector(self.connector_id, user.email)
+                    self.reused[email] = account
+                    self.logger.info(
+                        "The address of user %s belongs to a new account now; removed %d grant(s) of the previous one",
+                        pipeshub_user.id, removed,
+                    )
+                withdrawn.pop(pipeshub_user.id, None)
+            self.current[email] = account
+        if (withdrawn, self.reused, self.current) != state:
+            await self._save(withdrawn)
         return True
 
     async def note_withdrawn(self, users: list) -> None:
@@ -134,9 +149,9 @@ class SourceAccounts:
         gone = {u.id: sid for u in users if u.id and (sid := _account_id(getattr(u, "source_user_id", None)))}
         if not gone:
             return
-        withdrawn, reused = await self._state()
+        withdrawn = await self._state()
         withdrawn.update(gone)
-        await self._save(withdrawn, reused)
+        await self._save(withdrawn)
 
     def may_grant(self, email: str, object_id: str | None) -> bool:
         """Whether a grant to ``email`` reaches the account that holds it now. ``object_id`` is the source id the

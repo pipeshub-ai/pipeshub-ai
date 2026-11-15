@@ -439,6 +439,25 @@ async def test_a_new_account_that_takes_an_address_reads_nothing_the_old_one_was
     assert "records/elsewhere" in targets and "records/mine" not in targets
 
 
+async def test_a_link_already_rewritten_to_the_new_account_still_takes_the_old_accounts_grants(w: World) -> None:
+    """The link was moved to the new id by a write that skipped the check (an earlier release linked by address
+    alone): the id this connector last linked the address to tells the change of hands."""
+    await member(w, "m", userId="um", email="m@x.com")
+    await w.nodes("records", rec("mine"))
+    await w.edge("permission", ("users", "m"), ("records", "mine"), type="USER", role="READER")
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    await processor.on_new_app_users([app_user("m@x.com", "m")])
+    renewed = app_user("m@x.com", "m").model_copy(update={"source_user_id": "src-m-new"})
+    await w.p.batch_upsert_app_users([renewed])
+    assert await w.allowed("m", "mine") == {"mine"}
+
+    await processor.on_new_app_users([renewed])
+
+    assert await w.allowed("m", "mine") == set()
+
+
 async def test_a_group_rewrite_after_an_address_changed_hands_admits_only_the_account_holding_it(w: World) -> None:
     """After the processor saw m@x.com pass to a new account, a group listing the deleted account does not make the
     PipesHub user a member again; the same group listing the new account does."""
