@@ -3919,6 +3919,55 @@ async def test_an_item_read_again_by_id_then_reported_removed_in_the_same_run_is
     assert ALICE not in ws.records.perm_emails("n"), "the flush does not write the access her feed just removed"
 
 
+def _after_permission_read_by(ws: Workspace, file_id: str, reader_email: str, then: Callable[[], None]) -> list[bool]:
+    """Run `then` right after the reader's first permission read of the item; returns a flag list it fills."""
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern == r"^/drive/v3/files/([^/]+)/permissions$")
+    done: list[bool] = []
+
+    def permissions(req: ApiRequest) -> object:
+        answer = real(req)
+        if req.identity == reader_email and req.path == f"/drive/v3/files/{file_id}/permissions" and not done:
+            done.append(True)
+            then()
+        return answer
+
+    ws.http.route("GET", r"/drive/v3/files/([^/]+)/permissions", permissions)
+    return done
+
+
+async def test_an_item_read_again_by_id_then_trashed_in_the_same_run_is_not_written(ws: Workspace) -> None:
+    await ws.sync()
+    ws.world.add_item("n", "n.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[ALICE].user_id}"))
+    ws.sync_points.sync_points[key]["feed_failed_items"] = ["n"]
+    # Drive reports a trashed file as a change with `removed: false` and `file.trashed`.
+    done = _after_permission_read_by(ws, "n", ALICE, lambda: ws.world.trash("n"))
+    bob = ws.world.users.pop(BOB)  # only Alice's run this time, so no other read of the item writes it
+    try:
+        await ws.sync()
+    finally:
+        ws.world.users[BOB] = bob
+
+    assert done, "her read by id came first"
+    assert "n" not in ws.records.records, "the flush does not write an item her feed reported in the trash"
+
+
+async def test_a_shared_drive_item_read_again_by_id_then_trashed_in_the_same_run_is_not_written(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import FAILED_ITEMS
+
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer"})
+    await ws.sync()
+    ws.world.add_item("s", "s.txt", parent="sd-1")
+    user_id = ws.world.users[ALICE].user_id
+    key = next(k for k in ws.sync_points.sync_points if k.endswith("_sd-1") and user_id in k)
+    ws.sync_points.sync_points[key][FAILED_ITEMS] = ["s"]
+    done = _after_permission_read_by(ws, "s", ALICE, lambda: ws.world.trash("s"))
+    await ws.sync()
+
+    assert done, "her read by id came first"
+    assert "s" not in ws.records.records, "the flush does not write an item the drive's feed reported in the trash"
+
+
 async def test_a_reader_who_lost_the_item_is_no_evidence_for_a_later_cut_in_the_run(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
     from app.connectors.sources.google.drive.utils.folder_filter_utils import (
