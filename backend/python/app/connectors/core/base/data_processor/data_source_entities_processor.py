@@ -7192,7 +7192,9 @@ class DataSourceEntitiesProcessor:
             return 0
         users = CollectionNames.USERS.value
         removed = 0
-        async with self.data_store_provider.transaction() as tx_store:
+        # Dropped even when a later batch raises: on Neo4j without explicit transactions an earlier batch's deletes
+        # have already committed, and a retry finds nothing left to report.
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             user_ids: set[str] = set()
             for email in sorted(user_emails):
                 user = await tx_store.get_user_by_email(email, raise_on_error=True)
@@ -7218,8 +7220,6 @@ class DataSourceEntitiesProcessor:
                             })
                 if edges:
                     removed += await tx_store.batch_delete_edges(edges, collection=CollectionNames.PERMISSION.value) or 0
-        if removed:
-            await self._access_changed([connector_id])
         return removed
 
     async def get_app_creator_user(self, connector_id: str) -> User | None:

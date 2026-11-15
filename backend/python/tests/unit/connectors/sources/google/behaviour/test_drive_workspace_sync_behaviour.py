@@ -3215,6 +3215,46 @@ async def test_no_member_keeps_a_stand_in_grant_below_a_limited_folder_past_the_
     assert not any(reaches(ws, BOB, item) for item in items)
 
 
+async def test_a_descendant_a_manager_got_no_list_for_waits_and_gets_its_direct_grant_back(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1")
+    ws.world.add_item("f1", "a.txt", parent="dir", perms=[reader(BOB)])  # his own grant, which the limit keeps
+    await ws.sync()
+    assert BOB in ws.records.perm_emails("f1")
+
+    _viewer_list_for(ws, "f1", ALICE, [])  # the Manager's read comes back empty: not a list
+    ws.world._mutate("dir", lambda: ws.world._bump("dir", inheritedPermissionsDisabled=True))
+    await ws.sync()
+    assert ws.incomplete
+
+    _viewer_list_for(ws, "f1", "nobody@example.com", [])  # reads answer as usual again
+    await ws.sync()
+    assert BOB in ws.records.perm_emails("f1"), "the list names him, so his grant comes back"
+
+
+async def test_a_descendant_check_that_fails_still_spends_the_runs_bound(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+
+    monkeypatch.setattr(drive_connector, "LIMITED_SUBTREE_MAX_CHECKS", 1)
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    for d in ("dirA", "dirB"):
+        ws.world.folder(d, d, parent="sd-1")
+        ws.world.add_item(f"{d}-1", "x.txt", parent=d)
+    await ws.sync()
+
+    ws.http.fail("GET", "/drive/v3/files/dirA-1/permissions", 500, "backendError", when=lambda r: r.identity == ALICE)
+    for d in ("dirA", "dirB"):
+        ws.world._mutate(d, lambda d=d: ws.world._bump(d, inheritedPermissionsDisabled=True))
+    before = len(ws.http.requests)
+    await ws.sync()
+
+    assert not [r for r in ws.http.requests[before:] if r.path == "/drive/v3/files/dirB-1/permissions"], (
+        "the one check this run was spent on dirA's item, though it failed"
+    )
+
+
 async def test_a_folder_the_bound_never_reached_stays_pending_until_it_is_checked(
     ws: Workspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3377,6 +3417,50 @@ async def test_with_no_manager_a_contributor_reads_a_shared_drive_items_sharing(
     await ws.sync()
 
     assert carol in ws.records.perm_emails("f"), "her direct grant is learned from Erin's read"
+
+
+async def test_a_viewer_of_another_organizations_shared_drive_keeps_the_list_they_read(ws: Workspace) -> None:
+    carol = "carol@partner.example"
+    ws.world.add_drive("sd-x", "Partner", {ALICE: "reader"})
+    ws.world.drives["sd-x"]["foreign"] = True
+    ws.world.add_item("x", "x.txt", parent="sd-x", perms=[reader(ALICE), reader(carol)])
+    ws.world.files["x"].perm_access = "all"
+    # Its member list is another organization's: this admin is refused it.
+    ws.http.fail("GET", "/drive/v3/files/sd-x/permissions", 403, "insufficientFilePermissions",
+                 when=lambda r: r.query.get("useDomainAdminAccess") == "true")
+    await ws.sync()
+
+    assert ALICE in ws.records.perm_emails("x")
+    assert not ws.incomplete
+
+
+async def test_a_shared_drives_member_list_is_read_once_a_run_for_all_its_items(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
+    for i in range(4):
+        ws.world.add_item(f"f{i}", f"{i}.txt", parent="sd-1")
+    await ws.sync()
+
+    admin_reads = [
+        r for r in ws.http.requests
+        if r.path == "/drive/v3/files/sd-1/permissions" and r.query.get("useDomainAdminAccess") == "true"
+    ]
+    assert len(admin_reads) == 1
+
+
+async def test_a_manager_group_the_directory_will_not_list_keeps_a_members_stored_grant(ws: Workspace) -> None:
+    ws.world.add_group("leads@example.com", [ALICE])
+    ws.world.add_drive("sd-1", "Team", {"leads@example.com": "organizer", BOB: "reader"})
+    ws.world.add_item("f", "x.txt", parent="sd-1", perms=[reader(BOB)])
+    await ws.sync()
+    assert BOB in ws.records.perm_emails("f")
+
+    ws.http.fail("GET", "/admin/directory/v1/groups/leads@example.com/members", 403, "forbidden")
+    ws.world._mutate("f", lambda: ws.world._bump("f", name="y.txt"))
+    await ws.sync()
+
+    # Whether a Manager could have read it is unknown: nothing is decided, and his direct grant stays.
+    assert BOB in ws.records.perm_emails("f")
+    assert ws.incomplete
 
 
 async def test_a_member_group_that_holds_a_whole_domain_leaves_its_people_unknown(ws: Workspace) -> None:
