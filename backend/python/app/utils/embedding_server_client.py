@@ -233,15 +233,45 @@ class EmbeddingServerEmbeddings(Embeddings):
         extra = getattr(item, "model_extra", None) or {}
         return "precision_intent" in extra or hasattr(item, "precision_intent")
 
-    async def announces_precision(self) -> bool:
-        """Cached 30 s: a server that lists ``precision_intent`` stamps every response; an older one stamps none."""
+    def _fresh_announcement(self) -> bool | None:
         cached = self._announcement
         if cached is not None and time.monotonic() - cached[0] < _ANNOUNCEMENT_TTL_SECONDS:
             return cached[1]
+        return None
+
+    def _listed_model_sync(self) -> object | None:
+        client = openai.OpenAI(
+            base_url=_embedding_server_base_url(), api_key=_EMBEDDING_SERVER_API_KEY,
+            max_retries=0, timeout=self.timeout,
+        )
+        try:
+            page = client.models.list()
+        finally:
+            client.close()
+        return next((item for item in page.data if item.id == self.model), None)
+
+    async def announces_precision(self) -> bool:
+        """Cached 30 s: a server that lists ``precision_intent`` stamps every response; an older one stamps none."""
+        fresh = self._fresh_announcement()
+        if fresh is not None:
+            return fresh
         try:
             item = await self._listed_model()
         except openai.OpenAIError:
             # An unreachable server cannot answer the embedding either; fail closed.
+            return True
+        announced = self._announces(item)
+        self._announcement = (time.monotonic(), announced)
+        return announced
+
+    def announces_precision_sync(self) -> bool:
+        """The synchronous twin, for a worker thread: the same cache, the same discovery, the same fail-closed answer."""
+        fresh = self._fresh_announcement()
+        if fresh is not None:
+            return fresh
+        try:
+            item = self._listed_model_sync()
+        except openai.OpenAIError:
             return True
         announced = self._announces(item)
         self._announcement = (time.monotonic(), announced)
@@ -296,8 +326,7 @@ class EmbeddingServerEmbeddings(Embeddings):
             _responses.reset(token)
         announced = True
         if not seen or any(p is None for p, _ in seen):
-            cached = self._announcement
-            announced = cached[1] if cached is not None else True
+            announced = self.announces_precision_sync()
         precision, fallback = self._settle_witness(seen, announced)
         return vectors, precision, fallback
 

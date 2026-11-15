@@ -231,3 +231,52 @@ class TestPrecisionWitness:
 
         results = await asyncio.gather(*[witness.fresh("m", 0, probe) for _ in range(3)], return_exceptions=True)
         assert all(isinstance(r, RuntimeError) for r in results)
+
+
+class TestAsyncExpiredAnswer:
+    @pytest.mark.asyncio
+    async def test_an_expired_answer_is_asked_for_again(self, server) -> None:
+        import time
+
+        server(lambda _t: {}, announces=False)
+        client = _client()
+        client._announcement = (time.monotonic() - 3600, True)
+        assert (await client.aembed_documents_witnessed(["a"]))[1] == "fp32"
+
+
+class TestSyncLegacyServer:
+    """The synchronous call discovers the server's announcement itself, as the async one does."""
+
+    def test_a_header_less_response_from_an_older_server_is_fp32_with_no_cached_answer(self, server) -> None:
+        server(lambda _t: {}, announces=False)
+        _, precision, fallback = _client().embed_documents_witnessed(["a"])
+        assert (precision, fallback) == ("fp32", False)
+
+    def test_a_header_less_response_from_a_server_that_announces_is_refused(self, server) -> None:
+        server(lambda _t: {}, announces=True)
+        with pytest.raises(EmbeddingPrecisionUnknownError, match="announces"):
+            _client().embed_documents_witnessed(["a"])
+
+    def test_an_expired_answer_is_asked_for_again(self, server) -> None:
+        import time
+
+        made = server(lambda _t: {}, announces=False)
+        client = _client()
+        client._announcement = (time.monotonic() - 3600, True)  # it announced once; the server since became an older one
+        assert client.embed_documents_witnessed(["a"])[1] == "fp32"
+        assert made.posts == 1 and client._announcement[1] is False
+
+    def test_a_fresh_answer_is_not_asked_for_again(self, server) -> None:
+        import time
+
+        server(lambda _t: {}, announces=False)
+        client = _client()
+        client._announcement = (time.monotonic(), True)
+        with pytest.raises(EmbeddingPrecisionUnknownError, match="announces"):
+            client.embed_documents_witnessed(["a"])
+
+    def test_an_unreachable_server_is_treated_as_announcing(self, server, monkeypatch) -> None:
+        made = server(lambda _t: {}, announces=False)
+        made.httpd.shutdown()
+        made.httpd.server_close()
+        assert _client().announces_precision_sync() is True
