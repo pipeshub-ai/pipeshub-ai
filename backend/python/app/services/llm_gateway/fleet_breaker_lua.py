@@ -180,23 +180,26 @@ redis.call('HSET', br, 'trial_until', now + tonumber(ARGV[3]))
 return 1
 """
 
-# KEYS: capped, counted, br, hold
-# ARGV: now, job, window_ms, hold_jobs, hold_cooldown_ms, episode, reason, label, cls
+# KEYS: capped, counted, br, hold, owed
+# ARGV: now, job, window_ms, hold_jobs, hold_cooldown_ms, episode, reason, label, cls, owed_ttl_s
 # -> {already, distinct, newly_held, episode, member...}
 # A job counts once per revision (``counted``). When the hold rule fires the window is cleared, so the same
 # set cannot trigger another hold; a counted job that reaches the cap again is refused (already = 1).
 # While the key is on hold, a job reaching the cap (its send was in flight when the hold began) counts as
 # the key's: distinct is reported as ``hold_jobs`` so the caller redrives it.
 CAPPED = _PRELUDE + """
-local capped, counted, br, hold = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
+local capped, counted, br, hold, owed = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5]
 local now = now_ms(ARGV[1])
 local job, window, hold_jobs = ARGV[2], tonumber(ARGV[3]), tonumber(ARGV[4])
+local owed_ttl = tonumber(ARGV[10])
 redis.call('ZREMRANGEBYSCORE', capped, '-inf', now - window)
 if redis.call('EXISTS', hold) == 1 then
   -- The key is on hold: a send that was in flight when it began, settling now, is the key's fault, not a
-  -- document's. The job is redriven like the ones the hold absorbed.
+  -- document's. The job is redriven like the ones the hold absorbed, and owed that until it is done.
   redis.call('HSETNX', counted, job, now)
   redis.call('EXPIRE', counted, 8 * 86400)
+  redis.call('SADD', owed, job)
+  redis.call('EXPIRE', owed, owed_ttl)
   return {0, hold_jobs, 0, redis.call('HGET', hold, 'episode') or ''}
 end
 if redis.call('HSETNX', counted, job, now) == 0 then
@@ -220,7 +223,13 @@ if distinct >= hold_jobs then
   redis.call('EXPIRE', br, OPEN_TTL)
   out[3] = newly
   out[4] = episode
-  for _, member in ipairs(redis.call('ZRANGE', capped, 0, -1)) do table.insert(out, member) end
+  -- Every capped job of the window, this one included, is owed a redrive until it is done: written here, with the
+  -- hold, so no failure after this script can lose one.
+  for _, member in ipairs(redis.call('ZRANGE', capped, 0, -1)) do
+    table.insert(out, member)
+    redis.call('SADD', owed, member)
+  end
+  redis.call('EXPIRE', owed, owed_ttl)
   redis.call('DEL', capped)
 end
 return out

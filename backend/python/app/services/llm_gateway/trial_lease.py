@@ -95,12 +95,10 @@ class TrialLeaseRenewer:
                 except FleetBreakerUnavailable:
                     pass  # the next round; the lease has 60 s
 
-        tasks = [asyncio.ensure_future(renew(token, pk, cls)) for token, (pk, cls) in snapshot.items()]
-        if tasks:
-            _, late = await asyncio.wait(tasks, timeout=self._round_deadline)
-            for task in late:
-                task.cancel()
-            await asyncio.gather(*late, return_exceptions=True)
+        # The round's deadline cancels the renewals still waiting; what they did not reach is renewed next round.
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(self._round_deadline):
+                await asyncio.gather(*(renew(token, pk, cls) for token, (pk, cls) in snapshot.items()))
         return renewed
 
     async def _run(self) -> None:

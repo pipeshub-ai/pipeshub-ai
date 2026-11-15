@@ -21,6 +21,7 @@ An unreadable Redis is the gateway's policy, not this module's: it pauses the ca
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import uuid
 from dataclasses import dataclass, field
@@ -55,6 +56,17 @@ ALLOW, REFUSE, TRIAL = 0, 1, 2
 
 class FleetBreakerUnavailable(Exception):
     """The breaker's Redis could not be read. Paid calls pause; nothing falls back to a local breaker."""
+
+
+# Redrives a hold owes are kept this long after the last one was added: a job still not redriven by then stays FAILED
+# for a user's "Reindex failed".
+OWED_TTL_SECONDS = 24 * 3600
+
+
+def owed_key_name(scope: str) -> str:
+    """The set of jobs a hold on ``scope`` (``<pk>:<cls>``) owes a redrive, in the key's own hash tag, so the script that
+    opens the hold writes it atomically (namespace it with ``FleetRedis.key``)."""
+    return f"sg:{{p:{scope}}}:owed"
 
 
 def size_class(estimated_tokens: int) -> str:
@@ -164,14 +176,24 @@ def _forwarded_background_key(model: object) -> str | None:
     return "|".join(sorted(keys)) if keys else None
 
 
-def provider_pk(provider: str, credential: str = "") -> str:
-    """``HMAC-SHA256(install secret, provider key | credential)[:24]``: the key every breaker, rate window and hold of a
-    provider key lives under. The provider key is class, model and endpoint; the credential is mixed in so two orgs with
-    different API keys on the same model and endpoint do not share an outage or a hold, and it is never stored in
-    clear or as a plain hash (a hash of a short secret can be brute-forced; an HMAC under a secret kept elsewhere cannot)."""
-    import hmac
+# The credential is stretched with PBKDF2 under the install secret, so a digest is costly to test guesses against even
+# for someone who has both the digests (Redis keys) and the secret (the configuration store). Computed once per
+# credential in a process (cached), so a model call pays nothing for it.
+PK_ITERATIONS = 100_000
 
-    return hmac.new(_install_secret, f"{provider}|{credential}".encode(), hashlib.sha256).hexdigest()[:24]
+
+def provider_pk(provider: str, credential: str = "") -> str:
+    """The key every breaker, rate window and hold of a provider key lives under: a PBKDF2-HMAC-SHA256 digest of the
+    provider key (class, model and endpoint) and the credential, salted with the install secret. The credential is mixed
+    in so two orgs with different API keys on the same model and endpoint do not share an outage or a hold; it is never
+    stored in clear or as a plain hash (a fast hash of a short secret can be brute-forced)."""
+    return _provider_pk(_install_secret, provider, credential)
+
+
+@functools.lru_cache(maxsize=1024)
+def _provider_pk(secret: bytes, provider: str, credential: str) -> str:
+    material = f"{provider}|{credential}".encode()
+    return hashlib.pbkdf2_hmac("sha256", material, secret, PK_ITERATIONS).hex()[:24]
 
 
 @dataclass(frozen=True)
@@ -278,8 +300,12 @@ class FleetBreaker:
     async def register_capped(self, pk: str, cls: str, job: str, *, label: str, reason: str) -> CappedResult:
         reply = await self._run(
             lua.CAPPED,
-            [self._key(pk, cls, "capped"), self._key(pk, cls, "counted"), self._key(pk, cls, "br"), self.hold_key(pk, cls)],
+            [
+                self._key(pk, cls, "capped"), self._key(pk, cls, "counted"), self._key(pk, cls, "br"), self.hold_key(pk, cls),
+                self._fleet.key(owed_key_name(f"{pk}:{cls}")),
+            ],
             self._now(), job, HOLD_WINDOW_MS, HOLD_JOBS, HOLD_COOLDOWN_MS, uuid.uuid4().hex, reason, label, cls,
+            OWED_TTL_SECONDS,
         )
         already, distinct, newly, episode, *members = reply
         return CappedResult(

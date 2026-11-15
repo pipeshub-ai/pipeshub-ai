@@ -942,3 +942,40 @@ async def test_a_hold_redrive_is_owed_until_the_job_settles_and_its_reset_succee
     assert after is not None and (after.charged, after.sends) == (0, 6)
     assert h.state(job).status is not ProgressStatus.FAILED
     assert await h.store.pending_redrives() == {}
+
+
+@pytest.mark.asyncio
+async def test_a_hold_whose_own_reset_fails_owes_every_job_and_the_job_is_not_failed_on_wake(
+    fleet: FleetRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The third capped job opens the hold, and its own charge-count reset fails right after. Every capped job is still
+    owed (the breaker's script recorded them with the hold), and the job's next wake resets it instead of failing it at
+    the charged cap while the key is on hold."""
+    h = _BudgetHarness(fleet)
+    jobs = [_job(virtual_record_id=f"vr-{i}") for i in range(3)]
+    h.stage.result = _charged_pause(charged=6)
+    for job in jobs[:2]:
+        h.seed(job)
+        with pytest.raises(StageFailed):
+            await h.deliver(job)
+    third = jobs[2]
+    h.seed(third)
+    real_release = PauseStore.release_charged
+
+    async def down_for_the_third(self, key):  # noqa: ANN202
+        if key == third.state_key:
+            raise PauseStoreUnavailable("redis blinked")
+        return await real_release(self, key)
+
+    monkeypatch.setattr(PauseStore, "release_charged", down_for_the_third)
+    with pytest.raises(StagePaused):
+        await h.deliver(third)
+    monkeypatch.undo()
+    scope = f"{_PK}:{_CLS}"
+    assert await h.store.is_owed(scope, third.state_key)
+    assert all(h.state(job).status is not ProgressStatus.FAILED for job in jobs[:2]), "the hold redrove the others"
+
+    h.stage.result = StageResult(outcome=StageOutcome.COMPLETED)
+    await h.deliver(third)
+    assert h.state(third).status is ProgressStatus.COMPLETED, "its charges were the key's: not failed on wake"
+    assert not await h.store.is_owed(scope, third.state_key)

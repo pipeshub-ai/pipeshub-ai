@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from app.modules.pipeline.pause_budget import (
@@ -135,6 +135,12 @@ class PauseJudge:
             return None
         limits = await self.limits()
         verdict = counters_spent(prior, limits)
+        if verdict is Verdict.FAIL_CHARGED and prior.scope and await self._store.is_owed(prior.scope, job.state_key):
+            # A hold owes this job a redrive whose reset has not happened yet: its charges were the key's, not its own.
+            await self._store.release_charged(job.state_key)
+            await self._store.redrive_done(prior.scope, job.state_key)
+            prior = replace(prior, charged=0)
+            verdict = counters_spent(prior, limits)
         if verdict is None:
             ledger = await self._ledger(prior.scope)
             verdict = budget_spent(prior, await self._now(), ledger, limits)
@@ -197,15 +203,25 @@ class PauseJudge:
                 )
                 decision = decide(state, capped_distinct=0 if capped.already else capped.distinct, **decide_kwargs)
                 if decision.verdict is Verdict.REDRIVE:
-                    await self._store.release_charged(job.state_key)
+                    # The breaker's script has already made every capped job of the window owed a redrive, this one
+                    # included, atomically with the hold; what follows can fail without losing any of them.
                     redrive = capped.others
-                    # Owed until each is done: a job still running, or one whose reset or redrive fails now, is retried.
-                    await self._store.add_redrives(scope, redrive)
+                    await self._settle_own_redrive(job, scope)
                     jitter = self._rng.uniform(0, HOLD_COOLDOWN_MS / 1000.0)
                     newly_held = capped.newly_held
                     if capped.newly_held:
                         await self._note_hold(breaker, job, result, capped.episode, label, len(redrive) + 1, now)
         return Judgement(decision, redrive, jitter, newly_held, scope)
+
+    async def _settle_own_redrive(self, job: StageJob, scope: str) -> None:
+        """This job is owed a fresh charge count: give it now, or leave it owed for its next wake (``spent``) or the
+        recovery leader, either of which resets it before it can be failed at the old count."""
+        try:
+            await self._store.note_owed_scope(scope)
+            await self._store.release_charged(job.state_key)
+            await self._store.redrive_done(scope, job.state_key)
+        except PauseStoreUnavailable as exc:
+            self._logger.warning("the charge count of %s is reset later (%s): it stays owed", job.state_key, exc)
 
     async def _note_hold(
         self, breaker: FleetBreaker, job: StageJob, result: StageResult, episode: str, label: str, redriven: int, now: int

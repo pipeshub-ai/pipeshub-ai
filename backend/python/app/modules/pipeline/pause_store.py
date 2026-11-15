@@ -23,13 +23,11 @@ import asyncio
 from typing import Any
 
 from app.modules.pipeline.pause_budget import PauseState
+from app.services.llm_gateway.fleet_breaker import OWED_TTL_SECONDS, owed_key_name
 from app.services.llm_gateway.fleet_redis import FleetRedis, get_fleet_redis
 
 PAUSE_TTL_SECONDS = 8 * 24 * 3600
 REDIS_OP_TIMEOUT_S = 2.0
-# Redrives of a hold are retried this long after the last one was added: a job still not redriven by then is left FAILED
-# for a user's "Reindex failed".
-REDRIVE_TTL_SECONDS = 24 * 3600
 
 # KEYS: hash  ARGV: attempt, sends, charged, trials, since_ms, ledger_at_since, scope, scope_ledger, ttl
 # A new hash starts at ``since_ms`` / ``ledger_at_since``. A scope learned after the first pause adds that key's ledger
@@ -186,27 +184,41 @@ class PauseStore:
         return bool(await self._eval(_RELEASE_CHARGED, [self._key(state_key)]))
 
     # ---- the redrives a hold owes ------------------------------------------------------------------
+    # The owed set of a key scope is written by the breaker's script that opens the hold (``owed_key_name``), atomically
+    # with it. The index of scopes that owe some is a convenience for the recovery leader: a job finds its own entry
+    # without it (``is_owed``), so an index write that failed loses nothing.
 
     def _redrive_index(self) -> str:
-        return self._handle().key("messaging:pause:redrives")
+        return self._handle().key("messaging:pause:owed-scopes")
 
-    def _redrive_key(self, scope: str) -> str:
-        return self._handle().key(f"messaging:pause:redrive:{{{scope}}}")
+    def _owed_key(self, scope: str) -> str:
+        return self._handle().key(owed_key_name(scope))
+
+    async def note_owed_scope(self, scope: str) -> None:
+        client = self._handle().client()
+
+        async def add() -> None:
+            await client.sadd(self._redrive_index(), scope)
+            await client.expire(self._redrive_index(), OWED_TTL_SECONDS)
+
+        await self._do(add())
 
     async def add_redrives(self, scope: str, state_keys: tuple[str, ...] | list[str]) -> None:
-        """Keep the jobs a hold on ``scope`` must redrive until each is done (``redrive_done``)."""
+        """Owe the jobs ``state_keys`` a redrive under ``scope`` (the breaker's script does this when it opens a hold)."""
         if not state_keys:
             return
         client = self._handle().client()
-        key = self._redrive_key(scope)
+        key = self._owed_key(scope)
 
         async def add() -> None:
             await client.sadd(key, *state_keys)
-            await client.expire(key, REDRIVE_TTL_SECONDS)
-            await client.sadd(self._redrive_index(), scope)
-            await client.expire(self._redrive_index(), REDRIVE_TTL_SECONDS)
+            await client.expire(key, OWED_TTL_SECONDS)
 
         await self._do(add())
+        await self.note_owed_scope(scope)
+
+    async def is_owed(self, scope: str, state_key: str) -> bool:
+        return bool(await self._do(self._handle().client().sismember(self._owed_key(scope), state_key)))
 
     async def pending_redrives(self) -> dict[str, list[str]]:
         """The redrives still owed, by key scope. A scope whose set has expired or emptied leaves the index."""
@@ -214,7 +226,7 @@ class PauseStore:
         pending: dict[str, list[str]] = {}
         for raw_scope in await self._do(client.smembers(self._redrive_index())):
             scope = _s(raw_scope)
-            members = sorted(_s(m) for m in await self._do(client.smembers(self._redrive_key(scope))))
+            members = sorted(_s(m) for m in await self._do(client.smembers(self._owed_key(scope))))
             if members:
                 pending[scope] = members
             else:
@@ -222,4 +234,4 @@ class PauseStore:
         return pending
 
     async def redrive_done(self, scope: str, state_key: str) -> None:
-        await self._do(self._handle().client().srem(self._redrive_key(scope), state_key))
+        await self._do(self._handle().client().srem(self._owed_key(scope), state_key))
