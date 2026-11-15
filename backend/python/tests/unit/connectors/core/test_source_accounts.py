@@ -393,7 +393,8 @@ async def test_a_large_directory_never_writes_a_large_value_and_one_change_rewri
     config.set_config = counting
     people[123] = _user("person123@x.com", "acc-123-new")
     await _admit(directory, accounts, people)
-    assert writes == [source_accounts_key(CONNECTOR, _bucket("person123@x.com"))]
+    assert writes == [source_accounts_key(CONNECTOR, _bucket("person123@x.com")), source_accounts_key(CONNECTOR)]
+    assert len(json.dumps(config.saved[source_accounts_key(CONNECTOR)])) < 100     # the marker: a version bump
     assert accounts.reused == {"person123@x.com": "acc-123-new"}
 
 
@@ -460,7 +461,7 @@ async def test_an_address_an_earlier_version_already_linked_to_its_new_account_i
 
     assert directory.calls[0] == ("remove", "ana@x.com")
     assert _saved(config)["reused"] == {"ana@x.com": "new-oid"}
-    assert config.saved[source_accounts_key(CONNECTOR)] == {"seeded": True, "deletedChecked": True}
+    assert config.saved[source_accounts_key(CONNECTOR)] == {"seeded": True, "deletedChecked": True, "version": 1}
     assert not accounts.may_grant("ana@x.com", "old-oid") and not accounts.may_grant("ana@x.com", None)
     assert accounts.may_grant("ana@x.com", "new-oid")
     directory.calls.clear()
@@ -476,7 +477,7 @@ async def test_deleted_users_that_cannot_be_read_are_read_again_next_run(world) 
     directory.links["node-ana@x.com"] = "new-oid"
     accounts.deleted_users = AsyncMock(side_effect=RuntimeError("403"))
     await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
-    assert config.saved[source_accounts_key(CONNECTOR)] == {"seeded": True}
+    assert config.saved[source_accounts_key(CONNECTOR)]["deletedChecked"] is False
     accounts.deleted_users = AsyncMock(return_value={"ana@x.com": "old-oid"})
     directory.calls.clear()
     await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
@@ -501,3 +502,94 @@ async def test_a_saved_state_that_is_not_a_mapping_is_refused(world) -> None:
     assert await accounts.before_link([_user("ana@x.com", "a")]) is False
     with pytest.raises(RuntimeError):
         await accounts.ensure_loaded()
+
+
+@pytest.mark.asyncio
+async def test_while_deleted_users_cannot_be_read_no_grant_naming_no_account_is_written(world) -> None:
+    """An address whose link names the listed id may still be one an earlier version moved to a new account; until the
+    deleted accounts are read, a grant that names no account (a SharePoint principal) waits, in every instance."""
+    directory, accounts, config = world
+    directory.nodes["ana@x.com"] = "node-ana@x.com"
+    directory.links["node-ana@x.com"] = "new-oid"
+    accounts.deleted_users = AsyncMock(side_effect=RuntimeError("503"))
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+    await accounts.ensure_loaded()
+    assert not accounts.may_grant("ana@x.com", None) and accounts.may_grant("ana@x.com", "new-oid")
+
+    worker = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))     # a reindex worker
+    await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", None)
+
+    accounts.deleted_users = AsyncMock(return_value={})
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+    assert accounts.may_grant("ana@x.com", None)
+
+
+@pytest.mark.asyncio
+async def test_deleted_evidence_waits_for_the_listing_that_shows_its_address(world) -> None:
+    """The deleted accounts are read once; an address absent from that run's listing keeps its evidence until a later
+    listing shows it."""
+    directory, accounts, config = world
+    directory.nodes["ana@x.com"] = "node-ana@x.com"
+    directory.links["node-ana@x.com"] = "new-oid"
+    directory.deleted = {"ana@x.com": "old-oid"}
+    await _admit(directory, accounts, [_user("bo@x.com", "bo-oid")])                 # ana@ is not in this listing
+    assert config.saved[source_accounts_key(CONNECTOR, _bucket("ana@x.com"))]["deleted"] == {"ana@x.com": "old-oid"}
+    directory.deleted = {}
+    directory.calls.clear()
+
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
+
+    assert directory.calls[0] == ("remove", "ana@x.com")
+    assert "deleted" not in config.saved[source_accounts_key(CONNECTOR, _bucket("ana@x.com"))]
+    assert _saved(config)["reused"] == {"ana@x.com": "new-oid"}
+
+
+@pytest.mark.asyncio
+async def test_a_withdrawn_account_is_remembered_by_address_across_a_user_merge(world) -> None:
+    """A verified sign-in merges the synced user into the login user (another id): the address still remembers the
+    withdrawn account."""
+    directory, accounts, _ = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
+    _withdraw(directory, "old-oid")
+    directory.nodes["ana@x.com"] = "login-user"                        # the merge: the synced user is gone
+    directory.calls.clear()
+
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+
+    assert directory.calls[0] == ("remove", "ana@x.com")
+
+
+@pytest.mark.asyncio
+async def test_a_state_another_instance_changed_is_read_again_before_a_later_grant(world, monkeypatch) -> None:
+    """A reindex worker loaded the state; a sync elsewhere admits a new account for ana@; the worker's next decision,
+    once its copy is older than STATE_MAX_AGE_SECONDS, reads the change (and only a change)."""
+    from app.connectors.core.base.data_processor import source_accounts as module
+
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
+    worker = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))
+    now = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    await worker.ensure_loaded()
+    assert worker.may_grant("ana@x.com", "old-oid")
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])        # another instance re-links ana@
+    await worker.ensure_loaded()
+    assert worker.may_grant("ana@x.com", "old-oid")                           # still within the trusted window
+    now[0] += module.STATE_MAX_AGE_SECONDS + 1
+    await worker.ensure_loaded()
+    assert not worker.may_grant("ana@x.com", "old-oid") and worker.may_grant("ana@x.com", "new-oid")
+
+
+@pytest.mark.asyncio
+async def test_recheck_reads_the_state_again_and_drops_refused_user_grants(world) -> None:
+    """A batch judged before an admission is checked again just before it is written."""
+    directory, accounts, config = world
+    worker = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))
+    await worker.ensure_loaded()
+    grants = [Permission(external_id="old-oid", email="ana@x.com", type=PermissionType.READ, entity_type=EntityType.USER),
+              Permission(external_id="g-1", email=None, type=PermissionType.READ, entity_type=EntityType.GROUP),
+              Permission(external_id="bo-oid", email="bo@x.com", type=PermissionType.READ, entity_type=EntityType.USER)]
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])         # admitted while the batch was read
+    assert [p.external_id for p in await worker.recheck(grants)] == ["g-1", "bo-oid"]
