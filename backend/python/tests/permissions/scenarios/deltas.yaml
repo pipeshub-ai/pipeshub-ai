@@ -9,16 +9,22 @@ deltas:
   - id: DELTA-02
     public:
       connector: Google Drive
-      source: "A file shared with your whole domain, or with anyone who has the link"
-      differs: "It does not give everyone in the organisation access in PipesHub. People it is shared with directly or through a group still see it."
+      source: "A file shared by link only: anyone with the link, or anyone in your domain with the link, can open it, but it cannot be found in Drive search"
+      differs: "The link gives no one access in PipesHub. People it is shared with directly, through a group, or with a share of your domain or of anyone that can be found in Drive search still see it."
     direction: under-share
     scenarios: [DRIVE-C-08]
     pairs: [DRIVE-C-08/mo/roadmap]
     reason: >
-      The Drive team connector stores no grant for a domain share (google/drive/team/connector.py:1157-1159) and the
-      processor writes no edge for a domain or anyone entity (data_source_entities_processor.py:2317-2331), so a
-      discoverable domain share gives the org no grant. Safe but incomplete.
-    fix: "Write a discoverable domain share (and a discoverable anyone share) as an org grant after a verified-domain check; link-only shares stay ungranted."
+      Since #5726 the Drive team connector stores a domain or "anyone" share that Drive search can find
+      (allowFileDiscovery true) as a grant to the enabled people of its audience, and a link-only share as no grant
+      (_discoverable_audience, google/drive/team/connector.py:1388-1401, used at 1881-1886). Google: allowFileDiscovery
+      is "Whether the permission allows the file to be discovered through search. This is only applicable for
+      permissions of type domain or anyone."
+      (https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions). So the published difference is
+      the link-only share: people who can open it with the link get no access. DRIVE-C-08's world still holds the
+      graph from before #5726 (the processor writes no edge for a domain or anyone entity), so it still observes the
+      discoverable domain share as ungranted.
+    fix: "Give DRIVE-C-08 the audience-group grant the connector now writes, and pin the link-only share with its own scenario."
   - id: DELTA-05
     public:
       connector: Confluence
