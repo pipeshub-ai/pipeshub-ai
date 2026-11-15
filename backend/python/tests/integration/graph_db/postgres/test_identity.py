@@ -23,6 +23,7 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.core import org_context
 from app.core.org_context import MissingOrgContext, OrgMismatch, SystemContextNotAllowed
 from app.models.entities import AppRole, AppUser, AppUserGroup
+from tests.support.in_memory_config import InMemoryConfigService
 
 from .test_access import APP, World, rec
 
@@ -176,20 +177,6 @@ async def test_the_app_user_links_include_guests_but_not_another_orgs_or_connect
             await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", other), write=True)
     finally:
         org_context.pop(token)
-
-
-class _Config:
-    """ConfigurationService in memory: the processor keeps which source account holds each address there."""
-
-    def __init__(self) -> None:
-        self.data: dict[str, object] = {}
-
-    async def get_config(self, key: str, default: object = None, **_: object) -> object:
-        return self.data.get(key, default)
-
-    async def set_config(self, key: str, value: object, **_: object) -> bool:
-        self.data[key] = value
-        return True
 
 
 def app_user(email: str, key: str, *, guest: bool = False, active: bool = False) -> AppUser:
@@ -408,7 +395,7 @@ async def test_a_withdrawn_user_gets_the_link_back_when_the_next_listing_shows_t
     from types import SimpleNamespace
 
     await member(w, "m", userId="um", email="m@x.com")
-    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), _Config())
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
     processor.org_id = w.org
     processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
     listed = app_user("m@x.com", "m")
@@ -436,7 +423,7 @@ async def test_a_new_account_that_takes_an_address_reads_nothing_the_old_one_was
     for target in (("records", "mine"), ("records", "elsewhere")):
         await w.edge("permission", ("users", "m"), target, type="USER", role="READER")
     await w.edge("permission", ("users", "k"), ("records", "kept"), type="USER", role="READER")
-    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), _Config())
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
     processor.org_id = w.org
     processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
     await processor.on_new_app_users([app_user("m@x.com", "m"), app_user("k@x.com", "k")])
@@ -457,7 +444,7 @@ async def test_a_group_rewrite_after_an_address_changed_hands_admits_only_the_ac
     PipesHub user a member again; the same group listing the new account does."""
     await member(w, "m", userId="um", email="m@x.com")
     await w.nodes("records", rec("doc"))
-    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), _Config())
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
     processor.org_id = w.org
     processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
     group = AppUserGroup(app_name=Connectors.JIRA, connector_id=APP, source_user_group_id="ext-team", name="Team")

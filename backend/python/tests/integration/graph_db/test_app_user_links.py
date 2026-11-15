@@ -161,8 +161,9 @@ async def _recover(graph, user_key: str, org: str, connector: str) -> tuple[set[
     )
     from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
     from app.models.entities import AppUser
+    from tests.support.in_memory_config import InMemoryConfigService
 
-    processor = DataSourceEntitiesProcessor(logging.getLogger("recovery-it"), GraphDataStore(logging.getLogger("recovery-it"), graph), MagicMock())
+    processor = DataSourceEntitiesProcessor(logging.getLogger("recovery-it"), GraphDataStore(logging.getLogger("recovery-it"), graph), InMemoryConfigService())
     processor.org_id = org
     processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
     app_user = AppUser(app_name=Connectors.ONEDRIVE, connector_id=connector, source_user_id="src-recover",
