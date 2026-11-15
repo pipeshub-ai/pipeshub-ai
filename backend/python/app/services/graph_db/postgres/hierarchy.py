@@ -601,18 +601,19 @@ class HubMixin(PgBase):
         rows = [{"id": a.get("_key") or a.get("id"), "name": a.get("name"), "type": a.get("type")} for a in apps if (a.get("type") or "") != "KB" and (a.get("_key") or a.get("id"))]
         return {"apps": sorted(rows, key=lambda a: (a.get("name") or "").lower())}
 
-    async def _hub_node(self, tx: Tx, org: str, node_id: str) -> dict | None:
-        """One node of the hub by id (a record, else a group, else an app), shaped as a step of the trail, with its collection."""
-        n = await tx.fetchrow("""/* pipeshub:graph.hub_node */ SELECT n.coll, n.doc, (SELECT f.doc->>'isFile' FROM graph.edges t JOIN graph.nodes f ON f.org_id = t.org_id
-              AND f.coll = 'files' AND f.id = t.to_id WHERE t.org_id = $1 AND t.coll = 'isOfType' AND t.from_coll = 'records' AND t.from_id = n.id LIMIT 1) AS is_file
-            FROM graph.nodes n WHERE n.org_id = $1 AND n.id = $2 AND n.coll IN ('records', 'recordGroups', 'apps')
-            ORDER BY CASE n.coll WHEN 'records' THEN 0 WHEN 'recordGroups' THEN 1 ELSE 2 END LIMIT 1""", org, node_id)
-        if not n:
-            return None
-        d, coll = _doc(n["doc"]), n["coll"]
-        kind = ("folder" if n["is_file"] == "false" else "record") if coll == "records" else "recordGroup" if coll == "recordGroups" else "app"
-        sub = d.get("recordType") if coll == "records" else (("COLLECTION" if d.get("connectorName") == "KB" else d.get("groupType") or d.get("connectorName")) if coll == "recordGroups" else d.get("type"))
-        return {"coll": coll, "id": d.get("id"), "name": d.get("recordName") or d.get("groupName") or d.get("name"), "nodeType": kind, "subType": sub}
+    async def _hub_nodes(self, tx: Tx, org: str, ids: list[str]) -> dict[str, dict]:
+        """The hub's node of each id (a record, else a group, else an app), shaped as a step of the trail, with its collection."""
+        out: dict[str, dict] = {}
+        for n in await tx.fetch("""/* pipeshub:graph.hub_node */ SELECT DISTINCT ON (n.id) n.id AS key, n.coll, n.doc, (SELECT f.doc->>'isFile' FROM graph.edges t
+              JOIN graph.nodes f ON f.org_id = t.org_id AND f.coll = 'files' AND f.id = t.to_id WHERE t.org_id = $1 AND t.coll = 'isOfType' AND t.from_coll = 'records'
+              AND t.from_id = n.id LIMIT 1) AS is_file
+            FROM graph.nodes n WHERE n.org_id = $1 AND n.id = ANY($2::text[]) AND n.coll IN ('records', 'recordGroups', 'apps')
+            ORDER BY n.id, CASE n.coll WHEN 'records' THEN 0 WHEN 'recordGroups' THEN 1 ELSE 2 END""", org, ids):
+            d, coll = _doc(n["doc"]), n["coll"]
+            kind = ("folder" if n["is_file"] == "false" else "record") if coll == "records" else "recordGroup" if coll == "recordGroups" else "app"
+            sub = d.get("recordType") if coll == "records" else (("COLLECTION" if d.get("connectorName") == "KB" else d.get("groupType") or d.get("connectorName")) if coll == "recordGroups" else d.get("type"))
+            out[n["key"]] = {"coll": coll, "id": d.get("id"), "name": d.get("recordName") or d.get("groupName") or d.get("name"), "nodeType": kind, "subType": sub}
+        return out
 
     async def _hub_trail(self, tx: Tx, org: str, node_id: str) -> list[dict[str, Any]]:
         """The trail from the node up to its root, every step's parent in the trail: a record's hierarchy parent, else the group it belongs to, else the app (a
@@ -622,7 +623,7 @@ class HubMixin(PgBase):
         cur: str | None = node_id
         while cur and cur not in seen:
             seen.add(cur)
-            info = await self._hub_node(tx, org, cur)
+            info = (await self._hub_nodes(tx, org, [cur])).get(cur)
             if not info or not info["id"] or not info["name"]:
                 break
             trail.append({k: info[k] for k in ("id", "name", "nodeType", "subType")})
@@ -635,10 +636,12 @@ class HubMixin(PgBase):
         return trail
 
     async def _hub_trail_kg(self, tx: Tx, org: str, node_id: str) -> list[dict[str, Any]]:
-        """:meth:`_hub_trail` with the steps chosen in kg (``kg.hierarchy.trail``) and each step's document read as the walk reads it."""
+        """:meth:`_hub_trail` with the steps chosen in kg (``kg.hierarchy.trail``) and their documents read in one statement, as the walk reads each."""
         trail: list[dict[str, Any]] = []
-        for coll, nid in await kg_hier.trail(tx, org, node_id):
-            info = await self._hub_node(tx, org, nid)
+        steps = await kg_hier.trail(tx, org, node_id)
+        nodes = await self._hub_nodes(tx, org, [nid for _, nid in steps])
+        for coll, nid in steps:
+            info = nodes.get(nid)
             if info is not None and info["coll"] != _COLL_OF_CODE[coll]:
                 raise kg_hier.Fallback("coll")          # the id names a node of another collection too, which the walk would step to
             if not info or not info["id"] or not info["name"]:
