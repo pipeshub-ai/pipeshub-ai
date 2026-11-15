@@ -23,6 +23,7 @@ from google_behaviour_fakes import (
     FakeEntitiesProcessor,
     FakeGoogleHttp,
     FakeSyncPointStore,
+    google_error,
 )
 from googleapiclient.errors import HttpError
 
@@ -32,7 +33,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 )
 from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
 from app.models.entities import User
-from app.models.permission import EntityType, PermissionType
+from app.models.permission import EntityType, Permission, PermissionType
 
 CONNECTOR_ID = "drive-workspace-1"
 ADMIN = "admin@example.com"
@@ -3379,6 +3380,101 @@ async def test_a_new_item_below_a_folder_trashed_in_the_same_run_is_not_written(
     assert done, "her read by id came first"
     assert "c" not in ws.records.records, "below a folder in the trash: not written"
     assert "top" not in ws.records.records, "nor its folders, as placeholders above it"
+
+
+async def test_a_folder_the_reporter_lost_but_another_opens_keeps_its_new_child_for_the_other(ws: Workspace) -> None:
+    erin = "erin@example.com"
+    ws.world.add_user(erin)
+    ws.world.folder("f", "Shared", parent="root-bob", owner=BOB, perms=[reader(ALICE), reader(erin)])
+    await ws.sync()
+    ws.world.add_item("c", "c.txt", parent="f", owner=BOB)
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[ALICE].user_id}"))
+    ws.sync_points.sync_points[key]["feed_failed_items"] = ["c"]
+    # Alice reads the new child by id, then loses the folder before her feed is read. Bob and Erin still open
+    # both, though their own feeds fail this run, so only Alice's read can write the child now.
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern.endswith("/changes$"))
+    done: list[bool] = []
+
+    def changes(req: ApiRequest) -> object:
+        if req.identity in (BOB, erin):
+            return google_error(500, "backendError")
+        if req.identity == ALICE and not done:
+            done.append(True)
+            ws.world.unshare("f", ALICE)
+        return real(req)
+
+    ws.http.route("GET", r"/drive/v3/changes", changes)
+    await ws.sync()
+
+    assert done, "her read by id came first"
+    assert "f" in ws.records.records, "Erin still opens the folder: only Alice's grant went"
+    assert erin in ws.records.perm_emails("c"), "the child is written for whoever still opens it"
+    assert ALICE not in ws.records.perm_emails("c"), "but not for Alice, who lost the folder"
+
+
+async def test_a_new_file_below_an_unknown_folder_under_one_trashed_this_run_is_read_again_not_written(
+    ws: Workspace,
+) -> None:
+    ws.world.folder("top", "Top", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    await ws.sync()
+    ws.world.folder("mid", "Mid", parent="top", owner=BOB)  # never stored, never read this run
+    ws.world.add_item("c", "c.txt", parent="mid", owner=BOB, perms=[reader(ALICE)])
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[ALICE].user_id}"))
+    ws.sync_points.sync_points[key]["feed_failed_items"] = ["c"]
+    done = _after_permission_read_by(ws, "c", ALICE, lambda: ws.world.trash("top"))
+    bob = ws.world.users.pop(BOB)
+    try:
+        await ws.sync()
+    finally:
+        ws.world.users[BOB] = bob
+
+    assert done, "her read by id came first"
+    assert "c" not in ws.records.records, "its folders above are not known, and one this run trashed may hold it"
+    assert "c" in (ws.sync_points.sync_points[key].get("feed_failed_items") or []), "kept to read again by id"
+
+
+async def test_the_flush_settles_new_records_against_what_the_sync_withdrew(ws: Workspace) -> None:
+    from app.config.constants.arangodb import Connectors
+    from app.connectors.sources.google.drive.team import connector as drive_connector
+    from app.models.entities import FileRecord, OriginTypes, RecordType
+
+    await ws.sync()
+    connector = ws.connector
+
+    def new(ext: str, parent: str) -> FileRecord:
+        return FileRecord(
+            org_id="org-1", record_name=ext, record_type=RecordType.FILE, external_record_id=ext,
+            parent_external_record_id=parent, version=1, origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.GOOGLE_DRIVE, connector_id=CONNECTOR_ID, is_file=True,
+            shared_with_me_record_group_ids=[f"0S:{ALICE}"],
+        )
+
+    def grants(*emails: str) -> list:
+        return [Permission(email=e, type=PermissionType.READ, entity_type=EntityType.USER) for e in emails]
+
+    # A shared drive folder removed from Alice's feed: kept because Erin still opens it (lost), or removed for
+    # everyone (deleted), with a new child waiting in the batch under each.
+    erin = "erin@example.com"
+    w = drive_connector._SyncWithdrawals(ALICE)
+    w.lost.add("kept-folder")
+    w.deleted.add("gone-folder")
+    drive_connector._withdrawals.set(w)
+    failed = connector._track_failed_items()
+    written: list = []
+
+    async def capture(batch: list) -> None:
+        written.extend(batch)
+
+    connector.data_entities_processor.on_new_records = capture
+    batch = [(new("open-child", "kept-folder"), grants(ALICE, erin)), (new("gone-child", "gone-folder"), grants(erin))]
+    await connector._flush_batch(batch)
+    drive_connector._withdrawals.set(None)
+
+    assert [r.external_record_id for r, _ in written] == ["open-child"]
+    record, perms = written[0]
+    assert {p.email for p in perms} == {erin}, "written for Erin, who still opens it; not for Alice"
+    assert record.shared_with_me_record_group_ids == []
+    assert failed == {"open-child", "gone-child"}, "both read again by id: nothing passed over"
 
 
 async def test_a_shared_drive_item_read_again_by_id_then_trashed_in_the_same_run_is_not_written(ws: Workspace) -> None:
