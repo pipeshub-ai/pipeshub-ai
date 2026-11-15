@@ -238,9 +238,16 @@ def _with_comment_digest(
     return f"{revision}|comments:{digest}"
 
 
+# Mention types whose text comes from no other page (developers.notion.com/reference/rich-text):
+# a person, a date, a template placeholder, a link preview's URL. Any other mention, including
+# page, database, the undocumented link_mention (a pasted link, titled by its target) and any type
+# added later, keeps only its target's id or URL.
+_MENTIONS_OF_NO_OTHER_PAGE = frozenset({"user", "date", "template_mention", "link_preview"})
+
+
 def _without_linked_content(node: object) -> None:
-    """Remove, in place, what a Notion object shows of other pages: a page or database mention's
-    title, every rollup, and on a page that relates to others, its formulas.
+    """Remove, in place, what a Notion object shows of other pages: the title of a page, database or
+    link mention, every rollup, and on a page that relates to others, its formulas.
 
     Notion returns a mention's title to the integration whatever the reader may open, and a rollup
     or a formula over a relation is computed from the related pages. Each of those pages has readers
@@ -252,8 +259,14 @@ def _without_linked_content(node: object) -> None:
         return
     if not isinstance(node, dict):
         return
-    if node.get("type") == "mention" and (node.get("mention") or {}).get("type") in ("page", "database"):
-        node["plain_text"] = ""
+    mention = node.get("mention") if node.get("type") == "mention" else None
+    kind = mention.get("type") if isinstance(mention, dict) else None
+    if kind and kind not in _MENTIONS_OF_NO_OTHER_PAGE:
+        target = mention.get(kind)
+        if isinstance(target, dict):
+            mention[kind] = {k: target[k] for k in ("id", "href", "url") if k in target}
+        # A pasted link keeps the URL its author wrote; the title Notion fetched for it goes.
+        node["plain_text"] = (node.get("href") or "") if kind == "link_mention" else ""
     if node.get("type") == "rollup" and "rollup" in node:
         node["rollup"] = {"type": "unsupported"}
     properties = node.get("properties") if node.get("object") == "page" else None
@@ -1213,19 +1226,27 @@ class NotionConnector(BaseConnector):
             if not self.data_entities_processor.full_sync_running(self.connector_id):
                 kept = kept[: self._RECONFIRM_PER_SYNC]
             now = get_epoch_timestamp_in_ms()
+            unanswered: set[str] = set()
             for object_id in (*new, *kept):
-                if await self._opens(datasource, object_id, listed[object_id]):
+                opens = await self._opens(datasource, object_id, listed[object_id])
+                if opens:
                     confirmed[object_id] = now
-                else:
+                elif opens is False:
                     confirmed.pop(object_id, None)
+                else:
+                    unanswered.add(object_id)  # withheld this sync, and re-checked first next sync
+            if unanswered:
+                self._sync_incomplete = True
             if not await self.config_service.set_config(path, confirmed, keep_in_cache=False):
                 raise RuntimeError("the configuration store did not keep the confirmed pages")
-            return {i for i, at in confirmed.items() if now - at <= self._CONFIRMED_TTL_MS}
+            return {i for i, at in confirmed.items() if i not in unanswered and now - at <= self._CONFIRMED_TTL_MS}
         finally:
             await client.close()
 
-    async def _opens(self, datasource: NotionDataSource, object_id: str, object_type: str) -> bool:
-        """Whether the token's person may open the page or data source now; False unless Notion says so."""
+    async def _opens(self, datasource: NotionDataSource, object_id: str, object_type: str) -> bool | None:
+        """Whether the token's person may open the page or data source now: False only when Notion
+        says not (404 or 403, developers.notion.com/reference/status-codes, or it is in the trash);
+        None when Notion did not answer either way (a transport error, or a 429 or 5xx after retries)."""
         if object_type == "data_source":
             response = await datasource.retrieve_data_source_by_id(object_id)
         else:
@@ -1233,8 +1254,10 @@ class NotionConnector(BaseConnector):
         status = getattr(response, "status_code", None)
         if status == HTTPStatus.UNAUTHORIZED:
             raise _TokenRejected("Notion no longer accepts the token")
-        if not response or not response.success or not response.data:
+        if status in (HTTPStatus.NOT_FOUND, HTTPStatus.FORBIDDEN):
             return False
+        if not response or not response.success or not response.data:
+            return None
         body = response.data.json() or {}
         return not (body.get("in_trash") or body.get("archived"))
 
@@ -2149,6 +2172,8 @@ class NotionConnector(BaseConnector):
 
                 # Resolve child records for table rows (database row pages with children)
                 await self._resolve_table_row_children(blocks_container.blocks, parent_data_source_record=record)
+                # After resolving, which names the children from their records: indexing and preview read this.
+                self._hide_child_titles(blocks_container.blocks, blocks_container.block_groups)
 
                 # Stream blocks container as JSON in chunks
                 async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
@@ -2191,6 +2216,8 @@ class NotionConnector(BaseConnector):
 
                 # Resolve child reference block IDs (creates minimal records for unsynced children)
                 await self._resolve_child_reference_blocks(blocks_container.blocks, parent_record=record)
+                # After resolving, which names each link from its target's record.
+                self._hide_child_titles(blocks_container.blocks, blocks_container.block_groups)
 
                 # Stream blocks container as JSON in chunks
                 async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
@@ -3239,7 +3266,6 @@ class NotionConnector(BaseConnector):
         if comments_by_block:
             await self._attach_comments_to_blocks(blocks, block_groups, comments_by_block, page_id, parent_page_url, parser)
 
-        self._hide_child_titles(blocks, block_groups)
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     async def _fetch_data_source_as_blocks(
@@ -3358,7 +3384,6 @@ class NotionConnector(BaseConnector):
 
         self.logger.info(f"Fetched data source {data_source_id}: {len(block_groups)} tables, {len(blocks)} rows")
 
-        self._hide_child_titles(blocks, block_groups)
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     async def _fetch_page_attachments_and_comments(

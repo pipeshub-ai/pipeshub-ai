@@ -63,7 +63,7 @@ async def _caller_and_config(request: Request, connector_id: str) -> tuple[str, 
 @notion_tokens_router.get(_PATH, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_personal_token(connector_id: str, request: Request) -> dict[str, Any]:
     user_id, config = await _caller_and_config(request, connector_id)
-    entry = await config.get_config(personal_tokens.token_path(connector_id, user_id), use_cache=False)
+    entry = await config.get_config(personal_tokens.token_path(connector_id, user_id), use_cache=False, keep_in_cache=False)
     return personal_tokens.public_view(entry if isinstance(entry, dict) else None)
 
 
@@ -78,7 +78,7 @@ async def link_personal_token(connector_id: str, body: _LinkBody, request: Reque
         await personal_tokens.link_token(config, connector_id, user_id, token)
     except RuntimeError as e:
         raise HTTPException(status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail="The token could not be saved. Try again.") from e
-    return personal_tokens.public_view(await config.get_config(personal_tokens.token_path(connector_id, user_id), use_cache=False))
+    return personal_tokens.public_view(await config.get_config(personal_tokens.token_path(connector_id, user_id), use_cache=False, keep_in_cache=False))
 
 
 @notion_tokens_router.delete(_PATH, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])

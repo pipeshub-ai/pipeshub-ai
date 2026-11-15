@@ -116,3 +116,23 @@ def test_a_remove_the_store_did_not_do_is_reported(config: _Config, instance: di
     client.put(URL, json={"token": SECRET})
     config.delete_config = AsyncMock(return_value=False)  # the store kept it
     assert client.delete(URL).status_code == 503
+
+
+class _NoCacheConfig(_Config):
+    """Fails any read or write of a token entry that would leave it in the in-process cache."""
+
+    async def get_config(self, key: str, default: object = None, **kw: object) -> object:
+        assert kw.get("keep_in_cache") is False, f"{key} read into the cache"
+        return await super().get_config(key, default)
+
+    async def set_config(self, key: str, value: object, **kw: object) -> bool:
+        assert kw.get("keep_in_cache") is False, f"{key} written into the cache"
+        return await super().set_config(key, value)
+
+
+def test_a_token_never_enters_the_in_process_cache(instance: dict) -> None:
+    config = _NoCacheConfig()
+    client = _client(config, instance, {"userId": "u1", "role": "member"})
+    assert client.get(URL).status_code == 200
+    assert client.put(URL, json={"token": SECRET}).status_code == 200
+    assert client.get(URL).json()["status"] == personal_tokens.LINKED

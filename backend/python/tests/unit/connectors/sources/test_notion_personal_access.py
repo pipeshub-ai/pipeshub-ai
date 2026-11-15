@@ -19,6 +19,7 @@ from app.connectors.sources.notion.connector import (
 from app.connectors.sources.notion_personal.connector import NotionPersonalConnector
 from app.models.blocks import (
     Block,
+    BlocksContainer,
     BlockSubType,
     BlockType,
     ChildRecord,
@@ -374,6 +375,48 @@ def test_a_page_shows_no_title_of_a_page_or_database_it_links_to_or_holds() -> N
     assert text.data == "Quarterly plan"
 
 
+async def _streamed(conn: NotionConnector, record: Record) -> str:
+    conn.data_source = MagicMock()
+    conn._retry_once_after_401 = lambda call: call()
+    response = await conn.stream_record(record)
+    return b"".join([c async for c in response.body_iterator]).decode()
+
+
+def _streamable(ext: str, record_type: RecordType = RecordType.WEBPAGE) -> Record:
+    rec = _record(ext, record_type)
+    rec.record_name, rec.weburl, rec.external_revision_id = "Plan", None, None
+    return rec
+
+
+def _stored(name: str) -> MagicMock:
+    rec = MagicMock(spec=Record)
+    rec.id, rec.record_name, rec.is_placeholder = "rid-secret", name, False
+    return rec
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_page_shows_no_title_of_a_page_it_links_to() -> None:
+    """Streaming is what indexing and preview read: the link's title is filled in after the fetch."""
+    conn = _connector()
+    link = Block(type=BlockType.TEXT, sub_type=BlockSubType.CHILD_RECORD, format=DataFormat.TXT, data="Page p-secret",
+                 source_id="p-secret", source_type="link_to_page", name="WEBPAGE")
+    conn._fetch_page_as_blocks = AsyncMock(return_value=BlocksContainer(blocks=[link], block_groups=[]))
+    conn._attach_stream_comments = AsyncMock()
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=_stored("Layoffs 2027"))
+    body = await _streamed(conn, _streamable("p1"))
+    assert "Layoffs 2027" not in body and "rid-secret" in body, "the link keeps its target, not its title"
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_table_shows_no_title_of_a_rows_subpage() -> None:
+    conn = _connector()
+    row = Block(type=BlockType.TABLE_ROW, format=DataFormat.JSON, data={}, source_id="row-1")
+    conn._fetch_data_source_as_blocks = AsyncMock(return_value=BlocksContainer(blocks=[row], block_groups=[]))
+    conn.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[_stored("Layoffs 2027")])
+    body = await _streamed(conn, _streamable("ds1", RecordType.DATASOURCE))
+    assert "Layoffs 2027" not in body and "rid-secret" in body
+
+
 # ---- what a page's content may show of other pages --------------------------------------------
 
 def _mention(kind: str, title: str) -> dict[str, Any]:
@@ -384,7 +427,12 @@ def test_mentions_rollups_and_relation_formulas_lose_what_comes_from_other_pages
     body = {"results": [{
         "object": "block", "type": "paragraph", "paragraph": {"rich_text": [
             {"type": "text", "plain_text": "See "}, _mention("page", "Layoffs 2027"), _mention("database", "Salaries"),
-            _mention("user", "Alice"), _mention("date", "2027-01-01")]},
+            _mention("user", "Alice"), _mention("date", "2027-01-01"),
+            {"type": "mention", "mention": {"type": "link_mention", "link_mention": {
+                "href": "https://www.notion.so/acme/x", "title": "Layoffs 2027", "description": "Layoffs 2027 plan"}},
+             "plain_text": "Layoffs 2027", "href": "https://www.notion.so/acme/x"},
+            {"type": "mention", "mention": {"type": "some_new_kind", "some_new_kind": {"id": "y", "name": "Salaries"}},
+             "plain_text": "Salaries"}]},
     }, {
         "object": "page", "properties": {
             "Project": {"type": "relation", "relation": [{"id": "r1"}]},
@@ -396,8 +444,11 @@ def test_mentions_rollups_and_relation_formulas_lose_what_comes_from_other_pages
     }]}
     _without_linked_content(body)
     rich = body["results"][0]["paragraph"]["rich_text"]
-    assert [r["plain_text"] for r in rich] == ["See ", "", "", "Alice", "2027-01-01"]
+    assert [r["plain_text"] for r in rich] == ["See ", "", "", "Alice", "2027-01-01", "https://www.notion.so/acme/x", ""]
     assert rich[1]["mention"]["page"]["id"] == "x", "the link keeps its target"
+    assert rich[5]["mention"]["link_mention"] == {"href": "https://www.notion.so/acme/x"}, "a pasted link keeps its URL only"
+    assert rich[6]["mention"]["some_new_kind"] == {"id": "y"}, "a mention Notion does not document shows nothing"
+    assert "Layoffs" not in str(rich) and "Salaries" not in str(rich)
     related = body["results"][1]["properties"]
     assert related["Budget"]["rollup"] == {"type": "unsupported"}
     assert related["Owner names"]["formula"] == {"type": "unsupported"}
@@ -607,6 +658,33 @@ async def test_grants_the_budget_cannot_recheck_expire_to_withheld_and_are_reche
     conn.config_service.values[path] = {"p1": expired - 2, "p2": expired - 1, "p3": expired}
     await conn._load_personal_access()
     assert set(conn._readers) == {"p1"}, "only the re-confirmed grant is served; the rest wait, withheld"
+    conn._readers = {}
+    await conn._load_personal_access()
+    assert set(conn._readers) == {"p1", "p2"}
+
+
+@pytest.mark.parametrize("failure", [
+    _make_api_response(success=False, status=None),  # a transport error, or a 429 or 5xx after retries
+    _make_api_response(success=False, status=503),
+    _make_api_response(success=False, status=429),
+])
+@pytest.mark.asyncio
+async def test_a_check_notion_did_not_answer_withholds_the_page_this_sync_and_keeps_it_for_a_recheck(
+        _now: None, failure: MagicMock) -> None:
+    """Only a 404 or 403 says the person may not open it (developers.notion.com/reference/status-codes)."""
+    ds = _datasource(_bot(), _search("p1", "p2"))
+    conn = _connector(ds)
+    await _link(conn)
+    path = personal_tokens.confirmed_path(conn.connector_id, "u-alice")
+    conn.config_service.values[path] = {"p1": NOW - 5}
+    ds.retrieve_page = AsyncMock(return_value=failure)
+    conn.data_entities_processor.full_sync_running = MagicMock(return_value=True)
+    await conn._load_personal_access()
+    assert conn._readers == {}, "neither is confirmed this sync"
+    assert conn.config_service.values[path] == {"p1": NOW - 5}, "not recorded as denied: re-checked next sync"
+    assert conn._sync_incomplete
+
+    ds.retrieve_page = AsyncMock(side_effect=lambda object_id, **_: _object(object_id))
     conn._readers = {}
     await conn._load_personal_access()
     assert set(conn._readers) == {"p1", "p2"}
