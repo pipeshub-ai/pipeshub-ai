@@ -1136,3 +1136,79 @@ def test_the_hop_order_indexes_are_partial_byte_ordered_and_on_every_leaf(rdb):
             leaves = c.execute("SELECT count(*) FROM pg_partition_tree(%s::regclass) WHERE isleaf", (f"graph.{idx}",)).fetchone()[0]
             parts = c.execute("SELECT count(*) FROM pg_partition_tree('graph.edges'::regclass) WHERE isleaf").fetchone()[0]
             assert leaves == parts and leaves > 0, (idx, leaves, parts)
+
+
+# ---- the records and files that link a storage document (graph_0013) -----------------------------------------------------------------------
+REF = "SELECT doc_id, kind, node_id, origin FROM graph.ref_links(%s::text[], 'UPLOAD', 'KB', %s) ORDER BY 1, 2, 3"
+
+
+def _seed_ref_links(c):
+    """The same document ids in both orgs: a KB upload behind ten connector links, records without origin or connector name (NULL in the upload test),
+    files by storage path, and a record of another collection with the same key."""
+    for org in (A, B):
+        as_role(c, "pipeshub_connectors", org)
+        for i in range(10):
+            c.execute(NODE, (org, "records", f"c{i}", json.dumps({"externalRecordId": "d1", "origin": "CONNECTOR", "connectorName": "WEB", "connectorId": "w"})))
+        c.execute(NODE, (org, "records", "zup", json.dumps({"externalRecordId": "d1", "origin": "UPLOAD", "connectorName": "KB", "connectorId": "kb1"})))
+        c.execute(NODE, (org, "records", "anull", json.dumps({"externalRecordId": "d2", "origin": "UPLOAD", "connectorId": "x"})))
+        c.execute(NODE, (org, "records", "bup", json.dumps({"externalRecordId": "d2", "origin": "UPLOAD", "connectorName": "KB", "connectorId": "kb1"})))
+        c.execute(NODE, (org, "files", "f2", json.dumps({"path": "storage://d3"})))
+        c.execute(NODE, (org, "files", "f1", json.dumps({"path": "storage://d3"})))
+        c.execute(NODE, (org, "recordGroups", "g", json.dumps({"externalRecordId": "d4"})))
+    as_role(c, "pipeshub_connectors", B)
+    c.execute(NODE, (B, "records", "only-b", json.dumps({"externalRecordId": "d5", "origin": "UPLOAD", "connectorName": "KB", "connectorId": "kb9"})))
+    c.execute(NODE, (B, "files", "only-b-file", json.dumps({"path": "storage://d5"})))
+
+
+def test_the_links_of_a_document_are_the_orgs_own_capped_per_document_with_the_upload_first(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_ref_links(c)
+        as_role(c, "pipeshub_connectors", A)
+        got = _ids(c, REF, ["d1", "d2", "d3", "d4", "d5", "d1"], 3)
+        assert got == [("d1", "externalRecordId", "c0", "CONNECTOR"), ("d1", "externalRecordId", "c1", "CONNECTOR"), ("d1", "externalRecordId", "zup", "UPLOAD"),
+                       ("d2", "externalRecordId", "anull", "UPLOAD"), ("d2", "externalRecordId", "bup", "UPLOAD"), ("d3", "files.path", "f1", None)], got
+        assert _ids(c, REF, ["d1"], 1) == [("d1", "externalRecordId", "zup", "UPLOAD")]          # the upload outranks every other link
+        assert _ids(c, REF, ["d2"], 1) == [("d2", "externalRecordId", "bup", "UPLOAD")]          # and a record whose upload test is NULL
+        # another org's records and files that name a document are never answered, nor anything of their rows
+        assert _ids(c, REF, ["d5"], 8) == []
+        as_role(c, "pipeshub_connectors", B)
+        assert _ids(c, REF, ["d5"], 8) == [("d5", "externalRecordId", "only-b", "UPLOAD"), ("d5", "files.path", "only-b-file", None)]
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            assert _ids(c, REF, ["d1", "d5"], 8) == [], org
+
+
+def test_the_link_read_refuses_bad_arguments_and_is_for_the_graph_services_only(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        for args in ((None, "UPLOAD", "KB", 8), ([None], "UPLOAD", "KB", 8), ([""], "UPLOAD", "KB", 8), (["d" * 201], "UPLOAD", "KB", 8), (["d"] * 1001, "UPLOAD", "KB", 8),
+                     (["d"], None, "KB", 8), (["d"], "", "KB", 8), (["d"], "UPLOAD", None, 8), (["d"], "UPLOAD", "K" * 101, 8), (["d"], "UPLOAD", "KB", None),
+                     (["d"], "UPLOAD", "KB", 0), (["d"], "UPLOAD", "KB", 101)):
+            with pytest.raises(psycopg.errors.InvalidParameterValue):
+                c.execute("SELECT * FROM graph.ref_links(%s::text[], %s, %s, %s)", args)
+            c.execute("ROLLBACK")
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False), ("pipeshub_kv", False)):
+            has = c.execute("SELECT has_function_privilege(%s, 'graph.ref_links(text[], text, text, int)', 'EXECUTE')", (role,)).fetchone()[0]
+            assert has is ok, role
+        assert not c.execute("SELECT has_function_privilege('public', 'graph.ref_links(text[], text, text, int)', 'EXECUTE')").fetchone()[0]
+        assert c.execute("SELECT prosecdef FROM pg_proc WHERE oid = 'graph.ref_links(text[], text, text, int)'::regprocedure").fetchone()[0]
+
+
+def test_the_link_read_uses_its_two_indexes_where_the_plain_statement_cannot(rdb):
+    """20,000 records and files in the org, across connectors. Seven calls: the plpgsql plan cache goes generic after five."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('externalRecordId', 'e' || i, 'connectorId', 'c' || (i %% 50), 'origin', 'CONNECTOR') "
+                  "FROM generate_series(1, 20000) i", (A,))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'files', 'f' || i, jsonb_build_object('path', 'storage://e' || i) FROM generate_series(1, 20000) i", (A,))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT node_id FROM graph.ref_links(%s::text[], 'UPLOAD', 'KB', 8)", (["e7", "e777", "nope"],))
+        for i in (0, 6):
+            assert "nodes_record_external_any" in plans[i] and "nodes_file_path" in plans[i] and "Seq Scan on" not in plans[i], (i, plans[i])
+        plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' "
+                                                                           "AND n.doc->>'externalRecordId' = 'e777'")
+        assert not any(re.search(r"Index Cond: .*externalRecordId", p) for p in plain), plain[0]
