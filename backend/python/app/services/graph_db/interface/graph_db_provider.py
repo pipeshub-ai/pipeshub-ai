@@ -702,6 +702,38 @@ class IGraphDBProvider(ABC):
         """Clone an agent template"""
         pass
 
+    @abstractmethod
+    async def get_all_agent_templates(self, user_id: str, transaction: str | None=None) -> list[dict]:
+        """The live templates the user reaches by their own grant or a team's, with their access."""
+        pass
+
+    @abstractmethod
+    async def update_agent_template(self, template_id: str, template_updates: dict[str, Any], user_id: str, transaction: str | None=None) -> bool | None:
+        """Update a template the user owns; False otherwise."""
+        pass
+
+    @abstractmethod
+    async def delete_agent_template(self, template_id: str, user_id: str, transaction: str | None=None) -> bool | None:
+        """Soft-delete a template the user owns; False otherwise."""
+        pass
+
+    @abstractmethod
+    async def get_all_agents(self, user_id: str, org_id: str, page: int | None=None, limit: int | None=None, search: str | None=None,
+                             sort_by: str | None=None, sort_order: str | None=None, is_deleted: bool=False,  # noqa: FBT001, FBT002 - positional, as the stores take it
+                             transaction: str | None=None) -> list[dict] | dict[str, Any]:
+        """The agents the user reaches (own grant or the org's share), searched, sorted and paged (``{agents, totalItems}`` with ``page`` and ``limit``)."""
+        pass
+
+    @abstractmethod
+    async def update_agent(self, agent_id: str, agent_updates: dict[str, Any], user_id: str, org_id: str, transaction: str | None=None) -> bool | None:
+        """Update an agent the user may edit; False otherwise."""
+        pass
+
+    @abstractmethod
+    async def delete_agent(self, agent_id: str, user_id: str, org_id: str, transaction: str | None=None) -> bool | None:
+        """Soft-delete an agent the user owns; False otherwise."""
+        pass
+
     # ==================== Connection Management ====================
 
     @abstractmethod
@@ -3753,7 +3785,9 @@ class IGraphDBProvider(ABC):
             transaction: Optional transaction ID
 
         Returns:
-            Tuple of (list of KB dicts, total count, available_filters dict)
+            Tuple of (list of KB dicts, total count, available_filters dict). Each KB's
+            ``folders`` holds at most ``KB_LIST_FOLDERS_CAP`` of its folders, the first
+            by id, and ``foldersTruncated`` is True when it has more.
         """
         pass
 
@@ -7452,7 +7486,7 @@ class IGraphDBProvider(ABC):
 
     @abstractmethod
     async def check_agent_permission(
-        self, agent_id: str, user_id: str, org_id: str
+        self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None
     ) -> dict | None:
         """
         Lightweight permission check: returns the caller's access rights on an
@@ -7469,6 +7503,8 @@ class IGraphDBProvider(ABC):
             agent_id: The agent key / ID.
             user_id:  The internal user key (_key in ArangoDB, id in Neo4j).
             org_id:   The organisation key.
+            transaction: Optional transaction ID; a check before a write in a
+                         transaction reads the grants as that transaction sees them.
 
         Returns:
             Dict with keys ``{user_role, can_edit, can_delete, can_share,
