@@ -156,7 +156,7 @@ def world(monkeypatch):  # noqa: ANN201
         }
 
     store._embed_entities = embed
-    store._embed_changed = lambda entities, states, fingerprint: embed(entities)
+    store._embed_changed = lambda entities, states, fingerprint, precision=None: embed(entities)
     return SimpleNamespace(config=config, vdb=vdb, pins=pins, registry=registry, store=store, served=served)
 
 
@@ -176,8 +176,8 @@ async def _seed_int8_index(w) -> None:
     await w.registry._manifest_store.record(ManagedCollection(
         name=RECORDS, collection_type="records", embedding_dimension=4, strategy_name="single", embedding_model="m",
     ))
-    await w.pins.claim(RECORDS, INT8)
-    await w.pins.claim(ENTITIES, INT8)
+    await w.pins._claim_unfenced(RECORDS, INT8)
+    await w.pins._claim_unfenced(ENTITIES, INT8)
 
 
 def _handler(w, monkeypatch, *, entity_store=True):  # noqa: ANN202
@@ -243,8 +243,8 @@ async def test_after_the_cleanup_records_and_entity_writes_both_succeed_at_the_n
 async def test_the_pin_of_a_collection_that_is_still_there_is_kept_and_an_orphans_is_released(world, monkeypatch) -> None:
     await _seed_int8_index(world)
     world.vdb.add("other", FP32, n=2)  # a live collection the cleanup does not manage
-    await world.pins.claim("other", FP32)
-    await world.pins.claim("gone", INT8)  # a collection that no longer exists
+    await world.pins._claim_unfenced("other", FP32)
+    await world.pins._claim_unfenced("gone", INT8)  # a collection that no longer exists
     handler = _handler(world, monkeypatch)
     assert [e async for e in handler._delete_vector_collection()]
     assert await world.pins.keys() == [world.pins.key("other")]
@@ -264,7 +264,7 @@ async def test_without_an_entity_store_the_entity_pin_stays_with_its_vectors(wor
 @pytest.mark.asyncio
 async def test_a_pin_that_cannot_be_released_publishes_the_failed_phase(world, monkeypatch) -> None:
     await _seed_int8_index(world)
-    await world.pins.claim("gone", INT8)  # an orphan, whose release the store refuses
+    await world.pins._claim_unfenced("gone", INT8)  # an orphan, whose release the store refuses
     real_delete = world.config.delete_config
 
     async def delete(key):  # noqa: ANN202
@@ -282,14 +282,14 @@ async def test_a_pin_that_cannot_be_released_publishes_the_failed_phase(world, m
 @pytest.mark.asyncio
 async def test_an_entity_batch_written_while_the_pin_moved_is_removed_and_handed_back(world) -> None:
     """The pin is int8 when the batch is checked; a cleanup and an fp32 writer replace it before the write lands."""
-    await world.pins.claim(ENTITIES, INT8)
+    await world.pins._claim_unfenced(ENTITIES, INT8)
     world.vdb.add(ENTITIES, INT8, entityType="person", entityId="p0")
     world.served["precision"] = INT8
     real = world.vdb.upsert_points
 
     async def pin_moves_then_write(collection_name, points):  # noqa: ANN202
         await world.pins.release(ENTITIES)
-        await world.pins.claim(ENTITIES, FP32)
+        await world.pins._claim_unfenced(ENTITIES, FP32)
         await real(collection_name, points)
 
     world.vdb.upsert_points = pin_moves_then_write

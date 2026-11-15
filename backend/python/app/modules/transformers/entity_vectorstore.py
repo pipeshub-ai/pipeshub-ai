@@ -69,9 +69,11 @@ from app.exceptions.indexing_exceptions import (
 from app.modules.indexing.embed_resume import POINT_PRECISION
 from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
 from app.services.messaging.precision_flip import PrecisionFlip
-from app.services.vector_db.collection_pin import STAMP_TAG, CollectionPinStore
+from app.services.vector_db.collection_epoch import POINT_EPOCH, Fence
+from app.services.vector_db.collection_pin import FP32, INT8, STAMP_TAG, CollectionPinStore
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
+    EMBED_EPOCH_FIELD,
     EMBED_PRECISION_FIELD,
     RECORD_GROUP_IDS_FIELD,
 )
@@ -816,7 +818,7 @@ class EntityVectorStore:
         async def drop_and_create() -> None:
             info = await self.vector_db_service.get_collection_info(name)
             if info.exists:
-                await self.vector_db_service.delete_collection(name)
+                await self._drop_collection(name)
             await CollectionPinStore(self.config_service, self.logger).release_collection(name)
             await self._create_collection(name)
             self._ready_collections.discard(name)
@@ -861,8 +863,15 @@ class EntityVectorStore:
             "" if holds_entities else " (it holds no entities)",
         )
         if current.exists:
-            await self.vector_db_service.delete_collection(name)
+            await self._drop_collection(name)
         await self._create_collection(name)
+
+    async def _drop_collection(self, name: str) -> None:
+        """Drop the collection's vectors between a new epoch and the confirmation of the drop (see ``CollectionEpochs``)."""
+        epochs = CollectionPinStore(self.config_service, self.logger).epochs
+        ticket = await epochs.begin_reset(name)
+        await self.vector_db_service.delete_collection(name)
+        await epochs.confirm_reset(ticket)
 
     async def _create_collection(self, name: str) -> None:
         guard = self._guard()
@@ -898,6 +907,7 @@ class EntityVectorStore:
             ("metadata.kind", {"type": "keyword"}),
             # The guard counts points by this tag; Redis cannot filter a field its index does not have.
             (EMBED_PRECISION_FIELD, {"type": "keyword"}),
+            (EMBED_EPOCH_FIELD, {"type": "keyword"}),
             (CONNECTOR_IDS_FIELD, {"type": "keyword"}),
             (RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),
         ]:
@@ -1181,6 +1191,11 @@ class EntityVectorStore:
         generation = self._generation
         config_hash = self._config_hash
         fingerprint = self._fingerprint()
+        # The epoch this batch is accepted under: read before anything is embedded, checked when the pin is claimed
+        # and again once the points are written, and written into every point.
+        fence = await self._guard().capture(collection)
+        # An entity stored with the other precision than the pin's is not unchanged: it is written again.
+        pinned = (await self._guard().standing(collection, named[0].org_id, fresh=True, derive=False)).precision
         # Read and embed without the locks. A failed read in merge mode skips
         # the batch: merging against an assumed-empty state would drop every
         # other writer's membership.
@@ -1191,7 +1206,7 @@ class EntityVectorStore:
                 raise
             self.logger.warning("Entity state read failed; rewriting %d points in full: %s", len(named), exc)
             early = {}
-        vectors = await self._embed_changed(named, early, fingerprint)
+        vectors = await self._embed_changed(named, early, fingerprint, pinned)
 
         async with contextlib.AsyncExitStack() as locks:
             # Sorted, deduped acquisition order rules out circular waits
@@ -1216,7 +1231,7 @@ class EntityVectorStore:
                 else:
                     connector_ids = self._union_ids([], entity.connector_ids)
                     record_group_ids = self._union_ids([], entity.record_group_ids)
-                if existing is not None and self._same_content(existing, entity, fingerprint):
+                if existing is not None and self._same_content(existing, entity, fingerprint, pinned):
                     if (
                         list(existing["connectorIds"]) != connector_ids
                         or list(existing["recordGroupIds"]) != record_group_ids
@@ -1257,13 +1272,15 @@ class EntityVectorStore:
             # an int8 claim, so points written before the pins existed (fp32) are found and not mixed with.
             batch_org = named[0].org_id
             for precision, fallback in {w for w in witnessed.values() if w is not None}:
-                await self._guard().verify_batch(collection, batch_org, precision, fallback=fallback, intent="int8-w")
+                await self._guard().verify_batch(
+                    collection, batch_org, precision, fallback=fallback, intent="int8-w", fence=fence,
+                )
 
             points = []
             for entity, connector_ids, record_group_ids in pending:
                 point_id = self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
                 dense, sparse, _ = vectors[point_id]
-                tag = {POINT_PRECISION: witnessed[point_id][0]} if witnessed.get(point_id) else {}
+                tag = {POINT_PRECISION: witnessed[point_id][0], POINT_EPOCH: fence.token} if witnessed.get(point_id) else {}
                 points.append(VectorPoint(
                     id=point_id,
                     dense_vector=dense,
@@ -1277,12 +1294,13 @@ class EntityVectorStore:
                 ))
             await self._raise_if_config_moved(config_hash)
             await self.vector_db_service.upsert_points(collection_name=collection, points=points)
-            await self._confirm_precision_after_write(collection, batch_org, witnessed, [e for e, _, _ in pending])
+            await self._confirm_precision_after_write(collection, batch_org, witnessed, [e for e, _, _ in pending], fence)
             outcome.written += len(points)
             settled.update(point.id for point in points)
 
     async def _confirm_precision_after_write(
         self, collection: str, org: str, witnessed: dict[str, tuple[str, bool] | None], written: list[EntityRecord],
+        fence: Fence,
     ) -> None:
         """The pin is read again after the write: a cleanup that released it, or a writer of the other precision that
         claimed it, between the check and the write would otherwise leave these points beside the other precision.
@@ -1291,18 +1309,19 @@ class EntityVectorStore:
         """
         for precision in {w[0] for w in witnessed.values() if w is not None}:
             try:
-                await self._guard().confirm_after_write(collection, org, precision)
+                await self._guard().confirm_after_write(collection, org, precision, fence)
             except PrecisionFlip:
-                await self._remove_written(org, precision, witnessed, written)
+                await self._remove_written(org, precision, witnessed, written, fence)
                 raise
 
     async def _remove_written(
         self, org: str, precision: str, witnessed: dict[str, tuple[str, bool] | None], written: list[EntityRecord],
+        fence: Fence,
     ) -> None:
         """Remove the points this batch wrote at *precision*, and only those.
 
-        The filter carries the precision tag as well as the ids: another replica's replacement of the same entity at
-        the pin's precision is a valid point and must stay. A delete that fails is logged and does not replace the
+        The filter carries the precision tag and the batch's epoch as well as the ids: another writer's points
+        for the same entities (another precision, or another epoch) are valid and must stay. A delete that fails is logged and does not replace the
         ``PrecisionFlip`` the caller is about to raise: the record must be handed back, not counted as a failed write.
         """
         by_type: dict[str, list[str]] = {}
@@ -1312,7 +1331,7 @@ class EntityVectorStore:
                 by_type.setdefault(entity.entity_type.value, []).append(entity.entity_id)
         for entity_type, ids in by_type.items():
             try:
-                await self.delete_entities(org, entity_type, ids, precision=precision)
+                await self.delete_entities(org, entity_type, ids, precision=precision, epoch=fence.token)
             except Exception:
                 self.logger.error(
                     "Could not remove the %s entity points of a rejected batch (org %s, type %s); handing the batch back anyway",
@@ -1321,13 +1340,14 @@ class EntityVectorStore:
 
     async def _embed_changed(
         self, entities: list[EntityRecord], states: dict[str, dict[str, Any]], fingerprint: str,
+        precision: str | None = None,
     ) -> dict[str, tuple[list[float], Any, tuple[str, bool] | None]]:
         """Vectors, by point id, for the entities whose stored content does
         not already match (per ``states``)."""
         changed = [
             e for e in entities
             if not self._same_content(
-                states.get(self._point_id(e.org_id, e.entity_type.value, e.entity_id)) or {}, e, fingerprint,
+                states.get(self._point_id(e.org_id, e.entity_type.value, e.entity_id)) or {}, e, fingerprint, precision,
             )
         ]
         return await self._embed_entities(changed) if changed else {}
@@ -1500,14 +1520,22 @@ class EntityVectorStore:
         return states
 
     @staticmethod
-    def _same_content(existing: dict[str, Any], entity: EntityRecord, fingerprint: str) -> bool:
+    def _same_content(
+        existing: dict[str, Any], entity: EntityRecord, fingerprint: str, precision: str | None = None,
+    ) -> bool:
         """True when the stored text and metadata are what ``entity`` would
         write and the stored vector came from the current model, so it needs
-        no re-embedding."""
+        no re-embedding.
+
+        With *precision* (the index's pin), a point tagged with the other precision is not the same: it is written
+        again, over the same id, so a point left by a writer that died before it confirmed is replaced, not kept."""
         if not existing.get("exists") or existing.get("page_content") != entity.embedding_text:
             return False
         metadata = dict(existing.get("metadata") or {})
-        metadata.pop(POINT_PRECISION, None)  # which weights made the vector is not content: the fingerprint carries the setting
+        stored = metadata.pop(POINT_PRECISION, None)  # which weights made the vector is not content: the fingerprint carries the setting
+        if precision and stored in (FP32, INT8) and stored != precision:
+            return False
+        metadata.pop(POINT_EPOCH, None)
         return (
             metadata.pop(EMBEDDING_MODEL_FIELD, None) == fingerprint
             and metadata == entity.to_vector_payload()
@@ -1559,6 +1587,7 @@ class EntityVectorStore:
 
     async def delete_entities(
         self, org_id: str, entity_type: str, entity_ids: list[str], *, precision: str | None = None,
+        epoch: str | None = None,
     ) -> None:
         """Delete ``entity_ids`` of one type in one org. Raises on failure.
 
@@ -1573,7 +1602,7 @@ class EntityVectorStore:
         if collection is None:
             return
         await self.vector_db_service.delete_points(
-            collection, await self._entities_filter(org_id, entity_type, ids, precision=precision),
+            collection, await self._entities_filter(org_id, entity_type, ids, precision=precision, epoch=epoch),
         )
 
     async def delete_unreached_entities(
@@ -1988,6 +2017,7 @@ class EntityVectorStore:
 
     async def _entities_filter(
         self, org_id: str, entity_type: str, entity_ids: list[str], *, precision: str | None = None,
+        epoch: str | None = None,
     ) -> FilterExpression:
         must: dict[str, Any] = {
             "metadata.orgId": org_id,
@@ -1996,6 +2026,8 @@ class EntityVectorStore:
         }
         if precision:
             must[EMBED_PRECISION_FIELD] = [precision]
+        if epoch:
+            must[EMBED_EPOCH_FIELD] = [epoch]
         return await self.vector_db_service.filter_collection(must=must)
 
     # ------------------------------------------------------------------

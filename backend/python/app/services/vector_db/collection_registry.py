@@ -611,18 +611,28 @@ class CollectionRegistry:
         """Release the pins of collections that no longer exist; a pin over a collection that is there stays."""
         return await self._pins().release_orphans(self._vector_db_service.collection_exists)
 
+    async def sweep_dead_epochs(self) -> None:
+        """Delete, from every managed collection, the points written under retired epochs (the cleanup's tail)."""
+        for entry in await self.list_managed_collections(fresh=True):
+            await self._guard().sweep_dead(entry.name, None)
+
     async def delete_collection(self, name: str) -> None:
         """Idempotent drop: a missing collection is treated as success."""
         await self._drop(name)
         await self._manifest_store.forget(name)
 
     async def _drop(self, name: str) -> None:
+        # A new epoch is current before anything is dropped, so a batch that was embedded for the old index can
+        # no longer claim a pin or confirm a write; the old one is retired only once the drop is confirmed.
+        # A bump that cannot be written stops the drop here.
+        ticket = await self._pins().epochs.begin_reset(name)
         try:
             await self._vector_db_service.delete_collection(name)
         except Exception as e:
             if not _is_collection_missing(e):
                 raise
             self._logger.info("Collection %s already absent", name)
+        await self._pins().epochs.confirm_reset(ticket)
         self._existence.invalidate(name)
         # After the vectors, never before: a crash in between leaves a pin over nothing, which the next
         # creator of the collection replaces; the other order would leave vectors with no pin. A pin the

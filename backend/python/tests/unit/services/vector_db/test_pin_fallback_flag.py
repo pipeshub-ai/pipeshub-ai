@@ -18,6 +18,6 @@ log = logging.getLogger("fallback-flag")
 async def test_a_fallback_flag_over_an_int8_pin_is_refused_even_when_the_header_says_int8() -> None:
     pins = CollectionPinStore(ConfigurationService(log, InMemoryKeyValueStore(log)), log)
     guard = PrecisionGuard(pins, _FakeDb(), log)
-    await pins.claim("c", INT8, "o1")
+    await pins._claim_unfenced("c", INT8, "o1")
     with pytest.raises(PrecisionFlip, match="fell back"):
         await guard.verify_batch("c", "o1", INT8, fallback=True, intent=INT8)

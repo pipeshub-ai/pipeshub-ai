@@ -46,7 +46,7 @@ async def test_any_other_batch_error_is_still_wrapped(sequential: bool) -> None:
 async def _leaking_store():  # noqa: ANN202
     db = _FakeDb()
     store = _store(db, INT8)
-    await store._guard._pins.claim("records", INT8)
+    await store._guard._pins._claim_unfenced("records", INT8)
     real = store._embed_and_upsert_documents
 
     async def leak_then_store(*a, **k):  # noqa: ANN202
@@ -82,7 +82,7 @@ async def test_the_class_unit_write_removes_a_leaked_point_and_hands_the_record_
 async def test_a_summary_write_with_nothing_leaked_completes() -> None:
     db = _FakeDb()
     store = _store(db, INT8)
-    await store._guard._pins.claim("records", INT8)
+    await store._guard._pins._claim_unfenced("records", INT8)
     store._build_record_summary_document = lambda *a, **k: Document(page_content="summary", metadata=dict(_DOC_META))
     await store.index_record_summary("rec-1", VRID, ORG, semantic_metadata=None)
     assert [p["embedPrecision"] for p in db.points] == [INT8]

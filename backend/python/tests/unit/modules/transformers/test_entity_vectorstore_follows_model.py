@@ -606,10 +606,14 @@ class TestConfigReads:
             for _ in range(3):
                 await store.search_entities("pricing", ORG, set(), {"c1"})
             assert reads == 1
-            # A write re-reads the store once per batch, before it upserts.
+            # A write reads the store a few times per batch, before it upserts.
+            per_batch = []
             for entity_id in ("t1", "t2", "t3"):
+                before = reads
                 await store.upsert_entities_batch([_topic(entity_id)], merge_membership=False)
-            assert reads == 4
+                per_batch.append(reads - before)
+            # The config re-read, the epoch pointer and the pin, each fresh; the first batch also creates the epoch.
+            assert per_batch == [4, 3, 3]
 
     async def test_a_missed_notification_is_caught_by_the_periodic_read(self, monkeypatch) -> None:
         db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)

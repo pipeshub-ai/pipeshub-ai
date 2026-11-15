@@ -230,7 +230,7 @@ async def test_a_stale_pin_over_an_empty_org_space_does_not_block_the_write_that
     config = ConfigurationService(log, InMemoryKeyValueStore(log))
     pins = CollectionPinStore(config, log, clock=lambda: now[0])
     guard = PrecisionGuard(pins, _service(runtime), log)
-    await pins.claim("records", INT8, ORG)  # left by a crash: the org's space was emptied, the pin was not removed
+    await pins._claim_unfenced("records", INT8, ORG)  # left by a crash: the org's space was emptied, the pin was not removed
     now[0] += 3600
     await guard.verify_batch("records", ORG, FP32, fallback=False, intent=INT8)
     assert (await pins.get("records", ORG, fresh=True)).precision == FP32
@@ -238,7 +238,7 @@ async def test_a_stale_pin_over_an_empty_org_space_does_not_block_the_write_that
 
     # the same pin over a space that holds int8 points keeps refusing the other precision
     await pins.release("records", ORG)
-    await pins.claim("records", INT8, ORG)
+    await pins._claim_unfenced("records", INT8, ORG)
     now[0] += 3600
     runtime.tagged = {INT8: 3}
     with pytest.raises(PrecisionFlip):

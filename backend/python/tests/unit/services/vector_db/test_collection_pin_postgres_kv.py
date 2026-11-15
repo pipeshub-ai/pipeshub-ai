@@ -82,7 +82,7 @@ def _process(runtime: _Runtime):  # noqa: ANN202
 async def test_two_processes_claiming_with_different_precision_leave_one_pin() -> None:
     runtime = _Runtime()
     (_, pins_a), (_, pins_b) = _process(runtime), _process(runtime)
-    one, two = await asyncio.gather(pins_a.claim("c", INT8, "o1"), pins_b.claim("c", FP32, "o1"))
+    one, two = await asyncio.gather(pins_a._claim_unfenced("c", INT8, "o1"), pins_b._claim_unfenced("c", FP32, "o1"))
     assert one.precision == two.precision
     assert len(runtime.table) == 1
 
@@ -91,7 +91,7 @@ async def test_two_processes_claiming_with_different_precision_leave_one_pin() -
 async def test_a_process_that_missed_the_notification_sees_the_release_on_an_uncached_read() -> None:
     runtime = _Runtime()
     (_, pins_a), (_, pins_b) = _process(runtime), _process(runtime)
-    await pins_a.claim("c", INT8, "o1")
+    await pins_a._claim_unfenced("c", INT8, "o1")
     assert (await pins_b.get("c", "o1")).precision == INT8  # B now holds the pin in its cache
     await pins_a.release("c", "o1")
     assert (await pins_b.get("c", "o1")).precision == INT8  # NOTIFY fails open: the cache is stale
@@ -107,21 +107,21 @@ async def test_a_derived_restore_does_not_resurrect_a_released_pin_on_this_store
     guard_b = PrecisionGuard(pins_b, db, log)
     assert (await guard_b.standing("c", "o1")).precision == FP32  # B has seen "tagged fp32 present"
     db.points.clear()
-    await pins_a.claim("c", FP32, "o1")
+    await pins_a._claim_unfenced("c", FP32, "o1")
     await pins_a.release("c", "o1")
     await guard_b.restore("c", "o1", FP32)
-    assert runtime.table == {}
+    assert [k for k in runtime.table if "embedding_pin" in k] == []
 
 
 @pytest.mark.asyncio
 async def test_release_removes_nested_per_org_pins_and_orphans_by_listing_the_directory() -> None:
     runtime = _Runtime()
     _, pins = _process(runtime)
-    await pins.claim("c", INT8)
-    await pins.claim("c", INT8, "o1")
-    await pins.claim("gone", FP32)
-    await pins.claim("gone", INT8, "o9")
-    await pins.claim("live", FP32)
+    await pins._claim_unfenced("c", INT8)
+    await pins._claim_unfenced("c", INT8, "o1")
+    await pins._claim_unfenced("gone", FP32)
+    await pins._claim_unfenced("gone", INT8, "o9")
+    await pins._claim_unfenced("live", FP32)
     await pins.release_collection("c")
     assert sorted(await pins.keys()) == sorted([pins.key("gone"), pins.key("gone", "o9"), pins.key("live")])
 
@@ -136,5 +136,5 @@ async def test_release_removes_nested_per_org_pins_and_orphans_by_listing_the_di
 async def test_a_pin_is_never_replaced_by_a_later_claim() -> None:
     runtime = _Runtime()
     (_, pins_a), (_, pins_b) = _process(runtime), _process(runtime)
-    await pins_a.claim("c", INT8, "o1")
-    assert (await pins_b.claim("c", FP32, "o1")).precision == INT8
+    await pins_a._claim_unfenced("c", INT8, "o1")
+    assert (await pins_b._claim_unfenced("c", FP32, "o1")).precision == INT8

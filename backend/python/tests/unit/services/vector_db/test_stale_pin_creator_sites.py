@@ -106,7 +106,7 @@ async def test_the_create_branch_replaces_a_pin_left_by_a_crash(_witness) -> Non
     await _stale(pins, name, INT8, age_seconds=3600)
     _witness.record(MODEL, FP32)
     await registry.ensure_collection(_ctx(), 4)
-    assert (await pins.get(name, fresh=True)).precision == FP32
+    assert await pins.get(name, fresh=True) is None  # released, not replaced: the first writer claims at its own precision
 
 
 @pytest.mark.asyncio
@@ -133,7 +133,7 @@ async def test_a_creator_never_replaces_a_pin_claimed_after_it_observed_absence(
     _witness.record(MODEL, FP32)
 
     async def writer_claims() -> None:
-        await pins.claim(name, INT8)
+        await pins._claim_unfenced(name, INT8)
 
     vdb.on_create = writer_claims
     await registry.ensure_collection(_ctx(), 4)
@@ -166,7 +166,7 @@ async def test_nothing_is_replaced_without_a_witness_or_under_a_fallback(_witnes
 
 @pytest.mark.asyncio
 async def test_the_stale_rule_runs_with_the_real_claim_and_update_calls(_witness) -> None:
-    """The replacement is one ``update_config`` of the pin's own key; a later claim meets the real create-if-absent."""
+    """The stale pin is deleted, never overwritten: no ``update_config`` is made, and a later claim meets the real create-if-absent."""
     registry, _, config, pins = _registry()
     name = registry.resolve_write_collection(_ctx())
     await _stale(pins, name, INT8, age_seconds=3600)
@@ -180,8 +180,10 @@ async def test_the_stale_rule_runs_with_the_real_claim_and_update_calls(_witness
 
     config.update_config = spy
     await registry.ensure_collection(_ctx(), 4)
-    assert calls == [pins.key(name)]
-    assert (await pins.claim(name, INT8)).precision == FP32  # refused by create-if-absent: the winner's value stands
+    assert calls == []
+    assert await pins.get(name, fresh=True) is None
+    assert (await pins._claim_unfenced(name, FP32)).precision == FP32
+    assert (await pins._claim_unfenced(name, INT8)).precision == FP32  # refused by create-if-absent: the winner's value stands
 
 
 @pytest.mark.asyncio
@@ -200,7 +202,7 @@ async def test_the_cleanup_recreate_replaces_a_stale_pin(_witness, monkeypatch) 
     monkeypatch.setattr(CollectionPinStore, "release_collection", crashed)
     await _stale(pins, name, INT8, age_seconds=3600)
     await registry.recreate_records_collections(4)
-    assert (await pins.get(name, fresh=True)).precision == FP32
+    assert await pins.get(name, fresh=True) is None
 
 
 @pytest.mark.asyncio
@@ -220,7 +222,7 @@ async def test_an_entity_collection_create_replaces_a_stale_pin(_witness) -> Non
     await _stale(pins, "entities", INT8, age_seconds=3600)
     _witness.record(MODEL, FP32)
     await store._create_collection("entities")
-    assert (await pins.get("entities", fresh=True)).precision == FP32
+    assert await pins.get("entities", fresh=True) is None
 
 
 class _Catalog:
@@ -264,8 +266,8 @@ async def test_a_stale_org_pin_is_replaced_only_by_the_replace_empty_space_event
         await svc._space_for_write(ORG, 4, {MODEL})
     except Exception:
         assert not replaced
-    expected = FP32 if replaced else INT8
-    assert (await pins.get(name, ORG, fresh=True)).precision == expected
+    stands = await pins.get(name, ORG, fresh=True)
+    assert (stands is None) if replaced else (stands.precision == INT8)
 
 
 def test_the_registry_listens_to_a_store_with_one_space_per_org() -> None:

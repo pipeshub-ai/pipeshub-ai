@@ -54,8 +54,8 @@ async def test_the_cleanup_releases_the_pins_of_what_it_dropped_and_refreshes_th
     verdict = build_precision_verdict(config, registry, db, graph, log)
     verdict._fetch_states = AsyncMock(return_value={"m": ServerState(FP32, FP32, False)})  # the server now serves fp32
     set_active_verdict(verdict)
-    await pins.claim("records", INT8)
-    await pins.claim("gone", FP32, "o9")  # an orphan left by a collection that no longer exists
+    await pins._claim_unfenced("records", INT8)
+    await pins._claim_unfenced("gone", FP32, "o9")  # an orphan left by a collection that no longer exists
 
     await verdict.refresh()
     assert verdict.mismatch
@@ -89,7 +89,7 @@ async def test_the_cleanup_releases_the_pins_of_what_it_dropped_and_refreshes_th
     handler.logger = log
     handler.event_processor = SimpleNamespace(
         sink_orchestrator=SimpleNamespace(vector_store=vector_store),
-        processor=SimpleNamespace(indexing_pipeline=SimpleNamespace(collection_registry=SimpleNamespace(recreate_records_collections=rebuild, release_orphan_pins=release_orphan_pins))),
+        processor=SimpleNamespace(indexing_pipeline=SimpleNamespace(collection_registry=SimpleNamespace(recreate_records_collections=rebuild, release_orphan_pins=release_orphan_pins, sweep_dead_epochs=AsyncMock()))),
     )
     events = [e async for e in handler._delete_vector_collection()]
     assert events

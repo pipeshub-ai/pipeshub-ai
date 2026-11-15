@@ -12,6 +12,9 @@ from tests.unit.modules.transformers.test_vectorstore_point_ids import (
 )
 
 
+from app.services.vector_db.collection_epoch import Fence  # noqa: E402
+
+
 class _Bundled(EmbeddingServerEmbeddings):
     """The bundled-server client type, with nothing behind it."""
 
@@ -32,6 +35,8 @@ async def _upsert(embedder: object, witnessed: tuple[str, bool] | None) -> list:
     store._embed_documents_with_retry = embed
     store._compute_sparse_embeddings = AsyncMock(return_value=[None])
     store._guard = MagicMock()
+    store._guard.capture = AsyncMock(return_value=Fence("records", "t0"))
+    store._guard.confirm_after_write = AsyncMock()
     store._guard.verify_batch = AsyncMock()
     await store._embed_and_upsert_documents(
         [Document(page_content="alpha", metadata=_meta())], "r1", "records",
@@ -71,6 +76,8 @@ async def test_a_refusal_stops_the_batch_before_the_upsert() -> None:
     store._embed_documents_with_retry = embed
     store._compute_sparse_embeddings = AsyncMock(return_value=[None])
     store._guard = MagicMock()
+    store._guard.capture = AsyncMock(return_value=Fence("records", "t0"))
+    store._guard.confirm_after_write = AsyncMock()
     store._guard.verify_batch = AsyncMock(side_effect=PrecisionFlip("index holds int8-w"))
     with pytest.raises(PrecisionFlip):
         await store._embed_and_upsert_documents([Document(page_content="a", metadata=_meta())], "r1", "records")
@@ -100,6 +107,8 @@ async def test_the_resume_key_does_not_change_when_a_batch_has_been_witnessed() 
     store._embed_documents_with_retry = embed
     store._compute_sparse_embeddings = AsyncMock(return_value=[None])
     store._guard = MagicMock()
+    store._guard.capture = AsyncMock(return_value=Fence("records", "t0"))
+    store._guard.confirm_after_write = AsyncMock()
     store._guard.verify_batch = AsyncMock()
     await store._embed_and_upsert_documents([Document(page_content="alpha", metadata=_meta())], "r1", "records")
     assert store._embed_key() == before  # a retry of the same attempt is still resuming it

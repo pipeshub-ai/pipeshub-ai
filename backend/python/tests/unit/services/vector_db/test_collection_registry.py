@@ -30,7 +30,7 @@ def _make_config_service(*, down: bool = False):
     get_config answers it: ``default``, unless asked to raise."""
     store: dict = {}
 
-    async def get_config(key, default=None, raise_on_error=False):
+    async def get_config(key, default=None, raise_on_error=False, use_cache=False):
         if down:
             if raise_on_error:
                 raise RuntimeError("KV store unreachable")
@@ -44,6 +44,19 @@ def _make_config_service(*, down: bool = False):
     svc.get_config = AsyncMock(side_effect=get_config)
     svc.set_config = AsyncMock(side_effect=set_config)
     svc.list_keys_in_directory = AsyncMock(return_value=[])  # no weight-precision pins to release
+
+    async def create_if_absent(key, value, **_k):
+        if key in store:
+            return False
+        store[key] = value
+        return True
+
+    async def create_key(key, value, overwrite=True, ttl=None):
+        store[key] = value
+        return True
+
+    svc.create_config_if_absent = AsyncMock(side_effect=create_if_absent)
+    svc.store.create_key = AsyncMock(side_effect=create_key)
     return svc
 
 
@@ -720,7 +733,7 @@ class TestARejectedManifestWriteIsRetried:
         stored: dict = {}
         state = {"reject_next_write": True}
 
-        async def get_config(key, default=None, raise_on_error=False):
+        async def get_config(key, default=None, raise_on_error=False, use_cache=False):
             return stored.get(key, default)
 
         async def set_config(key, value):

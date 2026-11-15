@@ -61,7 +61,7 @@ async def _flip_through_the_real_wrappers() -> PrecisionFlip:
     store.graph_provider.get_document = AsyncMock(return_value={"_key": "rec-1"})
     store._is_local_cpu_embedding = lambda: False
     store._guard = PrecisionGuard(CollectionPinStore(config, log), db, log)
-    await store._guard._pins.claim("records", INT8, None)  # the index holds int8; the server answers fp32
+    await store._guard._pins._claim_unfenced("records", INT8, None)  # the index holds int8; the server answers fp32
     store.get_embedding_model_instance = AsyncMock(return_value=False)
     store._ensure_collection = AsyncMock(return_value="records")
     store._bind_membership = AsyncMock(return_value=None)

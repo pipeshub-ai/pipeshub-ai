@@ -50,3 +50,11 @@ def precision_flip_in(exc: BaseException | None) -> PrecisionFlip | None:
         seen.add(id(current))
         current = current.__cause__ or current.__context__
     return None
+
+
+class FenceMoved(PrecisionFlip):
+    """The index was reset (or its pin removed) while this batch was being embedded or written.
+
+    Nothing the batch wrote is kept. The record goes back like any flip, and the retry embeds again against the
+    index as it is now; there is no setting to change, so the message carries no hint.
+    """

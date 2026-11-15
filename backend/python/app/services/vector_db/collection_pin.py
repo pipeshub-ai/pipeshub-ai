@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
 
 from app.config.configuration_service import delete_config_confirmed
-from app.utils.precision_witness import get_precision_witness
+from app.services.vector_db.collection_epoch import CollectionEpochs
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -54,10 +54,11 @@ class Pin:
 
 
 class CollectionPinStore:
-    def __init__(self, config_service, logger, *, clock: Callable[[], float] = time.time) -> None:  # noqa: ANN001
+    def __init__(self, config_service, logger, *, clock: Callable[[], float] = time.time) -> None:
         self._config = config_service
         self._logger = logger
         self._clock = clock
+        self.epochs = CollectionEpochs(config_service, logger, clock=clock)
 
     @staticmethod
     def key(collection: str, org: str | None = None) -> str:
@@ -68,19 +69,34 @@ class CollectionPinStore:
         raw = await self._config.get_config(self.key(collection, org), use_cache=not fresh, raise_on_error=True)
         return Pin.from_value(raw)
 
-    async def claim(self, collection: str, precision: str, org: str | None = None, *, derived: bool = False) -> Pin:
-        """Create the pin if none exists; return the pin that now stands (ours or the winner's)."""
+    async def _try_create(
+        self, collection: str, precision: str, org: str | None = None, *, derived: bool = False,
+    ) -> tuple[Pin, bool]:
+        """Create the pin if none exists: the pin that now stands, and whether this call created it.
+
+        Only ``PrecisionGuard._claim`` (which checks the epoch around it) may call this: a pin made any other way
+        is a claim no cleanup can see.
+        """
         mine = Pin(precision, int(self._clock() * 1000), derived)
         created = await self._config.create_config_if_absent(self.key(collection, org), mine.to_value())
         if created:
-            return mine
+            return mine, True
         standing = await self.get(collection, org, fresh=True)
         if standing is None:  # removed between the two calls: the caller asks again
             raise RuntimeError("the pin changed while it was being claimed")
-        return standing
+        return standing, False
+
+    async def _claim_unfenced(self, collection: str, precision: str, org: str | None = None, *, derived: bool = False) -> Pin:
+        """:meth:`_try_create` without the epoch checks. For tests that seed a pin; nothing in ``app`` may call it."""
+        return (await self._try_create(collection, precision, org, derived=derived))[0]
 
     async def release(self, collection: str, org: str | None = None) -> None:
-        """Remove the pin; raises when the store cannot confirm it is gone."""
+        """Remove the pin; raises when the store cannot confirm it is gone.
+
+        The release is recorded first (a failure to record it stops the release): a first claim skips counting
+        the points only while no pin of the index was ever released.
+        """
+        await self.epochs.pin_released(collection, org)
         await delete_config_confirmed(self._config, self.key(collection, org))
 
     async def keys(self) -> list[str]:
@@ -107,58 +123,6 @@ class CollectionPinStore:
                 released.append(name)
         return released
 
-    async def replace_stale(
-        self, collection: str, precision: str, observed_empty_at: float, org: str | None = None,
-        skew: float = STALE_PIN_SKEW_SECONDS, holds_old: Callable[[str], Awaitable[int]] | None = None,
-    ) -> bool:
-        """Replace a pin left over by a crash, only if it predates *observed_empty_at* by more than *skew*.
-
-        A writer that claimed after the collection came to exist has ``pinned_at`` at or after the
-        moment the replacer saw it empty, so it is never replaced.
-
-        A writer that found the old pin and wrote under it does not touch the pin, so the timestamp alone cannot
-        see it. ``holds_old`` counts the points that carry the old pin's precision, and is asked once the
-        new pin is in place: any such point puts the old pin back and nothing is replaced (a count that
-        cannot be read does the same). Writers that read the pin after the replacement see the new one.
-        """
-        standing = await self.get(collection, org, fresh=True)
-        if standing is None or standing.precision == precision:
-            return False
-        if standing.pinned_at / 1000.0 >= observed_empty_at - skew:
-            return False
-        await self._config.update_config(self.key(collection, org), Pin(precision, int(self._clock() * 1000)).to_value())
-        after = await self.get(collection, org, fresh=True)
-        if after is None or after.precision != precision:
-            return False
-        if holds_old is not None:
-            try:
-                kept = await holds_old(standing.precision)
-            except Exception:
-                kept = 1
-                self._logger.warning("could not count the points under the old precision pin of '%s'", collection, exc_info=True)
-            if kept:
-                await self._config.update_config(self.key(collection, org), standing.to_value())
-                return False
-        return True
-
     def now(self) -> float:
         """The wall-clock second a creator observes "absent or empty" at (the pin store's own clock)."""
         return self._clock()
-
-    async def replace_stale_for_writer(
-        self, collection: str, model: str | None, observed_at: float, org: str | None = None,
-        holds_old: Callable[[str], Awaitable[int]] | None = None,
-    ) -> bool:
-        """The creator-site form of :meth:`replace_stale`: the writer's precision is what this process last saw the model serve.
-
-        Nothing is replaced without a witness, or under a fallback (a pin is never claimed from a fallback), and a
-        store that cannot be read leaves the pin alone: the claim in front of the first write then decides.
-        """
-        witness = get_precision_witness().latest(model) if model else None
-        if witness is None or witness.fallback:
-            return False
-        try:
-            return await self.replace_stale(collection, witness.precision, observed_at, org, holds_old=holds_old)
-        except Exception:
-            self._logger.warning("could not check for a stale precision pin of '%s'", collection, exc_info=True)
-            return False

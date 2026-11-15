@@ -1670,6 +1670,7 @@ class RecordEventHandler(BaseEventService):
         try:
             registry = self.event_processor.processor.indexing_pipeline.collection_registry
             await registry.release_orphan_pins()
+            await registry.sweep_dead_epochs()
         except Exception:
             self.logger.error("Could not release the weight-precision pins of collections that are gone", exc_info=True)
             raise

@@ -106,6 +106,7 @@ from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
+from app.services.vector_db.collection_epoch import POINT_EPOCH, Fence
 from app.services.vector_db.collection_pin import IMAGE_TAG, CollectionPinStore
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD
@@ -2824,6 +2825,10 @@ class VectorStore(Transformer):
             return
 
         texts = [doc.page_content for doc in documents]
+        # The epoch of the collection this batch is accepted under, read before it is embedded: a cleanup that
+        # drops the collection meanwhile moves it, and the batch then claims and confirms nothing.
+        guard = self._precision_guard()
+        fence = await guard.capture(collection_name) if isinstance(self.dense_embeddings, EmbeddingServerEmbeddings) else None
 
         with stage(
             "embed.dense",
@@ -2838,7 +2843,7 @@ class VectorStore(Transformer):
             batch_precision, batch_fallback = witnessed[-1]
             await self._precision_guard().verify_batch(
                 collection_name, _bound_org(), batch_precision,
-                fallback=batch_fallback, intent=INT8_INTENT,
+                fallback=batch_fallback, intent=INT8_INTENT, fence=fence,
             )
 
         # Sparse embeddings (provider-dependent). Code adds its subtokens here only.
@@ -2854,6 +2859,8 @@ class VectorStore(Transformer):
         stamp = (attempt.stamp if attempt is not None else None) or {}
         # The weights that made this batch, as its own response said: every point carries it, fp32 too.
         precision_stamp = {POINT_PRECISION: batch_precision} if batch_precision else {}
+        if batch_precision and fence is not None:
+            precision_stamp[POINT_EPOCH] = fence.token
         points: List[VectorPoint] = [
             VectorPoint(
                 id=deterministic_point_id(doc.metadata, doc.page_content),
@@ -2870,6 +2877,8 @@ class VectorStore(Transformer):
             await self.vector_db_service.upsert_points(
                 collection_name=collection_name, points=points
             )
+        if batch_precision and fence is not None:
+            await self._confirm_batch(guard, collection_name, batch_precision, fence, documents)
         _note_points(points)
         progress = current_progress()
         if progress is not None:
@@ -3191,6 +3200,29 @@ class VectorStore(Transformer):
         await self._check_for_leaks(collection_name, org_id, virtual_record_id)
         self.logger.info(f"✅ Embeddings created and stored for record '{record_id}'")
 
+    async def _confirm_batch(
+        self, guard: PrecisionGuard, collection_name: str, precision: str, fence: Fence, documents: List[Document],
+    ) -> None:
+        """After the write: the epoch and the pin are still the batch's, else the batch's own points go and the record goes back.
+
+        What is removed is what this batch's record wrote at this precision under this epoch: another writer's
+        points (another epoch or precision) are never matched.
+        """
+        org = _bound_org()
+        try:
+            await guard.confirm_after_write(collection_name, org, precision, fence)
+        except PrecisionFlip:
+            record_ids = sorted({d.metadata.get("virtualRecordId") for d in documents if d.metadata.get("virtualRecordId")})
+            try:
+                if record_ids:
+                    await guard.delete_written(collection_name, org, precision, fence, {"virtualRecordId": record_ids})
+            except Exception:
+                self.logger.error(
+                    "Could not remove the points of a rejected batch from '%s'; handing the record back anyway",
+                    collection_name, exc_info=True,
+                )
+            raise
+
     async def _check_for_leaks(self, collection_name: str, org_id: str | None, virtual_record_id: str) -> None:
         """End of a record: no point of the record may carry the other precision's tag.
 
@@ -3201,6 +3233,7 @@ class VectorStore(Transformer):
             return
         guard = self._precision_guard()
         org = org_for_filter(org_id, match_bound=True)
+        await guard.sweep_dead(collection_name, org)
         standing = await guard.standing(collection_name, org, fresh=True)
         if standing.precision is None:
             return
@@ -3298,6 +3331,8 @@ class VectorStore(Transformer):
                 await self._cleanup_orphaned_embeddings_if_needed(
                     record_id, virtual_record_id, org_id, record
                 )
+                # A record with nothing to write still ends here: points a writer that died left are found now.
+                await self._check_for_leaks(collection_name, org_id, virtual_record_id)
                 return None
 
             text_blocks = []
@@ -3623,6 +3658,7 @@ class VectorStore(Transformer):
                 await self._cleanup_orphaned_embeddings_if_needed(
                     record_id, virtual_record_id, org_id, record
                 )
+                await self._check_for_leaks(collection_name, org_id, virtual_record_id)
                 return True
 
             # ── Embed and store ──

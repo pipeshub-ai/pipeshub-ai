@@ -95,7 +95,7 @@ async def test_the_pin_key_is_the_same_on_the_postgres_key_value_store() -> None
     _, pins = _process(runtime)
     guard = PrecisionGuard(pins, _FakeDb(), log)
     await guard.verify_batch("c", "o1", INT8, fallback=False, intent=INT8)
-    assert list(runtime.table) == [pins.key("c")]
+    assert [k for k in runtime.table if "embedding_pin" in k] == [pins.key("c")]
 
 
 @pytest.mark.asyncio
