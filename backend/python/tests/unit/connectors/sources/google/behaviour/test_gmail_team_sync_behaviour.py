@@ -173,8 +173,8 @@ async def test_each_mailbox_is_read_as_its_owner_and_only_its_owner_gets_access(
 
 
 async def test_the_new_holder_of_a_reused_address_gets_its_own_mailbox_and_never_the_earlier_accounts(ws: Harness) -> None:
-    """Alice's address passed to a new account. The earlier account's mail stays in the address's groups, which
-    nothing grants any more; the new account's mail goes to groups keyed by its Directory id, granted to that id."""
+    """Alice's address passed to a new account. The new account's mail goes to groups keyed by its Directory id,
+    granted to that id; the earlier account's mailbox, which nobody can read any more, is removed."""
     ws.gmail.deliver(ALICE, "old-mail", sender=OUTSIDER)
     await ws.sync()
     new_id = ws.directory.users[ALICE].user_id
@@ -191,8 +191,12 @@ async def test_the_new_holder_of_a_reused_address_gets_its_own_mailbox_and_never
     ]
     assert ws.records.records["new-mail"].external_record_group_id == f"{ALICE}#{new_id}:INBOX"
     assert ws.records.record_groups[f"{ALICE}#{new_id}:INBOX"].parent_external_group_id == owned
-    assert ws.records.records["old-mail"].external_record_group_id == f"{ALICE}:INBOX"
-    assert ws.records.record_group_permissions[f"mailbox:{ALICE}"] == []
+    # The earlier account's mailbox goes, with its labels and mail (the processor deletes the subtree); the new
+    # holder's mailbox is not touched, and the next run removes nothing more.
+    assert ws.records.deleted_groups == [f"mailbox:{ALICE}"]
+    assert owned in ws.records.record_groups
+    await ws.sync()
+    assert ws.records.deleted_groups == [f"mailbox:{ALICE}"]
     assert GoogleGmailTeamConnector._owner_email_from_group(f"{ALICE}#{new_id}:INBOX") == ALICE
     assert GoogleGmailTeamConnector._owner_email_from_group(owned) == ALICE
 

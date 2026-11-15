@@ -15,14 +15,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.core import org_context
 from app.core.org_context import MissingOrgContext, OrgMismatch, SystemContextNotAllowed
-from app.models.entities import AppRole, AppUser, AppUserGroup
+from app.models.entities import AppRole, AppUser, AppUserGroup, RecordGroup, RecordGroupType
 from app.models.permission import PermissionType
 from tests.support.in_memory_config import InMemoryConfigService
 
@@ -509,6 +509,35 @@ async def test_a_member_added_by_an_event_after_an_address_changed_hands_is_the_
 
     await processor.on_user_group_member_added("ext-team", "m@x.com", PermissionType.READ, APP, source_user_id="src-m-new")
     assert await w.allowed("m", "doc") == {"doc"}
+
+
+async def test_removing_the_earlier_accounts_mailbox_leaves_the_new_holders(w: World) -> None:
+    """Gmail removes the mailbox of a re-used address's earlier account through the group delete; the new holder's
+    mailbox, keyed by its account, keeps its labels and mail."""
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+
+    def group(external_id: str, parent: str | None = None) -> RecordGroup:
+        return RecordGroup(name=external_id, org_id=w.org, external_group_id=external_id, parent_external_group_id=parent,
+                           connector_name=Connectors.GOOGLE_MAIL_WORKSPACE, connector_id=APP, group_type=RecordGroupType.MAILBOX)
+
+    await processor.on_new_record_groups([(group("mailbox:m@x.com"), []), (group("mailbox:m@x.com#new"), [])])
+    await processor.on_new_record_groups([(group("m@x.com:INBOX", "mailbox:m@x.com"), []),
+                                          (group("m@x.com#new:INBOX", "mailbox:m@x.com#new"), [])])
+    for key, label in (("old-mail", "m@x.com:INBOX"), ("new-mail", "m@x.com#new:INBOX")):
+        stored = await w.p.get_record_group_by_external_id(APP, label)
+        await w.nodes("records", rec(key, recordGroupId=stored.id, externalRecordId=key))
+        await w.edge(CollectionNames.BELONGS_TO.value, ("records", key), (CollectionNames.RECORD_GROUPS.value, stored.id))
+
+    assert await processor.on_record_group_deleted("mailbox:m@x.com", APP)
+
+    for gone in ("mailbox:m@x.com", "m@x.com:INBOX"):
+        assert await w.p.get_record_group_by_external_id(APP, gone) is None, gone
+    for kept in ("mailbox:m@x.com#new", "m@x.com#new:INBOX"):
+        assert await w.p.get_record_group_by_external_id(APP, kept) is not None, kept
+    assert await w.p.get_document("old-mail", "records") is None
+    assert await w.p.get_document("new-mail", "records") is not None
 
 
 async def test_a_link_written_in_an_open_transaction_is_read_inside_it(w: World) -> None:

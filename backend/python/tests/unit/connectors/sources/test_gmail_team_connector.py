@@ -3185,3 +3185,33 @@ class TestPassDateFilterEdgeCases:
 # _fetch_history_changes - error in non-HttpError
 # ===========================================================================
 
+
+
+class TestRemoveEarlierMailboxes:
+    """After an address passed to a new account, the earlier account's mailbox is removed, once; nothing else is."""
+
+    @staticmethod
+    def _user(email: str, sid: str) -> AppUser:
+        return AppUser(app_name=Connectors.GOOGLE_MAIL_WORKSPACE, connector_id="gmail-cov-1", source_user_id=sid,
+                       email=email, full_name=email)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_removal_is_retried_and_a_never_reused_address_removes_nothing(self, connector):
+        connector.source_accounts.reused = {"ana@x.com": "new"}
+        dep = connector.data_entities_processor
+        dep.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())
+        dep.on_record_group_deleted = AsyncMock(return_value=False)
+        users = [self._user("ana@x.com", "new"), self._user("bo@x.com", "b")]
+
+        keys = await connector._remove_earlier_mailboxes(users, {"bo@x.com": "bo@x.com#old"})
+        assert keys == {"bo@x.com": "bo@x.com#old"}, "a failed removal keeps the earlier key; bo reads as never re-used"
+        dep.on_record_group_deleted.assert_awaited_once_with("mailbox:ana@x.com", "gmail-cov-1")
+
+        dep.on_record_group_deleted = AsyncMock(return_value=True)
+        keys = await connector._remove_earlier_mailboxes(users, keys)
+        assert keys == {"ana@x.com": "ana@x.com#new", "bo@x.com": "bo@x.com#old"}
+        dep.on_record_group_deleted.assert_awaited_once_with("mailbox:ana@x.com", "gmail-cov-1")
+
+        dep.on_record_group_deleted.reset_mock()
+        assert await connector._remove_earlier_mailboxes(users, keys) == keys
+        dep.on_record_group_deleted.assert_not_awaited()
