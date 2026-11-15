@@ -211,15 +211,15 @@ class KbListingsMixin(PgBase):
 
         async def go(tx: Tx) -> tuple[list[dict], int, dict]:
             rows = await tx.fetch("""/* pipeshub:graph.list_kb_records */ WITH kb AS (SELECT k.id FROM graph.nodes k WHERE k.org_id = $1 AND k.coll = 'apps' AND k.id = $2 AND k.doc->>'type' = $4),
-                folders AS (SELECT f.id, f.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                    JOIN graph.nodes f ON f.org_id = $1 AND f.coll = 'records' AND f.id = b.from_id WHERE f.doc->>'mimeType' = ANY($3::text[]) AND ($5::text IS NULL OR f.id = $5)),
+                folders AS (SELECT f.id, f.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = $2 AND ($5::text IS NULL OR b.from_id = $5)
+                    CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = b.from_id LIMIT 1) f WHERE f.doc->>'mimeType' = ANY($3::text[])),
                 cand AS (
                   SELECT r.id, r.doc, f.id AS fid, f.doc->>'recordName' AS fname FROM folders f
-                    JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.from_id = f.id AND e.to_coll = 'records'
-                    JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = e.to_id
+                    JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.from_id = f.id
+                    CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE e.to_coll = 'records' AND n.org_id = $1 AND n.coll = 'records' AND n.id = e.to_id LIMIT 1) r
                   UNION ALL
-                  SELECT r.id, r.doc, NULL, NULL FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                    JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = b.from_id
+                  SELECT r.id, r.doc, NULL, NULL FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = $2
+                    CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = b.from_id LIMIT 1) r
                   WHERE $5::text IS NULL AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
                                                           AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)),
                 live AS (SELECT c.* FROM cand c WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND c.doc->>'orgId' = $6 AND NOT (c.doc->>'mimeType' = ANY($3::text[]))),
@@ -264,14 +264,14 @@ class KbListingsMixin(PgBase):
                 combos, folders_json, live_n = _doc_list(rows[0]["facets"]), rows[0]["folders"], rows[0]["live_n"]
             else:                           # one folder's page: the facets still describe the whole collection
                 filt = await tx.fetch("""/* pipeshub:graph.list_kb_records_filters */ WITH kb AS (SELECT k.id FROM graph.nodes k WHERE k.org_id = $1 AND k.coll = 'apps' AND k.id = $2 AND k.doc->>'type' = $4),
-                    folders AS (SELECT f.id, f.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                        JOIN graph.nodes f ON f.org_id = $1 AND f.coll = 'records' AND f.id = b.from_id WHERE f.doc->>'mimeType' = ANY($3::text[])),
+                    folders AS (SELECT f.id, f.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = $2
+                        CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = b.from_id LIMIT 1) f WHERE f.doc->>'mimeType' = ANY($3::text[])),
                     recs AS (
                       SELECT r.id, r.doc FROM folders f JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD'
-                          AND e.from_coll = 'records' AND e.from_id = f.id AND e.to_coll = 'records' JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = e.to_id
+                          AND e.from_coll = 'records' AND e.from_id = f.id CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE e.to_coll = 'records' AND n.org_id = $1 AND n.coll = 'records' AND n.id = e.to_id LIMIT 1) r
                       UNION ALL
-                      SELECT r.id, r.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                        JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = b.from_id
+                      SELECT r.id, r.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = $2
+                        CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = b.from_id LIMIT 1) r
                       WHERE NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
                                         AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)),
                     live AS (SELECT c.* FROM recs c WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND c.doc->>'orgId' = $5 AND NOT (c.doc->>'mimeType' = ANY($3::text[])))
