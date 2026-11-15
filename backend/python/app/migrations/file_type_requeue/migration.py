@@ -136,10 +136,11 @@ def is_selected(record: Record, row: dict[str, Any], disabled: frozenset[str]) -
         return False, decision.file_type.key
     if decision.supported and decision.limited_as is not None and not isinstance(row.get("sizeInBytes"), int):
         # Refused earlier for its size, which was not stored: the gate cannot tell it is still too
-        # large, so the reason it was given decides.
+        # large, so the reason it was given decides. Read from the page row: the typed record the
+        # walk loads does not carry `reason`.
         from app.utils.user_errors import file_too_large_to_read
 
-        if getattr(record, "reason", None) == file_too_large_to_read(decision.limited_as):
+        if row.get("reason") == file_too_large_to_read(decision.limited_as):
             return False, None
     return decision.supported, None
 

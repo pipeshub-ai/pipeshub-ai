@@ -1387,7 +1387,8 @@ class EventService:
             if requeue_ids is not None:
                 ids_key = hashlib.sha256("\n".join(sorted(requeue_ids)).encode()).hexdigest()[:32]
                 task = await reindex_task_manager.start_if_idle(
-                    f"requeue:{connector_id}:{ids_key}",
+                    # Under the reindex prefix, so cache eviction and connector deletion see and stop it.
+                    f"reindex:{connector_id}:requeue:{ids_key}",
                     self._requeue_records(connector, connector_id, org_id, requeue_ids),
                 )
                 if task is None:

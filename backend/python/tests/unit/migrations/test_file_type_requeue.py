@@ -63,11 +63,13 @@ class FakeGraph:
             key=lambda r: r.id,
         )[:limit]
         return [{"_key": r.id, "recordType": r.record_type.value, "mimeType": r.mime_type,
-                 "sizeInBytes": r.size_in_bytes, "isInternal": r.is_internal, "isPlaceholder": r.is_placeholder}
+                 "sizeInBytes": r.size_in_bytes, "isInternal": r.is_internal, "isPlaceholder": r.is_placeholder,
+                 "reason": r.reason}
                 for r in rows]
 
     async def get_typed_records_batch(self, ids: list[str], raise_on_error: bool) -> dict[str, FileRecord]:
-        return {i: self.records[i].model_copy() for i in ids if i in self.records}
+        # As `FileRecord.from_arango_record` builds them on every backend: without `reason`.
+        return {i: self.records[i].model_copy(update={"reason": None}) for i in ids if i in self.records}
 
     async def transition_unsupported(self, ids: list[str], to_status: str) -> list[str]:
         if self.before_transition:
@@ -702,3 +704,12 @@ async def test_a_log_refused_as_too_large_with_no_stored_size_is_not_requeued() 
 
     assert kafka.ids() == ["plain"]
     assert graph.status("big") == FTNS and graph.status("big-cfg") == FTNS
+
+
+def test_the_page_row_carries_the_reason_the_selection_reads() -> None:
+    """The typed record the walk loads has no `reason`; the page query projects these fields."""
+    from app.services.graph_db.interface.graph_db_provider import (
+        UNSUPPORTED_PAGE_FIELDS,
+    )
+
+    assert "reason" in UNSUPPORTED_PAGE_FIELDS

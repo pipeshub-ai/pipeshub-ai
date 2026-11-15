@@ -352,6 +352,18 @@ async def test_the_move_takes_only_records_still_refused(seed: _Seed) -> None:
     assert moved["indexingStatus"] == ProgressStatus.QUEUED.value and moved.get("reason") is None
 
 
+async def test_the_move_leaves_a_record_trashed_after_the_page_read_it(seed: _Seed) -> None:
+    """The page reads only live records; one trashed before the move must not be moved or sent."""
+    s = seed
+    trashed, live = s.key("docm"), s.key("zip")
+    with for_org(s.org, job="test"):
+        assert await s.graph.update_node(trashed, RECORDS, {"isDeleted": True})
+        won = await s.graph.transition_unsupported([trashed, live], ProgressStatus.QUEUED.value)
+
+    assert won == [live]
+    assert (await s.doc(trashed))["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+
+
 async def test_every_moved_record_is_sent_again_after_a_publish_that_failed(seed: _Seed) -> None:
     from app.modules.indexing.record_republish import republish_eligible
 

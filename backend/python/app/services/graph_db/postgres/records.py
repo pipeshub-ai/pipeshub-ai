@@ -355,7 +355,8 @@ class RecordsMixin(PgBase):
         _VALIDATOR.validate_node_update(_RECORDS, {"indexingStatus": to_status, **{k: v for k, v in extra.items() if v is not None}})
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.transition_unsupported */ UPDATE graph.nodes
             SET doc = doc || jsonb_build_object('indexingStatus', $4::text) || $5::jsonb
-            WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'indexingStatus' = $3 RETURNING id""",
+            WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'indexingStatus' = $3
+              AND coalesce(doc->>'isDeleted', '') <> 'true' RETURNING id""",
                                                  org, ids, ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, to_status, _j(extra)), None, write=True)
         return [r["id"] for r in rows]
 

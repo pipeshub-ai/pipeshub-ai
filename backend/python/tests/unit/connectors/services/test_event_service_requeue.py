@@ -49,9 +49,8 @@ async def _handle(svc: EventService, connector: _Connector, payload: dict) -> bo
          patch("app.connectors.services.event_service.Connectors") as known:
         known.DRIVE = MagicMock()
         handled = await svc._handle_reindex("drive", {"orgId": "org1", "connectorId": "c1", **payload})
-        for prefix in ("requeue:c1:", "reindex:c1:"):
-            for task in list(reindex_task_manager.tasks_with_prefix(prefix)):
-                await task
+        for task in list(reindex_task_manager.tasks_with_prefix("reindex:c1:")):
+            await task
     return handled
 
 
@@ -137,3 +136,32 @@ async def test_the_default_re_queue_publishes_the_records_as_stored() -> None:
 
     connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with(records)
     assert BaseConnector.REQUEUE_PARKED is False
+
+
+async def test_a_running_requeue_counts_as_this_connectors_reindex_and_stops_with_it() -> None:
+    """Cache eviction keeps a connector it sees reindexing, and deletion cancels its reindexes:
+    a re-queue in progress must be one of them, or eviction closes the data source under it."""
+    import asyncio
+
+    from app.connectors.services.event_service import _reindexing_here
+
+    started, release = asyncio.Event(), asyncio.Event()
+    connector = _Connector()
+
+    async def slow(*_args, **_kwargs) -> None:
+        started.set()
+        await release.wait()
+
+    connector.requeue_records = AsyncMock(side_effect=slow)
+    svc = _service([_record("r1", ProgressStatus.QUEUED.value)])
+    with patch.object(svc, "_ensure_connector", new_callable=AsyncMock, return_value=connector), \
+         patch("app.connectors.services.event_service.Connectors") as known:
+        known.DRIVE = MagicMock()
+        assert await svc._handle_reindex("drive", {"orgId": "org1", "connectorId": "c1", "recordIds": ["r1"]})
+        await asyncio.wait_for(started.wait(), 5)
+        try:
+            assert _reindexing_here("c1")
+            await reindex_task_manager.cancel_by_prefix("reindex:c1:")
+            assert not _reindexing_here("c1")
+        finally:
+            release.set()

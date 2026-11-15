@@ -3315,7 +3315,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         updated = await self.http_client.execute_aql(
             f"""
             FOR doc IN @@records
-                FILTER doc._key IN @keys AND doc.indexingStatus == @expected
+                FILTER doc._key IN @keys AND doc.indexingStatus == @expected AND doc.isDeleted != true
                 UPDATE doc WITH {fields} IN @@records
                 RETURN NEW._key
             """,

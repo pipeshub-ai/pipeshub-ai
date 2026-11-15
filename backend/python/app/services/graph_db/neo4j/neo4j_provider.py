@@ -16881,7 +16881,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             SET n.{_MATCH_LOCK} = true
             REMOVE n.{_MATCH_LOCK}
             WITH n
-            WHERE n.indexingStatus = $expected
+            WHERE n.indexingStatus = $expected AND {cypher_live_record("n")}
             SET n.indexingStatus = $to, n.reason = null{stamp}
             RETURN n.id AS id
             """,

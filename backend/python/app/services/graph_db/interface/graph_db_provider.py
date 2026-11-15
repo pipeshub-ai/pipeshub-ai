@@ -48,6 +48,7 @@ KH_LISTING_STATE_FLAG = "/migrations/kh_listing_state_v1"
 # The record fields a page of `list_unsupported_page` carries besides `_key`.
 UNSUPPORTED_PAGE_FIELDS = (
     "orgId", "connectorId", "recordType", "recordName", "mimeType", "sizeInBytes", "isInternal", "isPlaceholder",
+    "reason",
 )
 
 # Hierarchy hops the access check walks. Whatever lists what the check may admit
