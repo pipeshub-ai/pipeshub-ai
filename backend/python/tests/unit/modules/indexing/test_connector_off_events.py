@@ -18,6 +18,7 @@ from app.modules.indexing.connector_off_events import (
     GraphConnectorOffFilter,
     ReadTimeOutcome,
     RecordHeldForDelete,
+    clears_embeddings_first,
     connector_off_updates,
     connector_state,
     read_time_outcome,
@@ -703,22 +704,24 @@ async def test_an_already_indexed_reindex_sees_a_delete_marked_before_the_guard(
 
 
 @pytest.mark.parametrize("state", [ConnectorState.OFF, ConnectorState.REMOVED])
-def test_read_time_filter_passes_replayed_deliveries(state: ConnectorState) -> None:
-    """A replay of a delivery that completed the record is the handler's: it acknowledges it before anything
-    else, so the read-time filter must not settle it first. The record is COMPLETED, which the filter already
-    leaves alone (its queued copies are released from the handler); this pins that for the replay guard."""
-    from app.modules.indexing.connector_off_events import (
-        ReadTimeOutcome,
-        read_time_outcome,
-    )
-
+def test_read_time_filter_passes_an_update_of_a_completed_record(state: ConnectorState) -> None:
+    """The read-time filter leaves an update of a COMPLETED record to the handler, which is where an exact
+    replay of the delivery that completed it is acknowledged (and its queued copies released). A reconciled
+    type, so the status branch decides and not the delete-embeddings-first shortcut; the same record in a
+    status that releases nothing is settled, which shows that branch is the one reached."""
     record = {
         "id": "r1", "connectorId": "conn-off", "origin": "CONNECTOR", "indexingStatus": ProgressStatus.COMPLETED.value,
         "extractionStatus": ProgressStatus.COMPLETED.value,
     }
-    payload = {"recordId": "r1", "connectorId": "conn-off", "_delivery_id": "t-0-1", "_event_id": "evt-1"}
+    payload = {
+        "recordId": "r1", "connectorId": "conn-off", "mimeType": "application/pdf", "extension": "pdf",
+        "_delivery_id": "t-0-1", "_event_id": "evt-1",
+    }
+    assert not clears_embeddings_first(UPDATE, payload)
 
     assert read_time_outcome(UPDATE, payload, record, lambda _connector: state) is ReadTimeOutcome.PASS
+    failed = {**record, "indexingStatus": ProgressStatus.FAILED.value}
+    assert read_time_outcome(UPDATE, payload, failed, lambda _connector: state) is not ReadTimeOutcome.PASS
 
 
 def test_replayed_delivery_needs_a_completed_record_an_event_id_and_covering_flags() -> None:
