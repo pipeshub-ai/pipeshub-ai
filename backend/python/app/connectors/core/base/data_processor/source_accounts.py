@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import Connectors
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from logging import Logger
 
     from app.config.configuration_service import ConfigurationService
