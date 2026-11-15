@@ -9548,7 +9548,7 @@ class TestListUserKnowledgeBases:
         assert count_query.count("FILTER kb.isHidden != true") == 2
 
     @pytest.mark.asyncio
-    async def test_folders_are_the_first_100_by_id_and_say_when_there_are_more(self, connected_provider):
+    async def test_folders_are_the_first_100_by_id_and_say_when_there_are_more(self, connected_provider) -> None:
         connected_provider.http_client.execute_aql.side_effect = [[], [0], []]
 
         await connected_provider.list_user_knowledge_bases("u1", "org1", skip=0, limit=10)

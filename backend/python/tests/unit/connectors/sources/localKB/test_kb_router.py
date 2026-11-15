@@ -299,7 +299,7 @@ class TestListUserKnowledgeBases:
         assert call_kwargs["page"] == 2
         assert call_kwargs["permissions"] == ["OWNER", "READER"]
 
-    def test_the_folders_truncated_flag_reaches_the_caller(self):
+    def test_the_folders_truncated_flag_reaches_the_caller(self) -> None:
         app, kb_svc, _ = _make_app()
         kb = {"id": "kb1", "name": "KB", "createdAtTimestamp": 1, "updatedAtTimestamp": 2, "createdBy": "u1",
               "folders": [{"id": f"f{i:03}", "name": f"f{i:03}"} for i in range(100)]}
