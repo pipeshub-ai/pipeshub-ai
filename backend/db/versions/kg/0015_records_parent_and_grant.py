@@ -2,8 +2,8 @@
 from alembic import op
 from db.lib.vetted import run_vetted
 
-revision = "kg_0014"
-down_revision = "kg_0013"
+revision = "kg_0015"
+down_revision = "kg_0014"
 branch_labels = None
 depends_on = None
 older_code_compatible = "replaces the body of the records writer with one that refuses less; older code calls it with the same arguments"
@@ -21,4 +21,4 @@ def upgrade():
 
 
 def downgrade():
-    pass      # kg_0002 owns the function and runs the same generated file: a database at kg_0013 built by this code has this body too, and older code calls it alike
+    pass      # kg_0002 owns the function and runs the same generated file: a database at kg_0014 built by this code has this body too, and older code calls it alike

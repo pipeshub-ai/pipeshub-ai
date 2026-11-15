@@ -3,13 +3,16 @@
 The answers are those of ``Neo4jProvider`` (the same shapes, errors and empty cases). Access is asked in both directions: nobody gets a collection
 they hold no role on (another user, another org, a revoked grant, a hidden collection), and everybody gets the ones they do (directly or through a team).
 
-Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none.
+Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none, and PG_ADMIN_URL (an owner DSN, to analyse
+before the folder-name plan test).
 """
 from __future__ import annotations
 
 import contextlib
+import os
 from typing import TYPE_CHECKING
 
+import asyncpg
 import pytest
 
 from app.config.constants.arangodb import Connectors, MimeTypes
@@ -368,6 +371,39 @@ async def test_folder_checks_know_membership_trash_names_depth_and_height(w: Wor
     got = await w.p.get_and_validate_folder_in_kb("kb1", "gone")
     assert got["name"] == "gone" and got["recordGroupId"] == "kb1" and got["isDeleted"] is True
     assert await w.p.get_and_validate_folder_in_kb("kb2", "top") is None
+
+
+async def test_a_folder_name_check_reads_the_parent_and_not_the_whole_organisation(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creating a folder asks whether its name is taken under the parent (or at the collection's root). The check reads that parent's children or that
+    collection's records, so its cost does not grow with the records of the organisation's other connectors."""
+    admin_url = os.environ.get("PG_ADMIN_URL")
+    assert admin_url, "set PG_ADMIN_URL (an owner DSN): this test analyses graph.nodes and graph.edges before it reads the plans"
+    await kb(w)
+    await kb(w, "kb2")
+    await folder(w, "top")
+    await folder(w, "mid", parent="top")
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'n' || g,
+        jsonb_build_object('recordName', 'top', 'mimeType', $2::text, 'connectorId', 'other') FROM generate_series(1, 20000) g""", w.org, FOLDER), write=True)
+    con = await asyncpg.connect(admin_url)
+    try:
+        await con.execute("ANALYZE graph.nodes; ANALYZE graph.edges")      # as autovacuum would have by now: a plan that needs no statistics is not what is measured
+    finally:
+        await con.close()
+    sent: list[tuple[str, tuple]] = []
+    real = w.p._one
+
+    async def spy(sql: str, *args: object, **kw: object) -> object:
+        sent.append((sql, args))
+        return await real(sql, *args, **kw)
+    monkeypatch.setattr(w.p, "_one", spy)
+    assert (await w.p.find_folder_by_name_in_parent("kb1", "TOP"))["_key"] == "top"
+    assert (await w.p.find_folder_by_name_in_parent("kb1", "MID", "top"))["_key"] == "mid"
+    assert await w.p.find_folder_by_name_in_parent("kb2", "top") is None             # 20,000 records of that name in the org, none in this collection
+    for sql, args in sent:
+        plan = "\n".join(r[0] for r in await pg_db.run(lambda tx, sql=sql, args=args: tx._con.fetch("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) " + sql, *args)))
+        root = next(line for line in plan.splitlines() if line.strip().startswith("Buffers:"))
+        touched = sum(int(part.split("=")[1]) for part in root.split() if part.startswith(("hit=", "read=")))
+        assert touched < 200, (touched, plan)
 
 
 async def test_a_cycle_of_parents_ends_the_walks(w: World) -> None:

@@ -70,6 +70,7 @@
       "restoredMany_one": "Restored {{count}} item",
       "restoredMany_other": "Restored {{count}} items",
       "showing": "Showing {{from}}–{{to}} of {{total}}",
+      "showingAtLeast": "Showing {{from}}–{{to}} of {{total, number}}+",
       "previous": "Previous",
       "next": "Next",
       "nameAndMore_one": "{{name}} and {{count}} more",

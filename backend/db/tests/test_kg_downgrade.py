@@ -141,10 +141,10 @@ def test_downgrading_the_listing_writer_removes_only_its_own_objects(db):
 
 
 @pytest.mark.parametrize("down, writer, old_check", [("kg_0009", "w_records_upsert", "%4000%"), ("kg_0011", "w_grants_set", "%p_roles has an item of the wrong length%"),
-                                                     ("kg_0013", "w_records_upsert", "%'RESTRICTED')%")],
-                         ids=["kg_0010-long-names", "kg_0012-long-roles", "kg_0014-parent-and-grant"])
+                                                     ("kg_0014", "w_records_upsert", "%'RESTRICTED')%")],
+                         ids=["kg_0010-long-names", "kg_0012-long-roles", "kg_0015-parent-and-grant"])
 def test_downgrading_a_revision_that_relaxes_a_writer_keeps_the_writer_and_an_upgrade_replaces_it(db, down, writer, old_check):
-    """kg_0010, kg_0012 and kg_0014 replace the body of a writer kg_0002 owns: a downgrade keeps the writer, its registry row and its pin (kg_0002 runs the same generated file),
+    """kg_0010, kg_0012 and kg_0015 replace the body of a writer kg_0002 owns: a downgrade keeps the writer, its registry row and its pin (kg_0002 runs the same generated file),
     and an upgrade from there replaces it again with nothing left over."""
     cluster, name = db
     url = cluster.url(name, "pipeshub_migrate")
@@ -275,3 +275,46 @@ def test_downgrading_the_projector_epoch_gives_the_writers_back_their_earlier_si
     with connect(cluster, name) as c:
         assert present(c, old) == [False] * 6 and present(c, new) == [True] * 6
         clean_catalog(c)
+
+
+def test_the_parent_child_links_revision_moves_the_floor_and_the_kinds_and_its_downgrade_takes_them_back(db):
+    """kg_0014: the links writers take kind 3 (a PARENT_CHILD parent) and the projection writers refuse epoch 5 (code that wrote no such links); down to kg_0013, the
+    writers take epoch 5 again and the links writers keep kind 3 (older code reads no such kind and drops the rows as it copies each node again), the catalog is clean;
+    an upgrade takes the floor back."""
+    import psycopg
+
+    from .rls_fixture import ORG_A as org
+    from .test_kg_writers import call
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+
+    def accepts(c, fn: str, args: tuple, epoch: int | None = None) -> bool:
+        try:
+            if epoch is None:
+                call(c, fn, org, args)
+            else:
+                call(c, fn, org, args, epoch=epoch)
+        except psycopg.errors.InvalidParameterValue:
+            return False
+        return True
+
+    def state(c) -> tuple[bool, bool, bool]:
+        return (accepts(c, "kg.w_links_set", ([1], [3], [2])), accepts(c, "kg.w_changes_ack", (), 5), accepts(c, "kg.w_changes_ack", (), 6))
+
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (True, False, True)
+        assert c.execute("SELECT count(*) FROM kg.links WHERE kind = 3").fetchone()[0] == 1
+    r = run_migrate(url, "downgrade", "kg_0013", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (True, True, True)
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+        assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (True, False, True)
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 26
+
