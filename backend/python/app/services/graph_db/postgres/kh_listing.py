@@ -131,6 +131,18 @@ def where_of(org: str, app_sk: int, app_doc: dict, filters: dict[str, Any], hidd
     return base, where
 
 
+def capped_counts(rows: list[Any]) -> tuple[dict[str, int], bool]:
+    """The counts by type of a count statement's rows (``count_sql``, ``browse_count_sql``: read up to COUNT_CAP + 1), and whether they reached past the cap. A count past it keeps
+    COUNT_CAP: the row past the cap is dropped from its largest type, so the counts add up to what the total reports."""
+    counts = {"record": 0, "folder": 0, "recordGroup": 0}
+    for r in rows:
+        counts["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += r["n"]
+    over = sum(counts.values()) - COUNT_CAP
+    if over > 0:
+        counts[max(counts, key=counts.__getitem__)] -= over
+    return counts, over > 0
+
+
 class KhListingMixin(PgBase):
     async def _kq(self, fn: Any, transaction: str | None) -> Any:  # noqa: ANN401
         """A read unit of the listing: custom plans (a statement that carries arrays of ids is planned for them, not generically after the fifth run), in the page's transaction when it has one."""
@@ -543,7 +555,8 @@ class KhListingMixin(PgBase):
 
     async def _kh_flat_exact(self, org: str, app_sk: int, where: str, base: kgl.Params, viewer: dict[str, Any], transaction: str | None) -> tuple[int, dict[str, int], bool]:
         """The total of a connector kg serves, from the stamped classes: what the viewer's grants open by class are counted where the rows are, up to COUNT_CAP, and the few rows kg does not decide
-        are counted from the access check's answer."""
+        are counted from the access check's answer. Rows the counters count are exact and come on top of the capped scan, so a capped total is a lower bound that can pass COUNT_CAP;
+        the counts by type always add up to the total."""
         left, walked = viewer["left"], viewer["walked"]
         # With no filter and nothing hidden, the classes met with no grant of the row's own are counted from the counters (every row of them, no cap); the rows that need
         # their own grant are still counted where they are.
@@ -554,11 +567,7 @@ class KhListingMixin(PgBase):
         q = kgl.Params(list(base.values))
         q.values[2] = COUNT_CAP + 1
         sql = kgl.count_sql(where, q.add([] if folded is not None else viewer["plain"]), q.add(viewer["own"]), q.add(viewer["granted"]), q.add(viewer["unvouched"]))
-        counts = {"record": 0, "folder": 0, "recordGroup": 0}
-        scanned = 0
-        for r in await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction):
-            counts["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += r["n"]
-            scanned += r["n"]
+        counts, capped = capped_counts(await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction))
         for (kind, folder), n in (folded or {}).items():
             counts["recordGroup" if kind == 2 else "folder" if folder else "record"] += n
         if left:       # the rows the check admitted, by type, from their own rows
@@ -567,10 +576,7 @@ class KhListingMixin(PgBase):
                 r = by_id.get(i)
                 if r:
                     counts["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += 1
-        total = sum(counts.values())
-        if folded is not None and scanned <= COUNT_CAP:
-            return total, {k: v for k, v in counts.items() if v}, False
-        return min(total, COUNT_CAP), {k: v for k, v in counts.items() if v}, total > COUNT_CAP
+        return sum(counts.values()), {k: v for k, v in counts.items() if v}, capped
 
     async def _kh_flat_count(self, org: str, app_sk: int, where: str, base: kgl.Params, admit: Any, transaction: str | None) -> tuple[int, dict[str, int], bool]:  # noqa: ANN401
         """The rows of the first COUNT_SCAN candidates the check admits, by type, and whether there were more candidates (then the total is a lower bound)."""

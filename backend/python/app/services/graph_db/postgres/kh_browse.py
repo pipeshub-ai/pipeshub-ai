@@ -39,6 +39,7 @@ from app.services.graph_db.postgres.kh_listing import (
     WINDOW_MAX,
     LeadBudget,
     _node_type,
+    capped_counts,
     chain_tops_apply,
     filtered_out,
     head,
@@ -404,11 +405,10 @@ class KhBrowseMixin(PgBase):
                 sql = kgl.browse_count_sql(where, c.add(sorted(sets["plain"])), c.add(sorted(sets["own"])), c.add(sorted(gset)), c.add(sorted(sets["unvouched"])),
                                            c.add(sets["app_sk"]), links)
                 listed, n = await self._kh_listed(left, *walk)
-                counts = self._kh_counts(listed)
-                for r in await self._kq(lambda tx, s=sql, v=tuple(c.values): tx.fetch(s, *v), transaction):
-                    counts["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += r["n"]
-                total = sum(counts.values())
-                return min(total, COUNT_CAP), counts, total > COUNT_CAP or n < len(left)
+                counts, capped = capped_counts(await self._kq(lambda tx, s=sql, v=tuple(c.values): tx.fetch(s, *v), transaction))
+                for k, v in self._kh_counts(listed).items():
+                    counts[k] += v
+                return sum(counts.values()), counts, capped or n < len(left)
         c = kgl.Params(list(p.values))
         c.values[2] = COUNT_SCAN + 1
         first = list(await self._kq(lambda tx, s=kgl.children_sql(where, links), v=tuple(c.values): tx.fetch(s, *v), transaction))

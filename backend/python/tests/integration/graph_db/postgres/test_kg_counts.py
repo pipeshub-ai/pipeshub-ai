@@ -4,6 +4,7 @@ counts only what the viewer's classes open."""
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 
 import pytest
@@ -153,14 +154,14 @@ async def _group_world(p, db, org: str, n: int) -> None:
         await p.batch_create_edges([edge(f"r{i:04d}", "records", "g1", "recordGroups") for i in range(n)], "belongsTo")
         await p.batch_create_edges([edge("g1", "recordGroups", f"r{i:04d}", "records", relationshipType="PARENT_CHILD") for i in range(n)], "nodeRelations")
         await p.batch_create_edges([edge(f"r{i:04d}", "records", "g1", "recordGroups") for i in range(n)], "inheritPermissions")
-        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}, {"_key": "u2", "orgId": org, "email": "v@example.com"}], "users")
+        await p.batch_upsert_nodes([{"_key": "u1", "userId": "user-1", "orgId": org, "email": "u@example.com"}, {"_key": "u2", "userId": "user-2", "orgId": org, "email": "v@example.com"}], "users")
         await p.batch_create_edges([edge("u1", "users", "app1", "apps"), edge("u2", "users", "app1", "apps")], "userAppRelation")
         await p.batch_create_edges([edge("u1", "users", "g1", "recordGroups", type="USER", role="READER")], "permission")
     await flip(db, org)
 
 
 def _asks(org: str, user: str, **kw) -> dict:
-    return {"app_id": "app1", "org_id": org, "grantee_ids": [user], "gated_app_ids": ["app1"], "granted_ids": ["g1"] if user == "u1" else [], **kw}
+    return {"app_id": "app1", "org_id": org, "grantee_ids": [user], "gated_app_ids": ["app1"], "granted_ids": kw.pop("granted_ids", ["g1"] if user == "u1" else []), **kw}
 
 
 async def _page(p, org: str, user: str, **kw) -> dict:
@@ -184,3 +185,48 @@ async def test_a_listing_counts_past_its_cap_from_the_counters_and_only_what_the
     assert nobody["total"] == 0 and not nobody["rows"]
     filtered = await _page(p, org, "u1", filters={"search_query": "R000"})        # a filter is counted where the rows are
     assert filtered["total"] == 4 and filtered["totalCapped"] is True
+
+
+async def _own_records(p, org: str, n: int) -> list[str]:
+    """``n`` records of the connector outside the group, each granted to ``u1`` alone: their rows need their own grant, so the scan counts them, never the counters."""
+    ids = [f"o{i:04d}" for i in range(n)]
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": i, "recordName": i.upper(), "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for i in ids], "records")
+        await p.batch_create_edges([edge("u1", "users", i, "records", type="USER", role="READER") for i in ids], "permission")
+    return ids
+
+
+async def test_a_capped_listing_keeps_the_exact_class_count_and_its_counts_add_up_to_its_total_on_every_page(pg_db, monkeypatch) -> None:
+    """12 rows the viewer reads by class (counted by the counters) and 6 records it reads by their own grant (plus the group, by its own): with the cap at 4 the scan of the
+    own-grant rows stops at 4, so the total is 12 + 4, a lower bound that says so, and the counts by type add up to it. The service carries both on its cursor, so every
+    page of the listing reports the same total and counts."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+    from tests.permissions.kh_layer import _Config
+
+    p, org = prov(pg_db), new_org()
+    await _group_world(p, pg_db, org, 12)
+    own = await _own_records(p, org, 6)
+    await flip(pg_db, org)
+    await counts.run(pg_db, org)
+    monkeypatch.setattr(kh_listing, "COUNT_CAP", 4)
+    monkeypatch.setenv("PG_KG_COUNTERS", "1")
+    page = await _page(p, org, "u1", granted_ids=["g1", *own])
+    assert page["total"] == 16 and page["totalCapped"] is True
+    assert sum(page["counts"].values()) == page["total"] and page["counts"]["record"] >= 12
+
+    service = KnowledgeHubService(logging.getLogger("kg-counts"), p, _Config())
+    seen, cursor = [], None
+    for _ in range(10):
+        with ctx(org):
+            got = await service.get_nodes(user_id="user-1", org_id=org, parent_id="app1", parent_type="app", flattened=True, include=["counts"], limit=5,
+                                          sort_by="name", sort_order="asc", **({"cursor": cursor} if cursor else {}))
+        assert got.success, got
+        seen.append((got.pagination.totalItems, got.pagination.totalCapped, got.counts.total, tuple(sorted((c.label, c.count) for c in got.counts.items))))
+        cursor = got.pagination.nextCursor
+        if not cursor:
+            break
+    assert len(seen) > 1 and len(set(seen)) == 1, seen                          # one total and one breakdown for the whole listing
+    total, capped, counted, items = seen[0]
+    assert total == counted == sum(n for _, n in items) == 16 and capped is True
