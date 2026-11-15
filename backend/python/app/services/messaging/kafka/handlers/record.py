@@ -11,10 +11,10 @@ import aiohttp  # type: ignore
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     FOLDER_MIME_TYPES,
-    SUPPORTED_CODE_FILE_EXTENSIONS,
     CollectionNames,
     EventTypes,
     OriginTypes,
@@ -27,7 +27,6 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
-from app.config.file_types import GATE_EXTENSIONS, GATE_MIMES
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
 from app.events.events import EventProcessor
@@ -42,6 +41,7 @@ from app.modules.code_graph.build_state import (
     claimed_build_already_ran,
     request_is_stale,
 )
+from app.modules.indexing import replay_set
 from app.modules.indexing.connector_off_events import (
     HELD_FOR_DELETE_DELAY_S,
     ConnectorState,
@@ -51,6 +51,8 @@ from app.modules.indexing.connector_off_events import (
     connector_gated_event,
     connector_state,
     gating_connector_id,
+    replay_candidate,
+    replayed_delivery,
 )
 from app.modules.indexing.connector_off_events import (
     resuming_enrichment as record_resuming_enrichment,
@@ -118,8 +120,7 @@ from app.services.vector_db.rebuild_state import (
 from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
 from app.telemetry.modules.record_storage_metrics import record_rejected_too_large
-from app.utils.api_call import make_api_call
-from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.api_call import ResponseTooLargeError, make_api_call
 from app.utils.indexing_timing import stage
 from app.utils.jwt import generate_jwt
 from app.utils.loop_bridge import run_on_loop
@@ -136,6 +137,7 @@ from app.utils.user_errors import (
     STORED_CONTENT_MISSING,
     duplicate_failed,
     duplicate_password_protected,
+    file_too_large_to_read,
     is_password_protected,
     rate_limited_gave_up,
     rate_limited_will_retry,
@@ -204,6 +206,9 @@ def stored_documents_give_up_seconds() -> float:
 _PARSE_NOW_NO_ACCESS = "the requesting user cannot access the record"
 
 
+_DISABLED_TYPES_TTL_SECONDS = 60.0
+
+
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
                 config_service: ConfigurationService,
@@ -224,6 +229,8 @@ class RecordEventHandler(BaseEventService):
         # Edge-build requests failed since the last one that went through. An
         # outage fails one per code file; one traceback says it (O-12).
         self._edge_request_failures = 0
+        # The file types an admin turned off, and when they were read.
+        self._disabled_types: tuple[frozenset[str], float] | None = None
         # The producer's client is bound to the loop that created it — the main
         # loop this handler is constructed on (indexing_main.start_kafka_consumers).
         # process_event runs on the indexing consumer's worker-thread loop, so
@@ -236,6 +243,31 @@ class RecordEventHandler(BaseEventService):
         except RuntimeError:
             self._producer_loop = None
 
+    async def _refuse_too_large(self, record_id: str, extension: object) -> None:
+        await self.__update_document_status(
+            record_id=record_id,
+            indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+            extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+            reason=file_too_large_to_read(extension),  # type: ignore[arg-type]
+        )
+
+    async def _disabled_file_types(self) -> frozenset[str]:
+        """The file types turned off in the KV store (or by FILE_TYPES_DISABLED when it has none)."""
+        now = time.monotonic()
+        if self._disabled_types is not None and now - self._disabled_types[1] < _DISABLED_TYPES_TTL_SECONDS:
+            return self._disabled_types[0]
+        try:
+            config = await self.config_service.get_config(file_types.FILE_TYPES_CONFIG_KEY)
+        except Exception:
+            # Unreadable, the setting turns nothing off: every type indexes as it did before it existed.
+            self.logger.warning("Could not read the disabled file types; none are disabled", exc_info=True)
+            config = None
+        if config is None:
+            config = file_types.disabled_from_env(os.environ.get("FILE_TYPES_DISABLED"))
+        keys = file_types.disabled_keys(config)
+        self._disabled_types = (keys, now)
+        return keys
+
     async def _redis_client(self) -> "Redis":
         loop = asyncio.get_running_loop()
         # A closed loop's client cannot be closed any more; dropping it is all
@@ -247,6 +279,33 @@ class RecordEventHandler(BaseEventService):
             redis = await redis_from_config_service(self.config_service)
             self._redis_by_loop[loop] = redis
         return redis
+
+    async def _replay_entries(self, record_id: str, payload: dict) -> dict[str, replay_set.StoredDelivery] | None:
+        """What the replay set holds for the record; None when it cannot be read."""
+        try:
+            return await replay_set.read_entries(await self._redis_client(), record_id, payload)
+        except Exception as exc:
+            replay_set.REPLAY_SET_ERRORS.inc("read")
+            self.logger.warning("Replay set not read for record %s: %s", record_id, type(exc).__name__)
+            return None
+
+    def _replay_ref(self, payload: dict) -> replay_set.DeliveryRef:
+        event_id, delivery_id = payload.get(replay_set.EVENT_ID_KEY), payload.get(replay_set.DELIVERY_ID_KEY)
+        flags = replay_set.flags_of(payload)
+
+        async def remember(record_id: str, completed_at_ms: int) -> None:
+            await replay_set.record_delivery(
+                await self._redis_client(), record_id,
+                event_id=str(event_id) if event_id else None,
+                delivery_id=str(delivery_id) if delivery_id else None,
+                flags=flags, completed_at_ms=completed_at_ms,
+            )
+
+        return replay_set.DeliveryRef(
+            event_id=str(event_id) if event_id else None,
+            delivery_id=str(delivery_id) if delivery_id else None,
+            flags=flags, remember=remember,
+        )
 
     async def _discard_redis(self) -> None:
         redis = self._redis_by_loop.pop(asyncio.get_running_loop(), None)
@@ -1560,6 +1619,7 @@ class RecordEventHandler(BaseEventService):
         # Nothing of an earlier delivery's run survives into this one.
         end_run()
         end_attempt()
+        replay_set.end_delivery()
         try:
             if not event_type:
                 # A message with no event type is a producer bug: acking it
@@ -1869,6 +1929,20 @@ class RecordEventHandler(BaseEventService):
                         delay_s=HELD_FOR_DELETE_DELAY_S,
                     )
 
+            # An exact replay of a delivery that completed this record (a lost acknowledgement, a
+            # rebalance) is answered by the replay set, an optimisation that is simply absent when Redis
+            # is unreachable or evicted it. Decided before a stage redrive, which would run a completed
+            # delivery's stages again; a lost hand-off still runs.
+            replayed = bool(
+                not already_indexed(event_type, payload, record)
+                and replay_candidate(event_type, payload, record)
+                and replayed_delivery(event_type, payload, record, await self._replay_entries(record_id, payload))
+                and not (stage_ingress is not None and await stage_ingress.handoff_lost(record))
+            )
+            if replayed:
+                # Acknowledged as an indexing event below, which owns the record's bookkeeping.
+                stage_redrive = False
+
             if stage_redrive:
                 stage_rev = payload.get("stageRev")
                 # A null stageRev is a record selected before it had a revision.
@@ -1923,9 +1997,8 @@ class RecordEventHandler(BaseEventService):
             # Decided before anything is taken out of the vector store: an event that is
             # acknowledged here must leave the record's points exactly as they are.
             resuming_enrichment = record_resuming_enrichment(doc)
-            if already_indexed(event_type, payload, doc) and not (
-                stage_ingress is not None and await stage_ingress.handoff_lost(doc)
-            ):
+            idle = already_indexed(event_type, payload, doc)
+            if replayed or (idle and not (stage_ingress is not None and await stage_ingress.handoff_lost(doc))):
                 # The finally block releases queued copies from here, and that is a write, so a
                 # delete marked since the check above is seen first: the connector's app is read
                 # again, as at the connector check below.
@@ -1936,10 +2009,22 @@ class RecordEventHandler(BaseEventService):
                         f"connector {deleting_id} of record {record_id} is being deleted",
                         delay_s=HELD_FOR_DELETE_DELAY_S,
                     )
-                self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
+                if replayed:
+                    replay_set.REPLAYS_ACKNOWLEDGED.inc("indexing")
+                    self.logger.info(
+                        f"Replay of a delivery that already completed record {record_id}: acknowledged"
+                    )
+                else:
+                    self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
+
+            if event_type in (
+                EventTypes.NEW_RECORD.value, EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value
+            ) and not payload.get("vectorDbOnly") and payload.get(replay_set.EVENT_ID_KEY):
+                # The sink remembers this delivery when it writes COMPLETED, as a call of its own.
+                replay_set.begin_delivery(self._replay_ref(payload))
 
             # Reconciliation: only an event that goes on to run touches the vector store.
             vector_db_only = bool(payload.get("vectorDbOnly"))
@@ -2080,19 +2165,7 @@ class RecordEventHandler(BaseEventService):
                 if record_name and "." in record_name:
                     code_file_extension = record_name.rsplit(".", 1)[-1].lower()
 
-            if (extension is None or extension == "unknown") and mime_type is not None and mime_type != "unknown":
-                derived_extension = get_extension_from_mimetype(mime_type)
-                if derived_extension:
-                    extension = derived_extension
-
-            if extension == "unknown" and mime_type != "text/gmail_content":
-                record_name = payload.get("recordName")
-                if record_name and "." in record_name:
-                    extension = record_name.split(".")[-1]
-
-            self.logger.debug("🚀 Checking for mime_type")
-            self.logger.debug("🚀 mime_type: %s", mime_type)
-            self.logger.debug("🚀 extension: %s", extension)
+            self.logger.debug("mime_type: %s, extension: %s", mime_type, extension)
 
             # Folder / tree-node records are skeleton graph entries with no
             # streamable content (created by tree-aware connectors like
@@ -2139,37 +2212,34 @@ class RecordEventHandler(BaseEventService):
 
             is_code_file = doc.get("recordType") == RecordTypes.CODE_FILE.value
 
-            supported_mime_types = GATE_MIMES
-            supported_extensions = GATE_EXTENSIONS
+            # A CODE_FILE's mime is not trustworthy: connectors that walk a git tree default it
+            # to text/plain for anything they don't recognise, which would let archives and media
+            # through as text. It is judged on the filename extension alone.
+            known_size = doc.get("sizeInBytes")
+            decision = file_types.gate_decision(
+                mime=mime_type,
+                extension=extension,
+                record_name=payload.get("recordName"),
+                is_code_file=is_code_file,
+                code_file_extension=code_file_extension,
+                size_bytes=known_size,
+                disabled=await self._disabled_file_types(),
+            )
 
-            if is_code_file:
-                # A CODE_FILE's mime is not trustworthy — connectors that walk a
-                # git tree default it to text/plain for anything they don't
-                # recognise, which would let archives and media through as text.
-                # Judge it on the filename extension alone: a known language, or
-                # a type the generic pipeline handles (images, json, yaml).
-                judged_extension = code_file_extension
-                is_supported = (
-                    code_file_extension in SUPPORTED_CODE_FILE_EXTENSIONS
-                    or code_file_extension in supported_extensions
-                )
-            else:
-                judged_extension = extension
-                is_supported = (
-                    mime_type in supported_mime_types
-                    or extension in supported_extensions
-                )
-
-            if not is_supported:
+            if not decision.supported:
                 self.logger.info(
-                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {judged_extension} 🔴🔴🔴"
+                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {decision.judged_extension} 🔴🔴🔴"
                 )
-
+                reason = (
+                    file_too_large_to_read(decision.limited_as)
+                    if decision.refusal == "too_large"
+                    else unsupported_file_type(decision.judged_extension)
+                )
                 await self.__update_document_status(
                     record_id=record_id,
                     indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
                     extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    reason=unsupported_file_type(judged_extension),
+                    reason=reason,
                 )
 
                 # Yield both events for unsupported file types
@@ -2177,17 +2247,20 @@ class RecordEventHandler(BaseEventService):
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
-
-
             # Always: the consumer holds a record that would sit on its file
             # waiting for a parse slot back until it is not downloaded yet.
-            known_size = doc.get("sizeInBytes")
             yield PipelineEvent(
                 event=IndexingEvent.START_DOWNLOAD,
                 data=PipelineEventData(
                     record_id=record_id,
                     size_bytes=known_size if isinstance(known_size, int) and known_size > 0 else None,
                 ),
+            )
+
+            # A .log/.cfg whose size the record does not say is held to the hard limit as it
+            # downloads, whatever reads it (the gate refused the ones that say it).
+            download_limit = (
+                file_types.TEXT_LOG_HARD_LIMIT_BYTES if decision.limited_as is not None else None
             )
 
             # Try signed URL first if available, fallback to connector streaming if it fails
@@ -2199,9 +2272,16 @@ class RecordEventHandler(BaseEventService):
                     with stage("download"):
                         response = await self._download_from_signed_url(
                             signed_url=payload["signedUrl"], record_id=record_id, doc=doc,
+                            max_bytes=download_limit,
                         )
                     if not response:
                         raise Exception("Failed to download file from signed URL")
+                except ResponseTooLargeError:
+                    # Refused for its size: the connector stream would only fetch the same bytes.
+                    await self._refuse_too_large(record_id, decision.limited_as)
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
                 except Exception as e:
                     self.logger.warning(
                         f"⚠️ Failed to download from signed URL for record {record_id}: {str(e)}. "
@@ -2252,7 +2332,13 @@ class RecordEventHandler(BaseEventService):
                         with stage("download"):
                             response = await make_api_call(
                                 route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token,
+                                max_bytes=download_limit,
                             )
+                    except ResponseTooLargeError:
+                        await self._refuse_too_large(record_id, decision.limited_as)
+                        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                        return
                     except Exception as fetch_exc:
                         # A reader is waiting: a deferral of hours is the ordinary retry's job to refuse.
                         if resuming_enrichment or parse_now or not await self._defer_rate_limited_record(
@@ -2566,6 +2652,7 @@ class RecordEventHandler(BaseEventService):
             # Last, so every status write above is shaped by the run.
             end_run()
             end_attempt()
+            replay_set.end_delivery()
 
     async def __update_document_status(
         self,
@@ -2621,6 +2708,7 @@ class RecordEventHandler(BaseEventService):
 
     async def _download_from_signed_url(
         self, signed_url: str, record_id: str, doc: dict, from_route: bool = False,
+        max_bytes: int | None = None,
     ) -> bytes|None:
         """
         Download file from signed URL with exponential backoff retry
@@ -2656,6 +2744,11 @@ class RecordEventHandler(BaseEventService):
                                 )
 
                             content_length = response.headers.get("Content-Length")
+                            if (
+                                max_bytes is not None and content_length and content_length.isdigit()
+                                and int(content_length) > max_bytes
+                            ):
+                                raise ResponseTooLargeError(max_bytes)
                             if content_length:
                                 self.logger.info(
                                     f"Expected file size: {int(content_length) / (1024*1024):.2f} MB"
@@ -2672,6 +2765,8 @@ class RecordEventHandler(BaseEventService):
                                 ):
                                     file_buffer.extend(chunk)
                                     total_size += len(chunk)
+                                    if max_bytes is not None and total_size > max_bytes:
+                                        raise ResponseTooLargeError(max_bytes)
                                     if total_size - last_logged_size >= log_interval:
                                         self.logger.debug(
                                             f"Total size so far: {total_size / (1024*1024):.2f} MB"

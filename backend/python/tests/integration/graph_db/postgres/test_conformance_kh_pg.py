@@ -15,6 +15,7 @@ from app.connectors.sources.localKB.handlers.kh_merge import key_for
 from app.core.org_context import OrgContext, bind
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
 from app.services.graph_db.postgres import kh_browse
+from app.services.graph_db.postgres.kg import counts as kg_counts
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
 from tests.permissions.kh_layer import (
@@ -94,6 +95,7 @@ class KhPgLayer(KgLayer):
         super().__init__(provider, db)
         self.not_current = not_current
         self.not_ready = 0
+        self.hide_first_app = False
         self.name = f"postgres-kg-{'walk' if not_current else 'kg'}"
 
     async def preload(self, worlds) -> None:
@@ -102,6 +104,9 @@ class KhPgLayer(KgLayer):
         for w in new:
             org = _hex(Namespace(self._prefix[w]).org)
             await _decorate_names(org)
+            if self.hide_first_app:      # in the graph, before the copy: as a project's own collection is written
+                await _admin("""UPDATE graph.nodes SET doc = doc || '{"isHidden": true}' WHERE org_id = $1 AND coll = 'apps'
+                    AND id = (SELECT min(id) FROM graph.nodes WHERE org_id = $1 AND coll = 'apps')""", org)
             done, total = await flip(self._db, org)
             self.promoted.update(promoted=done, connectors=total)
         if self.not_current:
@@ -163,6 +168,28 @@ async def test_golden_and_adversarial_worlds_list_what_the_viewer_may_read(kh_la
     assert kh_layer.not_ready * 10 <= len(worlds), f"{kh_layer.not_ready} of {len(worlds)} worlds were refused as not copied"
 
 
+async def test_golden_and_adversarial_worlds_count_from_the_counters_what_the_viewer_may_read(pg_provider, pg_db, monkeypatch) -> None:
+    """With the counters read (PG_KG_COUNTERS=1) an unfiltered total of a connector kg serves comes from kg.counts: every total, count and facet is still the oracle's."""
+    monkeypatch.setenv("PG_KG_COUNTERS", "1")
+    layer = KhPgLayer(pg_provider, pg_db, not_current=False)
+    worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
+    bad: list[KhFinding] = []
+    seeded = 0
+    try:
+        for start in range(0, len(worlds), CHUNK):
+            chunk = worlds[start:start + CHUNK]
+            await layer.preload(chunk)
+            for world in chunk:
+                seeded += await kg_counts.run(pg_db, _hex(Namespace(layer._prefix[world]).org))
+            for offset, world in enumerate(chunk):
+                bad += _bad(await check(layer, world, f"golden-{start + offset}"))
+            await layer.release(chunk)
+    finally:
+        await layer.release(list(layer._prefix))
+    assert seeded, "no connector was counted whole: the counters were never read"
+    assert not bad, f"{layer.name} with counters\n{_describe(bad)}"
+
+
 @pytest.mark.parametrize("kind", sorted(gen.GENERATORS))
 async def test_generated_worlds_list_what_the_viewer_may_read(kh_layer, kind: str, monkeypatch) -> None:
     # The typed graph takes the three access rules a connector writes; the adversarial generator also writes INHERITED, which no connector does and which the projection refuses (the connector is then never
@@ -181,6 +208,54 @@ async def test_generated_worlds_list_what_the_viewer_may_read(kh_layer, kind: st
         print(f"{kh_layer.name} {kind} seed {seed}: {len(worlds)} worlds, {kh_layer.not_ready} refused as not copied so far")
         assert not bad, f"{kh_layer.name} {kind} seed {seed}\n{_describe(bad)}"
         assert kh_layer.not_ready * 10 <= len(worlds), f"{kh_layer.not_ready} of {len(worlds)} {kind} worlds were refused as not copied"
+
+
+async def _root_rows(layer: KhPgLayer, world, viewer: str) -> list[str] | None:
+    """Every page of the service's All Records (``get_nodes`` with no parent, flattened), by cursor; None when a page fails."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+    from tests.permissions.kh_layer import _Config
+
+    ns = await layer._ns(world)
+    service = KnowledgeHubService(logging.getLogger("kh-root"), layer._provider, _Config())
+    rows: list[str] = []
+    cursor = None
+    for _ in range(200):
+        page = await service.get_nodes(user_id=ns.id(viewer), org_id=ns.org, flattened=True, limit=BIG_PAGE, sort_by="name", sort_order="asc", cursor=cursor)
+        if not page.success:
+            return None
+        rows += [ns.local(i.id) for i in page.items]
+        if not (cursor := page.pagination.nextCursor):
+            return rows
+    raise AssertionError("the root listing did not end")
+
+
+async def test_the_root_listing_is_the_flat_listing_of_every_app_but_the_hidden_one(kh_layer) -> None:
+    """The root listing (All Records) against the provider's flat listing of the same Apps, every viewer of the golden and KH worlds, with each world's first App hidden:
+    the same rows in the same order, and none of the hidden App's."""
+    kh_layer.hide_first_app = True
+    worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
+    bad: list[str] = []
+    for start in range(0, len(worlds), CHUNK):
+        chunk = worlds[start:start + CHUNK]
+        await kh_layer.preload(chunk)
+        for world in chunk:
+            ns = await kh_layer._ns(world)
+            apps = sorted(ns.id(n.id) for n in world.nodes if n.kind == "app")
+            if not apps:
+                continue
+            with bind(OrgContext(ns.org, None, "job", "job:test", "t")):
+                for viewer in world.users():
+                    try:
+                        want = [r["id"] for r in (await listing(kh_layer, world, viewer, {"connector_ids": apps[1:]})).rows] if apps[1:] else []
+                    except KnowledgeHubListingNotReady:
+                        continue
+                    got = await _root_rows(kh_layer, world, viewer)
+                    if got != want:
+                        bad.append(f"{viewer}: root {got} flat {want}")
+        await kh_layer.release(chunk)
+    assert not bad, f"{kh_layer.name}\n" + "\n".join(bad[:20])
 
 
 async def test_a_stub_is_listed_under_a_declaration_exactly_when_opening_it_lists_something(kh_layer) -> None:

@@ -3678,7 +3678,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
                 parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
 
-            stamp_delivery_id(parsed_message.payload, stable_message_id)
+            stamp_delivery_id(parsed_message.payload, stable_message_id, parsed_message.org_ctx)
 
             # Counted only now that the record is ours: a crash while it waited
             # for a permit or for its lease was not its doing.

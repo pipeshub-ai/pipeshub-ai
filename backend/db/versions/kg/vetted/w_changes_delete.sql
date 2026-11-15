@@ -15,7 +15,7 @@ BEGIN
   IF cardinality(p_ids) > 5000 THEN RAISE EXCEPTION 'w_changes_delete: p_ids takes at most 5000 items' USING ERRCODE = '22023'; END IF;
   IF EXISTS (SELECT 1 FROM unnest(p_ids) e WHERE e IS NULL) THEN RAISE EXCEPTION 'w_changes_delete: p_ids has a NULL item' USING ERRCODE = '22023'; END IF;
   IF p_projector_epoch IS NULL THEN RAISE EXCEPTION 'w_changes_delete: p_projector_epoch is required' USING ERRCODE = '22023'; END IF;
-  IF p_projector_epoch NOT BETWEEN 5 AND 1000000 THEN RAISE EXCEPTION 'w_changes_delete: p_projector_epoch must be 5..1000000' USING ERRCODE = '22023'; END IF;
+  IF p_projector_epoch NOT BETWEEN 6 AND 1000000 THEN RAISE EXCEPTION 'w_changes_delete: p_projector_epoch must be 6..1000000' USING ERRCODE = '22023'; END IF;
   IF v_org IS NULL THEN RETURN 0; END IF;       -- no org (or someone else's): no rows, the same answer
   DECLARE v_n integer;
   BEGIN

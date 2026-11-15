@@ -14,7 +14,14 @@ import uuid
 from typing import TYPE_CHECKING
 
 from app.core.org_context import bind, spawn_detached
-from app.services.graph_db.postgres.kg import bootstrap, flush, legacy, net, restamp
+from app.services.graph_db.postgres.kg import (
+    bootstrap,
+    counts,
+    flush,
+    legacy,
+    net,
+    restamp,
+)
 from app.services.graph_db.postgres.kg.drainer import PAGE, _ctx, drain_or_retry, lag
 from app.services.pg_runtime import PgListener
 from app.telemetry.backend import METRICS_BACKEND
@@ -64,7 +71,7 @@ class KgWorker:
         self._wake.set()
 
     async def run_once(self) -> int:
-        """One pass over every org: drain the change log, finish the claimable restamp jobs and publish the gauges. Returns the log rows projected plus the jobs finished. Each phase has
+        """One pass over every org: drain the change log, finish the claimable restamp jobs, fold the counters and publish the gauges. Returns the log rows projected plus the jobs finished. Each phase has
         its own error handling: a log that cannot be drained (``drain_or_retry`` counts it and leaves the rows) must not keep records hidden, and jobs that fail must not stop the projection."""
         rows = 0
         for org in await self._orgs():
@@ -83,6 +90,12 @@ class KgWorker:
                 logger.exception("kg restamp jobs failed for an org; retrying")
             if self._stop.is_set():
                 break                                      # shutting down: no new unit for the gauges
+            try:
+                rows += await counts.run(self._db, org, stop=self._stop)
+            except Exception:
+                logger.exception("kg counters failed for an org; retrying")
+            if self._stop.is_set():
+                break
             try:
                 rows += await bootstrap.bring_to_enforce(self._db, org, self._due, self._stop)
             except Exception:

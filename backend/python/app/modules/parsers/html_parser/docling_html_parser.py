@@ -50,10 +50,14 @@ class DoclingHtmlParser:
         self,
         logger: logging.Logger | None = None,
         config_service: object | None = None,
+        *,
+        allow_remote_fetch: bool = True,
     ) -> None:
         self._converter: "DocumentConverter | None" = None
         self._logger = logger or logging.getLogger(__name__)
         self._config_service = config_service
+        # False for a mail's HTML: fetching its remote images would tell the sender it was read.
+        self._allow_remote_fetch = allow_remote_fetch
 
     @property
     def converter(self) -> "DocumentConverter":
@@ -228,7 +232,7 @@ class DoclingHtmlParser:
         if images:
             urls_to_convert = [image["url"] for image in images]
             base64_urls = await ImageParser.urls_to_base64(
-                urls_to_convert, allow_remote_fetch=True  # file bytes, not a pushed blocks document
+                urls_to_convert, allow_remote_fetch=self._allow_remote_fetch
             )
 
             for i, image in enumerate(images):
