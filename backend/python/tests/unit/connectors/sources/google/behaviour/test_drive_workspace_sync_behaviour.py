@@ -3190,6 +3190,45 @@ async def test_a_list_cut_during_a_full_listing_is_read_again_by_id_once_lists_c
     assert (dana, "USER", "READ") in ws.grants("f"), "read again by id: the real list names her"
 
 
+async def test_more_cuts_than_the_cap_never_cost_the_feed_its_position(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    monkeypatch.setattr(drive_connector, "MAX_FAILED_ITEMS", 1)
+    dana = "dana@example.com"
+    ws.world.add_user(dana)
+    items = ["f1", "f2", "f3"]
+    for item in items:
+        ws.world.add_item(item, f"{item}.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE), reader(dana)])
+    ws.world.add_item("g", "g.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    await ws.sync()
+    for email in (ALICE, BOB):  # their Drives are listed in full again
+        ws.sync_points.sync_points.pop(next(
+            k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[email].user_id}")
+        ))
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern == r"^/drive/v3/files/([^/]+)/permissions$")
+    ws.http.route("GET", r"/drive/v3/files/([^/]+)/permissions", lambda req: (
+        {"permissions": []} if req.path in {f"/drive/v3/files/{i}/permissions" for i in items} else real(req)
+    ))
+    for _ in range(MAX_HELD_RUNS):  # cut on the last: three cuts, a cap of one
+        await ws.sync()
+    assert not any((dana, "USER", "READ") in ws.grants(i) for i in items), "cut to what is proven"
+    assert ws.user_checkpoint(ALICE) and ws.user_checkpoint(BOB), "the start token is saved whatever the count"
+
+    _lists_read_again(ws)  # nothing changed at the source but this:
+    ws.world.unshare("g", ALICE)
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert any(r.path == "/drive/v3/changes" for r in ws.http.requests[before:]), "the feed is read, not the listing"
+    assert (ALICE, "USER", "READ") not in ws.grants("g"), "the removal it reports applies"
+
+    for _ in range(len(items)):  # one a run, in turn
+        await ws.sync()
+    assert all((dana, "USER", "READ") in ws.grants(i) for i in items), "every cut item is read again in the end"
+
+
 async def test_a_reader_who_lost_the_item_is_no_evidence_for_a_later_cut_in_the_run(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
     from app.connectors.sources.google.drive.utils.folder_filter_utils import (
