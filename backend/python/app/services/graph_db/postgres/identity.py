@@ -51,6 +51,9 @@ _KB = Connectors.KNOWLEDGE_BASE.value
 _PRINCIPALS_PAGE = 5000      # the LIMIT of each branch of graph.principals_by_email
 _ORG_FIELD = "orgId"  # the org property of a graph document, not a claim
 
+# All 29 Unicode whitespace characters matching Python str.isspace() / str.strip()
+PG_TRIM_WS = r"E' \t\r\n\f\u000b\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\x1c\x1d\x1e\x1f'"
+
 
 def _js(v: Any) -> Any:  # noqa: ANN401
     return json.loads(v) if isinstance(v, str) else v
@@ -140,24 +143,40 @@ class IdentityMixin(PgBase):
         addresses, or the statement for more, for an address out of its bounds or a page that may not be all of the matches. One read either way: chunks would each
         see their own snapshot, and a login moving between two of them would be missed by both (the batch would then create a duplicate user)."""
         norm_emails = list(dict.fromkeys(e.strip().lower() for e in emails if e and e.strip()))
-        if norm_emails and len(norm_emails) <= 1000 and all(0 < len(e) <= 1000 for e in norm_emails):
-            rows = await self._id_rows("""/* pipeshub:graph.users_by_email_vetted */ SELECT lower(btrim(p.doc->>'email', E' \t\r\n')) AS email, p.node_id AS id,
-                   coalesce((p.doc->>'isActive')::boolean, false) AS active FROM graph.principals_by_email(ARRAY['users'], $1::text[]) p
-                   WHERE lower(btrim(p.doc->>'email', E' \t\r\n')) = ANY($1::text[]) ORDER BY p.node_id""", [norm_emails], transaction)
+        if not norm_emails:
+            return []
+        if len(norm_emails) <= 1000 and all(0 < len(e) <= 1000 for e in norm_emails):
+            query = f"""/* pipeshub:graph.users_by_email_vetted */
+                WITH vetted AS (
+                    SELECT lower(btrim(p.doc->>'email', {PG_TRIM_WS})) AS email, p.node_id AS id,
+                           coalesce((p.doc->>'isActive')::boolean, false) AS active
+                    FROM graph.principals_by_email(ARRAY['users'], $1::text[]) p
+                    WHERE lower(btrim(p.doc->>'email', {PG_TRIM_WS})) = ANY($1::text[])
+                ),
+                padded AS (
+                    SELECT 1 AS exists_padded
+                    FROM graph.nodes
+                    WHERE org_id = $2 AND coll = 'users'
+                      AND lower(btrim(doc->>'email', {PG_TRIM_WS})) = ANY($1::text[])
+                      AND doc->>'email' != btrim(doc->>'email', {PG_TRIM_WS})
+                    LIMIT 1
+                )
+                SELECT v.email, v.id, v.active, (SELECT exists_padded FROM padded) AS has_padded
+                FROM vetted v
+                ORDER BY v.id"""
+            rows = await self._id_rows(query, [norm_emails, org], transaction)
             if rows is not None and len(rows) < _PRINCIPALS_PAGE:
                 found_emails = {(r.get("email") or "").strip().lower() for r in rows}
-                if all(e in found_emails for e in norm_emails):
-                    has_padded = await self._id_rows(
-                        """/* pipeshub:graph.has_padded_users */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'users'
-                           AND lower(btrim(doc->>'email', E' \t\r\n')) = ANY($2::text[])
-                           AND doc->>'email' != btrim(doc->>'email', E' \t\r\n') LIMIT 1""",
-                        [org, norm_emails], transaction
-                    )
-                    if not has_padded:
-                        return [{"email": (r.get("email") or "").strip().lower(), "id": r["id"], "active": r["active"]} for r in rows]
+                has_padded = any(bool(r.get("has_padded")) for r in rows)
+                if not has_padded and all(e in found_emails for e in norm_emails):
+                    return [{"email": (r.get("email") or "").strip().lower(), "id": r["id"], "active": r["active"]} for r in rows]
 
-        rows = await self._id_rows("""/* pipeshub:graph.users_by_email */ SELECT lower(btrim(doc->>'email', E' \t\r\n')) AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
-               FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', E' \t\r\n')) = ANY($2::text[]) ORDER BY id""", [org, norm_emails], transaction)
+        fallback_query = f"""/* pipeshub:graph.users_by_email */
+            SELECT lower(btrim(doc->>'email', {PG_TRIM_WS})) AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
+            FROM graph.nodes
+            WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', {PG_TRIM_WS})) = ANY($2::text[])
+            ORDER BY id"""
+        rows = await self._id_rows(fallback_query, [org, norm_emails], transaction)
         return [{"email": (r.get("email") or "").strip().lower(), "id": r["id"], "active": r["active"]} for r in (rows or [])]
 
     async def _verified_email_peers(self, org: str, email: str, transaction: str | None) -> list:
@@ -219,7 +238,7 @@ class IdentityMixin(PgBase):
         cands = [_doc(r["doc"]) for r in (rows or [])]
         if not any(d.get("isActive") is True for d in cands):
             fb_rows = await self._id_rows(
-                "/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', E' \t\r\n')) = $2",
+                f"/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', {PG_TRIM_WS})) = $2",
                 [current_org_id(), norm_email], transaction
             )
             cands.extend([_doc(r["doc"]) for r in (fb_rows or [])])
@@ -264,7 +283,7 @@ class IdentityMixin(PgBase):
             missing_active = [w for w in raw_wanted if not any(d.get("isActive") is True for d in cands_by_norm[w])]
             if missing_active:
                 fb_rows = await self._id_rows(
-                    "/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', E' \t\r\n')) = ANY($2::text[])",
+                    f"/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', {PG_TRIM_WS})) = ANY($2::text[])",
                     [org, missing_active], snap
                 )
                 for r in (fb_rows or []):
@@ -514,7 +533,7 @@ class IdentityMixin(PgBase):
             # the database lowers and trims an address, as it lowers the stored ones: Python's lower() may disagree on non-ASCII letters.
             # Use Python strip() on input emails to match the serializer (handles NBSP and all Unicode whitespace).
             stripped_emails = list({(u.email or "").strip() for u in users if u.email})
-            low = {r["raw"]: r["low"] for r in await self._id_rows("/* pipeshub:graph.lower_emails */ SELECT e AS raw, lower(btrim(e, E' \t\r\n')) AS low FROM unnest($1::text[]) e",
+            low = {r["raw"]: r["low"] for r in await self._id_rows(f"/* pipeshub:graph.lower_emails */ SELECT e AS raw, lower(btrim(e, {PG_TRIM_WS})) AS low FROM unnest($1::text[]) e",
                                                                    [stripped_emails], tx)}
             def _canon(u: AppUser) -> str:
                 raw_stripped = (u.email or "").strip()

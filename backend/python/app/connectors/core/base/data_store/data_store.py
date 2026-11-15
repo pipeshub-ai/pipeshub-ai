@@ -243,6 +243,11 @@ class BaseDataStore(ABC):
     async def get_app_by_id(self, connector_id: str) -> Optional[AppMetadata]:
         pass
 
+    async def get_document(
+        self, key: str, collection: str, *, raise_on_error: bool = False
+    ) -> dict | None:
+        return None
+
     @abstractmethod
     async def get_app_users(
         self, org_id: str, connector_id: str, *, raise_on_error: bool = False

@@ -10,6 +10,7 @@ import pytest
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.data_processor import (
     data_source_entities_processor as module,
 )
@@ -20,6 +21,7 @@ from app.connectors.sources.s3.connector import (
     S3CompatibleDataSourceEntitiesProcessor,
     S3Connector,
 )
+from app.models.entities import AppUser
 
 ORGS = [{"id": "first-org"}, {"id": "second-org"}]
 
@@ -86,3 +88,138 @@ async def test_the_s3_connector_hands_its_org_to_the_processor() -> None:
         )
 
     initialize.assert_awaited_once_with(org_id="second-org")
+
+
+def _make_user(connector_id: str = "conn-1", email: str = "alice@example.com", org_id: str = "") -> AppUser:
+    return AppUser(
+        app_name=Connectors.GOOGLE_DRIVE,
+        connector_id=connector_id,
+        id="u-1",
+        source_user_id="s-1",
+        email=email,
+        full_name="Alice",
+        org_id=org_id,
+    )
+
+
+async def test_on_new_app_users_with_explicit_organization() -> None:
+    provider = _provider(ORGS)
+    tx = provider.transaction.return_value.__aenter__.return_value
+    tx.get_document = AsyncMock(return_value={"id": "conn-1", "orgId": "first-org"})
+    tx.batch_upsert_app_users = AsyncMock()
+
+    processor = DataSourceEntitiesProcessor(MagicMock(), provider, MagicMock())
+    await processor.initialize("first-org")
+
+    user = _make_user(connector_id="conn-1", email="alice@example.com")
+    await processor.on_new_app_users([user])
+
+    assert user.org_id == "first-org"
+    tx.batch_upsert_app_users.assert_awaited_once_with([user])
+
+
+async def test_on_new_app_users_with_ambient_organization() -> None:
+    from app.core import org_context
+
+    provider = _provider(ORGS)
+    tx = provider.transaction.return_value.__aenter__.return_value
+    tx.get_document = AsyncMock(return_value={"id": "conn-1", "orgId": "second-org"})
+    tx.batch_upsert_app_users = AsyncMock()
+
+    processor = DataSourceEntitiesProcessor(MagicMock(), provider, MagicMock())
+    # Fallback initialization in multi-org: fallback must not be proof of ownership
+    await processor.initialize()
+    assert processor._org_id_is_fallback is True
+
+    user = _make_user(connector_id="conn-1", email="alice@example.com")
+    with org_context.for_org("second-org", job="test"):
+        await processor.on_new_app_users([user])
+
+    assert user.org_id == "second-org"
+    tx.batch_upsert_app_users.assert_awaited_once_with([user])
+
+
+async def test_on_new_app_users_missing_organization_in_multi_org_deployment_raises() -> None:
+    provider = _provider(ORGS)  # 2 orgs
+    tx = provider.transaction.return_value.__aenter__.return_value
+    tx.get_document = AsyncMock(return_value={"id": "conn-1"})  # no orgId on connector app
+    tx.batch_upsert_app_users = AsyncMock()
+
+    processor = DataSourceEntitiesProcessor(MagicMock(), provider, MagicMock())
+    await processor.initialize()  # sets fallback org
+
+    user = _make_user(connector_id="conn-1")
+    with pytest.raises(ValueError, match="Cannot resolve organization"):
+        await processor.on_new_app_users([user])
+
+    tx.batch_upsert_app_users.assert_not_called()
+
+
+async def test_on_new_app_users_conflicting_ambient_and_processor_org_raises() -> None:
+    from app.core import org_context
+
+    provider = _provider(ORGS)
+    tx = provider.transaction.return_value.__aenter__.return_value
+    tx.get_document = AsyncMock(return_value={"id": "conn-1", "orgId": "first-org"})
+    tx.batch_upsert_app_users = AsyncMock()
+
+    processor = DataSourceEntitiesProcessor(MagicMock(), provider, MagicMock())
+    await processor.initialize("first-org")
+
+    user = _make_user(connector_id="conn-1")
+    with org_context.for_org("second-org", job="test"):
+        with pytest.raises(ValueError, match="Conflicting organization context"):
+            await processor.on_new_app_users([user])
+
+    tx.batch_upsert_app_users.assert_not_called()
+
+
+async def test_on_new_app_users_conflicting_connector_and_context_org_raises() -> None:
+    provider = _provider(ORGS)
+    tx = provider.transaction.return_value.__aenter__.return_value
+    tx.get_document = AsyncMock(return_value={"id": "conn-1", "orgId": "second-org"})
+    tx.batch_upsert_app_users = AsyncMock()
+
+    processor = DataSourceEntitiesProcessor(MagicMock(), provider, MagicMock())
+    await processor.initialize("first-org")
+
+    user = _make_user(connector_id="conn-1")
+    with pytest.raises(ValueError, match="Organization conflict"):
+        await processor.on_new_app_users([user])
+
+    tx.batch_upsert_app_users.assert_not_called()
+
+
+async def test_on_new_app_users_conflicting_user_org_raises_and_prevents_cross_org_writes() -> None:
+    provider = _provider(ORGS)
+    tx = provider.transaction.return_value.__aenter__.return_value
+    tx.get_document = AsyncMock(return_value={"id": "conn-1", "orgId": "first-org"})
+    tx.batch_upsert_app_users = AsyncMock()
+
+    processor = DataSourceEntitiesProcessor(MagicMock(), provider, MagicMock())
+    await processor.initialize("first-org")
+
+    # User explicitly declares second-org which conflicts with connector's first-org
+    user = _make_user(connector_id="conn-1", email="alice@example.com", org_id="second-org")
+    with pytest.raises(ValueError, match="conflicts with resolved organization"):
+        await processor.on_new_app_users([user])
+
+    # Assert no cross-organization user or edge is written
+    tx.batch_upsert_app_users.assert_not_called()
+
+
+async def test_on_new_app_users_single_org_fallback_is_safe() -> None:
+    provider = _provider([{"id": "only-org"}])
+    tx = provider.transaction.return_value.__aenter__.return_value
+    tx.get_document = AsyncMock(return_value={"id": "conn-1"})
+    tx.batch_upsert_app_users = AsyncMock()
+
+    processor = DataSourceEntitiesProcessor(MagicMock(), provider, MagicMock())
+    await processor.initialize()
+
+    user = _make_user(connector_id="conn-1")
+    await processor.on_new_app_users([user])
+
+    assert user.org_id == "only-org"
+    tx.batch_upsert_app_users.assert_awaited_once_with([user])
+

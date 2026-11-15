@@ -76,7 +76,7 @@ async def fetch_unnormalized_users(
 
     from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
-    from app.services.graph_db.postgres.identity import IdentityMixin
+    from app.services.graph_db.postgres.identity import PG_TRIM_WS, IdentityMixin
 
     provider = detect_provider_type(graph)
 
@@ -116,14 +116,14 @@ async def fetch_unnormalized_users(
         ]
 
     if provider == "postgres" or isinstance(graph, IdentityMixin) or hasattr(graph, "_id_rows"):
-        query = r"""
+        query = f"""
         /* pipeshub:graph.unnormalized_user_emails */
-        SELECT id, org_id, doc->>'email' AS email, lower(btrim(doc->>'email', E' \t\r\n')) AS new_email
+        SELECT id, org_id, doc->>'email' AS email, lower(btrim(doc->>'email', {PG_TRIM_WS})) AS new_email
         FROM graph.nodes
         WHERE coll = 'users'
         AND ($1::text IS NULL OR org_id = $1)
         AND doc->>'email' IS NOT NULL AND doc->>'email' <> ''
-        AND doc->>'email' <> lower(btrim(doc->>'email', E' \t\r\n'))
+        AND doc->>'email' <> lower(btrim(doc->>'email', {PG_TRIM_WS}))
         ORDER BY id ASC
         LIMIT $2 OFFSET $3
         """

@@ -240,28 +240,24 @@ async def test_users_by_email_rows_partial_vetted_read_discards_and_runs_fallbac
 
 async def test_users_by_email_rows_returns_vetted_rows_when_no_addresses_missing() -> None:
     h = Harness()
-    # Vetted read finds all requested emails, and no padded duplicate exists
-    h.p._id_rows = AsyncMock(side_effect=[
-        [
-            {"email": "user1@example.com", "id": "u1", "active": True},
-            {"email": "user2@example.com", "id": "u2", "active": True},
-        ],
-        [],  # has_padded_users returns empty
+    # Vetted single-snapshot query finds all requested emails, and no padded duplicate exists
+    h.p._id_rows = AsyncMock(return_value=[
+        {"email": "user1@example.com", "id": "u1", "active": True, "has_padded": None},
+        {"email": "user2@example.com", "id": "u2", "active": True, "has_padded": None},
     ])
     rows = await h.call("_users_by_email_rows", "org-1", ["user1@example.com", "user2@example.com"], None)
     assert len(rows) == 2
-    # Vetted read and has_padded_users check called, fallback not called
-    assert h.p._id_rows.await_count == 2
+    # Combined vetted read and has_padded check called in one statement, fallback not called
+    assert h.p._id_rows.await_count == 1
     assert "users_by_email_vetted" in h.p._id_rows.await_args_list[0].args[0]
-    assert "has_padded_users" in h.p._id_rows.await_args_list[1].args[0]
+    assert "padded AS" in h.p._id_rows.await_args_list[0].args[0]
 
 
 async def test_users_by_email_rows_falls_back_when_padded_duplicate_exists() -> None:
     h = Harness()
-    # Vetted read finds the unpadded user, but a padded duplicate also exists
+    # Fast path detects padded user in the same statement snapshot, discards and falls back
     h.p._id_rows = AsyncMock(side_effect=[
-        [{"email": "user1@example.com", "id": "u1", "active": True}],
-        [1],  # has_padded_users finds padded duplicate
+        [{"email": "user1@example.com", "id": "u1", "active": True, "has_padded": 1}],
         [
             {"email": "user1@example.com", "id": "u1", "active": True},
             {"email": "user1@example.com", "id": "u2", "active": True},
@@ -269,8 +265,9 @@ async def test_users_by_email_rows_falls_back_when_padded_duplicate_exists() -> 
     ])
     rows = await h.call("_users_by_email_rows", "org-1", ["user1@example.com"], None)
     assert len(rows) == 2
-    assert h.p._id_rows.await_count == 3
-    assert "users_by_email" in h.p._id_rows.await_args_list[2].args[0]
+    assert h.p._id_rows.await_count == 2
+    assert "users_by_email_vetted" in h.p._id_rows.await_args_list[0].args[0]
+    assert "users_by_email */" in h.p._id_rows.await_args_list[1].args[0]
 
 
 async def test_batch_upsert_app_users_uses_ambient_org_as_org_node() -> None:

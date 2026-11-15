@@ -6599,6 +6599,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         stub_key: str,
         transaction: str | None,
     ) -> None:
+        # Lock both stub and keep nodes to serialize concurrent reconciliations
+        await self.client.execute_query(
+            """
+            MATCH (old:User {id: $stub_key}), (keep:User {id: $keep_key})
+            SET old._lock = timestamp(), keep._lock = timestamp()
+            REMOVE old._lock, keep._lock
+            """,
+            parameters={"stub_key": stub_key, "keep_key": keep_key},
+            txn_id=transaction,
+        )
+
         permission_rel = EDGE_COLLECTION_TO_RELATIONSHIP[CollectionNames.PERMISSION.value]
         allowed_rels = sorted(
             {
@@ -6624,9 +6635,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         for record in unmoved or []:
             self.logger.warning(
-                "Not moving stub relationship type %s while merging user %s",
+                "Not moving stub relationship type %s while merging user %s into %s",
                 record.get("rel_type"),
                 stub_key,
+                keep_key,
             )
 
         params = {
@@ -6648,10 +6660,35 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     parameters=params,
                     txn_id=transaction,
                 )
-        await self.delete_nodes(
-            [stub_key],
-            CollectionNames.USERS.value,
-            transaction=transaction,
+
+        # Remove edges between old and keep (and self-loops)
+        await self.client.execute_query(
+            """
+            MATCH (old:User {id: $stub_key})-[r]-(n)
+            WHERE n = old OR coalesce(n.id, '') = $keep_key
+            DELETE r
+            """,
+            parameters={"stub_key": stub_key, "keep_key": keep_key},
+            txn_id=transaction,
+        )
+
+        # If unsupported relationships existed, retain the stub node; do not delete it!
+        if unmoved:
+            self.logger.warning(
+                "Retaining user stub %s due to unmoved unsupported relationships", stub_key
+            )
+            return
+
+        # Safely delete old user node ONLY if no relationships remain attached.
+        # Plain DELETE without DETACH ensures we never detach-delete concurrent relationships.
+        await self.client.execute_query(
+            """
+            MATCH (old:User {id: $stub_key})
+            WHERE NOT (old)-[]-()
+            DELETE old
+            """,
+            parameters={"stub_key": stub_key},
+            txn_id=transaction,
         )
 
     @staticmethod
@@ -6700,11 +6737,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WHERE n <> old AND coalesce(n.id, '') <> $keep_key
         WITH n, r{identity_columns}
         {order_by}
-        WITH n{identity_names}, head(collect(properties(r))) AS props
+        WITH n{identity_names}, collect(r) AS old_rels, head(collect(properties(r))) AS props
         MATCH (keep:User {{id: $keep_key}})
         MERGE {merge_pattern}
         ON CREATE SET nr = props
         {on_match}
+        FOREACH (old_r IN old_rels | DELETE old_r)
         """
 
     async def get_graph_user_keys_by_mongo_user_ids(
@@ -10603,9 +10641,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     # reconcile the unused stub without disrupting existing safeguards.
                     if user_record.id != user.id:
                         try:
-                            await self.delete_nodes(
-                                [user.id],
-                                collection=CollectionNames.USERS.value,
+                            await self._absorb_graph_user_stub(
+                                user_record.id,
+                                user.id,
                                 transaction=transaction,
                             )
                         except Exception as stub_err:

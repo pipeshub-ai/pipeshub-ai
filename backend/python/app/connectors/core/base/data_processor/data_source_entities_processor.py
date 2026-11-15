@@ -465,6 +465,7 @@ class DataSourceEntitiesProcessor:
         self.data_store_provider: DataStoreProvider = data_store_provider
         self.config_service: ConfigurationService = config_service
         self.org_id = ""
+        self._org_id_is_fallback: bool = False
         # StorageCleanupHelper is initialized lazily the first time it is needed
         self._storage_cleanup: StorageCleanupHelper | None = None
         # Per connector, the nodes its running full sync has written so far.
@@ -813,9 +814,13 @@ class DataSourceEntitiesProcessor:
         if org_id:
             # Caller-supplied org (per-connector / per-request) is authoritative.
             self.org_id = org_id
+            self._org_id_is_fallback = False
             return
 
-        if self.org_id or org_agnostic:
+        if self.org_id:
+            return
+
+        if org_agnostic:
             return
 
         if not self.allow_first_org_fallback:
@@ -831,6 +836,7 @@ class DataSourceEntitiesProcessor:
                 return
             # Use backward-compatible field access
             self.org_id = orgs[0].get("id", orgs[0].get("_key"))
+            self._org_id_is_fallback = True
 
 
     async def _link_kb_record_to_app(self, record: Record, tx_store: TransactionStore) -> None:
@@ -5482,12 +5488,85 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning("on_new_app_users received an empty list; skipping processing.")
                 return
 
-            if self.org_id:
-                for u in users:
-                    if not getattr(u, "org_id", None):
-                        u.org_id = self.org_id
+            connector_ids = {u.connector_id for u in users if getattr(u, "connector_id", None)}
+            if not connector_ids:
+                raise ValueError("Cannot resolve connector_id: AppUser missing connector_id")
+            if len(connector_ids) > 1:
+                raise ValueError(f"Conflicting connector IDs in app users batch: {connector_ids}")
+            connector_id = next(iter(connector_ids))
+
+            explicit_processor_org = (
+                self.org_id if (self.org_id and not getattr(self, "_org_id_is_fallback", False)) else None
+            )
+
+            ambient_org = None
+            try:
+                from app.core.org_context import peek as peek_org_context
+
+                ambient_ctx = peek_org_context()
+                if ambient_ctx and ambient_ctx.kind != "system" and ambient_ctx.org_id:
+                    ambient_org = ambient_ctx.org_id
+            except Exception:
+                ambient_org = None
+
+            if explicit_processor_org and ambient_org and explicit_processor_org != ambient_org:
+                raise ValueError(
+                    f"Conflicting organization context: explicit processor organization '{explicit_processor_org}' "
+                    f"conflicts with ambient organization '{ambient_org}'"
+                )
+
+            context_org = explicit_processor_org or ambient_org
 
             async with self.data_store_provider.transaction() as tx_store:
+                app_doc = None
+                if hasattr(tx_store, "get_document"):
+                    app_doc = await tx_store.get_document(connector_id, CollectionNames.APPS.value)
+                elif hasattr(tx_store, "graph_provider") and hasattr(tx_store.graph_provider, "get_document"):
+                    app_doc = await tx_store.graph_provider.get_document(
+                        connector_id, CollectionNames.APPS.value, transaction=getattr(tx_store, "txn", None)
+                    )
+
+                connector_org = None
+                if isinstance(app_doc, dict):
+                    raw_app_org = app_doc.get("orgId") or app_doc.get("org_id")
+                    if isinstance(raw_app_org, str) and raw_app_org.strip():
+                        connector_org = raw_app_org.strip()
+
+                if connector_org and context_org and connector_org != context_org:
+                    raise ValueError(
+                        f"Organization conflict: connector '{connector_id}' belongs to organization '{connector_org}', "
+                        f"but context specified '{context_org}'"
+                    )
+
+                resolved_org = connector_org or context_org
+
+                if not resolved_org:
+                    orgs = await tx_store.get_all_orgs()
+                    if orgs and len(orgs) == 1:
+                        single_org = orgs[0].get("id") or orgs[0].get("_key")
+                        resolved_org = single_org
+                    else:
+                        raise ValueError(
+                            f"Cannot resolve organization for connector '{connector_id}': missing ownership context "
+                            f"in multi-organization deployment"
+                        )
+
+                if connector_org and connector_org != resolved_org:
+                    raise ValueError(
+                        f"Connector '{connector_id}' organization '{connector_org}' conflicts with resolved organization '{resolved_org}'"
+                    )
+
+                for u in users:
+                    user_org = getattr(u, "org_id", None) or getattr(u, "orgId", None)
+                    if isinstance(user_org, str) and user_org.strip():
+                        if user_org.strip() != resolved_org:
+                            raise ValueError(
+                                f"User '{u.email or u.source_user_id}' belongs to organization '{user_org.strip()}', "
+                                f"which conflicts with resolved organization '{resolved_org}'"
+                            )
+                    else:
+                        u.org_id = resolved_org
+
                 await tx_store.batch_upsert_app_users(users)
 
         except Exception as e:

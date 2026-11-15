@@ -253,7 +253,8 @@ class ConnectorFactory:
             if processor is None:
                 processor = processor_cls(logger, data_store_provider, config_service)
                 processor.org_id = org_id
-                await processor.initialize()
+                processor._org_id_is_fallback = False
+                await processor.initialize(org_id=org_id)
                 cls._shared_org_processors[key] = processor
         return processor
 
@@ -315,9 +316,10 @@ class ConnectorFactory:
                 data_entities_processor = processor_cls(logger, data_store_provider, config_service)
                 if org_id:
                     data_entities_processor.org_id = org_id
+                    data_entities_processor._org_id_is_fallback = False
                 # Before initialize(): it opens the producer and can still raise after.
                 owned_processor = data_entities_processor
-                await data_entities_processor.initialize()
+                await data_entities_processor.initialize(org_id=org_id)
 
             thread_pool = kwargs.pop("thread_pool", None)
 
@@ -340,6 +342,9 @@ class ConnectorFactory:
                 connector._owns_entities_processor = (
                     connector_processor is not None and connector_processor is not shared_processor
                 )
+                if connector_processor is not None and org_id:
+                    connector_processor.org_id = org_id
+                    connector_processor._org_id_is_fallback = False
                 owned_processor = None
                 if notification_service is not None:
                     connector._notification_service = notification_service

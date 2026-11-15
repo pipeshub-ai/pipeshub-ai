@@ -499,6 +499,14 @@ class GraphTransactionStore(TransactionStore):
         doc = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value, transaction=self.txn)
         return AppMetadata.from_db_document(doc) if doc else None
 
+    async def get_document(
+        self, key: str, collection: str, *, raise_on_error: bool = False
+    ) -> dict | None:
+        """Get raw document by key and collection."""
+        return await self.graph_provider.get_document(
+            key, collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
+
     async def get_record_by_external_id(
         self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL,
         *, raise_on_error: bool = False,
@@ -1588,6 +1596,11 @@ class GraphDataStore(DataStoreProvider):
 
     async def get_existing_record_keys(self, record_ids: list[str]) -> set[str]:
         return await self.graph_provider.get_existing_record_keys(record_ids)
+
+    async def get_document(
+        self, key: str, collection: str, *, raise_on_error: bool = False
+    ) -> dict | None:
+        return await self.graph_provider.get_document(key, collection, raise_on_error=raise_on_error)
 
     @asynccontextmanager
     async def transaction(self, explicit: bool | None = None) -> AsyncContextManager["TransactionStore"]:

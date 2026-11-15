@@ -476,3 +476,96 @@ async def test_get_person_by_email_queries_with_normalized_address() -> None:
     assert params["email"] == "person@example.com"
     assert params["org_id"] == "org-1"
 
+
+# ---- 10. stub relationship preservation and reconciliation --------------------------------------
+
+
+async def test_absorb_graph_user_stub_moves_edges_and_safely_deletes_isolated_stub() -> None:
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = logging.getLogger("test")
+    p.client = MagicMock()
+    p.client.execute_query = AsyncMock(return_value=[])
+
+    await p._absorb_graph_user_stub("keep-1", "stub-1", transaction="txn-1")
+
+    queries = [call.args[0] for call in p.client.execute_query.await_args_list]
+
+    # 1. Lock query
+    assert any("SET old._lock = timestamp(), keep._lock = timestamp()" in q for q in queries)
+
+    # 2. Unmoved inspection query
+    assert any("WHERE NOT type(r) IN $allowed_rels" in q for q in queries)
+
+    # 3. Move query contains FOREACH (old_r IN old_rels | DELETE old_r)
+    move_queries = [q for q in queries if "FOREACH (old_r IN old_rels | DELETE old_r)" in q]
+    assert len(move_queries) > 0
+
+    # 4. Remove edges between old and keep (and self-loops)
+    assert any("WHERE n = old OR coalesce(n.id, '') = $keep_key" in q for q in queries)
+
+    # 5. Non-detaching delete query
+    delete_query = [q for q in queries if "WHERE NOT (old)-[]-()" in q and "DELETE old" in q]
+    assert len(delete_query) == 1
+    assert "DETACH" not in delete_query[0]
+
+
+async def test_absorb_graph_user_stub_retains_stub_when_unsupported_relationships_exist() -> None:
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = MagicMock()
+    p.client = MagicMock()
+
+    # Return an unsupported relationship type during unmoved inspection
+    async def mock_execute(query: str, parameters: dict | None = None, **kwargs: object) -> list[dict]:
+        if "WHERE NOT type(r) IN $allowed_rels" in query:
+            return [{"rel_type": "CUSTOM_EXTERNAL_REL"}]
+        return []
+
+    p.client.execute_query = AsyncMock(side_effect=mock_execute)
+
+    await p._absorb_graph_user_stub("keep-1", "stub-1", transaction="txn-1")
+
+    queries = [call.args[0] for call in p.client.execute_query.await_args_list]
+
+    # Warning logged for unmoved relationship and retention
+    assert p.logger.warning.call_count >= 2
+
+    # Old user delete query must NOT be executed
+    assert not any("WHERE NOT (old)-[]-()" in q for q in queries)
+
+
+async def test_batch_upsert_app_users_absorbs_stub_when_user_id_differs() -> None:
+    from app.config.constants.arangodb import Connectors
+    from app.models.entities import AppUser, User
+
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = logging.getLogger("test")
+    p.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1", "id": "org-1"}])
+    p.get_document = AsyncMock(return_value={"id": "c1", "orgId": "org-1"})
+    # First get_user_by_email checks existing; second get_user_by_email after upsert returns resolved user with different id
+    p.get_user_by_email = AsyncMock(side_effect=[
+        None,
+        User(id="existing-user-id", email="user@example.com", is_active=True),
+    ])
+    p.batch_upsert_nodes = AsyncMock(return_value=True)
+    p.migrate_person_to_user = AsyncMock()
+    p.batch_create_edges = AsyncMock(return_value=True)
+    p._absorb_graph_user_stub = AsyncMock()
+
+    user = AppUser(
+        app_name=Connectors.GOOGLE_DRIVE,
+        connector_id="c1",
+        id="stub-user-id",
+        source_user_id="s1",
+        email="user@example.com",
+        full_name="User One",
+    )
+
+    await p.batch_upsert_app_users([user], transaction="txn-123")
+
+    p._absorb_graph_user_stub.assert_awaited_once_with(
+        "existing-user-id",
+        "stub-user-id",
+        transaction="txn-123",
+    )
+
+

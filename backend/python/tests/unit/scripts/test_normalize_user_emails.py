@@ -19,6 +19,7 @@ from app.scripts.normalize_user_emails import (
 )
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.graph_db.postgres.identity import PG_TRIM_WS
 
 
 def _lines(out: io.StringIO) -> list[dict]:
@@ -265,7 +266,7 @@ async def test_fetch_unnormalized_users_postgres_tab_padded() -> None:
     assert res[0]["id"] == "u1"
     assert res[0]["email"] == "\talice@acme.com\t"
     assert res[0]["newEmail"] == "alice@acme.com"
-    assert "btrim(doc->>'email', E' \\t\\r\\n')" in p.executed_query
+    assert f"btrim(doc->>'email', {PG_TRIM_WS})" in p.executed_query
 
 
 @pytest.mark.asyncio
