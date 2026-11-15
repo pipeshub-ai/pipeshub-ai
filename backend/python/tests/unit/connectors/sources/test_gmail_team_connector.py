@@ -3196,7 +3196,7 @@ class TestRemoveEarlierMailboxes:
                        email=email, full_name=email)
 
     @pytest.mark.asyncio
-    async def test_a_failed_removal_is_retried_and_a_never_reused_address_removes_nothing(self, connector):
+    async def test_a_failed_removal_is_retried_and_a_never_reused_address_removes_nothing(self, connector) -> None:
         connector.source_accounts.reused = {"ana@x.com": "new"}
         dep = connector.data_entities_processor
         dep.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())

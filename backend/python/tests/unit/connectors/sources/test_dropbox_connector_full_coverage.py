@@ -1431,10 +1431,10 @@ class TestHandleGroupChangeMemberRoleEvent:
 # ===========================================================================
 class TestUpdateUserGroupPermission:
     @pytest.fixture(autouse=True)
-    def _accounts(self, connector):
+    def _accounts(self, connector) -> None:
         stub_source_accounts(connector)
 
-    async def test_a_reused_address_is_updated_only_for_the_member_holding_it(self, connector):
+    async def test_a_reused_address_is_updated_only_for_the_member_holding_it(self, connector) -> None:
         """The event log can still list a change for the earlier account of an address."""
         connector.source_accounts.reused = {"user@test.com": "dbmid:new"}
         connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=MagicMock(id="u1"))

@@ -1884,7 +1884,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             )])
         await self.user_sync_point.update_sync_point(_MAILBOXES_SYNC_POINT_KEY, {"emails": current, "mailboxKeys": sorted(keys.values())})
 
-    async def _remove_earlier_mailboxes(self, users: List[AppUser], keys: dict[str, str]) -> dict[str, str]:
+    async def _remove_earlier_mailboxes(self, users: list[AppUser], keys: dict[str, str]) -> dict[str, str]:
         """Once an address passed to a new account, the earlier account's mailbox, labels and mail go: nobody can read
         them, and Google deletes a deleted user's "Gmail messages and attachments"
         (https://knowledge.workspace.google.com/admin/users/delete-or-remove-a-user-from-your-organization).

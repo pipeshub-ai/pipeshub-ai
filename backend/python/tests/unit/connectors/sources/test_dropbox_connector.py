@@ -2941,7 +2941,7 @@ class TestHandleGroupChangeMemberRoleEvent:
 # ===========================================================================
 class TestUpdateUserGroupPermission:
     @pytest.fixture(autouse=True)
-    def _accounts(self, connector):
+    def _accounts(self, connector) -> None:
         stub_source_accounts(connector)
 
     async def test_user_not_found(self, connector):

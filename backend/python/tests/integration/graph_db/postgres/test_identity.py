@@ -22,7 +22,13 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.core import org_context
 from app.core.org_context import MissingOrgContext, OrgMismatch, SystemContextNotAllowed
-from app.models.entities import AppRole, AppUser, AppUserGroup, RecordGroup, RecordGroupType
+from app.models.entities import (
+    AppRole,
+    AppUser,
+    AppUserGroup,
+    RecordGroup,
+    RecordGroupType,
+)
 from app.models.permission import PermissionType
 from tests.support.in_memory_config import InMemoryConfigService
 
