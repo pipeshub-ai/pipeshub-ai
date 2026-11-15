@@ -172,6 +172,31 @@ async def test_each_mailbox_is_read_as_its_owner_and_only_its_owner_gets_access(
     assert all(req.identity == BOB for req in ws.http.requests if "/users/bob@example.com/" in req.path)
 
 
+async def test_the_new_holder_of_a_reused_address_gets_its_own_mailbox_and_never_the_earlier_accounts(ws: Harness) -> None:
+    """Alice's address passed to a new account. The earlier account's mail stays in the address's groups, which
+    nothing grants any more; the new account's mail goes to groups keyed by its Directory id, granted to that id."""
+    ws.gmail.deliver(ALICE, "old-mail", sender=OUTSIDER)
+    await ws.sync()
+    new_id = ws.directory.users[ALICE].user_id
+    ws.records.reuse_address(CONNECTOR_ID, ALICE, new_id)
+    ws.records.record_group_permissions[f"mailbox:{ALICE}"] = []        # the processor stripped the earlier grants
+    ws.gmail.add_mailbox(ALICE)                                           # the new account's own, new mailbox
+    ws.gmail.deliver(ALICE, "new-mail", sender=OUTSIDER)
+
+    await ws.sync()
+
+    owned = f"mailbox:{ALICE}#{new_id}"
+    assert [(p.email, p.external_id, p.type) for p in ws.records.record_group_permissions[owned]] == [
+        (ALICE, new_id, PermissionType.OWNER)
+    ]
+    assert ws.records.records["new-mail"].external_record_group_id == f"{ALICE}#{new_id}:INBOX"
+    assert ws.records.record_groups[f"{ALICE}#{new_id}:INBOX"].parent_external_group_id == owned
+    assert ws.records.records["old-mail"].external_record_group_id == f"{ALICE}:INBOX"
+    assert ws.records.record_group_permissions[f"mailbox:{ALICE}"] == []
+    assert GoogleGmailTeamConnector._owner_email_from_group(f"{ALICE}#{new_id}:INBOX") == ALICE
+    assert GoogleGmailTeamConnector._owner_email_from_group(owned) == ALICE
+
+
 async def test_a_user_the_service_account_may_not_impersonate_does_not_stop_the_others(ws: Harness) -> None:
     ws.gmail.deliver(ALICE, "a-1", sender=OUTSIDER)
     ws.gmail.deliver(BOB, "b-1", sender=OUTSIDER)

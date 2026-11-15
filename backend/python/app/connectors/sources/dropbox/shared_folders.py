@@ -108,7 +108,8 @@ def member_grant_id(user: object) -> str:
     re-used address now gets its own grants. Sharing's UserInfo carries it beside account_id: "team_member_id
     String? The team member ID of the shared folder member. Only present if same_team is true."
     (https://github.com/dropbox/dropbox-api-spec/blob/master/sharing_folders.stone, struct UserInfo)."""
-    return getattr(user, "team_member_id", None) or user.account_id
+    team_member_id = getattr(user, "team_member_id", None)
+    return team_member_id if isinstance(team_member_id, str) and team_member_id else user.account_id
 
 
 def folder_grants(users: Iterable, groups: Iterable, invitees: Iterable) -> list[Permission]:

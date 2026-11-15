@@ -19,6 +19,7 @@ import base64
 import copy
 import itertools
 import json
+import logging
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -29,6 +30,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import httplib2
 
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts, _bucket, source_accounts_key
 from app.models.entities import Record
 from app.models.permission import EntityType, PermissionType
 from app.services.graph_db.common.record_visibility import (
@@ -276,6 +278,18 @@ def paginate(items: list[Any], query: dict[str, str], *, default_size: int, key:
 # --- our databases -----------------------------------------------------------
 
 
+class _MemoryConfig:
+    def __init__(self) -> None:
+        self.saved: dict[str, Any] = {}
+
+    async def get_config(self, key: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
+        return self.saved.get(key, default)
+
+    async def set_config(self, key: str, value: Any, **_: Any) -> bool:  # noqa: ANN401
+        self.saved[key] = value
+        return True
+
+
 class FakeEntitiesProcessor:
     """In-memory stand-in for ``DataSourceEntitiesProcessor``.
 
@@ -316,6 +330,24 @@ class FakeEntitiesProcessor:
         self.deleted_groups: list[str] = []
         # The record ids the running full sync wrote or noted kept; None when no full sync runs.
         self.full_sync_seen: set[str] | None = None
+        self._accounts: dict[str, SourceAccounts] = {}
+
+    def source_accounts(self, connector_id: str) -> SourceAccounts:
+        """The real per-address account state, kept in memory: no address changed hands unless ``reuse_address``."""
+        if connector_id not in self._accounts:
+            self._accounts[connector_id] = SourceAccounts(self, connector_id, _MemoryConfig(), logging.getLogger("fake"))
+        return self._accounts[connector_id]
+
+    def reuse_address(self, connector_id: str, email: str, holder: str) -> None:
+        """Stage what the processor saves when ``email`` passed from another account to the account ``holder``."""
+        accounts = self.source_accounts(connector_id)
+        bucket = _bucket(email.lower())
+        accounts.config_service.saved[source_accounts_key(connector_id, bucket)] = {
+            "linked": {email.lower(): holder}, "reused": {email.lower(): holder},
+        }
+        # As the processor's own check on linking does, the next read sees the saved state.
+        accounts._read.discard(bucket)
+        accounts.loaded = False
 
     def _check_write(self, external_id: str | None) -> None:
         if external_id in self.fail_writes_for:

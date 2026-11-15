@@ -36,6 +36,7 @@ from app.models.entities import (
     Record,
     RecordType,
 )
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
 
 if TYPE_CHECKING:
     from app.connectors.sources.google.gmail.team.connector import (
@@ -200,6 +201,7 @@ def connector():
             scope="team",
             created_by="test",
         )
+        stub_source_accounts(conn)
         conn.sync_filters = FilterCollection()
         conn.indexing_filters = FilterCollection()
         conn.admin_client = MagicMock()
@@ -996,6 +998,7 @@ def connector_fullcov():
             scope="personal",
             created_by="test-user-id",
         )
+        stub_source_accounts(conn)
         conn.sync_filters = FilterCollection()
         conn.indexing_filters = FilterCollection()
         conn.admin_client = MagicMock()

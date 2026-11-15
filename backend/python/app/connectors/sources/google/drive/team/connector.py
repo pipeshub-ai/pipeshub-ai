@@ -478,6 +478,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
         self.connector_id = connector_id
+        self.source_accounts = data_entities_processor.source_accounts(connector_id)
 
         # Batch processing configuration
         self.batch_size = 100
@@ -1032,7 +1033,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         (https://developers.google.com/workspace/drive/api/reference/rest/v3/about) and User.permissionId is
         "The user's ID as visible in Permission resources"
         (https://developers.google.com/workspace/drive/api/reference/rest/v3/User)."""
-        accounts = self.data_entities_processor.source_accounts(self.connector_id)
+        accounts = self.source_accounts
         await accounts.ensure_loaded([u.email for u in users if u.email])
         ids: dict[str, tuple[str, str]] = {}
         for user in users:

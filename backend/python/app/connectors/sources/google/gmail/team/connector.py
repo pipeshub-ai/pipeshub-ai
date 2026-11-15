@@ -293,6 +293,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
         self.connector_id = connector_id
+        self.source_accounts = data_entities_processor.source_accounts(connector_id)
 
         # Batch processing configuration
         self.batch_size = 100
@@ -475,7 +476,9 @@ class GoogleGmailTeamConnector(BaseConnector):
         held before, the address and the Directory id of the account that holds it now. The earlier account's mail
         stays in the address's groups, which grant nobody once the address changed hands, so the new holder reads
         only its own mail. Groups written before an address changed hands keep their keys."""
-        accounts = self.data_entities_processor.source_accounts(self.connector_id)
+        if not user_email:
+            return user_email
+        accounts = self.source_accounts
         await accounts.ensure_loaded([user_email])
         holder = accounts.holder(user_email)
         return f"{user_email}#{holder}" if holder else user_email

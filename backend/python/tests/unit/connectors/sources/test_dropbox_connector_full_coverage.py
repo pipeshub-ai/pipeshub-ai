@@ -1515,7 +1515,7 @@ class TestCreateAndSyncSingleRecordGroup:
     async def test_success(self, connector):
         user_membership = MagicMock()
         user_membership.access_type = MagicMock(_tag="editor")
-        user_membership.user = MagicMock(email="u@t.com")
+        user_membership.user = MagicMock(email="u@t.com", account_id="dbid:u", team_member_id="dbmid:u")
 
         group_membership = MagicMock()
         group_membership.access_type = MagicMock(_tag="viewer")
@@ -1546,7 +1546,7 @@ class TestCreateAndSyncSingleRecordGroup:
     async def test_members_pagination(self, connector):
         user1 = MagicMock()
         user1.access_type = MagicMock(_tag="owner")
-        user1.user = MagicMock(email="u1@t.com")
+        user1.user = MagicMock(email="u1@t.com", account_id="dbid:u1", team_member_id="dbmid:u1")
 
         page1_data = MagicMock()
         page1_data.users = [user1]
@@ -1556,7 +1556,7 @@ class TestCreateAndSyncSingleRecordGroup:
 
         user2 = MagicMock()
         user2.access_type = MagicMock(_tag="editor")
-        user2.user = MagicMock(email="u2@t.com")
+        user2.user = MagicMock(email="u2@t.com", account_id="dbid:u2", team_member_id="dbmid:u2")
 
         page2_data = MagicMock()
         page2_data.users = [user2]

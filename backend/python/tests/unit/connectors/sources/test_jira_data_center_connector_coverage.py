@@ -925,7 +925,7 @@ async def test_fetch_project_permission_scheme_dc_branches():
     types = {(p.entity_type, p.email, p.external_id) for p in perms}
     assert (EntityType.GROUP, None, "gid1") in types
     assert (EntityType.GROUP, None, "expanded-g") in types
-    assert (EntityType.USER, "u@example.com", None) in types
+    assert (EntityType.USER, "u@example.com", "acc") in types   # the user key names the account
     assert (EntityType.ORG, None, "anyone_authenticated") in types
     assert (EntityType.ROLE, None, "PROJ_10400") in types
     assert (EntityType.ROLE, None, "PROJ_projectLead") in types

@@ -140,6 +140,32 @@ def reader(email: str) -> dict[str, Any]:
 # --- identities, users and groups --------------------------------------------
 
 
+async def test_the_new_holder_of_a_reused_address_gets_the_shares_naming_its_permission_id_only(ws: Workspace) -> None:
+    """Drive names a grantee by its permissionId, not its Directory id. Once Alice's address belongs to a new
+    account, its permissionId is noted against that account, so a share naming it is written and one naming the
+    earlier account's is not."""
+    alice = ws.world.users[ALICE]
+    ws.records.reuse_address(CONNECTOR_ID, ALICE, alice.user_id)
+    ws.world.add_item("mine", "mine.txt", parent="root-bob", owner=BOB,
+                      perms=[{**reader(ALICE), "id": alice.permission_id}])
+    ws.world.add_item("theirs", "theirs.txt", parent="root-bob", owner=BOB,
+                      perms=[{**reader(ALICE), "id": "perm-of-the-deleted-account"}])
+
+    await ws.sync()
+
+    accounts = ws.records.source_accounts(CONNECTOR_ID)
+    granted = {
+        record: [p.external_id for p in ws.records.permissions[record] if p.email == ALICE]
+        for record in ("mine", "theirs")
+    }
+    assert granted == {"mine": [alice.permission_id], "theirs": ["perm-of-the-deleted-account"]}
+    assert accounts.holds(ALICE, alice.permission_id)
+    assert not accounts.holds(ALICE, "perm-of-the-deleted-account")
+    # Alice's own groups name her by her Directory id.
+    my_drive = [p for p in ws.records.record_group_permissions["root-alice"] if p.email == ALICE]
+    assert [p.external_id for p in my_drive] == [alice.user_id]
+
+
 async def test_each_users_drive_is_read_as_that_user_through_domain_wide_delegation(ws: Workspace) -> None:
     ws.world.add_item("a1", "alice.txt", parent="root-alice", owner=ALICE)
     ws.world.add_item("b1", "bob.txt", parent="root-bob", owner=BOB)

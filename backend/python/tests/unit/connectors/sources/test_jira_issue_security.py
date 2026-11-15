@@ -894,3 +894,44 @@ class TestPagingWithTotalOnly:
             return 200, {"values": [{"n": start}], "maxResults": 1000}
         status, values = await collect_paged_values(endless)
         assert values is None
+
+
+class TestPerIssueHoldersNameTheAccount:
+    """A grant to a re-used address is written only when it names the account that holds it now, so the reporter,
+    assignee and user-field holders carry the id the connectors list users with: accountId on Cloud, the user key
+    on Data Center."""
+
+    @staticmethod
+    def _level(holders: list[dict], fields: dict) -> set:
+        grants, _ = apply_issue_access(
+            _record(), {"security": {"id": "20"}, **fields}, is_subtask=False, project_key="PROJ",
+            context=_present(members={"20": holders}), reporter_email="rep@ex.com", assignee_email="asg@ex.com",
+            user_by_account_id={"acc-f": type("U", (), {"email": "fld@ex.com"})()},
+        )
+        return {(p.email, p.external_id) for p in grants}
+
+    def test_cloud_reporter_assignee_and_user_field_carry_the_account_id(self) -> None:
+        got = self._level(
+            [{"type": "reporter"}, {"type": "assignee"}, {"type": "userCustomField", "parameter": "customfield_1"}],
+            {"reporter": {"accountId": "acc-r"}, "assignee": {"accountId": "acc-a"},
+             "customfield_1": [{"accountId": "acc-f"}]},
+        )
+        assert got == {("rep@ex.com", "acc-r"), ("asg@ex.com", "acc-a"), ("fld@ex.com", "acc-f")}
+
+    def test_data_center_holders_carry_the_user_key(self) -> None:
+        got = self._level(
+            [{"type": "reporter"}, {"type": "assignee"}],
+            {"reporter": {"key": "JIRAUSER10100", "name": "rep"}, "assignee": {"key": "JIRAUSER10200", "name": "asg"}},
+        )
+        assert got == {("rep@ex.com", "JIRAUSER10100"), ("asg@ex.com", "JIRAUSER10200")}
+
+    def test_a_browse_reporter_grant_carries_the_account_id(self) -> None:
+        context = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=[{"type": "reporter"}])
+        grants, _ = apply_issue_access(
+            _record(), {"security": None, "reporter": {"accountId": "acc-r"}}, is_subtask=False, project_key="PROJ",
+            context=context, reporter_email="rep@ex.com",
+        )
+        assert {(p.email, p.external_id) for p in grants} == {("rep@ex.com", "acc-r")}
+
+    def test_a_holder_whose_field_names_no_account_carries_none(self) -> None:
+        assert self._level([{"type": "reporter"}], {}) == {("rep@ex.com", None)}

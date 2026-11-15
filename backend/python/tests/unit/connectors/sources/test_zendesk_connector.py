@@ -1254,6 +1254,17 @@ class TestRecordPermissions:
         group_perm = next(p for p in perms if p.external_id == "group_7")
         assert group_perm.type == PermissionType.READ
 
+    def test_a_customer_grant_names_the_zendesk_user_the_ticket_names(self, zendesk_connector) -> None:
+        """A grant to a re-used address is written only when it names the account holding it now by its user id."""
+        zendesk_connector._user_data = lambda uid: {"id": uid, "email": f"cc{uid}@acme.com"}
+        perms = zendesk_connector._record_permissions(
+            7, {"email": "req@acme.com"}, requester_id=41, collaborators=[42],
+        )
+        users = {(p.email, p.external_id) for p in perms if p.entity_type == EntityType.USER}
+        assert users == {("req@acme.com", "41"), ("cc42@acme.com", "42")}
+        sideloaded = zendesk_connector._record_permissions(7, {"id": 43, "email": "side@acme.com"})
+        assert [(p.email, p.external_id) for p in sideloaded if p.entity_type == EntityType.USER] == [("side@acme.com", "43")]
+
     def test_all_tickets_group_is_always_granted(self, zendesk_connector) -> None:
         perms = zendesk_connector._record_permissions(7, {"email": "req@acme.com"})
         assert any(

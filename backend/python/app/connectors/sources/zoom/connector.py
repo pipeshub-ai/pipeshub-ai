@@ -163,6 +163,10 @@ class ZoomParticipant(BaseModel):
 
     name: str = ""
     user_email: str = ""
+    # "If the participant joins the meeting by logging into Zoom, this value is the `id` value in the Get a user API
+    # response ... without logging into Zoom, this returns an empty string value."
+    # (https://developers.zoom.us/docs/api/meetings/, GET /report/meetings/{meetingId}/participants)
+    participant_user_id: str = ""
     duration: int = 0
     join_time: str = ""
     leave_time: str = ""
@@ -422,7 +426,7 @@ class ZoomConnector(BaseConnector):
 
             results = await asyncio.gather(
                 *[
-                    self._process_one_meeting(sem, m, host_email, record_group_id)
+                    self._process_one_meeting(sem, m, host_email, record_group_id, host_id=user_id)
                     for m in raw_meetings
                 ],
                 return_exceptions=True,
@@ -778,6 +782,7 @@ class ZoomConnector(BaseConnector):
         meeting_obj: ZoomMeetingReport,
         host_email: str,
         record_group_id: Optional[str],
+        host_id: Optional[str] = None,
     ) -> Optional[tuple[Record, list[Permission]]]:
         """Fetch detail + permissions for a single meeting under the shared semaphore.
 
@@ -823,6 +828,7 @@ class ZoomConnector(BaseConnector):
                     meeting_detail=meeting_detail,
                     encoded_uuid=encoded_uuid,
                     host_email=host_email,
+                    host_id=host_id,
                 )
                 return (rec, perms)
             except Exception as exc:
@@ -912,6 +918,7 @@ class ZoomConnector(BaseConnector):
         if email:
             perms.append(Permission(
                 email=email,
+                external_id=user_id,
                 type=PermissionType.OWNER,
                 entity_type=EntityType.USER,
             ))
@@ -998,23 +1005,25 @@ class ZoomConnector(BaseConnector):
         meeting_detail: Optional[ZoomMeetingDetail],
         encoded_uuid: str,
         host_email: str,
+        host_id: Optional[str] = None,
     ) -> list[Permission]:
         """Build permission list from host, alt-hosts, participants, and invitees.
 
         Flow:
         1. Host email → OWNER
-        2. Alt-hosts (settings.alternative_hosts, semicolon-separated) → READ each
-        3. Participants (report API) → READ each
+        2. Participants (report API) → READ each
+        3. Alt-hosts (settings.alternative_hosts, semicolon-separated) → READ each
         4. Invitees (settings.meeting_invitees[].email) → READ each
         5. All deduplicated via seen_emails set
         """
         perms: list[Permission] = []
         seen_emails: set[str] = set()
 
-        # 1 — host → OWNER
+        # 1 — host → OWNER (the listed user whose meeting report this is, by its Zoom user id)
         if host_email:
             perms.append(Permission(
                 email=host_email,
+                external_id=host_id,
                 type=PermissionType.OWNER,
                 entity_type=EntityType.USER,
             ))
@@ -1022,7 +1031,18 @@ class ZoomConnector(BaseConnector):
 
         settings = meeting_detail.settings if meeting_detail else ZoomMeetingSettings()
 
-        # 2 — alt-hosts → READ
+        # 2 — participants → READ, first: their grants carry the Zoom user id an address-only one would shadow
+        try:
+            participants = await self._list_meeting_participants(encoded_uuid)
+            self._add_participant_permissions(perms, participants, seen_emails)
+        except Exception as exc:
+            self.logger.warning("Zoom: failed to fetch participants: %s", exc)
+
+        # 3 — alt-hosts → READ
+        # shortcut: an alternative host, an invitee or a participant who joined without signing in is named by
+        # address alone ("alternative hosts' email addresses or IDs"; an invitee has only "email"; such a
+        # participant's participant_user_id is empty, https://developers.zoom.us/docs/api/meetings/), so after an
+        # address passes to a new Zoom account that grant fails closed for the new holder; upgrade if Zoom adds ids.
         for raw_alt in settings.alternative_hosts.split(";"):
             alt_email = raw_alt.strip().lower()
             if alt_email and alt_email not in seen_emails:
@@ -1032,13 +1052,6 @@ class ZoomConnector(BaseConnector):
                     entity_type=EntityType.USER,
                 ))
                 seen_emails.add(alt_email)
-
-        # 3 — participants → READ
-        try:
-            participants = await self._list_meeting_participants(encoded_uuid)
-            self._add_participant_permissions(perms, participants, seen_emails)
-        except Exception as exc:
-            self.logger.warning("Zoom: failed to fetch participants: %s", exc)
 
         # 4 — invitees → READ
         for inv in settings.meeting_invitees:
@@ -1060,11 +1073,13 @@ class ZoomConnector(BaseConnector):
         seen_emails: set[str],
     ) -> None:
         """Append READ permission per participant email."""
-        for p in participants:
+        # A person who joined more than once keeps the entry that names their Zoom account.
+        for p in sorted(participants, key=lambda p: not p.participant_user_id):
             p_email = p.user_email.strip().lower()
             if p_email and p_email not in seen_emails:
                 perms.append(Permission(
                     email=p_email,
+                    external_id=p.participant_user_id or None,
                     type=PermissionType.READ,
                     entity_type=EntityType.USER,
                 ))

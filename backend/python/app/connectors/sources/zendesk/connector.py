@@ -4018,8 +4018,14 @@ class ZendeskConnector(BaseConnector):
             email = user_data.get("email")
             if email and email.lower() not in emails:
                 emails.add(email.lower())
+                # The ticket names the person by Zendesk user id ("requester_id ... The user who requested this
+                # ticket", "collaborator_ids ... The ids of users currently CC'ed on the ticket",
+                # https://developer.zendesk.com/api-reference/ticketing/tickets/tickets/), the id users are listed
+                # with, so a re-used address's grant reaches only the account the ticket names.
+                person_id = user_id or user_data.get("id")
                 permissions.append(Permission(
                     email=email,
+                    external_id=str(person_id) if person_id else None,
                     type=PermissionType.READ,
                     entity_type=EntityType.USER,
                 ))

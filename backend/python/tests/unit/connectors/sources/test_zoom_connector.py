@@ -415,6 +415,8 @@ class TestZoomConnectorSyncFlow:
         # Second meeting still recorded
         connector.data_entities_processor.on_new_records.assert_awaited_once()
         connector._update_user_meeting_sync_point.assert_awaited_once()
+        # The meeting host is the listed user, named by its Zoom user id.
+        assert connector._build_meeting_permissions.await_args.kwargs["host_id"] == "u1"
 
 
 # ============================================================================
@@ -1143,6 +1145,34 @@ class TestRunSyncInitAndAppUsers:
         connector._sync_meetings_for_user.assert_awaited_once()
 
 
+class TestMeetingGrantsNameTheZoomAccount:
+    """A grant to a re-used address is written only when it names the account holding it now by its Zoom user id."""
+
+    @pytest.mark.asyncio
+    async def test_host_and_signed_in_participants_carry_their_user_id_and_others_none(self) -> None:
+        connector = _make_connector()
+        connector._list_meeting_participants = AsyncMock(  # type: ignore[method-assign]
+            return_value=[
+                ZoomParticipant(user_email="p1@example.com"),                                   # joined first signed out
+                ZoomParticipant(user_email="P1@example.com", participant_user_id="zu-p1"),      # then signed in
+                ZoomParticipant(user_email="guest@else.com"),                                   # never signed in
+                ZoomParticipant(user_email="alt@example.com", participant_user_id="zu-alt"),
+            ]
+        )
+        meeting_detail = ZoomMeetingDetail.model_validate({
+            "settings": {"alternative_hosts": "alt@example.com", "meeting_invitees": [{"email": "inv@example.com"}]},
+        })
+
+        perms = await connector._build_meeting_permissions(
+            meeting_detail=meeting_detail, encoded_uuid="u", host_email="host@example.com", host_id="zu-host",
+        )
+
+        assert {(p.email, p.external_id) for p in perms} == {
+            ("host@example.com", "zu-host"), ("p1@example.com", "zu-p1"), ("alt@example.com", "zu-alt"),
+            ("guest@else.com", None), ("inv@example.com", None),
+        }
+
+
 class TestBuildRecordGroup:
     def test_builds_group_with_owner_permission(self) -> None:
         connector = _make_connector()
@@ -1161,6 +1191,7 @@ class TestBuildRecordGroup:
         assert len(perms) == 1
         assert perms[0].email == "host@example.com"
         assert perms[0].type == PermissionType.OWNER
+        assert perms[0].external_id == "user-123"     # names the account, not just its address
 
     def test_builds_group_without_email(self) -> None:
         connector = _make_connector()

@@ -121,8 +121,8 @@ class TestSecuredIssues:
         assert got == {
             (EntityType.GROUP, "group-1", None),
             (EntityType.USER, "acc-9", "mia@x.com"),
-            (EntityType.USER, None, "rep@x.com"),
-            (EntityType.USER, None, "asg@x.com"),
+            (EntityType.USER, "acc-1", "rep@x.com"),
+            (EntityType.USER, "acc-2", "asg@x.com"),
             (EntityType.ROLE, "PROJ_projectLead", None),
             (EntityType.ROLE, "PROJ_10003", None),
         }
