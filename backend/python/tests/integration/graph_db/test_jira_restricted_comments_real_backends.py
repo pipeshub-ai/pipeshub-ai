@@ -107,7 +107,7 @@ async def _comment_mismatches(world: dict[str, Any], readers: dict[str, set[str]
             for how, seen in (("read", checked), ("find in search", searched)):
                 if (record_id in seen) != allowed:
                     problems.append(f"{name} {'cannot' if allowed else 'can'} {how} {ext}")
-        for key in issue_readers:
+        for key in issue_readers & COMMENTS_UNDER.keys():  # issues with no comment list none
             listed = await _listed_under(world, name, tickets[key]) & set(ids.values())
             expected = {record_id for ext, record_id in ids.items() if name in readers[ext]
                         and ext in COMMENTS_UNDER.get(key, ())}
