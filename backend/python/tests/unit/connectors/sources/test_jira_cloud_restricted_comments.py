@@ -319,3 +319,38 @@ async def test_a_group_name_resolves_only_through_the_sync_that_read_every_group
     connector.notify = AsyncMock()
     await connector._sync_user_groups([])
     assert connector._group_ids_by_name == {}
+
+
+def _reindexable(connector: JiraConnector, issue: dict[str, Any]) -> None:
+    ds = MagicMock()
+    ds.get_issue = AsyncMock(return_value=_response(200, issue))
+    connector._get_fresh_datasource = AsyncMock(return_value=ds)
+    connector.indexing_filters = MagicMock()
+    connector._attach_browse_holders = AsyncMock(return_value=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+    connector._learn_parent_levels = AsyncMock()
+
+
+def _stored_issue() -> TicketRecord:
+    return TicketRecord(id="ticket-1", org_id="org-1", record_name="i", record_type=RecordType.TICKET,
+                        external_record_id="100", version=1, connector_id="conn-1", mime_type="text/html",
+                        external_record_group_id="10000", source_updated_at=1, **SOURCE)
+
+
+@pytest.mark.parametrize(("comments", "stored", "left_to_the_sync"), [
+    # A comment given to another group (or deleted) since the sync: its stored record must be rebuilt.
+    ([GROUP_COMMENT], [_stored_comment("12", "rec-12", 1)], True),
+    ([PUBLIC_COMMENT], [_stored_comment("12", "rec-12", 1)], True),
+    # A restricted comment added since the sync has no record yet.
+    ([GROUP_COMMENT], [], True),
+    # No restricted comment, none stored: the reindex writes the issue as before.
+    ([PUBLIC_COMMENT], [], False),
+])
+async def test_a_reindex_leaves_an_issue_with_restricted_comments_to_the_sync(
+    comments: list[dict[str, Any]], stored: list[CommentRecord], left_to_the_sync: bool,
+) -> None:
+    """Writing the moved timestamp would make the next sync skip the issue and keep the old comment records."""
+    connector = _connector()
+    _stored_below(connector, {("100", "COMMENT"): stored})
+    _reindexable(connector, _issue(comments))
+    result = await connector._check_and_fetch_updated_issue(_stored_issue(), {})
+    assert (result is None) is left_to_the_sync

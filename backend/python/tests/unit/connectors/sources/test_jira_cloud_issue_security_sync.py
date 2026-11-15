@@ -63,6 +63,7 @@ def _connector() -> JiraConnector:
     for name in ("on_new_records", "on_record_content_update", "on_new_record_groups"):
         setattr(dep, name, AsyncMock())
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_records_by_parent = AsyncMock(return_value=[])  # no comment records stored
     cs = MagicMock()
     cs.get_config = AsyncMock()
     c = JiraConnector(logging.getLogger("test.jira.sec"), dep, MagicMock(), cs, "conn-sec", "team", "user-1")

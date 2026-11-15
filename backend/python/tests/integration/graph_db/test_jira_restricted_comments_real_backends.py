@@ -30,6 +30,7 @@ from tests.integration.graph_db.test_jira_issue_security_real_backends import (
     _edited,
     _email,
     _listed_under,
+    _reindex,
     _sync_project,
     _ticket_ids,
     _users,
@@ -250,3 +251,19 @@ async def test_search_and_chat_retrieval_hand_a_restricted_comment_only_to_its_g
         problems += [f"{name} {'cannot' if allowed else 'can'} get the comment as a {how}"
                      for how, got in seen.items() if got != allowed]
     assert not problems, "\n  ".join(problems)
+
+
+async def test_a_reindex_does_not_let_the_next_sync_skip_a_comment_given_to_another_group(world: dict[str, Any]) -> None:
+    """The comment moves from the product group (alice, bob) to the admins (alice, dave) and the issue is
+    reindexed before the next sync. The reindex must not store the moved timestamp without the comment:
+    the next sync would skip the issue and bob would keep the comment."""
+    await _comment_world(world)
+    await _write_comments(world, "plain task", "2024-06-16T10:00:00.000+0000", [_comment("501", group=PRODUCT_GROUP)])
+    assert not await _comment_mismatches(world, {"comment_501": {"alice", "bob"}})
+
+    moved = {**_comment("501", group=ADMINS_GROUP), "updated": "2024-06-17T10:00:00.000+0000"}
+    issue = _edited("plain task", "2024-06-17T10:00:00.000+0000", comment={"comments": [moved], "total": 1})
+    await _reindex(world, issue)
+    await _write_comments(world, "plain task", "2024-06-17T10:00:00.000+0000", [moved])  # the next incremental sync
+
+    assert not await _comment_mismatches(world, {"comment_501": {"alice"}})
