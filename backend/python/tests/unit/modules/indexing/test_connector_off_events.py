@@ -18,6 +18,7 @@ from app.modules.indexing.connector_off_events import (
     GraphConnectorOffFilter,
     ReadTimeOutcome,
     RecordHeldForDelete,
+    clears_embeddings_first,
     connector_off_updates,
     connector_state,
     read_time_outcome,
@@ -669,23 +670,26 @@ async def test_a_vector_rebuild_of_a_turned_off_connector_still_runs(monkeypatch
 
 
 @pytest.mark.parametrize(("flip", "held"), [("DELETING", True), ("off", False)])
-async def test_an_already_indexed_reindex_sees_a_delete_marked_while_embeddings_are_deleted(flip: str, held: bool) -> None:
+async def test_an_already_indexed_reindex_sees_a_delete_marked_before_the_guard(flip: str, held: bool) -> None:
     """A non-forced reindex of an indexed record returns early, and the finally block then releases
-    its queued copies; a delete marked during the embedding delete holds it first. A connector turned
-    off meanwhile keeps the early return, as before."""
+    its queued copies; a delete marked after the first check (here, while the stage runtime is asked
+    whether its hand-off was lost) holds it first. A connector turned off meanwhile keeps the early
+    return, as before. Nothing is taken out of the vector store on the way."""
     graph = FakeConnectorGraph()
     graph.add_connector("conn-off", active=True)
     graph.add_record("r1", "conn-off", indexingStatus=ProgressStatus.COMPLETED.value,
                      extractionStatus=ProgressStatus.COMPLETED.value)
     handler, event_processor = _handler(graph)
 
-    async def flipped_meanwhile(*_a: object, **_kw: object) -> None:
+    async def flipped_meanwhile(*_a: object, **_kw: object) -> bool:
         if flip == "DELETING":
             graph.apps["conn-off"]["status"] = "DELETING"
         else:
             graph.set_active("conn-off", False)
+        return False
 
-    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.side_effect = flipped_meanwhile
+    event_processor.stage_ingress = MagicMock()
+    event_processor.stage_ingress.handoff_lost = AsyncMock(side_effect=flipped_meanwhile)
     payload = dict(_payload(**_CLEARS_EMBEDDINGS_FIRST))
 
     if held:
@@ -696,3 +700,59 @@ async def test_an_already_indexed_reindex_sees_a_delete_marked_while_embeddings_
         events = [e.event async for e in handler.process_event(REINDEX, payload)]
         assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
         assert graph.calls["update_queued_duplicates_status"] == 1
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
+
+
+@pytest.mark.parametrize("state", [ConnectorState.OFF, ConnectorState.REMOVED])
+def test_read_time_filter_passes_an_update_of_a_completed_record(state: ConnectorState) -> None:
+    """The read-time filter leaves an update of a COMPLETED record to the handler, which is where an exact
+    replay of the delivery that completed it is acknowledged (and its queued copies released). A reconciled
+    type, so the status branch decides and not the delete-embeddings-first shortcut; the same record in a
+    status that releases nothing is settled, which shows that branch is the one reached."""
+    record = {
+        "id": "r1", "connectorId": "conn-off", "origin": "CONNECTOR", "indexingStatus": ProgressStatus.COMPLETED.value,
+        "extractionStatus": ProgressStatus.COMPLETED.value,
+    }
+    payload = {
+        "recordId": "r1", "connectorId": "conn-off", "mimeType": "application/pdf", "extension": "pdf",
+        "_delivery_id": "t-0-1", "_event_id": "evt-1",
+    }
+    assert not clears_embeddings_first(UPDATE, payload)
+
+    assert read_time_outcome(UPDATE, payload, record, lambda _connector: state) is ReadTimeOutcome.PASS
+    failed = {**record, "indexingStatus": ProgressStatus.FAILED.value}
+    assert read_time_outcome(UPDATE, payload, failed, lambda _connector: state) is not ReadTimeOutcome.PASS
+
+
+def test_replayed_delivery_needs_a_completed_record_an_event_id_and_covering_flags() -> None:
+    from app.modules.indexing.connector_off_events import (
+        replay_candidate,
+        replayed_delivery,
+    )
+    from app.modules.indexing.replay_set import StoredDelivery
+
+    done = {
+        "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value,
+        "lastIndexTimestamp": 1,
+    }
+    payload = {"_event_id": "evt-1", "_delivery_id": "t-0-1"}
+    stored = {"evt-1": StoredDelivery(flags="", delivery_id="t-0-1", completed_at_ms=1)}
+
+    assert replayed_delivery(UPDATE, payload, done, stored)
+    assert not replayed_delivery(UPDATE, payload, done, None)
+    assert not replayed_delivery(UPDATE, payload, done, {})
+    assert not replayed_delivery(UPDATE, {"_delivery_id": "t-0-1"}, done, stored), "a delivery id alone is no identity"
+    assert not replayed_delivery(UPDATE, {**payload, "_delivery_id": "t-9-9"}, done, stored), "another delivery"
+    assert replayed_delivery(UPDATE, {"_event_id": "evt-1"}, done, stored)
+    assert not replayed_delivery(UPDATE, payload, {**done, "indexingStatus": "IN_PROGRESS"}, stored)
+    assert not replayed_delivery(UPDATE, payload, {**done, "extractionStatus": "IN_PROGRESS"}, stored)
+    assert not replayed_delivery(UPDATE, {**payload, "vectorDbOnly": True}, done, stored)
+    assert not replayed_delivery(UPDATE, {**payload, "forceReindex": True}, done, stored), "asks for more"
+    assert replayed_delivery(
+        UPDATE, {**payload, "forceReindex": True}, done,
+        {"evt-1": StoredDelivery(flags="F", delivery_id="t-0-1", completed_at_ms=1)},
+    )
+    assert not replayed_delivery(UPDATE, payload, {**done, "lastIndexTimestamp": 2}, stored), (
+        "a completion the set does not know came after it"
+    )
+    assert not replay_candidate("deleteRecord", payload, done)

@@ -191,9 +191,14 @@ class KnowledgeBaseFiltersResponse(BaseModel):
     available: Dict[str, List[str]] = Field(..., description="Available filter options")
 
 
+class KnowledgeBaseListItem(KnowledgeBaseResponse):
+    """A knowledge base in the list: at most 100 of its folders, the first by id"""
+    foldersTruncated: bool = Field(False, description="Whether the knowledge base has more folders than the list returns")
+
+
 class ListKnowledgeBaseResponse(BaseModel):
     """Response model for paginated knowledge base listing"""
-    knowledgeBases: List[KnowledgeBaseResponse] = Field(..., description="List of knowledge bases")
+    knowledgeBases: List[KnowledgeBaseListItem] = Field(..., description="List of knowledge bases")
     pagination: KnowledgeBasePaginationResponse = Field(..., description="Pagination information")
     filters: KnowledgeBaseFiltersResponse = Field(..., description="Filter information")
 
@@ -412,11 +417,17 @@ class TrashRetention(BaseModel):
     minAgeMs: int = Field(..., description="Items stay at least this long before the cleanup may remove them")
 
 
+class TrashPagination(PaginationResponse):
+    """Paging of the recently deleted list, whose total stops counting at a cap"""
+    totalCapped: bool = Field(False, description="More items than the cap; totalCount is the cap")
+    nextCursor: Optional[str] = Field(None, description="Pass as cursor for the next page; null on the last page")
+
+
 class ListTrashResponse(BaseModel):
     """One page of a collection's recently deleted items"""
     success: bool = Field(True, description="Success status")
     items: list[TrashItem] = Field(..., description="Deleted items, newest first")
-    pagination: PaginationResponse = Field(..., description="Pagination information")
+    pagination: TrashPagination = Field(..., description="Pagination information")
     retention: TrashRetention | None = Field(None, description="Retention; none when it can't be read")
 class FileUploadResponse(BaseModel):
     """Response model for file upload"""

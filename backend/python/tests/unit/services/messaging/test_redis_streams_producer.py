@@ -133,7 +133,9 @@ class TestSendMessage:
         call_args = mock_redis.xadd.call_args
         assert call_args[0][0] == "test-topic"
         fields = call_args[0][1]
-        assert json.loads(fields["value"]) == {"key": "val"}
+        sent = json.loads(fields["value"])
+        assert sent.pop("eventId")  # every message leaves with an event id
+        assert sent == {"key": "val"}
         assert fields["key"] == "k1"
 
     @pytest.mark.asyncio
