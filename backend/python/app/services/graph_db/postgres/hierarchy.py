@@ -550,20 +550,24 @@ class HierarchyMixin(PgBase):
             return {}
 
     async def is_record_descendant_of(self, record_id: str, ancestor_id: str, transaction: str | None = None) -> bool:
-        """Whether the record lies below the ancestor over PARENT_CHILD edges between records (one hop or more; a record is not its own descendant unless a cycle says so)."""
+        """Whether the record lies below the ancestor over PARENT_CHILD edges between records (one hop or more; a record is not its own descendant unless a cycle says so).
+        Read from kg's PARENT_CHILD links for a connector it serves (``kg.hierarchy.pc_ancestor``), else walked."""
         org = current_org_id()
-        try:
-            return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.is_record_descendant_of */ WITH RECURSIVE up(id) AS (
+
+        async def walk(tx: Tx) -> bool:
+            return bool(await tx.fetchval("""/* pipeshub:graph.is_record_descendant_of */ WITH RECURSIVE up(id) AS (
                   SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id = $2 AND e.to_coll = 'records' AND e.from_coll = 'records'
                     AND e.doc->>'relationshipType' = 'PARENT_CHILD'
                   UNION
                   SELECT e.from_id FROM up JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id = up.id AND e.to_coll = 'records' AND e.from_coll = 'records'
                     AND e.doc->>'relationshipType' = 'PARENT_CHILD')
-                SELECT EXISTS (SELECT 1 FROM up WHERE up.id = $3)""", org, record_id, ancestor_id), transaction))
+                SELECT EXISTS (SELECT 1 FROM up WHERE up.id = $3)""", org, record_id, ancestor_id))
+        try:
+            got = await kg_hier.answer(self, "pc_ancestor", transaction, lambda tx: kg_hier.pc_ancestor(tx, org, record_id, ancestor_id), walk=walk)
+            return got if got is not None else await self._q(walk, transaction)
         except Exception:
             self.logger.exception("Is record descendant check failed")
             return False
-
 
 # ---- the knowledge hub's root listing, parent and trail --------------------------------------------------------------------------
 _KH_SORT_FIELDS = ("name", "createdAt", "updatedAt", "nodeType", "origin", "connector", "sizeInBytes")

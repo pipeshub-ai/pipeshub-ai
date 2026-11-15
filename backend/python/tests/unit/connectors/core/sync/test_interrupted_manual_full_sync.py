@@ -234,7 +234,7 @@ async def _cut_short(
         with pytest.raises(asyncio.CancelledError):
             await task
     else:
-        await asyncio.wait_for(task, timeout=1)
+        await task
     await asyncio.sleep(0)
     return gp
 

@@ -70,6 +70,7 @@
       "restoredMany_one": "항목 {{count}}개를 복원했습니다",
       "restoredMany_other": "항목 {{count}}개를 복원했습니다",
       "showing": "{{total}}개 중 {{from}}–{{to}}",
+      "showingAtLeast": "{{total, number}}+개 중 {{from}}–{{to}}",
       "previous": "이전",
       "next": "다음",
       "nameAndMore_one": "{{name}} 외 {{count}}개",

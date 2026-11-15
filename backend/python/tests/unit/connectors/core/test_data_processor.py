@@ -806,13 +806,16 @@ class TestOnRecordContentUpdate:
         ctx.__aexit__ = AsyncMock(return_value=False)
         proc.data_store_provider.transaction.return_value = ctx
 
-        record = _make_record()
+        record = _make_record(external_revision_id="r2")
         record.id = "rec-1"
         record.indexing_status = ProgressStatus.COMPLETED.value
 
         mock_db_record = MagicMock()
         mock_db_record.indexing_status = ProgressStatus.COMPLETED.value
         tx_store.get_record_by_key.return_value = mock_db_record
+        # An indexed record whose content changed (a new revision): the save re-queues it.
+        tx_store.get_record_by_external_id.return_value = _make_record(
+            id="rec-1", external_revision_id="r1", indexing_status=ProgressStatus.COMPLETED.value)
 
         await proc.on_record_content_update(record)
 
