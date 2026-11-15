@@ -18,7 +18,7 @@ from ..model import ORG_ID, Node, World, WorldBuilder
 if TYPE_CHECKING:
     import random
 
-RULES = ["OPEN", "OPEN", "STRICT", "STRICT", "RESTRICTED", None, "INHERITED"]
+RULES = ["OPEN", "OPEN", "STRICT", "STRICT", "RESTRICTED", "PARENT_AND_GRANT", None, "INHERITED"]
 RGL = "RECORD_GROUP_LEVEL"
 FOREIGN = "other"
 

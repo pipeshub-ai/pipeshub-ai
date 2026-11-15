@@ -19,7 +19,7 @@ from ..model import ORG_ID, Node, World, WorldBuilder
 if TYPE_CHECKING:
     import random
 
-RULES = ["OPEN", "STRICT", "RESTRICTED", None]
+RULES = ["OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT", None]
 RGL = "RECORD_GROUP_LEVEL"
 INDEXING = ["COMPLETED", "COMPLETED", "COMPLETED", "QUEUED", "FAILED"]
 

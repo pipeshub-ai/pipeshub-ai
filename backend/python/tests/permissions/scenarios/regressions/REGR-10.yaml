@@ -1,0 +1,38 @@
+- id: REGR-10
+  title: 'RESTRICTED keeps its meaning below a seed: a leveled story under an epic its reporter reads by a direct grant stays closed to that reporter'
+  source: Jira, a story with a security level filed under its epic; Jira checks Browse on the story itself
+  rule: intersection
+  world:
+    principals:
+      - {id: alice}
+      - {id: dave}
+      - {id: g:level, kind: group}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: P, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: epic, kind: record, connector: A, rule: OPEN, parents: [P], inherits: [P], belongs: [P]}
+      - {id: story, kind: record, connector: A, rule: RESTRICTED, parents: [epic], inherits: [epic], belongs: [P]}
+      - {id: sub, kind: record, connector: A, rule: RESTRICTED, parents: [story], inherits: [story], belongs: [P]}
+      - {id: plain, kind: record, connector: A, rule: STRICT, parents: [epic], inherits: [epic], belongs: [P]}
+      - {id: note, kind: record, connector: A, rule: PARENT_AND_GRANT, parents: [story], inherits: [story], belongs: [P]}
+    grants:
+      - [alice, P]
+      - [dave, epic]
+      - [g:level, story]
+      - [g:level, sub]
+      - [g:level, note]
+    memberships:
+      - [alice, g:level]
+      - [dave, g:level]
+    gates:
+      - [alice, A]
+      - [dave, A]
+  expect:
+    verdicts:
+      dave: {epic: admit, story: deny, sub: deny, plain: deny, note: deny, P: deny}
+      alice: {epic: admit, story: admit, sub: admit, plain: admit, note: admit}
+  tags: [regression, seed, parent-and-grant, restricted]
+  comment: >-
+    dave reads the epic only through his own grant (a seed). The story is RESTRICTED: it needs the walk from the App, so his level membership
+    alone does not open it, nor its sub-task, nor a PARENT_AND_GRANT note under it (its parent is unreadable to him). The unleveled STRICT
+    story stays closed to him too. alice reads the project, so she reads all of it.
