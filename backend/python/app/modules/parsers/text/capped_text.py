@@ -87,6 +87,8 @@ def _utf16_without_bom(sample: bytes) -> str | None:
         if _legacy_encoding(sample) is not None:
             return None  # an 8-bit or multibyte legacy encoding reads it (Shift-JIS, GBK, ...)
         sample = sample[:pairs * 2]
+        if _mostly_ascii_byte_pairs(sample):
+            return None
         scores = {codec: _one_script_share(sample, codec) for codec in ("utf-16-le", "utf-16-be")}
         best = max(scores, key=lambda codec: scores[codec] or 0.0)
         return best if (scores[best] or 0.0) >= _UTF16_ONE_SCRIPT_SHARE else None
@@ -99,6 +101,20 @@ def _utf16_without_bom(sample: bytes) -> str | None:
         return "utf-16-be" if _decodes(sample, "utf-16-be") else None
     order = ("utf-16-le", "utf-16-be") if odd_nul >= even_nul else ("utf-16-be", "utf-16-le")
     return next((codec for codec in order if _reads_as_text(sample, codec)), None)
+
+
+def _mostly_ascii_byte_pairs(sample: bytes) -> bool:
+    """Whether most two-byte units of a NUL-free *sample* are two printable ASCII bytes.
+
+    8-bit text read two bytes at a time gives such units (they decode as ideographs). Only a
+    sample without NULs is asked: a NUL proves the bytes are not 8-bit text, and many ideographs
+    in UTF-16 are two printable ASCII bytes themselves (U+6C49 is ``lI``).
+    """
+    units = len(sample) // 2
+    both_ascii = sum(
+        1 for k in range(0, units * 2, 2) if 0x20 <= sample[k] <= 0x7E and 0x20 <= sample[k + 1] <= 0x7E
+    )
+    return both_ascii > _UTF16_ASCII_PAIR_SHARE * units
 
 
 def _legacy_encoding(sample: bytes) -> str | None:
@@ -131,12 +147,6 @@ def _one_script_share(sample: bytes, codec: str) -> float | None:
     assortment of scripts and symbol blocks (Latin letters beside ideographs, Yi beside Hangul),
     which text does not.
     """
-    # 8-bit text read two bytes at a time gives code units whose bytes are both printable ASCII
-    # (ideographs, mostly); text in UTF-16 rarely does, as its ASCII has a NUL byte.
-    units = len(sample) // 2
-    both_ascii = sum(1 for k in range(0, units * 2, 2) if 0x20 <= sample[k] <= 0x7E and 0x20 <= sample[k + 1] <= 0x7E)
-    if both_ascii > _UTF16_ASCII_PAIR_SHARE * units:
-        return None
     try:
         text = codecs.getincrementaldecoder(codec)("strict").decode(sample, final=False)
     except UnicodeDecodeError:

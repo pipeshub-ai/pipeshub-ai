@@ -191,8 +191,9 @@ def test_utf16_text_with_long_lines_is_text(text: str, codec: str) -> None:
     "text",
     ["name=" + "张三" * 1500 + "\n", "ข้อความภาษาไทยยาวมาก" * 400, "مرحبابالعالمالعربي" * 400,
      "😀🎉👍🏽🇯🇵" * 1200, "名前=田中太郎、ひらがなとカタカナ" * 300, "设定文件服务器主机名端口号" * 600,
-     "サーバーのホスト名とポート番号" * 500],
-    ids=["CJK", "Thai", "Arabic", "emoji", "Japanese", "Han alone", "kana with a long-vowel mark"],
+     "サーバーのホスト名とポート番号" * 500, "name=" + "汉字" * 1500 + "\n"],
+    ids=["CJK", "Thai", "Arabic", "emoji", "Japanese", "Han alone", "kana with a long-vowel mark",
+         "ideographs whose code units are two ASCII bytes"],
 )
 @pytest.mark.parametrize("codec", ["utf-16-le", "utf-16-be"])
 def test_utf16_text_on_one_long_line_without_spaces_is_text(text: str, codec: str) -> None:
