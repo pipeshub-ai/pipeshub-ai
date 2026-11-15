@@ -4277,12 +4277,14 @@ class JiraConnector(BaseConnector):
         )
         # A change of who the Browse holders name on each issue moves no issue's `updated`.
         stored_browse = (project_sync_data or {}).get("browse_holders") or ""
-        if security.browse_holders is None and not stored_browse:
-            security.browse_holders = []  # nothing was granted this way before, so nothing is lost
+        if security.browse_holders is None and not stored_browse and not is_new_project:
+            # Synced before the holders were tracked: nothing was granted this way, so nothing is lost. A project
+            # with no checkpoint (never synced, or cleared by a full resync) may have stored issues they grant.
+            security.browse_holders = []
         browse = security.browse_fingerprint()
         if not is_new_project and browse not in ("?", stored_browse):
             reread, changed_levels = "project", None
-        browse_to_save = browse if browse != "?" or stored_browse else stored_browse
+        browse_to_save = browse if browse != "?" or stored_browse or is_new_project else stored_browse
         if browse == "?" and stored_browse not in ("", "?"):
             # Saved before the walk, as the level marker is: issues written meanwhile keep their
             # stored grants, and only this marker makes the next sync that reads them re-read.

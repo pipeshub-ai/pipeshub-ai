@@ -1452,6 +1452,31 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert len(calls) == 1 and self._saved_digests(c) == []
 
     @pytest.mark.asyncio
+    async def test_holders_unread_after_the_checkpoints_were_cleared_stay_unknown_and_stored_grants_stay(self) -> None:
+        """A full resync clears the project's checkpoint, so no stored digest is not proof that the holders granted
+        nothing: a stored issue a reporter reads through them keeps its grants until they are read."""
+        c = _connector()  # no holders read this sync
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(return_value={})
+        c.issues_sync_point.update_sync_point = AsyncMock()
+        c._load_issue_security = AsyncMock(return_value=_present())
+
+        async def fetch(*a, **kw) -> AsyncIterator:
+            return
+            yield
+
+        c._fetch_issues_batched = fetch
+        await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        assert c._issue_security[PROJECT_ID].browse_holders is None
+        assert c._keeps_stored_grants(_stored_ticket(version=0)) is True
+        assert self._saved_digests(c) == ["?"], "the next sync, no longer new, must still see them unknown"
+        c.issues_sync_point.read_sync_point = AsyncMock(return_value={
+            "last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
+            "security_levels": json.dumps(_present().level_fingerprints()), "browse_holders": "?"})
+        await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        assert c._keeps_stored_grants(_stored_ticket(version=0)) is True
+
+    @pytest.mark.asyncio
     async def test_an_unread_scheme_marks_a_project_that_had_holders_so_the_next_read_rereads(self) -> None:
         c = _connector()
         c.issues_sync_point = MagicMock()
