@@ -14,7 +14,9 @@
 # (expire-auto: "Automatically run the expire command after a successful backup", default y; "The no- prefix may be used to set a boolean
 # option to false on the command-line", https://pgbackrest.org/command.html): nothing expires until an operator runs
 #   pg-backup.sh clear-gap-hold
-# which removes the hold and expires by retention at once (the expire command "can also be run by the user").
+# which removes the hold and expires by retention at once (the expire command "can also be run by the user"). A hold nobody clears is
+# released after PG_BACKUP_GAP_HOLD_DAYS (default 14), so the repository cannot grow until backups fail; the held backup then falls
+# under normal retention.
 set -uo pipefail
 full_s=$(( ${PG_BACKUP_FULL_DAYS:-7} * 86400 ))
 incr_s=$(( ${PG_BACKUP_INCR_HOURS:-6} * 3600 ))
@@ -23,6 +25,7 @@ ok="${PG_BACKUP_OK_FILE:-/tmp/pg-backup.ok}"   # the healthcheck: present only w
 gaps="${PG_WAL_GAP_DIR:-/var/run/postgresql/pgbackrest-wal-gap.d}"
 drops() { ls -A "$gaps" 2>/dev/null; }   # one name per dropped segment, in WAL order
 hold="${PG_WAL_GAP_HOLD:-/var/run/postgresql/pgbackrest-gap-hold}"   # "<label of the newest backup before the gap> <first dropped segment>"
+hold_s=$(( ${PG_BACKUP_GAP_HOLD_DAYS:-14} * 86400 ))   # the hold's age is its file's modification time
 
 if [ "${1:-}" = clear-gap-hold ]; then
   if [ -n "$(drops)" ]; then echo "pg-backup: WAL drops are still uncovered by a full backup; the hold stays" >&2; exit 1; fi
@@ -59,7 +62,7 @@ gap_report() {
   echo "pg-backup: to restore up to the gap, restore the end of the archive from the newest backup taken before it:" \
        "scripts/pg-restore.sh latest --set ${label:-<its label from pgbackrest info>}; a time target needs a later commit before the gap to stop at."
   echo "pg-backup: nothing is expired while this gap is held, so that backup stays; when you no longer need it:" \
-       "docker compose exec pg-backup pg-backup.sh clear-gap-hold"
+       "docker compose exec pg-backup pg-backup.sh clear-gap-hold (released by itself after PG_BACKUP_GAP_HOLD_DAYS=$(( hold_s / 86400 )) days)"
   echo "pg-backup: taking a full backup now."
 }
 
@@ -81,6 +84,11 @@ until pgbackrest stanza-create && pgbackrest check; do
   rm -f "$ok"; echo "pg-backup: the stanza could not be created or checked; retrying in ${retry_s}s" >&2; sleep "$retry_s"
 done
 while :; do
+  if [ -e "$hold" ] && [ $(( $(date +%s) - $(stat -c %Y "$hold") )) -ge "$hold_s" ]; then
+    echo "pg-backup: RELEASING THE GAP HOLD ($(cat "$hold")) after PG_BACKUP_GAP_HOLD_DAYS=$(( hold_s / 86400 )) days: expiry resumes," \
+         "so the backup before the gap now falls under normal retention and restoring up to the gap may soon be impossible" >&2
+    rm -f "$hold"
+  fi
   if [ -n "$(drops)" ]; then
     rm -f "$ok"
     if [ ! -s "$hold" ]; then

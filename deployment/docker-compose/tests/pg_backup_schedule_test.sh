@@ -105,6 +105,19 @@ rm -f "$gaps"/*
 check "clear-gap-hold removes the hold and expires by retention" "$(clear_hold)" "0 expire"
 check "the hold is gone" "$([ -e "$work/hold" ] && echo held || echo gone)" gone
 check "without a hold or drops, backups expire as usual" "$(decide "[{\"backup\":[$(backup full 691200),$(backup incr 3600)]}]")" "backup --type=full"
+# a hold nobody clears is released after PG_BACKUP_GAP_HOLD_DAYS (default 14), loudly, and expiry resumes
+echo "incr-3600 000000010000000000000015" > "$work/hold"; touch -d '-13 days' "$work/hold"
+check "a 13-day-old hold stays and backups still expire nothing" \
+  "$(decide "[{\"backup\":[$(backup full 691200),$(backup incr 3600)]}]")" "backup --type=full --no-expire-auto"
+touch -d '-15 days' "$work/hold"
+check "a 15-day-old hold is released and the backup expires by retention again" \
+  "$(decide "[{\"backup\":[$(backup full 691200),$(backup incr 3600)]}]")" "backup --type=full"
+check "the release is logged loudly" "$(grep -c 'RELEASING THE GAP HOLD (incr-3600 000000010000000000000015) after PG_BACKUP_GAP_HOLD_DAYS=14 days' "$work/out")" 1
+check "and the hold is gone" "$([ -e "$work/hold" ] && echo held || echo gone)" gone
+echo "incr-3600 000000010000000000000015" > "$work/hold"; touch -d '-3 days' "$work/hold"
+PG_BACKUP_GAP_HOLD_DAYS=2 decide "$recent" >/dev/null 2>&1
+check "PG_BACKUP_GAP_HOLD_DAYS sets the cap" "$([ -e "$work/hold" ] && echo held || echo gone)" gone
+rm -f "$work/hold"
 # a hold also forms when the repository could not be read while the drops were noticed: from the gap-closing full backup
 : > "$gaps/000000010000000000000040"; rm -f "$work/hold"
 STUB_INFO_FAIL_UNTIL_BACKUP=1 STUB_BACKUPS=1 decide "$recent" >/dev/null 2>&1
