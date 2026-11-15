@@ -2940,9 +2940,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     async def __hand_back_fifo_read(self, stream_name: str, message_id: str, fields: dict[str, str]) -> bool:
         """The no-scheduler loop's read-time check; True when the entry was handed back.
 
-        A failed hand-back takes the normal path instead of staying pending: this loop reads only new
-        entries, so a pending one would wait for an idle drain or a restart. The write-time precision
-        check still stops a mismatched write, and the handler's own retry covers a failed run.
+        A failed hand-back takes the normal path instead of staying pending: the event runs now rather
+        than after the next pending scan, the write-time precision check still stops a mismatched write,
+        and the handler's own retry covers a failed run.
         """
         if self.precision_filter is None:
             return False

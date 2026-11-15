@@ -271,7 +271,7 @@ class TestFifoLoop:
         assert handler.seen == ["d1"]  # the delete passes; nothing of n1 was downloaded or parsed
 
     async def test_a_failed_publish_takes_the_normal_path_instead_of_waiting_pending(self, harness) -> None:
-        # This loop reads only new entries: one left pending would wait for an idle drain or a restart.
+        # The event runs now instead of waiting pending for the next scan; the write-time check guards it.
         await harness.produce(_envelope("n1", ON))
         consumer, producer = _build(harness, _verdict(True), enabled=False)
         producer.send_event = AsyncMock(side_effect=RuntimeError("broker down"))
