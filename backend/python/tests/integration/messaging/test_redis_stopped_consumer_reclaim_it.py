@@ -918,3 +918,51 @@ class TestOwnEntriesBehindOnesThatKeepFailing:
             await owner.stop()
             await peer.stop()
         assert not {f"poison-{i}" for i in range(10)} & set(done)
+
+
+class TestRetriesOnTheFifoPathRespectAdmission:
+    async def test_no_task_starts_while_the_gates_are_full(
+        self, redis_available, redis_client, base_stream, unique_suffix, monkeypatch
+    ) -> None:
+        """Without fair scheduling, handing a remembered entry on starts its
+        task: under backpressure (full index gates) none may start until the
+        gates open."""
+        from app.services.messaging import consumer_concurrency
+
+        host, port = redis_available
+        group = f"it-fifo-admit-{unique_suffix}"
+        topics = RedisLaneRouter(_LANES).lane_topics(base_stream)
+        await _create_groups(redis_client, topics, group)
+        lane = f"{base_stream}.0"
+        await redis_client.xadd(lane, _event(_connector_on_lane(0, "own"), "remembered"))
+        config = RedisStreamsConfig(
+            host=host, port=port, client_id=f"{group}-client", group_id=group, topics=topics,
+            batch_size=10, block_ms=500, claim_min_idle_ms=60_000,
+        )
+        consumer = IndexingRedisStreamsConsumer(logging.getLogger("it-fifo-admit"), config)
+        read = await redis_client.xreadgroup(group, consumer.consumer_name, {lane: ">"})
+        consumer._unhanded = {(lane, read[0][1][0][0]): None}
+        gates = {"full": True}
+        monkeypatch.setattr(consumer_concurrency, "index_gates_saturated", lambda _host: gates["full"])
+        # Keeps the startup drain and own-pending recovery from taking it, so
+        # only the retry could start it.
+        consumer._IndexingRedisStreamsConsumer__recover_while_reading = _no_op
+        real_drain = consumer._drain_pending
+
+        async def drain_only_after_start() -> bool:
+            return False if gates["full"] else await real_drain()
+
+        consumer._drain_pending = drain_only_after_start
+        done: list[str] = []
+        await consumer.start(_handler(done, seconds=0.0))
+        try:
+            await asyncio.sleep(3)
+            assert done == []
+            gates["full"] = False
+            await _until(lambda: _done(done, ["remembered"]), "the remembered entry", timeout=15)
+        finally:
+            await consumer.stop()
+
+
+async def _no_op(*_args, **_kwargs) -> None:
+    return None

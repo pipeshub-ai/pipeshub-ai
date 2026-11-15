@@ -16,6 +16,8 @@ from logging import getLogger
 from unittest.mock import AsyncMock
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 pytest.importorskip("fakeredis.aioredis")
 
@@ -589,3 +591,116 @@ class TestEveryRememberedIdIsExamined:
 
         assert trimmed not in {e["message_id"] for e in await _owned(consumer, consumer.consumer_name)}
         assert (LANE, trimmed) not in consumer._unhanded
+
+
+class TestAPeersClaimBeforeTheDeadLetterCheck:
+    async def test_a_transferred_entry_past_the_delivery_backstop_is_not_acknowledged(
+        self, consumer
+    ) -> None:
+        """Own-pending recovery found the entry; a peer claimed it before the
+        dead-letter check (its claims taking the delivery count past the
+        backstop). The check must not acknowledge the peer's entry."""
+        await consumer.redis.xreadgroup(GROUP, "live-peer", {LANE: ">"}, count=1)
+        await consumer.redis.xadd(LANE, _fields("transferred"))
+        read = await consumer.redis.xreadgroup(GROUP, consumer.consumer_name, {LANE: ">"})
+        message_id = read[0][1][0][0]
+        scan = consumer._IndexingRedisStreamsConsumer__own_unheld_pending_payloads
+
+        async def scan_then_peer_claims(*args, **kwargs):  # noqa: ANN202
+            found = await scan(*args, **kwargs)
+            await consumer.redis.xclaim(
+                LANE, GROUP, "live-peer", min_idle_time=0, message_ids=[message_id], retrycount=50
+            )
+            return found
+
+        consumer._IndexingRedisStreamsConsumer__own_unheld_pending_payloads = scan_then_peer_claims
+        consumer._last_recovery = 0.0
+
+        await _read_pass(consumer)
+
+        peers = await _owned(consumer, "live-peer")
+        assert [e["message_id"] for e in peers if e["message_id"] == message_id] == [message_id]
+        assert consumer._scheduler.pending_count == 0
+
+
+class TestOwnPendingScanProgress:
+    """A scan of this consumer's pending list carries on where the last one
+    stopped, whatever stopped it, and goes back to the head only once it has
+    reached the end. Entries at the head that never leave (bodiless ones whose
+    acknowledgement keeps failing) cannot keep one behind them from being
+    found."""
+
+    @staticmethod
+    async def _scan_until_found(
+        stuck: int, page_size: int, pages: int, limit: int, scans_allowed: int,
+        full_retry_list: bool = False,
+    ) -> int | None:
+        from app.services.messaging.redis_streams import indexing_consumer as module
+
+        provider = FakeRedisConnectionProvider(is_cluster=False)
+        consumer = await _fifo_consumer(provider)
+        await consumer.redis.xgroup_create(LANE, GROUP, id="0", mkstream=True)
+        consumer.config.batch_size = 1
+        for i in range(stuck + 1):
+            await consumer.redis.xadd(LANE, _fields(f"r-{i}", f"conn-{i}"))
+        read = await consumer.redis.xreadgroup(GROUP, consumer.consumer_name, {LANE: ">"})
+        ids = [message_id for _s, entries in read for message_id, _f in entries]
+        target = ids[-1]
+        for message_id in ids[:-1]:
+            await consumer.redis.xdel(LANE, message_id)
+
+        async def ack_keeps_failing(*_args, **_kwargs) -> None:
+            return None
+
+        consumer._IndexingRedisStreamsConsumer__ack_claimed_without_body = ack_keeps_failing
+        if full_retry_list:
+            consumer._unhanded = {
+                (OTHER_LANE, f"{i}-0"): None for i in range(1, module._UNHANDED_LIMIT + 1)
+            }
+        consumer._IndexingRedisStreamsConsumer__pending_scan_pages = lambda _topic: pages
+        scan = consumer._IndexingRedisStreamsConsumer__own_unheld_pending_payloads
+        try:
+            for attempt in range(1, scans_allowed + 1):
+                found = await scan(LANE, limit, ignore_budget=True)
+                if target in {message_id for message_id, _f in found}:
+                    return attempt
+            return None
+        finally:
+            await consumer.redis.aclose()
+
+    @settings(max_examples=60, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    @given(
+        stuck=st.integers(min_value=0, max_value=40),
+        page_size=st.integers(min_value=1, max_value=6),
+        pages=st.integers(min_value=1, max_value=4),
+        limit=st.integers(min_value=1, max_value=5),
+    )
+    def test_an_entry_behind_ones_that_never_leave_is_found_in_bounded_scans(
+        self, monkeypatch, stuck: int, page_size: int, pages: int, limit: int
+    ) -> None:
+        from app.services.messaging.redis_streams import indexing_consumer as module
+
+        monkeypatch.setattr(module, "_PENDING_SCAN_PAGE", page_size)
+        bound = math.ceil((stuck + 1) / (page_size * pages)) + 1
+        found_on = asyncio.run(self._scan_until_found(stuck, page_size, pages, limit, bound))
+        assert found_on is not None, f"not found within {bound} scans"
+
+    async def test_a_full_retry_list_and_more_than_a_scan_of_failing_acks_ahead(
+        self, provider
+    ) -> None:
+        """The case reported: more than one scan's page budget of trimmed
+        entries whose acknowledgement keeps failing, a full retry list, and a
+        recoverable entry behind them."""
+        from app.services.messaging.redis_streams import indexing_consumer as module
+
+        page_size, pages = 2, 2
+        stuck = 3 * page_size * pages
+        original = module._PENDING_SCAN_PAGE
+        module._PENDING_SCAN_PAGE = page_size
+        try:
+            found_on = await self._scan_until_found(
+                stuck, page_size, pages, 1, 5, full_retry_list=True
+            )
+        finally:
+            module._PENDING_SCAN_PAGE = original
+        assert found_on is not None and found_on <= math.ceil((stuck + 1) / (page_size * pages)) + 1

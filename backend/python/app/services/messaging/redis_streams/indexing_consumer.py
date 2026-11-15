@@ -1321,11 +1321,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             parsed_message = await self._parse_message(message_id, fields, topic)
             with log_fields(topic=topic, message_id=message_id), bound_message(parsed_message):
                 stable_message_id = self._get_stable_message_id(message_id, parsed_message)
+                # Before the dead-letter check, which may acknowledge the entry:
+                # one a peer claimed since the scan found it is not ours to ack.
+                # Reasserted, its idle time is reset, so no peer can claim it
+                # in the claim window that follows.
+                if owned and not await self.__reclaim_for_dispatch(topic, message_id):
+                    return False
                 if await self._should_dead_letter(
                     topic, message_id, stable_message_id, parsed_message
                 ):
-                    return False
-                if owned and not await self.__reclaim_for_dispatch(topic, message_id):
                     return False
                 self.logger.info(
                     "Recovering %spending message: stream=%s, id=%s",
@@ -1424,10 +1428,26 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     continue
                 if self._scheduler is not None and not self.__buffer_has_room():
                     continue
+                if self._scheduler is None and not self.__fifo_admission_open():
+                    # Without a scheduler the handoff starts the task: the same
+                    # admission as the FIFO read loop applies.
+                    continue
                 self._unhanded.pop(key, None)
                 await self.__recover_entry(topic, message_id, found[0][1], owned=True)
             except Exception as e:
                 self.logger.warning("Could not retry pending entry %s on %s: %s", message_id, topic, e)
+
+    def __fifo_admission_open(
+        self,
+        budget: concurrency.DispatchBudget | None = None,
+        saturated: bool | None = None,
+    ) -> bool:
+        """Whether the FIFO path may start another task: the dispatch budget is
+        not blocked and the index gates are not all in use."""
+        budget = budget or self._dispatch_budget()
+        if saturated is None:
+            saturated = concurrency.index_gates_saturated(self)
+        return not (budget.blocked or saturated)
 
     async def __pending_here(self, topic: str, message_id: str) -> bool:
         mine = await self.redis.xpending_range(  # type: ignore[union-attr]
@@ -2118,51 +2138,62 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         page_size = max(self.config.batch_size, _PENDING_SCAN_PAGE)
         found: list[tuple[str, dict[str, str]]] = []
         pages = self.__pending_scan_pages(topic)
-        # Resumed after the last entry examined, wrapping round to the head:
-        # entries at the head that keep failing their handoff would otherwise
-        # fill every scan, and one behind them would never be reached.
+        # Resumed after the last entry examined, wrapping round to the head
+        # only once the scan has truly reached the end of the list: entries
+        # at the head that keep failing (their handoff, or the ack of a gone
+        # one) would otherwise fill every scan, and one behind them would
+        # never be reached. Whatever the exit -- limit reached, page budget
+        # used up, an error -- the next scan carries on from here.
         resume = self._own_scan_resume.get(topic, "-")
         segments = [(resume, "+")] if resume == "-" else [(resume, "+"), ("-", resume[1:])]
-        for low, high in segments:
-            cursor = low
-            while pages > 0:
-                pages -= 1
-                details = await self.redis.xpending_range(  # type: ignore
-                    topic,
-                    self.config.group_id,
-                    min=cursor,
-                    max=high,
-                    count=page_size,
-                    consumername=self.consumer_name,
-                )
-                if not isinstance(details, list) or not details:
-                    break
-                last_id = cursor
-                for detail in details:
-                    message_id = self._pending_detail_id(detail) if isinstance(detail, dict) else None
-                    if not message_id:
-                        continue
-                    last_id = message_id
-                    if self.__already_held(message_id, topic):
-                        continue
-                    entries = await self.redis.xrange(  # type: ignore
-                        topic, min=message_id, max=message_id, count=1
-                    )
-                    if not entries:
-                        # Trimmed or deleted: nothing left to process, and pending
-                        # under this consumer it would hold its lane's head.
-                        await self.__ack_claimed_without_body(topic, [message_id])
-                        continue
-                    _entry_id, fields = entries[0]
-                    found.append((message_id, fields))
-                    if len(found) >= remaining:
-                        self._own_scan_resume[topic] = f"({message_id}"
+        last_examined: str | None = None
+        reached_end = False
+        try:
+            for low, high in segments:
+                cursor = low
+                while True:
+                    if pages <= 0:
                         return found
-                if len(details) < page_size:
-                    break
-                cursor = f"({last_id}"
-        self._own_scan_resume[topic] = "-"
-        return found
+                    pages -= 1
+                    details = await self.redis.xpending_range(  # type: ignore
+                        topic,
+                        self.config.group_id,
+                        min=cursor,
+                        max=high,
+                        count=page_size,
+                        consumername=self.consumer_name,
+                    )
+                    if not isinstance(details, list) or not details:
+                        break
+                    for detail in details:
+                        message_id = self._pending_detail_id(detail) if isinstance(detail, dict) else None
+                        if not message_id:
+                            continue
+                        last_examined = message_id
+                        if self.__already_held(message_id, topic):
+                            continue
+                        entries = await self.redis.xrange(  # type: ignore
+                            topic, min=message_id, max=message_id, count=1
+                        )
+                        if not entries:
+                            # Trimmed or deleted: nothing left to process, and
+                            # pending here it would hold its lane's head.
+                            await self.__ack_claimed_without_body(topic, [message_id])
+                            continue
+                        _entry_id, fields = entries[0]
+                        found.append((message_id, fields))
+                        if len(found) >= remaining:
+                            return found
+                    if len(details) < page_size:
+                        break
+                    cursor = f"({last_examined}"
+            reached_end = True
+            return found
+        finally:
+            if reached_end:
+                self._own_scan_resume[topic] = "-"
+            elif last_examined is not None:
+                self._own_scan_resume[topic] = f"({last_examined}"
 
     async def __reclaim_for_dispatch(self, topic: str, message_id: str) -> bool:
         """Reassert ownership of a PEL entry before dispatching it; False if it
@@ -2933,7 +2964,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     # single further record. Claiming more entries then only
                     # grows this consumer's PEL.
                     saturated = concurrency.index_gates_saturated(self)
-                    if budget.blocked or saturated:
+                    if not self.__fifo_admission_open(budget, saturated):
                         if not self._backpressure_active:
                             self.logger.warning(
                                 "Backpressure engaged: tasks waiting for "
