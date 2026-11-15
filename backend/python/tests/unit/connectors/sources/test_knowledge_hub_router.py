@@ -126,7 +126,7 @@ class TestHandleGetNodes:
         assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_a_source_still_being_prepared_answers_its_empty_page_not_a_503(self):
+    async def test_a_source_still_being_prepared_answers_its_empty_page_not_a_503(self) -> None:
         from app.connectors.sources.localKB.api.knowledge_hub_models import (
             AppliedFilters,
             FiltersInfo,

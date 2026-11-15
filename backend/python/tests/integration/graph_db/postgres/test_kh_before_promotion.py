@@ -10,12 +10,13 @@ import asyncpg
 import pytest
 
 from app.connectors.sources.localKB.handlers.kh_search import search_page
-from app.connectors.sources.localKB.handlers.knowledge_hub_service import KnowledgeHubService
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    KnowledgeHubService,
+)
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
-
 from tests.permissions.kh_layer import _Config
 
 from .pg_support import new_org
