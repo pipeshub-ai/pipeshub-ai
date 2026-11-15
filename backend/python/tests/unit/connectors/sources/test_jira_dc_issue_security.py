@@ -243,3 +243,14 @@ class TestParentKeyLookup:
             return_value=MagicMock(status=200, json=MagicMock(return_value={"id": "8"})))))
         assert await connector._resolve_issue_id_from_key_or_id(issue_id=None, issue_key="P-8", context="x") == "8"
         assert connector._issue_id_to_key_cache["8"] == "P-8"
+
+
+class TestRefusedRoleList:
+    def test_a_refused_role_list_holds_a_level_naming_a_role(self) -> None:
+        """A 403 from applicationrole leaves the role's groups unknown, not empty: the level's issues keep their stored copy."""
+        connector = _connector()
+        connector._app_roles_forbidden = True
+        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={
+            "1": [{"type": "applicationRole", "parameter": "jira-software"}]})
+        held = connector._security_with_roles(security)
+        assert (held.members_readable, held.defer_checkpoint) == (False, True)

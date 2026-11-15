@@ -4520,7 +4520,9 @@ class JiraConnector(BaseConnector):
             )
 
     def _hold_levels_naming_unread_roles(self, security: IssueSecurityContext) -> IssueSecurityContext:
-        return hold_levels_naming_unread_roles(security, app_roles_unread=self._app_roles_unread)
+        # A refused role list (403) leaves the role's groups unknown too, not empty: its levels are held the same way.
+        return hold_levels_naming_unread_roles(
+            security, app_roles_unread=self._app_roles_unread or self._app_roles_forbidden)
 
     def _plan_level_reread(
         self, security: IssueSecurityContext, stored: dict[str, str] | None, *, is_new_project: bool,

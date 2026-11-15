@@ -3299,7 +3299,9 @@ class JiraDataCenterConnector(BaseConnector):
         ]
 
     def _security_with_roles(self, security: IssueSecurityContext) -> IssueSecurityContext:
-        return hold_levels_naming_unread_roles(security, app_roles_unread=self._app_roles_unread)
+        # A refused role list (403) leaves the role's groups unknown too, not empty: its levels are held the same way.
+        return hold_levels_naming_unread_roles(
+            security, app_roles_unread=self._app_roles_unread or self._app_roles_forbidden)
 
     async def _warn_unreadable_security(self) -> None:
         """One warning per reason for the projects whose issue security levels could not be

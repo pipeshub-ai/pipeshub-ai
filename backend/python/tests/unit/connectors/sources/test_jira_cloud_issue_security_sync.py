@@ -932,6 +932,34 @@ class TestLevelPassAfterFailuresAndRemovals:
         assert (perms, record.rewrite_permissions) == ([], False)
 
     @pytest.mark.asyncio
+    async def test_a_refused_role_list_holds_a_level_naming_a_role_until_the_roles_are_read(self) -> None:
+        """A 403 leaves the role's groups unknown, not empty: no pass rewrites the level's issues (a sub-task holds a
+        copy of its level's holders) and the stored digest stays, so the next sync that reads the roles re-reads them."""
+        members = {"10102": [{"type": "applicationRole", "parameter": "jira-software"}]}
+        roles = {"jira-software": [{"groupId": "g-1"}]}
+        stored = _present(members=members).level_fingerprints(roles, split=True)
+        sub = _issue({"id": "10102"}, key="PROJ-2", issue_id="1002")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "hierarchyLevel": -1, "subtask": True}
+        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
+
+        c = _connector()
+        c._app_roles_forbidden, c._app_roles_mapping = True, {}
+        c, ctx, calls, _ = await self._sync(stored_levels=stored, ctx=_present(members=members), connector=c)
+        assert len(calls) == 1
+        c.data_entities_processor.on_new_record_groups.assert_not_awaited()
+        saved = json.loads(c.issues_sync_point.update_sync_point.await_args.args[1]["security_levels"])
+        assert saved == {**stored, "*": "retry"}
+        record, perms, _ = await _build(c, sub, ctx)
+        assert (perms, record.rewrite_permissions) == ([], False)  # its stored copy, the role's groups included
+
+        c = _connector()
+        c._app_roles_mapping = roles
+        c, ctx, calls, _ = await self._sync(stored_levels=saved, ctx=_present(members=members), connector=c)
+        assert len(calls) == 2  # the marker re-reads the leveled issues
+        record, perms, _ = await _build(c, sub, ctx)
+        assert record.rewrite_permissions and (EntityType.GROUP, "g-1") in {(p.entity_type, p.external_id) for p in perms}
+
+    @pytest.mark.asyncio
     async def test_a_role_read_in_part_does_not_hold_levels_without_roles(self) -> None:
         c = _connector()
         c._app_roles_unread = True
