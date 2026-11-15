@@ -8,6 +8,15 @@ from collections.abc import Iterator
 
 import pytest
 
+from tests.support.edition_defaults import unit_test_fixtures
+
+
+@pytest.fixture(autouse=True)
+def _no_table_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every PDF parse runs the rule-based table path. The learned detector downloads its model from the Hub in a
+    worker thread: a stalled download outlived the test's timeout and kept the pytest worker from exiting."""
+    monkeypatch.setenv("PDF_TABLE_MODEL", "off")
+
 
 @pytest.fixture(autouse=True)
 def _fresh_connector_name_cache() -> None:
@@ -107,3 +116,45 @@ def _no_leaked_pipeshub_temp_files(_private_temp_dir: str) -> Iterator[None]:
         f"test left temp files behind: {leaked}. Remove them in the test "
         "(or fix the code that creates them)."
     )
+
+
+# Where ``@pytest.fixture`` keeps its marker: pytest >= 8.4 uses the first, older pytest
+# the second. Both markers carry the ``name=`` the decorator was given.
+_FIXTURE_MARKER_ATTRIBUTES = ("_fixture_function_marker", "_pytestfixturefunction")
+
+
+def _registered_name(attribute: str, value: object) -> str | None:
+    """The name pytest registers ``value`` under when it finds it as ``attribute``; None if no fixture."""
+    for marker_attribute in _FIXTURE_MARKER_ATTRIBUTES:
+        marker = getattr(value, marker_attribute, None)
+        if marker is not None:
+            return marker.name or attribute
+    return None
+
+
+def _bind_unit_test_fixtures() -> None:
+    fixtures = unit_test_fixtures()
+    registered = {
+        name
+        for attribute, value in globals().items()
+        if (name := _registered_name(attribute, value))
+    }
+    added = [
+        name
+        for attribute, value in fixtures.items()
+        if (name := _registered_name(attribute, value))
+    ]
+    # A second fixture of one name silently replaces the first for every test; so does
+    # binding over a name defined above. ``name=`` sets the name, not the mapping key.
+    clashes = sorted(
+        (fixtures.keys() & globals().keys())
+        | (registered & set(added))
+        | {name for name in added if added.count(name) > 1}
+    )
+    assert not clashes, (
+        f"unit_test_fixtures() redefines names in this conftest: {clashes}"
+    )
+    globals().update(fixtures)
+
+
+_bind_unit_test_fixtures()

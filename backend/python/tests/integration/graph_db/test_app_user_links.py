@@ -174,6 +174,8 @@ async def _recover(graph, user_key: str, org: str, connector: str) -> tuple[set[
 
     await processor.on_new_app_users([app_user])
     linked = await links()
+    # the address comes with each link: which account an address was linked to is compared by address
+    assert [u.email for u in await processor.get_app_user_links(connector)] == [f"{user_key}@example.com"]
     await processor.withdraw_app_user_access(connector, [SimpleNamespace(id=user_key)])
     withdrawn = await links()
     await processor.on_new_app_users([app_user])  # the next listing shows the user again

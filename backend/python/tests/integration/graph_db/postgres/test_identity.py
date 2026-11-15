@@ -341,6 +341,7 @@ CALLS = [
     ("check_toolset_instance_in_use", ("i",)), ("check_connector_name_uniqueness", ("n", "team", "o", "u", "apps")),
     ("count_connector_instances_by_scope", ("apps", "team")),
     ("get_agent", ("a",)), ("get_agents_by_model_key", ("o", "m")), ("get_agents_by_web_search_provider", ("o", "p")),
+    ("get_all_agents", ("u", "o")), ("update_agent", ("a", {"name": "n"}, "u", "o")), ("delete_agent", ("a", "u", "o")),
 ]
 
 
@@ -405,6 +406,7 @@ async def test_a_withdrawn_user_gets_the_link_back_when_the_next_listing_shows_t
 
     await processor.on_new_app_users([listed])
     assert await links() == {"m"}
+    assert [u.email for u in await processor.get_app_user_links(APP)] == ["m@x.com"]
     await processor.withdraw_app_user_access(APP, [SimpleNamespace(id="m")])
     assert await links() == set()
     await processor.on_new_app_users([listed])                                  # the next listing shows the user again

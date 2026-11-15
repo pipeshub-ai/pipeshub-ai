@@ -70,6 +70,11 @@ KB_ROLE_PRIORITY: dict[str, int] = {
 # anything deeper behind.
 CONTAINMENT_MAX_DEPTH = 1000
 
+# Folders ``list_user_knowledge_bases`` returns per collection, the first by id;
+# ``foldersTruncated`` says more exist; browsing the collection pages through
+# them all.
+KB_LIST_FOLDERS_CAP = 100
+
 # Records considered per entity when listing an entity's records, taken
 # before the newest-first sort. Without a bound, a language or broad category
 # linked to most of an org's records is sorted in full on every page. Past the

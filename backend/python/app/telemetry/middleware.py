@@ -7,9 +7,8 @@ drift that left the Python services entirely uninstrumented.
 
 import time
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.telemetry.identity import domain_from_email
 from app.telemetry.modules.http_metrics import (
@@ -20,33 +19,48 @@ from app.telemetry.modules.http_metrics import (
 from app.utils.route_template import route_template
 
 
-class MetricsMiddleware(BaseHTTPMiddleware):
-    """Records request count + latency for every request handled by the app."""
+class MetricsMiddleware:
+    """Records request count + latency for every request handled by the app.
+
+    Raw ASGI: behind a ``BaseHTTPMiddleware`` a route's ``Request.is_disconnected()`` always answers False.
+    """
 
     def __init__(self, app: ASGIApp, service_name: str) -> None:
-        super().__init__(app)
+        self.app = app
         self.service_name = service_name
 
-    async def dispatch(self, request: Request, call_next):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
         start = time.perf_counter()
-        status_code = 500
-        try:
-            response = await call_next(request)
-            status_code = response.status_code
-            return response
-        finally:
-            elapsed = time.perf_counter() - start
-            route = bound_route(route_template(request.scope))
-            org = self._org(request)
-            domain = self._domain(request)
+        recorded = False
+
+        def record(status_code: int) -> None:
+            nonlocal recorded
+            recorded = True
+            request = Request(scope)
+            route = bound_route(route_template(scope))
             # Never reset counters — push cumulative values, let the TSDB
             # compute rate()/increase().
             HTTP_REQUESTS.inc(
-                self.service_name, route, request.method, str(status_code), org, domain
+                self.service_name, route, request.method, str(status_code), self._org(request), self._domain(request)
             )
             HTTP_REQUEST_DURATION.observe(
-                self.service_name, route, request.method, value=elapsed
+                self.service_name, route, request.method, value=time.perf_counter() - start
             )
+
+        async def send_and_record(message: Message) -> None:
+            # At the response's start: a stream left open for minutes is still in every push meanwhile.
+            if message["type"] == "http.response.start" and not recorded:
+                record(message["status"])
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_and_record)
+        finally:
+            if not recorded:  # it failed (or was cancelled) before a response started
+                record(500)
 
     @staticmethod
     def _org(request: Request) -> str:

@@ -5378,6 +5378,7 @@
       "noRecordMetadata": "इस आइटम के लिए कोई अतिरिक्त मेटाडेटा नहीं है।"
     },
     "indexingReasonAria": "अनुक्रमण विफलता विवरण",
+    "indexingNoteAria": "इंडेक्सिंग नोट",
     "stageTrackLabel": "पाइपलाइन",
     "stageParsed": "पार्स किया गया",
     "stageSearchable": "खोजने योग्य",
@@ -5770,6 +5771,7 @@
       "restoredMany_one": "{{count}} आइटम वापस लाया गया",
       "restoredMany_other": "{{count}} आइटम वापस लाए गए",
       "showing": "{{total}} में से {{from}}–{{to}}",
+      "showingAtLeast": "{{total, number}}+ में से {{from}}–{{to}}",
       "previous": "पिछला",
       "next": "अगला",
       "nameAndMore_one": "{{name}} और {{count}} अन्य",

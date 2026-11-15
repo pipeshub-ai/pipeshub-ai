@@ -47,6 +47,8 @@ from app.connectors.sources.localKB.api.models import (
     UploadRecordsinKBResponse,
 )
 from app.connectors.sources.localKB.handlers.kb_service import (
+    MAX_TRASH_CURSOR_LENGTH,
+    PAGE_BEYOND_LIMIT,
     ConnectionCheck,
     KnowledgeBaseService,
 )
@@ -1760,8 +1762,9 @@ async def list_trash(
     request: Request,
     page: int = Query(1, ge=1),
     limit: int = Query(25, ge=1, le=100),
+    cursor: str | None = Query(None, min_length=1, max_length=MAX_TRASH_CURSOR_LENGTH),
     kb_service: KnowledgeBaseService = Depends(get_kb_service),
-) -> ListTrashResponse:
+) -> ListTrashResponse | JSONResponse:
     try:
         result = await kb_service.list_trash(
             kb_id=kb_id,
@@ -1769,13 +1772,16 @@ async def list_trash(
             org_id=request.state.user.get("orgId"),
             page=page,
             limit=limit,
+            cursor=cursor,
         )
         if not result or result.get("success") is False:
             error_code = int((result or {}).get("code", HTTP_INTERNAL_SERVER_ERROR))
-            raise HTTPException(
-                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=(result or {}).get("reason") or action_failed("load the recently deleted items"),
-            )
+            status_code = error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR
+            detail = (result or {}).get("reason") or action_failed("load the recently deleted items")
+            if (result or {}).get("errorCode") == PAGE_BEYOND_LIMIT:
+                # The gateway tells this 400 apart by its code, not its words.
+                return JSONResponse(status_code=status_code, content={"detail": detail, "errorCode": PAGE_BEYOND_LIMIT})
+            raise HTTPException(status_code=status_code, detail=detail)
         return ListTrashResponse(**result)
     except HTTPException:
         raise

@@ -13,6 +13,7 @@ from app.services.graph_db.postgres.kg import dependents, reader
 from app.services.graph_db.postgres.kg.model import (
     LINK_GROUP,
     LINK_HIERARCHY,
+    LINK_PARENT_CHILD,
     UAR,
     derive,
 )
@@ -112,8 +113,8 @@ EXPECTED = {
         "f1": (3, "app1", "g1", "fold", "One.TXT", "one.txt", 40, 30, 12, "vr1", None, None, "CONNECTOR", True, False, True),
         "f2": (3, "app1", None, "g1", "Two", "two", 0, 0, None, None, None, None, "UPLOAD", False, True, False),
     },
-    # f1 is also in g2 (its second group); f2 has the folder as a second hierarchy parent (an attachment) after the group
-    "links": {("g2", LINK_GROUP, "f1"), ("fold", LINK_HIERARCHY, "f2")},
+    # f1 is also in g2 (its second group); f2 has the folder as a second hierarchy parent (an attachment) after the group; every PARENT_CHILD parent is a kind-3 link
+    "links": {("g2", LINK_GROUP, "f1"), ("fold", LINK_HIERARCHY, "f2"), ("fold", LINK_PARENT_CHILD, "f1"), ("g1", LINK_PARENT_CHILD, "f2")},
     # (principal, node, type) -> (role, the node's app, the node is a leaf record); a membership of a team is a closure row below, not a grant on a node
     "grants": {("u1", "f1", "USER"): ("READER", "app1", True), ("team1", "g1", "TEAM"): ("WRITER", "app1", False), ("u1", "app1", UAR): (None, "app1", False)},
     "closure": {("u1", "u1", "-"): "self", ("u1", "team1", "-"): "membership", ("u1", "org", "-"): "org"},

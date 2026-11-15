@@ -1873,14 +1873,32 @@ export const listTrash =
         );
       }
       const { kbId } = req.params as { kbId: string };
-      const { page, limit } = req.query as { page?: string; limit?: string };
+      const { page, limit, cursor } = req.query as {
+        page?: string;
+        limit?: string;
+        cursor?: string;
+      };
       const query = new URLSearchParams({ page: page ?? '1', limit: limit ?? '25' });
+      if (cursor) query.set('cursor', cursor);
 
-      const response = await executeConnectorCommand(
+      const response = await executeConnectorCommand<{
+        detail?: string;
+        errorCode?: string;
+      }>(
         `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/trash?${query.toString()}`,
         HttpMethod.GET,
         req.headers as Record<string, string>,
       );
+      if (
+        response.statusCode === 400 &&
+        response.data?.errorCode === 'PAGE_BEYOND_LIMIT'
+      ) {
+        throw new HttpError(
+          'PAGE_BEYOND_LIMIT',
+          response.data.detail ?? 'Follow nextCursor to page further.',
+          400,
+        );
+      }
 
       handleConnectorResponse(
         response,
