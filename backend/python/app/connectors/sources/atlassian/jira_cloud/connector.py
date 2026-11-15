@@ -281,6 +281,8 @@ SUBTASK_REREAD_CHUNK: int = 50
 # Accounts per JQL when re-reading the issues that name newly listed accounts.
 # Seconds to wait for the search made with no credentials that tells whether a project is public.
 ANONYMOUS_READ_TIMEOUT_S: float = 20.0
+# Pages of that search followed past empty ones before the project counts as not public.
+ANONYMOUS_READ_PAGES: int = 3
 PEOPLE_REREAD_CHUNK: int = 20  # kept small: a clause's argument limit is not published
 # The connector's sync point holding newly listed accounts not yet handed to every project.
 PEOPLE_REREAD_KEY: str = "people_reread"
@@ -2861,18 +2863,33 @@ class JiraConnector(BaseConnector):
         if not self.site_url or not project_key:
             return False
         jql = 'project = "{}"'.format(project_key.replace("\\", "\\\\").replace('"', '\\"'))
+        token: str | None = None
+        used: set[str] = set()
         try:
             async with httpx.AsyncClient(timeout=ANONYMOUS_READ_TIMEOUT_S) as client:
-                response = await client.post(
-                    f"{self.site_url.rstrip('/')}/rest/api/3/search/jql",
-                    json={"jql": jql, "maxResults": 1, "fields": ["id"]},
-                    headers={"Accept": "application/json"},
-                )
-            issues = response.json().get("issues") if response.status_code == HttpStatusCode.OK.value else None
+                for _ in range(ANONYMOUS_READ_PAGES):
+                    body: dict[str, Any] = {"jql": jql, "maxResults": 1, "fields": ["id"]}
+                    if token:
+                        body["nextPageToken"] = token
+                    response = await client.post(
+                        f"{self.site_url.rstrip('/')}/rest/api/3/search/jql", json=body,
+                        headers={"Accept": "application/json"},
+                    )
+                    data = response.json() if response.status_code == HttpStatusCode.OK.value else None
+                    issues = data.get("issues") if isinstance(data, dict) else None
+                    if not isinstance(issues, list):
+                        return False
+                    if issues:
+                        return True
+                    # An empty page that is not the last (isLast false, a nextPageToken) can precede one with issues;
+                    # a terminal empty page is the answer of a site that does not let signed-out visitors read.
+                    token = data.get("nextPageToken")
+                    if data.get("isLast") is True or not token or token in used:
+                        return False
+                    used.add(token)
         except (httpx.HTTPError, ValueError, AttributeError) as e:
             self.logger.warning("Could not check whether project %s is public: %s", project_key, e)
-            return False
-        return isinstance(issues, list) and bool(issues)
+        return False
 
     async def _fallback_permissions_for_forbidden_scheme(
         self,

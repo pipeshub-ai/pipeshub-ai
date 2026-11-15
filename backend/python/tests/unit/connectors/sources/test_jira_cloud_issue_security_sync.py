@@ -1993,6 +1993,38 @@ class TestAnonymousBrowseReachesEveryone:
         c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("pages", "public"), [
+        ([{"issues": [], "isLast": False, "nextPageToken": "t"}, {"issues": [{"id": "1"}], "isLast": True}], True),
+        ([{"issues": [], "isLast": True}], False),
+        ([{"issues": [], "isLast": False, "nextPageToken": "t"}, {"issues": [], "isLast": False, "nextPageToken": "t"}],
+         False),
+        ([{"issues": [], "isLast": False, "nextPageToken": f"t{i}"} for i in range(5)], False),
+    ], ids=["issue_on_a_later_page", "terminal_empty_page", "repeated_token", "page_bound"])
+    async def test_the_signed_out_search_follows_empty_pages_that_are_not_the_last(
+        self, monkeypatch: pytest.MonkeyPatch, pages: list, public: bool,
+    ) -> None:
+        """Enhanced search can answer an empty page with isLast false and a nextPageToken before a page with issues."""
+        import httpx
+
+        from app.connectors.sources.atlassian.jira_cloud import connector as module
+
+        answers = iter(pages)
+        sent: list[dict] = []
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json=next(answers))
+
+        real = httpx.AsyncClient
+        monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(answer), **kw))
+        c = _connector()
+        c.site_url = "https://acme.atlassian.net"
+        assert await c._read_anonymously("PUB") is public
+        assert len(sent) <= module.ANONYMOUS_READ_PAGES
+        if len(sent) > 1:
+            assert sent[1]["nextPageToken"] == pages[0]["nextPageToken"]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(("status", "body", "public"), [
         (200, {"issues": [{"id": "1"}]}, True), (200, {"issues": []}, False), (401, {}, False),
         (200, "<html>log in</html>", False)], ids=["issue_returned", "nothing_returned", "refused", "not_json"])
