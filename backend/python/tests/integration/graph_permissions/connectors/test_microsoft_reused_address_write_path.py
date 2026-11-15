@@ -14,6 +14,7 @@ import pytest
 from app.config.constants.arangodb import Connectors
 from app.connectors.sources.microsoft.common.source_accounts import SourceAccounts
 from app.models.entities import AppUser
+from tests.support.in_memory_config import InMemoryConfigService
 
 from . import test_onedrive_inheritance_write_path as onedrive
 from .test_onedrive_inheritance_write_path import Drive
@@ -21,18 +22,6 @@ from .test_onedrive_inheritance_write_path import Drive
 drive = onedrive.drive      # the fixture: Ana's OneDrive, shared with Ben and Cal
 
 pytestmark = pytest.mark.integration
-
-
-class _Config:
-    def __init__(self) -> None:
-        self.data: dict[str, object] = {}
-
-    async def get_config(self, key: str, default: object = None, **_: object) -> object:
-        return self.data.get(key, default)
-
-    async def set_config(self, key: str, value: object, **_: object) -> bool:
-        self.data[key] = value
-        return True
 
 
 def _listing(drive: Drive, ben_id: str) -> list[AppUser]:
@@ -47,7 +36,7 @@ async def _everyone(drive: Drive) -> dict[str, set[str]]:
 
 async def test_a_new_account_with_a_deleted_accounts_address_reads_nothing_the_old_one_was_granted(drive: Drive) -> None:
     await drive.write()
-    accounts = SourceAccounts(drive.processor, drive.connector_id, _Config(), logging.getLogger("t"))
+    accounts = SourceAccounts(drive.processor, drive.connector_id, InMemoryConfigService(), logging.getLogger("t"))
     before = await _everyone(drive)
     assert "ben" in before["Plans"] and "ben" in before["plan.pdf"]
 
@@ -60,7 +49,7 @@ async def test_a_new_account_with_a_deleted_accounts_address_reads_nothing_the_o
 
 async def test_a_restored_account_keeps_what_it_could_read(drive: Drive) -> None:
     await drive.write()
-    accounts = SourceAccounts(drive.processor, drive.connector_id, _Config(), logging.getLogger("t"))
+    accounts = SourceAccounts(drive.processor, drive.connector_id, InMemoryConfigService(), logging.getLogger("t"))
     before = await _everyone(drive)
     ben = [link for link in await drive.processor.get_app_user_links(drive.connector_id) if link.source_user_id == "u-ben"]
     await accounts.withdraw(ben)                            # deleted: withdrawn on the next sync
@@ -73,7 +62,7 @@ async def test_a_restored_account_keeps_what_it_could_read(drive: Drive) -> None
 
 async def test_an_address_taken_after_the_old_account_was_withdrawn_reads_nothing_of_it(drive: Drive) -> None:
     await drive.write()
-    accounts = SourceAccounts(drive.processor, drive.connector_id, _Config(), logging.getLogger("t"))
+    accounts = SourceAccounts(drive.processor, drive.connector_id, InMemoryConfigService(), logging.getLogger("t"))
     before = await _everyone(drive)
     ben = [link for link in await drive.processor.get_app_user_links(drive.connector_id) if link.source_user_id == "u-ben"]
     await accounts.withdraw(ben)
