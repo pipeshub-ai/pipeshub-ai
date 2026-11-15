@@ -251,10 +251,10 @@ class RecordEventHandler(BaseEventService):
             self._redis_by_loop[loop] = redis
         return redis
 
-    async def _replay_entry(self, record_id: str, payload: dict) -> replay_set.StoredDelivery | None:
-        """What the replay set holds for the event; None when it holds nothing or cannot be read."""
+    async def _replay_entries(self, record_id: str, payload: dict) -> dict[str, replay_set.StoredDelivery] | None:
+        """What the replay set holds for the record; None when it cannot be read."""
         try:
-            return await replay_set.read_entry(await self._redis_client(), record_id, payload)
+            return await replay_set.read_entries(await self._redis_client(), record_id, payload)
         except Exception as exc:
             replay_set.REPLAY_SET_ERRORS.inc("read")
             self.logger.warning("Replay set not read for record %s: %s", record_id, type(exc).__name__)
@@ -264,12 +264,12 @@ class RecordEventHandler(BaseEventService):
         event_id, delivery_id = payload.get(replay_set.EVENT_ID_KEY), payload.get(replay_set.DELIVERY_ID_KEY)
         flags = replay_set.flags_of(payload)
 
-        async def remember(record_id: str) -> None:
+        async def remember(record_id: str, completed_at_ms: int) -> None:
             await replay_set.record_delivery(
                 await self._redis_client(), record_id,
                 event_id=str(event_id) if event_id else None,
                 delivery_id=str(delivery_id) if delivery_id else None,
-                flags=flags, now_ms=int(time.time() * 1000),
+                flags=flags, completed_at_ms=completed_at_ms,
             )
 
         return replay_set.DeliveryRef(
@@ -1900,6 +1900,20 @@ class RecordEventHandler(BaseEventService):
                         delay_s=HELD_FOR_DELETE_DELAY_S,
                     )
 
+            # An exact replay of a delivery that completed this record (a lost acknowledgement, a
+            # rebalance) is answered by the replay set, an optimisation that is simply absent when Redis
+            # is unreachable or evicted it. Decided before a stage redrive, which would run a completed
+            # delivery's stages again; a lost hand-off still runs.
+            replayed = bool(
+                not already_indexed(event_type, payload, record)
+                and replay_candidate(event_type, payload, record)
+                and replayed_delivery(event_type, payload, record, await self._replay_entries(record_id, payload))
+                and not (stage_ingress is not None and await stage_ingress.handoff_lost(record))
+            )
+            if replayed:
+                # Acknowledged as an indexing event below, which owns the record's bookkeeping.
+                stage_redrive = False
+
             if stage_redrive:
                 stage_rev = payload.get("stageRev")
                 # A null stageRev is a record selected before it had a revision.
@@ -1955,15 +1969,7 @@ class RecordEventHandler(BaseEventService):
             # acknowledged here must leave the record's points exactly as they are.
             resuming_enrichment = record_resuming_enrichment(doc)
             idle = already_indexed(event_type, payload, doc)
-            replayed = False
-            if not idle and replay_candidate(event_type, payload, doc):
-                # An exact replay of a delivery that completed this record (a lost acknowledgement, a
-                # rebalance): the replay set answers it, an optimisation that is simply absent when
-                # Redis is unreachable or evicted it.
-                replayed = idle = replayed_delivery(
-                    event_type, payload, doc, await self._replay_entry(record_id, payload)
-                )
-            if idle and not (stage_ingress is not None and await stage_ingress.handoff_lost(doc)):
+            if replayed or (idle and not (stage_ingress is not None and await stage_ingress.handoff_lost(doc))):
                 # The finally block releases queued copies from here, and that is a write, so a
                 # delete marked since the check above is seen first: the connector's app is read
                 # again, as at the connector check below.
@@ -1977,7 +1983,7 @@ class RecordEventHandler(BaseEventService):
                 if replayed:
                     replay_set.REPLAYS_ACKNOWLEDGED.inc("indexing")
                     self.logger.info(
-                        f"🔁 Replay of a delivery that already completed record {record_id}: acknowledged"
+                        f"Replay of a delivery that already completed record {record_id}: acknowledged"
                     )
                 else:
                     self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")

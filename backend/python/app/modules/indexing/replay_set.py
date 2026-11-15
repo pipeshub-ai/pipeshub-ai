@@ -13,7 +13,8 @@ logged and counted.
 Keys, per record (one hash tag, so both live on one cluster slot):
 
 * ``messaging:indexed:{<recordId>}``: a hash. The field is the envelope event id; the value is
-  ``<flags>|<completed-at-ms>|<delivery id>``.
+  ``<flags>|<completed-at-ms>|<delivery id>``, where completed-at is the ``lastIndexTimestamp`` that the
+  delivery's COMPLETED write gave the record.
 * ``messaging:indexed:{<recordId>}:order``: a sorted set of the newest ``REPLAY_SET_SIZE`` event ids; trimming
   one removes its hash field.
 
@@ -21,6 +22,13 @@ Keys, per record (one hash tag, so both live on one cluster slot):
 an offset reset it can repeat for a different event. A replay is acknowledged only when its event id is in the set
 and, when it carries a delivery id, the stored one is the same. A match on the delivery id alone never
 acknowledges, and an event with no envelope has no event id, so the guard does not apply to it.
+
+**An entry answers a replay only while the record still shows a remembered completion that is not older.**
+The record's ``lastIndexTimestamp`` must be the completed-at of an entry (the current completion is one the
+set knows), and the replayed event must be that delivery, or come before it in the same broker log. Without
+that, an older event whose entry was lost (a failed write, a trim, an eviction) runs again on replay and can
+index its own, older bytes; a newer event acknowledged after it would leave the record there. Since the
+record is the proof, a lost write can only make a replay run, never make one skip.
 
 ``flags`` say what intent the completed delivery carried: ``F`` when it was a forced reindex, ``S=<digest>``
 of the sorted stage names when it named stages. A replay is only acknowledged when the stored flags cover it:
@@ -31,6 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -99,10 +108,13 @@ def covers(stored: str, replay: str) -> bool:
     return set(filter(None, replay.split(","))) <= stored_parts
 
 
-# Add one delivery, then trim to the newest REPLAY_SET_SIZE and drop the trimmed ones' fields.
+# Add one delivery, then trim to the newest REPLAY_SET_SIZE and drop the trimmed ones' fields. A hash whose
+# order key is gone (one key of the pair evicted) is dropped first: trimming reads only the order key, so
+# its fields would never be trimmed.
 _RECORD_LUA = """
 local h, z = KEYS[1], KEYS[2]
 local ms, size, ttl, value, event = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3]), ARGV[4], ARGV[5]
+if redis.call('EXISTS', z) == 0 then redis.call('DEL', h) end
 redis.call('HSET', h, event, value)
 redis.call('ZADD', z, ms, event)
 local over = redis.call('ZCARD', z) - size
@@ -122,6 +134,8 @@ class StoredDelivery:
 
     flags: str
     delivery_id: str
+    #: The ``lastIndexTimestamp`` the delivery's COMPLETED write gave the record.
+    completed_at_ms: int | None = None
 
 
 def parse_entry(value: object) -> StoredDelivery | None:
@@ -133,31 +147,91 @@ def parse_entry(value: object) -> StoredDelivery | None:
     parts = value.split("|", 2)
     if len(parts) != 3:
         return None
-    return StoredDelivery(flags=parts[0], delivery_id=parts[2])
+    return StoredDelivery(flags=parts[0], delivery_id=parts[2], completed_at_ms=_as_ms(parts[1]))
+
+
+def _as_ms(value: object) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 async def record_delivery(
-    redis: Redis, record_id: str, *, event_id: str | None, delivery_id: str | None, flags: str, now_ms: int
+    redis: Redis, record_id: str, *, event_id: str | None, delivery_id: str | None, flags: str,
+    completed_at_ms: int,
 ) -> None:
     """Remember that this event completed the record. Raises on a Redis failure; the caller treats it as best effort.
 
-    The identity of a delivery is its envelope event id. An event with none (no envelope) is not
-    remembered: a broker delivery id alone cannot tell a replay from a new event after an offset reset.
+    ``completed_at_ms`` is the ``lastIndexTimestamp`` the COMPLETED write gave the record. The identity of a
+    delivery is its envelope event id. An event with none (no envelope) is not remembered: a broker delivery
+    id alone cannot tell a replay from a new event after an offset reset.
     """
     if not event_id:
         return
     await redis.eval(  # type: ignore[misc]
         _RECORD_LUA, 2, hash_key(record_id), order_key(record_id),
-        now_ms, REPLAY_SET_SIZE, REPLAY_SET_TTL_MS, f"{flags}|{now_ms}|{delivery_id or ''}", event_id,
+        completed_at_ms, REPLAY_SET_SIZE, REPLAY_SET_TTL_MS,
+        f"{flags}|{completed_at_ms}|{delivery_id or ''}", event_id,
     )
 
 
-async def read_entry(redis: Redis, record_id: str, payload: Mapping[str, Any]) -> StoredDelivery | None:
-    """What the set holds for the event's id (None when nothing, or the event has no id). Raises on a Redis failure."""
-    event_id = payload.get(EVENT_ID_KEY)
-    if not event_id:
+async def read_entries(redis: Redis, record_id: str, payload: Mapping[str, Any]) -> dict[str, StoredDelivery]:
+    """The record's entries by event id (at most ``REPLAY_SET_SIZE``); empty when the event has no id, which
+    nothing can match. Raises on a Redis failure."""
+    if not payload.get(EVENT_ID_KEY):
+        return {}
+    raw = await redis.hgetall(hash_key(record_id))  # type: ignore[misc]
+    entries: dict[str, StoredDelivery] = {}
+    for field, value in (raw or {}).items():
+        entry = parse_entry(value)
+        if entry is not None:
+            entries[field.decode() if isinstance(field, bytes) else str(field)] = entry
+    return entries
+
+
+# The consumers' delivery ids (``stamp_delivery_id``): Kafka ``<topic>-<partition>-<offset>``, the PostgreSQL
+# queue ``<topic>:<row id>``, Redis Streams the bare entry id ``<ms>-<seq>``. A retry keeps its original's id.
+_PG_ID = re.compile(r"(.+):(\d+)")
+_REDIS_ID = re.compile(r"(\d+)-(\d+)")
+_KAFKA_ID = re.compile(r"(.+)-(\d+)-(\d+)")
+
+
+def log_position(delivery_id: str | None) -> tuple[str, tuple[int, ...]] | None:
+    """The broker log a delivery id names and its position there, or None when it names no position."""
+    if not delivery_id:
         return None
-    return parse_entry(await redis.hget(hash_key(record_id), str(event_id)))  # type: ignore[misc]
+    if match := _PG_ID.fullmatch(delivery_id):
+        return f"pg:{match[1]}", (int(match[2]),)
+    if match := _REDIS_ID.fullmatch(delivery_id):
+        return "redis", (int(match[1]), int(match[2]))
+    if match := _KAFKA_ID.fullmatch(delivery_id):
+        return f"kafka:{match[1]}-{match[2]}", (int(match[3]),)
+    return None
+
+
+def not_older_than_the_record(
+    event_id: str, entries: Mapping[str, StoredDelivery], indexed_at: object
+) -> bool:
+    """Whether the record still shows a remembered completion that the event ``event_id`` does not postdate.
+
+    ``indexed_at`` is the record's ``lastIndexTimestamp``. The remembered delivery whose COMPLETED write set
+    it made the record what it is now; the event is answered by it when it is that delivery, or when both
+    delivery ids name positions in one broker log and the event's comes first. A completion the set does not
+    know, two entries with one timestamp, or positions that cannot be compared answer nothing.
+    """
+    stored = entries.get(event_id)
+    now = _as_ms(indexed_at)
+    if stored is None or now is None:
+        return False
+    current = [(eid, entry) for eid, entry in entries.items() if entry.completed_at_ms == now]
+    if len(current) != 1:
+        return False
+    current_id, current_entry = current[0]
+    if current_id == event_id:
+        return True
+    mine, theirs = log_position(stored.delivery_id), log_position(current_entry.delivery_id)
+    return mine is not None and theirs is not None and mine[0] == theirs[0] and mine[1] < theirs[1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,8 +241,9 @@ class DeliveryRef:
     event_id: str | None
     delivery_id: str | None
     flags: str
-    #: Writes the entry for a record id; supplied by the handler, which owns the Redis client of this loop.
-    remember: Callable[[str], Awaitable[None]]
+    #: Writes the entry for a record id and its completed-at; supplied by the handler, which owns the Redis
+    #: client of this loop.
+    remember: Callable[[str, int], Awaitable[None]]
 
 
 _current: ContextVar[DeliveryRef | None] = ContextVar("replay_delivery", default=None)
@@ -184,14 +259,14 @@ def end_delivery() -> None:
     _current.set(None)
 
 
-async def note_record_completed(record_id: str, logger: Logger | None = None) -> None:
-    """Called after the record's COMPLETED write returned true, as a call of its own: a failure here is
-    logged and counted and never fails the completion."""
+async def note_record_completed(record_id: str, completed_at_ms: int, logger: Logger | None = None) -> None:
+    """Called after the record's COMPLETED write returned true, with the ``lastIndexTimestamp`` it wrote, as a
+    call of its own: a failure here is logged and counted and never fails the completion."""
     ref = _current.get()
     if ref is None or not enabled():
         return
     try:
-        await ref.remember(record_id)
+        await ref.remember(record_id, completed_at_ms)
     except Exception as exc:
         REPLAY_SET_ERRORS.inc("write")
         if logger is not None:

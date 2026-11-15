@@ -134,14 +134,20 @@ async def test_redelivery_keeps_the_delivery_id_kafka(kafka_available, topic, un
     assert second[0] == first[0], "a redelivery from the committed offset carries the same delivery id"
 
 
-def _record_handler(downloads: list[str]):  # noqa: ANN202
-    """The real RecordEventHandler over a COMPLETED record, with a real Redis for the replay set."""
-    handler = make_record_handler()
-    gp = handler.event_processor.graph_provider
-    gp.get_document = AsyncMock(return_value={
+def _completed_record() -> dict[str, Any]:
+    """The record as the graph holds it: COMPLETED, and stamped by each COMPLETED write."""
+    return {
         "_key": "r1", "virtualRecordId": "vr1", "contentRev": "rev-1", "mimeType": "application/pdf",
         "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value,
-    })
+        "lastIndexTimestamp": None,
+    }
+
+
+def _record_handler(record: dict[str, Any]):  # noqa: ANN202
+    """The real RecordEventHandler over ``record``, with a real Redis for the replay set."""
+    handler = make_record_handler()
+    gp = handler.event_processor.graph_provider
+    gp.get_document = AsyncMock(side_effect=lambda *_a, **_k: dict(record))
     gp.update_queued_duplicates_status = AsyncMock(return_value=0)
     handler.event_processor.processor.indexing_pipeline = AsyncMock()
     clients: dict[int, Redis] = {}
@@ -156,8 +162,9 @@ def _record_handler(downloads: list[str]):  # noqa: ANN202
     return handler
 
 
+@pytest.mark.parametrize("first_entry_lost", [False, True], ids=["remembered", "first-entry-lost"])
 async def test_window_of_two_events_for_one_record_kafka(
-    kafka_available, redis_available, topic, unique_suffix
+    kafka_available, redis_available, topic, unique_suffix, first_entry_lost: bool
 ) -> None:
     record_id = "r1"
     redis = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
@@ -172,6 +179,8 @@ async def test_window_of_two_events_for_one_record_kafka(
     first_downloads: list[str] = []
     replay_downloads: list[str] = []
     replay_done: list[str] = []
+    record = _completed_record()
+    completions = iter(range(1_000, 2_000))
 
     def wrap(handler: Any, downloads: list[str], done: list[str]):  # noqa: ANN202, ANN401
         async def handle(message: Any) -> AsyncIterator[PipelineEvent]:  # noqa: ANN401
@@ -180,7 +189,8 @@ async def test_window_of_two_events_for_one_record_kafka(
                 if event.event == IndexingEvent.START_DOWNLOAD:
                     downloads.append(delivery)
                     # The run goes on to its COMPLETED write; the sink then remembers the delivery.
-                    await replay_set.note_record_completed(record_id)
+                    record["lastIndexTimestamp"] = next(completions)
+                    await replay_set.note_record_completed(record_id, record["lastIndexTimestamp"])
                     yield PipelineEvent(event=IndexingEvent.START_PARSING, data=PipelineEventData(tier=ParseTier.LIGHT))
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE)
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
@@ -193,7 +203,7 @@ async def test_window_of_two_events_for_one_record_kafka(
     # First run: U1 and U2 both complete and are committed.
     first_done: list[str] = []
     consumer = _consumer(kafka_available, topic, group)
-    await consumer.start(wrap(_record_handler(first_downloads), first_downloads, first_done))
+    await consumer.start(wrap(_record_handler(record), first_downloads, first_done))
     try:
         await _until(lambda: len(first_done) >= 2, "both updates to complete")
         await asyncio.sleep(1.0)  # let the commit land
@@ -201,6 +211,10 @@ async def test_window_of_two_events_for_one_record_kafka(
         await consumer.stop()
     stored = await redis.hgetall(replay_set.hash_key(record_id))
     assert len(first_downloads) == 2 and set(first_downloads) <= set(stored), (first_downloads, stored)
+    if first_entry_lost:
+        # U1's write to the set failed: only U2 is remembered.
+        await redis.hdel(replay_set.hash_key(record_id), first_downloads[0])
+        await redis.zrem(replay_set.order_key(record_id), first_downloads[0])
 
     # The group's committed offset goes back to before U1 (a lost commit, then a rebalance).
     from aiokafka import AIOKafkaConsumer, TopicPartition
@@ -215,7 +229,7 @@ async def test_window_of_two_events_for_one_record_kafka(
         await rewind.stop()
 
     consumer = _consumer(kafka_available, topic, group)
-    await consumer.start(wrap(_record_handler(replay_downloads), replay_downloads, replay_done))
+    await consumer.start(wrap(_record_handler(record), replay_downloads, replay_done))
     try:
         await _until(lambda: len(replay_done) >= 2, "the replayed window", timeout=30)
     finally:
@@ -223,5 +237,9 @@ async def test_window_of_two_events_for_one_record_kafka(
         await redis.delete(replay_set.hash_key(record_id), replay_set.order_key(record_id))
         await redis.aclose()
 
-    assert sorted(replay_done) == sorted(first_downloads), "both replays reached the handler and were acknowledged"
-    assert replay_downloads == [], "a replayed window of completed deliveries downloads nothing"
+    assert sorted(replay_done) == sorted(first_downloads), "both replays reached the handler and finished"
+    if first_entry_lost:
+        # U1 runs again and may index its own, older bytes, so U2 must run after it.
+        assert replay_downloads == first_downloads, "an older update that ran again makes the newer one run"
+    else:
+        assert replay_downloads == [], "a replayed window of completed deliveries downloads nothing"

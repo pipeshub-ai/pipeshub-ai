@@ -822,8 +822,11 @@ class TestTheReplaySetIsWrittenAfterTheCompletedWrite:
         orch = _make_orchestrator()
         orch.graph_provider.batch_update_nodes = AsyncMock(side_effect=lambda *a, **k: order.append("completed") or True)
 
-        async def remember(record_id: str) -> None:
+        async def remember(record_id: str, completed_at_ms: int) -> None:
             order.append(f"remember:{record_id}")
+            written = orch.graph_provider.batch_update_nodes.await_args.args[0][0]
+            # The entry carries the lastIndexTimestamp this write gave the record.
+            assert completed_at_ms == written["lastIndexTimestamp"]
 
         self._bind(remember)
         assert await orch._update_indexing_status(_make_ctx("rec-7")) is True
@@ -832,7 +835,7 @@ class TestTheReplaySetIsWrittenAfterTheCompletedWrite:
         assert "lastDelivery" not in str(orch.graph_provider.batch_update_nodes.await_args)
 
         # A failing write does not fail the completion.
-        async def broken(record_id: str) -> None:
+        async def broken(record_id: str, completed_at_ms: int) -> None:
             raise ConnectionError("redis down")
 
         self._bind(broken)
@@ -844,7 +847,7 @@ class TestTheReplaySetIsWrittenAfterTheCompletedWrite:
         orch.graph_provider.batch_update_nodes = AsyncMock(return_value=False)
         remembered: list[str] = []
 
-        async def remember(record_id: str) -> None:
+        async def remember(record_id: str, completed_at_ms: int) -> None:
             remembered.append(record_id)
 
         self._bind(remember)
@@ -861,7 +864,7 @@ class TestTheReplaySetIsWrittenAfterTheCompletedWrite:
         monkeypatch.setenv("REPLAY_SET", "off")
         remembered: list[str] = []
 
-        async def remember(record_id: str) -> None:
+        async def remember(record_id: str, completed_at_ms: int) -> None:
             remembered.append(record_id)
 
         self._bind(remember)

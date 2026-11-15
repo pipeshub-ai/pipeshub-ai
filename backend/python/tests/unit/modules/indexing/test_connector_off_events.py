@@ -728,12 +728,16 @@ def test_replayed_delivery_needs_a_completed_record_an_event_id_and_covering_fla
     )
     from app.modules.indexing.replay_set import StoredDelivery
 
-    done = {"indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value}
+    done = {
+        "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value,
+        "lastIndexTimestamp": 1,
+    }
     payload = {"_event_id": "evt-1", "_delivery_id": "t-0-1"}
-    stored = StoredDelivery(flags="", delivery_id="t-0-1")
+    stored = {"evt-1": StoredDelivery(flags="", delivery_id="t-0-1", completed_at_ms=1)}
 
     assert replayed_delivery(UPDATE, payload, done, stored)
     assert not replayed_delivery(UPDATE, payload, done, None)
+    assert not replayed_delivery(UPDATE, payload, done, {})
     assert not replayed_delivery(UPDATE, {"_delivery_id": "t-0-1"}, done, stored), "a delivery id alone is no identity"
     assert not replayed_delivery(UPDATE, {**payload, "_delivery_id": "t-9-9"}, done, stored), "another delivery"
     assert replayed_delivery(UPDATE, {"_event_id": "evt-1"}, done, stored)
@@ -742,6 +746,10 @@ def test_replayed_delivery_needs_a_completed_record_an_event_id_and_covering_fla
     assert not replayed_delivery(UPDATE, {**payload, "vectorDbOnly": True}, done, stored)
     assert not replayed_delivery(UPDATE, {**payload, "forceReindex": True}, done, stored), "asks for more"
     assert replayed_delivery(
-        UPDATE, {**payload, "forceReindex": True}, done, StoredDelivery(flags="F", delivery_id="t-0-1")
+        UPDATE, {**payload, "forceReindex": True}, done,
+        {"evt-1": StoredDelivery(flags="F", delivery_id="t-0-1", completed_at_ms=1)},
+    )
+    assert not replayed_delivery(UPDATE, payload, {**done, "lastIndexTimestamp": 2}, stored), (
+        "a completion the set does not know came after it"
     )
     assert not replay_candidate("deleteRecord", payload, done)

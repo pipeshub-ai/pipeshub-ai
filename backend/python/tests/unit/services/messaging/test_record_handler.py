@@ -2012,21 +2012,27 @@ class TestAlreadyIndexed:
             pass
         return seen
 
+    #: What the handler yields when it acknowledges an event without work.
+    _ACK = [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+
     @staticmethod
     async def _completed_by(redis, record_id: str = "r1", *deliveries: tuple[str, str, str]) -> None:
+        """Each delivery completed the record in turn, at 1, 2, ...: the last one is the record's ``lastIndexTimestamp``."""
         from app.modules.indexing import replay_set
 
-        for event_id, delivery_id, flags in deliveries:
+        for at, (event_id, delivery_id, flags) in enumerate(deliveries, start=1):
             await replay_set.record_delivery(
-                redis, record_id, event_id=event_id, delivery_id=delivery_id or None, flags=flags, now_ms=1
+                redis, record_id, event_id=event_id, delivery_id=delivery_id or None, flags=flags, completed_at_ms=at
             )
 
-    def _completed_record_handler(self, redis) -> RecordEventHandler:
+    def _completed_record_handler(self, redis, indexed_at: int = 1) -> RecordEventHandler:
+        """A handler over a record whose last COMPLETED write was at ``indexed_at``."""
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(return_value={
             "_key": "r1", "virtualRecordId": "vr1", "contentRev": "rev-1", "mimeType": "application/pdf",
             "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value,
+            "lastIndexTimestamp": indexed_at,
         })
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
         handler.event_processor.processor.indexing_pipeline = AsyncMock()
@@ -2054,8 +2060,7 @@ class TestAlreadyIndexed:
             handler, EventTypes.UPDATE_RECORD.value, self._update(_event_id="evt-42", _delivery_id="t-0-42")
         )
 
-        assert IndexingEvent.START_DOWNLOAD not in events
-        assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+        assert events == self._ACK
         handler.event_processor.processor.indexing_pipeline.assert_not_called()
 
     @pytest.mark.asyncio
@@ -2065,9 +2070,7 @@ class TestAlreadyIndexed:
 
         # The event id alone is enough (a replay that carries no delivery id).
         handler = self._completed_record_handler(redis)
-        assert IndexingEvent.START_DOWNLOAD not in await self._until_it_starts_work(
-            handler, update, self._update(_event_id="evt-9")
-        )
+        assert await self._until_it_starts_work(handler, update, self._update(_event_id="evt-9")) == self._ACK
         # The same event id under another delivery id is not the stored delivery: it runs.
         handler = self._completed_record_handler(redis)
         assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
@@ -2124,12 +2127,12 @@ class TestAlreadyIndexed:
         handler = self._completed_record_handler(redis)
 
         # The sink remembers the delivery when the run wrote COMPLETED ...
-        await handler._replay_ref(payload).remember("r1")
+        await handler._replay_ref(payload).remember("r1", 1)
         # ... and the broker redelivers the same message.
         replay = await self._consumed(sent, "t-0-42")
         events = await self._until_it_starts_work(handler, EventTypes.UPDATE_RECORD.value, replay)
 
-        assert IndexingEvent.START_DOWNLOAD not in events
+        assert events == self._ACK
 
     @pytest.mark.asyncio
     async def test_a_message_from_an_older_producer_with_no_event_id_runs_normally(self, redis) -> None:
@@ -2138,7 +2141,7 @@ class TestAlreadyIndexed:
         assert "_event_id" not in payload
         handler = self._completed_record_handler(redis)
 
-        await handler._replay_ref(payload).remember("r1")  # nothing is remembered without an event id
+        await handler._replay_ref(payload).remember("r1", 1)  # nothing is remembered without an event id
         assert await redis.dbsize() == 0
         events = await self._until_it_starts_work(handler, EventTypes.UPDATE_RECORD.value, payload)
 
@@ -2193,20 +2196,20 @@ class TestAlreadyIndexed:
             handler, EventTypes.REINDEX_RECORD.value, self._update(_event_id="evt-50", _delivery_id="t-0-50", forceReindex=True)
         )
 
-        assert IndexingEvent.START_DOWNLOAD not in events
+        assert events == self._ACK
         handler.event_processor.processor.indexing_pipeline.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_replayed_window_of_two_completed_updates_does_no_work(self, redis) -> None:
         # U1 and U2 both completed, then a rebalance replays the window from before U1.
         await self._completed_by(redis, "r1", ("evt-10", "t-0-10", ""), ("evt-15", "t-0-15", ""))
-        handler = self._completed_record_handler(redis)
+        handler = self._completed_record_handler(redis, indexed_at=2)
 
         for delivery_id in ("t-0-10", "t-0-15"):
             events = await self._until_it_starts_work(
                 handler, EventTypes.UPDATE_RECORD.value, self._update(_event_id=delivery_id.replace("t-0-", "evt-"), _delivery_id=delivery_id)
             )
-            assert IndexingEvent.START_DOWNLOAD not in events, delivery_id
+            assert events == self._ACK, delivery_id
 
     @pytest.mark.asyncio
     async def test_a_forced_original_runs_after_a_non_forced_recovery_with_the_same_id(self, redis) -> None:
@@ -2250,7 +2253,7 @@ class TestAlreadyIndexed:
         )
         # Unreachable: the read raises.
         broken = MagicMock()
-        broken.hget = AsyncMock(side_effect=ConnectionError("down"))
+        broken.hgetall = AsyncMock(side_effect=ConnectionError("down"))
         handler = self._completed_record_handler(broken)
         assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
             handler, update, self._update(_event_id="evt-42", _delivery_id="t-0-42")
@@ -2262,6 +2265,52 @@ class TestAlreadyIndexed:
         assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
             handler, update, self._update(_event_id="evt-42", _delivery_id="t-0-42")
         )
+
+    @pytest.mark.asyncio
+    async def test_an_older_update_that_ran_again_makes_the_newer_one_run(self, redis) -> None:
+        # U1 then U2 of one record: U1's entry was never written (or was trimmed), U2's was, and a replay
+        # of the window follows. U1 is unknown, so it runs again, and it may index U1's bytes (a signed URL
+        # names that version). U2 must then run too, or the record is left on U1's content.
+        from app.modules.indexing import replay_set
+
+        await replay_set.record_delivery(redis, "r1", event_id="evt-15", delivery_id="t-0-15", flags="", completed_at_ms=2)
+        handler = self._completed_record_handler(redis, indexed_at=2)
+        assert IndexingEvent.START_DOWNLOAD in await self._until_it_starts_work(
+            handler, EventTypes.UPDATE_RECORD.value, self._update(_event_id="evt-10", _delivery_id="t-0-10")
+        )
+
+        # U1's run completes the record again; its entry is written, or that write fails as well.
+        for remembered in (True, False):
+            await redis.flushall()
+            await replay_set.record_delivery(redis, "r1", event_id="evt-15", delivery_id="t-0-15", flags="", completed_at_ms=2)
+            if remembered:
+                await replay_set.record_delivery(
+                    redis, "r1", event_id="evt-10", delivery_id="t-0-10", flags="", completed_at_ms=3
+                )
+            handler = self._completed_record_handler(redis, indexed_at=3)
+            events = await self._until_it_starts_work(
+                handler, EventTypes.UPDATE_RECORD.value, self._update(_event_id="evt-15", _delivery_id="t-0-15")
+            )
+            assert IndexingEvent.START_DOWNLOAD in events, f"U1 re-ran (entry written: {remembered}); U2 must run"
+
+    @pytest.mark.asyncio
+    async def test_a_replayed_stage_reindex_that_ran_in_full_redrives_nothing(self, redis) -> None:
+        # The first delivery found no stage state for the revision and fell back to a full reindex, which
+        # completed the record and dispatched every stage. Its replay must not redrive the stages again.
+        from app.modules.indexing import replay_set
+
+        payload = self._update(_event_id="evt-80", _delivery_id="t-0-80", forceReindex=True, stages=["classify"])
+        await self._completed_by(redis, "r1", ("evt-80", "t-0-80", replay_set.flags_of(payload)))
+        handler = self._completed_record_handler(redis)
+        ingress = MagicMock()
+        ingress.handoff_lost = AsyncMock(return_value=False)
+        ingress.redrive = AsyncMock(return_value=["classify"])
+        handler.event_processor.stage_ingress = ingress
+
+        events = await self._until_it_starts_work(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+        ingress.redrive.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_new_record_already_completed(self):

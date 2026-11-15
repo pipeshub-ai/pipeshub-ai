@@ -160,23 +160,31 @@ def replayed_delivery(
     event_type: str,
     payload: Mapping[str, Any],
     record: Mapping[str, Any],
-    stored: replay_set.StoredDelivery | None,
+    entries: Mapping[str, replay_set.StoredDelivery] | None,
 ) -> bool:
     """An exact replay of an event that completed this record, which needs no work.
 
-    ``stored`` is what the replay set holds for the event's envelope event id (``replay_set.read_entry``). The
-    replay is exact when that entry exists, the delivery id the replay carries (if any) is the stored one, and
-    the stored flags cover the replay's: a forced replay needs a forced completion, and a replay naming
-    ``stages`` needs the same stage set. A delivery id alone never makes a replay: after a broker offset
-    reset it can repeat for a different event. An optimisation only (the set may be empty, evicted or
-    unreachable).
+    ``entries`` is what the replay set holds for the record (``replay_set.read_entries``). The replay is
+    exact when the set holds the event's envelope event id, the delivery id the replay carries (if any) is
+    the stored one, and the stored flags cover the replay's: a forced replay needs a forced completion, and
+    a replay naming ``stages`` needs the same stage set. A delivery id alone never makes a replay: after a
+    broker offset reset it can repeat for a different event. The record must also still show a remembered
+    completion that the event does not postdate (``replay_set.not_older_than_the_record``): an older event
+    that ran again since may have indexed older bytes. An optimisation only (the set may be empty, evicted
+    or unreachable).
     """
-    if stored is None or not replay_candidate(event_type, payload, record):
+    if not entries or not replay_candidate(event_type, payload, record):
+        return False
+    event_id = str(payload.get(replay_set.EVENT_ID_KEY))
+    stored = entries.get(event_id)
+    if stored is None:
         return False
     delivery_id = payload.get(replay_set.DELIVERY_ID_KEY)
     if delivery_id and stored.delivery_id != str(delivery_id):
         return False
-    return replay_set.covers(stored.flags, replay_set.flags_of(payload))
+    return replay_set.covers(stored.flags, replay_set.flags_of(payload)) and replay_set.not_older_than_the_record(
+        event_id, entries, record.get("lastIndexTimestamp")
+    )
 
 
 def gating_connector_id(record: Mapping[str, Any]) -> str | None:

@@ -911,9 +911,10 @@ class SinkOrchestrator(Transformer):
         self.logger.debug(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )
-        # The write above returned true, so the delivery that ran it may be remembered. A call of its own
-        # (never part of the write): a failure only weakens the replay guard and never fails the completion.
-        await note_record_completed(record.id, self.logger)
+        # The write above returned true, so the delivery that ran it may be remembered, with the
+        # lastIndexTimestamp it wrote. A call of its own (never part of the write): a failure only weakens
+        # the replay guard and never fails the completion.
+        await note_record_completed(record.id, timestamp, self.logger)
         # The record is only searchable now, so the accessible-record map that
         # gates search is stale. Connector records arrive in bursts, so their
         # deletes are coalesced (see `on_record_indexed`).
