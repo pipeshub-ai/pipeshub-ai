@@ -2140,15 +2140,22 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self._empty_list_counted.add(file_id)
                 runs[file_id] = runs.get(file_id, 0) + 1
                 await self._save_empty_list_runs(runs)
-            if runs[file_id] < MAX_HELD_RUNS:
+            if runs.get(file_id, 0) < MAX_HELD_RUNS:
                 return None
+        # A suspended owner keeps no grant: their access was taken off when they were suspended.
         proven = [
             Permission(email=o["emailAddress"], type=PermissionType.OWNER, entity_type=EntityType.USER)
-            for o in metadata.get("owners") or [] if o.get("emailAddress")
+            for o in metadata.get("owners") or []
+            if o.get("emailAddress") and not self._is_inactive_email(o["emailAddress"])
         ]
         # Every reader who opened it this run, not only this one: each read replaces the stored list.
         readers = self._empty_list_readers.setdefault(file_id, set())
-        if user_email:
+        # A limited folder its reader cannot list the children of shows them its name, not its content
+        # (https://developers.google.com/workspace/drive/api/guides/limited-expansive-access): no grant.
+        metadata_only = bool(metadata.get("inheritedPermissionsDisabled")) and not (
+            (metadata.get("capabilities") or {}).get("canListChildren")
+        )
+        if user_email and not metadata_only:
             readers.add(user_email.lower())
         owners = {(p.email or "").lower() for p in proven}
         proven += [
@@ -2159,6 +2166,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             f"The permission list of {file_id} came back empty {MAX_HELD_RUNS} runs in a row; only its owner and its "
             "reader keep access until a list can be read"
         )
+        # Read again by id next run, until a real list is read; not a failure, so the feed moves on.
+        if (failed := _failed_items.get()) is not None:
+            failed.add(file_id)
         return DrivePermissionBatch(proven, saw_permission_details=False), False, []
 
     async def _load_empty_list_runs(self) -> dict[str, int]:
@@ -2178,6 +2188,9 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _forget_empty_list_runs(self, file_id: str) -> None:
         async with self._empty_list_lock:
+            # A later empty list in this run counts again, from nothing.
+            self._empty_list_counted.discard(file_id)
+            self._empty_list_readers.pop(file_id, None)
             runs = await self._load_empty_list_runs()
             if runs.pop(file_id, None) is not None:
                 await self._save_empty_list_runs(runs)
@@ -4678,7 +4691,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     if read is None:
                         raise
                     new_permissions, is_fallback_permissions, individually_shared_emails = read
-                if list_read and not item_drive_id and existing_record is not None and not is_fallback_permissions:
+                if list_read and not is_fallback_permissions:  # a new item may have been counted too
                     await self._forget_empty_list_runs(file_id)
                 member_reads_through_drive = False
                 reader_lists = bool((metadata.get("capabilities") or {}).get("canShare")) or (
