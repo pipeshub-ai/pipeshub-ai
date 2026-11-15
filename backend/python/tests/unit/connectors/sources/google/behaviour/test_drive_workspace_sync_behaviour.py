@@ -3820,6 +3820,75 @@ async def test_more_cuts_than_the_cap_never_cost_the_feed_its_position(
     assert all((dana, "USER", "READ") in ws.grants(i) for i in items), "every cut item is read again in the end"
 
 
+async def test_a_checkpoint_write_that_fails_after_the_queue_write_loses_no_item(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    monkeypatch.setattr(drive_connector, "MAX_FAILED_ITEMS", 1)
+    dana = "dana@example.com"
+    ws.world.add_user(dana)
+    items = ["f1", "f2", "f3"]
+    for item in items:
+        ws.world.add_item(item, f"{item}.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE), reader(dana)])
+    await ws.sync()
+    for email in (ALICE, BOB):
+        ws.sync_points.sync_points.pop(next(
+            k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[email].user_id}")
+        ))
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern == r"^/drive/v3/files/([^/]+)/permissions$")
+    ws.http.route("GET", r"/drive/v3/files/([^/]+)/permissions", lambda req: (
+        {"permissions": []} if req.path in {f"/drive/v3/files/{i}/permissions" for i in items} else real(req)
+    ))
+    for _ in range(MAX_HELD_RUNS):  # three cut, one on each checkpoint, two on each queue
+        await ws.sync()
+    _lists_read_again(ws)
+
+    # The next run's checkpoint writes fail once each, after their queue was written.
+    store, write = ws.sync_points, ws.sync_points.update_sync_point
+    failed_once: set[str] = set()
+
+    async def failing(key: str, data: dict) -> None:
+        if "/users/" in key and drive_connector.FEED_FAILED_ITEMS in data and key not in failed_once:
+            failed_once.add(key)
+            raise RuntimeError("store down")
+        await write(key, data)
+
+    monkeypatch.setattr(store, "update_sync_point", failing)
+    with contextlib.suppress(Exception):
+        await ws.sync()
+    monkeypatch.setattr(store, "update_sync_point", write)
+    for _ in range(len(items) + 1):
+        await ws.sync()
+
+    assert all((dana, "USER", "READ") in ws.grants(i) for i in items), "no item fell between the queue and the checkpoint"
+
+
+async def test_a_queue_write_that_fails_part_way_leaves_the_earlier_queue_whole(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+
+    monkeypatch.setattr(drive_connector, "MAX_FAILED_ITEMS", 1)
+    await ws.sync()
+    connector, store = ws.connector, ws.sync_points
+    await connector._write_id_queue("q", ["a", "b", "c"])
+    write = store.update_sync_point
+
+    async def failing(key: str, data: dict) -> None:
+        if key.endswith("q") and "parts" in data:  # the first key's write, after the new parts
+            raise RuntimeError("store down")
+        await write(key, data)
+
+    monkeypatch.setattr(store, "update_sync_point", failing)
+    with contextlib.suppress(RuntimeError):
+        await connector._write_id_queue("q", ["x", "y", "z"])
+    monkeypatch.setattr(store, "update_sync_point", write)
+
+    assert await connector._read_id_queue("q") == ["a", "b", "c"]
+
+
 async def test_a_reader_who_lost_the_item_is_no_evidence_for_a_later_cut_in_the_run(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
     from app.connectors.sources.google.drive.utils.folder_filter_utils import (
