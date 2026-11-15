@@ -34,34 +34,33 @@ class MetricsMiddleware:
             await self.app(scope, receive, send)
             return
         start = time.perf_counter()
-        elapsed: float | None = None
-        status_code = 500
+        recorded = False
 
-        async def send_and_record_status(message: Message) -> None:
-            nonlocal elapsed, status_code
-            if message["type"] == "http.response.start":
-                # Latency to the response's start, not to its last byte: a stream's length is not the route's latency.
-                elapsed = time.perf_counter() - start
-                status_code = message["status"]
-            await send(message)
-
-        try:
-            await self.app(scope, receive, send_and_record_status)
-        finally:
-            if elapsed is None:
-                elapsed = time.perf_counter() - start
+        def record(status_code: int) -> None:
+            nonlocal recorded
+            recorded = True
             request = Request(scope)
             route = bound_route(route_template(scope))
-            org = self._org(request)
-            domain = self._domain(request)
             # Never reset counters — push cumulative values, let the TSDB
             # compute rate()/increase().
             HTTP_REQUESTS.inc(
-                self.service_name, route, request.method, str(status_code), org, domain
+                self.service_name, route, request.method, str(status_code), self._org(request), self._domain(request)
             )
             HTTP_REQUEST_DURATION.observe(
-                self.service_name, route, request.method, value=elapsed
+                self.service_name, route, request.method, value=time.perf_counter() - start
             )
+
+        async def send_and_record(message: Message) -> None:
+            # At the response's start: a stream left open for minutes is still in every push meanwhile.
+            if message["type"] == "http.response.start" and not recorded:
+                record(message["status"])
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_and_record)
+        finally:
+            if not recorded:  # it failed (or was cancelled) before a response started
+                record(500)
 
     @staticmethod
     def _org(request: Request) -> str:

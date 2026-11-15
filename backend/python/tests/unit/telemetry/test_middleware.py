@@ -1,5 +1,6 @@
 """Unit tests for app.telemetry.middleware — the ASGI metrics middleware."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -143,6 +144,35 @@ class TestDispatch:
         args, kwargs = duration_mock.observe.call_args
         assert args == ("query_service", "/api/v1/search", "POST")
         assert kwargs["value"] >= 0
+
+    async def test_a_response_still_streaming_is_already_counted(self):
+        """Recorded when the response starts, as before: a long stream is in every push while it runs."""
+        request = make_request(
+            path="/api/v1/stream", route=SimpleNamespace(path_format="/api/v1/stream", path="/api/v1/stream")
+        )
+        body_may_go, started = asyncio.Event(), asyncio.Event()
+
+        async def app(_scope, _receive, send) -> None:
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            started.set()
+            await body_may_go.wait()
+            await send({"type": "http.response.body", "body": b"done"})
+
+        with (
+            patch("app.telemetry.middleware.HTTP_REQUESTS") as requests_mock,
+            patch("app.telemetry.middleware.HTTP_REQUEST_DURATION") as duration_mock,
+        ):
+            call = asyncio.ensure_future(self._call(request.scope, app))
+            await started.wait()
+            requests_mock.inc.assert_called_once_with(
+                "query_service", "/api/v1/stream", "GET", "200", "unknown", "unknown"
+            )
+            duration_mock.observe.assert_called_once()
+            body_may_go.set()
+            await call
+
+        requests_mock.inc.assert_called_once()
+        duration_mock.observe.assert_called_once()
 
     async def test_records_500_when_handler_raises(self):
         request = make_request(
