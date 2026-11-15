@@ -3973,6 +3973,62 @@ async def test_a_new_item_below_a_folder_trashed_in_the_same_run_is_not_written(
     assert "top" not in ws.records.records, "nor its folders, as placeholders above it"
 
 
+async def test_an_item_read_again_by_id_then_deleted_in_the_same_run_is_not_written(ws: Workspace) -> None:
+    await ws.sync()
+    ws.world.add_item("n", "n.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[ALICE].user_id}"))
+    ws.sync_points.sync_points[key]["feed_failed_items"] = ["n"]
+    # Created and deleted for good in one sync: her read by id comes first, then her feed reports it removed.
+    done = _after_permission_read_by(ws, "n", ALICE, lambda: ws.world.delete("n"))
+    bob = ws.world.users.pop(BOB)  # only Alice's run this time, so no later run of Bob's tidies it up
+    try:
+        await ws.sync()
+    finally:
+        ws.world.users[BOB] = bob
+
+    assert done, "her read by id came first"
+    assert "n" not in ws.records.records, "nobody can open it any more: not written, for anyone"
+
+
+async def test_a_shared_drive_item_read_again_by_id_then_deleted_in_the_same_run_is_not_written(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import FAILED_ITEMS
+
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer"})
+    await ws.sync()
+    ws.world.add_item("s", "s.txt", parent="sd-1")
+    user_id = ws.world.users[ALICE].user_id
+    key = next(k for k in ws.sync_points.sync_points if k.endswith("_sd-1") and user_id in k)
+    ws.sync_points.sync_points[key][FAILED_ITEMS] = ["s"]
+    done = _after_permission_read_by(ws, "s", ALICE, lambda: ws.world.delete("s"))
+    await ws.sync()
+
+    assert done, "her read by id came first"
+    assert "s" not in ws.records.records, "the drive's feed said removed, and nobody can open it: not written"
+
+
+async def test_a_new_item_below_a_child_kept_when_its_removed_folder_went_is_written(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import FAILED_ITEMS
+
+    erin = "erin@example.com"
+    ws.world.add_user(erin)
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", erin: "organizer"})
+    ws.world.folder("d", "Old", parent="sd-1")
+    ws.world.folder("k", "Kept", parent="d")
+    await ws.sync()
+    ws.world.add_item("n", "n.txt", parent="k")
+    user_id = ws.world.users[ALICE].user_id
+    key = next(k for k in ws.sync_points.sync_points if k.endswith("_sd-1") and user_id in k)
+    ws.sync_points.sync_points[key][FAILED_ITEMS] = ["n"]
+    # The folder goes; the folder below it is still open (here: the source deletes only the folder), so it is kept.
+    done = _after_permission_read_by(ws, "n", ALICE, lambda: ws.world.delete("d"))
+    await ws.sync()
+
+    assert done, "her read by id came first"
+    assert "d" not in ws.records.records
+    assert "k" in ws.records.records, "still open: kept"
+    assert "n" in ws.records.records, "below the kept folder: written"
+
+
 async def test_a_folder_the_reporter_lost_but_another_opens_keeps_its_new_child_for_the_other(ws: Workspace) -> None:
     erin = "erin@example.com"
     ws.world.add_user(erin)
