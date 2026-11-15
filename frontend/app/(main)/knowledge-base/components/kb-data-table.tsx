@@ -22,6 +22,7 @@ import { TableHeaderCell } from './kb-list-view';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { PAGE_PADDING_X } from '@/app/components/ui/responsive';
 import { kbCol, kbColMin, useKbColumnWidths } from './kb-column-widths';
+import { KbPaginationFooter } from './kb-pagination';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
@@ -49,6 +50,7 @@ interface KbDataTableProps {
     hasPrev: boolean;
     nextCursor?: string | null;
     prevCursor?: string | null;
+    totalCapped?: boolean;
   };
   permissions?: NodePermissions;
   currentNodeName?: string;
@@ -329,67 +331,93 @@ export function KbDataTable({
     <Flex direction="column" style={{ flex: 1, overflow: 'hidden', background: 'linear-gradient(to bottom, var(--olive-2), var(--olive-1))' }}>
       {/* Conditional view rendering based on viewMode */}
       {items.length === 0 && !showSkeleton ? (
-        <Flex
-          align="center"
-          justify="center"
-          direction="column"
-          gap="4"
-          style={{ minHeight: '400px', flex: 1 }}
-        >
-          {/* Dynamic heading based on mode, filters, and current node name */}
-          <Flex direction="column" align="center" gap="1">
-            {!hasSearchQuery && !hasActiveFilters && <EmptyIcon size={56} color="var(--slate-12)" />}
-            {(hasSearchQuery || hasActiveFilters) && <NotFoundIcon size={56} color="var(--slate-12)" />}
-            <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              {hasActiveFilters || hasSearchQuery
-                ? t('message.noResults')
-                : pageViewMode === 'all-records'
-                  ? allRecordsSidebarSelection?.type === 'collection'
-                    ? t('kb.namedEmpty', { name: allRecordsSidebarSelection.name })
-                    : t('kb.noRecords')
-                  : currentNodeName
-                    ? t('kb.namedEmpty', { name: currentNodeName })
-                    : t('kb.folderEmpty')
-              }
-            </Text>
-            <Text size="2" style={{ color: 'var(--slate-10)', textAlign: 'center', maxWidth: 420, padding: `0 ${PAGE_PADDING_X}` }}>
-              {hasSearchQuery
-                ? t('kb.searchEmptyHint')
-                : hasActiveFilters
-                  ? t('kb.adjustFiltersHint')
+        <>
+          <Flex
+            align="center"
+            justify="center"
+            direction="column"
+            gap="4"
+            data-testid="kb-empty-state"
+            // It shrinks with the viewport (and scrolls) so the pagination footer under it is never clipped by the overflow-hidden parent.
+            style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}
+          >
+            {/* Dynamic heading based on mode, filters, and current node name */}
+            <Flex direction="column" align="center" gap="1">
+              {!hasSearchQuery && !hasActiveFilters && <EmptyIcon size={56} color="var(--slate-12)" />}
+              {(hasSearchQuery || hasActiveFilters) && <NotFoundIcon size={56} color="var(--slate-12)" />}
+              <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                {hasActiveFilters || hasSearchQuery
+                  ? t('message.noResults')
                   : pageViewMode === 'all-records'
                     ? allRecordsSidebarSelection?.type === 'collection'
-                      ? t('kb.addFromCollectionsHint')
-                      : t('kb.adjustFiltersHint')
-                    : permissions?.canCreateFolders ? t('kb.addFilesHint') : ''
-              }
-            </Text>
-          </Flex>
+                      ? t('kb.namedEmpty', { name: allRecordsSidebarSelection.name })
+                      : t('kb.noRecords')
+                    : currentNodeName
+                      ? t('kb.namedEmpty', { name: currentNodeName })
+                      : t('kb.folderEmpty')
+                }
+              </Text>
+              <Text size="2" style={{ color: 'var(--slate-10)', textAlign: 'center', maxWidth: 420, padding: `0 ${PAGE_PADDING_X}` }}>
+                {hasSearchQuery
+                  ? t('kb.searchEmptyHint')
+                  : hasActiveFilters
+                    ? t('kb.adjustFiltersHint')
+                    : pageViewMode === 'all-records'
+                      ? allRecordsSidebarSelection?.type === 'collection'
+                        ? t('kb.addFromCollectionsHint')
+                        : t('kb.adjustFiltersHint')
+                      : permissions?.canCreateFolders ? t('kb.addFilesHint') : ''
+                }
+              </Text>
+            </Flex>
 
-          {hasSearchQuery && onClearSearch && (
-            <Button variant="outline" color="gray" size="2" onClick={onClearSearch}>
-              <MaterialIcon name="close" size={16} />
-              {t('kb.clearSearch')}
-            </Button>
-          )}
+            {hasSearchQuery && onClearSearch && (
+              <Button variant="outline" color="gray" size="2" onClick={onClearSearch}>
+                <MaterialIcon name="close" size={16} />
+                {t('kb.clearSearch')}
+              </Button>
+            )}
 
-          {/* Action buttons - only show in collections mode when not filtered */}
-          {pageViewMode === 'collections' && hasBreadcrumbs && !hasActiveFilters && !hasSearchQuery && (
-            <Flex gap="2" align="center">
-              {/* Show Create Folder if callback is provided and not explicitly denied */}
-              {onCreateFolder && (permissions?.canCreateFolders !== false) && (
-                <Button
-                  variant="outline"
-                  color="gray"
-                  size="2"
-                  onClick={onCreateFolder}
-                >
-                  <MaterialIcon name="create_new_folder" size={16} />
-                  {t('kb.createFolder')}
-                </Button>
-              )}
-              {/* Show Upload if callback is provided and not explicitly denied */}
-              {onUpload && (permissions?.canUpload !== false) && (
+            {/* Action buttons - only show in collections mode when not filtered */}
+            {pageViewMode === 'collections' && hasBreadcrumbs && !hasActiveFilters && !hasSearchQuery && (
+              <Flex gap="2" align="center">
+                {/* Show Create Folder if callback is provided and not explicitly denied */}
+                {onCreateFolder && (permissions?.canCreateFolders !== false) && (
+                  <Button
+                    variant="outline"
+                    color="gray"
+                    size="2"
+                    onClick={onCreateFolder}
+                  >
+                    <MaterialIcon name="create_new_folder" size={16} />
+                    {t('kb.createFolder')}
+                  </Button>
+                )}
+                {/* Show Upload if callback is provided and not explicitly denied */}
+                {onUpload && (permissions?.canUpload !== false) && (
+                  <Button
+                    variant="solid"
+                    size="2"
+                    style={{
+                      backgroundColor: 'var(--accent-9)',
+                      color: 'white'
+                    }}
+                    onClick={onUpload}
+                  >
+                    <MaterialIcon name="upload" size={16} />
+                    {t('action.upload')}
+                  </Button>
+                )}
+              </Flex>
+            )}
+
+            {/* All Records collection empty state button */}
+            {pageViewMode === 'all-records' &&
+             !hasActiveFilters &&
+             !hasSearchQuery &&
+             allRecordsSidebarSelection?.type === 'collection' &&
+             onGoToCollection && (
+              <Flex gap="2" align="center">
                 <Button
                   variant="solid"
                   size="2"
@@ -397,36 +425,18 @@ export function KbDataTable({
                     backgroundColor: 'var(--accent-9)',
                     color: 'white'
                   }}
-                  onClick={onUpload}
+                  onClick={onGoToCollection}
                 >
-                  <MaterialIcon name="upload" size={16} />
-                  {t('action.upload')}
+                  {t('kb.goToCollections')}
                 </Button>
-              )}
-            </Flex>
+              </Flex>
+            )}
+          </Flex>
+          {/* A page can be empty with more beyond it (the server stopped looking for the moment): keep the way on, and back. */}
+          {pagination && onCursorChange && (pagination.hasNext || pagination.hasPrev) && (
+            <KbPaginationFooter pagination={pagination} onCursorChange={onCursorChange} onLimitChange={onLimitChange} />
           )}
-
-          {/* All Records collection empty state button */}
-          {pageViewMode === 'all-records' &&
-           !hasActiveFilters &&
-           !hasSearchQuery &&
-           allRecordsSidebarSelection?.type === 'collection' &&
-           onGoToCollection && (
-            <Flex gap="2" align="center">
-              <Button
-                variant="solid"
-                size="2"
-                style={{
-                  backgroundColor: 'var(--accent-9)',
-                  color: 'white'
-                }}
-                onClick={onGoToCollection}
-              >
-                {t('kb.goToCollections')}
-              </Button>
-            </Flex>
-          )}
-        </Flex>
+        </>
       ) : viewMode === 'grid' ? (
         <KbGridView
           items={items}

@@ -199,6 +199,10 @@ describe('OAuthScopeNames', () => {
 
   // Code graph
   describe('Code graph scopes', () => {
+    it('should have CODE_WRITE as "code:write"', () => {
+      expect(OAuthScopeNames.CODE_WRITE).to.equal('code:write');
+    });
+
     it('should have CODE_READ as "code:read"', () => {
       expect(OAuthScopeNames.CODE_READ).to.equal('code:read');
     });
@@ -251,8 +255,8 @@ describe('OAuthScopeNames', () => {
 
   // Structural tests
   describe('structural checks', () => {
-    it('should have exactly 49 scope entries', () => {
-      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(49);
+    it('should have exactly 50 scope entries', () => {
+      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(50);
     });
 
     it('should contain only the expected keys', () => {
@@ -311,6 +315,7 @@ describe('OAuthScopeNames', () => {
         'CONNECTOR_DELETE',
         // Code graph
         'CODE_READ',
+        'CODE_WRITE',
         // Configuration
         'CONFIG_READ',
         'CONFIG_WRITE',

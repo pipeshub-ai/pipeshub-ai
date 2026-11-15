@@ -994,3 +994,37 @@ async def test_switched_off_demo_apps_leave_the_gate(logger, provider, config_se
     # No grants are handed over: the page reads its connector's own, behind this gate.
     assert kwargs["granted_ids"] is None and kwargs.get("grants_by_connector") is None
     assert result.success is False and result.error == "Node not found"
+
+
+# --------------------------------------------------------------- sort by origin
+
+@pytest.mark.asyncio
+async def test_an_origin_sort_reaches_the_root_query_and_stays_in_its_cursor(service, provider) -> None:
+    """A sort the service does not map falls back to name, which is not what was asked for."""
+    provider.get_knowledge_hub_root_nodes_v2.return_value = envelope(
+        [row("app1", "App One", node_type="app")], total=2, has_more=True,
+    )
+    first = await service.get_nodes(user_id="u1", org_id="o1", limit=1, sort_by="origin", sort_order="asc")
+
+    assert first.success is True
+    assert provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs["sort_field"] == "origin"
+    assert first.filters.applied.sortBy == "origin"
+
+    after = await service.get_nodes(user_id="u1", org_id="o1", limit=1, cursor=first.pagination.nextCursor)
+    assert after.success is True
+    assert provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs["sort_field"] == "origin"
+    assert after.filters.applied.sortBy == "origin"
+
+
+@pytest.mark.asyncio
+async def test_an_origin_sort_reaches_the_folder_query(service, provider) -> None:
+    provider.get_knowledge_hub_connector_page_v3.return_value = page_of(
+        [row("r1", "Record")], scope=admitted_scope(),
+    )
+    result = await service.get_nodes(
+        user_id="u1", org_id="o1", parent_id="p1", parent_type="recordGroup",
+        sort_by="origin", sort_order="desc",
+    )
+    assert result.success is True
+    kwargs = provider.get_knowledge_hub_connector_page_v3.call_args.kwargs
+    assert (kwargs["sort_field"], kwargs["sort_dir"]) == ("origin", "DESC")

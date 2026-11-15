@@ -11,6 +11,7 @@ factories). Covered indirectly today via the chat-mode integration tests.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -94,30 +95,35 @@ class TestSandboxToolsetGate:
             yield
 
     @pytest.mark.usefixtures("_only_coding_sandbox")
-    async def test_unset_mode_skips_sandbox_toolset_with_warning(self, monkeypatch) -> None:
+    async def test_unset_mode_skips_sandbox_toolset_with_warning(self, monkeypatch, caplog) -> None:
+        from app.utils import logging_fields
+
+        monkeypatch.setattr(logging_fields, "_log_once_last", {})
         monkeypatch.delenv("SANDBOX_MODE", raising=False)
         context = _make_context()
 
-        registry = await PipesHubToolLoader().load(context)
+        with caplog.at_level(logging.DEBUG):
+            registry = await PipesHubToolLoader().load(context)
+            await PipesHubToolLoader().load(_make_context())
 
         assert not any(name.startswith("coding_sandbox") for name in registry.names())
-        warning_calls = [
-            c for c in context.tool_state["logger"].warning.call_args_list
-            if "Skipping sandbox toolsets" in str(c.args[0])
-        ]
-        assert len(warning_calls) == 1
+        warnings = [r for r in caplog.records if r.getMessage() == "code_execution.unavailable"]
+        assert [r.levelno for r in warnings] == [logging.WARNING]
 
     @pytest.mark.usefixtures("_only_coding_sandbox")
-    async def test_local_mode_without_dev_flag_skips_sandbox_toolset(self, monkeypatch) -> None:
+    async def test_local_mode_without_dev_flag_skips_sandbox_toolset(self, monkeypatch, caplog) -> None:
+        from app.utils import logging_fields
+
+        monkeypatch.setattr(logging_fields, "_log_once_last", {})
         monkeypatch.setenv("SANDBOX_MODE", "local")
         monkeypatch.delenv("SANDBOX_ALLOW_LOCAL", raising=False)
         context = _make_context()
 
-        registry = await PipesHubToolLoader().load(context)
+        with caplog.at_level(logging.DEBUG):
+            registry = await PipesHubToolLoader().load(context)
 
         assert not any(name.startswith("coding_sandbox") for name in registry.names())
-        warnings = [str(c.args) for c in context.tool_state["logger"].warning.call_args_list]
-        assert any("SANDBOX_ALLOW_LOCAL" in w for w in warnings)
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == ["code_execution.unavailable"]
 
     @pytest.mark.usefixtures("_only_coding_sandbox")
     async def test_explicit_local_mode_loads_sandbox_toolset(self, monkeypatch) -> None:

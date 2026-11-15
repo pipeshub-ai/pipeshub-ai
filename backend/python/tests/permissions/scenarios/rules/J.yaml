@@ -17,7 +17,7 @@
     verdicts:
       u: {i: admit}
   tags: [rules, jira]
-  comment: jira_issue_security.py:627-634 (apply_issue_access_settled, STRICT)
+  comment: jira_issue_security.py:699-717 (apply_issue_access_settled, project_open, STRICT)
 - id: RULE-J02
   title: 'Jira: issue with a level, U is a level holder, Browse granted'
   source: rule cases R1-R13 (spec)
@@ -96,7 +96,7 @@
     verdicts:
       u: {i: deny}
   tags: [rules, jira]
-  comment: jira_issue_security.py:516-519 (ANYONE_AUTHENTICATED_SCOPE)
+  comment: jira_issue_security.py:559-567 (ANYONE_AUTHENTICATED_SCOPE)
 - id: RULE-J06
   title: 'Jira: sub-task of a leveled parent, U holds the level (both granted)'
   source: rule cases R1-R13 (spec)
@@ -119,7 +119,7 @@
     verdicts:
       u: {sub: admit}
   tags: [rules, jira]
-  comment: jira_issue_security.py:507-509 (group holders)
+  comment: jira_issue_security.py:553-555 (group holders)
 - id: RULE-J07
   title: 'Jira: sub-task granted but parent issue not (parent''s level excludes U)'
   source: rule cases R1-R13 (spec)
@@ -182,4 +182,69 @@
     verdicts:
       u: {att: deny}
   tags: [rules, jira]
-  comment: apply_attachment_access, jira_issue_security.py:700-704; U not in the level.
+  comment: apply_attachment_access, jira_issue_security.py:781-787; U not in the level.
+- id: RULE-J10
+  title: 'Jira: top-level issue, U is its reporter and Browse is granted to the reporter only'
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: i, kind: record, connector: A, rule: OPEN, parents: [proj], inherits: [proj], belongs: [proj]}
+      - {id: att, kind: record, connector: A, rule: OPEN, parents: [{id: i, rel: ATTACHMENT}], inherits: [i], belongs: [proj]}
+    grants:
+      - [u, i]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {i: admit, att: admit}
+  tags: [rules, jira]
+  comment: "jira_issue_security.py:699-717 (project_open with browse_holder_grants). U has no grant on the project, the direct grant must be enough, so the issue is OPEN, not STRICT."
+- id: RULE-J11
+  title: 'Jira: sub-task of an issue U reads as its reporter, U is not the sub-task''s reporter'
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: i, kind: record, connector: A, rule: OPEN, parents: [proj], inherits: [proj], belongs: [proj]}
+      - {id: sub, kind: record, connector: A, rule: STRICT, parents: [i], inherits: [i], belongs: [proj]}
+    grants:
+      - [u, i]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {i: admit, sub: deny}
+  tags: [rules, jira]
+  comment: A child follows its parent and gets no per-issue grant (jira_issue_security.py:699-717), so it stays STRICT and needs the project too.
+- id: RULE-J12
+  title: 'Jira: top-level issue, Browse granted to the reporter only, U is not its reporter'
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+      - {id: r}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: i, kind: record, connector: A, rule: OPEN, parents: [proj], inherits: [proj], belongs: [proj]}
+    grants:
+      - [r, i]
+    gates:
+      - [u, A]
+      - [r, A]
+  expect:
+    verdicts:
+      u: {i: deny}
+      r: {i: admit}
+  tags: [rules, jira]
+  comment: The reporter's direct grant opens the issue for the reporter alone.

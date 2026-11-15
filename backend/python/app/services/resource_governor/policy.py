@@ -15,7 +15,7 @@ import math
 import os
 import statistics
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from app.modules.parsers.excel.limits import excel_document_memory_bytes
 from app.services.resource_governor.models import (
@@ -80,6 +80,47 @@ def heavy_parse_working_set_gb() -> float:
             )
         return HEAVY_PARSE_WORKING_SET_GB
     return max(HEAVY_PARSE_WORKING_SET_GB, excel_gb)
+
+
+# The parent's own growth while a PdfPlumber parse runs (+0.10 to +0.19 GiB measured over the idle
+# parent, 1.3 x the largest). It is the heavy permit's working set only where lane admission
+# charges the worker's memory (``resolve_heavy_working_set``).
+PDF_PARENT_WORKING_SET_GB = 0.25
+DOCLING_WORKING_SET_DEFAULT_GB = 1.5
+
+
+def docling_working_set_gb() -> float:
+    """Resident GiB one local Docling conversion holds (``GOVERNOR_DOCLING_WORKING_SET_GB``).
+
+    The Docling service's heavy permit and a local DOCX's excess are sized from this, never from
+    the PdfPlumber figure."""
+    return _env_float("GOVERNOR_DOCLING_WORKING_SET_GB", DOCLING_WORKING_SET_DEFAULT_GB, low=0.1, high=64.0)
+
+
+class HeavyWorkingSet(NamedTuple):
+    gb: float
+    source: str  # explicit | measured | fallback | docling
+
+    def as_dict(self) -> dict[str, object]:
+        return {"gb": self.gb, "source": self.source}
+
+
+def resolve_heavy_working_set(*, measured_base: bool = False, docling_gb: float | None = None) -> HeavyWorkingSet:
+    """The working set a heavy permit assumes, by the order of LLD 2.22.
+
+    1. an operator's ``GOVERNOR_HEAVY_PARSE_WORKING_SET_GB``, used exactly;
+    2. the Docling service's own figure (*docling_gb*), when the caller is that service;
+    3. the measured PdfPlumber parent base, only where *measured_base* says the worker's memory is
+       charged by a shared lane budget;
+    4. the old ``max(1.5, excel document)``.
+    """
+    if _heavy_parse_working_set_is_explicit():
+        return HeavyWorkingSet(heavy_parse_working_set_gb(), "explicit")
+    if docling_gb is not None:
+        return HeavyWorkingSet(docling_gb, "docling")
+    if measured_base:
+        return HeavyWorkingSet(PDF_PARENT_WORKING_SET_GB, "measured")
+    return HeavyWorkingSet(heavy_parse_working_set_gb(), "fallback")
 
 
 # Slots per CPU per tier. A heavy parse is CPU-bound end to end (Docling
@@ -325,7 +366,9 @@ def _worker_share(total: int, worker_count: int) -> int:
     return total if workers == 1 else max(1, total // workers)
 
 
-def heavy_memory_cap(snap: ResourceSnapshot, worker_count: int = 1) -> int | None:
+def heavy_memory_cap(
+    snap: ResourceSnapshot, worker_count: int = 1, working_set_gb: float | None = None
+) -> int | None:
     """How many heavy parses this process's share of the *currently free*
     memory can hold, or ``None`` when the cgroup limit is unknown.
 
@@ -341,10 +384,13 @@ def heavy_memory_cap(snap: ResourceSnapshot, worker_count: int = 1) -> int | Non
     free_gb = _free_memory_gb(snap)
     if free_gb is None:
         return None
-    return _worker_share(max(1, int(free_gb / heavy_parse_working_set_gb())), worker_count)
+    working_set = heavy_parse_working_set_gb() if working_set_gb is None else working_set_gb
+    return _worker_share(max(1, int(free_gb / working_set)), worker_count)
 
 
-def cgroup_heavy_parse_limit(snap: ResourceSnapshot, fleet: Ceilings) -> int:
+def cgroup_heavy_parse_limit(
+    snap: ResourceSnapshot, fleet: Ceilings, working_set_gb: float | None = None
+) -> int:
     """Heavy parses the whole cgroup may run at once: the heavy budget for all
     of its worker processes, held to what free memory holds.
 
@@ -352,7 +398,7 @@ def cgroup_heavy_parse_limit(snap: ResourceSnapshot, fleet: Ceilings) -> int:
     a parse already running is not counted back into free memory, and a
     smaller value never revokes one.
     """
-    mem_cap = heavy_memory_cap(snap)
+    mem_cap = heavy_memory_cap(snap, working_set_gb=working_set_gb)
     return max(1, fleet.heavy if mem_cap is None else min(fleet.heavy, mem_cap))
 
 
@@ -685,12 +731,16 @@ def ceiling_for(pool: Pool, ceilings: Ceilings) -> int:
 
 
 def _target_for(
-    pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings, worker_count: int = 1
+    pool: Pool,
+    snap: ResourceSnapshot,
+    ceilings: Ceilings,
+    worker_count: int = 1,
+    heavy_working_set_gb: float | None = None,
 ) -> int:
     """Section 4 "Targets per sample" — the value growth ramps toward, never
     a value jumped to directly."""
     if pool is Pool.HEAVY_PARSE:
-        mem_cap = heavy_memory_cap(snap, worker_count)
+        mem_cap = heavy_memory_cap(snap, worker_count, heavy_working_set_gb)
         bound = ceilings.heavy if mem_cap is None else min(ceilings.heavy, mem_cap)
         # Clamped to 1, not to floor_for: the memory gate must be able to
         # hold heavy *below* its warm-start floor when the cgroup genuinely
@@ -937,11 +987,12 @@ def _next_pool_limit(
     interval: float,
     feedback: FeedbackWindow | None = None,
     worker_count: int = 1,
+    heavy_working_set_gb: float | None = None,
 ) -> tuple[int, PoolState]:
     ceiling = ceiling_for(pool, ceilings)
     floor = pressure_floor(pool, ceiling, worker_count)
     shrink_step = COUNT_POOL_STEP
-    target = _target_for(pool, snap, ceilings, worker_count)
+    target = _target_for(pool, snap, ceilings, worker_count, heavy_working_set_gb)
     pressure = snap.mem_pressure
     # Asymmetric on purpose: shrink on the cgroup's true occupancy, grow on
     # the baseline-credited reading. Braking on the credited reading pushes
@@ -1068,6 +1119,7 @@ def next_limits(
     interval: float = SAMPLE_INTERVAL_SECONDS,
     feedback: FeedbackWindow | None = None,
     worker_count: int = 1,
+    heavy_working_set_gb: float | None = None,
 ) -> tuple[Limits, ControllerState]:
     """Advance every pool's limit by at most one step toward its target.
 
@@ -1085,7 +1137,7 @@ def next_limits(
         pool_demand = demand.get(pool, PoolDemand.empty())
         new_limit, new_state = _next_pool_limit(
             pool, current.get(pool), snap, ceilings, state.get(pool), pool_demand, now, interval,
-            feedback=feedback, worker_count=worker_count,
+            feedback=feedback, worker_count=worker_count, heavy_working_set_gb=heavy_working_set_gb,
         )
         new_values[pool] = new_limit
         new_states[pool] = new_state

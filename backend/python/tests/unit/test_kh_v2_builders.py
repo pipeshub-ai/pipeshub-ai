@@ -519,6 +519,15 @@ def test_the_status_reason_travels_with_the_row(
         assert {"indexingStatus", "reason"} <= fields, sorted(fields)
 
 
+def test_embedding_progress_travels_with_the_row(
+    neo4j: Neo4jProvider, arango: ArangoHTTPProvider
+) -> None:
+    """The list shows 'Embedding 340 / 1,200 chunks' from these two counts."""
+    for text in (neo4j._kh_v2_projection_cypher(), arango._kh_v2_projection_aql()):
+        fields = _projection_fields(text)
+        assert {"embedDone", "embedTotal"} <= fields, sorted(fields)
+
+
 def test_the_comparator_output_is_returned(
     neo4j: Neo4jProvider, arango: ArangoHTTPProvider
 ) -> None:

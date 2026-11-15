@@ -6,6 +6,7 @@ import pytest
 
 from app.web.chain import ChainFailed, Cooldowns
 from app.web.container import (
+    NoSearchProvider,
     UnknownSearchProvider,
     build_web_services,
     search_providers,
@@ -118,13 +119,22 @@ class TestFetch:
 
 
 class TestContainer:
-    def test_default_is_the_free_chain(self) -> None:
+    def test_a_chosen_duckduckgo_is_the_free_chain(self) -> None:
         assert [p.id for p in search_providers({"provider": "duckduckgo", "configuration": {}})] == ["ddgs", "duckduckgo"]
-        assert [p.id for p in search_providers({})] == ["ddgs", "duckduckgo"]
 
-    def test_configured_provider_goes_first(self) -> None:
+    def test_nothing_configured_has_no_engine_to_fall_back_on(self) -> None:
+        providers = search_providers({})
+        assert len(providers) == 1 and isinstance(providers[0], NoSearchProvider)
+
+    async def test_nothing_configured_is_reported_not_searched(self) -> None:
+        services = build_web_services({}, DefaultWebAccessGate())
+        with pytest.raises(ChainFailed) as info:
+            await services.search.search("q", CALLER)
+        assert info.value.error_type == "not_configured"
+
+    def test_configured_provider_runs_alone(self) -> None:
         providers = search_providers({"provider": "serper", "configuration": {"apiKey": "k"}})
-        assert [p.id for p in providers] == ["serper", "ddgs", "duckduckgo"]
+        assert [p.id for p in providers] == ["serper"]
 
     async def test_unknown_provider_is_reported_not_replaced(self) -> None:  # WP-0-SRCH-05
         providers = search_providers({"provider": "bing", "configuration": {}})

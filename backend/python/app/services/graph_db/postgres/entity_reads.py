@@ -18,7 +18,12 @@ from app.modules.named_entities.graph_ops import (
     NamedEntityQuery,
     filter_constraints,
 )
-from app.services.graph_db.postgres.base import PgBase, _doc
+from app.services.graph_db.postgres.base import (
+    MENTIONS_BOUND,
+    VETTED_BOUND,
+    PgBase,
+    _doc,
+)
 
 
 def _uniq(ids: list[str]) -> list[str]:
@@ -29,6 +34,29 @@ def _node(doc: dict, *fields: str) -> dict:
     return {f: doc.get(f) for f in fields}
 
 
+def _fits_ids(ids: list[str]) -> bool:
+    """Whether ``graph.value_mentions_by_records`` takes these record ids."""
+    return 0 < len(ids) <= 5000 and all(isinstance(i, str) and 0 < len(i) <= 200 for i in ids)
+
+
+def _fits(org_id: str, kinds: list[str], keys: list[str]) -> bool:
+    """Whether the vetted reads of graph_0007 take these arguments (their bounds); otherwise the caller reads with its statement."""
+    return (isinstance(org_id, str) and 0 < len(org_id) <= 200 and 0 < len(keys) <= 1000 and all(isinstance(k, str) and 0 < len(k) <= 1000 for k in keys)
+            and all(isinstance(k, str) and 0 < len(k) <= 200 for k in kinds))
+
+
+def _with_mentions(ids: str, sql: str) -> str:
+    """``sql`` over the vetted mentions of the record ids ``ids`` (as ``m``), with the number of mentions read in column ``n`` of every row (one row when ``sql`` finds none)."""
+    tag, _, body = sql.partition("*/ ")      # the statement's tag stays first
+    return (f"{tag}*/ WITH m AS MATERIALIZED (SELECT node_id AS id, doc FROM graph.value_mentions_by_records({ids}::text[])) "
+            f"SELECT c.n, a.* FROM (SELECT count(*) AS n FROM m) c LEFT JOIN ({body}) a ON true ORDER BY a.rid")
+
+
+def _whole(rows: list) -> list | None:
+    """The rows of a ``_with_mentions`` read, or None when it read as many mentions as the function's bound: it may be partial."""
+    return None if rows and rows[0]["n"] >= MENTIONS_BOUND else [r for r in rows if r["rid"] is not None]
+
+
 class EntityReadsMixin(PgBase):
     # ---- nodes -------------------------------------------------------------------------------------------------
     async def find_named_entities(self, org_id: str, kind: str, norm_keys: list[str]) -> list[dict]:
@@ -36,9 +64,16 @@ class EntityReadsMixin(PgBase):
         org = current_org_id()
         if not norm_keys:
             return []
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.find_named_entities */ SELECT n.doc FROM graph.nodes n
-            WHERE n.org_id = $1 AND n.coll = 'namedEntities' AND n.doc->>'orgId' = $2 AND n.doc->>'kind' = $3
-              AND (n.doc->>'normKey' = ANY($4::text[]) OR n.doc->'normalizedAliases' ?| $4::text[]) ORDER BY n.id""", org, org_id, kind, _uniq(norm_keys)), None)
+        keys = _uniq(norm_keys)
+        rows = None
+        if _fits(org_id, [kind], keys):      # the vetted read of graph_0007
+            rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.named_entities_by_keys */ SELECT doc FROM graph.named_entities_by_keys($1, $2, $3::text[])", org_id, kind, keys), None)
+            if len(rows) >= VETTED_BOUND:      # at its bound the answer may be partial
+                rows = None
+        if rows is None:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.find_named_entities */ SELECT n.doc FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = 'namedEntities' AND n.doc->>'orgId' = $2 AND n.doc->>'kind' = $3
+                  AND (n.doc->>'normKey' = ANY($4::text[]) OR n.doc->'normalizedAliases' ?| $4::text[]) ORDER BY n.id""", org, org_id, kind, keys), None)
         return [_doc(r["doc"]) for r in rows]
 
     async def get_named_entities_by_ids(self, org_id: str, ids: list[str]) -> list[dict]:
@@ -62,12 +97,22 @@ class EntityReadsMixin(PgBase):
         if not pairs:
             return []
         kinds, keys = zip(*dict.fromkeys(pairs), strict=True)
-        if alias:
+        rows = None
+        if _fits(org_id, list(kinds), list(keys)) and limit <= 1000:      # the vetted reads of graph_0007
+            if alias:
+                rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.named_entities_by_alias */ SELECT key, doc FROM graph.named_entities_by_alias($1, $2::text[], $3::text[], $4)",
+                                                         org_id, list(kinds), list(keys), max(1, limit)), None)
+            else:
+                rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.named_entities_by_prefix */ SELECT key, doc FROM graph.named_entities_by_prefix($1, $2::text[], $3::text[], $4)",
+                                                         org_id, list(kinds), list(keys), max(1, limit)), None)
+            if len(rows) >= VETTED_BOUND:      # at its bound the answer may be partial
+                rows = None
+        if rows is None and alias:
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.find_named_entities_by_alias */ SELECT p.key, n.doc FROM unnest($3::text[], $4::text[]) AS p(kind, key)
                 CROSS JOIN LATERAL (SELECT x.id, x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = 'namedEntities' AND x.doc->>'orgId' = $2
                   AND x.doc->>'kind' = p.kind AND x.doc->'normalizedAliases' ? p.key AND x.doc->>'normKey' <> p.key AND x.doc->>'mergedInto' IS NULL
                   ORDER BY x.id LIMIT $5) n ORDER BY p.key, n.id""", org, org_id, list(kinds), list(keys), max(1, limit)), None)
-        else:
+        elif rows is None:
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.find_named_entities_by_key_prefix */ SELECT p.key, n.doc FROM unnest($3::text[], $4::text[]) AS p(kind, key)
                 CROSS JOIN LATERAL (SELECT x.id, x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = 'namedEntities' AND x.doc->>'orgId' = $2
                   AND x.doc->>'kind' = p.kind AND starts_with(x.doc->>'normKey', p.key || ' ')
@@ -94,8 +139,14 @@ class EntityReadsMixin(PgBase):
                 JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id
                 JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = 'namedEntities' AND n.id = e.to_id
                 WHERE e.org_id = $1 AND e.coll = 'mentionsEntity' AND e.from_coll = 'records' AND e.from_id = $2 AND e.to_coll = 'namedEntities' ORDER BY n.id""", org, record_id)
-            values = await tx.fetch("""/* pipeshub:graph.get_named_entities_for_record_values */ SELECT doc FROM graph.nodes
-                WHERE org_id = $1 AND coll = 'valueMentions' AND doc->>'recordId' = $2 ORDER BY id""", org, record_id)
+            values = None
+            if _fits_ids([record_id]):      # the vetted read of graph_0007
+                values = await tx.fetch("/* pipeshub:graph.value_mentions_by_records */ SELECT doc FROM graph.value_mentions_by_records($1::text[]) ORDER BY node_id", [record_id])
+                if len(values) >= MENTIONS_BOUND:      # at its bound the answer may be partial
+                    values = None
+            if values is None:
+                values = await tx.fetch("""/* pipeshub:graph.get_named_entities_for_record_values */ SELECT doc FROM graph.nodes
+                    WHERE org_id = $1 AND coll = 'valueMentions' AND doc->>'recordId' = $2 ORDER BY id""", org, record_id)
             return nodes, values
         nodes, values = await self._q(go, None)
         return [{**_doc(r["node"]), **_node(_doc(r["edge"]), "mentionCount", "blockIndexes")} for r in nodes] + [_doc(r["doc"]) for r in values]
@@ -133,7 +184,19 @@ class EntityReadsMixin(PgBase):
         found: dict[str, tuple[bool, int]] = {}
         ids = _uniq(record_ids)
         for at in range(0, len(ids), _WITHIN_CHUNK):
-            rows = await self._q(lambda tx, part=ids[at:at + _WITHIN_CHUNK]: tx.fetch("""/* pipeshub:graph.get_named_entity_date_spans */ SELECT d.rid, min(d.e - d.s) AS span,
+            part = ids[at:at + _WITHIN_CHUNK]
+            rows = None
+            if _fits_ids(part):      # the vetted read of graph_0007
+                rows = await self._q(lambda tx, part=part: tx.fetch(_with_mentions("$2", """/* pipeshub:graph.get_named_entity_date_spans_vetted */ SELECT d.rid, min(d.e - d.s) AS span,
+                  max(CASE WHEN d.s >= $3::float8 AND d.e - d.s <= $5::float8 THEN 1 ELSE 0 END) AS named
+                FROM (SELECT v.doc->>'recordId' AS rid, f.s, f.e FROM m v CROSS JOIN LATERAL (SELECT
+                    CASE WHEN jsonb_typeof(v.doc->'startMs') = 'number' THEN (v.doc->>'startMs')::float8 END AS s,
+                    CASE WHEN jsonb_typeof(v.doc->'endMs') = 'number' THEN (v.doc->>'endMs')::float8 END AS e) f
+                  WHERE v.doc->>'orgId' = $1) d
+                WHERE d.s < $4::float8 AND d.e > $3::float8 GROUP BY d.rid"""), org_id, part, float(start_ms), float(end_ms), float(max(end_ms - start_ms, _MIN_DATE_SPAN_MS))), None)
+                rows = _whole(rows)
+            if rows is None:
+                rows = await self._q(lambda tx, part=part: tx.fetch("""/* pipeshub:graph.get_named_entity_date_spans */ SELECT d.rid, min(d.e - d.s) AS span,
                   max(CASE WHEN d.s >= $4::float8 AND d.e - d.s <= $6::float8 THEN 1 ELSE 0 END) AS named
                 FROM (SELECT v.doc->>'recordId' AS rid, f.s, f.e FROM graph.nodes v CROSS JOIN LATERAL (SELECT
                     CASE WHEN jsonb_typeof(v.doc->'startMs') = 'number' THEN (v.doc->>'startMs')::float8 END AS s,
@@ -164,7 +227,26 @@ class EntityReadsMixin(PgBase):
         args = (org, org_id, b["kinds"], b["dateStart"], b["dateEnd"], b["amountMin"], b["amountMax"], b["currency"], b["quantityMin"], b["quantityMax"],
                 b["dimension"], b["percentMin"], b["percentMax"], record_ids, count)
         if mode == "names":
-            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_named_entity_values_in_records */ SELECT d.rid, (array_agg(d.name ORDER BY d.size DESC, d.name COLLATE "C"))[1:$15::int] AS names
+            rows = None
+            if record_ids is not None and _fits_ids(record_ids):      # the vetted read of graph_0007 (it has no use for the org: the function takes the ambient one)
+                rows = await self._q(lambda tx: tx.fetch(_with_mentions("$13", """/* pipeshub:graph.get_named_entity_values_in_records_vetted */ SELECT d.rid, (array_agg(d.name ORDER BY d.size DESC, d.name COLLATE "C"))[1:$14::int] AS names
+                FROM (SELECT v.doc->>'recordId' AS rid, v.doc->>'name' AS name, coalesce(f.ah, f.a, f.si, f.nv, f.s, 0) AS size FROM m v CROSS JOIN LATERAL (SELECT
+                    CASE WHEN jsonb_typeof(v.doc->'startMs') = 'number' THEN (v.doc->>'startMs')::float8 END AS s,
+                    CASE WHEN jsonb_typeof(v.doc->'endMs') = 'number' THEN (v.doc->>'endMs')::float8 END AS e,
+                    CASE WHEN jsonb_typeof(v.doc->'amountFloat') = 'number' THEN (v.doc->>'amountFloat')::float8 END AS a,
+                    CASE WHEN jsonb_typeof(v.doc->'amountHighFloat') = 'number' THEN (v.doc->>'amountHighFloat')::float8 END AS ah,
+                    CASE WHEN jsonb_typeof(v.doc->'siValue') = 'number' THEN (v.doc->>'siValue')::float8 END AS si,
+                    CASE WHEN jsonb_typeof(v.doc->'numericValue') = 'number' THEN (v.doc->>'numericValue')::float8 END AS nv) f
+                  WHERE v.doc->>'orgId' = $1 AND v.doc->>'name' IS NOT NULL
+                    AND (cardinality($2::text[]) = 0 OR v.doc->>'kind' = ANY($2::text[]))
+                    AND ($3::float8 IS NULL OR (f.s < $4::float8 AND f.e > $3::float8))
+                    AND ($5::float8 IS NULL OR (($7::text = '' OR v.doc->>'currency' = $7::text) AND coalesce(f.ah, f.a) >= $5::float8 AND f.a <= $6::float8))
+                    AND ($8::float8 IS NULL OR (($10::text = '' OR v.doc->>'dimension' = $10::text) AND f.si >= $8::float8 AND f.si <= $9::float8))
+                    AND ($11::float8 IS NULL OR (v.doc->>'kind' = 'percentage' AND f.nv >= $11::float8 AND f.nv <= $12::float8))) d
+                GROUP BY d.rid"""), *args[1:]), None)
+                rows = _whole(rows)
+            if rows is None:
+                rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_named_entity_values_in_records */ SELECT d.rid, (array_agg(d.name ORDER BY d.size DESC, d.name COLLATE "C"))[1:$15::int] AS names
                 FROM (SELECT v.doc->>'recordId' AS rid, v.doc->>'name' AS name, coalesce(f.ah, f.a, f.si, f.nv, f.s, 0) AS size FROM graph.nodes v CROSS JOIN LATERAL (SELECT
                     CASE WHEN jsonb_typeof(v.doc->'startMs') = 'number' THEN (v.doc->>'startMs')::float8 END AS s,
                     CASE WHEN jsonb_typeof(v.doc->'endMs') = 'number' THEN (v.doc->>'endMs')::float8 END AS e,
@@ -180,7 +262,27 @@ class EntityReadsMixin(PgBase):
                     AND ($12::float8 IS NULL OR (v.doc->>'kind' = 'percentage' AND f.nv >= $12::float8 AND f.nv <= $13::float8))) d
                 GROUP BY d.rid""", *args), None)
             return [(r["rid"], r["names"] or []) for r in rows]
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_records_for_named_entities_values */ SELECT DISTINCT v.doc->>'recordId' AS rid FROM graph.nodes v CROSS JOIN LATERAL (SELECT
+        rows = None
+        if record_ids is not None and _fits_ids(record_ids):      # the vetted read of graph_0007
+            rows = await self._q(lambda tx: tx.fetch(_with_mentions("$14", """/* pipeshub:graph.get_records_for_named_entities_values_vetted */ SELECT DISTINCT v.doc->>'recordId' AS rid FROM m v CROSS JOIN LATERAL (SELECT
+                CASE WHEN jsonb_typeof(v.doc->'startMs') = 'number' THEN (v.doc->>'startMs')::float8 END AS s,
+                CASE WHEN jsonb_typeof(v.doc->'endMs') = 'number' THEN (v.doc->>'endMs')::float8 END AS e,
+                CASE WHEN jsonb_typeof(v.doc->'amountFloat') = 'number' THEN (v.doc->>'amountFloat')::float8 END AS a,
+                CASE WHEN jsonb_typeof(v.doc->'amountHighFloat') = 'number' THEN (v.doc->>'amountHighFloat')::float8 END AS ah,
+                CASE WHEN jsonb_typeof(v.doc->'siValue') = 'number' THEN (v.doc->>'siValue')::float8 END AS si,
+                CASE WHEN jsonb_typeof(v.doc->'numericValue') = 'number' THEN (v.doc->>'numericValue')::float8 END AS nv) f
+              JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = v.doc->>'recordId'      -- only live records count toward the cap
+                AND r.doc->>'orgId' = $2 AND r.doc->>'isDeleted' IS DISTINCT FROM 'true'
+              WHERE v.doc->>'orgId' = $2 AND v.doc->>'recordId' IS NOT NULL
+                AND (cardinality($3::text[]) = 0 OR v.doc->>'kind' = ANY($3::text[]))
+                AND ($4::float8 IS NULL OR (f.s < $5::float8 AND f.e > $4::float8))
+                AND ($6::float8 IS NULL OR (($8::text = '' OR v.doc->>'currency' = $8::text) AND coalesce(f.ah, f.a) >= $6::float8 AND f.a <= $7::float8))
+                AND ($9::float8 IS NULL OR (($11::text = '' OR v.doc->>'dimension' = $11::text) AND f.si >= $9::float8 AND f.si <= $10::float8))
+                AND ($12::float8 IS NULL OR (v.doc->>'kind' = 'percentage' AND f.nv >= $12::float8 AND f.nv <= $13::float8))
+              ORDER BY rid LIMIT $15::int"""), *args), None)
+            rows = _whole(rows)
+        if rows is None:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_records_for_named_entities_values */ SELECT DISTINCT v.doc->>'recordId' AS rid FROM graph.nodes v CROSS JOIN LATERAL (SELECT
                 CASE WHEN jsonb_typeof(v.doc->'startMs') = 'number' THEN (v.doc->>'startMs')::float8 END AS s,
                 CASE WHEN jsonb_typeof(v.doc->'endMs') = 'number' THEN (v.doc->>'endMs')::float8 END AS e,
                 CASE WHEN jsonb_typeof(v.doc->'amountFloat') = 'number' THEN (v.doc->>'amountFloat')::float8 END AS a,

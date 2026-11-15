@@ -27,6 +27,7 @@ def test_only_the_stores_and_the_field_list_name_the_fence() -> None:
     assert users == {
         "services/permissions/scope_fields.py", "services/vector_db/filters.py", "services/vector_db/qdrant/qdrant.py",
         "services/vector_db/opensearch/opensearch.py", "services/vector_db/redis/redis_vector.py", "services/vector_db/redis/utils.py",
+        "services/vector_db/scope_rewrite.py",      # reads a stored fence to tell a right point that still has to take its writer's fence
     }
 
 

@@ -282,11 +282,10 @@ describe('GET /configurationManager/web-search over HTTP', () => {
     expect(asMember.status).to.equal(200);
     expect(asMember.raw).to.not.include('real-key');
     expect(asMember.providers.map((p) => [p.provider, p.isDefault])).to.deep.equal([
-      ['duckduckgo', false],
       ['serper', true],
       ['tavily', false],
     ]);
-    expect(asMember.providers.slice(1).map((p) => p.configuration.apiKey)).to.deep.equal([
+    expect(asMember.providers.map((p) => p.configuration.apiKey)).to.deep.equal([
       CONFIG_SECRET_PLACEHOLDER,
       CONFIG_SECRET_PLACEHOLDER,
     ]);
@@ -294,7 +293,7 @@ describe('GET /configurationManager/web-search over HTTP', () => {
     const asAdmin = await listProviders(sessionFor(admin));
 
     expect(asAdmin.status).to.equal(200);
-    expect(asAdmin.providers.slice(1).map((p) => p.configuration.apiKey)).to.deep.equal([
+    expect(asAdmin.providers.map((p) => p.configuration.apiKey)).to.deep.equal([
       'serper-real-key',
       'tavily-real-key',
     ]);

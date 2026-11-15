@@ -41,7 +41,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # -----------------------------------------------------------------------------
 # Stage 1: Node.js Backend Build
 # -----------------------------------------------------------------------------
-FROM node:20-slim AS nodejs-backend
+FROM node:24-slim AS nodejs-backend
 WORKDIR /app/backend
 
 COPY backend/nodejs/apps/package*.json ./
@@ -77,7 +77,7 @@ RUN mkdir -p /app/templates && cd src && find . -name '*.hbs' -exec cp --parents
 # Stage 2: Frontend Build (Next.js in `frontend/`)
 # -----------------------------------------------------------------------------
 # Static export so the Node.js API can serve files from `backend/dist/public`.
-FROM node:20-slim AS frontend-build
+FROM node:24-slim AS frontend-build
 WORKDIR /app/frontend
 
 COPY frontend/package*.json ./
@@ -111,6 +111,8 @@ RUN groupadd --gid 1000 pipeshub && \
     install -d -o 1000 -g 1000 /root/.cache /root/.local && \
     chown 1000:1000 /root
 ENV HOME=/root
+# Repositories pushed by `pipeshub index` are mirrored on the data volume, so they survive the container being replaced.
+ENV PIPESHUB_LOCAL_REPO_STORE=/data/pipeshub/local-repos
 # Pinned so the baked models are still found when HOME is overridden (the
 # Helm chart sets HOME=/home/user).
 ENV HF_HOME=/root/.cache/huggingface \

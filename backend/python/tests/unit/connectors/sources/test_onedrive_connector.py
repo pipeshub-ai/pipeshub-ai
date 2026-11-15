@@ -56,6 +56,7 @@ def _make_mock_deps():
     data_entities_processor.on_user_group_deleted = AsyncMock(return_value=True)
     data_entities_processor.on_user_group_member_removed = AsyncMock(return_value=True)
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+    data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
     data_entities_processor.reindex_existing_records = AsyncMock()
 
     data_store_provider = MagicMock()
@@ -1796,6 +1797,7 @@ def _make_mock_deps_cov():
     data_entities_processor.on_user_group_deleted = AsyncMock(return_value=True)
     data_entities_processor.on_user_group_member_removed = AsyncMock(return_value=True)
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+    data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
     data_entities_processor.reindex_existing_records = AsyncMock()
     return logger, data_entities_processor
 

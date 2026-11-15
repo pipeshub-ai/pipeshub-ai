@@ -9,6 +9,7 @@ import pytest
 
 from app.config.constants.arangodb import ProgressStatus
 from app.exceptions.indexing_exceptions import ProcessingError
+from app.modules.pipeline.connector_gate import ConnectorBeingDeleted
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.models import (
     HeadlineField,
@@ -26,6 +27,7 @@ from app.modules.pipeline.registry import StageRegistry
 from app.modules.pipeline.stage import Deadline, StageIO
 from app.modules.pipeline.worker import (
     StageFailed,
+    StageHeldForDelete,
     StageJobHandler,
     StagePaused,
     StageRetry,
@@ -609,3 +611,85 @@ async def test_an_unchanged_completion_loses_to_a_redrive_that_finished_meanwhil
     assert (h.state(job).attempt, h.state(job).output) == (2, "newer")
     assert h.headlines.writes == []
     assert h.producer.sent == []
+
+
+class _DeletingIO(_IO):
+    """A stage IO whose job's connector is (or is not) being deleted."""
+
+    deleting: ClassVar[set[str]] = set()
+
+    async def connector_deleting(self, job: StageJob) -> bool:
+        return job.connector_id in self.deleting
+
+
+def _harness_with(io: type[_IO]) -> _Harness:
+    h = _Harness()
+    h.handler = StageJobHandler(
+        h.registry, h.states, h.headlines, h.coordinator, io,
+        logger=logging.getLogger("t"), worker_id="w1", clock_ms=h.clock,
+    )
+    return h
+
+
+@pytest.mark.asyncio
+async def test_a_job_of_a_connector_being_deleted_is_held_without_a_write() -> None:
+    """Its records and stage states are the delete's: a claim or headline write here makes the
+    delete's batch lose a write conflict on ArangoDB. Held, not settled: the delete may be put back."""
+    _DeletingIO.deleting = {"conn-1"}
+    h, job = _harness_with(_DeletingIO), _job()
+    h.seed(job)
+    with pytest.raises(StageHeldForDelete) as held:
+        await h.deliver(job)
+    assert held.value.counts_toward_backstop is False and held.value.delay_s == 60.0
+    assert h.stage.runs == 0
+    assert h.state(job).status is ProgressStatus.QUEUED and h.state(job).attempt == 0
+    assert h.headlines.writes == [] and h.producer.jobs("pipeline.summary-embed") == []
+
+
+@pytest.mark.asyncio
+async def test_a_held_job_does_not_recreate_its_state() -> None:
+    _DeletingIO.deleting = {"conn-1"}
+    h, job = _harness_with(_DeletingIO), _job()
+    with pytest.raises(StageHeldForDelete):
+        await h.deliver(job)
+    assert job.state_key not in h.states.states
+
+
+@pytest.mark.asyncio
+async def test_a_held_job_runs_once_the_delete_is_put_back() -> None:
+    _DeletingIO.deleting = {"conn-1"}
+    h, job = _harness_with(_DeletingIO), _job()
+    h.seed(job)
+    with pytest.raises(StageHeldForDelete):
+        await h.deliver(job)
+    _DeletingIO.deleting = set()
+    await h.deliver(job)
+    assert h.stage.runs == 1 and h.state(job).status is ProgressStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_a_delete_that_starts_mid_run_leaves_the_claim_for_the_redelivery() -> None:
+    """The IO raises under the lease; nothing is settled, so the claim stays IN_PROGRESS and a
+    redelivery after a revert takes it over like a crashed run's."""
+    _DeletingIO.deleting = set()
+    h, job = _harness_with(_DeletingIO), _job()
+    h.seed(job)
+    h.stage.result = ConnectorBeingDeleted("conn-1")
+    with pytest.raises(StageHeldForDelete):
+        await h.deliver(job)
+    claimed = h.state(job)
+    assert claimed.status is ProgressStatus.IN_PROGRESS and claimed.attempt == 1
+    assert h.headlines.writes == []
+
+    h.stage.result = StageResult(outcome=StageOutcome.COMPLETED)
+    await h.deliver(job)
+    assert h.state(job).status is ProgressStatus.COMPLETED and h.state(job).attempt == 2
+
+
+@pytest.mark.asyncio
+async def test_a_job_of_another_connector_runs_as_before() -> None:
+    _DeletingIO.deleting = {"conn-other"}
+    h, job = _harness_with(_DeletingIO), _job()
+    h.seed(job)
+    await h.deliver(job)
+    assert h.stage.runs == 1 and h.state(job).status is ProgressStatus.COMPLETED

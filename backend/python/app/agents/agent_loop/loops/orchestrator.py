@@ -43,6 +43,8 @@ from app.agent_loop_lib.tools.builtin.planning.critique_plan import CritiquePlan
 from app.agent_loop_lib.tools.builtin.planning.verify_result import VerifyResultTool
 from app.agent_loop_lib.tools.tags import TAG_SPAWN, TAG_UI_ONLY
 from app.agents.agent_loop.sub_agent_prompt import build_sub_agent_prompt
+from app.utils.error_class import log_failure
+from app.utils.logging_fields import log_event
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -353,11 +355,7 @@ async def _programmatic_dispatch(
             },
         ))
 
-    logger.info(
-        "OrchestratorLoop: programmatic dispatch of %d steps: %s",
-        len(synthetic_calls),
-        [s.id for s in plan.steps],
-    )
+    log_event(logger, "orchestrator.dispatch.start", level=logging.DEBUG, steps=len(synthetic_calls))
 
     tasks = await schedule_spawn_batch(
         agent, agent.runtime, synthetic_calls, agent.scope,
@@ -582,17 +580,14 @@ class OrchestratorLoop(LoopStrategy):
                 dispatched, turn_index = await _programmatic_dispatch(
                     agent, structured_plan, goal, turn_index,
                 )
-                logger.info(
-                    "OrchestratorLoop: programmatic dispatch %s (%d steps)",
-                    "succeeded" if dispatched else "ran but every child failed",
-                    len(structured_plan.steps),
+                # Each child's failure has its own line; this records the dispatch.
+                log_event(
+                    logger, "orchestrator.dispatch.end", steps=len(structured_plan.steps),
+                    outcome="success" if dispatched else "failure",
                 )
-            except Exception:
-                logger.warning(
-                    "OrchestratorLoop: programmatic dispatch failed before "
-                    "scheduling any child, falling back to LLM-mediated dispatch",
-                    exc_info=True,
-                )
+            except Exception as e:
+                # Falls back to LLM-mediated dispatch.
+                log_failure(logger, "orchestrator.dispatch.failed", e)
                 programmatic_dispatch_ran = False
                 dispatched = False
 

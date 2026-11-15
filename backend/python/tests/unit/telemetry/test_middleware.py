@@ -4,9 +4,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
 from starlette.requests import Request
 
 from app.telemetry.middleware import MetricsMiddleware
+from app.utils.route_template import route_template
 
 
 def make_request(
@@ -38,22 +40,51 @@ def make_middleware(service_name="query_service") -> MetricsMiddleware:
 
 
 class TestRouteTemplate:
-    def test_prefers_matched_route_path_format(self):
+    """MetricsMiddleware and http.request.end name a route with one helper (app.utils.route_template)."""
+
+    def test_prefers_matched_route_path_format(self) -> None:
         route = SimpleNamespace(path_format="/api/v1/agent/{id}", path="/raw")
         request = make_request(path="/api/v1/agent/42", route=route)
 
-        assert MetricsMiddleware._route_template(request) == "/api/v1/agent/{id}"
+        assert route_template(request.scope) == "/api/v1/agent/{id}"
 
-    def test_falls_back_to_route_path(self):
+    def test_falls_back_to_route_path(self) -> None:
         route = SimpleNamespace(path_format=None, path="/api/v1/agent/{id}")
         request = make_request(path="/api/v1/agent/42", route=route)
 
-        assert MetricsMiddleware._route_template(request) == "/api/v1/agent/{id}"
+        assert route_template(request.scope) == "/api/v1/agent/{id}"
 
-    def test_collapses_to_unmatched_when_no_route_matched(self):
+    def test_collapses_to_unmatched_when_no_route_matched(self) -> None:
         request = make_request(path="/api/v1/agent/12345")
 
-        assert MetricsMiddleware._route_template(request) == "unmatched"
+        assert route_template(request.scope) == "unmatched"
+
+    def test_a_request_refused_before_routing_gets_the_route_it_would_match_full_before_partial(self) -> None:
+        """Starlette's router takes the first FULL match, else the first PARTIAL (a 405)."""
+        app = FastAPI()
+
+        @app.post("/api/v1/kb/{a}")
+        async def by_post(a: str) -> None: ...
+
+        @app.get("/api/v1/kb/{b}")
+        async def by_get(b: str) -> None: ...
+
+        @app.get("/api/v1/files/{rest:path}")
+        async def files(rest: str) -> None: ...
+
+        def scope(method: str, path: str) -> dict:
+            return {**make_request(path=path, method=method).scope, "app": app, "root_path": ""}
+
+        assert route_template(scope("GET", "/api/v1/kb/42")) == "/api/v1/kb/{b}"
+        assert route_template(scope("POST", "/api/v1/kb/42")) == "/api/v1/kb/{a}"
+        assert route_template(scope("DELETE", "/api/v1/kb/42")) == "/api/v1/kb/{a}"
+        assert route_template(scope("GET", "/api/v1/files/a/b.txt")) == "/api/v1/files/{rest}"
+        assert route_template(scope("GET", "/api/v1/nothing/here")) == "unmatched"
+
+    def test_a_non_string_template_is_never_returned(self) -> None:
+        request = make_request(route=SimpleNamespace(path_format=MagicMock(), path=None))
+
+        assert route_template(request.scope) == "unmatched"
 
 
 class TestIdentityExtraction:

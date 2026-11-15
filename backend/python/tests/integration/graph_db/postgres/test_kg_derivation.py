@@ -77,6 +77,7 @@ async def project(p: PostgresGraphProvider, org: str, focus: set) -> None:
         snap = await reader.snapshot(tx, org, focus, w.nodes_upsert)
         d = derive(focus, snap)
         await w.records_upsert([{"sk": sk, **row} for sk, row in sorted(d.records.items())])
+        await w.listing_set([(sk, r["coll"], r["id"], r["kind"], r["folder"], r["hide_children"], r["alien"], r["name_sort"]) for sk, r in sorted(d.records.items())])
         await w.records_delete(sorted(d.gone))
         await w.links_set(sorted(d.links))
         await w.grants_set([(pr, nd, g, role, app, leaf) for (pr, nd, g), (role, app, leaf) in sorted(d.grants.items())])
@@ -188,3 +189,30 @@ async def test_the_dependents_of_a_record_do_not_include_those_of_a_record_group
         kids = await p._q(lambda tx: dependents.children_of(tx, org, key), None)
         moved = await p._q(lambda tx: dependents.moved_parents(tx, org, key), None)
     assert (parents, kids, moved) == (set(), set(), set())
+
+
+async def listing_columns(p: PostgresGraphProvider, org: str) -> dict:
+    async def go(tx) -> dict:
+        return {r["id"]: (r["folder"], r["hide_children"], r["alien"]) for r in await tx.fetch("SELECT id, folder, hide_children, alien FROM kg.records WHERE org_id = $1", org)}
+    with ctx(org):
+        return await p._q(go, None)
+
+
+async def test_the_listing_columns_follow_the_hub_node_type_the_hidden_children_and_the_organisation(pg_db) -> None:
+    """folder: a record whose mime type is a folder's or whose type is FOLDER (any case), never a group; hide_children: a record group that says so (a record's flag does not count);
+    alien: a node of another organisation (or of none). Each row below fails the column it names when its rule is dropped."""
+    p, org = prov(pg_db), new_org()
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "hide", "groupName": "H", "connectorId": "app1", "orgId": org, "hideChildren": True, "mimeType": "application/vnd.folder"},
+                                    {"_key": "show", "groupName": "S", "connectorId": "app1", "orgId": org, "hideChildren": "false"}], "recordGroups")
+        await p.batch_upsert_nodes([
+            {"_key": "bymime", "recordName": "A", "connectorId": "app1", "orgId": org, "recordType": "FILE", "mimeType": "application/vnd.folder"},
+            {"_key": "bytype", "recordName": "B", "connectorId": "app1", "orgId": org, "recordType": "folder"},
+            {"_key": "file", "recordName": "C", "connectorId": "app1", "orgId": org, "recordType": "FILE", "mimeType": "text/plain", "hideChildren": True},
+            {"_key": "other", "recordName": "D", "connectorId": "app1", "orgId": "another-org", "recordType": "FILE"},
+        ], "records")
+    await project(p, org, {("apps", "app1"), ("recordGroups", "hide"), ("recordGroups", "show"), ("records", "bymime"), ("records", "bytype"), ("records", "file"), ("records", "other")})
+    assert await listing_columns(p, org) == {
+        "app1": (False, False, False), "hide": (False, True, False), "show": (False, False, False),
+        "bymime": (True, False, False), "bytype": (True, False, False), "file": (False, False, False), "other": (False, False, True)}

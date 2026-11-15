@@ -430,6 +430,11 @@ class FilterField:
     option_source_type: OptionSourceType = OptionSourceType.MANUAL
     allowed_operators: list[str] | None = None
     fallback_operator: str | None = None
+    # Folder paths only: "posix" (object stores; names as stored) or "windows"
+    # (file shares; `\` separates folders and case does not matter).
+    path_style: str | None = None
+    # Folder paths only: the connector reads `*`, `?` and `**` in them.
+    wildcards: bool = False
     def __post_init__(self) -> None:
         """Validate configuration"""
 
@@ -530,6 +535,12 @@ class FilterField:
 
         if self.fallback_operator is not None:
             schema["fallbackOperator"] = self.fallback_operator
+
+        if self.path_style is not None:
+            schema["pathStyle"] = self.path_style
+
+        if self.wildcards:
+            schema["folderWildcards"] = True
 
         return schema
 

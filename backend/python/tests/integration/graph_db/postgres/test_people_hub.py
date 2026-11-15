@@ -196,6 +196,17 @@ async def role(w: World, user: str, rec_id: str) -> str | None:
     return e and e.get("role")
 
 
+async def test_the_peers_of_a_verified_email_are_read_by_the_vetted_function_and_by_the_statement_for_an_address_out_of_its_bounds(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    from .test_kg_lookups import spy
+    await merge_world(w)
+    sent = spy(monkeypatch)
+    got = await w.p.apply_verified_user_email(LOGIN, w.org, "new@x.io")
+    assert sorted(got["mergedStubKeys"]) == ["stub1", "stub2"] and "verified_email_peers_vetted" in sent and "verified_email_peers" not in sent
+    sent.clear()
+    await w.p.apply_verified_user_email(LOGIN, w.org, "e" * 1001 + "@x.io")
+    assert "verified_email_peers" in sent and "verified_email_peers_vetted" not in sent
+
+
 async def test_a_verified_email_merges_the_stubs_into_the_login_user_and_keeps_every_grant(w: World) -> None:
     await merge_world(w)
     p = w.p

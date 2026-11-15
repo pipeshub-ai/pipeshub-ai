@@ -25,6 +25,7 @@ from weakref import WeakKeyDictionary
 import httpx  # type: ignore
 from aiolimiter import AsyncLimiter  # type: ignore
 
+from app.connectors.core.sync.run_context import note_backoff_wait
 from app.sources.client.http.http_retry import is_retryable_status
 
 T = TypeVar("T")
@@ -158,7 +159,11 @@ class ResiliencePolicy:
             now = asyncio.get_running_loop().time()
         except RuntimeError:
             return
-        self._resume_at = max(self._resume_at, now + min(seconds, self.max_delay))
+        resume_at = max(self._resume_at, now + min(seconds, self.max_delay))
+        # Only what this pause adds to the shut gate, so callers waiting behind one pause count it
+        # once; counting at the waiter would multiply it by the number of waiters.
+        note_backoff_wait(resume_at - max(self._resume_at, now))
+        self._resume_at = resume_at
 
     async def _wait_for_gate(self) -> None:
         loop = asyncio.get_running_loop()

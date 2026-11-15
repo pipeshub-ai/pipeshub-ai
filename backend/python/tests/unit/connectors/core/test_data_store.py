@@ -206,7 +206,8 @@ class ConcreteTransactionStore(TransactionStore):
     async def delete_edge(self, from_id, from_collection, to_id, to_collection, collection):
         pass
 
-    async def delete_edges_by_relationship_types(self, from_id, from_collection, collection, relationship_types):
+    async def delete_edges_by_relationship_types(self, from_id, from_collection, collection, relationship_types, *,
+                                                 raise_on_error=False):
         return 0
 
     async def delete_parent_child_edge_to_record(self, record_id):

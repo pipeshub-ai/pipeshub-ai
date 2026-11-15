@@ -1,7 +1,8 @@
 """Connector instances on PostgreSQL against a real database: the filtered list, the stats, the next queued duplicate, and deleting an instance with everything of it.
 
-Both ways: a delete takes everything of the connector and nothing of another connector or org; a delete that fails part way leaves every row and edge as
-it was and a retry completes it. A read that fails answers its default and answers right once the store is back.
+Both ways: a delete takes everything of the connector and nothing of another connector or org. In a caller's transaction a delete that fails part way leaves
+every row and edge as it was; without one it runs in batches, and one that fails part way leaves a connector nobody can open and a retry completes it, naming
+the ids of the batches that were already gone. A read that fails answers its default and answers right once the store is back.
 
 Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none.
 """
@@ -87,6 +88,33 @@ async def test_a_deleted_instance_takes_all_of_it_and_nothing_of_another_connect
     assert await w.p.delete_connector_instance("c1", w.org) == {"success": False, "error": "Connector instance c1 not found"}
 
 
+async def test_the_late_write_pass_removes_what_indexing_wrote_after_the_delete_and_nothing_else(w: World) -> None:
+    """A stage job and a duplicate code file can still write for a connector after its delete committed."""
+    await connector(w, "c1")
+    await connector(w, "c2", vrid="x")
+    assert (await w.p.delete_connector_instance("c1", w.org))["success"] is True
+    await w.nodes("blocks", {"_key": "c1-late-b", "connectorId": "c1", "recordId": "c1-r1"})
+    await w.nodes("stageStates", {"_key": "v1:2:entities", "connectorId": "c1", "status": "IN_PROGRESS"})
+    await w.nodes("blocks", {"_key": "c2-b2", "connectorId": "c2", "recordId": "c2-r1"})
+    await w.edge("recordLinks", ("blocks", "c2-b2"), ("blocks", "c1-late-b"), relationshipType="CALLS")
+
+    async def dangling(tx: Tx) -> None:
+        """A code link whose statement saw its blocks commits after they went: the writer does not lock the ends, and no foreign key ties them."""
+        for group, end in (("c1-rg", "c1-gone"), ("c2-rg", "c2-gone")):
+            await tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, doc)
+                VALUES ($1, 'nodeRelations', 'blocks', $2, 'blocks', $3, jsonb_build_object('relationshipType', 'CALLS', 'recordGroupId', $4::text))""",
+                             w.org, f"{end}-a", f"{end}-b", group)
+    await w.p._q(dangling, None, write=True)
+
+    assert await w.p.sweep_deleted_connector_writes("c1", ["c1-rg"]) == (3, 0)
+    nodes, edges = await snapshot(w)
+    assert ("blocks", "c1-late-b") not in nodes and ("stageStates", "v1:2:entities") not in nodes
+    assert ("blocks", "c2-b2") in nodes and ("stageStates", "x1:1:entities") in nodes
+    assert not [e for e in edges if "c1-late-b" in (e[2], e[4])]                 # the block goes with every edge around it
+    assert not [e for e in edges if e[2] == "c1-gone-a"] and [e for e in edges if e[2] == "c2-gone-a"]      # only the deleted connector's groups
+    assert await w.p.sweep_deleted_connector_writes("c1", ["c1-rg"]) == (0, 0)
+
+
 async def test_the_scopes_of_a_deleted_connector_are_dropped_and_those_of_a_failed_delete_are_kept(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await connector(w, "c1")
     forgotten: list[str] = []
@@ -122,7 +150,49 @@ async def test_another_orgs_instance_is_not_there_and_not_deleted(w: World) -> N
     assert ("apps", "c1") in (await snapshot(w))[0]
 
 
-async def test_a_delete_that_fails_part_way_changes_nothing_and_a_retry_completes(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_delete_that_fails_at_the_last_step_leaves_the_app_and_a_retry_completes(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await connector(w, "c1")
+    real = delete_module._remove_nodes
+
+    async def boom(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
+        if coll == "apps":
+            raise RuntimeError("store down")
+        return await real(tx, org, coll, keys)
+    monkeypatch.setattr(delete_module, "_remove_nodes", boom)
+    got = await w.p.delete_connector_instance("c1", w.org)
+    assert got["success"] is False and got["partial"] is True and got["error"].startswith("Failed to delete connector instance:")
+    nodes = (await snapshot(w))[0]
+    assert ("apps", "c1") in nodes and ("records", "c1-r1") not in nodes and ("recordGroups", "c1-rg") not in nodes      # the batches are committed, the app waits
+    monkeypatch.setattr(delete_module, "_remove_nodes", real)
+    again = await w.p.delete_connector_instance("c1", w.org)
+    assert again["success"] is True and again["record_group_ids"] == ["c1-rg"]           # named by the first attempt's stash
+    nodes, edges = await snapshot(w)
+    assert ("apps", "c1") not in nodes and not [n for n in nodes if n[0] == "connectorDeleteHandles" or n[1].startswith("c1-")]
+
+
+async def test_a_retry_that_cannot_close_the_connector_again_stays_partial(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The first attempt has removed the grants and the records; a lock timeout on the app row at the start of the retry must not bring the connector back."""
+    await connector(w, "c1")
+    real_nodes, real_close = delete_module._remove_nodes, delete_module._close_connector
+
+    async def boom(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
+        if coll == "apps":
+            raise RuntimeError("store down")
+        return await real_nodes(tx, org, coll, keys)
+
+    async def locked(tx: Tx, org: str, connector_id: str) -> None:
+        raise RuntimeError("canceling statement due to lock timeout")
+    monkeypatch.setattr(delete_module, "_remove_nodes", boom)
+    assert (await w.p.delete_connector_instance("c1", w.org))["partial"] is True
+    monkeypatch.setattr(delete_module, "_close_connector", locked)
+    got = await w.p.delete_connector_instance("c1", w.org)
+    assert got["success"] is False and got["partial"] is True and "lock timeout" in got["error"]
+    monkeypatch.setattr(delete_module, "_remove_nodes", real_nodes)
+    monkeypatch.setattr(delete_module, "_close_connector", real_close)
+    assert (await w.p.delete_connector_instance("c1", w.org))["success"] is True
+
+
+async def test_a_delete_in_a_caller_transaction_that_fails_part_way_changes_nothing_and_a_retry_completes(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await connector(w, "c1")
     before = await snapshot(w)
     real = delete_module._remove_nodes
@@ -132,23 +202,42 @@ async def test_a_delete_that_fails_part_way_changes_nothing_and_a_retry_complete
             raise RuntimeError("store down")
         return await real(tx, org, coll, keys)
     monkeypatch.setattr(delete_module, "_remove_nodes", boom)
-    got = await w.p.delete_connector_instance("c1", w.org)
-    assert got["success"] is False and got["error"].startswith("Failed to delete connector instance:")
-    assert await snapshot(w) == before                         # the records, the groups, every edge: all still there
+    t = await w.p.begin_transaction([], [])
+    got = await w.p.delete_connector_instance("c1", w.org, t)
+    assert got["success"] is False and got["error"].startswith("Failed to delete connector instance:") and not got.get("partial")
+    await w.p.commit_transaction(t)
+    assert await snapshot(w) == before                         # rolled back to the savepoint: every row and edge is still there
     monkeypatch.setattr(delete_module, "_remove_nodes", real)
     assert (await w.p.delete_connector_instance("c1", w.org))["success"] is True
     assert ("apps", "c1") not in (await snapshot(w))[0]
 
 
-async def test_a_delete_that_cannot_remove_everything_is_refused_and_changes_nothing(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_delete_that_cannot_remove_everything_is_refused_and_a_retry_completes(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await connector(w, "c1")
-    before = await snapshot(w)
+    real = delete_module._remove_records
 
     async def nothing(tx: Tx, org: str, ids: list[str]) -> int:
         return 0
     monkeypatch.setattr(delete_module, "_remove_records", nothing)
     got = await w.p.delete_connector_instance("c1", w.org)
     assert got["success"] is False and "remain" in got["error"]
+    assert {("apps", "c1"), ("records", "c1-r1"), ("records", "c1-r2")} <= (await snapshot(w))[0]
+    monkeypatch.setattr(delete_module, "_remove_records", real)
+    assert (await w.p.delete_connector_instance("c1", w.org))["success"] is True
+    assert not [n for n in (await snapshot(w))[0] if n[1].startswith("c1-")]
+
+
+async def test_a_delete_in_a_caller_transaction_that_cannot_remove_everything_changes_nothing(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await connector(w, "c1")
+    before = await snapshot(w)
+
+    async def nothing(tx: Tx, org: str, ids: list[str]) -> int:
+        return 0
+    monkeypatch.setattr(delete_module, "_remove_records", nothing)
+    t = await w.p.begin_transaction([], [])
+    got = await w.p.delete_connector_instance("c1", w.org, t)
+    assert got["success"] is False and "remain" in got["error"]
+    await w.p.rollback_transaction(t)
     assert await snapshot(w) == before
 
 
@@ -235,7 +324,22 @@ async def test_blocks_that_name_the_connector_go_even_when_no_record_owns_them(w
     assert ("blocks", "orphan") not in nodes and ("blocks", "orphan2") in nodes and got["deleted_blocks_count"] == 2          # the block of a record, and the orphan
 
 
-async def test_a_delete_that_leaves_a_block_of_the_connector_is_refused(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_delete_that_leaves_a_block_of_the_connector_is_refused_and_a_retry_completes(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await connector(w, "c1")
+    await w.nodes("blocks", {"_key": "orphan", "recordId": "gone-record", "connectorId": "c1"})
+    real = delete_module._remove_nodes
+
+    async def keep_blocks(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
+        return 0 if coll == "blocks" else await real(tx, org, coll, keys)
+    monkeypatch.setattr(delete_module, "_remove_nodes", keep_blocks)
+    got = await w.p.delete_connector_instance("c1", w.org)
+    assert got["success"] is False and got["partial"] is True and "remain in blocks" in got["error"] and ("apps", "c1") in (await snapshot(w))[0]
+    monkeypatch.setattr(delete_module, "_remove_nodes", real)
+    assert (await w.p.delete_connector_instance("c1", w.org))["success"] is True
+    assert not [n for n in (await snapshot(w))[0] if n[1].startswith("c1") or n[1] == "orphan"]
+
+
+async def test_a_delete_in_a_caller_transaction_that_leaves_a_block_is_refused_and_changes_nothing(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await connector(w, "c1")
     await w.nodes("blocks", {"_key": "orphan", "recordId": "gone-record", "connectorId": "c1"})
     before = await snapshot(w)
@@ -244,8 +348,11 @@ async def test_a_delete_that_leaves_a_block_of_the_connector_is_refused(w: World
     async def keep_blocks(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
         return 0 if coll == "blocks" else await real(tx, org, coll, keys)
     monkeypatch.setattr(delete_module, "_remove_nodes", keep_blocks)
-    got = await w.p.delete_connector_instance("c1", w.org)
-    assert got["success"] is False and "remain" in got["error"] and await snapshot(w) == before
+    t = await w.p.begin_transaction([], [])
+    got = await w.p.delete_connector_instance("c1", w.org, t)
+    assert got["success"] is False and "remain" in got["error"]
+    await w.p.commit_transaction(t)
+    assert await snapshot(w) == before
 
 
 async def test_the_instances_list_is_scoped_filtered_literal_and_newest_first(w: World) -> None:
@@ -350,3 +457,132 @@ async def test_the_next_queued_duplicate_is_live_queued_same_md5_and_size_in_the
     finally:
         w.p._q = real
     assert (await w.p.find_next_queued_duplicate("ref"))["_key"] == "qsize"
+
+
+# ---- a delete in batches that is interrupted, and run again ----------------------------------------------------------------------
+
+async def open_world(w: World) -> None:
+    """A connector the user ``u`` (and a group ``u`` is in) opens: records under record groups, one record granted to a second user, labels and no membership cleanup."""
+    await w.nodes("users", {"_key": "u", "userId": "uid-u"}, {"_key": "u2", "userId": "uid-u2"})
+    await w.nodes("apps", {"_key": "c1", "type": "DRIVE", "vectorMembershipBackfilled": False})
+    await w.nodes("recordGroups", {"_key": "c1-g1", "connectorId": "c1"}, {"_key": "c1-g2", "connectorId": "c1"}, {"_key": "c1-g3", "connectorId": "c1"})
+    await w.nodes("topics", {"_key": "only-c1"}, {"_key": "shared"})
+    await w.nodes("records", {"_key": "other-r", "connectorId": "c2", "virtualRecordId": "vo"})
+    for g in ("c1-g1", "c1-g2", "c1-g3"):
+        await w.child(("apps", "c1"), ("recordGroups", g))
+    for i in range(7):
+        await w.nodes("records", {"_key": f"c1-r{i}", "connectorId": "c1", "recordType": "FILE", "virtualRecordId": f"v{i}", "indexingStatus": "COMPLETED", "origin": "CONNECTOR"})
+        await w.child(("recordGroups", f"c1-g{1 + i % 3}"), ("records", f"c1-r{i}"))
+        await w.edge("belongsToTopic", ("records", f"c1-r{i}"), ("topics", "only-c1" if i < 6 else "shared"))
+    await w.edge("belongsToTopic", ("records", "other-r"), ("topics", "shared"))
+    await w.nodes("stageStates", *({"_key": f"c1-ss{i}", "connectorId": "c1", "status": "COMPLETED"} for i in range(5)),      # none that names a virtual record, and one that does
+                  {"_key": "c1-ssv", "connectorId": "c1", "virtualRecordId": "v0", "status": "COMPLETED"}, {"_key": "other-ss", "connectorId": "c2", "virtualRecordId": "vo"})
+    for who in ("u", "u2"):
+        await w.edge("permission", ("users", who), ("apps", "c1"), type="USER", role="READER")
+    await w.edge("permission", ("users", "u2"), ("records", "c1-r3"), type="USER", role="READER")
+
+
+async def can_open(w: World, who: str) -> set[str]:
+    got = await w.p.check_access(who, w.org, node_ids=[*(f"c1-r{i}" for i in range(7)), "c1-g1", "c1-g2", "c1-g3", "c1"])
+    return set(got.node_ids)
+
+
+@pytest.mark.parametrize("fail_at", ["second_record_batch", "record_groups", "last_unit"])
+async def test_an_interrupted_delete_in_batches_opens_nothing_and_a_rerun_finishes_it_naming_every_id(w: World, monkeypatch: pytest.MonkeyPatch, fail_at: str) -> None:
+    await open_world(w)
+    monkeypatch.setattr(delete_module, "_CHUNK", 2)
+    assert len(await can_open(w, "u")) == 11 and len(await w.p.get_accessible_virtual_record_ids("uid-u", w.org)) == 7        # open to the user before the delete
+    assert "c1-r3" in await can_open(w, "u2")
+    real_records, real_nodes, real_finish = delete_module._remove_records, delete_module._remove_nodes, delete_module._finish_connector
+    calls = {"records": 0}
+
+    async def records(tx: Tx, org: str, ids: list[str]) -> int:
+        calls["records"] += 1
+        if fail_at == "second_record_batch" and calls["records"] == 2:
+            raise RuntimeError("worker killed")
+        return await real_records(tx, org, ids)
+
+    async def nodes(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
+        if fail_at == "record_groups" and coll == "recordGroups" and keys == ["c1-g3"]:
+            raise RuntimeError("worker killed")
+        return await real_nodes(tx, org, coll, keys)
+
+    async def finish(*a: object, **k: object) -> int:
+        raise RuntimeError("worker killed")
+    monkeypatch.setattr(delete_module, "_remove_records", records)
+    monkeypatch.setattr(delete_module, "_remove_nodes", nodes)
+    if fail_at == "last_unit":
+        monkeypatch.setattr(delete_module, "_finish_connector", finish)
+    got = await w.p.delete_connector_instance("c1", w.org)
+    assert got["success"] is False and "worker killed" in got["error"]
+    left = (await snapshot(w))[0]
+    assert ("apps", "c1") in left and ("records", "c1-r0") not in left                  # it stopped part way: the connector is still there and some of it is gone
+    assert ("records", "c1-r6") in left or fail_at != "second_record_batch"
+    # what is left opens to nobody: not the user the connector was open to, not the one with a grant on a record, and the search scope is empty
+    assert await can_open(w, "u") == set() and await can_open(w, "u2") == set()
+    assert await w.p.get_accessible_virtual_record_ids("uid-u", w.org) == {} and await w.p.get_accessible_virtual_record_ids("uid-u2", w.org) == {}
+    monkeypatch.setattr(delete_module, "_remove_records", real_records)
+    monkeypatch.setattr(delete_module, "_remove_nodes", real_nodes)
+    monkeypatch.setattr(delete_module, "_finish_connector", real_finish)
+    done = await w.p.delete_connector_instance("c1", w.org)
+    assert done["success"] is True
+    assert done["virtual_record_ids"] == [f"v{i}" for i in range(7)] and done["record_group_ids"] == ["c1-g1", "c1-g2", "c1-g3"]      # also those removed before the interruption
+    nodes_left, edges_left = await snapshot(w)
+    assert not [n for n in nodes_left if n[1].startswith("c1") or n[0] == "connectorDeleteHandles"] and ("topics", "only-c1") not in nodes_left
+    assert {("topics", "shared"), ("records", "other-r")} <= nodes_left and done["deleted_orphan_taxonomy_count"] == 1
+    assert not [e for e in edges_left if "c1" in e[2] + e[4]]
+    assert (await w.p.delete_connector_instance("c1", w.org))["success"] is False
+
+
+async def test_a_connector_of_many_records_goes_in_batches_of_the_chunk_size(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await open_world(w)
+    monkeypatch.setattr(delete_module, "_CHUNK", 2)
+    real = delete_module._remove_records
+    sizes: list[int] = []
+
+    async def spy(tx: Tx, org: str, ids: list[str]) -> int:
+        sizes.append(len(ids))
+        return await real(tx, org, ids)
+    monkeypatch.setattr(delete_module, "_remove_records", spy)
+    got = await w.p.delete_connector_instance("c1", w.org)
+    assert got["deleted_records_count"] == 7 and got["deleted_record_groups_count"] == 3 and sizes == [2, 2, 2, 1]
+
+
+async def test_two_deletes_of_one_connector_at_once_leave_one_answer_that_names_every_id(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+    await open_world(w)
+    monkeypatch.setattr(delete_module, "_CHUNK", 2)
+    for _ in range(4):
+        got = await asyncio.gather(w.p.delete_connector_instance("c1", w.org), w.p.delete_connector_instance("c1", w.org))
+        won = [g for g in got if g["success"]]
+        assert len(won) == 1, got
+        assert won[0]["virtual_record_ids"] == [f"v{i}" for i in range(7)] and won[0]["record_group_ids"] == ["c1-g1", "c1-g2", "c1-g3"]      # also what the other run removed
+        assert won[0]["deleted_orphan_taxonomy_count"] == 1
+        nodes, _ = await snapshot(w)
+        assert not [n for n in nodes if n[1].startswith("c1") or n[0] == "connectorDeleteHandles"] and ("topics", "only-c1") not in nodes
+        await open_world(w)
+
+
+async def test_the_nodes_of_a_collection_with_no_index_on_the_connector_go_a_batch_at_a_time_and_a_batch_that_removes_nothing_fails(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await open_world(w)
+    monkeypatch.setattr(delete_module, "_CHUNK", 2)
+    real = delete_module._remove_nodes
+    sizes: list[int] = []
+
+    async def spy(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
+        if coll == "stageStates":
+            sizes.append(len(keys))
+        return await real(tx, org, coll, keys)
+    monkeypatch.setattr(delete_module, "_remove_nodes", spy)
+    assert (await w.p.delete_connector_instance("c1", w.org))["success"] is True
+    assert sizes == [2, 2, 1] and ("stageStates", "other-ss") in (await snapshot(w))[0]      # c1-ssv went with its record; another connector's stays
+
+    await open_world(w)
+
+    async def nothing(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
+        return 0 if coll == "stageStates" else await real(tx, org, coll, keys)
+    monkeypatch.setattr(delete_module, "_remove_nodes", nothing)
+    got = await w.p.delete_connector_instance("c1", w.org)
+    assert got["success"] is False and got["partial"] is True and "stageStates" in got["error"]
+    monkeypatch.setattr(delete_module, "_remove_nodes", real)
+    assert (await w.p.delete_connector_instance("c1", w.org))["success"] is True

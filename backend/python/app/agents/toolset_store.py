@@ -25,6 +25,7 @@ from app.agents.constants.toolset_constants import (
     get_toolset_user_instance_path,
     get_toolset_user_instances_prefix,
 )
+from app.config.configuration_service import delete_config_confirmed
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.env_utils import env_int
 from app.utils.url_fetcher import FetchError, resolve_public_http_target
@@ -200,7 +201,7 @@ async def delete_personal_instance(config_service: ConfigurationService, instanc
         RuntimeError: the instance record itself couldn't be deleted.
     """
     deleted = await delete_instance_credentials(config_service, instance["_id"])
-    if not await config_service.delete_config(personal_instance_path(instance)):
+    if not await delete_config_confirmed(config_service, personal_instance_path(instance)):
         raise RuntimeError(f"Couldn't delete personal toolset instance {instance['_id']}")
     await delete_instance_rules(config_service, instance["_id"])
     try:

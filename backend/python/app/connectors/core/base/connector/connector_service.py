@@ -3,6 +3,7 @@ import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 import copy
+import json
 from logging import Logger
 from typing import Any, Dict, List, Literal, Optional
 import weakref
@@ -84,6 +85,30 @@ class ActionItem(BaseModel):
     message: str
     action: Literal["authenticate"] | None = None
     docs_url: str | None = Field(default=None, serialization_alias="docsUrl")
+    # Values for the UI's own wording of a known item (``actionItems.known.<code>``).
+    params: dict[str, str] | None = None
+
+
+def replace_action_item(connector: object, code: str, item: ActionItem | None) -> None:
+    """Set or clear the connector's item ``code`` for this run, keeping its other items.
+
+    The runner writes ``last_action_items`` only when it is a list, so this always
+    leaves one: an empty list clears the card's badge.
+    """
+    items = [i for i in (getattr(connector, "last_action_items", None) or []) if i.code != code]
+    if item is not None:
+        items.append(item)
+    connector.last_action_items = items
+
+
+def action_items_json(items: list[ActionItem]) -> str | None:
+    """Action items as the app doc stores them: JSON text, or None when nothing is left
+    to do, which clears the card's badge."""
+    return json.dumps([
+        # params is newer than the stored shape; other items keep exactly the keys they had.
+        item.model_dump(by_alias=True, exclude={"params"} if item.params is None else None)
+        for item in items
+    ]) if items else None
 
 
 class ConnectorSyncSkippedError(Exception):

@@ -6,18 +6,21 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 from app.api.middlewares.admin_gate import require_admin_caller
-from app.api.middlewares.request_context import RequestContextMiddleware
+from app.api.middlewares.request_log import (
+    install_request_logging,
+    mark_request_failure,
+)
 from app.api.routes.chatbot import warm_up_entity_vector_store
 from app.api.routes.records import router as records_router
 from app.core.envelope import configure_from_config as configure_envelope
-from app.core.org_context import spawn_detached
+from app.core.org_context import spawn_detached, system
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
@@ -56,8 +59,8 @@ from app.services.messaging.utils import MessagingUtils
 from app.telemetry.setup import setup_telemetry
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
 from app.utils.process_hardening import mark_process_non_dumpable
+from app.utils.route_template import route_template
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.url_redaction import redact_sensitive_query_params
 from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
 
@@ -258,8 +261,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start message consumers: {str(e)}")
         raise
 
-    # Get all organizations
-    orgs = await graph_provider.get_all_orgs()
+    # Only the list is cross-org: tasks started below must not inherit this scope.
+    with system("query_startup"):
+        orgs = await graph_provider.get_all_orgs()
     if not orgs:
         logger.info("No organizations found in the system")
     else:
@@ -304,7 +308,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
 
                 app.state.skills_seed_task = asyncio.create_task(
-                    reconcile_builtin_skills_for_orgs(graph_provider, orgs)
+                    reconcile_builtin_skills_for_orgs(graph_provider)
                 )
         except Exception as e:
             logger.warning(f"Builtin skill seeding not scheduled at startup (requests will retry): {e}")
@@ -530,32 +534,16 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
         return await call_next(request)
 
     try:
-        # Apply authentication
         authenticated_request = await authMiddleware(request)
-        # Continue with the request
-        return await call_next(authenticated_request)
-
     except HTTPException as exc:
-        # Handle authentication errors
+        mark_request_failure(request, exc)
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    except Exception:
-        # Handle unexpected errors. This wraps every route, so an uncaught
-        # exception anywhere in the app ends up here: log it with its
-        # traceback, otherwise the only trace of a crashing route is a
-        # generic 500 and nothing in the server logs.
-        container.logger().exception(
-            "Unhandled exception while processing %s %s",
-            request.method,
-            request.url.path,
-        )
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal server error"},
-        )
+    # A route's exception is logged and answered by http.request.end (request_log).
+    return await call_next(authenticated_request)
 
 
-# Trace context — outermost, before auth.
-app.add_middleware(RequestContextMiddleware)
+# Trace context and the request line — outside auth, so both see every request.
+install_request_logging(app)
 telemetry = setup_telemetry(app, service_name="query_service")
 
 
@@ -584,11 +572,11 @@ async def health_check() -> JSONResponse:
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     """Answer a malformed request in plain words, keeping FastAPI's ``detail`` list shape."""
     errors = jsonable_encoder(exc.errors())
+    # No URL: its query can carry an email or a token. The request's http.request.end has the method and status.
     logging.getLogger(__name__).warning(
-        "Request validation failed for %s %s: %s",
-        request.method,
-        redact_sensitive_query_params(str(request.url)),
+        "Request validation failed: %s",
         log_safe_validation_errors(errors),
+        extra={"route": route_template(request.scope)},
     )
     message, detail = friendly_validation_errors(errors)
     return JSONResponse(status_code=422, content={"message": message, "detail": detail})
@@ -684,7 +672,7 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
         argv = [
             sys.executable, "-m", "uvicorn", "app.query_main:app",
             "--host", host, "--port", str(port),
-            "--log-level", "info", "--workers", str(workers),
+            "--log-level", "info", "--no-access-log", "--workers", str(workers),
             "--timeout-worker-healthcheck", str(uvicorn_worker_healthcheck_timeout()),
         ]
         try:
@@ -703,6 +691,7 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
         host=host,
         port=port,
         log_level="info",
+        access_log=False,
         reload=reload,
         workers=workers,
         timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),

@@ -564,6 +564,7 @@
     "created": "Vytvořeno",
     "updated": "Aktualizováno",
     "source": "Zdroj",
+    "actions": "Akce",
     "noData": "Žádná data k dispozici",
     "loading": "Načítání dat...",
     "selectAll": "Vybrat vše",
@@ -615,6 +616,8 @@
     "pagination": {
       "showing": "Zobrazeno {{start}}-{{end}} z {{total}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "Zobrazeno {{start}}-{{end}} z nejméně {{total}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "{{value}} na stránku"
     },
     "yes": "Ano",
@@ -772,6 +775,10 @@
     "indexingStatus": {
       "completed": "Dokončeno",
       "inProgress": "Probíhá",
+      "embeddingProgress_one": "Vkládání {{done, number}} / {{total, number}} úseku",
+      "embeddingProgress_few": "Vkládání {{done, number}} / {{total, number}} úseků",
+      "embeddingProgress_many": "Vkládání {{done, number}} / {{total, number}} úseků",
+      "embeddingProgress_other": "Vkládání {{done, number}} / {{total, number}} úseků",
       "failed": "Selhalo",
       "fileTypeNotSupported": "Nepodporovaný typ souboru",
       "notStarted": "Nezahájeno",
@@ -836,7 +843,8 @@
     "nameRules": {
       "folderSeparator": "Názvy složek nesmí obsahovat \"/\" ani \"\\\".",
       "collectionExists": "Kolekci s názvem \"{{name}}\" už máte. Zvolte jiný název."
-    }
+    },
+    "sourcesNotReady": "Některé zdroje se ještě připravují a zatím nejsou uvedeny ({{count}}). Zkuste to za chvíli znovu."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -977,7 +985,17 @@
     "copy": "Kopírovat",
     "fork": "Rozvětvit chat",
     "forkFromHere": "Rozvětvit odtud",
+    "forkedHere": "Rozvětveno zde",
+    "untitledChat": "Nepojmenovaný chat",
+    "forkedFrom": "Rozvětveno z",
+    "copiedUpToHere": "Zkopírováno až sem · nové zprávy začínají níže",
+    "forkOriginUnavailable": "původní chat již není dostupný",
     "regenerate": "Vygenerovat znovu",
+    "answerHidden": {
+      "lost": "Tato odpověď použila obsah, ke kterému již nemáte přístup.",
+      "unconfirmed": "Nepodařilo se ověřit váš přístup. Zkuste to znovu.",
+      "askAgain": "Zeptat se znovu"
+    },
     "readAloud": "Přečíst nahlas",
     "stopReading": "Zastavit čtení",
     "ttsNotSupported": "Převod textu na řeč není v tomto prohlížeči podporován",
@@ -1674,6 +1692,15 @@
         "done": "Hotovo",
         "error": "Selhalo"
       }
+    },
+    "webSearchSetup": {
+      "title": "Vyhledávání na webu zatím není nastaveno",
+      "adminBody": "Vaše organizace nemá nastaveného žádného poskytovatele vyhledávání. Vyberte jej v Workspace → Vyhledávání na webu a zapněte tak vyhledávání pro všechny.",
+      "memberBody": "Vaše organizace zatím nenastavila poskytovatele vyhledávání na webu, takže odpovědi nemohou web používat.",
+      "memberHint": "Požádejte správce, aby jej nastavil v Workspace → Vyhledávání na webu.",
+      "setUp": "Nastavit vyhledávání na webu",
+      "notNow": "Teď ne",
+      "gotIt": "Rozumím"
     }
   },
   "workspaceMenu": {
@@ -1721,6 +1748,8 @@
         "demoteAdminBeforeRemove": "Nejprve změňte roli správce na člena a poté jej odeberte.",
         "removeUserTitle": "Odebrat uživatele?",
         "removeUserMessage": "Opravdu chcete odebrat uživatele {{email}} z pracovního prostoru {{workspace}}?",
+        "removeUserOAuthAppsOne": "Tento uživatel vytvořil 1 aplikaci OAuth. Přejde na vás, aby lidé, kteří se přes ni připojili, zůstali připojeni.",
+        "removeUserOAuthAppsMany": "Počet aplikací OAuth, které tento uživatel vytvořil: {{count}}. Přejdou na vás, aby lidé, kteří se přes ně připojili, zůstali připojeni.",
         "removeButton": "Odebrat",
         "cancelButton": "Zrušit",
         "removeSuccess": "Uživatel byl úspěšně odebrán",
@@ -2047,7 +2076,8 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "Vytvářejte a spravujte OAuth aplikace, které jste zaregistrovali. Vaše aplikace zde vidíte pouze vy.",
+      "subtitle": "Vytvářejte a spravujte OAuth aplikace, které jste zaregistrovali. Vidíte je jen vy a správci vaší organizace.",
+      "subtitleAdmin": "Všechny aplikace OAuth ve vaší organizaci a kdo je vytvořil. Pozastavte nebo smažte každou aplikaci, kterou neznáte.",
       "searchPlaceholder": "Hledat...",
       "newApplication": "Nová OAuth aplikace",
       "emptyTitle": "Žádné aplikace OAuth 2.0",
@@ -2057,6 +2087,7 @@
       "retry": "Zkusit znovu",
       "scopesBadgeOne": "{{count}} rozsah",
       "scopesBadgeMany": "{{count}} rozsahů",
+      "createdBy": "Vytvořil(a): {{name}}",
       "manage": "Spravovat",
       "noSearchResults": "Vašemu hledání neodpovídají žádné aplikace.",
       "manageComingSoonTitle": "Již brzy",
@@ -2067,6 +2098,7 @@
         "saveDisabledNoChanges": "Žádné změny k uložení.",
         "saveDisabledInvalid": "Před uložením opravte chyby validace.",
         "tabAdvanced": "Pokročilé",
+        "creatorOnlyNotice": "Tuto aplikaci může změnit jen ten, kdo ji vytvořil. V části Pokročilé ji můžete pozastavit nebo smazat.",
         "aboutHeading": "O aplikaci",
         "aboutHelper": "Toto Client ID použijte ve svých OAuth tocích.",
         "copyClientIdAria": "Kopírovat Client ID",
@@ -2548,6 +2580,7 @@
       "nav": {
         "general": "Obecné",
         "labs": "Labs",
+        "mcpAccess": "Přístup MCP",
         "authentication": "Ověřování",
         "connectors": "Konektory",
         "mcpServers": "MCP servery",
@@ -2841,6 +2874,30 @@
         "cancel": "Pokračovat v úpravách"
       }
     },
+    "mcpAccess": {
+      "title": "Přístup MCP",
+      "subtitle": "Zvolte, co mohou klienti MCP, jako Claude, Cursor nebo ChatGPT, v tomto pracovním prostoru dělat přes jeho koncový bod /mcp.",
+      "enabled": {
+        "label": "Povolit přístup MCP",
+        "description": "Je-li vypnuto, každý požadavek klienta MCP je odmítnut. Připojení klienti začnou znovu fungovat, jakmile jej opět zapnete."
+      },
+      "writeTools": {
+        "label": "Povolit zapisující nástroje",
+        "description": "Je-li vypnuto, klienti MCP nemohou vytvářet kolekce, nahrávat soubory ani přidávat weby a chat nespouští připojené akce."
+      },
+      "tools": {
+        "title": "Nástroje",
+        "subtitle": "Vypněte jednotlivé nástroje. Vypnutý nástroj se klientům MCP nenabízí a jeho volání jsou odmítnuta.",
+        "writes": "Zapisuje"
+      },
+      "appliesNote": "Změny se na nové požadavky MCP uplatní během několika sekund.",
+      "loadError": "Nastavení přístupu MCP se nepodařilo načíst. Zkuste stránku načíst znovu.",
+      "toasts": {
+        "saveSuccess": "Nastavení přístupu MCP uloženo",
+        "saveError": "Nastavení přístupu MCP se nepodařilo uložit",
+        "saveErrorDescription": "Zkontrolujte připojení a zkuste to znovu."
+      }
+    },
     "labs": {
       "title": "Konfigurace platformy",
       "subtitle": "Změny nastavení platformy se týkají všech uživatelů a projeví se okamžitě.",
@@ -2945,6 +3002,11 @@
           "samlSso": "SAML SSO",
           "oauth": "OAuth"
         }
+      },
+      "enterpriseSso": {
+        "title": "Jednotné přihlášení SAML a OpenID Connect",
+        "description": "Přihlašujte uživatele přes Okta, OneLogin nebo jiného poskytovatele identity SAML 2.0 či OpenID Connect.",
+        "contactSales": "Pro nákup napište na {{email}}"
       }
     },
     "connectors": {
@@ -3401,7 +3463,28 @@
         "loadingOptions": "Načítání možností…",
         "noResults": "Nebyly nalezeny žádné výsledky",
         "loadingMore": "Načítání dalších…",
-        "optionsLoadFailed": "Možnosti tohoto filtru se nepodařilo načíst. Zavřete tento seznam a znovu jej otevřete, abyste to zkusili znovu."
+        "optionsLoadFailed": "Možnosti tohoto filtru se nepodařilo načíst. Zavřete tento seznam a znovu jej otevřete, abyste to zkusili znovu.",
+        "folderPaths": {
+          "help": "Cesty začínají na nejvyšší úrovni. * odpovídá libovolným znakům v rámci jednoho názvu složky, ** libovolnému počtu složek, ? jednomu znaku. Zahrnuje se vše uvnitř odpovídající složky. Vzor, který nic nenajde, se zobrazí na kartě konektoru.",
+          "examples": {
+            "oneLevel": "customer/*/quotes: složka quotes každého zákazníka",
+            "anyDepth": "**/quotes: každá složka s názvem quotes v libovolné hloubce (čte každou složku)",
+            "exclude": "archive s možností Vyloučit: vše kromě složky archive"
+          },
+          "caseInsensitive": "Na velikosti písmen v názvech nezáleží. Složky oddělují \\ i /.",
+          "caseSensitive": "Na velikosti písmen v názvech záleží. Napište \\* nebo \\?, chcete-li tyto znaky v názvu najít doslova.",
+          "notFiles": "Vzory vybírají složky, ne soubory. Typy souborů vyberete filtrem File Extensions.",
+          "errors": {
+            "climbsOut": "Složka „{{value}}“ musí být cesta od nejvyšší úrovně, bez „..“.",
+            "emptySegment": "Složka „{{value}}“ obsahuje prázdný název složky mezi dvěma lomítky. Odstraňte nadbytečné „/“.",
+            "excludesEverything": "Vyloučením „{{value}}“ nezbude nic k synchronizaci. Odeberte ji, nebo přepněte na Zahrnout.",
+            "tooLong": "Složka „{{value}}“ je delší než 1024 znaků.",
+            "uncPath": "Složka „{{value}}“ vypadá jako síťová cesta. Začněte na nejvyšší úrovni sdílené složky, bez \\\\server\\share.",
+            "doubleStarInName": "Ve složce „{{value}}“ musí být „**“ celý název složky, například reports/**/2026. Pro část názvu použijte „*“.",
+            "tooManyDoubleStars": "Složka „{{value}}“ používá „**“ více než 4krát. Použijte méně.",
+            "tooManyStars": "Název složky v „{{value}}“ obsahuje více než 16 „*“. Použijte méně."
+          }
+        }
       },
       "syncStrategies": {
         "SCHEDULED": "Plánovaná",
@@ -3547,7 +3630,24 @@
         "badge": "Vyžaduje akci",
         "title": "Vyžaduje akci",
         "openAuthentication": "Aktualizovat ověření",
-        "viewSteps": "Zobrazit postup nastavení"
+        "viewSteps": "Zobrazit postup nastavení",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki odmítá dotazy na členy a strukturu stránek",
+            "message": "Soukromé prostory se synchronizují jen s přístupem potvrzeným při dřívější synchronizaci, a to jen {{days}} dní po jeho potvrzení. Soukromé prostory, které nikdy nebyly synchronizovány nebo byly potvrzeny dříve, se přeskočí a hierarchie stránek není k dispozici. Otevřených prostorů se to netýká. Úplná synchronizace, včetně té spuštěné změnou filtrů, to pro soukromé prostory ukončí, dokud Drupal Wiki znovu nevypíše jejich členy.",
+            "message_dated": "Soukromé prostory se synchronizují jen s přístupem potvrzeným při dřívější synchronizaci, a to jen {{days}} dní po jeho potvrzení. Soukromé prostory, které nikdy nebyly synchronizovány nebo byly potvrzeny dříve, se přeskočí a hierarchie stránek není k dispozici. Otevřených prostorů se to netýká. Úplná synchronizace, včetně té spuštěné změnou filtrů, to pro soukromé prostory ukončí, dokud Drupal Wiki znovu nevypíše jejich členy. Nejstarší používaný přístup byl potvrzen {{confirmedOn}}."
+          },
+          "folder_filter_unmatched": {
+            "title": "Vzor složky nic nenašel",
+            "message": "Žádná složka, kterou tento konektor synchronizuje, neodpovídá {{values}}, takže se pro něj nic nesynchronizuje. Zkontrolujte pravopis ve filtru Folders.",
+            "title_several": "Vzory složek bez shody: {{count}}",
+            "message_several": "Žádná složka, kterou tento konektor synchronizuje, neodpovídá {{values}}, takže se pro ně nic nesynchronizuje. Zkontrolujte pravopis ve filtru Folders.",
+            "title_exclude": "Vzor složky nic nenašel",
+            "message_exclude": "Žádná složka, kterou tento konektor synchronizuje, neodpovídá {{values}}, takže nic nevylučuje. Zkontrolujte pravopis ve filtru Folders.",
+            "title_several_exclude": "Vzory složek bez shody: {{count}}",
+            "message_several_exclude": "Žádná složka, kterou tento konektor synchronizuje, neodpovídá {{values}}, takže nic nevylučují. Zkontrolujte pravopis ve filtru Folders."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Tato data uvidí všichni ve vaší organizaci",
@@ -3557,6 +3657,107 @@
         "cancel": "Zrušit",
         "continueTeam": "Pokračovat s týmovým konektorem",
         "goToPersonal": "Nastavit osobní konektor"
+      },
+      "accessCheck": {
+        "open": "Zkontrolovat přístup osoby",
+        "title": "Zkontrolovat přístup osoby",
+        "description": "Zjistěte, zda osoba může číst záznam z tohoto konektoru, a proč ne.",
+        "personLabel": "Osoba",
+        "personPlaceholder": "Vyberte osobu",
+        "peopleLoading": "Načítání osob...",
+        "peopleFailed": "Seznam osob se nepodařilo načíst.",
+        "recordLabel": "ID záznamu",
+        "recordHint": "Otevřete záznam a zkopírujte jeho ID.",
+        "check": "Zkontrolovat",
+        "checking": "Kontroluje se...",
+        "close": "Zavřít",
+        "resultHeading": "Výsledek",
+        "restrictedArea": "omezená oblast",
+        "theyFallback": "Tato osoba",
+        "pathLabel": "Umístění: {{path}}",
+        "reference": "Reference: {{ref}} (předejte ji podpoře, pokud se důvod zdá chybný)",
+        "verdict": {
+          "granted": "{{name}} tento záznam vidí.",
+          "denied": "{{name}} tento záznam nevidí."
+        },
+        "reason": {
+          "granted": "Pokud ve vyhledávání chybí, možná ještě není indexován nebo konektor stále synchronizuje.",
+          "not_linked": "{{name}} nemá k tomuto konektoru propojený účet.",
+          "no_grant": "Nic v {{container}} nedává osobě {{name}} přístup.",
+          "restricted_container": "{{container}} je omezeno na jiné osoby.",
+          "item_restricted": "Tento záznam má vlastní omezení a {{name}} v něm není.",
+          "parent_not_readable": "{{name}} nemůže otevřít nadřazenou položku, kterou tento záznam potřebuje.",
+          "pending_rewrite": "Složka tohoto záznamu se právě aktualizuje.",
+          "syncing": "Konektor ještě nedokončil synchronizaci této části.",
+          "scheme_unreadable": "Konektor nemůže přečíst pravidla přístupu pro tuto oblast, proto je skrytá pro všechny.",
+          "deleted_at_source": "Tento záznam byl smazán ve zdroji.",
+          "unexplained": "Důvod nelze zobrazit."
+        },
+        "next": {
+          "not_linked": "Opravte účet ve zdroji a poté synchronizujte.",
+          "no_grant": "Přidejte osobu {{name}} ve zdroji.",
+          "restricted_container": "Požádejte vlastníka, aby přidal osobu {{name}}.",
+          "item_restricted": "Požádejte vlastníka, aby přidal osobu {{name}}.",
+          "parent_not_readable": "Sdílejte nadřazenou položku s osobou {{name}}.",
+          "pending_rewrite": "Počkejte několik minut a pak zkontrolujte znovu.",
+          "syncing": "Počkejte na dokončení synchronizace.",
+          "scheme_unreadable": "Opravte oprávnění synchronizačního účtu ve zdroji.",
+          "deleted_at_source": "Není co dělat.",
+          "unexplained": "Obraťte se na podporu a sdělte jí referenci."
+        },
+        "errors": {
+          "failed": "Kontrolu se nepodařilo provést. Zkuste to znovu.",
+          "notFound": "Tato osoba nebo záznam v tomto konektoru nebyl nalezen.",
+          "rateLimited": "Příliš mnoho kontrol. Zkuste to znovu za minutu."
+        },
+        "peopleRetry": "Zkusit znovu",
+        "askedAbout": "K záznamu {{record}}"
+      },
+      "access": {
+        "title": "Přístup",
+        "loading": "Načítání podrobností o přístupu…",
+        "loadError": "Podrobnosti o přístupu se nepodařilo načíst.",
+        "retry": "Zkusit znovu",
+        "reach": "Změny v {{connector}} se v PipesHub projeví do {{interval}}.",
+        "reachUnknown": "Změny v {{connector}} se v PipesHub projeví při další synchronizaci.",
+        "syncNow": "Synchronizovat oprávnění nyní",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "Oprávnění",
+          "succeeded": "Naposledy aktualizováno {{when}}.",
+          "failed": "Poslední aktualizace oprávnění selhala, takže nedávné změny ve zdroji nemusí být ještě uplatněny. Zkuste to znovu volbou „Synchronizovat oprávnění nyní“.",
+          "never": "Oprávnění zatím nebyla aktualizována. Obsah tohoto konektoru zůstane skrytý, dokud neskončí první synchronizace.",
+          "running": "Oprávnění se právě aktualizují.",
+          "incomplete": "Poslední aktualizace oprávnění nedoběhla do konce."
+        },
+        "pending": {
+          "label": "Čeká na použití",
+          "none": "Nic nečeká.",
+          "some_one": "Aktualizuje se {{count}} složka. Je skrytá pro všechny, dokud aktualizace neskončí, obvykle několik minut.",
+          "some_few": "Aktualizují se {{count}} složky. Jsou skryté pro všechny, dokud aktualizace neskončí, obvykle několik minut.",
+          "some_many": "Aktualizuje se {{count}} složky. Jsou skryté pro všechny, dokud aktualizace neskončí, obvykle několik minut.",
+          "some_other": "Aktualizuje se {{count}} složek. Jsou skryté pro všechny, dokud aktualizace neskončí, obvykle několik minut.",
+          "overflow": "Změna se dotkla celého konektoru, proto je nutné jeho index oprávnění zcela znovu vytvořit. Do té doby vyhledávání kontroluje každý výsledek, takže kvůli tomu nic není skryto.",
+          "unknown": "Neznámé: seznam složek čekajících na aktualizaci nelze přečíst. Viz „Vyžaduje pozornost“."
+        },
+        "attention": {
+          "label": "Vyžaduje pozornost ({{count}})",
+          "none": "Nic nevyžaduje pozornost.",
+          "warning": "Položek skrytých v {{container}}: {{items}}. Synchronizační účet nemůže číst oprávnění tohoto kontejneru.",
+          "fix": "Řešení: udělte synchronizačnímu účtu v {{vendor}} oprávnění {{permission}} a poté zvolte Synchronizovat oprávnění nyní.",
+          "showAll": "Zobrazit dalších {{count}}",
+          "warningNoContainer": "Některé položky jsou skryté, protože synchronizační účet nemůže přečíst jejich oprávnění.",
+          "rebuild": "Index oprávnění tohoto konektoru je nutné zcela znovu vytvořit. Do té doby vyhledávání kontroluje každý výsledek, takže kvůli tomu nic není skryto.",
+          "unfinished": "Změna oprávnění neskončila čistě. Požádejte provozovatele PipesHub o kontrolu indexu oprávnění tohoto konektoru.",
+          "stale": "Některé položky rychlejší vyhledávání nemohlo zkontrolovat, a jsou proto nalezeny klasickým vyhledáváním.",
+          "sweep": "Aktualizace oprávnění tohoto konektoru opakovaně selhávají. Požádejte provozovatele PipesHub o kontrolu jeho protokolů.",
+          "other": "Na oprávnění tohoto konektoru se musí někdo podívat.",
+          "unreadable": "Seznam složek čekajících na aktualizaci nelze přečíst. Požádejte provozovatele PipesHub o opětovné vytvoření indexu oprávnění tohoto konektoru. Vyhledávání mezitím kontroluje každý výsledek."
+        }
       }
     },
     "mcpServers": {
@@ -4286,6 +4487,11 @@
         "settingDefault": "Nastavuje se…",
         "editConfiguration": "Upravit konfiguraci",
         "deleteConfiguration": "Smazat konfiguraci"
+      },
+      "duckduckgoWarning": "Na sdílených serverech může být blokován nebo omezován. Pro týmy nedoporučujeme.",
+      "notSetUp": {
+        "title": "Vyhledávání na webu zatím není nastaveno.",
+        "description": "Vyberte níže poskytovatele a zapněte ho. Do té doby nikdo ve vaší organizaci nemůže v chatu vyhledávat na webu."
       }
     },
     "profile": {
@@ -5503,6 +5709,7 @@
     "requestHeading": "Tato aplikace žádá o přístup k:",
     "unreviewedApp": "Tato aplikace se zaregistrovala sama. Žádný správce ji nezkontroloval.",
     "clientIdHost": "Identifikována doménou {{host}}",
+    "registeredBy": "Zaregistroval(a): {{name}}",
     "redirectTo": "Vrátí vás na {{uri}}",
     "notGrantedHeading": "Tato aplikace požádala také o následující oprávnění. Její nastavení je nepovoluje, takže je nezíská:",
     "notGrantedOwnerHint": "Osoba, která tuto aplikaci vytvořila, je může přidat v Nastavení pracovního prostoru → Nastavení pro vývojáře → OAuth 2.0 aplikace.",
@@ -6003,5 +6210,20 @@
     },
     "nothingNew": "U tohoto uzlu není co dalšího zobrazit.",
     "tableOnly": "Zobrazuje se jen tabulka, aby vše zůstalo plynulé."
+  },
+  "accessNotice": {
+    "permissions_updating": "Některé zdroje aktualizují oprávnění, takže několik minut může chybět část výsledků.",
+    "connector_syncing": "{{name}} se stále synchronizuje, takže výsledky z něj mohou být neúplné.",
+    "connector_syncing_unnamed": "Zdroj se stále synchronizuje, takže výsledky z něj mohou být neúplné.",
+    "check_unavailable": "Právě teď se nepodařilo zjistit, ke kterým dokumentům máte přístup, proto se nezobrazují žádné výsledky. Zkuste to znovu za minutu.",
+    "emptySyncing": "Zatím není co prohledávat. {{name}} se stále synchronizuje.",
+    "emptySyncing_unnamed": "Zatím není co prohledávat. Zdroj se stále synchronizuje.",
+    "noAccess": {
+      "title": "K této položce nemáte přístup",
+      "body": "Mohla být přesunuta, smazána nebo omezena. Zeptejte se vlastníka, nebo ji otevřete tam, odkud pochází, pokud máte odkaz.",
+      "justGotAccess": "Právě jste získali přístup ve zdroji? Nový přístup se objeví po další synchronizaci.",
+      "copyDetails": "Zkopírovat podrobnosti pro správce",
+      "copied": "Podrobnosti zkopírovány"
+    }
   }
 }

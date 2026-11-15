@@ -19,15 +19,13 @@ import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
 import FormData from 'form-data';
 
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { Logger } from '../../../libs/services/logger.service';
 import {
   BadGatewayError,
   ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
+import { withCause } from '../../../libs/errors/base.error';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
-
-const logger = Logger.getInstance({ service: 'Skills Proxy' });
 
 const SKILLS_BASE = '/api/v1/skills';
 
@@ -64,6 +62,8 @@ function buildForwardHeaders(
   return { ...headers, ...extra };
 }
 
+// Not logged here: the call's upstream.call.end line and the error middleware's
+// line (which shows the axios error as the cause, without its body) report it.
 function mapAxiosError(error: unknown, action: string): Error {
   const err = error as {
     response?: { status: number; data: unknown };
@@ -71,23 +71,19 @@ function mapAxiosError(error: unknown, action: string): Error {
     message?: string;
   };
   if (err?.response) {
-    logger.error(`${action} upstream returned ${err.response.status}`, {
-      status: err.response.status,
-      data: err.response.data,
-    });
-    return new BadGatewayError(
+    const mapped = new BadGatewayError(
       typeof err.response.data === 'object' && err.response.data !== null
         ? ((err.response.data as Record<string, unknown>).detail as string) ||
           ((err.response.data as Record<string, unknown>).message as string) ||
           `${action} failed (upstream ${err.response.status})`
         : `${action} failed (upstream ${err.response.status})`,
     );
+    return withCause(mapped, error);
   }
-  logger.error(`${action} upstream unreachable`, {
-    code: err?.code,
-    message: err?.message,
-  });
-  return new ServiceUnavailableError(`${action} failed: skills service is unavailable`);
+  return withCause(
+    new ServiceUnavailableError(`${action} failed: skills service is unavailable`),
+    error,
+  );
 }
 
 type PathBuilder = (req: AuthenticatedUserRequest) => string;

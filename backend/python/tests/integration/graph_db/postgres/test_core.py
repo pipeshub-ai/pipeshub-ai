@@ -147,6 +147,7 @@ CALLS = [
     ("create_node_if_absent", ("k", "things", {}), {}),
     ("update_node", ("k", "things", {"v": 1}), {}),
     ("increment_node_field", ("k", "things", "v"), {}),
+    ("store_time", (), {}),
     ("batch_update_nodes", ([{"_key": "k", "v": 1}], "things"), {}),
     ("update_node_fields_if_match", ("k", "things", {"v": 1}, {"v": 0}), {}),
     ("delete_nodes", (["k"], "things"), {}),

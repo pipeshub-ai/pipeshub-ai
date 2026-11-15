@@ -16,8 +16,11 @@ from app.sources.client.drupal_wiki.graphql import (
 )
 from app.sources.client.graphql.response import GraphQLResponse
 from app.sources.external.drupal_wiki.graphql import (
+    DrupalWikiGraphQLAuthError,
     DrupalWikiGraphQLDataSource,
     DrupalWikiGraphQLError,
+    DrupalWikiGraphQLRefusedError,
+    DrupalWikiGraphQLTransientError,
 )
 
 BASE_URL = "https://wiki.example.com"
@@ -186,4 +189,96 @@ class TestFailuresCarryTheWikisReason:
         inner.execute = AsyncMock(side_effect=httpx.ReadTimeout(""))
 
         with pytest.raises(DrupalWikiGraphQLError, match="RoleMemberManagerData failed: ReadTimeout$"):
+            await source.get_space_members(12)
+
+
+def wiki_source(body: object, status: int) -> DrupalWikiGraphQLDataSource:
+    """A data source whose wiki answers every operation with ``body`` and ``status``."""
+    rest = DrupalWikiRESTClientViaToken(BASE_URL, "secret")
+    rest.execute = AsyncMock(return_value=http_response(body, status=status))
+    return DrupalWikiGraphQLDataSource(DrupalWikiGraphQLClient(DrupalWikiGraphQLClientViaToken(rest)))
+
+
+# Drupal Wiki 8.44 refuses both operations for a personal access token with exactly this.
+REFUSED_844 = {"errors": [{"message": "QueryNotAllowed", "extensions": {"code": "QUERY_NOT_ALLOWED"}}]}
+REFUSED_CLASSIFIED = {"errors": [{"message": "QueryNotAllowed", "extensions": {"classification": "QueryNotAllowed"}}]}
+
+
+def refusal(code: str) -> dict:
+    return {"errors": [{"message": code, "extensions": {"code": code}}]}
+
+
+class TestARefusalIsTypedApart:
+    """T1: a refusal is told apart from a token the wiki rejects and from a failure that may pass."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("body", "status"),
+        [(REFUSED_844, 400), (REFUSED_844, 200), (REFUSED_844, 403), (REFUSED_CLASSIFIED, 400)],
+    )
+    @pytest.mark.parametrize("operation", ["get_space_members", "get_space_tree"])
+    async def test_query_not_allowed_is_a_refusal_whatever_the_status(
+        self, body: dict, status: int, operation: str
+    ) -> None:
+        with pytest.raises(DrupalWikiGraphQLRefusedError, match="QueryNotAllowed") as caught:
+            await getattr(wiki_source(body, status), operation)(12)
+
+        assert caught.value.kind == "QUERY_NOT_ALLOWED"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("code", ["PERSISTED_QUERY_NOT_FOUND", "PERSISTED_QUERY_NOT_SUPPORTED"])
+    async def test_a_persisted_query_the_wiki_lacks_is_a_refusal_of_its_own_kind(self, code: str) -> None:
+        # Drupal Wiki 8.44 serves only the persisted queries its web UI ships.
+        with pytest.raises(DrupalWikiGraphQLRefusedError) as caught:
+            await wiki_source(refusal(code), 400).get_space_members(12)
+
+        assert caught.value.kind == code
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [500, 502, 503, 429])
+    async def test_a_server_error_or_rate_limit_is_transient(self, status: int) -> None:
+        with pytest.raises(DrupalWikiGraphQLTransientError):
+            await wiki_source({"errors": [{"message": "upstream down"}]}, status).get_space_members(12)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [TimeoutError(), httpx.ReadTimeout(""), httpx.ConnectError("refused")])
+    async def test_a_timeout_or_dropped_connection_is_transient(self, error: Exception) -> None:
+        source, inner = data_source()
+        inner.execute = AsyncMock(side_effect=error)
+
+        with pytest.raises(DrupalWikiGraphQLTransientError):
+            await source.get_space_tree(12)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_a_rejected_token_is_an_auth_error(self, status: int) -> None:
+        body = {"status": status, "title": "Unauthorized", "detail": "Token expired"}
+
+        with pytest.raises(DrupalWikiGraphQLAuthError) as caught:
+            await wiki_source(body, status).get_space_members(12)
+
+        assert not isinstance(caught.value, DrupalWikiGraphQLRefusedError)
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_field_is_neither_refused_nor_transient(self) -> None:
+        body = {"errors": [{"message": "Field 'x' is undefined", "extensions": {"classification": "ValidationError"}}]}
+
+        with pytest.raises(DrupalWikiGraphQLError) as caught:
+            await wiki_source(body, 400).get_space_tree(12)
+
+        assert type(caught.value) is DrupalWikiGraphQLError
+
+
+class TestAnExceptionCarryingAStatusIsTyped:
+    """QA-P1-4: an error raised with the wiki's 401/403 response attached is an auth error."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_a_raised_401_or_403_is_auth_not_transient(self, status: int) -> None:
+        request = httpx.Request("POST", f"{BASE_URL}/graphql")
+        error = httpx.HTTPStatusError("rejected", request=request, response=httpx.Response(status, request=request))
+        source, inner = data_source()
+        inner.execute = AsyncMock(side_effect=error)
+
+        with pytest.raises(DrupalWikiGraphQLAuthError):
             await source.get_space_members(12)

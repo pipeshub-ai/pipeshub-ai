@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import logging
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
@@ -28,8 +29,10 @@ from app.agents.openapi import executor as executor_module
 from app.agents.openapi import service as service_module
 from app.agents.openapi.models import ApiToolsetCredentials
 from app.agents.openapi.store import ApiToolsetStore
+from app.api.middlewares.request_log import install_request_logging
 from app.api.routes import api_toolsets as routes
 from app.utils.desktop_state import DESKTOP_STATE_PREFIX
+from app.utils.logger import log_record_fields
 from tests.support.in_memory_config import InMemoryConfigService
 from tests.unit.agents.mcp.refresh_failures import BODY_SECRET, token_endpoint_error
 
@@ -278,6 +281,23 @@ class TestInstances:
         api.used_by = RuntimeError("graph down")
         assert api.call("DELETE", f"/instances/{created['id']}", user=ADMIN).status_code == 503
         assert api.call("GET", f"/instances/{created['id']}").status_code == 200
+
+    def test_a_usage_check_outage_is_one_warning_with_the_toolset_id(
+        self, api: Harness, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        install_request_logging(api.client.app)  # before the app's first request builds its middleware
+        caplog.set_level(logging.INFO, logger="app")
+        created = api.create()
+        api.used_by = ConnectionError("graph down")
+        caplog.clear()
+
+        resp = api.call("DELETE", f"/instances/{created['id']}", user=ADMIN)
+
+        assert resp.status_code == 503
+        (end,) = [r for r in caplog.records if r.name.startswith("app.") and r.levelno >= logging.WARNING]
+        fields = log_record_fields(end)
+        assert (end.getMessage(), end.levelno, fields["error_class"], fields["cause_type"], fields["toolset_id"]) == (
+            "http.request.end", logging.WARNING, "unavailable", "ConnectionError", created["id"])
 
     def test_delete_removes_the_record_and_every_credential(self, api: Harness) -> None:
         created = api.create()

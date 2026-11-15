@@ -31,6 +31,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.data_processor.pr_links import link_changed_files
 from app.connectors.core.base.error.stream_errors import (
     not_downloadable,
     raise_for_stream_fetch,
@@ -46,6 +47,7 @@ from app.models.blocks import (
     ChildType,
     CommentAttachment,
     DataFormat,
+    FileChangeMetadata,
     GroupSubType,
     GroupType,
 )
@@ -61,7 +63,7 @@ from .constants import (
     PR_FILE_INLINE_CONTENT_MAX_BYTES,
     PR_FILE_INLINE_MAX_FILES,
 )
-from .models import GitHubLiterals, RecordUpdate
+from .models import GitHubLiterals, RecordUpdate, blob_external_id
 
 if TYPE_CHECKING:
     from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
@@ -87,6 +89,11 @@ _IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"II*\x00", "tiff"),
     (b"MM\x00*", "tiff"),
 )
+
+
+def _count(value: object) -> int | None:
+    """A line count GitHub gave, else None: absent is unknown, not 0."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _image_format_from_bytes(image_bytes: bytes) -> str | None:
@@ -1019,6 +1026,13 @@ class CommentsHelper:
                 comments=list(threads.values()),
                 weburl=changes_url,
                 requires_processing=True,
+                file_change_metadata=FileChangeMetadata(
+                    path=filename,
+                    previous_path=previous if previous and status in ("renamed", "copied") else None,
+                    status=status or None,
+                    additions=_count(getattr(file, "additions", None)),
+                    deletions=_count(getattr(file, "deletions", None)),
+                ),
             )
             block_groups.append(bg)
             block_group_number += 1
@@ -1029,6 +1043,10 @@ class CommentsHelper:
                 "past the %s-byte diff limit",
                 pr_number, owner, repo, omitted, len(changed_files), PR_DIFF_TEXT_MAX_BYTES,
             )
+        repo_id = (getattr(record, "external_record_group_id", None) or "").split("-", 1)[0]  # "{repo.id}-pull-requests"
+        if repo_id.isdigit():
+            await link_changed_files(c.data_entities_processor, record, block_groups,
+                                     lambda path: blob_external_id(int(repo_id), path))
         return block_groups, remaining
 
     def _inline_file_content(

@@ -74,7 +74,8 @@ def graph(docs: dict[str, dict | None]) -> MagicMock:
 
 
 def done(**kw: object) -> dict:
-    return {"scopeBackfillState": "done", "scopeBackfillVersion": SCOPE_FIELDS_VERSION, "scopeBackfillGeneration": GEN, **kw}
+    return {"scopeBackfillState": "done", "scopeBackfillVersion": SCOPE_FIELDS_VERSION, "scopeBackfillGeneration": GEN,
+            "scopeBackfillStructureGeneration": 5, "scopeProjectionGeneration": 5, **kw}
 
 
 def comparator(docs: dict[str, dict | None] | None = None, *, scope_value: ViewerScopes | Exception | None = None, **kw: object) -> ShadowComparator:
@@ -182,9 +183,10 @@ async def test_unavailable_scopes_and_no_current_connector_skip_before_any_searc
     assert await comparator(scope_value=ViewerScopesUnavailable("timeout")).compare(ORG, USER, {"a"}, {"a"}, never, never) == {}
     assert _generation_and_metrics.skipped.total("scopes_unavailable") == 1
     for docs in ({}, {"c1": None}, {"c1": done(scopeBackfillState="running")}, {"c1": done(scopeBackfillVersion=SCOPE_FIELDS_VERSION - 1)},
-                 {"c1": done(scopeBackfillGeneration=GEN - 1)}, {"c1": done(scopeProjectionUnsafe=True)}):
+                 {"c1": done(scopeBackfillGeneration=GEN - 1)}, {"c1": done(scopeProjectionUnsafe=True)},
+                 {"c1": done(scopeProjectionGeneration=6)}, {"c1": done(scopeProjectionPendingRoots='{"r":5}')}, {"c1": done(scopeProjectionPendingRoots="x")}):
         assert await comparator(docs).compare(ORG, USER, {"a"}, {"a"}, never, never) == {}
-    assert _generation_and_metrics.skipped.total("no_current_connector") == 6
+    assert _generation_and_metrics.skipped.total("no_current_connector") == 9
     never.assert_not_called()
 
 

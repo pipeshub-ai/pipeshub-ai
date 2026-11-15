@@ -10,7 +10,8 @@ from contextlib import AbstractContextManager
 from datetime import datetime, timedelta
 from typing import Optional
 
-from app.core.org_context import for_org, spawn_detached, system
+from app.core.org_context import spawn_detached
+from app.core.org_jobs import for_each_org
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import (
@@ -276,18 +277,7 @@ class TokenRefreshService:
         try:
             # Org by org: the graph is org-scoped (Postgres refuses an unbound read), and a
             # refresh's deauth writes and the timer it arms act for the connector's org.
-            with system("token_refresh"):
-                orgs = await self.graph_provider.get_all_orgs(active=False)
-            for org in orgs:
-                org_id = org.get("_key") or org.get("id")
-                if not org_id:
-                    continue
-                # One org's failure must not starve the orgs listed after it, pass after pass.
-                try:
-                    with for_org(str(org_id), job="token_refresh"):
-                        await self._refresh_org_tokens(str(org_id))
-                except Exception as exc:
-                    self.logger.warning("token refresh failed org=%s error=%s", org_id, type(exc).__name__)
+            await for_each_org(self.graph_provider, "token_refresh", self._refresh_org_tokens, self.logger)
 
         except Exception as e:
             self.logger.error(f"Error refreshing tokens: {e}", exc_info=True)

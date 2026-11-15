@@ -189,6 +189,7 @@ def _stuck_graph(docs: list[dict]) -> AsyncMock:
 
     gp.get_nodes_by_field_in = AsyncMock(side_effect=_by_field)
     gp.batch_upsert_nodes = AsyncMock()
+    gp.get_all_orgs = AsyncMock(return_value=[{"_key": "o1"}])
     return gp
 
 
@@ -214,8 +215,8 @@ class TestTheBootSweep:
     async def test_a_full_sync_killed_outright_owes_a_full_sync(self) -> None:
         """No finalizer ran (OOM, SIGKILL), so the doc still reads FULL_SYNCING."""
         gp = _stuck_graph([
-            {"id": "full", "status": AppStatus.FULL_SYNCING.value},
-            {"id": "incr", "status": AppStatus.SYNCING.value},
+            {"id": "full", "status": AppStatus.FULL_SYNCING.value, "orgId": "o1"},
+            {"id": "incr", "status": AppStatus.SYNCING.value, "orgId": "o1"},
         ])
         written = await _sweep(gp)
 

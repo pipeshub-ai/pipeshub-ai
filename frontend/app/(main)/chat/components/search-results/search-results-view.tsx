@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { SearchResultsExtras } from '@/config';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SearchDegradedNote } from '../message-area/search-degraded-note';
+import { AccessNotices, readAccessNotices } from '@/app/components/feedback/access-notice';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useChatStore } from '@/chat/store';
 import { useCitationActions } from '../message-area/response-tabs/citations/use-citation-actions';
@@ -119,6 +120,13 @@ export function SearchResultsView() {
   const unindexedMatches =
     (searchResponseMeta?.searchResponse as { unindexedMatches?: UnindexedMatch[] } | undefined)
       ?.unindexedMatches ?? [];
+  const accessNotices = readAccessNotices(
+    (searchResponseMeta?.searchResponse as { accessNotices?: unknown } | undefined)?.accessNotices
+  );
+  // "Nothing to search yet" is only true of a connector that has never finished a sync; a resync gets the banner and the usual no-match text.
+  const syncing = accessNotices.find((n) => n.code === 'connector_syncing' && n.firstSync === true);
+  const showsEmptyState =
+    !isSearching && !searchError && searchResults.length === 0 && unindexedMatches.length === 0 && !!searchQuery;
   const setMode = useChatStore((s) => s.setMode);
   const { onPreview } = useCitationActions();
 
@@ -264,6 +272,13 @@ export function SearchResultsView() {
             <SearchDegradedNote />
           )}
 
+        {!isSearching && !searchError && (
+          <AccessNotices
+            // The empty state below already says this source is syncing; don't say it twice.
+            notices={showsEmptyState && syncing ? accessNotices.filter((n) => n !== syncing) : accessNotices}
+          />
+        )}
+
         {/* Loading state */}
         {isSearching && (
           <>
@@ -288,7 +303,7 @@ export function SearchResultsView() {
         )}
 
         {/* Empty state */}
-        {!isSearching && !searchError && searchResults.length === 0 && unindexedMatches.length === 0 && searchQuery && (
+        {showsEmptyState && (
           <Flex
             direction="column"
             align="center"
@@ -297,8 +312,11 @@ export function SearchResultsView() {
             style={{ padding: 'var(--space-6)' }}
           >
             <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              {serverEmptyMessage || t('chat.noResultsFor', { query: searchQuery })}
+              {syncing
+                ? t(syncing.connectorName ? 'accessNotice.emptySyncing' : 'accessNotice.emptySyncing_unnamed', { name: syncing.connectorName })
+                : serverEmptyMessage || t('chat.noResultsFor', { query: searchQuery })}
             </Text>
+            {syncing ? <Text size="1" style={{ color: 'var(--slate-11)' }}>{t('accessNotice.noAccess.justGotAccess')}</Text> : null}
           </Flex>
         )}
 

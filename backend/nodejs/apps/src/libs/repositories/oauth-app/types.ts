@@ -111,6 +111,11 @@ export interface OwnedAppListQuery {
   limit: number;
 }
 
+/** An administrator's view: every app of the org, optionally only one person's. */
+export interface OrgAppListQuery extends OwnedAppListQuery {
+  createdBy?: string;
+}
+
 /**
  * "Owned" means: in the org, created by the user, not deleted, and not one of the
  * internal clients (the per-org personal-token and service-token apps, the
@@ -153,6 +158,13 @@ export interface OAuthAppRepository {
     patch: OAuthAppPatch,
     opts?: UpdateOwnedOptions,
   ): Promise<OAuthAppDto | null>;
+  /** Same filter as `findOwned` without the creator: any app an administrator of the org manages. */
+  findInOrg(orgId: string, appId: string): Promise<OAuthAppDto | null>;
+  /** Same filter and order as `listOwned` without the creator. */
+  listInOrg(
+    orgId: string,
+    q: OrgAppListQuery,
+  ): Promise<{ rows: OAuthAppDto[]; total: number }>;
   /** Not deleted. Used by the token endpoints, after the client is known. */
   findLiveByClientId(clientId: string): Promise<OAuthAppDto | null>;
   /** The scopes and knowledge limit a live app allows now, or null when the app is gone or deleted. */
@@ -180,12 +192,24 @@ export interface OAuthAppRepository {
   ): Promise<void>;
   /** Client ids of live apps whose tokens act as the given user (a service account). */
   listClientIdsActingAs(userId: string): Promise<string[]>;
-  /** Client ids of live apps the user created. */
-  listClientIdsCreatedBy(orgId: string, userId: string): Promise<string[]>;
-  /** Soft-deletes and revokes every live app the user created. */
-  softDeleteCreatedBy(
+  /**
+   * Client ids of live apps whose own `client_credentials` tokens act as the user because
+   * they created the app and it names no service account.
+   */
+  listClientIdsActingAsCreator(
+    orgId: string,
+    userId: string,
+  ): Promise<string[]>;
+  /** Soft-deletes and revokes the apps `listClientIdsActingAsCreator` lists. */
+  softDeleteActingAsCreator(
     orgId: string,
     userId: string,
     deletedBy: string,
+  ): Promise<void>;
+  /** Makes `toUserId` the creator of every live app `fromUserId` created, internal ones included. */
+  transferCreatedBy(
+    orgId: string,
+    fromUserId: string,
+    toUserId: string,
   ): Promise<void>;
 }

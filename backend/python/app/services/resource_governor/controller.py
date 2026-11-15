@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import os
 import random
 import threading
 import time
@@ -24,7 +25,9 @@ from app.services.resource_governor.feedback import (
 )
 from app.services.resource_governor.gate import AdmissionGate, StartRateLimiter
 from app.services.resource_governor.lanes import (
+    POOL_WORKERS_ENV,
     LaneBudget,
+    explicit_setting,
     lanes_health,
     open_lane_budget,
     parse_lanes_mode,
@@ -52,6 +55,7 @@ from app.services.resource_governor.policy import (
     LIGHT_PARSE_SLOTS_PER_CPU,
     SAMPLE_INTERVAL_SECONDS,
     SAMPLE_JITTER_SECONDS,
+    HeavyWorkingSet,
     ceiling_cpus,
     ceiling_for,
     cgroup_heavy_parse_limit,
@@ -59,6 +63,7 @@ from app.services.resource_governor.policy import (
     free_memory_share_bytes,
     next_limits,
     resolve_ceilings,
+    resolve_heavy_working_set,
     split_ceilings,
     start_rate_limiter_params,
     warm_start_limits,
@@ -124,8 +129,12 @@ class ResourceGovernor:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: Callable[[], float] = random.random,
+        heavy_working_set_gb: float | None = None,
     ) -> None:
         self._logger = logger
+        # The Docling service's own working set; the other services leave it unset.
+        self._docling_working_set_gb = heavy_working_set_gb
+        self._heavy_ws = resolve_heavy_working_set()
         self._probe = probe or build_probe()
         self._feedback = feedback or get_default_downstream_feedback()
         self._sample_interval = sample_interval
@@ -367,7 +376,40 @@ class ResourceGovernor:
         with self._stats_lock:
             snapshot = self._last_snapshot
         return self._heavy_parse_slots.try_acquire(
-            cgroup_heavy_parse_limit(snapshot, self._fleet_ceilings), count
+            cgroup_heavy_parse_limit(snapshot, self._fleet_ceilings, self._policy_working_set()), count
+        )
+
+    @property
+    def heavy_working_set(self) -> HeavyWorkingSet:
+        """The working set a heavy permit assumes as of the last sample, and where it came from."""
+        return self._heavy_ws
+
+    def _policy_working_set(self) -> float | None:
+        """What to hand the policy: the resolved figure where it differs from the legacy rule, else
+        ``None`` so the legacy rule itself decides (``off`` never passes a figure)."""
+        ws = self._heavy_ws
+        return ws.gb if ws.source in ("measured", "docling") else None
+
+    def _measured_base_applies(self) -> bool:
+        """Whether the PdfPlumber parent base may replace the old heavy working set.
+
+        Only while a shared lane budget charges the worker's memory: the mode is on, the pool is
+        sized by the plan (no explicit ``PARSE_POOL_WORKERS``, which is private or none), and the
+        budget's slots and ledger are shared and healthy. A degraded or local budget protects this
+        process alone, so the old margin returns at the next sample.
+        """
+        if parse_lanes_mode() != "on" or os.name != "posix":
+            return False
+        if explicit_setting(POOL_WORKERS_ENV) is not None:
+            return False
+        lanes = self._lanes
+        return lanes is not None and lanes.shared()
+
+    def _resolve_heavy_working_set(self) -> HeavyWorkingSet:
+        on = parse_lanes_mode() == "on"
+        return resolve_heavy_working_set(
+            measured_base=self._docling_working_set_gb is None and self._measured_base_applies(),
+            docling_gb=self._docling_working_set_gb if on else None,
         )
 
     def limit(self, pool: Pool) -> int:
@@ -441,6 +483,7 @@ class ResourceGovernor:
                 await asyncio.to_thread(lanes.brake_step, snapshot.mem_pressure_raw)
             except Exception:
                 self._logger.exception("ResourceGovernor: the lane brake step failed")
+        self._heavy_ws = self._resolve_heavy_working_set()
         demand = self._drain_all_demand()
         feedback = self._feedback.drain()
 
@@ -461,6 +504,7 @@ class ResourceGovernor:
                 interval=self._sample_interval,
                 feedback=feedback,
                 worker_count=self._worker_count,
+                heavy_working_set_gb=self._policy_working_set(),
             )
             self._state = new_state
 
@@ -617,6 +661,7 @@ class ResourceGovernor:
                 "index_light": self._ceilings.index_light,
             },
             "lanes": lanes_health(self, effective_cpu_count()),
+            **({"heavy_working_set": self._heavy_ws.as_dict()} if parse_lanes_mode() == "on" else {}),
             "limits": {pool.value: limits.get(pool) for pool in Pool},
             "in_use": in_use,
             "downstream_feedback": feedback.as_dict(),

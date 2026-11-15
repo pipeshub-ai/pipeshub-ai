@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.exceptions.indexing_exceptions import RecordDeletedError
+from app.exceptions.non_retryable import NonRetryableError
 from app.services.messaging.config import PipelineEvent, StreamMessage
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
@@ -279,14 +280,14 @@ class TestCreateEntityMessageHandler:
             mock_svc.process_event.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_none_message_returns_false(self):
-        """None is invalid; handler catches errors and returns False."""
+    async def test_none_message_raises(self):
+        """None is not a message: the error reaches the consumer instead of becoming False."""
         container = _make_app_container()
         graph_provider = MagicMock()
         with patch("app.services.messaging.kafka.utils.utils.EntityEventService"):
             handler = await KafkaUtils.create_entity_message_handler(container, graph_provider)
-            result = await handler(None)
-            assert result is False
+            with pytest.raises(AttributeError):
+                await handler(None)
 
     @pytest.mark.asyncio
     async def test_missing_event_type(self):
@@ -294,8 +295,8 @@ class TestCreateEntityMessageHandler:
         graph_provider = MagicMock()
         with patch("app.services.messaging.kafka.utils.utils.EntityEventService"):
             handler = await KafkaUtils.create_entity_message_handler(container, graph_provider)
-            result = await handler(StreamMessage(eventType="", payload={"key": "val"}))
-            assert result is False
+            with pytest.raises(NonRetryableError):
+                await handler(StreamMessage(eventType="", payload={"key": "val"}))
 
     @pytest.mark.asyncio
     async def test_missing_payload(self):
@@ -303,21 +304,23 @@ class TestCreateEntityMessageHandler:
         graph_provider = MagicMock()
         with patch("app.services.messaging.kafka.utils.utils.EntityEventService"):
             handler = await KafkaUtils.create_entity_message_handler(container, graph_provider)
-            result = await handler(StreamMessage(eventType="orgCreated", payload={}))
-            assert result is False
+            with pytest.raises(NonRetryableError):
+                await handler(StreamMessage(eventType="orgCreated", payload={}))
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_exception_reaches_the_consumer(self):
         container = _make_app_container()
         graph_provider = MagicMock()
         with patch("app.services.messaging.kafka.utils.utils.EntityEventService") as MockSvc:
             mock_svc = AsyncMock()
-            mock_svc.process_event = AsyncMock(side_effect=Exception("error"))
+            error = RuntimeError("error")
+            mock_svc.process_event = AsyncMock(side_effect=error)
             MockSvc.return_value = mock_svc
 
             handler = await KafkaUtils.create_entity_message_handler(container, graph_provider)
-            result = await handler(StreamMessage(eventType="orgCreated", payload={"orgId": "o1"}))
-            assert result is False
+            with pytest.raises(RuntimeError) as caught:
+                await handler(StreamMessage(eventType="orgCreated", payload={"orgId": "o1"}))
+            assert caught.value is error
 
 
 # ===================================================================
@@ -353,43 +356,55 @@ class TestCreateSyncMessageHandler:
             assert result is True
 
     @pytest.mark.asyncio
-    async def test_none_message_returns_false(self):
-        """None is invalid; handler catches errors and returns False."""
+    async def test_none_message_raises(self):
+        """None is not a message: the error reaches the consumer instead of becoming False."""
         container = _make_app_container()
         graph_provider = MagicMock()
         handler = await KafkaUtils.create_sync_message_handler(container, graph_provider)
-        result = await handler(None)
-        assert result is False
+        with pytest.raises(AttributeError):
+            await handler(None)
 
     @pytest.mark.asyncio
     async def test_missing_event_type(self):
         container = _make_app_container()
         graph_provider = MagicMock()
         handler = await KafkaUtils.create_sync_message_handler(container, graph_provider)
-        result = await handler(StreamMessage(eventType="", payload={}))
-        assert result is False
+        with pytest.raises(NonRetryableError):
+            await handler(StreamMessage(eventType="", payload={}))
 
     @pytest.mark.asyncio
-    async def test_no_connector_found(self):
+    async def test_no_connector_is_skipped(self):
+        container = _make_app_container()
+        graph_provider = MagicMock()
+        with patch("app.services.messaging.kafka.utils.utils.EventService") as MockSvc:
+            handler = await KafkaUtils.create_sync_message_handler(container, graph_provider)
+            # event_type has no dot and payload has no connector: not addressed to this consumer
+            result = await handler(StreamMessage(eventType="start", payload={}))
+        assert result is True
+        MockSvc.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_connector_before_the_dot_is_terminal(self) -> None:
         container = _make_app_container()
         graph_provider = MagicMock()
         handler = await KafkaUtils.create_sync_message_handler(container, graph_provider)
-        # event_type has no dot and payload has no connector
-        result = await handler(StreamMessage(eventType="start", payload={}))
-        assert result is False
+        with pytest.raises(NonRetryableError):
+            await handler(StreamMessage(eventType=".resync", payload={}))
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_exception_reaches_the_consumer(self):
         container = _make_app_container()
         graph_provider = MagicMock()
         with patch("app.services.messaging.kafka.utils.utils.EventService") as MockSvc:
             mock_svc = AsyncMock()
-            mock_svc.process_event = AsyncMock(side_effect=Exception("error"))
+            error = RuntimeError("error")
+            mock_svc.process_event = AsyncMock(side_effect=error)
             MockSvc.return_value = mock_svc
 
             handler = await KafkaUtils.create_sync_message_handler(container, graph_provider)
-            result = await handler(StreamMessage(eventType="gmail.start", payload={"orgId": "o1"}))
-            assert result is False
+            with pytest.raises(RuntimeError) as caught:
+                await handler(StreamMessage(eventType="gmail.start", payload={"orgId": "o1"}))
+            assert caught.value is error
 
 
 # ===================================================================
@@ -574,16 +589,16 @@ class TestCreateAiConfigMessageHandler:
             assert result is True
 
     @pytest.mark.asyncio
-    async def test_none_message_returns_false(self):
-        """None is invalid; handler catches errors and returns False."""
+    async def test_none_message_raises(self):
+        """None is not a message: the error reaches the consumer instead of becoming False."""
         container = _make_app_container()
         mock_retrieval = AsyncMock()
         container.retrieval_service = AsyncMock(return_value=mock_retrieval)
 
         with patch("app.services.messaging.kafka.utils.utils.AiConfigEventService"):
             handler = await KafkaUtils.create_aiconfig_message_handler(container)
-            result = await handler(None)
-            assert result is False
+            with pytest.raises(AttributeError):
+                await handler(None)
 
     @pytest.mark.asyncio
     async def test_missing_event_type(self):
@@ -593,8 +608,8 @@ class TestCreateAiConfigMessageHandler:
 
         with patch("app.services.messaging.kafka.utils.utils.AiConfigEventService"):
             handler = await KafkaUtils.create_aiconfig_message_handler(container)
-            result = await handler(StreamMessage(eventType="", payload={}))
-            assert result is False
+            with pytest.raises(NonRetryableError):
+                await handler(StreamMessage(eventType="", payload={}))
 
     @pytest.mark.asyncio
     async def test_non_ai_config_event_skipped(self):
@@ -612,16 +627,18 @@ class TestCreateAiConfigMessageHandler:
             mock_svc.process_event.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_exception_reaches_the_consumer(self):
         container = _make_app_container()
         mock_retrieval = AsyncMock()
         container.retrieval_service = AsyncMock(return_value=mock_retrieval)
 
         with patch("app.services.messaging.kafka.utils.utils.AiConfigEventService") as MockSvc:
             mock_svc = AsyncMock()
-            mock_svc.process_event = AsyncMock(side_effect=Exception("error"))
+            error = RuntimeError("error")
+            mock_svc.process_event = AsyncMock(side_effect=error)
             MockSvc.return_value = mock_svc
 
             handler = await KafkaUtils.create_aiconfig_message_handler(container)
-            result = await handler(StreamMessage(eventType="llmConfigured", payload={}))
-            assert result is False
+            with pytest.raises(RuntimeError) as caught:
+                await handler(StreamMessage(eventType="llmConfigured", payload={}))
+            assert caught.value is error

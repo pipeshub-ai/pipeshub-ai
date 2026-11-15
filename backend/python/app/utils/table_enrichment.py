@@ -7,7 +7,8 @@ parallel using the summary as context.
 
 Enrichment is best-effort. Any failure degrades a table to ``generate_simple_row_text``
 rather than failing the record, because the blocks themselves are already correct - only
-the natural-language text quality is lost.
+the natural-language text quality is lost. With no model set up at all, every table gets
+that plain text, so the record still indexes and is searchable.
 """
 
 import json
@@ -38,7 +39,7 @@ from app.utils.concurrency import (
     max_table_rows_for_llm,
 )
 from app.utils.indexing_metrics import note_table_result, track_indexing_enrichment
-from app.utils.llm import get_llm_for_role
+from app.utils.llm import LLMNotConfiguredError, get_llm_for_role
 from app.utils.streaming import (
     invoke_with_count_validation_and_reflection,
     invoke_with_row_descriptions_and_reflection,
@@ -109,6 +110,32 @@ def _header_context(known_headers: Optional[List[str]]) -> str:
     )
 
 
+async def indexing_llm_or_none(config_service: Any, logger: Logger) -> Optional[BaseChatModel]:  # noqa: ANN401
+    """The indexing-role model, or None when no model is set up.
+
+    A model that is set up but cannot be built still raises, so the record retries.
+    """
+    try:
+        llm, _ = await get_llm_for_role(config_service, "indexing", reasoning_effort="low")
+    except LLMNotConfiguredError:
+        logger.info("No AI model is set up: tables are indexed with plain row text")
+        return None
+    return llm
+
+
+def _plain_enrichment(
+    rows: Sequence[Sequence[str]], header_rows: int, headers: list[str], *, degraded: bool
+) -> TableEnrichmentResult:
+    data_rows = rows[header_rows:]
+    return TableEnrichmentResult(
+        summary=fallback_table_summary(headers, len(data_rows)),
+        headers=headers,
+        header_row_count=header_rows,
+        descriptions=_simple_texts(data_rows, headers),
+        degraded=degraded,
+    )
+
+
 def simple_table_enrichment(grid: Sequence[Sequence[Any]]) -> TableEnrichmentResult:
     """Build a table's row text without any LLM call (skip_table_enrichment=True)."""
     rows = normalize_grid(grid)
@@ -118,7 +145,7 @@ def simple_table_enrichment(grid: Sequence[Sequence[Any]]) -> TableEnrichmentRes
 
 
 async def enrich_table_grid(
-    llm: BaseChatModel,
+    llm: Optional[BaseChatModel],
     grid: Sequence[Sequence[Any]],
     *,
     logger: Logger,
@@ -129,6 +156,7 @@ async def enrich_table_grid(
     """Enrich one table.
 
     Args:
+        llm: ``None`` when no model is set up: the table gets plain text, not degraded.
         grid: All table rows, including the header row when there is one.
         known_header_row_count: 0 or 1 when the caller has ground truth (docling's
             ``column_header`` flag, a block's ``is_header``). ``None`` asks the LLM,
@@ -157,6 +185,9 @@ async def enrich_table_grid(
     if not first_batch:
         return TableEnrichmentResult(headers=known_headers or [], header_row_count=header_rows)
 
+    if llm is None:
+        return _plain_enrichment(rows, header_rows, known_headers or [], degraded=False)
+
     messages = table_enrichment_prompt.format_messages(
         row_count=len(first_batch),
         numbered_rows_data=indexing_helpers.format_rows_with_index(first_batch),
@@ -172,17 +203,8 @@ async def enrich_table_grid(
         logger.warning(f"Table enrichment call failed: {e}")
 
     if parsed is None:
-        headers = known_headers or []
-        data_rows = rows[header_rows:]
-        result = TableEnrichmentResult(
-            summary=fallback_table_summary(headers, len(data_rows)),
-            headers=headers,
-            header_row_count=header_rows,
-            descriptions=_simple_texts(data_rows, headers),
-            degraded=True,
-        )
         note_table_result(succeeded=False, degraded=True)
-        return result
+        return _plain_enrichment(rows, header_rows, known_headers or [], degraded=True)
 
     summary = parsed.summary or ""
     if known:
@@ -258,7 +280,7 @@ def describe_rows_within_budget(row_counts: Sequence[int]) -> list[bool]:
 
 
 async def enrich_tables(
-    llm: BaseChatModel,
+    llm: Optional[BaseChatModel],
     grids: Sequence[Sequence[Sequence[Any]]],
     *,
     logger: Logger,
@@ -343,10 +365,47 @@ def _collect_table_row_blocks(
     return row_blocks
 
 
+def _fill_without_llm(
+    table_group: Any,  # noqa: ANN401
+    data_row_blocks: list[Any],
+    header_cells: Optional[Sequence[Any]],
+) -> None:
+    """Plain summary and row text for one TABLE BlockGroup when no model is set up.
+
+    Parsers that keep column names on the group rather than in a header row (the HTML
+    parser) already wrote header-aware row text; without any column names the parser's
+    row text is the best there is, so it is kept.
+    """
+    if table_group.data is None:
+        table_group.data = {}
+    if header_cells is not None:
+        headers = [cell_text(c) for c in header_cells]
+    else:
+        headers = [str(h) for h in table_group.data.get("column_headers") or []]
+        if not headers and table_group.table_metadata:
+            headers = list(table_group.table_metadata.column_names or [])
+
+    for rb in data_row_blocks:
+        if rb.data is None:
+            continue
+        cells = [cell_text(c) for c in rb.data.get("cells") or []]
+        text = indexing_helpers.generate_simple_row_text(_row_dict(cells, headers))
+        if headers:
+            rb.data["row_natural_language_text"] = text
+        else:
+            rb.data.setdefault("row_natural_language_text", text)
+
+    captions = table_group.table_metadata.captions if table_group.table_metadata else None
+    table_group.data["table_summary"] = summary_with_captions(
+        fallback_table_summary(headers, len(data_row_blocks)), captions
+    )
+    table_group.data["column_headers"] = headers
+
+
 async def _enhance_one_table(
     table_group: Any,  # noqa: ANN401
     block_containers: Any,  # noqa: ANN401
-    llm: BaseChatModel,
+    llm: Optional[BaseChatModel],
     logger: Logger,
     *,
     describe_rows: bool = True,
@@ -383,6 +442,11 @@ async def _enhance_one_table(
         # descriptions map back to.
         grid = [(rb.data or {}).get("cells") or [] for rb in data_row_blocks]
         known_header_row_count = 0
+
+    if llm is None:
+        header_cells = (row_blocks[0].data or {}).get("cells") if header_is_first else None
+        _fill_without_llm(table_group, data_row_blocks, header_cells)
+        return True
 
     try:
         enrichment = await enrich_table_grid(
@@ -447,7 +511,8 @@ async def enhance_tables_with_llm(
     raised - the blocks are already structurally correct, only the description text is
     lost. Only raises when every attempted table failed, since that usually means the
     LLM is unreachable and the record should be retried rather than silently indexed
-    with no table content at all.
+    with no table content at all. With no model set up, every table gets plain text and
+    nothing raises: there is no model to retry against.
     """
     from app.models.blocks import GroupType
 
@@ -456,9 +521,9 @@ async def enhance_tables_with_llm(
         return TableEnhancementStats()
 
     if llm is None:
-        llm, _ = await get_llm_for_role(config_service, "indexing", reasoning_effort="low")
-
-    logger.info(f"Enhancing {len(table_groups)} tables with LLM summaries")
+        llm = await indexing_llm_or_none(config_service, logger)
+    if llm is not None:
+        logger.info(f"Enhancing {len(table_groups)} tables with LLM summaries")
 
     # The row budget runs over the record's tables in document order.
     describe_flags = describe_rows_within_budget([

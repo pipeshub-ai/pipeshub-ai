@@ -51,8 +51,12 @@ class PeopleMixin(IdentityMixin):
         """The person of this org with this source key (``"<connector id>:<source user id>"``); as ``get_person_by_email``, a document field with no index."""
         if not self._mine(org_id):
             return None
-        d = await self._one("/* pipeshub:graph.get_person_by_source_key */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'person' AND doc->>'sourceKey' = $2 ORDER BY id LIMIT 1",
-                            current_org_id(), source_key, transaction=transaction)
+        org = current_org_id()
+        if isinstance(source_key, str) and 0 < len(source_key) <= 400:      # the vetted read of graph_0006
+            d = await self._one("/* pipeshub:graph.person_by_source_key */ SELECT node_id, doc FROM graph.person_by_source_key($1)", source_key, transaction=transaction)
+        else:
+            d = await self._one("/* pipeshub:graph.get_person_by_source_key */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'person' AND doc->>'sourceKey' = $2 ORDER BY id LIMIT 1",
+                                org, source_key, transaction=transaction)
         return Person.from_arango_person(_arango(d, "person")) if d else None
 
     @_soft(None, flag=True)
@@ -68,8 +72,11 @@ class PeopleMixin(IdentityMixin):
         async with self._atomic(transaction) as tid:
             await self._id_rows("/* pipeshub:graph.upsert_person_source_lock */ SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [f"person_source:{org}:{person.source_key}"],
                                 tid, write=True)
-            rows = await self._id_rows("/* pipeshub:graph.upsert_person_source_find */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'person' AND doc->>'sourceKey' = $2 ORDER BY id LIMIT 1",
-                                       [org, person.source_key], tid)
+            if len(person.source_key) <= 400:      # the vetted read of graph_0006
+                rows = await self._id_rows("/* pipeshub:graph.person_by_source_key */ SELECT node_id AS id FROM graph.person_by_source_key($1)", [person.source_key], tid)
+            else:
+                rows = await self._id_rows("/* pipeshub:graph.upsert_person_source_find */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'person' AND doc->>'sourceKey' = $2 ORDER BY id LIMIT 1",
+                                           [org, person.source_key], tid)
             if rows:
                 return rows[0]["id"]
             return node["_key"] if await self.create_node_if_absent(node["_key"], "person", node, tid) else None
@@ -135,6 +142,9 @@ class PeopleMixin(IdentityMixin):
     @_soft(None)
     async def get_entity_id_by_email(self, email: str, transaction: str | None = None) -> str | None:
         """The id of the user, else the group, else the person of the org with this email (case-insensitive). A failed read answers None."""
+        found = await self._principals_by_email(_BY_EMAIL_COLLS, [email], transaction)
+        if found is not None:      # the vetted read of graph_0006: the user, else the group, else the person; the lowest id (byte order, as COLLATE "C") of a kind
+            return min(found, key=lambda r: (_BY_EMAIL_COLLS.index(r["coll"]), r["node_id"]))["node_id"] if found else None
         rows = await self._id_rows("""/* pipeshub:graph.get_entity_id_by_email */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = ANY($2::text[]) AND lower(doc->>'email') = lower($3)
             ORDER BY array_position($2::text[], coll), id COLLATE "C" LIMIT 1""", [current_org_id(), _BY_EMAIL_COLLS, email], transaction)
         return rows[0]["id"] if rows else None
@@ -146,6 +156,14 @@ class PeopleMixin(IdentityMixin):
         wanted = sorted({e for e in emails if e})
         if not wanted:
             return {}
+        found = await self._principals_by_email(_BY_EMAIL_COLLS, wanted, transaction)      # the vetted read of graph_0006
+        if found is not None and all(isinstance(_doc(r["doc"]).get("email"), str) for r in found):
+            best: dict[str, tuple[int, str]] = {}      # per stored address the least (kind, id): ids in byte order, as COLLATE "C"
+            for r in found:
+                at, e = (_BY_EMAIL_COLLS.index(r["coll"]), r["node_id"]), _doc(r["doc"])["email"]
+                if e not in best or at < best[e]:
+                    best[e] = at
+            return {e: (k, _BY_EMAIL_COLLS[i], dict(_BY_EMAIL)[_BY_EMAIL_COLLS[i]]) for e, (i, k) in best.items()}
         rows = await self._id_rows("""/* pipeshub:graph.bulk_get_entity_ids_by_email */ SELECT DISTINCT ON (doc->>'email') doc->>'email' AS email, id, coll FROM graph.nodes
             WHERE org_id = $1 AND coll = ANY($2::text[]) AND lower(doc->>'email') IN (SELECT lower(x) FROM unnest($3::text[]) x)
             ORDER BY doc->>'email', array_position($2::text[], coll), id COLLATE "C" """, [current_org_id(), _BY_EMAIL_COLLS, wanted], transaction)

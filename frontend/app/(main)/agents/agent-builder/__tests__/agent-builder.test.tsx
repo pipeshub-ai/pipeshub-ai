@@ -87,7 +87,12 @@ const mcpApi = vi.hoisted(() => ({
 }));
 vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: mcpApi }));
 vi.mock('@/app/(main)/workspace/web-search/api', () => ({
-  WebSearchApi: { getConfig: vi.fn(async () => ({ providers: [] })) },
+  // A member only sees the search providers an admin has set up.
+  WebSearchApi: {
+    getConfig: vi.fn(async () => ({
+      providers: [{ providerKey: 'ddg-1', provider: 'duckduckgo', configuration: {}, isDefault: true }],
+    })),
+  },
 }));
 const getUsersByIds = vi.hoisted(() => vi.fn());
 vi.mock('@/app/(main)/workspace/users/api', () => ({ UsersApi: { getUsersByIds } }));

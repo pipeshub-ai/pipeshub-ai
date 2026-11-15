@@ -16,6 +16,7 @@ import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+import httpx2
 from httpx import URL
 
 from app.core import org_context
@@ -335,6 +336,9 @@ class JsonFormatter(logging.Formatter):
         return "\n".join(parts)
 
 
+_HTTPX_RENDERED_STATUS = re.compile(r'HTTP Request: \S+ (\S+) "HTTP/[\d.]+ (\d{3}) ')
+
+
 class HttpxSuccessFilter(logging.Filter):
     """Drop httpx's per-request INFO log for successful responses.
 
@@ -344,7 +348,9 @@ class HttpxSuccessFilter(logging.Filter):
     as well — so filter on the status code instead and keep 3xx/4xx/5xx.
 
     The status is read from ``record.args`` rather than the formatted message:
-    httpx passes it as an int, so this does not depend on message wording.
+    httpx passes it as an int, so this does not depend on message wording. Only
+    when another filter has already rendered the message and cleared ``args``
+    (litellm's) is it read from the text.
 
     Lines that are kept have their request URL redacted: the query string of a
     signed URL, or the userinfo of any URL, is a credential.
@@ -352,6 +358,15 @@ class HttpxSuccessFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         if not isinstance(record.args, (tuple, list)):
+            # Another filter on this logger (litellm's SecretRedactionFilter) may already have rendered the
+            # message and cleared args: read the status from the text instead.
+            rendered = _HTTPX_RENDERED_STATUS.match(record.msg) if isinstance(record.msg, str) else None
+            if rendered is None:
+                return True
+            if 200 <= int(rendered.group(2)) < 300:
+                return False
+            start, end = rendered.span(1)  # the kept line's URL, redacted as the args path does
+            record.msg = record.msg[:start] + redact_url(rendered.group(1)) + record.msg[end:]
             return True
         # args are (method, url, http_version, status_code, reason_phrase); scan
         # for the status rather than indexing, so a signature change downgrades
@@ -364,7 +379,7 @@ class HttpxSuccessFilter(logging.Filter):
                     return False
                 break
         record.args = tuple(
-            redact_url(str(arg)) if isinstance(arg, URL) else arg for arg in record.args
+            redact_url(str(arg)) if isinstance(arg, (URL, httpx2.URL)) else arg for arg in record.args
         )
         return True
 
@@ -557,8 +572,10 @@ _redact_all_handlers()
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 logging.getLogger("uvicorn.access").addFilter(AccessLogRedactionFilter())
 
-# httpx logs every outbound request at INFO. Keep the failures, drop the 2xx.
+# httpx logs every outbound request at INFO. Keep the failures, drop the 2xx. httpx2 (the MCP 2.x client) is a
+# second copy of httpx with its own logger and URL type.
 logging.getLogger("httpx").addFilter(HttpxSuccessFilter())
+logging.getLogger("httpx2").addFilter(HttpxSuccessFilter())
 
 
 def _provider_formatter(

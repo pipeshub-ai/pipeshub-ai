@@ -870,11 +870,32 @@ class TestDeleteKnowledgeBase:
 
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is True
-        assert calls[:3] == [
+        assert calls[:4] == [
             "intent:/services/entityCleanup/pending/kb1",
             "intent:/services/storageRelease/pending/kb1",
+            "intent:/services/lateWriteSweep/pending/kb1",
             "graph-delete",
         ]
+
+    @pytest.mark.asyncio
+    async def test_the_late_write_intent_keeps_the_kbs_record_group(self, service, mock_config_service) -> None:
+        """A KB file's code links carry the KB's record group and no connectorId, and the group goes with the delete."""
+        written: dict[str, dict] = {}
+
+        async def record(key, value) -> bool:
+            written[key] = value
+            return True
+
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[{"_key": "kb1"}])
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
+        mock_config_service.get_config = AsyncMock(return_value=None)
+        mock_config_service.set_config = AsyncMock(side_effect=record)
+
+        assert (await service.delete_knowledge_base("kb1", "user1", "org1"))["success"] is True
+        assert written["/services/lateWriteSweep/pending/kb1"]["recordGroupIds"] == ["kb1"]
+        assert service.graph_provider.get_nodes_by_filters.await_args.kwargs["filters"] == {"connectorId": "kb1"}
 
     @pytest.mark.asyncio
     async def test_no_graph_delete_without_a_recorded_intent(self, service, mock_config_service) -> None:
@@ -1028,7 +1049,8 @@ class TestDeleteKBStorageCleanup:
             mock_asyncio.create_task.call_args[0][0].close()
 
         assert calls == [
-            "/services/entityCleanup/pending/kb1", "/services/storageRelease/pending/kb1", "delete",
+            "/services/entityCleanup/pending/kb1", "/services/storageRelease/pending/kb1",
+            "/services/lateWriteSweep/pending/kb1", "delete",
         ]
 
     @pytest.mark.asyncio

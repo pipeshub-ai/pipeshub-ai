@@ -111,4 +111,30 @@ describe('ChatInputWrapper search', () => {
     expect(state.searchQuery).toBe('alpha');
     expect(state.searchError).toBe('Search is unavailable.');
   });
+
+  it('hands the notice codes of a search that found nothing to the results view', async () => {
+    const notices = [{ code: 'connector_syncing', connectorName: 'Jira' }];
+    search.mockRejectedValue({ type: ErrorType.NOT_FOUND, message: 'none', details: { accessNotices: notices } });
+    render(<ChatInputWrapper />);
+
+    await send('alpha');
+
+    const state = useChatStore.getState();
+    expect(state.searchError).toBeNull();
+    expect((state.searchResponseMeta?.searchResponse as { accessNotices?: unknown }).accessNotices).toEqual(notices);
+  });
+
+  it('words a search that could not check access itself, not with the server\'s text', async () => {
+    search.mockRejectedValue({
+      type: ErrorType.SERVER_ERROR,
+      message: 'raw server words',
+      statusCode: 503,
+      details: { accessNotices: [{ code: 'check_unavailable' }] },
+    });
+    render(<ChatInputWrapper />);
+
+    await send('alpha');
+
+    expect(useChatStore.getState().searchError).toBe("We couldn't check which documents you have access to just now, so no results are shown. Please try again in a minute.");
+  });
 });

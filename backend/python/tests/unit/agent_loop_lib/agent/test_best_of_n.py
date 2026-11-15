@@ -270,3 +270,22 @@ class TestJudge:
 
         assert index == 0
         assert reason == ""
+
+
+class TestACandidateThatRaisesIsLoggedOnce:
+    async def test_one_classed_line_and_the_failed_candidate_is_unchanged(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        from app.utils.logger import log_record_fields
+
+        caplog.set_level(logging.DEBUG)
+        agent = _fake_agent(run_child_results=[TimeoutError("candidate hung sentinel-662")])
+
+        result = await _run_one_candidate(agent, MagicMock(), Goal(description="g"), "team-1")
+
+        assert (result.success, result.error) == (False, "candidate hung sentinel-662")
+        (failed,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        fields = log_record_fields(failed)
+        assert (failed.getMessage(), fields["error_class"]) == ("sub_agent.failed", "timeout")
+        # The error can quote a provider's answer: it reaches the result, never the log.
+        assert "error_message" not in fields and "sentinel-662" not in caplog.text

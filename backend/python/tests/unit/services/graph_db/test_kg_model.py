@@ -197,7 +197,18 @@ def test_a_record_row_has_exactly_the_columns_the_writer_takes() -> None:
     from app.services.graph_db.postgres.kg.writers import RECORD_COLS
     snap = basic()
     row = derive({CHILD}, snap).records[snap.sk[CHILD]]
-    assert set(row) == set(RECORD_COLS) - {"sk"}
+    assert set(row) == set(RECORD_COLS) - {"sk"} | {"folder", "hide_children", "alien", "name_sort"}      # the listing columns have a writer of their own (w_listing_set)
+
+
+def test_the_listing_columns_follow_the_hub_types_the_hidden_children_and_the_organisation() -> None:
+    nodes = {APP: {"orgId": "o"}, G: {"connectorId": "a", "orgId": "o", "hideChildren": True, "mimeType": "application/vnd.folder"},
+             ("recordGroups", "g2"): {"connectorId": "a", "orgId": "o", "hideChildren": "false"},
+             REC: {"connectorId": "a", "orgId": "o", "mimeType": "application/vnd.folder"}, ("records", "t"): {"connectorId": "a", "orgId": "o", "recordType": "folder"},
+             CHILD: {"connectorId": "a", "orgId": "o", "hideChildren": True}, ("records", "x"): {"connectorId": "a", "orgId": "other"}, ("records", "n"): {"connectorId": "a"}}
+    snap = world(nodes, [])
+    got = {k[1]: tuple(r[c] for c in ("folder", "hide_children", "alien")) for k in nodes if (r := derive({k}, snap).records[snap.sk[k]])}
+    assert got == {"a": (False, False, False), "g": (False, True, False), "g2": (False, False, False), "r": (True, False, False), "t": (True, False, False),
+                   "c": (False, False, False), "x": (False, False, True), "n": (False, False, True)}
 
 
 def test_a_snapshot_without_its_organisation_is_refused() -> None:
@@ -227,3 +238,14 @@ def test_records_that_share_a_parent_or_a_group_with_another_connector_name_both
     assert derive({foreign_parent}, snap).cross_apps == set()                         # a parent that has no parent of its own across connectors names none
     inside = world({APP: {}, REC: {"connectorId": "a"}, CHILD: {"connectorId": "a"}}, [edge("nodeRelations", *REC, *CHILD, relationshipType="PARENT_CHILD")])
     assert derive({CHILD}, inside).cross_apps == set()
+
+
+def test_the_name_sort_orders_names_by_utf16_code_unit_not_by_code_point() -> None:
+    """A character above U+FFFF (two code units, the first below U+E000) sorts before U+E000..U+FFFF in UTF-16, and after them by code point: the listing is merged and paged in the first order."""
+    names = ["x", "\U00010000x", "Zebra", "zèbre", "Éclair", "eclair", "�x"]
+    nodes = {APP: {"orgId": "o"}, **{("records", f"n{i}"): {"connectorId": "a", "orgId": "o", "recordName": n} for i, n in enumerate(names)}}
+    snap = world(nodes, [])
+    by_sort = sorted(names, key=lambda n: derive({("records", f"n{names.index(n)}")}, snap).records[snap.sk[("records", f"n{names.index(n)}")]]["name_sort"])
+    assert by_sort == sorted(names, key=lambda n: n.lower().encode("utf-16-be", "surrogatepass"))
+    assert by_sort.index("\U00010000x") < by_sort.index("x") < by_sort.index("�x")
+    assert sorted(names, key=str.lower).index("\U00010000x") > sorted(names, key=str.lower).index("�x")      # by code point it is the other way round

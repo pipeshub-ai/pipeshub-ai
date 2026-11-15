@@ -96,6 +96,14 @@ class KnowledgeHubListingBusy(GraphDBError):
         super().__init__("The listing is busy right now. Please try again in a few seconds.")
 
 
+class KnowledgeHubListingNotReady(GraphDBError):
+    """A source whose copy in the typed graph has not been made yet (just connected, or right after an upgrade): its structure would be missing or partial,
+    so it is not listed as empty. Nothing is wrong with the request; retry."""
+
+    def __init__(self) -> None:
+        super().__init__("This source is still being prepared. Try again in a moment.")
+
+
 def is_out_of_memory(error: BaseException) -> bool:
     """Whether the database gave up on a statement for want of memory, however it was wrapped on the way up
     (an ``ExceptionGroup``, or another error raised ``from`` it)."""

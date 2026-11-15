@@ -844,11 +844,16 @@ class EntityVectorStore:
             (CONNECTOR_IDS_FIELD, {"type": "keyword"}),
             (RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),
         ]:
-            await self.vector_db_service.create_index(
-                collection_name=name,
-                field_name=field,
-                field_schema=schema,
-            )
+            try:
+                await self.vector_db_service.create_index(
+                    collection_name=name,
+                    field_name=field,
+                    field_schema=schema,
+                )
+            except Exception as e:
+                # Redis reports a refused index instead of hiding it; the entity
+                # index keeps working without it, as it did before.
+                self.logger.warning("Failed to create entity index %s on %s: %s", field, name, e)
 
     async def _collection_mismatch(self, name: str, info: VectorCollectionInfo) -> str | None:
         """Why the existing collection cannot serve this model, or None.

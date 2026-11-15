@@ -1,5 +1,7 @@
 from app.connectors.core.base.event_service.event_service import BaseEventService
+from app.exceptions.non_retryable import NonRetryableError
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.utils import error_class
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
 
 
@@ -15,20 +17,11 @@ class AiConfigEventService(BaseEventService):
 
     async def process_event(self, event_type: str, payload: dict) -> bool:
         """Handle AI configuration events by calling appropriate handlers"""
-        try:
-            self.logger.info(f"Processing AI config event: {event_type}")
-
-            if event_type == "llmConfigured":
-                return await self.__handle_llm_configured(payload)
-            elif event_type == "embeddingModelConfigured":
-                return await self.__handle_embedding_configured(payload)
-            else:
-                self.logger.error(f"Unknown AI config event type: {event_type}")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"Error processing AI config event: {str(e)}")
-            return False
+        if event_type == "llmConfigured":
+            return await self.__handle_llm_configured(payload)
+        if event_type == "embeddingModelConfigured":
+            return await self.__handle_embedding_configured(payload)
+        raise NonRetryableError(f"unknown AI config event type {event_type}")
 
     async def __handle_llm_configured(self, payload: dict) -> bool:
         """Handle LLM configuration update
@@ -37,11 +30,10 @@ class AiConfigEventService(BaseEventService):
             payload (dict): Event payload containing configuration details
 
         Returns:
-            bool: True if successful, False otherwise
+            bool: True if successful; a failure raises
         """
         try:
-            self.logger.info("📥 Processing LLM configured event")
-            self.logger.debug(f"LLM config payload: {payload}")
+            self.logger.debug("Processing LLM configured event")
 
             # Refresh the LLM instance with new configuration
             await self.retrieval_service.get_llm_instance(use_cache=False)
@@ -64,12 +56,12 @@ class AiConfigEventService(BaseEventService):
             if store is not None:
                 await store.load()
 
-            self.logger.info("✅ Successfully updated LLM configuration in all services")
+            self.logger.info("Successfully updated LLM configuration in all services")
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update LLM configuration: {str(e)}")
-            return False
+            error_class.log_failure(self.logger, "ai_config.refresh_failed", e)
+            raise
 
     async def __handle_embedding_configured(self, payload: dict) -> bool:
         """Handle embedding model configuration update
@@ -78,18 +70,17 @@ class AiConfigEventService(BaseEventService):
             payload (dict): Event payload containing configuration details
 
         Returns:
-            bool: True if successful, False otherwise
+            bool: True if successful; a failure raises
         """
         try:
-            self.logger.info("📥 Processing embedding model configured event")
-            self.logger.debug(f"Embedding config payload: {payload}")
+            self.logger.debug("Processing embedding model configured event")
 
             # Refresh the embedding model instance with new configuration
             await self.retrieval_service.get_embedding_model_instance(use_cache=False)
 
-            self.logger.info("✅ Successfully updated embedding model in all services")
+            self.logger.info("Successfully updated embedding model in all services")
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update embedding model configuration: {str(e)}")
-            return False
+            error_class.log_failure(self.logger, "ai_config.refresh_failed", e)
+            raise

@@ -202,6 +202,8 @@ def _excludes(project_keys_operator: FilterOperatorType | None) -> bool:
 class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
     """Personal Jira DC: creator-only permissions, no user/group/role/scheme API calls."""
 
+    _enforces_issue_security = False
+
     def __init__(
         self,
         logger: Logger,

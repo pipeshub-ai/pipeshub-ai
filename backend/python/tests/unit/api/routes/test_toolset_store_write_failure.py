@@ -36,7 +36,12 @@ from app.config.configuration_service import ConfigurationService
 from tests.unit.api.routes import test_mcp_servers as mcp_tests
 from tests.unit.api.routes import test_toolsets_full_coverage as toolset_tests
 from tests.unit.api.routes.test_mcp_servers import _mock_request
-from tests.unit.api.routes.test_toolsets import _make_registry, _make_request
+from tests.unit.api.routes.test_toolsets import (
+    _make_registry,
+    _make_request,
+    assert_oauth_app_save_failed,
+    oauth_app_save_failure,
+)
 from tests.unit.api.routes.test_toolsets_full_coverage import _make_oauth_registry
 from tests.unit.config.test_configuration_service import _build_service
 
@@ -213,16 +218,17 @@ async def test_delete_oauth_config_write_failure_is_500() -> None:
 
 
 @pytest.mark.parametrize("existing_id", [None, "oc-1"], ids=["create", "update"])
-async def test_oauth_app_write_failure_returns_no_id(existing_id: str | None) -> None:
+async def test_oauth_app_write_failure_raises_500(existing_id: str | None) -> None:
     cs = _failing_writes()
     cs.get_config = AsyncMock(return_value=[{"_id": "oc-1", "orgId": "o1", "config": {}}])
-    with patch(f"{T}._get_oauth_config_from_registry", return_value=_oauth_registry_entry()):
-        result = await _create_or_update_toolset_oauth_config(
+    with patch(f"{T}._get_oauth_config_from_registry", return_value=_oauth_registry_entry()), \
+         pytest.raises(HTTPException) as exc:
+        await _create_or_update_toolset_oauth_config(
             toolset_type="jira", auth_config={"type": "OAUTH", "clientId": "cid", "clientSecret": "csec"},
             instance_name="My Jira", user_id="u1", org_id="o1", config_service=cs,
             registry=MagicMock(), base_url="http://localhost:3000", oauth_config_id=existing_id,
         )
-    assert result is None
+    assert_oauth_app_save_failed(exc)
 
 
 async def test_update_oauth_config_route_write_failure_is_500_and_signs_nobody_out() -> None:
@@ -232,7 +238,8 @@ async def test_update_oauth_config_route_write_failure_is_500_and_signs_nobody_o
     with patch(f"{T}._check_user_is_admin", new_callable=AsyncMock, return_value=True), \
          patch(f"{T}._get_oauth_config_by_id", new_callable=AsyncMock, return_value={"_id": "oc-1"}), \
          patch(f"{T}.resolve_oauth_base_url", new_callable=AsyncMock, return_value="http://localhost:3000"), \
-         patch(f"{T}._create_or_update_toolset_oauth_config", new_callable=AsyncMock, return_value=None), \
+         patch(f"{T}._create_or_update_toolset_oauth_config", new_callable=AsyncMock,
+               side_effect=oauth_app_save_failure()), \
          patch(f"{T}._load_toolset_instances", new_callable=AsyncMock, return_value=[dict(OAUTH_INSTANCE)]), \
          patch(f"{T}._deauth_all_instance_users", new_callable=AsyncMock, return_value=1) as deauth:
         with pytest.raises(HTTPException) as exc:
@@ -290,13 +297,14 @@ async def test_delete_instance_with_an_unreadable_list_is_500_and_keeps_credenti
 
 async def test_new_oauth_app_with_an_unreadable_list_overwrites_nothing() -> None:
     cs, store, _stored = _service(reads=False)
-    with patch(f"{T}._get_oauth_config_from_registry", return_value=_oauth_registry_entry()):
-        result = await _create_or_update_toolset_oauth_config(
+    with patch(f"{T}._get_oauth_config_from_registry", return_value=_oauth_registry_entry()), \
+         pytest.raises(HTTPException) as exc:
+        await _create_or_update_toolset_oauth_config(
             toolset_type="jira", auth_config={"type": "OAUTH", "clientId": "cid", "clientSecret": "csec"},
             instance_name="My Jira", user_id="u1", org_id="o1", config_service=cs,
             registry=MagicMock(), base_url="http://localhost:3000",
         )
-    assert result is None
+    assert_oauth_app_save_failed(exc)
     store.create_key.assert_not_awaited()
 
 
@@ -489,7 +497,7 @@ async def _sign_in(cs: MagicMock) -> AsyncMock:
     with patches[0], patches[1], patches[2] as register, patches[3], patches[4], patches[5], patches[6]:
         await _build_oauth_authorization_url(
             cs, helpers._oauth_instance(), "inst-1", "user-1", "org-1", None,
-            initiated_by="user-1", owner_type="user",
+            request=MagicMock(), initiated_by="user-1", owner_type="user",
         )
     return register
 

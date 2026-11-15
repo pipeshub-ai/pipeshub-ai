@@ -541,6 +541,183 @@ describe('OAuthAppService', () => {
     })
   })
 
+  describe('an org admin manages every app of the org', () => {
+    const creatorId = new Types.ObjectId().toString()
+    const adminId = new Types.ObjectId().toString()
+
+    function membersApp(): any {
+      return {
+        _id: new Types.ObjectId(fakeAppId),
+        slug: 'x',
+        clientId: 'member-app',
+        name: 'Look-alike',
+        orgId: new Types.ObjectId(fakeOrgId),
+        createdBy: new Types.ObjectId(creatorId),
+        redirectUris: [],
+        allowedGrantTypes: [],
+        allowedScopes: [],
+        status: OAuthAppStatus.ACTIVE,
+        isConfidential: true,
+        accessTokenLifetime: 3600,
+        refreshTokenLifetime: 2592000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        save: sinon.stub().resolves(),
+      }
+    }
+
+    function stubFind(apps: unknown[]) {
+      const chainable = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(apps),
+      }
+      const findStub = sinon.stub(OAuthApp, 'find').returns(chainable as any)
+      sinon.stub(OAuthApp, 'countDocuments').resolves(apps.length)
+      return findStub
+    }
+
+    it('lists apps of every creator in the caller\'s org, with who created each', async () => {
+      const findStub = stubFind([membersApp()])
+      sinon.stub(Users, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([
+              { _id: new Types.ObjectId(creatorId), fullName: 'Mallory', email: 'mallory@example.com' },
+            ]),
+          }),
+        }),
+      } as any)
+
+      const result = await service.listApps(fakeOrgId, adminId, {}, true)
+
+      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      expect(filter).to.not.have.property('createdBy')
+      expect(filter.orgId).to.deep.equal(new Types.ObjectId(fakeOrgId))
+      expect(result.data[0]).to.include({
+        createdBy: creatorId,
+        createdByName: 'Mallory',
+        createdByEmail: 'mallory@example.com',
+      })
+    })
+
+    it('narrows to one person\'s apps with createdBy', async () => {
+      const findStub = stubFind([])
+      await service.listApps(fakeOrgId, adminId, { createdBy: creatorId }, true)
+      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      expect(filter.createdBy).to.deep.equal(new Types.ObjectId(creatorId))
+    })
+
+    it('gives a member nothing for someone else\'s createdBy', async () => {
+      const findStub = stubFind([membersApp()])
+      const result = await service.listApps(fakeOrgId, fakeUserId, { createdBy: creatorId })
+      expect(findStub.called).to.equal(false)
+      expect(result.data).to.deep.equal([])
+      expect(result.pagination.total).to.equal(0)
+    })
+
+    it('still lists only a member\'s own apps', async () => {
+      const findStub = stubFind([])
+      await service.listApps(fakeOrgId, fakeUserId, {})
+      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
+    })
+
+    it('suspends a member\'s app and revokes its tokens', async () => {
+      const app = membersApp()
+      const findOne = sinon.stub(OAuthApp, 'findOne').resolves(app)
+
+      await service.suspendApp(fakeAppId, fakeOrgId, adminId, true)
+
+      // Found by org alone, then written as the app's own creator: the admin is not the owner.
+      const first = findOne.firstCall.args[0] as Record<string, unknown>
+      expect(first).to.not.have.property('createdBy')
+      expect(first.orgId).to.deep.equal(new Types.ObjectId(fakeOrgId))
+      const write = findOne.secondCall.args[0] as Record<string, unknown>
+      expect(write.createdBy).to.deep.equal(new Types.ObjectId(creatorId))
+      expect(app.status).to.equal(OAuthAppStatus.SUSPENDED)
+      expect(mockOAuthTokenService.revokeAllTokensForApp.calledOnceWith('member-app')).to.be.true
+    })
+
+    it('deletes a member\'s app, recording the admin as who deleted it', async () => {
+      const app = membersApp()
+      sinon.stub(OAuthApp, 'findOne').resolves(app)
+
+      await service.deleteApp(fakeAppId, fakeOrgId, adminId, true)
+
+      expect(app.isDeleted).to.equal(true)
+      expect(String(app.deletedBy)).to.equal(adminId)
+      expect(mockOAuthTokenService.revokeAllTokensForApp.calledWith('member-app')).to.be.true
+    })
+
+    /** A store that holds the member's app: found by org alone, or by its own creator, never by anyone else as owner. */
+    function storeWithMembersApp() {
+      const app = membersApp()
+      sinon.stub(OAuthApp, 'findOne').callsFake(((filter: Record<string, unknown>) => {
+        const owner = filter.createdBy
+        const found = owner === undefined || (owner as { toString(): string }).toString() === creatorId
+        return Promise.resolve(found ? app : null)
+      }) as any)
+      return app
+    }
+
+    async function expectNotFound(call: () => Promise<unknown>) {
+      try {
+        await call()
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(NotFoundError)
+      }
+    }
+
+    it('refuses an admin editing a member\'s app (redirect URIs would capture codes)', async () => {
+      const app = storeWithMembersApp()
+      await expectNotFound(() =>
+        service.updateApp(fakeAppId, fakeOrgId, adminId, true, {
+          redirectUris: ['https://attacker.example/cb'],
+        }),
+      )
+      expect(app.save.called).to.equal(false)
+      expect(mockOAuthTokenService.revokeAllTokensForApp.called).to.equal(false)
+    })
+
+    it('refuses an admin regenerating a member\'s secret', async () => {
+      const app = storeWithMembersApp()
+      await expectNotFound(() => service.regenerateSecret(fakeAppId, fakeOrgId, adminId))
+      expect(app.save.called).to.equal(false)
+    })
+
+    it('refuses an admin re-pointing a member\'s app at another identity', async () => {
+      const app = storeWithMembersApp()
+      await expectNotFound(() =>
+        service.setTokenIdentity(fakeAppId, fakeOrgId, adminId, new Types.ObjectId().toString()),
+      )
+      expect(app.save.called).to.equal(false)
+      expect(mockOAuthTokenService.revokeAllTokensForApp.called).to.equal(false)
+    })
+
+    it('lets an admin view and reactivate a member\'s app', async () => {
+      const app = storeWithMembersApp()
+      expect((await service.getAppById(fakeAppId, fakeOrgId, adminId, true)).clientId).to.equal('member-app')
+      app.status = OAuthAppStatus.SUSPENDED
+      await service.activateApp(fakeAppId, fakeOrgId, adminId, true)
+      expect(app.status).to.equal(OAuthAppStatus.ACTIVE)
+    })
+
+    it('does not let a member reach another member\'s app', async () => {
+      const findOne = sinon.stub(OAuthApp, 'findOne').resolves(null)
+      try {
+        await service.suspendApp(fakeAppId, fakeOrgId, fakeUserId, false)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(NotFoundError)
+      }
+      const filter = findOne.firstCall.args[0] as Record<string, unknown>
+      expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
+    })
+  })
+
   describe('getAppByClientId', () => {
     it('should return app when found and active', async () => {
       const mockApp = {

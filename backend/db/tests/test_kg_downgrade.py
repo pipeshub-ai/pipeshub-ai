@@ -1,4 +1,6 @@
 """Taking the kg writers away (a development downgrade to kg_0001) leaves a database the catalog check accepts, and an upgrade brings them back."""
+import pytest
+
 from .conftest import run_migrate
 from .test_integration import connect
 
@@ -16,7 +18,7 @@ def test_downgrading_the_writers_leaves_a_clean_catalog_and_an_upgrade_brings_th
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
-        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 22
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 26
 
 
 def test_downgrading_the_writers_touches_nothing_that_is_not_theirs(db):
@@ -100,6 +102,74 @@ def test_downgrading_the_restamp_queue_removes_only_its_own_objects(db):
 
 
 
+def test_downgrading_the_access_lists_removes_only_their_own_objects(db):
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    r = run_migrate(url, "downgrade", "kg_0007", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT to_regclass('kg.scopes') IS NULL").fetchone()[0] is True
+        assert c.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'kg' AND table_name = 'records' AND column_name = 'r13'").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname IN ('w_scopes_set', 'w_scopes_delete', 'w_r13_set')").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname LIKE 'w\\_%'").fetchone()[0] == 22      # the rest stay
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+        assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT to_regclass('kg.scopes') IS NOT NULL").fetchone()[0] is True
+
+
+def test_downgrading_the_listing_writer_removes_only_its_own_objects(db):
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    r = run_migrate(url, "downgrade", "kg_0008", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = 'w_listing_set'").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname LIKE 'w\\_%'").fetchone()[0] == 25      # the rest stay
+        assert c.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'kg' AND table_name = 'records' AND column_name IN ('folder', 'hide_children', 'alien')").fetchone()[0] == 3
+        assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = 'w_listing_set'").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("down, writer, old_check", [("kg_0009", "w_records_upsert", "%4000%"), ("kg_0011", "w_grants_set", "%p_roles has an item of the wrong length%")],
+                         ids=["kg_0010-long-names", "kg_0012-long-roles"])
+def test_downgrading_a_revision_that_relaxes_a_writer_keeps_the_writer_and_an_upgrade_replaces_it(db, down, writer, old_check):
+    """kg_0010 and kg_0012 replace the body of a writer kg_0002 owns: a downgrade keeps the writer, its registry row and its pin (kg_0002 runs the same generated file), and an
+    upgrade from there replaces it again with nothing left over."""
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    sig = f"'kg.{writer}'::regproc::regprocedure"
+
+    def state(c) -> tuple:
+        return (c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = %s", (writer,)).fetchone()[0],
+                c.execute(f"SELECT count(*) FROM kernel.function_registry WHERE proc = {sig}").fetchone()[0],
+                c.execute(f"SELECT count(*) FROM kernel.vetted_write_pins WHERE proc = {sig}").fetchone()[0],
+                c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = %s AND prosrc LIKE %s", (writer, old_check)).fetchone()[0])
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    r = run_migrate(url, "downgrade", down, PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (1, 1, 1, 0)
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+        assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (1, 1, 1, 0)
+        assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 26
+
+
 def test_a_function_that_only_shares_a_writers_name_is_not_taken_away_with_the_writers(db):
     """The writers are selected by exact signature: an overload of a writer's name keeps its function, its registry row and its pin."""
     cluster, name = db
@@ -170,3 +240,37 @@ def test_a_downgrade_goes_through_when_a_dropped_writer_took_its_rows_with_it(db
         assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname LIKE 'w\\_%'").fetchone()[0] == 0
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
+
+
+def test_downgrading_the_projector_epoch_gives_the_writers_back_their_earlier_signatures(db):
+    """kg_0013 down: the six writers lose the projection code epoch again (the signatures of kg_0012, which the code of that release calls), the catalog stays
+    clean, and an upgrade takes it back with nothing left over."""
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    old = ["kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[])",
+           "kg.w_fence_rows(bigint[],smallint[],text[],smallint[],bigint[])", "kg.w_queue_touch(bigint,bigint,text,integer,text)", "kg.w_queue_done(bigint)",
+           "kg.w_changes_ack()", "kg.w_changes_delete(bigint[])"]
+    new = [s[:-1] + (",integer)" if not s.endswith("()") else "integer)") for s in old]
+
+    def present(c, sigs: list[str]) -> list[bool]:
+        return [c.execute("SELECT to_regprocedure(%s) IS NOT NULL", (s,)).fetchone()[0] for s in sigs]
+
+    def clean_catalog(c) -> None:
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+        assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 26
+
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert present(c, old) == [False] * 6 and present(c, new) == [True] * 6
+    r = run_migrate(url, "downgrade", "kg_0012", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert present(c, old) == [True] * 6 and present(c, new) == [False] * 6
+        clean_catalog(c)
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert present(c, old) == [False] * 6 and present(c, new) == [True] * 6
+        clean_catalog(c)

@@ -1715,6 +1715,31 @@ async (
   }
 };
 
+/** Admin only, and decided by the connector service, which answers anyone else with the 404 of a missing connector. */
+export const getPermissionStatus =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(req.params.connectorId as string)}/permissions/status`,
+        HttpMethod.GET,
+        buildProxyHeaders(req),
+      );
+      handleConnectorResponse(
+        response,
+        res,
+        'Getting permission status',
+        'Connector not found',
+      );
+    } catch (error) {
+      next(handleBackendError(error, 'get permission status'));
+    }
+  };
+
 export const getConnectorStats =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -2231,5 +2256,68 @@ export const stopConnectorSync =
       });
       next(handleBackendError(error, 'stop connector sync'));
       return;
+    }
+  };
+
+/**
+ * Why a person can or cannot read a record, for an organisation admin (the route
+ * checks the role). The audit line names who asked, about whom and which record,
+ * with the reason code the answer gave: ids only, never record content.
+ */
+export const explainPermission =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const user = req.user as { userId?: string; orgId?: string } | undefined;
+    const { userId, orgId } = user ?? {};
+    const connectorId = req.params.connectorId as string;
+    // The route's schema has already required both as strings.
+    const { userId: targetUserId, recordId } = req.query as {
+      userId: string;
+      recordId: string;
+    };
+    let outcome: Record<string, unknown> = { status: 'failed' };
+    try {
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+      const queryParams = new URLSearchParams({
+        user_id: targetUserId,
+        record_id: recordId,
+      });
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/permissions/explain?${queryParams.toString()}`,
+        HttpMethod.GET,
+        buildProxyHeaders(req),
+      );
+      const data = response.data as
+        { code?: string; admitted?: boolean } | undefined;
+      outcome = {
+        status: response.statusCode,
+        code: data?.code,
+        admitted: data?.admitted,
+      };
+      handleConnectorResponse(
+        response,
+        res,
+        'Explaining access',
+        'Explanation not found',
+      );
+    } catch (error: unknown) {
+      next(handleBackendError(error, 'explain access'));
+    } finally {
+      logger.info('Access explanation requested', {
+        actorUserId: userId,
+        orgId,
+        connectorId,
+        targetUserId,
+        recordId,
+        ...outcome,
+      });
     }
   };

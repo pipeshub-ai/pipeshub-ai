@@ -39,6 +39,7 @@ __all__ = [
     "SymbolRef",
     "attach_file_paths",
     "get_record_roles",
+    "nodes_in_org",
     "repo_names",
     "resolve_symbol",
 ]
@@ -608,6 +609,14 @@ async def _readable_block_records(
     return {key: r["recordId"] for key, r in rows.items()}
 
 
+async def _readable_kinds(
+    graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
+) -> dict[str, str | None]:
+    """Block key -> kind, for the blocks among ``keys`` the caller may read (see ``_readable_block_rows``)."""
+    rows = await _readable_block_rows(graph_provider, org_id, access, keys, extra_fields=["kind"])
+    return {key: r.get("kind") for key, r in rows.items()}
+
+
 async def _readable_keys(
     graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
 ) -> set[str]:
@@ -653,9 +662,10 @@ async def _readable_neighbour_rows(
     graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess | None, keys: list[str],
     relations: list[str], direction: str, *, page: int, budget: int, want: int | None = None,
     connector_id: str | None = None, include_tests: bool = True,
-    accept: "Callable[[dict[str, Any]], bool] | None" = None,
+    accept: "Callable[[dict[str, Any]], bool] | None" = None, node_collection: str = _BLOCKS,
 ) -> tuple[list[dict[str, Any]], bool, bool]:
-    """Edge rows from ``keys`` whose far end the caller can read: ``(rows, over, incomplete)``.
+    """Edge rows from ``keys`` (nodes of ``node_collection``) whose far end the caller can read:
+    ``(rows, over, incomplete)``.
 
     Pages the store in a fixed order and filters each page before counting, so
     rows the caller cannot read, rows ``accept`` refuses, blocks outside
@@ -674,7 +684,7 @@ async def _readable_neighbour_rows(
     while True:
         try:
             raw = list(await graph_provider.get_neighbors_for_nodes_by_relationship_types(
-                node_keys=keys, node_collection=_BLOCKS, relationship_types=relations,
+                node_keys=keys, node_collection=node_collection, relationship_types=relations,
                 direction=direction, limit=page, after=after, raise_on_error=True,
             ) or [])
         except Exception as exc:

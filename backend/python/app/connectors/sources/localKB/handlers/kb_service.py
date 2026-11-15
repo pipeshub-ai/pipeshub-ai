@@ -26,6 +26,10 @@ from app.connectors.services.entity_cleanup_intents import (
     record_pending_entity_cleanup,
 )
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.late_write_sweep import (
+    LateWriteSweepIntentError,
+    record_pending_late_write_sweep,
+)
 from app.connectors.services.storage_release import (
     StorageReleaseIntentError,
     record_pending_storage_release,
@@ -1094,7 +1098,8 @@ class KnowledgeBaseService:
 
             # Recorded before anything is removed: a lost deleteConnectorEntities
             # is then still reconciled by the indexing service, and an unfinished
-            # storage release by the connectors service.
+            # storage release and what indexing writes after the delete by the
+            # connectors service.
             try:
                 await record_pending_entity_cleanup(
                     self.config_service, org_id=org_id, connector_id=kb_id,
@@ -1103,7 +1108,10 @@ class KnowledgeBaseService:
                 await record_pending_storage_release(
                     self.config_service, org_id=org_id, connector_id=kb_id,
                 )
-            except (EntityCleanupIntentError, StorageReleaseIntentError):
+                await record_pending_late_write_sweep(
+                    self.config_service, self.graph_provider, org_id=org_id, connector_id=kb_id,
+                )
+            except (EntityCleanupIntentError, StorageReleaseIntentError, LateWriteSweepIntentError):
                 self.logger.error("❌ Could not record the cleanup owed by KB %s; not deleting it", kb_id)
                 return {
                     "success": False,

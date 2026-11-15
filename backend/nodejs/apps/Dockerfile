@@ -1,7 +1,7 @@
 # Multi-stage Dockerfile for all services
 
 # Stage 1: Build
-FROM node:20 AS builder
+FROM node:24 AS builder
 
 # Set working directory for the build
 WORKDIR /build
@@ -38,7 +38,7 @@ RUN npm run build --prefix ./
 RUN mkdir -p /build/templates && cd src && find . -name '*.hbs' -exec cp --parents {} /build/templates/ \;
 
 # Stage 2: Runtime
-FROM node:20
+FROM node:24
 
 # Install essential networking tools and SSH server
 RUN apt-get update && apt-get install -y \

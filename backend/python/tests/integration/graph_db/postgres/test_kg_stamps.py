@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(180)]
 
-STAMPS = "SELECT sk, path, class_id, self_lit, seed, own_grant, under_deleted, legacy_reason, leaf FROM kg.records WHERE org_id = $1"
+STAMPS = "SELECT sk, path, class_id, self_lit, seed, own_grant, under_deleted, legacy_reason, leaf, r13 FROM kg.records WHERE org_id = $1"
 
 
 @pytest.fixture(autouse=True)
@@ -48,8 +48,18 @@ async def held_stamps(p, org: str) -> dict:
         out = {}
         for r in await tx.fetch(STAMPS, org):
             path = tuple(ids.get(int.from_bytes(bytes(r["path"])[i:i + 8], "big")) for i in range(0, len(r["path"]), 8)) if r["path"] is not None else None
-            out[ids[r["sk"]]] = (path, classes.get(r["class_id"]), r["self_lit"], r["seed"], r["own_grant"], r["under_deleted"], r["legacy_reason"], r["leaf"])
+            out[ids[r["sk"]]] = (path, classes.get(r["class_id"]), r["self_lit"], r["seed"], r["own_grant"], r["under_deleted"], r["legacy_reason"], r["leaf"], r["r13"])
         return out
+    with ctx(org):
+        return await p._q(go, None)
+
+
+async def held_scopes(p, org: str) -> dict:
+    """id -> (kind, connector id, restricted, rule_restricted, needs_grant, deleted) of every access list of the org."""
+    async def go(tx) -> dict:
+        ids = {r["sk"]: r["id"] for r in await tx.fetch("SELECT sk, id FROM kg.node_keys WHERE org_id = $1", org)}
+        return {ids[r["sk"]]: (r["kind"], ids[r["app_sk"]], r["restricted"], r["rule_restricted"], r["needs_grant"], r["deleted"])
+                for r in await tx.fetch("SELECT * FROM kg.scopes WHERE org_id = $1", org)}
     with ctx(org):
         return await p._q(go, None)
 
@@ -97,6 +107,7 @@ async def test_after_random_changes_the_stamps_equal_a_fresh_compile_and_those_o
     other, want = await fresh_with_stamps(p, org)
     got = await held_stamps(p, org)
     assert _norm(got, org) == _norm(want, other), seed
+    assert _norm(await held_scopes(p, org), org) == _norm(await held_scopes(p, other), other), seed
 
 
 def _norm(h: dict, org: str) -> dict:
@@ -378,3 +389,94 @@ async def test_a_parent_whose_id_kg_cannot_name_never_widens_the_class_of_its_ch
     got = (await held_stamps(p, org))["c"]
     print("L3", got)
     assert got[1] is None or got[1][2] == []              # no class wider than "nobody"; a record without one is read by the walk
+
+
+async def test_the_access_lists_are_the_records_and_groups_with_a_list_of_their_own_and_follow_the_graph(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+    # g1 is granted (to a team) and inherits nothing, so it needs a grant; f2 hangs under a folder it does not inherit from (an attachment), so it restricts; f1 is granted too but is
+    # deleted with nothing below it, and fold has no list of its own
+    assert await held_scopes(p, org) == {"g1": (2, "app1", False, False, True, False), "f2": (3, "app1", True, False, True, False)}
+    await update_node(p, org, "records", "f1", accessRule="RESTRICTED")
+    await update_node(p, org, "records", "f1", isDeleted=False)
+    await drain_org(pg_db, org)
+    assert (await held_scopes(p, org))["f1"] == (3, "app1", True, True, True, False)       # a rule other than open or strict restricts and needs a grant
+    assert await dry_diffs(p, org, "app1") == []
+    await delete_node(p, org, "records", "f1")
+    await delete_node(p, org, "recordGroups", "g1")
+    await drain_org(pg_db, org)
+    assert set(await held_scopes(p, org)) == {"f2"}                                              # the list of a node that is gone goes with it
+    assert await dry_diffs(p, org, "app1") == []
+
+
+async def test_a_stale_access_list_shows_in_the_dry_run_and_a_restamp_repairs_it(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+
+    async def corrupt(tx: Tx) -> None:
+        ids = {r["id"]: r["sk"] for r in await tx.fetch("SELECT id, sk FROM kg.node_keys WHERE org_id = $1", org)}
+        await KgWriter(tx).scopes_set([(ids["g1"], 2, ids["app1"], True, False, False, False), (ids["fold"], 3, ids["app1"], True, True, True, False)])
+    with ctx(org):
+        await pg_db.run(corrupt, write=True)
+    assert sorted(await dry_diffs(p, org, "app1")) == ["sc|fold", "sc|g1"]             # one list wrong, one that should not exist
+    from app.services.graph_db.postgres.kg import backfill as backfill_mod
+    await backfill_mod.restamp_app(pg_db, org, "app1")
+    assert await dry_diffs(p, org, "app1") == []
+    assert set(await held_scopes(p, org)) == {"g1", "f2"}
+
+
+async def test_a_record_of_no_connector_that_a_connector_did_not_bring_is_r13_and_nothing_else_is(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "own", "recordName": "Own", "orgId": org, "recordType": "FILE", "origin": "UPLOAD"},
+                                    {"_key": "alien", "recordName": "Alien", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"},
+                                    {"_key": "gone", "recordName": "Gone", "orgId": org, "recordType": "FILE", "origin": "UPLOAD", "isDeleted": True}], "records")
+    await drain_org(pg_db, org)
+    got = await held_stamps(p, org)
+    assert [got[k][8] for k in ("own", "alien", "gone")] == [True, False, False]
+    assert all(got[k][8] is False for k in ("fold", "f1", "f2", "x1", "g1"))                    # a connector's own records are never r13
+    assert got["own"][1] is None and got["own"][6] == 7                                         # and it keeps its refusal, so a reader that does not know r13 walks
+    await update_node(p, org, "records", "own", connectorId="app1")
+    await drain_org(pg_db, org)
+    assert (await held_stamps(p, org))["own"][8] is False and await dry_diffs(p, org, "app1") == []
+    await update_node(p, org, "records", "own", connectorId=None)
+    await drain_org(pg_db, org)
+    assert (await held_stamps(p, org))["own"][8] is True
+
+
+
+async def test_r13_follows_the_origin_in_the_graph_not_the_one_kg_held_before(pg_db) -> None:
+    """A restamp that runs before the record's own projection has written the new origin must still use the graph's."""
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "own", "recordName": "Own", "orgId": org, "recordType": "FILE", "origin": "UPLOAD"}], "records")
+    await drain_org(pg_db, org)
+    assert (await held_stamps(p, org))["own"][8] is True
+    await update_node(p, org, "records", "own", origin="CONNECTOR")
+
+    async def restamp_only(tx: Tx) -> None:          # the stamper alone: kg.records still says UPLOAD
+        await stamp(tx, org, {("records", "own")})
+    with ctx(org):
+        await pg_db.run(restamp_only, write=True)
+    assert (await held_stamps(p, org))["own"][8] is False
+
+
+async def test_a_restamp_page_counts_a_write_for_every_connector_it_rewrites(pg_db) -> None:
+    from app.services.graph_db.postgres.kg import locks
+
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+    await add_edge(p, org, ("records", "f2"), ("records", "x1"), "nodeRelations", relationshipType="PARENT_CHILD")      # x1 (app2) hangs under f2 (app1)
+    await drain_org(pg_db, org)
+    before = locks.written(org, "app1")
+
+    async def page(tx) -> None:
+        await stamp_app(tx, org, "app2", None, 100, locked={"app1", "app2"})
+    with ctx(org):
+        await pg_db.run(page, write=True)
+    assert locks.written(org, "app1") > before                                # the parent of the page's child is app1's row

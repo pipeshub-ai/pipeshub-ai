@@ -107,6 +107,49 @@ class TestBind:
         assert detached == {}
 
 
+class TestSubjectUserFields:
+    """target_user_id / source_user_id replace an email on per-user lines (docs/logging.md, "Personal data")."""
+
+    def test_both_are_bindable_and_printed_unmasked(self, capture) -> None:
+        logger, records = capture
+        with F.log_fields(target_user_id="u-0001", source_user_id="src-0001"):
+            logger.info("user.synced")
+        assert TextFormatter().format(records[0]).endswith(" | target_user_id=u-0001 source_user_id=src-0001")
+
+    def test_bound_inside_each_gathered_coroutine_not_around_gather(self, capture) -> None:
+        logger, records = capture
+
+        async def sync_user(source_user_id: str) -> None:
+            with F.log_fields(source_user_id=source_user_id):
+                await asyncio.sleep(0)
+                logger.info("user.synced")
+
+        async def run() -> None:
+            await asyncio.gather(sync_user("src-0001"), sync_user("src-0002"))
+
+        asyncio.run(run())
+        assert sorted(log_record_fields(r)["source_user_id"] for r in records) == ["src-0001", "src-0002"]
+
+    def test_a_binding_around_gather_reaches_every_coroutine_one_made_before_it_none(self, capture) -> None:
+        logger, records = capture
+
+        async def sync_user() -> None:
+            await asyncio.sleep(0)
+            logger.info("user.synced")
+
+        async def run() -> None:
+            with F.log_fields(source_user_id="src-0001"):  # each task copies the context at the gather call
+                await asyncio.gather(sync_user(), sync_user())
+            coros = []
+            for source_user_id in ("src-0002", "src-0003"):
+                with F.log_fields(source_user_id=source_user_id):
+                    coros.append(sync_user())
+            await asyncio.gather(*coros)
+
+        asyncio.run(run())
+        assert [log_record_fields(r).get("source_user_id") for r in records] == ["src-0001", "src-0001", None, None]
+
+
 class TestLogEvent:
     def test_message_is_the_event_and_fields_render(self, capture) -> None:
         logger, records = capture

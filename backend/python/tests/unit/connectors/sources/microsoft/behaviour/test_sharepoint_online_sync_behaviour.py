@@ -835,7 +835,7 @@ class TestSitePages:
 class TestFullRun:
     async def test_run_sync_saves_users_the_site_its_library_and_files(self, connector, api, db) -> None:
         serve_site(api)
-        api.on("GET", "/v1.0/users", page([{"id": "u1", "displayName": "Ana", "mail": "ana@contoso.com", "accountEnabled": True}]))
+        api.on("GET", "/v1.0/users", page([{"id": "u1", "displayName": "Ana", "mail": "ana@contoso.com", "accountEnabled": True}], count=1))
         api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
         api.on("GET", "/v1.0/groups", page([]))
         api.on("GET", f"{SITE_REST}/sitegroups", rest_users())
@@ -852,7 +852,7 @@ class TestFullRun:
 
     async def test_incremental_sync_picks_up_new_files(self, connector, api, db) -> None:
         serve_site(api)
-        api.on("GET", "/v1.0/users", page([]))
+        api.on("GET", "/v1.0/users", page([{"id": "u1", "displayName": "Ana", "mail": "ana@contoso.com", "accountEnabled": True}], count=1))
         api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
         api.on("GET", "/v1.0/groups", page([]))
         api.on("GET", f"{SITE_REST}/sitegroups", rest_users())
@@ -1510,7 +1510,7 @@ class TestRunSafety:
         api.on("GET", "/v1.0/users", page([
             {"id": "u1", "displayName": "Ana", "mail": "ana@contoso.com", "accountEnabled": True, "userType": "Member"},
             {"id": "u2", "displayName": "Bo", "mail": "bo@contoso.com", "accountEnabled": False, "userType": "Member"},
-        ]))
+        ], count=2))
         await connector._sync_users()
         serve_groups_delta(api, {None: page([{"id": "g1"}], delta_link=groups_delta_url("D1"))})
         api.on("GET", "/v1.0/groups", page([{"id": "g1", "displayName": "Eng"}]))

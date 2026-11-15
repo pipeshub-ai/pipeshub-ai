@@ -365,6 +365,89 @@ def text_file(words: Words) -> bytes:
     return "\n\n".join(words.paragraph(6) for _ in range(words.rng.randint(5, 20))).encode()
 
 
+# -- sized light files (the per-kind memory calibration) -------------------------
+
+
+def sized_markdown(words: Words, target_bytes: int) -> bytes:
+    """Markdown of about *target_bytes*: headings, paragraphs, lists, code fences and a table."""
+    parts: list[bytes] = []
+    total = 0
+    while total < target_bytes:
+        chunk = markdown_file(words) + b"\n| name | value |\n| --- | --- |\n" + b"".join(
+            f"| {words.title()} | {words.rng.randint(1, 9999)} |\n".encode() for _ in range(6)
+        )
+        parts.append(chunk)
+        total += len(chunk)
+    return b"\n".join(parts)[:target_bytes]
+
+
+def sized_csv(words: Words, target_bytes: int) -> bytes:
+    """A CSV of about *target_bytes*: an id, text, a number and a date per row."""
+    rows = ["id,name,description,amount,date"]
+    total = len(rows[0])
+    i = 0
+    while total < target_bytes:
+        line = f'{i},{words.title()},"{words.sentence()}",{words.rng.random() * 1000:.2f},2026-{1 + i % 12:02d}-{1 + i % 28:02d}'
+        rows.append(line)
+        total += len(line) + 1
+        i += 1
+    return "\n".join(rows).encode()
+
+
+def sized_code(words: Words, target_bytes: int) -> bytes:
+    """Python source of about *target_bytes*: classes with methods, docstrings and branches."""
+    out: list[str] = ["import os", ""]
+    total = 0
+    i = 0
+    while total < target_bytes:
+        name = f"{words.title().replace(' ', '')}{i}"
+        body = [
+            f"class {name}:",
+            f'    """{words.sentence()}"""',
+            "",
+            "    def __init__(self, value: int) -> None:",
+            "        self.value = value",
+            "",
+        ]
+        for j in range(4):
+            body += [
+                f"    def method_{j}(self, x: int) -> int:",
+                f'        """{words.sentence()}"""',
+                f"        if x > {words.rng.randint(1, 99)}:",
+                f"            return self.value + x * {j + 1}",
+                f"        return os.getpid() - {words.rng.randint(1, 99)}",
+                "",
+            ]
+        text = "\n".join(body) + "\n"
+        out.append(text)
+        total += len(text)
+        i += 1
+    return "\n".join(out).encode()[:target_bytes]
+
+
+def _xlsx_rows(seed: int, rows: int) -> bytes:
+    import openpyxl
+
+    rng = random.Random(seed)
+    book = openpyxl.Workbook(write_only=True)
+    per_sheet = 100_000
+    for index in range(max(1, math.ceil(rows / per_sheet))):
+        sheet = book.create_sheet(f"S{index}")
+        sheet.append([f"c{c}" for c in range(12)])
+        for _ in range(min(per_sheet, rows - index * per_sheet)):
+            sheet.append([rng.random() * 1e6 for _ in range(8)] + [f"t{rng.randint(0, 10**9)}" for _ in range(4)])
+    buf = io.BytesIO()
+    book.save(buf)
+    return buf.getvalue()
+
+
+def sized_xlsx(seed: int, target_bytes: int) -> bytes:
+    """A workbook of about *target_bytes* (zipped): 8 numeric and 4 text columns per row, several sheets."""
+    sample_rows = 20_000
+    per_row = len(_xlsx_rows(seed, sample_rows)) / sample_rows
+    return _xlsx_rows(seed, max(sample_rows, int(target_bytes / per_row)))
+
+
 # -- driver -------------------------------------------------------------------
 
 

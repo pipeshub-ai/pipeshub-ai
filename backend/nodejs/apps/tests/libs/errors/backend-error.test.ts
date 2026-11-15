@@ -9,6 +9,7 @@ import {
 } from '../../../src/libs/errors/backend-error'
 import { Logger } from '../../../src/libs/services/logger.service'
 import { logLevelFor } from '../../../src/libs/utils/error.middleware.utils'
+import { classifyRequestError } from '../../../src/libs/utils/error-class'
 import {
   BadRequestError,
   ConflictError,
@@ -53,7 +54,7 @@ describe('handleBackendError', () => {
       expect(result.message).to.equal(message)
     })
 
-    it('logs a 402 as a warning, and the error middleware does too', () => {
+    it('maps a 402 to a warning for the error middleware, and logs nothing itself', () => {
       const warn = sinon.stub(Logger.prototype, 'warn')
       const error = sinon.stub(Logger.prototype, 'error')
       try {
@@ -67,7 +68,7 @@ describe('handleBackendError', () => {
           'Chat Stream',
         )
         expect(logLevelFor(result)).to.equal('warn')
-        expect(warn.calledWith('Backend error during Chat Stream')).to.equal(true)
+        expect(warn.called).to.equal(false)
         expect(error.called).to.equal(false)
       } finally {
         sinon.restore()
@@ -83,7 +84,7 @@ describe('handleBackendError', () => {
       expect(result.message).to.equal('Payment check: fetch failed')
     })
 
-    it('logs any other 4xx it passes on as a warning too', () => {
+    it('maps any other 4xx it passes on to a warning too', () => {
       const warn = sinon.stub(Logger.prototype, 'warn')
       const error = sinon.stub(Logger.prototype, 'error')
       try {
@@ -92,7 +93,7 @@ describe('handleBackendError', () => {
           'create connector',
         )
         expect(logLevelFor(result)).to.equal('warn')
-        expect(warn.calledWith('Backend error during create connector')).to.equal(true)
+        expect(warn.called).to.equal(false)
         expect(error.called).to.equal(false)
       } finally {
         sinon.restore()
@@ -307,56 +308,58 @@ describe('handleBackendError', () => {
     expect(result.message).to.equal('Name is required')
   })
 
-  // A service refusing the request is answered to the caller as the same 4xx;
-  // logging each at error buried the real failures in the error log.
-  describe('log level', () => {
-    let warn: sinon.SinonStub
-    let error: sinon.SinonStub
-
-    // On the prototype: backend-error keeps the instance it got at load, which
-    // another test may since have replaced as the singleton.
-    beforeEach(() => {
-      warn = sinon.stub(Logger.prototype, 'warn')
-      error = sinon.stub(Logger.prototype, 'error')
-    })
-
+  // The call's own upstream.call.end line and the error middleware's line report it; this layer only maps.
+  describe('logs nothing; the cause tells the middleware why', () => {
     afterEach(() => sinon.restore())
 
-    for (const statusCode of [400, 401, 403, 404, 409, 422]) {
-      it(`logs a ${String(statusCode)} from the service at warn`, () => {
-        handleBackendError({ statusCode, data: { detail: 'refused' } }, 'create connector')
+    it('writes no record for any input', () => {
+      const levels = (['error', 'warn', 'info', 'debug'] as const).map((level) => sinon.stub(Logger.prototype, level))
+      const inputs: unknown[] = [
+        { statusCode: 400, data: { detail: 'refused' } },
+        { statusCode: 404, data: { detail: 'gone' } },
+        { statusCode: 405, data: { detail: 'Method Not Allowed' } },
+        { statusCode: 429, data: { detail: 'slow down' } },
+        { statusCode: 500, data: { detail: 'broke for alice@example.com' } },
+        { statusCode: 502, data: { detail: 'broke' } },
+        { statusCode: 500, data: { detail: 'ECONNREFUSED' } },
+        new Error('no status'),
+        Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('x'), { code: 'ECONNREFUSED' }) }),
+        'not an object',
+      ]
+      for (const input of inputs) handleBackendError(input, 'create connector')
+      expect(levels.map((stub) => stub.callCount)).to.deep.equal([0, 0, 0, 0])
+    })
 
-        expect(warn.calledOnce).to.be.true
-        expect(warn.firstCall.args[0]).to.equal('Backend error during create connector')
-        expect(error.called).to.be.false
+    for (const [status, errorClass] of [
+      [500, 'upstream_5xx'],
+      [502, 'upstream_5xx'],
+      [501, 'upstream_5xx'],
+      [408, 'timeout'],
+      [405, 'internal'],
+      [410, 'internal'],
+    ] as const) {
+      it(`a ${String(status)} from the service is our 500 classed ${errorClass}`, () => {
+        const result = handleBackendError({ statusCode: status, data: { detail: 'broke' } }, 'create connector')
+        expect(result).to.be.instanceOf(InternalServerError)
+        expect(classifyRequestError(result, 500)).to.equal(errorClass)
+        expect((result as Error & { cause?: unknown }).cause).to.deep.equal({ status })
       })
     }
 
-    // Answered to the caller as a 500, so it is ours to look into.
-    it('logs a 4xx it does not pass on (405) at error, with the service detail', () => {
-      const result = handleBackendError({ statusCode: 405, data: { detail: 'Method Not Allowed' } }, 'create connector')
+    it('a failure with no status keeps an Error as the cause, never a JSON parse message that quotes the body', () => {
+      const parse = new SyntaxError('Unexpected token < in JSON at position 0: "<html>alice@example.com"')
+      const parsed = handleBackendError(parse, 'Search') as Error & { cause?: Error }
+      expect(parsed).to.be.instanceOf(InternalServerError)
+      expect(parsed.cause).to.be.instanceOf(SyntaxError)
+      expect(parsed.cause!.message).to.not.include('alice@example.com')
+      expect(classifyRequestError(parsed, 500)).to.equal('internal')
 
-      expect(result).to.be.instanceOf(InternalServerError)
-      expect(error.calledOnce).to.be.true
-      expect(error.firstCall.args[1]).to.include({ statusCode: 405, errorDetail: 'Method Not Allowed' })
-      expect(warn.called).to.be.false
+      const bug = new TypeError("Cannot read properties of undefined (reading 'data')")
+      expect((handleBackendError(bug, 'Search') as Error & { cause?: unknown }).cause).to.equal(bug)
+
+      const plain = handleBackendError({ message: 'odd', data: { secret: 'x' } }, 'Search') as Error & { cause?: unknown }
+      expect(plain.cause).to.equal(undefined)
     })
-
-    it('logs a 429 it passes on as a 429 at warn', () => {
-      handleBackendError({ statusCode: 429, data: { detail: 'slow down' } }, 'create connector')
-
-      expect(warn.calledOnce).to.be.true
-      expect(error.called).to.be.false
-    })
-
-    for (const statusCode of [500, 502]) {
-      it(`logs a ${String(statusCode)} from the service at error`, () => {
-        handleBackendError({ statusCode, data: { detail: 'broke' } }, 'create connector')
-
-        expect(error.calledOnce).to.be.true
-        expect(warn.called).to.be.false
-      })
-    }
   })
 })
 

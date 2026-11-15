@@ -36,6 +36,11 @@ export interface OAuthClient {
    * they act as whoever created it — the case the migration prompt is for.
    */
   tokenIdentityUserId?: string;
+  /** Id of the person who registered the app. */
+  createdBy?: string;
+  /** Who registered it; only on an administrator's list of every app in the organization. */
+  createdByName?: string;
+  createdByEmail?: string;
 }
 
 export interface OAuthClientsPagination {

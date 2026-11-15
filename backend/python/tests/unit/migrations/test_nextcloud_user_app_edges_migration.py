@@ -16,13 +16,17 @@ class FakeGraph:
 
     def __init__(self, shape: str) -> None:
         self.shape = shape
+        # Two orgs; like Arango and Neo4j, the app read answers for every org.
         self.apps = [
-            {"_key": "nc-1", "type": "Nextcloud", "createdBy": "mongo-alice"},
-            {"_key": "nc-2", "type": "Nextcloud", "createdBy": "mongo-carol"},
+            {"_key": "nc-1", "type": "Nextcloud", "createdBy": "mongo-alice", "orgId": "org-1"},
+            {"_key": "nc-2", "type": "Nextcloud", "createdBy": "mongo-carol", "orgId": "org-2"},
         ]
         self.users = {"mongo-alice": {"_key": "u-alice"}, "mongo-carol": {"_key": "u-carol"}}
         self.edges = {("u-alice", "nc-1"), ("u-bob", "nc-1"), ("u-carol", "nc-2"), ("u-bob", "drive-1")}
         self.deleted: list[tuple[str, str]] = []
+
+    async def get_all_orgs(self, **_: object) -> list[dict]:
+        return [{"_key": "org-1"}, {"_key": "org-2"}]
 
     async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any], **_: object) -> list[dict]:
         assert collection == CollectionNames.APPS.value

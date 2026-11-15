@@ -506,7 +506,7 @@ class TestRegisterDynamicClient:
         inner.post = AsyncMock(return_value=resp)
 
         with _allow_all_discovery_targets(), _mock_async_client(inner):
-            with pytest.raises(DCRError, match="400"):
+            with pytest.raises(DCRError, match="400") as raised:
                 await register_dynamic_client(
                     registration_endpoint="https://example.com/register",
                     redirect_uri="https://app.example.com/callback",
@@ -514,6 +514,8 @@ class TestRegisterDynamicClient:
                     token_url="https://example.com/token",
                     policy=PUBLIC_ONLY,
                 )
+        # The provider's status, so the route can tell its outage (WARNING) from a refusal (ERROR).
+        assert raised.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_missing_client_id_raises_dcr_error(self) -> None:

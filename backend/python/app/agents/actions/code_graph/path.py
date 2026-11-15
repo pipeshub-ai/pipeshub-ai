@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import RecordRelations
 
+from .neighbours import _override_closure
 from .ops import (
     _BLOCKS,
     CODE_RELATIONS,
@@ -24,7 +25,7 @@ from .ops import (
 from .results import touched
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -126,12 +127,16 @@ async def find_symbol_path_impl(
             constructor_hop = {"from": target_key, "to": end_key, "relation": relation,
                                "direction": "outbound"}
 
+    def implementations(keys: list[str]) -> Awaitable[tuple[dict[str, str], bool]]:
+        return _override_closure(graph_provider, org_id, access, keys, "inbound")
+
     if start_key == target_key:
         edges, capped = [], False
     else:
         edges, capped = await _bfs_edges(
             graph_provider, start_key, target_key, max_depth=max_depth, relations=edge_types,
             undirected=undirected, org_id=org_id, access=access,
+            implementations=None if undirected else implementations,
         )
     if edges is not None and constructor_hop:
         edges = [*edges, constructor_hop]
@@ -139,7 +144,7 @@ async def find_symbol_path_impl(
     if edges is None and not undirected:
         edges, back_capped = await _bfs_edges(
             graph_provider, end_key, start_key, max_depth=max_depth, relations=edge_types,
-            org_id=org_id, access=access,
+            org_id=org_id, access=access, implementations=implementations,
         )
         capped = capped or back_capped
         reversed_path = edges is not None
@@ -161,8 +166,7 @@ async def find_symbol_path_impl(
 
     keys = {start_key, end_key}
     for edge in edges:
-        keys.add(edge["from"])
-        keys.add(edge["to"])
+        keys.update(k for k in (edge["from"], edge["to"], edge.get("of")) if k)
     blocks = await _readable_blocks(graph_provider, org_id, access, sorted(keys),
                                      connector_id=connector_id)
 
@@ -170,7 +174,8 @@ async def find_symbol_path_impl(
     for edge in edges:
         src = blocks.get(edge["from"])
         dst = blocks.get(edge["to"])
-        if src is None or dst is None:
+        of = blocks.get(edge["of"]) if edge.get("of") else None
+        if src is None or dst is None or (edge.get("of") and of is None):
             # A hop through something the caller cannot read is not a path they
             # are allowed to see.
             return {"found": False, "hops": []}
@@ -179,7 +184,8 @@ async def find_symbol_path_impl(
             "to": SymbolRef.from_block(dst),
             "relation": edge["relation"],
             "direction": edge["direction"],
-            "explain": _explain_hop(src, dst, edge),
+            **({"via": "implementation"} if of is not None else {}),
+            "explain": _explain_hop(src, dst, edge, of),
         })
 
     found: dict[str, Any] = touched(
@@ -250,6 +256,7 @@ async def _bfs_edges(
     undirected: bool = False,
     org_id: str = "",
     access: RecordAccess | None = None,
+    implementations: Callable[[list[str]], Awaitable[tuple[dict[str, str], bool]]] | None = None,
 ) -> tuple[list[dict[str, str]] | None, bool]:
     """Breadth-first search from ``start_key`` towards ``end_key``.
 
@@ -272,15 +279,23 @@ async def _bfs_edges(
     ``access`` keeps the search to blocks the caller may read, so a path
     through a hidden file neither shows nor hides a readable one (S-7).
 
+    ``implementations`` (directed walks): a call to a base or interface method
+    also steps to every readable method overriding it, since the call runs one
+    of those (the hop is the call, ``of`` the method it names). Unranked and
+    uncapped: unlike get_neighbour's list, a search needs them all, and
+    ``_MAX_VISITED`` bounds it.
+
     Returns ``(edges, capped)``. ``capped`` is set whenever a frontier or row
     cap bit, so the caller can say that an absent path is unproven.
     """
     all_relations = list(relations) if relations else list(CODE_RELATIONS)
     start = (start_key, _CLIMBING)
-    parents: dict[tuple[str, int], tuple[tuple[str, int], str, str]] = {}
+    parents: dict[tuple[str, int], tuple[tuple[str, int], str, str, str | None]] = {}
     visited = {start}
     frontier = [start]
     capped = False
+    # Callee -> the implementations walked from it ([] when none): each callee is looked up once.
+    impls_of: dict[str, list[str]] = {}
 
     for _ in range(max_depth):
         if not frontier:
@@ -292,14 +307,15 @@ async def _bfs_edges(
         for key, phase in frontier:
             phases_by_key.setdefault(key, []).append(phase)
         def steppable(row: dict[str, Any], phases_by_key: dict[str, list[int]] = phases_by_key) -> bool:
-            return bool(
-                row.get("collection") == _BLOCKS and row.get("key") and row.get("anchorKey")
-                and any(
-                    (step := _next_phase(phase, row, undirected=undirected)) is not None
-                    and (row["key"], step) not in visited
-                    for phase in phases_by_key.get(row["anchorKey"], ())
-                )
-            )
+            if not (row.get("collection") == _BLOCKS and row.get("key") and row.get("anchorKey")):
+                return False
+            steps = [step for phase in phases_by_key.get(row["anchorKey"], ())
+                     if (step := _next_phase(phase, row, undirected=undirected)) is not None]
+            if any((row["key"], step) not in visited for step in steps):
+                return True
+            # A callee already reached another way (say through OVERRIDES) still leads on to its implementations,
+            # until they have been looked up once.
+            return bool(steps) and _dispatches(row, implementations) and row["key"] not in impls_of
 
         # The shape rules and the access check run per page inside the fetch, so
         # neither a hub's unreadable callers nor its dropped ones fill the cap.
@@ -307,6 +323,18 @@ async def _bfs_edges(
                                               undirected=undirected, accept=steppable,
                                               org_id=org_id, access=access)
         capped = capped or hit_cap
+        if implementations is not None:
+            callees = [row for row in rows if _dispatches(row, implementations)]
+            new = list(dict.fromkeys(row["key"] for row in callees if row["key"] not in impls_of))
+            if new:
+                found, spent = await implementations(new)
+                capped = capped or spent
+                impls_of.update({key: [] for key in new})
+                for impl, callee in found.items():
+                    impls_of[callee].append(impl)
+            # After the real edges, so a direct call to an implementation is the hop that names it.
+            rows = [*rows, *({**row, "key": impl, "_impl_of": row["key"]}
+                             for row in callees for impl in impls_of[row["key"]])]
 
         next_frontier: list[tuple[str, int]] = []
         for row in rows:
@@ -325,7 +353,7 @@ async def _bfs_edges(
                     continue
                 visited.add(state)
                 parents[state] = ((anchor, phase), row.get("relationshipType"),
-                                  row.get("direction"))
+                                  row.get("direction"), row.get("_impl_of"))
                 if key == end_key:
                     return _unwind(parents, start, state), capped
                 next_frontier.append(state)
@@ -335,6 +363,12 @@ async def _bfs_edges(
         frontier = next_frontier
 
     return None, capped
+
+
+def _dispatches(row: dict[str, Any], implementations: object) -> bool:
+    """A call whose callee's implementations a directed walk also steps to."""
+    return (implementations is not None and row.get("direction") == "outbound"
+            and row.get("relationshipType") == RecordRelations.CALLS.value)
 
 
 async def _neighbour_rows(
@@ -413,27 +447,33 @@ _HOP_VERBS = {
 }
 
 
-def _explain_hop(src: dict[str, Any], dst: dict[str, Any], edge: dict[str, str]) -> str:
-    """One sentence per hop, in the direction the edge points."""
+def _explain_hop(src: dict[str, Any], dst: dict[str, Any], edge: dict[str, str],
+                 of: dict[str, Any] | None = None) -> str:
+    """One sentence per hop, in the direction the edge points; *of*: the base method an implementation hop's
+    call names."""
     head, tail = (src, dst) if edge.get("direction") != "inbound" else (dst, src)
     verb = _HOP_VERBS.get(edge.get("relation") or "", (edge.get("relation") or "").lower())
+    if of is not None:
+        return (f"{head.get('qualifiedName')} {verb} {of.get('qualifiedName')}, "
+                f"implemented by {tail.get('qualifiedName')}")
     return f"{head.get('qualifiedName')} {verb} {tail.get('qualifiedName')}"
 
 
 def _unwind(
-    parents: dict[tuple[str, int], tuple[tuple[str, int], str, str]],
+    parents: dict[tuple[str, int], tuple[tuple[str, int], str, str, str | None]],
     start: tuple[str, int],
     end: tuple[str, int],
 ) -> list[dict[str, str]]:
     chain: deque[dict[str, str]] = deque()
     cursor = end
     while cursor != start:
-        previous, relation, direction = parents[cursor]
+        previous, relation, direction, impl_of = parents[cursor]
         chain.appendleft({
             "from": previous[0],
             "to": cursor[0],
             "relation": relation,
             "direction": direction,
+            **({"of": impl_of} if impl_of else {}),
         })
         cursor = previous
     return list(chain)

@@ -12,6 +12,7 @@ from app.config.constants.arangodb import ProgressStatus
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.modules.artifacts.sidecars import ArtifactSidecars
 from app.modules.artifacts.store import NodeArtifactStore
+from app.modules.pipeline.connector_gate import ConnectorDeletingCheck
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.duplicates import QueuedCopies
 from app.modules.pipeline.ingress import EMBED, StageIngress
@@ -125,6 +126,7 @@ def build_pipeline_runtime(
     headlines = GraphHeadlineStatusWriter(graph)
     publisher = DeferredPublisher()
     record_leases = RecordLeases()
+    connector_deleting = ConnectorDeletingCheck(graph, logger)
     sidecars = ArtifactSidecars(NodeArtifactStore(sink.blob_storage, logger), config_service, logger)
     queued_copies = QueuedCopies(graph, sink, logger)
     coordinator = Coordinator(
@@ -143,6 +145,7 @@ def build_pipeline_runtime(
                 config_service=config_service,
                 record_from_document=record_from_document,
                 record_leases=record_leases,
+                connector_deleting=connector_deleting,
                 extraction_client=extraction_client if use_service else None,
                 logger=logger,
                 sidecars=sidecars,
@@ -158,6 +161,7 @@ def build_pipeline_runtime(
             config_service=config_service,
             record_from_document=record_from_document,
             record_leases=record_leases,
+            connector_deleting=connector_deleting,
             sidecars=sidecars,
         )
 

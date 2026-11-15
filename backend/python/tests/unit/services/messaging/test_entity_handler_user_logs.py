@@ -7,6 +7,7 @@ import pytest
 
 from app.config.constants.arangodb import PersonMigrationMode
 from app.services.messaging.kafka.handlers.entity import EntityEventService
+from tests.support.log_capture import assert_not_logged
 
 LOGGER_NAME = "tests.entity_handler.user_logs"
 PERSONAL = {
@@ -35,10 +36,9 @@ def _messages(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME]
 
 
-def _assert_no_personal_data(messages: list[str]) -> None:
+def _assert_no_personal_data(caplog: pytest.LogCaptureFixture) -> None:
     values = [v for v in PERSONAL.values() if isinstance(v, str)] + PERSONAL["businessPhones"]
-    for value in values:
-        assert not any(value in m for m in messages), f"{value!r} was logged"
+    assert_not_logged([r for r in caplog.records if r.name == LOGGER_NAME], *values)
 
 
 @pytest.fixture(autouse=True)
@@ -58,7 +58,7 @@ async def test_user_added_new_user_logs_ids_only(caplog: pytest.LogCaptureFixtur
     assert await _service(_user_added_provider()).process_event("userAdded", dict(PAYLOAD)) is True
 
     messages = _messages(caplog)
-    _assert_no_personal_data(messages)
+    _assert_no_personal_data(caplog)
     assert "Processing user added event for user u-1" in messages
     assert "Created or updated user u-1" in messages
 
@@ -70,7 +70,7 @@ async def test_user_added_existing_user_logs_ids_only(caplog: pytest.LogCaptureF
     assert await _service(_user_added_provider(existing)).process_event("userAdded", dict(PAYLOAD)) is True
 
     messages = _messages(caplog)
-    _assert_no_personal_data(messages)
+    _assert_no_personal_data(caplog)
     assert "Created or updated user u-1" in messages
 
 
@@ -83,7 +83,7 @@ async def test_user_added_adopting_a_person_logs_the_user_key(caplog: pytest.Log
     assert await _service(gp).process_event("userAdded", dict(PAYLOAD)) is True
 
     messages = _messages(caplog)
-    _assert_no_personal_data(messages)
+    _assert_no_personal_data(caplog)
     assert f"Adopted existing person for user graph-key-1 ({PersonMigrationMode.MIGRATED})" in messages
 
 
@@ -96,7 +96,7 @@ async def test_user_added_whose_adoption_fails_logs_the_user_key(caplog: pytest.
 
     assert await _service(gp).process_event("userAdded", dict(PAYLOAD)) is True
 
-    _assert_no_personal_data(_messages(caplog))
+    _assert_no_personal_data(caplog)
     errors = [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME and r.levelno == logging.ERROR]
     assert errors == ["Failed to adopt existing person for user graph-key-1: graph down"]
 
@@ -108,7 +108,7 @@ async def test_user_added_that_fails_still_logs_no_personal_data(caplog: pytest.
     assert await _service(gp).process_event("userAdded", dict(PAYLOAD)) is False
 
     messages = _messages(caplog)
-    _assert_no_personal_data(messages)
+    _assert_no_personal_data(caplog)
     assert "Organization not found: org-1" in messages
 
 
@@ -119,7 +119,7 @@ async def test_user_updated_logs_ids_only(caplog: pytest.LogCaptureFixture) -> N
     assert await _service(gp).process_event("userUpdated", dict(PAYLOAD)) is True
 
     messages = _messages(caplog)
-    _assert_no_personal_data(messages)
+    _assert_no_personal_data(caplog)
     assert "Processing user updated event for user u-1" in messages
     assert "Updated user u-1" in messages
 
@@ -135,7 +135,7 @@ async def test_user_deleted_logs_ids_only(caplog: pytest.LogCaptureFixture) -> N
     assert await svc.process_event("userDeleted", dict(PAYLOAD)) is True
 
     messages = _messages(caplog)
-    _assert_no_personal_data(messages)
+    _assert_no_personal_data(caplog)
     assert "Processing user deleted event for user u-1" in messages
     assert "Soft-deleted graph user graph-key-1" in messages
 
@@ -149,7 +149,7 @@ async def test_user_deleted_without_user_id_still_succeeds(caplog: pytest.LogCap
     assert await _service(gp).process_event("userDeleted", payload) is True
 
     messages = _messages(caplog)
-    _assert_no_personal_data(messages)
+    _assert_no_personal_data(caplog)
     assert "Soft-deleted graph user graph-key-1" in messages
 
 
@@ -160,5 +160,5 @@ async def test_user_deleted_with_no_graph_user_logs_ids_only(caplog: pytest.LogC
     assert await _service(gp).process_event("userDeleted", dict(PAYLOAD)) is False
 
     errors = [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME and r.levelno == logging.ERROR]
-    _assert_no_personal_data(_messages(caplog))
+    _assert_no_personal_data(caplog)
     assert errors == ["No graph user has the deleted user's email (user u-1)"]

@@ -72,7 +72,8 @@ async def _run(tx: Tx, org: str, collection_id: int, sparse: SparseVector, scope
         if len(kept) >= leg or not more or not scope.filtered:
             return kept, False
         if asked >= MAX_LEG:
-            return kept, True
+            # not for a deferring scope filter alone: the rows it hides are rows the access check would drop, and the request without it reports nothing
+            return kept, scope.extra is not None or (scope.scope_filter is not None and not scope.scope_filter.defer)
         asked = min(asked * 4, MAX_LEG)
 
 

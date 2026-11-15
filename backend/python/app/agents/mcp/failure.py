@@ -3,6 +3,7 @@ loop (what the model is told) and the UI (which state and action it shows)."""
 from __future__ import annotations
 
 import asyncio
+import logging
 from enum import Enum
 
 import httpx
@@ -24,6 +25,8 @@ from app.agents.mcp.token_refresh import (
     MCPTokenRefreshError,
 )
 from app.utils import error_class
+from app.utils.credential_refresh_log import MISCONFIGURED_REPEAT_S, refresh_error_class
+from app.utils.logging_fields import log_event, log_once
 from app.utils.oauth_errors import is_transient_status
 from mcp.shared.exceptions import MCPError
 
@@ -102,7 +105,46 @@ def mcp_error_class(exc: BaseException, reason: MCPFailureReason | None = None) 
         return "not_found"
     if isinstance(leaf, MCPError):  # the server's own JSON-RPC error
         return "bad_request" if leaf.code in _JSONRPC_REQUEST_ERRORS else "upstream_5xx"
+    if (tagged := refresh_error_class(leaf)) is not None:  # the class the refresh's own `end` line gave it
+        return tagged
     found = error_class.classify_error(leaf)
     if found != "internal":
         return found
     return _ERROR_CLASS_FALLBACK.get(reason or classify_mcp_failure(exc), "internal")
+
+
+def misconfigured_level(mcp_server_id: str, cls: str) -> int | None:
+    """DEBUG for a per-turn `misconfigured` line already logged for this server within the hour (the first
+    is ERROR); None otherwise. One gate per server and class, shared by `tool_call.end` and `mcp.discover.end`."""
+    if cls == "misconfigured" and not log_once(f"mcp:{mcp_server_id}:{cls}", MISCONFIGURED_REPEAT_S):
+        return logging.DEBUG
+    return None
+
+
+def log_discover_end(
+    log: logging.Logger, mcp_server_id: str, failure: BaseException | None, *, source: str,
+    reason: str = "no_attached_tools", level: int | None = None, **fields: object,
+) -> None:
+    """One `mcp.discover.end` for a server whose tools couldn't be listed (`source`: a chat `turn`, or
+    the server `listing`): its failure at the failure's level unless `level` is given (with the stack
+    only for our own bugs, and never the server's text), or a WARNING `skipped` with `reason`."""
+    if failure is None:
+        log_event(
+            log, "mcp.discover.end", level=logging.WARNING, mcp_server_id=mcp_server_id, outcome="skipped",
+            reason=reason, source=source, **fields,
+        )
+        return
+    cls = mcp_error_class(failure)
+    level = level if level is not None else misconfigured_level(mcp_server_id, cls)
+    want = level if level is not None else error_class.level_for(cls)
+    if error_class.already_logged(failure, want):
+        # The refresh's `end` (or another unit) logged it: this server's line at its own level, no second stack.
+        log_event(
+            log, "mcp.discover.end", level=want, mcp_server_id=mcp_server_id, outcome="failure", error_class=cls,
+            error_type=type(failure).__name__, source=source, **fields,
+        )
+        return
+    error_class.log_failure(
+        log, "mcp.discover.end", failure, level=level, error_class=cls,
+        include_error_text=False, mcp_server_id=mcp_server_id, source=source, **fields,
+    )

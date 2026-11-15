@@ -19,6 +19,7 @@
         "table_count": 1
       },
       "file_metadata": null,
+      "file_change_metadata": null,
       "format": "json",
       "index": 0,
       "link_metadata": null,
@@ -124,6 +125,7 @@
         "table_summary": "PLACEHOLDER"
       },
       "file_metadata": null,
+      "file_change_metadata": null,
       "format": "json",
       "index": 1,
       "link_metadata": null,

@@ -78,6 +78,8 @@ function UsersPageContent() {
   // Remove user confirmation state
   const [removeTarget, setRemoveTarget] = useState<User | null>(null);
   const [isRemoving, setIsRemoving] = useState(false);
+  // OAuth apps the person to remove created; null until known, or when it could not be read.
+  const [removeTargetAppCount, setRemoveTargetAppCount] = useState<number | null>(null);
   const [cancelInviteTarget, setCancelInviteTarget] = useState<User | null>(null);
   const [isCancellingInvite, setIsCancellingInvite] = useState(false);
   const [unblockTarget, setUnblockTarget] = useState<User | null>(null);
@@ -643,6 +645,23 @@ function UsersPageContent() {
     [t, currentUser]
   );
 
+  useEffect(() => {
+    setRemoveTargetAppCount(null);
+    const userId = removeTarget?.userId;
+    if (!userId) return;
+    let cancelled = false;
+    UsersApi.countOAuthAppsCreatedBy(userId)
+      .then((count) => {
+        if (!cancelled) setRemoveTargetAppCount(count);
+      })
+      .catch(() => {
+        // The warning is extra; the dialog still works without it.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [removeTarget]);
+
   // ── Row actions ────────────
   const handleRemoveUser = useCallback(async () => {
     if (!removeTarget) return;
@@ -1187,10 +1206,24 @@ function UsersPageContent() {
           if (!open) setRemoveTarget(null);
         }}
         title={t('workspace.users.actions.removeUserTitle')}
-        message={t('workspace.users.actions.removeUserMessage', {
-          email: removeTarget?.email || removeTarget?.name || '',
-          workspace: 'Pipeshub',
-        })}
+        message={
+          <>
+            {t('workspace.users.actions.removeUserMessage', {
+              email: removeTarget?.email || removeTarget?.name || '',
+              workspace: 'Pipeshub',
+            })}
+            {removeTargetAppCount ? (
+              <>
+                {' '}
+                {removeTargetAppCount === 1
+                  ? t('workspace.users.actions.removeUserOAuthAppsOne')
+                  : t('workspace.users.actions.removeUserOAuthAppsMany', {
+                      count: removeTargetAppCount,
+                    })}
+              </>
+            ) : null}
+          </>
+        }
         confirmLabel={t('workspace.users.actions.removeButton')}
         cancelLabel={t('workspace.users.actions.cancelButton')}
         confirmVariant="danger"

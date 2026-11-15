@@ -413,6 +413,18 @@ class TestBoxGetPermissions:
         assert perms[1].entity_type == EntityType.GROUP
         assert perms[2].type == PermissionType.OWNER
 
+    async def test_uploader_collaboration_grants_nothing(self, box_connector) -> None:
+        collab_data = {"entries": [
+            {"accessible_by": {"id": "u1", "type": "user", "login": "up@test.com"}, "role": "uploader"},
+            {"accessible_by": {"id": "u2", "type": "user", "login": "pu@test.com"}, "role": "previewer uploader"},
+            {"accessible_by": {"id": "u3", "type": "user", "login": "vu@test.com"}, "role": "viewer uploader"},
+        ]}
+        box_connector.data_source.collaborations_get_folder_collaborations = AsyncMock(
+            return_value=MagicMock(success=True, data=collab_data)
+        )
+        perms = await box_connector._get_permissions("d1", "folder")
+        assert [p.external_id for p in perms] == ["u2", "u3"]
+
     async def test_folder_permissions(self, box_connector):
         collab_data = {
             "entries": [
@@ -1452,6 +1464,24 @@ class TestBoxProcessEventBatch:
         await box_connector._process_event_batch(events, our_org_box_user_ids={"owner1"})
         box_connector._fetch_and_sync_files_for_owner.assert_awaited_once()
 
+    @pytest.mark.parametrize("role,queued", [("uploader", False), ("viewer", True)])
+    async def test_grant_event_queues_shared_with_me_unless_uploader(self, box_connector, role, queued) -> None:
+        events = [{
+            "event_id": "e2", "event_type": "COLLABORATION_CREATED",
+            "source": {
+                "item": {"id": "d1", "type": "folder"},
+                "accessible_by": {"id": "u1", "login": "user@test.com"},
+                "owned_by": {"id": "owner1"},
+                "role": role,
+            },
+            "created_at": "2024-01-01T00:00:00Z",
+        }]
+        box_connector._get_app_users_by_emails = AsyncMock(return_value=[MagicMock()])
+        box_connector._fetch_and_sync_folders_for_owner = AsyncMock()
+        box_connector._fetch_and_sync_items_as_shared_with_me = AsyncMock()
+        await box_connector._process_event_batch(events, our_org_box_user_ids={"owner1", "u1"})
+        assert box_connector._fetch_and_sync_items_as_shared_with_me.await_count == int(queued)
+
     async def test_collaboration_revocation_event(self, box_connector):
         events = [{
             "event_id": "e3", "event_type": "COLLABORATION_REMOVE",
@@ -2146,6 +2176,29 @@ class TestBoxFetchAndSyncItemsAsSharedWithMe:
         items = [("f1", "file", "u1", "user@test.com", None)]
         await box_connector._fetch_and_sync_items_as_shared_with_me(items)
         box_connector.data_entities_processor.on_new_records.assert_awaited()
+
+    async def test_items_are_fetched_with_owner_field(self, box_connector) -> None:
+        # Without owned_by a shared folder looks like the collaborator's own and is regrouped into their drive.
+        from app.connectors.sources.box.connector import ITEM_FIELDS
+        box_connector.data_source.set_as_user_context = AsyncMock()
+        box_connector.data_source.clear_as_user_context = AsyncMock()
+        box_connector.data_source.folders_get_folder_by_id = AsyncMock(
+            return_value=MagicMock(success=True, data=_make_box_entry_fullcov(entry_type="folder"))
+        )
+        box_connector._process_box_entry = AsyncMock(return_value=None)
+        await box_connector._fetch_and_sync_items_as_shared_with_me([("d1", "folder", "u1", "user@test.com", None)])
+        box_connector.data_source.folders_get_folder_by_id.assert_awaited_once_with("d1", fields=ITEM_FIELDS)
+
+    async def test_datasource_forwards_fields(self) -> None:
+        from app.sources.external.box.box import BoxDataSource
+        manager = MagicMock()
+        client = MagicMock(folders=manager, files=manager)
+        ds = BoxDataSource.__new__(BoxDataSource)
+        ds._get_client = AsyncMock(return_value=client)
+        await ds.folders_get_folder_by_id("d1", fields="id,owned_by")
+        manager.get_folder_by_id.assert_called_once_with("d1", fields=["id", "owned_by"])
+        await ds.files_get_file_by_id("f1", fields="id,owned_by")
+        manager.get_file_by_id.assert_called_once_with("f1", fields=["id", "owned_by"])
 
     async def test_folder_sync(self, box_connector):
         box_connector.data_source.set_as_user_context = AsyncMock()

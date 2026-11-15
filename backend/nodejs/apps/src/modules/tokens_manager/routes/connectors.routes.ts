@@ -17,6 +17,8 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
+import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
+import { createKeyedRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
 import { 
   AuthenticatedUserRequest,
   AuthenticatedServiceRequest 
@@ -56,6 +58,7 @@ import {
   getConnectorEgressIps,
   getActiveAgentInstances,
   getConnectorStats,
+  getPermissionStatus,
   getRecordContent,
   navigateKnowledgeGraph,
   lookupRecord,
@@ -64,6 +67,7 @@ import {
   reindexConnector,
   resyncConnectorRecords,
   stopConnectorSync,
+  explainPermission,
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
 import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
@@ -464,6 +468,38 @@ const lookupRecordSchema = z.object({
   }),
 });
 
+/**
+ * Why a person can or cannot read a record. Ids only: no search through titles.
+ */
+const explainPermissionSchema = z.object({
+  params: z.object({ connectorId: z.string().min(1).max(128) }),
+  query: z.object({
+    userId: z.string().min(1).max(128),
+    recordId: z.string().min(1).max(256),
+  }),
+});
+
+/** An admin-only route a non-admin cannot tell from one that does not exist: the 404 of any unknown route. */
+const adminOrNotFound = async (
+  req: AuthenticatedUserRequest,
+  _res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const user = req.user as { userId?: string; orgId?: string } | undefined;
+    const userId = user?.userId;
+    const orgId = user?.orgId;
+    if (!userId || !orgId || !(await isUserOrgAdmin(userId, orgId))) {
+      throw new NotFoundError('Route not found');
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+const EXPLAIN_PER_ADMIN_PER_MINUTE = 30;
+
 const testConnectorConnectionSchema = z.object({
   params: z.object({
     connectorType: z.string().min(1, 'Connector type is required'),
@@ -700,6 +736,24 @@ export function createConnectorRouter(
   );
 
   /**
+   * GET /:connectorId/permissions/explain
+   * Why a person can or cannot read a record. Org admins only; anyone else gets a 404.
+   */
+  router.get(
+    '/:connectorId/permissions/explain',
+    (req, res, next) => authMiddleware.authenticate(req, res, next),
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    adminOrNotFound,
+    createKeyedRateLimiter(logger, {
+      prefix: 'permission-explain',
+      maxRequestsPerMinute: EXPLAIN_PER_ADMIN_PER_MINUTE,
+      message: 'Too many access checks. Try again in a minute.',
+    }),
+    ValidationMiddleware.validate(explainPermissionSchema),
+    explainPermission(config),
+  );
+
+  /**
    * GET /instances/:connectorId
    * Get a specific connector instance
    */
@@ -737,6 +791,19 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
     ValidationMiddleware.validate(getConnectorStatsSchema),
     getConnectorStats(config),
+  );
+
+  /**
+   * GET /:connectorId/permissions/status
+   * How fresh the connector's permissions are. Admin only: the connector service answers
+   * anyone else with the 404 of a missing connector.
+   */
+  router.get(
+    '/:connectorId/permissions/status',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    getPermissionStatus(config),
   );
 
   /**

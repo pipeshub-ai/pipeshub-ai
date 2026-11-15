@@ -22,6 +22,7 @@ import logging
 import struct
 from typing import TYPE_CHECKING
 
+from app.config import file_types
 from app.exceptions.indexing_exceptions import PasswordProtectedError
 
 if TYPE_CHECKING:
@@ -42,15 +43,8 @@ _MAX_DIRECTORY_SECTORS = 64
 _MAX_DIFAT_SECTORS = 8
 
 # Formats whose encrypted form is a CFBF holding an EncryptedPackage stream.
-OOXML_EXTENSIONS = frozenset({"docx", "xlsx", "pptx", "docm", "xlsm", "pptm"})
-OOXML_MIME_TYPES = frozenset({
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "application/vnd.ms-word.document.macroenabled.12",
-    "application/vnd.ms-excel.sheet.macroenabled.12",
-    "application/vnd.ms-powerpoint.presentation.macroenabled.12",
-})
+OOXML_EXTENSIONS = file_types.OOXML_EXTENSIONS
+OOXML_MIME_TYPES = file_types.OOXML_MIMES
 
 PASSWORD_PROTECTED_MESSAGE = "The file is password-protected, so it cannot be read"
 

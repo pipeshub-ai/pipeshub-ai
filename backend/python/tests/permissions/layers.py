@@ -83,7 +83,10 @@ class GraphCheckLayer:
         so long runs load and release in chunks."""
         gone = [w for w in dict.fromkeys(worlds) if w in self._prefix]
         if gone:
-            await self._unload([f"{self._prefix.pop(w)}-" for w in gone])
+            # forgotten only once deleted: a delete cut short leaves records that a later release must still find
+            await self._unload([f"{self._prefix[w]}-" for w in gone])
+            for w in gone:
+                del self._prefix[w]
 
     async def _ns(self, world: World) -> Namespace:
         if world not in self._prefix:

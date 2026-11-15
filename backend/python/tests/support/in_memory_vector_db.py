@@ -129,6 +129,7 @@ class InMemoryVectorDBService(IVectorDBService):
     def __init__(self) -> None:
         self.collections: dict[str, dict[str, VectorPoint]] = {}
         self.configs: dict[str, CollectionConfig] = {}
+        self.existence_calls: list[list[str]] = []
 
     # ---- lifecycle and identity --------------------------------------
 
@@ -245,6 +246,11 @@ class InMemoryVectorDBService(IVectorDBService):
             VectorPoint(id=i, payload=copy.deepcopy(points[i].payload)) for i in ids if i in points
         ]
 
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        self.existence_calls.append(list(ids))
+        points = self._points(collection_name)
+        return {i for i in ids if i in points}
+
     #: Off here (a subclass turns it on): older spies replace `update_payload_by_ids` with a narrower signature that takes no fence.
     generation_fence = False
 
@@ -261,6 +267,9 @@ class InMemoryVectorDBService(IVectorDBService):
                         continue  # a later reader's point: refused, as the real stores refuse it
                     payload = {**payload, SCOPE_FENCE_FIELD: fence}
                 points[point_id].payload.update(copy.deepcopy(payload))
+
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        return sum(_passes(p.payload, count_filter) for p in self._points(collection_name).values())
 
     async def query_nearest_points(
         self, collection_name: str, requests: list[HybridSearchRequest],

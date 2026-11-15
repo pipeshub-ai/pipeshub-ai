@@ -18,6 +18,7 @@ from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
 )
 from app.services.messaging.config import messaging_env
+from app.services.resource_governor.kinds import ParseKind
 from tests.support.pdf_samples import text_pdf
 
 if TYPE_CHECKING:
@@ -80,6 +81,7 @@ class TestProcessorParse:
             label="report.pdf",
             size=len(content),
             timeout=messaging_env.pdf_record_processing_timeout,
+            kind=ParseKind.PDF_LAYOUT,
         )
 
     async def test_a_real_worker_parses_while_the_loop_keeps_serving_io(

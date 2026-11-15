@@ -106,22 +106,27 @@ export interface LoggerConfig {
 
 const DEFAULT_SERVICE = 'default-service';
 
-/** audit() logs on behalf of its caller, so its own frame is skipped like the logger's. */
-const AUDIT_FRAME = /[\\/]libs[\\/]services[\\/]audit\.[jt]s:/;
+/** audit() and the auth refusal wrapper log on behalf of their caller, so their frames are skipped like the logger's. */
+const AUDIT_FRAME =
+  /[\\/](?:libs[\\/]services[\\/]audit|modules[\\/]auth[\\/]utils[\\/]sign-in-audit)\.[jt]s:/;
 
 /** Event fields a call site may pass in `meta`; they render like the context ids. */
 const EVENT_FIELD_KEYS = [
+  'upstream',
   'method',
   'route',
   'status',
   'duration_ms',
+  'attempt',
   'client_ip',
   'error_class',
   'error_type',
+  'network_code',
   'outcome',
   'actor',
   'target',
   'reason',
+  'auth_method',
 ] as const;
 
 /** Shown in the text line as ` | k=v`, in this order (identity first, as in Python), when the record has them. */
@@ -155,6 +160,8 @@ const OUTCOMES = new Set(['success', 'failure', 'partial', 'skipped']);
 /** A snake_case code (`error_class`, an audit `reason`). */
 export const SNAKE_TOKEN = /^[a-z0-9_]{1,64}$/;
 const TYPE_NAME = /^[A-Za-z0-9_]{1,64}$/;
+/** A transport error code (`ECONNREFUSED`, `UND_ERR_SOCKET`). */
+const NETWORK_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
 const SHOWN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 /** A dotted lowercase event name (`http.request.end`). */
 export const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/;
@@ -181,18 +188,23 @@ const matches =
  */
 const FIELD_TYPES: Readonly<Record<string, (value: unknown) => boolean>> = {
   ...Object.fromEntries(LOG_CONTEXT_KEYS.map((key) => [key, isIdValue])),
+  // The service an outbound call went to (`upstream.call.end`); not `service`, which names the logger.
+  upstream: matches(SNAKE_TOKEN),
   method: (v) => typeof v === 'string' && HTTP_METHODS.has(v),
   route: isText,
   status: Number.isInteger,
   duration_ms: Number.isInteger,
+  attempt: Number.isInteger,
   client_ip: isText,
   error_class: matches(SNAKE_TOKEN),
   error_type: matches(TYPE_NAME),
+  network_code: matches(NETWORK_CODE),
   outcome: (v) => typeof v === 'string' && OUTCOMES.has(v),
   // An id as shown (raw, or a provider's hash); never an email or a name.
   actor: matches(SHOWN_ID),
   target: matches(SHOWN_ID),
   reason: matches(SNAKE_TOKEN),
+  auth_method: matches(TYPE_NAME),
   // Fill the identity only when the request context has none (an audit line before sign-in).
   org_id: isPipesHubId,
   user_id: isPipesHubId,

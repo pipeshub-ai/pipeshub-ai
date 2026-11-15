@@ -8,6 +8,7 @@ All methods support optional transaction parameter for atomic operations.
 """
 
 import asyncio
+import time
 import unicodedata
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
@@ -22,6 +23,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.connectors.sources.localKB.handlers.kh_merge import key_for
 from app.core.org_context import instrument_org_methods
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import Person
@@ -524,6 +526,10 @@ class IGraphDBProvider(ABC):
        During transition, providers should handle both old format (with _key, _from, _to)
        and new generic format to ensure smooth migration.
     """
+
+    #: How ``page_entity_index_source`` orders a connector's records, when it differs from the order this store always used. It is part of the
+    #: entity index's pass marker, so a pass saved under another order starts over instead of resuming a cursor that could skip rows.
+    ENTITY_INDEX_PAGE_ORDER: str = ""
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -1303,7 +1309,9 @@ class IGraphDBProvider(ABC):
         from_collection: str,
         collection: str,
         relationship_types: list[str],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> int:
         """
         Delete edges from a node by relationship types.
@@ -1314,6 +1322,8 @@ class IGraphDBProvider(ABC):
             collection (str): Edge collection name
             relationship_types (List[str]): List of relationship type values to delete
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failure instead of answering 0, which also means
+                "nothing to delete"; a caller that writes replacements next needs to tell them apart
 
         Returns:
             int: Number of edges deleted
@@ -1986,6 +1996,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def find_uncalled_blocks(
+        self,
+        org_id: str,
+        connector_id: str,
+        record_ids: list[str],
+        kinds: list[str],
+        relations: list[str],
+        limit: int,
+        after_key: str | None = None,
+        uncounted_caller_records: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Blocks of *kinds* in *record_ids* with no inbound code edge of *relations*, in ``_key`` order after
+        *after_key*: ``(page, next after_key or None)``.
+
+        An edge from a block of one of *uncounted_caller_records* (or from that record itself) does not count, so
+        a caller the reader may not see neither hides a block nor reveals itself. The anti-join runs in the
+        database, so a caller ranks a whole scope instead of a scanned sample.
+        """
+        pass
+
+    @abstractmethod
     async def get_edges_by_target_keys(
         self,
         target_keys: list[str],
@@ -2451,11 +2485,17 @@ class IGraphDBProvider(ABC):
         updates: dict[str, Any],
         expected: dict[str, Any],
         transaction: str | None = None,
+        *,
+        clock_at_most: float | None = None,
     ) -> bool:
         """Merge ``updates`` into the node only while every field in
         ``expected`` still holds its value (``None`` means absent), in one
         statement. Unlike ``update_node_if_match`` the document is merged,
         not replaced. A ``None`` in ``updates`` removes or nulls the field.
+        ``clock_at_most`` (epoch seconds): also only while the store's own
+        clock (`store_time`), read by the statement as it writes, is not past
+        it, so a value computed from an earlier read of that clock is never
+        written later than the caller allowed.
 
         Returns:
             True iff the write applied.
@@ -3026,6 +3066,8 @@ class IGraphDBProvider(ABC):
         org_id: str,
         per_address: int = 2,
         transaction: str | None = None,
+        *,
+        include_deleted: bool = False,
     ) -> list[dict[str, Any]]:
         """The live records of the org stored under any of ``weburls`` (exact
         match), in any connector. Link records and placeholders are left out:
@@ -3039,6 +3081,8 @@ class IGraphDBProvider(ABC):
             per_address: Most rows per address, records that are not dependent
                 nodes first; each address is looked up on its own.
             transaction: Optional transaction ID.
+            include_deleted: Also return deleted records, so a caller asking who may
+                read what is at an address can tell a deleted record from no record.
 
         Returns:
             Rows ``{"id", "recordType", "connectorName", "webUrl",
@@ -3666,6 +3710,17 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of app users
+        """
+        pass
+
+    @abstractmethod
+    async def get_app_user_links(
+        self, org_id: str, connector_id: str, transaction: str | None = None
+    ) -> list[dict]:
+        """Every user of the org linked to the connector with a source user id, guests
+        included (``get_app_users`` lists org members only). Each item is
+        ``{"id": <user key>, "sourceUserId": <id at the source>}``. Used to find the links
+        to withdraw. Reads inside ``transaction`` when given. A failed read raises.
         """
         pass
 
@@ -5056,6 +5111,13 @@ class IGraphDBProvider(ABC):
         "no scopes"."""
         raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
 
+    async def store_time(self) -> float:
+        """The store's own clock, in epoch seconds. Leases that a writer and a sweeper judge are written and read by this clock, so a host whose
+        clock is off cannot make a live lease look dead. A provider that cannot say raises, and so does a read slower than
+        ``STORE_CLOCK_TIMEOUT_SECONDS`` as far as the callers are concerned: a writer then writes its lease by the local clock and marks it unknown,
+        a sweep recovers nothing that round, and the operator view reports the unknown clock. Nothing is recovered by the local clock."""
+        raise NotImplementedError(f"{type(self).__name__} has no store clock")
+
     async def increment_node_field(
         self, key: str, collection: str, field: str, transaction: str | None = None
     ) -> int | None:
@@ -6173,6 +6235,21 @@ class IGraphDBProvider(ABC):
         sweep too -- both halves have to be removed here.
 
         Returns the number of block nodes removed.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def sweep_deleted_connector_writes(
+        self, connector_id: str, record_group_ids: Sequence[str] = (),
+    ) -> tuple[int, int]:
+        """One pass over a deleted connector: remove the blocks and stage states that still
+        carry its ``connectorId``, which indexing already in flight can write after the delete.
+        A store that writes an edge without checking its ends also removes the record links
+        that carry one of the connector's ``record_group_ids``: the code graph writes a file's
+        edges after its blocks, and those edges carry no ``connectorId``.
+
+        Returns ``(removed, left)``, ``left`` being what a count finds right after. Raises when
+        the store does. Never call it for a connector that still exists: it removes all of them.
         """
         raise NotImplementedError
 
@@ -7857,6 +7934,7 @@ class IGraphDBProvider(ABC):
         page = page[:limit]
         if direction == "prev":
             page.reverse()
+        await self._kh_v3_settle_held_arrows(page, app_id=app_id, org_id=org_id, access=access, transaction=transaction, listed_under=listed_under)
         if name_parents:
             await self._kh_v3_name_parents(
                 page, org_id=org_id, apps={app_id}, access=access, listed_under=listed_under,
@@ -7894,6 +7972,48 @@ class IGraphDBProvider(ABC):
             "counts": counts,
             "scope": scope_out,
         }
+
+    async def _kh_v3_settle_held_arrows(
+        self, page: list[dict[str, Any]], *, app_id: str, org_id: str, access: dict[str, Any] | None, transaction: str | None,
+        listed_under: str | None = None,
+    ) -> None:
+        """A row's arrow is on only where opening the row lists something, which the queries cannot say alone:
+
+        * a group the viewer holds a granted record in (``khHeld``) lists it only if it is a chain-top: asked of the chain-top walk a browse of the
+          group runs;
+        * a row the walk from the App does not reach and the page's declared scope does not hold (``khFromApp`` false: a seed, a chain-top)
+          opens only if the batch check admits it, as the start of its own browse is admitted (a browse of a start it refuses lists nothing):
+          asked of the same check;
+        * a row whose rules select no child (``khKids``: its children they leave undecided) lists one when the check admits it: asked of the
+          same check, and for a row of the point above only once the row itself is admitted.
+        """
+        asked = [row for row in page if row.pop("khHeld", False) and not row.get("hasChildren") and row.get("nodeType") == "recordGroup"]
+        # A stub is listed only where opening it lists something, so it is not asked again.
+        unreached = [row for row in page if not row.pop("khFromApp", True) and not row.get("isPlaceholder")]
+        # A browse row's hierarchy children of the App (no stub), read only for a row whose rules select no child.
+        kids = {row["id"]: row.pop("khKids", None) or [] for row in page}
+        if access is None:
+            return
+
+        for row, lists in zip(asked, await asyncio.gather(
+                *(self._kh_v3_lists_a_chain_top(app_id, org_id, r["id"], access, transaction) for r in asked)), strict=True):
+            row["hasChildren"] = lists
+        # A row with no child the rules select still has an arrow when the check admits one of its children (a second parent's walk, an App
+        # member, below a seed): the browse of the row lists it (`_kh_v3_undecided`). A row the walk does not reach has an arrow only if the
+        # check admits the row as well. Only the rows whose answer is open are asked: one check, and a second for the children of an unreached
+        # row the first one admits.
+        bare = [row for row in page if not row.get("hasChildren") and row.get("nodeType") != "app" and kids[row["id"]]] if listed_under is not None else []
+        unreached = [row for row in unreached if row.get("hasChildren") or kids[row["id"]]]
+        closed = {row["id"] for row in unreached}
+        admitted = await self._kh_v3_admitted(
+            closed | {k for row in bare if row["id"] not in closed for k in kids[row["id"]]}, org_id=org_id, access=access, transaction=transaction)
+        later = {k for row in bare if row["id"] in closed and row["id"] in admitted for k in kids[row["id"]]} - admitted
+        if later:
+            admitted |= await self._kh_v3_admitted(later, org_id=org_id, access=access, transaction=transaction)
+        for row in unreached:
+            row["hasChildren"] = bool(row.get("hasChildren")) and row["id"] in admitted
+        for row in bare:
+            row["hasChildren"] = (row["id"] not in closed or row["id"] in admitted) and any(k in admitted for k in kids[row["id"]])
 
     async def name_knowledge_hub_parents(
         self,
@@ -8024,6 +8144,40 @@ class IGraphDBProvider(ABC):
         ``max_depth`` bounds a flatten's walk below the start (hops)."""
         raise NotImplementedError
 
+    @staticmethod
+    def _kh_v3_require_other_grants(
+        app_id: str, gated_app_ids: list[str], granted_ids: list[str] | None,
+        grants_by_connector: dict[str, list[str]] | None, user_key: str | None,
+    ) -> None:
+        """Refuse a page asked with ``granted_ids`` alone while another connector is gated: the walk from the App can pass through
+        a node of that connector, whose grant counts, and neither its grants (``grants_by_connector``) nor the user to read them
+        (``user_key``) were given. Answering would leave out what such a node opens, with no sign of it."""
+        if granted_ids is not None and grants_by_connector is None and not user_key and any(a != app_id for a in gated_app_ids):
+            raise ValueError(
+                "granted_ids holds one connector's grants and another connector is gated: pass grants_by_connector or user_key")
+
+    async def _kh_v3_page_grants(
+        self, app_id: str, org_id: str, gated_app_ids: list[str], granted_ids: list[str] | None,
+        grants_by_connector: dict[str, list[str]] | None, user_key: str | None, transaction: str | None,
+    ) -> dict[str, list[str]]:
+        """The grants of every gated connector, by connector, for a page of ``app_id`` (a source account's inside its own connector
+        only, as ``get_knowledge_hub_access_v3`` buckets them): the walk from the App can pass through a node of another, and a grant
+        counts on a node of any gated App. An explicit ``granted_ids`` is the App's own bucket; the others are read for ``user_key``."""
+        self._kh_v3_require_other_grants(app_id, gated_app_ids, granted_ids, grants_by_connector, user_key)
+        if grants_by_connector is not None:
+            every = dict(grants_by_connector)
+        elif user_key:
+            access = await (
+                self._kh_v3_shared(("access", user_key, org_id), lambda: self.get_knowledge_hub_access_v3(user_key, org_id))
+                if transaction is None else self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction))
+            every = dict(access["by_connector"])
+            if granted_ids is not None:
+                every[app_id] = list(granted_ids)
+        else:
+            every = {app_id: list(granted_ids or [])}
+        gated = set(gated_app_ids)
+        return {a: list(ids or []) for a, ids in every.items() if a in gated}
+
     async def _kh_v3_shared(self, key: tuple, compute: Callable[[], Awaitable[_T]]) -> _T:
         """``compute()``, shared by the callers that ask for ``key`` while it runs:
         one click sends the main pane and the sidebar together, and both need the
@@ -8048,6 +8202,7 @@ class IGraphDBProvider(ABC):
         grants_by_connector: dict[str, list[str]],
         transaction: str | None,
         probe: dict[str, Any] | None = None,
+        cross: list[str] | None = None,
     ) -> tuple[bool, list[str], list[str]]:
         """What the batch check says about a browse start: whether it admits the
         start, which of its ancestors it admits (the breadcrumb of a start the
@@ -8063,15 +8218,33 @@ class IGraphDBProvider(ABC):
             "by_connector": grants_by_connector,
             # A backend that tests grants from the node instead of a list (Neo4j).
             "probe": probe,
+            # The other connectors' grants, tested on their nodes (`grants_by_connector` holds this App's alone).
+            "cross": cross,
         }
         admitted = (await self.check_access(
             "", org_id, node_ids=[start_id, *ancestors], access=access, transaction=transaction,
         )).node_ids
         if start_id not in admitted:
             return False, [], []
+        # A declaration is a scope only where the check's declared arm reads it: the viewer is granted it or the walk from the App reaches it, not
+        # where it is admitted some other way (below a seed), where what hangs under it is not readable through it.
         declared = [d for d in declared if d in admitted]
-        scope = await self._kh_v3_declared_groups(declared, transaction) if declared else []
+        # Every grant held: the walk to a declaration can pass through a node of another connector (a backend that lists one connector's
+        # grants tests the others' on their nodes, ``cross``).
+        granted = list(dict.fromkeys(g for ids in grants_by_connector.values() for g in ids or ()))
+        scope = await self._kh_v3_declared_scope(
+            declared, app_id, granted, probe, transaction, **({"cross": cross} if cross is not None else {})) if declared else []
         return True, [a for a in ancestors if a in admitted], scope
+
+    async def _kh_v3_declared_scope(
+        self, declared: list[str], app_id: str, granted: list[str], probe: dict[str, Any] | None, transaction: str | None,
+        cross: list[str] | None = None,
+    ) -> list[str]:
+        """The scope of these declared groups the check admits, as the check's declared arm reads it: those the viewer is granted or the walk
+        from the App reaches (where a group is admitted some other way, below a seed, what hangs under it is not readable through it), and the
+        groups under them, group to group, deleted groups cut. ``probe``: grants are tested from the node, as on the rest of the page.
+        ``cross``: the other connectors' grants, tested on their nodes along the walk."""
+        raise NotImplementedError
 
     async def _kh_v3_chain_tops(
         self,
@@ -8123,16 +8296,20 @@ class IGraphDBProvider(ABC):
         tops = [c for c in candidates if not set(c["parents"]) & open_parents]
         if not tops:
             return {}
-        # The costly walks run for the chain-tops only.
-        facts = await self._kh_v3_chain_top_facts(
-            app_id, [c["id"] for c in tops], sorted({g["id"] for c in tops for g in c["ownGroups"]}),
-            transaction,
-        )
-        for c in tops:
-            for g in c["ownGroups"]:
-                g["underApp"] = g["id"] in facts["underApp"]
-        tops = [c for c in tops if c["id"] not in facts["hidden"]]
+        # The costly walk runs for the chain-tops only.
+        hidden = await self._kh_v3_chain_top_hidden(app_id, [c["id"] for c in tops], transaction)
+        tops = [c for c in tops if c["id"] not in hidden]
         return place_chain_tops(tops, open_groups | open_parents, app_id)
+
+    async def _kh_v3_lists_a_chain_top(
+        self, app_id: str, org_id: str, group_id: str, access: dict[str, Any], transaction: str | None,
+    ) -> bool:
+        """Whether a browse of the group ``group_id`` places a chain-top under it (``_kh_v3_chain_tops`` with ``only_group``)."""
+        probe = access.get("probe")
+        by_groups = await self._kh_v3_chain_top_groups_by_probe(
+            app_id, org_id, group_id, probe["grantees"], transaction) if probe else None
+        return bool((await self._kh_v3_chain_tops(
+            app_id, org_id, access, transaction, only_group=group_id, by_groups=by_groups)).get(group_id))
 
     async def _kh_v3_chain_top_groups(
         self,
@@ -8156,15 +8333,10 @@ class IGraphDBProvider(ABC):
         ``parents`` are their hierarchy parents (the App included)."""
         raise NotImplementedError
 
-    async def _kh_v3_chain_top_facts(
-        self,
-        app_id: str,
-        node_ids: list[str],
-        group_ids: list[str],
-        transaction: str | None,
-    ) -> dict[str, set[str]]:
-        """``hidden``: the nodes beneath a group that hides its children;
-        ``underApp``: the groups whose hierarchy reaches ``app_id``."""
+    async def _kh_v3_chain_top_hidden(
+        self, app_id: str, node_ids: list[str], transaction: str | None,
+    ) -> set[str]:
+        """Of these nodes, those beneath a group that hides its children."""
         raise NotImplementedError
 
     async def _kh_v3_start_lineage(
@@ -8174,12 +8346,101 @@ class IGraphDBProvider(ABC):
         of ``app_id`` among the start and them."""
         raise NotImplementedError
 
-    async def _kh_v3_declared_groups(
-        self, declared: list[str], transaction: str | None,
-    ) -> list[str]:
-        """The groups under these declared groups, group to group, deleted groups
-        cut: the check's declared-scope arm."""
-        raise NotImplementedError
+    # A browse asks the batch check about the children of a node its rules do not select (``undecided``) in the page's order from its boundary,
+    # reading ``_KH_UNDECIDED_WINDOW_MAX`` at a time: this many first (all of them when there are no more), then more each time
+    # (`_kh_v3_browse_undecided`). A node's arrow and a stub's listing ask about this many, the first by id.
+    # shortcut: a row whose only child the check admits lies past the first ``_KH_UNDECIDED_MAX`` by id shows no arrow (PostgreSQL samples
+    # ``ARROW_CHILDREN`` the same way); read the frontier in windows too if that shows up.
+    _KH_UNDECIDED_MAX = 200
+    _KH_UNDECIDED_WINDOW_MAX = 2_000
+    # How long a browse keeps asking before it ends the page at the last child it asked about (the next page resumes there), as PostgreSQL's BUDGET_S.
+    _KH_UNDECIDED_BUDGET_S = 1.0
+
+    async def _kh_v3_browse_undecided(
+        self,
+        read: Callable[[list[str], dict[str, Any] | None, int], Awaitable[tuple[dict[str, Any], list[dict[str, Any]]]]],
+        *,
+        after: dict[str, Any] | None,
+        limit: int,
+        descending: bool,
+        direction: str,
+        org_id: str,
+        access: dict[str, Any],
+        transaction: str | None,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """A browse page that lists, beside what its rules select, every child they leave undecided that the batch check admits.
+
+        ``read(admitted, edge, n)`` reads the page (``rows``: up to ``limit + 1``, nearest the boundary first) with the ids ``admitted`` listed,
+        and the first ``n`` children the rules leave undecided past ``edge`` (``after`` when None) in the page's order, as
+        ``{id, sortKey, nullRank}``. Every undecided child up to the last one asked is decided, so the page is exact once ``limit + 1`` of its
+        rows lie there. The children in hand are asked about a window at a time (more each time) until that holds, or every one is asked, or the
+        budget is spent; the page is read again only to list what the check admitted, or for the next children once those in hand run out.
+        Returns the payload and the last child asked when some were left unasked (None when none was), which `_kh_v3_end_at` ends the page at."""
+        most = self._KH_UNDECIDED_WINDOW_MAX
+        admitted: list[str] = []
+        fresh: list[dict[str, Any]] = []      # admitted since the page was last read
+
+        def decided(cut: dict[str, Any]) -> bool:
+            listed = [r for r in payload.get("rows") or [] if not self._kh_v3_past(r, cut, descending=descending, direction=direction)]
+            return len(listed) + len(fresh) > limit
+
+        payload, left = await read(admitted, after, most + 1)
+        beyond, left = len(left) > most, left[:most]
+        window, t0, cut = self._KH_UNDECIDED_MAX, time.monotonic(), None
+        while left:
+            ask, left = left[:window], left[window:]
+            window = min(most, window * 8)
+            ok = await self._kh_v3_admitted([u["id"] for u in ask], org_id=org_id, access=access, transaction=transaction)
+            fresh += [u for u in ask if u["id"] in ok]
+            admitted += [u["id"] for u in ask if u["id"] in ok]
+            cut = ask[-1] if left or beyond else None
+            if cut is None or decided(cut) or time.monotonic() - t0 > self._KH_UNDECIDED_BUDGET_S:
+                break
+            if not left:      # the children in hand are asked: the next ones, with the page listing what was admitted
+                payload, left = await read(admitted, cut, most + 1)
+                beyond, left, fresh = len(left) > most, left[:most], []
+        if fresh:
+            payload, _ = await read(admitted, None, 0)
+        return payload, cut
+
+    @staticmethod
+    def _kh_v3_past(row: dict[str, Any], edge: dict[str, Any], *, descending: bool, direction: str) -> bool:
+        """Whether ``row`` lies past ``edge`` in a page's order (away from its boundary)."""
+        a, b = key_for(row, descending=descending), key_for(edge, descending=descending)
+        return b < a if direction == "next" else a < b
+
+    def _kh_v3_end_at(
+        self, payload: dict[str, Any], cut: dict[str, Any] | None, *, limit: int, descending: bool, direction: str,
+    ) -> dict[str, Any] | None:
+        """Where a browse page ends when the undecided children past ``cut`` were not asked about (`_kh_v3_browse_undecided`): nowhere new when
+        its ``limit + 1`` rows lie up to ``cut``; else its rows past ``cut`` are dropped and the edge returned, where the next page resumes. The edge
+        may be a child the viewer may not open: the cursor that carries it seals it (`app.utils.kh_cursor`), so its key and id never reach the client."""
+        rows = payload.get("rows") or []
+        if cut is None or (len(rows) > limit and not self._kh_v3_past(rows[limit], cut, descending=descending, direction=direction)):
+            return None
+        payload["rows"] = [r for r in rows if not self._kh_v3_past(r, cut, descending=descending, direction=direction)]
+        return {"nullRank": cut["nullRank"], "sortKey": cut["sortKey"], "id": cut["id"]}
+
+    @staticmethod
+    def _kh_v3_with_cut(result: dict[str, Any], cut: dict[str, Any] | None, resume: dict[str, Any] | None, *, include_total: bool) -> dict[str, Any]:
+        """A browse page whose undecided children past ``cut`` were not asked about: its total and counts are a lower bound, and a page that ends
+        at ``resume`` has more past it."""
+        if cut is not None and include_total:
+            result["totalCapped"] = True
+        if resume is not None:
+            result["hasMore"] = True
+            result["resume"] = resume
+        return result
+
+    async def _kh_v3_admitted(
+        self, ids: Iterable[str], *, org_id: str, access: dict[str, Any], transaction: str | None,
+    ) -> frozenset[str]:
+        """Of ``ids``, those the batch check admits. A browse lists them beside what its rules select, so it lists every child the viewer may open,
+        by whatever arm of the check."""
+        ids = set(ids)
+        if not ids:
+            return frozenset()
+        return (await self.check_access("", org_id, node_ids=ids, access=access, transaction=transaction)).node_ids
 
     async def get_knowledge_hub_access_v3(
         self,

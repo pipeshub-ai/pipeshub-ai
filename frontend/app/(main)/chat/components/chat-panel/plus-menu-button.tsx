@@ -59,6 +59,11 @@ export interface PlusMenuCapabilities {
    */
   agentHasInternalSearch?: boolean;
   agentHasWebSearch?: boolean;
+  /**
+   * Web search is shown off only because no admin has set it up yet. That is not a filter the
+   * person chose, so it does not mark the + button as filtered.
+   */
+  webSearchNotSetUp?: boolean;
 }
 
 interface PlusMenuContentProps extends PlusMenuCapabilities {
@@ -215,7 +220,7 @@ export function PlusMenuButton({
   const { t } = useTranslation();
   const showFilterBadge = hasNonDefaultSearchCapabilities(
     capabilities.internalSearch,
-    capabilities.webSearch,
+    capabilities.webSearch || Boolean(capabilities.webSearchNotSetUp),
   );
   return (
     <Popover.Root open={open} onOpenChange={onOpenChange}>

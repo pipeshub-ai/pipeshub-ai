@@ -222,6 +222,7 @@ async def _index_through_process_blocks(ticket: TicketRecord, storage: FakeStora
     sink.vector_store.apply = AsyncMock(return_value=True)
     sink._save_reconciliation_metadata = AsyncMock()  # type: ignore[method-assign]
     sink._sync_record_identity_entities = AsyncMock()  # type: ignore[method-assign]
+    sink._stored_run_is = AsyncMock(return_value=True)  # type: ignore[method-assign]
     sink.artifact_writer = ArtifactWriter(NodeArtifactStore(storage.blob_storage(), logger), logger)
 
     class _Pipeline:
@@ -257,13 +258,20 @@ async def storage() -> AsyncIterator[FakeStorage]:
     await fake.stop()
 
 
+def _set_root(storage: FakeStorage) -> str:
+    """The root of the one set indexing wrote (its stored write's)."""
+    [root] = {key.rsplit("/", 1)[0] for key in storage.puts if key.endswith("/manifest.json")}
+    assert root.startswith(FakeStorage.root("vr-1", REV) + "-")
+    return root
+
+
 async def test_indexing_a_ticket_writes_its_properties(storage: FakeStorage) -> None:
     """A ticket with values gets properties.json on the path indexing takes, not only when a test
     hands the writer a TicketRecord."""
     ticket, expected = CASES["jira"]
     await _index_through_process_blocks(ticket, storage)
 
-    root = FakeStorage.root("vr-1", REV)
+    root = _set_root(storage)
     assert f"{root}/{PROPERTIES_PATH}" in storage.puts, "indexing wrote no properties.json"
     stored = storage.puts[f"{root}/{PROPERTIES_PATH}"].data
     assert _values(RecordMetadata.model_validate_json(stored)) == expected
@@ -277,7 +285,7 @@ async def test_indexing_a_ticket_with_hidden_emails_keeps_them_out(storage: Fake
     ticket, expected = CASES["github_teams_hidden_emails"]
     await _index_through_process_blocks(ticket, storage)
 
-    stored = storage.puts[f"{FakeStorage.root('vr-1', REV)}/{PROPERTIES_PATH}"].data
+    stored = storage.puts[f"{_set_root(storage)}/{PROPERTIES_PATH}"].data
     assert _values(RecordMetadata.model_validate_json(stored)) == expected
     for user_id in (b"583231", b"1024025"):
         assert user_id not in stored

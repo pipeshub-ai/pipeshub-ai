@@ -334,6 +334,10 @@ class ScopeFilter:
 
     Every other point (never stamped, a ``legacy`` or unknown stamp, an untrusted one, a connector not in ``current``) is **not** admitted:
     an empty list admits nothing, never everything. ``reach`` is ``readable_groups | readable_scopes | open_apps``.
+
+    ``defer`` turns that into a filter that serves a search beside the request's own arms: a point the stamps do not decide (never stamped,
+    ``legacy`` or unknown, another version or generation, a connector not in ``current``, or no connector) is left to the request's own
+    arms and the post-check as before, and only a point a trusted stamp of a current connector decides is admitted or hidden by it.
     """
 
     current: frozenset[str] = frozenset()
@@ -350,12 +354,13 @@ class ScopeFilter:
     #: positional order of the fields before them is unchanged.
     pending: frozenset[str] = frozenset()
     blocked: frozenset[str] = frozenset()
+    defer: bool = False
 
     @classmethod
     def of(cls, scopes: ViewerScopes, current_connectors: Iterable[str] | Mapping[str, int], *, version: int, generation: int,
-           blocked: Iterable[str] = ()) -> ScopeFilter:
+           blocked: Iterable[str] = (), defer: bool = False) -> ScopeFilter:
         return cls(frozenset(current_connectors), scopes.open_apps, scopes.readable_groups, scopes.readable_scopes,
-                   scopes.unreadable_restricted, version, generation, scopes.pending, frozenset(blocked) | scopes.blocked)
+                   scopes.unreadable_restricted, version, generation, scopes.pending, frozenset(blocked) | scopes.blocked, defer)
 
     @property
     def reach(self) -> frozenset[str]:
@@ -364,6 +369,11 @@ class ScopeFilter:
     @property
     def trusts_nothing(self) -> bool:
         return self.generation < 0 or not self.current
+
+    @property
+    def matches_nothing(self) -> bool:
+        """Whether no point can pass: nothing is trusted and nothing is left to the request's own arms."""
+        return self.trusts_nothing and not self.defer
 
     def lists(self) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
         """``(current, open_apps, readable_groups, reach, excluded, pending, blocked)``, sorted, for a store that binds arrays. Computed once per

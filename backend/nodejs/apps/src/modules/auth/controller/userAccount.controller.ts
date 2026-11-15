@@ -49,12 +49,12 @@ import {
 import { AuthSessionRequest } from '../middlewares/types';
 
 import { SessionData, SessionService } from '../services/session.service';
-import { OAuth2Client } from 'google-auth-library';
 import {
   MicrosoftSignInConfig,
   microsoftAccountIdentity,
   validateAzureAdUser,
 } from '../utils/azureAdTokenValidation';
+import { verifyGoogleIdToken } from '../utils/googleIdTokenValidation';
 import { IamService } from '../services/iam.service';
 import { MailService } from '../services/mail.service';
 
@@ -66,15 +66,26 @@ import {
   NotFoundError,
   ServiceUnavailableError,
   UnauthorizedError,
+  WrongCredentialError,
 } from '../../../libs/errors/http.errors';
-import { BaseError } from '../../../libs/errors/base.error';
+import { BaseError, withCause } from '../../../libs/errors/base.error';
+import { audit, refusalReason } from '../../../libs/services/audit';
+import { setContextIdentity } from '../../../libs/context/request-context';
+import { logLevelFor } from '../../../libs/utils/error.middleware.utils';
+import { classifyError } from '../../../libs/utils/error-class';
+import { auditAuthRefusal, authRefusal } from '../utils/sign-in-audit';
+import axios from 'axios';
 import {
   markClientSafe,
   serverFailureMessage,
 } from '../../../libs/errors/reader-friendly';
 import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { generateAuthToken } from '../utils/generateAuthToken';
+import {
+  DISABLED_ACCOUNT_SIGN_IN_MESSAGE,
+  generateAuthToken,
+  SERVICE_ACCOUNT_SIGN_IN_MESSAGE,
+} from '../utils/generateAuthToken';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import { domainFromEmail } from '../../../libs/services/telemetry/identity';
 import {
@@ -122,6 +133,13 @@ export const ACCOUNT_NO_LONGER_ACTIVE =
 const isAccountRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
+
+/** An id from a stored record (string or ObjectId) as audit() takes it; nothing when there is none. */
+const idOf = (value: unknown): string | undefined => {
+  if (typeof value === 'string') return value === '' ? undefined : value;
+  const id = value as { toHexString?: () => string } | null | undefined;
+  return typeof id?.toHexString === 'function' ? id.toHexString() : undefined;
+};
 export const RESET_LINK_ALREADY_USED =
   'This reset link has already been used. Request a new one from the sign-in page.';
 export const RESET_LINK_NOT_CHECKED =
@@ -220,32 +238,24 @@ export class UserAccountController {
           String(target._id),
           tokenEmail.toLowerCase(),
         );
-        this.logger.info(
-          `${context}: Corrected user email from UPN to mail attribute`,
-          {
-            userId: target._id,
-            oldEmail: target.email,
-            newEmail: tokenEmail.toLowerCase(),
-          },
-        );
+        audit('auth.email.change', {
+          actor: String(target._id),
+          org: typeof target.orgId === 'string' ? target.orgId : undefined,
+          outcome: 'success',
+          reason: 'sso_mail_claim',
+        });
       } catch (emailUpdateError) {
         // Email update may fail if another user already has this email (unique constraint).
         // Log and continue — the user can still log in with their current email.
-        this.logger.warn(`${context}: Could not correct user email`, {
-          userId: target._id,
-          oldEmail: target.email,
-          newEmail: tokenEmail.toLowerCase(),
-          error: emailUpdateError,
+        this.logger.warn('auth.email.correct_failed', {
+          user_id: String(target._id),
+          error_class: classifyError(emailUpdateError),
         });
         return;
       }
     } else {
-      this.logger.info(
-        `${context}: Using email from token instead of login email`,
-        {
-          loginEmail: target.email,
-          tokenEmail,
-        },
+      this.logger.debug(
+        `${context}: using the email from the token instead of the sign-in email`,
       );
     }
     target.email = tokenEmail.toLowerCase();
@@ -256,16 +266,12 @@ export class UserAccountController {
     sessionInfo: SessionData,
     user: Record<string, unknown> | null | undefined,
   ): void {
-    const id = user?._id;
-    const userId =
-      typeof id === 'string'
-        ? id
-        : typeof (id as { toHexString?: unknown } | undefined)?.toHexString ===
-            'function'
-          ? (id as { toHexString(): string }).toHexString()
-          : '';
+    const userId = idOf(user?._id) ?? '';
     if (Number(sessionInfo.currentStep) > 0 && userId !== sessionInfo.userId) {
-      throw new UnauthorizedError(SIGN_IN_ACCOUNT_CHANGED);
+      throw authRefusal(
+        new WrongCredentialError(SIGN_IN_ACCOUNT_CHANGED),
+        'account_changed',
+      );
     }
   }
 
@@ -311,6 +317,13 @@ export class UserAccountController {
       userCredentials.isBlocked = false;
       userCredentials.wrongCredentialCount = 0;
       userCredentials.blockExpiresAt = null;
+      audit('auth.account.unlock', {
+        target: String(userCredentials.userId),
+        targetIsUser: true,
+        org: userCredentials.orgId,
+        outcome: 'success',
+        reason: 'block_expired',
+      });
       return false;
     }
 
@@ -343,10 +356,13 @@ export class UserAccountController {
           },
         });
       } catch (error) {
-        this.logger.error("The account-locked email couldn't be sent", {
-          userId,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        this.logger[logLevelFor(error)](
+          "The account-locked email couldn't be sent",
+          {
+            user_id: userId,
+            error,
+          },
+        );
       }
     })();
   }
@@ -361,7 +377,7 @@ export class UserAccountController {
     const userCredentials = await getCredentialRepository().find(userId, orgId);
     if (!userCredentials) {
       await compareWithDecoyHash(inputOTP);
-      throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
+      throw authRefusal(new WrongCredentialError(WRONG_SIGN_IN_CODE), 'no_otp');
     }
     // A locked account, a missing code and an expired code are all answered
     // like a wrong code, since an unknown email can only ever get that answer.
@@ -373,13 +389,15 @@ export class UserAccountController {
       !userCredentials.hashedOTP ||
       Date.now() > userCredentials.otpValidity
     ) {
-      if (locked) {
-        this.logger.warn('Sign-in code refused: the account is locked', {
-          userId,
-        });
-      }
       await compareWithDecoyHash(inputOTP);
-      throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
+      throw authRefusal(
+        new WrongCredentialError(WRONG_SIGN_IN_CODE),
+        locked
+          ? 'locked'
+          : userCredentials.otpValidity && userCredentials.hashedOTP
+            ? 'otp_expired'
+            : 'no_otp',
+      );
     }
 
     // The attempt is counted before the code is compared. Counting it
@@ -388,13 +406,12 @@ export class UserAccountController {
     const attempt = await this.reserveCredentialAttempt(userId, orgId);
     if (!attempt?.hashedOTP) {
       await compareWithDecoyHash(inputOTP);
-      throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
+      throw authRefusal(new WrongCredentialError(WRONG_SIGN_IN_CODE), 'locked');
     }
 
     // Ensure OTP is a string for bcrypt.compare (bcrypt requires both arguments to be strings)
     const otpString = String(inputOTP);
     const isMatching = await bcrypt.compare(otpString, attempt.hashedOTP);
-    this.logger.debug('isMatching', isMatching);
     if (!isMatching) {
       await getActivityRepository().record({
         email: email,
@@ -403,7 +420,6 @@ export class UserAccountController {
         loginMode: 'OTP',
       });
       if (attempt.wrongCredentialCount >= MAX_WRONG_CREDENTIAL_ATTEMPTS) {
-        this.logger.warn('blocked', email);
         attempt.isBlocked = true;
         attempt.blockExpiresAt = new Date(
           Date.now() + BLOCK_COOLDOWN_DURATION_MS,
@@ -421,10 +437,20 @@ export class UserAccountController {
           ipAddress: ipAddress,
           loginMode: 'OTP',
         });
+        audit('auth.account.lock', {
+          actor: userId,
+          org: orgId,
+          outcome: 'success',
+          reason: 'too_many_attempts',
+          authMethod: AuthMethodType.OTP,
+        });
 
         this.notifyAccountLocked(email, userId, orgId);
       }
-      throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
+      throw authRefusal(
+        new WrongCredentialError(WRONG_SIGN_IN_CODE),
+        'bad_otp',
+      );
     }
 
     // Clearing the code in the same write that matches it makes it single-use,
@@ -435,7 +461,10 @@ export class UserAccountController {
       attempt.hashedOTP,
     );
     if (!claimed) {
-      throw new UnauthorizedError(OTP_ALREADY_USED);
+      throw authRefusal(
+        new WrongCredentialError(OTP_ALREADY_USED),
+        'otp_already_used',
+      );
     }
     // After the claim, and separate from it: tying the claim to the counter
     // would let another request's reservation stop a correct code being used.
@@ -501,7 +530,10 @@ export class UserAccountController {
   ): Promise<void> {
     try {
       const { userId, orgId } = this.callerIdentity(req);
-      const userCredentialData = await getCredentialRepository().find(userId, orgId);
+      const userCredentialData = await getCredentialRepository().find(
+        userId,
+        orgId,
+      );
       res.json({ hasPassword: !!userCredentialData?.hashedPassword });
     } catch (error) {
       next(error);
@@ -517,7 +549,10 @@ export class UserAccountController {
   ): Promise<void> {
     try {
       const { userId, orgId } = this.callerIdentity(req);
-      const userCredentialData = await getCredentialRepository().find(userId, orgId);
+      const userCredentialData = await getCredentialRepository().find(
+        userId,
+        orgId,
+      );
       if (userCredentialData?.hashedPassword) {
         throw new BadRequestError(
           'A password is already set. Use change password instead.',
@@ -533,6 +568,7 @@ export class UserAccountController {
       await this.sendForgotPasswordEmail(
         userFindResult.data as Record<string, unknown>,
       );
+      audit('auth.password_setup.request', { outcome: 'success' });
       res.status(200).send({ data: 'mail sent' });
     } catch (error) {
       next(error);
@@ -742,10 +778,14 @@ export class UserAccountController {
         (await this.ensureBlockStatus(userCredentialData))
       ) {
         const blockedUntil = this.getBlockedUntilIso(userCredentialData);
-        throw new BadRequestError(
-          blockedUntil
-            ? `You cannot change you password as your account is blocked due to multiple incorrect logins [blockedUntil:${blockedUntil}]`
-            : 'You cannot change you password as your account is blocked due to multiple incorrect logins',
+        // Tagged here, not at the callers: locked means the same for all three.
+        throw authRefusal(
+          new BadRequestError(
+            blockedUntil
+              ? `You cannot change you password as your account is blocked due to multiple incorrect logins [blockedUntil:${blockedUntil}]`
+              : 'You cannot change you password as your account is blocked due to multiple incorrect logins',
+          ),
+          'locked',
         );
       }
 
@@ -805,8 +845,11 @@ export class UserAccountController {
           this.logger,
         );
         if (!isValid) {
-          throw new UnauthorizedError(
-            'Invalid CAPTCHA verification. Please try again.',
+          throw authRefusal(
+            new WrongCredentialError(
+              'Invalid CAPTCHA verification. Please try again.',
+            ),
+            'captcha_failed',
           );
         }
       }
@@ -816,6 +859,7 @@ export class UserAccountController {
       void this.sendResetIfAccountExists(email);
       return;
     } catch (error) {
+      auditAuthRefusal('auth.password_reset.request', error);
       next(error);
     }
   };
@@ -826,15 +870,25 @@ export class UserAccountController {
       const user = await this.iamService.getUserByEmail(email, authToken);
 
       if (user.statusCode === 200 && user.data) {
+        const account = user.data as { _id?: unknown; orgId?: unknown };
         await this.sendForgotPasswordEmail(user.data);
+        audit('auth.password_reset.request', {
+          actor: idOf(account._id),
+          org: idOf(account.orgId),
+          outcome: 'success',
+        });
+      } else {
+        audit('auth.password_reset.request', {
+          outcome: 'failure',
+          reason: 'unknown_user',
+        });
       }
     } catch (lookupOrSendError) {
-      this.logger.warn('forgotPasswordEmail: suppressing internal error', {
-        error:
-          lookupOrSendError instanceof Error
-            ? lookupOrSendError.message
-            : lookupOrSendError,
-      });
+      // The reply has gone; this line is the only record of the failure.
+      this.logger[logLevelFor(lookupOrSendError)](
+        "The password reset email couldn't be sent",
+        { error: lookupOrSendError },
+      );
     }
   }
   async setUpAuthConfig(req: AuthSessionRequest, res: Response): Promise<void> {
@@ -944,13 +998,24 @@ export class UserAccountController {
       const orgId = req.user.orgId as string;
       const userId = req.user.userId as string;
 
-      const adminCheckResult = await this.iamService.checkAdminUser(
-        userId,
-        iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
-      );
+      const adminCheckResult = await this.iamService
+        .checkAdminUser(
+          userId,
+          iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
+        )
+        .catch((error: unknown) => {
+          // IAM answers a member with 403, which its client throws.
+          if (axios.isAxiosError(error) && error.response?.status === 403) {
+            throw authRefusal(error, 'not_admin');
+          }
+          throw error;
+        });
 
       if (adminCheckResult.statusCode !== 200) {
-        throw new NotFoundError(ADMIN_ONLY_SIGN_IN_SETTINGS);
+        throw authRefusal(
+          new NotFoundError(ADMIN_ONLY_SIGN_IN_SETTINGS),
+          'not_admin',
+        );
       }
 
       if (!authMethod) {
@@ -967,8 +1032,10 @@ export class UserAccountController {
         throw new NotFoundError('Organization config not found');
       }
 
+      audit('auth.policy.update', { outcome: 'success' });
       res.status(200).json({ message: 'Auth method updated', authMethod });
     } catch (error) {
+      auditAuthRefusal('auth.policy.update', error);
       next(error);
     }
   }
@@ -994,11 +1061,15 @@ export class UserAccountController {
         );
 
         if (userFindResult.statusCode !== 200) {
-          throw new NotFoundError(SESSION_NO_LONGER_VALID);
+          throw authRefusal(
+            new NotFoundError(SESSION_NO_LONGER_VALID),
+            'unknown_user',
+          );
         }
         await this.updatePassword(userId, orgId, password, req.ip!, () => {
           passwordSaved = true;
         });
+        audit('auth.password_reset.complete', { outcome: 'success' });
       } catch (error) {
         // Until the new password is saved nothing has changed, so the link is
         // handed back for another attempt. Once it is saved the link is spent,
@@ -1012,6 +1083,7 @@ export class UserAccountController {
       res.status(200).send({ data: 'password reset' });
       return;
     } catch (error) {
+      auditAuthRefusal('auth.password_reset.complete', error);
       next(error);
     }
   }
@@ -1046,12 +1118,15 @@ export class UserAccountController {
         expiresAt,
       });
       if (!claimed) {
-        throw new UnauthorizedError(RESET_LINK_ALREADY_USED);
+        throw authRefusal(
+          new UnauthorizedError(RESET_LINK_ALREADY_USED),
+          'link_used',
+        );
       }
     } catch (error) {
       if (error instanceof ResetLinkStoreNotReadyError) {
         this.logger.error('The used reset link index could not be built', {
-          error: error.message,
+          error,
         });
         throw new ServiceUnavailableError(RESET_LINK_NOT_CHECKED);
       }
@@ -1066,9 +1141,12 @@ export class UserAccountController {
     } catch (error) {
       // The reset's own error is the one to report; this only costs the person
       // a fresh link.
-      this.logger.error('Could not hand back an unused reset link', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      this.logger[logLevelFor(error)](
+        'Could not hand back an unused reset link',
+        {
+          error,
+        },
+      );
     }
   }
 
@@ -1099,8 +1177,11 @@ export class UserAccountController {
           turnstileSecretKey,
         );
         if (!isTurnstileValid) {
-          throw new UnauthorizedError(
-            'Invalid CAPTCHA verification. Please try again.',
+          throw authRefusal(
+            new WrongCredentialError(
+              'Invalid CAPTCHA verification. Please try again.',
+            ),
+            'captcha_failed',
           );
         }
       }
@@ -1122,7 +1203,10 @@ export class UserAccountController {
         userCredentialData?.hashedPassword || ' ',
       );
       if (!isPasswordCorrect) {
-        throw new UnauthorizedError('Current password is incorrect.');
+        throw authRefusal(
+          new WrongCredentialError('Current password is incorrect.'),
+          'bad_current_password',
+        );
       }
       await this.updatePassword(
         req.user?.userId,
@@ -1130,6 +1214,8 @@ export class UserAccountController {
         newPassword,
         req.ip || ' ',
       );
+      // The password is changed now, whatever happens to the new token below.
+      audit('auth.password.change', { outcome: 'success' });
 
       const userFindResult = await this.iamService.getUserById(
         req.user?.userId,
@@ -1153,6 +1239,7 @@ export class UserAccountController {
       });
       return;
     } catch (error) {
+      auditAuthRefusal('auth.password.change', error);
       next(error);
     }
   }
@@ -1190,10 +1277,13 @@ export class UserAccountController {
       // Same hashing work as an unknown email, whose request always hashes once.
       await this.generateHashedOTP();
       const blockedUntil = this.getBlockedUntilIso(userCredentialData);
-      throw new ForbiddenError(
-        blockedUntil
-          ? `OTP not sent. You have entered incorrect OTP/Password too many times. Your account has been disabled. [blockedUntil:${blockedUntil}]`
-          : 'OTP not sent. You have entered incorrect OTP/Password too many times. Your account has been disabled.',
+      throw authRefusal(
+        new ForbiddenError(
+          blockedUntil
+            ? `OTP not sent. You have entered incorrect OTP/Password too many times. Your account has been disabled. [blockedUntil:${blockedUntil}]`
+            : 'OTP not sent. You have entered incorrect OTP/Password too many times. Your account has been disabled.',
+        ),
+        'locked',
       );
     }
 
@@ -1208,11 +1298,14 @@ export class UserAccountController {
     // Not awaited: waiting for the mail service would make a real account's
     // answer slower than an unknown email's. The code is already stored, so it
     // works whenever the email arrives.
-    const logSendFailure = (details: Record<string, unknown>): void => {
-      this.logger.error("The sign-in code email couldn't be sent", {
-        userId,
-        ...details,
-      });
+    const logSendFailure = (error: unknown): void => {
+      this.logger[logLevelFor(error)](
+        "The sign-in code email couldn't be sent",
+        {
+          user_id: userId,
+          error,
+        },
+      );
     };
     this.mailService
       .sendMail({
@@ -1231,14 +1324,13 @@ export class UserAccountController {
       })
       .then((result) => {
         if (result.statusCode !== 200) {
-          logSendFailure({ data: result.data });
+          this.logger.warn("The sign-in code email couldn't be sent", {
+            user_id: userId,
+            status: result.statusCode,
+          });
         }
       })
-      .catch((error: unknown) => {
-        logSendFailure({
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
+      .catch(logSendFailure);
     return { statusCode: 200, data: 'OTP sent' };
   }
 
@@ -1263,15 +1355,19 @@ export class UserAccountController {
       if (result.statusCode === 404) {
         // Same answer, and the same code hashing, as for a real account.
         await this.generateHashedOTP();
+        audit('auth.otp.send', {
+          outcome: 'failure',
+          reason: 'unknown_user',
+          authMethod: AuthMethodType.OTP,
+        });
         res.status(200).send(SIGN_IN_CODE_REQUESTED);
         return;
       }
       if (result.statusCode !== 200) {
-        this.logger.error('Looking up the account for a sign-in code failed', {
-          statusCode: result.statusCode,
-          data: result.data,
-        });
-        throw new InternalServerError(OTP_SEND_FAILED);
+        throw withCause(
+          new InternalServerError(OTP_SEND_FAILED),
+          new Error(`The account lookup answered ${result.statusCode}`),
+        );
       }
       const user = result.data as {
         _id: string;
@@ -1281,6 +1377,11 @@ export class UserAccountController {
 
       // A locked account or a failed send gets the same answer as an unknown
       // email, so the answer never shows that the account exists.
+      const who = {
+        actor: idOf(user._id),
+        org: idOf(user.orgId),
+        authMethod: AuthMethodType.OTP,
+      };
       try {
         await asAccount(user.orgId, user._id, 'address-lookup', () =>
           this.generateAndSendLoginOtp(
@@ -1291,12 +1392,16 @@ export class UserAccountController {
             req.ip || ' ',
           ),
         );
+        audit('auth.otp.send', { ...who, outcome: 'success' });
       } catch (sendError) {
-        this.logger.warn('No sign-in code was sent', {
-          userId: user._id,
-          error:
-            sendError instanceof Error ? sendError.message : String(sendError),
-        });
+        if (refusalReason(sendError) !== undefined) {
+          auditAuthRefusal('auth.otp.send', sendError, who);
+        } else {
+          this.logger[logLevelFor(sendError)]('No sign-in code was sent', {
+            user_id: who.actor,
+            error: sendError,
+          });
+        }
       }
       res.status(200).send(SIGN_IN_CODE_REQUESTED);
     } catch (error) {
@@ -1331,17 +1436,23 @@ export class UserAccountController {
       );
 
       if (!userCredential) {
-        throw new NotFoundError(SESSION_NO_LONGER_VALID);
+        throw authRefusal(
+          new NotFoundError(SESSION_NO_LONGER_VALID),
+          'no_credentials',
+        );
       }
 
       if (await this.ensureBlockStatus(userCredential)) {
         const blockedUntil = this.getBlockedUntilIso(userCredential);
         const brand = getBrandConfig();
         const disabled = `Your account has been disabled. If it is a mistake, Please reach out to ${brand.accountContactEmail ?? brand.supportEmail} to get it restored.`;
-        throw new BadRequestError(
-          blockedUntil
-            ? `${disabled} [blockedUntil:${blockedUntil}]`
-            : disabled,
+        throw authRefusal(
+          new BadRequestError(
+            blockedUntil
+              ? `${disabled} [blockedUntil:${blockedUntil}]`
+              : disabled,
+          ),
+          'locked',
         );
       }
 
@@ -1353,6 +1464,7 @@ export class UserAccountController {
       res.status(200).json({ user: user, accessToken: accessToken });
       return;
     } catch (error) {
+      auditAuthRefusal('auth.session.refresh', error);
       next(error);
     }
   }
@@ -1378,15 +1490,19 @@ export class UserAccountController {
     } catch (activityError) {
       this.logger.error(
         'Failed to fetch session-invalidating activity on refresh',
-        activityError,
+        { error: activityError },
       );
       return;
     }
     if (activity && activityEndsSession(activity, issuedAtSeconds)) {
-      throw new UnauthorizedError(
-        activity.activityType === ACCOUNT_DELETED
-          ? ACCOUNT_NO_LONGER_ACTIVE
-          : 'Session expired, please login again',
+      const deleted = activity.activityType === ACCOUNT_DELETED;
+      throw authRefusal(
+        new UnauthorizedError(
+          deleted
+            ? ACCOUNT_NO_LONGER_ACTIVE
+            : 'Session expired, please login again',
+        ),
+        deleted ? 'account_inactive' : 'session_ended',
       );
     }
   }
@@ -1409,12 +1525,11 @@ export class UserAccountController {
       if (error instanceof BaseError) {
         throw error;
       }
-      this.logger.error('Looking up the account to refresh a session failed', {
-        userId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw markClientSafe(
-        new InternalServerError(serverFailureMessage('refresh your session')),
+      throw withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage('refresh your session')),
+        ),
+        error,
       );
     }
 
@@ -1424,7 +1539,10 @@ export class UserAccountController {
       !isAccountRecord(user) ||
       user.isDisabled === true
     ) {
-      throw new UnauthorizedError(ACCOUNT_NO_LONGER_ACTIVE);
+      throw authRefusal(
+        new UnauthorizedError(ACCOUNT_NO_LONGER_ACTIVE),
+        'account_inactive',
+      );
     }
     return user;
   }
@@ -1444,6 +1562,7 @@ export class UserAccountController {
         activityType: LOGOUT,
         ipAddress: req.ip,
       });
+      audit('auth.sign_out', { outcome: 'success' });
 
       res.status(200).end();
       return;
@@ -1474,20 +1593,18 @@ export class UserAccountController {
       typeof password !== 'string' ||
       locked
     ) {
-      if (locked) {
-        this.logger.warn('Password sign-in refused: the account is locked', {
-          userId: userId,
-        });
-      }
       await compareWithDecoyHash(password);
-      throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
+      throw authRefusal(
+        new BadRequestError(WRONG_EMAIL_OR_PASSWORD),
+        locked ? 'locked' : 'no_password',
+      );
     }
 
     // Counted before the compare, for the same reason as a sign-in code.
     const attempt = await this.reserveCredentialAttempt(userId, orgId);
     if (!attempt?.hashedPassword) {
       await compareWithDecoyHash(password);
-      throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
+      throw authRefusal(new BadRequestError(WRONG_EMAIL_OR_PASSWORD), 'locked');
     }
 
     const isPasswordCorrect = await this.verifyPassword(
@@ -1520,9 +1637,19 @@ export class UserAccountController {
           ipAddress: ip,
           loginMode: 'PASSWORD',
         });
+        audit('auth.account.lock', {
+          actor: userId,
+          org: orgId,
+          outcome: 'success',
+          reason: 'too_many_attempts',
+          authMethod: AuthMethodType.PASSWORD,
+        });
         this.notifyAccountLocked(String(email), userId, orgId);
       }
-      throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
+      throw authRefusal(
+        new BadRequestError(WRONG_EMAIL_OR_PASSWORD),
+        'bad_password',
+      );
     }
     await this.releaseCredentialAttempt(
       userId,
@@ -1554,7 +1681,7 @@ export class UserAccountController {
       user.email,
       ip,
     );
-    this.logger.info('result for otp verification', result);
+    // verifyOTP answers 200 or throws a tagged refusal; this guards the contract.
     if (result.statusCode !== 200) {
       throw new BadRequestError(
         "We couldn't verify that code. Request a new code and try again.",
@@ -1586,26 +1713,24 @@ export class UserAccountController {
       );
     const { clientId } = configManagerResponse.data;
 
-    const client = new OAuth2Client(clientId);
-
-    // Verify the Google ID token
-    const ticket = await client.verifyIdToken({
-      idToken: credential,
-      audience: clientId, // Ensure it matches your client ID
-    });
+    const ticket = await verifyGoogleIdToken(clientId, credential);
 
     const payload = ticket.getPayload();
     if (!payload) {
-      throw new UnauthorizedError(
-        "Sign-in with Google didn't complete. Try again, or use another sign-in method.",
+      throw authRefusal(
+        new WrongCredentialError(
+          "Sign-in with Google didn't complete. Try again, or use another sign-in method.",
+        ),
+        'sso_token_invalid',
       );
     }
 
-    this.logger.debug('entered email', user.email);
-    this.logger.debug('authenticated email', payload?.email);
     const email = payload?.email;
     if (email?.toLowerCase() !== user.email?.toLowerCase()) {
-      throw new BadRequestError(EMAIL_MISMATCH);
+      throw authRefusal(
+        new BadRequestError(EMAIL_MISMATCH),
+        'sso_email_mismatch',
+      );
     }
     await getActivityRepository().record({
       email: email,
@@ -1641,8 +1766,11 @@ export class UserAccountController {
       identity.emailClaimTrusted,
     );
     if (identity.email !== String(user.email ?? '').toLowerCase()) {
-      throw new UnauthorizedError(
-        "This Microsoft account doesn't match the account you're signing in to. Sign in with the Microsoft account linked to your PipesHub email.",
+      throw authRefusal(
+        new WrongCredentialError(
+          "This Microsoft account doesn't match the account you're signing in to. Sign in with the Microsoft account linked to your PipesHub email.",
+        ),
+        'sso_email_mismatch',
       );
     }
 
@@ -1682,14 +1810,25 @@ export class UserAccountController {
         await this.authenticateWithMicrosoft(user, credentials, req.ip!);
         break;
       default:
-        throw new BadRequestError('Unsupported authentication method');
+        throw authRefusal(
+          new BadRequestError('Unsupported authentication method'),
+          'method_not_allowed',
+        );
     }
+
+    const who = {
+      actor: idOf(user._id),
+      org: idOf(user.orgId),
+      authMethod: method,
+    };
 
     // 4. MULTI-STEP HANDLING
     if (sessionInfo.currentStep < sessionInfo.authConfig.length - 1) {
       sessionInfo.userId = String(user._id);
       sessionInfo.currentStep++;
       await this.sessionService.updateSession(sessionInfo);
+      // The step is passed once it is saved, even if the lookups below fail.
+      audit('auth.sign_in', { ...who, outcome: 'partial' });
 
       const allowedMethods =
         sessionInfo.authConfig[sessionInfo.currentStep]?.allowedMethods.map(
@@ -1725,7 +1864,21 @@ export class UserAccountController {
     } else {
       // 5. FINAL SUCCESS
       await this.sessionService.completeAuthentication(sessionInfo);
-      const accessToken = await generateAuthToken(user, this.config.jwtSecret);
+      const accessToken = await generateAuthToken(
+        user,
+        this.config.jwtSecret,
+      ).catch((error: unknown) => {
+        // Tagged here: the same refusals mean something else on refresh or password change.
+        if (error instanceof Error) {
+          if (error.message === SERVICE_ACCOUNT_SIGN_IN_MESSAGE) {
+            throw authRefusal(error, 'service_account');
+          }
+          if (error.message === DISABLED_ACCOUNT_SIGN_IN_MESSAGE) {
+            throw authRefusal(error, 'account_disabled');
+          }
+        }
+        throw error;
+      });
 
       const isFirstLogin = !user.hasLoggedIn;
       recordEvent('login', {
@@ -1745,6 +1898,8 @@ export class UserAccountController {
         );
       }
 
+      setContextIdentity({ orgId: who.org, userId: who.actor });
+      audit('auth.sign_in', { ...who, outcome: 'success' });
       res.status(200).json({
         message: 'Fully authenticated',
         accessToken,
@@ -1762,8 +1917,9 @@ export class UserAccountController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
+    // Read by the catch: a refusal is audited for the account it was for, when known.
+    let user: Record<string, any> | undefined;
     try {
-      this.logger.info('running authenticate');
       const {
         method,
         credentials,
@@ -1771,7 +1927,6 @@ export class UserAccountController {
       } = req.body;
       const { sessionInfo } = req;
       let userFindResult;
-      let user: Record<string, any> | undefined;
       let userDetails:
         { firstName?: string; lastName?: string; fullName: string } | undefined;
 
@@ -1786,11 +1941,17 @@ export class UserAccountController {
       sessionInfo.authConfig = withoutRemovedSignInMethods(
         sessionInfo.authConfig,
       ).steps;
-      assertMethodAllowedAtStep(
-        sessionInfo.authConfig as IOrgAuthConfigLike['authSteps'] | undefined,
-        Number(sessionInfo.currentStep),
-        String(method),
-      );
+      try {
+        assertMethodAllowedAtStep(
+          sessionInfo.authConfig as IOrgAuthConfigLike['authSteps'] | undefined,
+          Number(sessionInfo.currentStep),
+          String(method),
+        );
+      } catch (error) {
+        throw error instanceof Error
+          ? authRefusal(error, 'method_not_allowed')
+          : error;
+      }
 
       // 1. Password Guard (Turnstile)
       if (method === AuthMethodType.PASSWORD) {
@@ -1803,8 +1964,11 @@ export class UserAccountController {
             this.logger,
           );
           if (!isValid)
-            throw new UnauthorizedError(
-              'Invalid CAPTCHA verification. Please try again.',
+            throw authRefusal(
+              new WrongCredentialError(
+                'Invalid CAPTCHA verification. Please try again.',
+              ),
+              'captcha_failed',
             );
         }
       }
@@ -1834,14 +1998,16 @@ export class UserAccountController {
                 this.config.scopedJwtSecret,
               );
             const { clientId } = configManagerResponse.data;
-            const client = new OAuth2Client(clientId);
-            const ticket = await client.verifyIdToken({
-              idToken: credentials.credential || credentials,
-              audience: clientId,
-            });
+            const ticket = await verifyGoogleIdToken(
+              clientId,
+              String(credentials.credential || credentials),
+            );
             const payload = ticket.getPayload();
             if (!payload?.email)
-              throw new UnauthorizedError(PROVIDER_SHARED_NO_EMAIL);
+              throw authRefusal(
+                new WrongCredentialError(PROVIDER_SHARED_NO_EMAIL),
+                'sso_no_email',
+              );
             providerEmail = payload.email;
             userDetails = this.jitProvisioningService.extractGoogleUserDetails(
               payload,
@@ -1867,7 +2033,10 @@ export class UserAccountController {
             const identity = microsoftAccountIdentity(decodedToken, tenantId);
             providerEmail = identity.email;
             if (!providerEmail) {
-              throw new UnauthorizedError(PROVIDER_SHARED_NO_EMAIL);
+              throw authRefusal(
+                new WrongCredentialError(PROVIDER_SHARED_NO_EMAIL),
+                'sso_no_email',
+              );
             }
             sessionInfo.email = providerEmail;
             userDetails =
@@ -1917,8 +2086,11 @@ export class UserAccountController {
                     : 'GOOGLE OAUTH',
               });
             } else {
-              throw new BadRequestError(
-                'Account not found. Please contact your administrator.',
+              throw authRefusal(
+                new BadRequestError(
+                  'Account not found. Please contact your administrator.',
+                ),
+                'no_account',
               );
             }
           }
@@ -1946,26 +2118,44 @@ export class UserAccountController {
           };
           if (method === AuthMethodType.OTP) {
             await compareWithDecoyHash(submitted.otp);
-            throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
+            throw authRefusal(
+              new WrongCredentialError(WRONG_SIGN_IN_CODE),
+              'unknown_user',
+            );
           }
           await compareWithDecoyHash(submitted.password);
-          throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
+          throw authRefusal(
+            new BadRequestError(WRONG_EMAIL_OR_PASSWORD),
+            'unknown_user',
+          );
         }
       }
       this.assertSameAccountAsEarlierSteps(sessionInfo, user);
 
       // The account is known: what follows runs as it (its credentials, activity and token are its own).
-      await asAccount(String(user.orgId), String(user._id), 'sign-in', () =>
-        this.completeSignIn(
-          req,
-          res,
-          user,
-          method as AuthMethodType,
-          credentials,
-          sessionInfo,
-        ),
+      const account = user;
+      await asAccount(
+        String(account.orgId),
+        String(account._id),
+        'sign-in',
+        () =>
+          this.completeSignIn(
+            req,
+            res,
+            account,
+            method as AuthMethodType,
+            credentials,
+            sessionInfo,
+          ),
       );
     } catch (error) {
+      const method: unknown = (req.body as { method?: unknown } | undefined)
+        ?.method;
+      auditAuthRefusal('auth.sign_in', error, {
+        actor: idOf(user?._id),
+        org: idOf(req.sessionInfo?.orgId),
+        authMethod: typeof method === 'string' ? method : undefined,
+      });
       next(error);
     }
   }
@@ -2012,6 +2202,10 @@ export class UserAccountController {
         );
       }
       const updatedUser = updateUserResult.data;
+      audit('auth.account.setup', {
+        outcome: 'success',
+        authMethod: AuthMethodType.PASSWORD,
+      });
 
       recordEvent('signup', {
         orgId: orgId?.toString(),
@@ -2041,7 +2235,10 @@ export class UserAccountController {
       // This account excluded: opening the link again repeats the write and
       // the event, which is how a failed event write is retried.
       if (await getUserRepository().emailTakenElsewhere(email, userId)) {
-        throw new BadRequestError(`Email already in use: ${newEmail}`);
+        throw authRefusal(
+          new BadRequestError(`Email already in use: ${newEmail}`),
+          'email_taken',
+        );
       }
       const user = await getUserRepository().changeEmail(userId, email);
       if (!user) {
@@ -2079,8 +2276,10 @@ export class UserAccountController {
         throw graphFailure;
       }
 
+      audit('auth.email.change', { outcome: 'success', reason: 'link' });
       res.status(200).json({ message: 'Email updated successfully' });
     } catch (err) {
+      auditAuthRefusal('auth.email.change', err);
       next(err);
     }
   }

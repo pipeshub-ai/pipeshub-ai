@@ -57,6 +57,26 @@ class TestWithoutALease:
         assert _statuses(gp) == [AppStatus.SYNCING.value, AppStatus.IDLE.value]
 
 
+class TestStartStatusWrite:
+    @pytest.mark.asyncio
+    async def test_a_failed_start_write_is_retried_so_the_connector_stops_being_served(self) -> None:
+        gp = _graph_provider()
+        gp.batch_upsert_nodes = AsyncMock(side_effect=[RuntimeError("blip"), RuntimeError("blip"), None, None])
+        with patch("app.connectors.core.sync.sync_runner.asyncio.sleep", new=AsyncMock()):
+            await run_sync_task(_connector(), "c1", gp, logging.getLogger("t"))
+        assert gp.batch_upsert_nodes.await_count == 3 and gp.batch_upsert_nodes.await_args_list[2].args[0][0]["status"] == AppStatus.SYNCING.value
+
+    @pytest.mark.asyncio
+    async def test_a_start_write_that_keeps_failing_does_not_stop_the_sync(self) -> None:
+        gp = _graph_provider()
+        gp.batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("rejected"))
+        run_sync = AsyncMock()
+        with patch("app.connectors.core.sync.sync_runner.asyncio.sleep", new=AsyncMock()):
+            await run_sync_task(_connector(run_sync), "c1", gp, logging.getLogger("t"))
+        run_sync.assert_awaited_once()
+        assert gp.batch_upsert_nodes.await_count >= 3      # (the tries, then the finalizer's own writes)
+
+
 class TestReleaseOrdering:
     @pytest.mark.asyncio
     async def test_idle_is_written_before_release(self) -> None:

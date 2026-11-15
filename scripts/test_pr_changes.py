@@ -60,6 +60,10 @@ class TestDecisions(unittest.TestCase):
         self.assertTrue({"node_unit", "node_build", "codeql_javascript", "e2e_smoke"} <= checks)
         self.assertFalse(checks & (PYTHON_CHECKS | MATRIX | {"frontend"}))
 
+    def test_the_generated_node_file_type_table_runs_the_python_parity_test(self) -> None:
+        checks = runs("backend/nodejs/apps/src/modules/storage/mimetypes/file-types.generated.ts")
+        self.assertTrue({"node_unit", "python_unit"} <= checks)
+
     def test_a_python_only_change_runs_no_node_or_frontend(self) -> None:
         checks = runs("backend/python/app/connectors/sources/jira/connector.py")
         self.assertTrue(PYTHON_CHECKS <= checks)
@@ -122,6 +126,12 @@ class TestDecisions(unittest.TestCase):
     def test_a_frontend_change_runs_the_frontend_checks_only(self) -> None:
         checks = runs("frontend/app/(main)/chat/page.tsx")
         self.assertEqual(checks, {"frontend", "codeql_javascript", "e2e_smoke"})
+
+    def test_the_sort_fields_the_api_checks_run_the_python_unit_tests(self) -> None:
+        # test_knowledge_hub_sort_matches_spec.py reads this file; a pull request
+        # that changes only it must not skip the check that rejects a bad value.
+        checks = runs("frontend/app/(main)/knowledge-base/sort-fields.json")
+        self.assertTrue({"frontend", "python_unit"} <= checks)
 
     def test_a_workflow_change_runs_its_own_checks_and_the_actions_scan(self) -> None:
         checks = runs(".github/workflows/unit-test.yml")

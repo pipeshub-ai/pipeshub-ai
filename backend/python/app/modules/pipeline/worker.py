@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from app.config.constants.arangodb import ProgressStatus
 from app.exceptions.indexing_exceptions import ProcessingError
+from app.modules.pipeline.connector_gate import ConnectorBeingDeleted
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.models import (
     StageJob,
@@ -61,6 +62,23 @@ class StagePaused(RequeueWithoutAttempt):
     """
 
     counts_toward_backstop = False
+
+
+class StageHeldForDelete(StagePaused):
+    """The job's connector is being deleted: hand it back for later, having written nothing.
+
+    Not settled, since a delete can be put back: once it sticks the job finds its records gone
+    and is dropped as stale; after a revert it runs. A run held mid-way leaves its claim
+    IN_PROGRESS, which the redelivery takes over like a crashed run's.
+
+    Only this message waits: the other connectors' jobs on the stage keep running.
+    """
+
+    pauses_consumer = False
+
+
+# How long a job held for a delete waits before it is delivered again.
+HELD_FOR_DELETE_DELAY_S = 60.0
 
 
 class StageRetry(Exception):
@@ -191,7 +209,28 @@ class StageJobHandler:
         return job, self._registry.get(job.stage)
 
     async def _handle(self, job: StageJob, stage: Stage[Any]) -> None:
+        try:
+            await self._handle_job(job, stage)
+        except ConnectorBeingDeleted:
+            # Nothing more is written: the delete removes the records and their stage states,
+            # and a write here would make its batch lose a write conflict.
+            self._logger.info(
+                "Stage job %s belongs to connector %s, which is being deleted; holding it for %.0fs",
+                job.job_id,
+                job.connector_id,
+                HELD_FOR_DELETE_DELAY_S,
+            )
+            self._count(job.stage, "paused")
+            raise StageHeldForDelete(
+                f"connector {job.connector_id} is being deleted", delay_s=HELD_FOR_DELETE_DELAY_S
+            ) from None
+
+    async def _handle_job(self, job: StageJob, stage: Stage[Any]) -> None:
         io = self._io_for(job, Deadline(stage.budget_s))
+        connector_deleting = getattr(io, "connector_deleting", None)
+        if connector_deleting is not None and await connector_deleting(job):
+            # Before the state is claimed, so a held job has written nothing at all.
+            raise ConnectorBeingDeleted(job.connector_id)
         state = await self._state_for(job, io)
         if state is None:
             self._logger.info(
@@ -235,6 +274,8 @@ class StageJobHandler:
                 result = await stage.run(job, io)
         except TimeoutError:
             result = StageResult(outcome=StageOutcome.RETRY, reason=f"ran past its {stage.budget_s:.0f}s budget")
+        except ConnectorBeingDeleted:
+            raise
         except Exception as exc:
             # The consumer classifies it (retry or dead-letter); the reason stays for whoever looks next.
             self._count(job.stage, "error")

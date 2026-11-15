@@ -1357,7 +1357,9 @@ class TestVectorDbOnlyReindex:
             call.args[0]
             for call in handler.event_processor.graph_provider.get_document.await_args_list
         ]
-        assert "conn-1" not in get_document_ids
+        # Read once, to hold the event while the connector is being deleted; a rebuild is not
+        # gated on the connector being on.
+        assert get_document_ids.count("conn-1") == 1
 
     @pytest.mark.asyncio
     async def test_missing_blob_marks_failed(self):
@@ -2448,9 +2450,9 @@ class TestConnectorActiveCheck:
             "mimeType": "application/pdf",
         }
 
-        # First call returns the record, second call for connector returns None,
-        # third call in finally block returns record again for status check
-        gp.get_document = AsyncMock(side_effect=[record, None, record])
+        # The record, the connector for the delete hold (None), the connector for the
+        # connector check (None), then the record again for the finally block's status check
+        gp.get_document = AsyncMock(side_effect=[record, None, None, record])
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
@@ -2475,9 +2477,9 @@ class TestConnectorActiveCheck:
         }
         connector_instance = {"_key": "conn-1", "isActive": False}
 
-        # First call: record, second call: connector, third call: __update_document_status,
-        # fourth call: finally block record fetch
-        gp.get_document = AsyncMock(side_effect=[record, connector_instance, record, record])
+        # The record, the connector for the delete hold, the connector for the connector check,
+        # __update_document_status, then the finally block's record fetch
+        gp.get_document = AsyncMock(side_effect=[record, connector_instance, connector_instance, record, record])
         gp.update_node = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
@@ -2501,9 +2503,10 @@ class TestConnectorActiveCheck:
         }
         connector_instance = {"_key": "conn-1", "isActive": True}
 
-        # get_document calls: record, connector, then final status check
+        # get_document calls: record, connector (delete hold), connector (connector check), then final status check
         gp.get_document = AsyncMock(side_effect=[
             record,
+            connector_instance,
             connector_instance,
             record,  # final record fetch in finally block
         ])
@@ -3390,9 +3393,10 @@ class TestProcessEventErrors:
             "mimeType": "text/markdown",
         }
         connector_instance = {"_key": "conn-1", "isActive": True, "name": "GitHub Apache"}
-        # The record read for processing, its connector, the final failure's
-        # check whether this attempt indexed it, then __update_document_status.
-        gp.get_document = AsyncMock(side_effect=[record, connector_instance, record, record])
+        # The record read for processing, its connector for the delete hold and again for the
+        # connector check, the final failure's check whether this attempt indexed it, then
+        # __update_document_status.
+        gp.get_document = AsyncMock(side_effect=[record, connector_instance, connector_instance, record, record])
         gp.update_node = AsyncMock(return_value=True)
         handler._propagate_primary_failure_to_queued_duplicates = AsyncMock()
 
@@ -6061,6 +6065,24 @@ class TestStageRedrive:
         ingress.redrive = AsyncMock(side_effect=ConnectionError("graph unavailable"))
         with pytest.raises(ConnectionError):
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(is_final_failure=True))
+        assert {c[0] for c in gp.mock_calls} == {"get_document"}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_connector_read_on_a_retrys_last_attempt_never_writes_the_records_statuses(self) -> None:
+        """The delete hold reads a connector record's app before the stage branch runs; that read
+        failing on the last attempt is still a stage re-run's failure, which owns no record status."""
+        handler, gp, ingress = self._handler(["vr1:rev-1:classify@1"])
+        record = {**gp.get_document.return_value, "origin": OriginTypes.CONNECTOR.value, "connectorId": "c1"}
+
+        async def get_document(doc_id, collection, **_kw) -> dict:
+            if collection == CollectionNames.APPS.value:
+                raise ConnectionError("graph unavailable")
+            return record
+
+        gp.get_document = AsyncMock(side_effect=get_document)
+        with pytest.raises(ConnectionError):
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(is_final_failure=True))
+        ingress.redrive.assert_not_awaited()
         assert {c[0] for c in gp.mock_calls} == {"get_document"}
 
     @pytest.mark.asyncio

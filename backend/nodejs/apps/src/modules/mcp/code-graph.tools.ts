@@ -65,7 +65,8 @@ than \`pipeshub_search\` or reading files one by one:
    does but not its name, \`pipeshub_code_search\` for a name or a string.
 3. Follow it: \`pipeshub_code_neighbours\` (callers, callees),
    \`pipeshub_code_path\` (A to B), \`pipeshub_code_impact\` (what a change
-   breaks), \`pipeshub_code_outline\` and \`pipeshub_code_read\` to read.
+   breaks), \`pipeshub_code_impact_of_diff\` (what a diff breaks),
+   \`pipeshub_code_outline\` and \`pipeshub_code_read\` to read.
 
 For who calls X or what breaks if X changes, call pipeshub_code_impact
 before grep or a text search per caller, then read only the files and
@@ -154,6 +155,8 @@ const MCP_TOOL_NAMES: Record<string, string> = {
   search_semantic: 'pipeshub_code_semantic_search',
   outline: 'pipeshub_code_outline',
   impact: 'pipeshub_code_impact',
+  impact_of_diff: 'pipeshub_code_impact_of_diff',
+  history: 'pipeshub_code_history',
   entry_points: 'pipeshub_code_entry_points',
 };
 const INTERNAL_TOOL_NAMES = new RegExp(
@@ -225,6 +228,8 @@ export const CODE_GRAPH_TOOL_NAMES = [
   'pipeshub_code_semantic_search',
   'pipeshub_code_outline',
   'pipeshub_code_impact',
+  'pipeshub_code_impact_of_diff',
+  'pipeshub_code_history',
   'pipeshub_code_entry_points',
 ] as const;
 
@@ -357,7 +362,9 @@ export function registerCodeGraphToolDefinitions(
         '(`"outbound"`). For what a change breaks, pipeshub_code_impact does it in one call. ' +
         'Returns rows with repo, file_path, line range and qualified name. Calls are resolved ' +
         'to the definition they reach, so a same-named method on another type is left out and ' +
-        'a renamed import is followed. Next: pipeshub_code_neighbours on a row, or ' +
+        'a renamed import is followed. Outbound, a call to an interface or base method also ' +
+        'lists what implements it (`of`: the method called), constructed classes first. ' +
+        'Next: pipeshub_code_neighbours on a row, or ' +
         `pipeshub_code_read for a body. ${COVERAGE}`,
       inputSchema: {
         repo,
@@ -587,6 +594,67 @@ export function registerCodeGraphToolDefinitions(
       annotations: READ_ONLY,
     },
     async (args) => call(deps, HttpMethod.POST, '/impact', args),
+  );
+
+  server.registerTool(
+    'pipeshub_code_impact_of_diff',
+    {
+      description:
+        'Use to review a patch or pull request: give a unified diff (`git diff` output) for ' +
+        'what it can break, in one call. Returns the symbols it changes (`changed`, plus the ' +
+        'whole file for a module-level change), the files and tests that reach them ' +
+        '(`impacted_files`, `impacted_tests`), and `untested_callers`, direct callers no test ' +
+        'reaches. Lines are matched against the indexed commit, so a patch on another base ' +
+        'can drift. Next: pipeshub_code_read only what it lists; for one symbol, ' +
+        `pipeshub_code_impact is the same walk. ${COVERAGE}`,
+      inputSchema: {
+        repo: repoRequired,
+        // The query service's MAX_PATCH_CHARS.
+        patch: z
+          .string()
+          .min(1)
+          .max(2_000_000)
+          .describe('The unified diff, with its ---/+++ headers.'),
+        depth: z
+          .number()
+          .int()
+          .min(1)
+          .max(5)
+          .optional()
+          .describe('Hops back from each changed symbol, default 2.'),
+        include_tests: includeTests,
+      },
+      annotations: READ_ONLY,
+    },
+    async (args) => call(deps, HttpMethod.POST, '/impact-of-diff', args),
+  );
+
+  server.registerTool(
+    'pipeshub_code_history',
+    {
+      description:
+        'Use for who changed a file and why. Returns the indexed pull or merge requests that ' +
+        'modified it, merged newest first, with title, link, author, `requested_reviewers` ' +
+        '(asked, not who reviewed), who merged it and when, and the tickets it names. Per ' +
+        "file: with `qualified_name`, `touches_symbol` says whether the PR's diff names that " +
+        'symbol in a changed line (null if unknown). Next: pipeshub_code_read the file; for ' +
+        'what a change can break, pipeshub_code_impact or pipeshub_code_impact_of_diff.',
+      inputSchema: {
+        repo,
+        file_path: filePath,
+        record_id: recordId,
+        qualified_name: qualifiedName,
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe('Most pull requests, default 20.'),
+      },
+      annotations: READ_ONLY,
+    },
+    async (args) => call(deps, HttpMethod.POST, '/history', args),
   );
 
   server.registerTool(

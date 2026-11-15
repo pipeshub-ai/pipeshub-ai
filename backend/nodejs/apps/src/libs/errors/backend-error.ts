@@ -1,4 +1,3 @@
-import { Logger } from '../services/logger.service';
 import {
   BadRequestError,
   ConflictError,
@@ -23,8 +22,6 @@ import {
   markClientSafe,
   serverFailureMessage,
 } from './reader-friendly';
-
-const logger = Logger.getInstance({ service: 'Backend Error' });
 
 /**
  * Shown when one PipesHub service cannot reach another. The fault is on the
@@ -233,8 +230,12 @@ export const unansweredCallError = (error: unknown): HttpError | null => {
  * and `{ statusCode, data, msg }`.
  *
  * A 4xx keeps the service's own words — those are written for the person who
- * made the request. A 5xx does not: the reader gets `operation` in plain words
- * while the upstream detail is logged.
+ * made the request. A 5xx does not: the reader gets `operation` in plain words,
+ * and the upstream's detail stays in the upstream's own log (same request id).
+ *
+ * Not logged here: the call's `upstream.call.end` line and the error
+ * middleware's line report it. A mapped 5xx carries `{ status }` as its cause,
+ * so those lines class an upstream 500 as `upstream_5xx`, not as ours.
  */
 export const handleBackendError = (
   error: unknown,
@@ -275,9 +276,6 @@ export const handleBackendError = (
 
   // Some services report a refused connection in the body instead of a status.
   if (bodyDetail === 'ECONNREFUSED') {
-    logger.error(`Could not reach the service during ${operation}`, {
-      statusCode,
-    });
     return markClientSafe(
       new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE),
     );
@@ -288,30 +286,36 @@ export const handleBackendError = (
     if (source.detail !== undefined && source.detail !== null) {
       return new BadRequestError(stringifyErrorDetail(source.detail));
     }
-    logger.error(`${operation} failed`, { error: ownMessage });
-    return markClientSafe(
+    const mapped = markClientSafe(
       new InternalServerError(serverFailureMessage(operation)),
     );
+    const cause = safeCause(error);
+    return cause ? withCause(mapped, cause) : mapped;
   }
 
   const errorDetail = stringifyErrorDetail(
     bodyDetail ?? fallbackDetail ?? 'Unknown error',
   );
 
-  const mapped = errorForStatus(
+  return errorForStatus(
     statusCode,
     errorDetail,
     bodyDetail,
     response ?? source,
     operation,
   );
-  // Logged by what the caller is answered: a refusal passed on as the same
-  // 4xx is routine, anything that becomes a 5xx (a 405 included) is ours.
-  logger[mapped.statusCode >= 500 ? 'error' : 'warn'](
-    `Backend error during ${operation}`,
-    { statusCode, errorDetail, fullResponse: data },
-  );
-  return mapped;
+};
+
+/**
+ * What the error middleware may show as the cause of a failure with no status:
+ * only an Error, never a payload object, and never JSON.parse's message, which
+ * quotes the start of the body it could not read.
+ */
+const safeCause = (error: unknown): Error | undefined => {
+  if (error instanceof SyntaxError) {
+    return new SyntaxError('response was not valid JSON');
+  }
+  return error instanceof Error ? error : undefined;
 };
 
 const errorForStatus = (
@@ -351,9 +355,13 @@ const errorForStatus = (
     default:
       // Every 5xx (502 included, as the upload pre-check documents), and
       // anything unrecognised: the service's own words describe its internals,
-      // so the reader gets the plain sentence instead.
-      return markClientSafe(
-        new InternalServerError(serverFailureMessage(operation)),
+      // so the reader gets the plain sentence instead. The status as the cause
+      // lets the log class an upstream 5xx as theirs (a 405 stays ours).
+      return withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage(operation)),
+        ),
+        { status: statusCode },
       );
   }
 };

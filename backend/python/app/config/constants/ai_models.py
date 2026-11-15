@@ -84,8 +84,6 @@ def validate_reasoning_effort(value: str | None) -> str | None:
     non-``None`` value must be one of ``REASONING_EFFORT_VALUES``.
     """
     if value is not None and value not in REASONING_EFFORT_VALUES:
-        raise ValueError(
-            f"Invalid reasoningEffort '{value}'. Must be one of: "
-            f"{', '.join(sorted(REASONING_EFFORT_VALUES))}."
-        )
+        # Not the value: this message reaches the 400 body, which Node logs and shows.
+        raise ValueError(f"Invalid reasoningEffort. Must be one of: {', '.join(sorted(REASONING_EFFORT_VALUES))}.")
     return value

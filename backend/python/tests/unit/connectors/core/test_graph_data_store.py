@@ -1060,8 +1060,13 @@ class TestGraphTransactionStore:
     async def test_get_nodes_by_field_in(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_nodes_by_field_in("records", "status", ["active"], return_fields=["_key"])
         mock_graph_provider.get_nodes_by_field_in.assert_awaited_once_with(
-            "records", "status", ["active"], ["_key"], transaction="txn-123"
+            "records", "status", ["active"], ["_key"], transaction="txn-123", raise_on_error=False
         )
+
+    @pytest.mark.asyncio
+    async def test_get_nodes_by_field_in_forwards_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_nodes_by_field_in("records", "status", ["active"], raise_on_error=True)
+        assert mock_graph_provider.get_nodes_by_field_in.await_args.kwargs["raise_on_error"] is True
 
     @pytest.mark.asyncio
     async def test_remove_nodes_by_field(self, tx_store, mock_graph_provider) -> None:

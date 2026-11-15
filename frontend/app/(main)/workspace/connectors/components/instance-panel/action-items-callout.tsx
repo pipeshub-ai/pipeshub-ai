@@ -6,7 +6,8 @@ import { Button, Callout, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { ConnectorInstance } from '../../types';
 
-/** What the connector's admin has to do, on its overview; each item is worded by the connector. */
+/** What the connector's admin has to do, on its overview. A known item is shown in the reader's
+ *  language from `actionItems.known.<code>`; any other as the connector worded it. */
 export function ActionItemsCallout({
   instance,
   onOpenAuthentication,
@@ -20,6 +21,11 @@ export function ActionItemsCallout({
   if (items.length === 0) return null;
   const anError = items.some((item) => item.severity === 'error');
   const needsAuthentication = items.some((item) => item.action === 'authenticate');
+  const text = (item: (typeof items)[number], field: 'title' | 'message') =>
+    t(`workspace.connectors.actionItems.known.${item.code}.${field}`, {
+      ...(item.params ?? {}),
+      defaultValue: item[field],
+    });
 
   return (
     <Callout.Root color={anError ? 'red' : 'amber'} variant="surface" size="1" role="status">
@@ -33,10 +39,10 @@ export function ActionItemsCallout({
         {items.map((item) => (
           <Flex key={item.code} direction="column" gap="1">
             <Text size="2" weight="medium">
-              {item.title}
+              {text(item, 'title')}
             </Text>
             <Text size="1" style={{ color: 'var(--gray-11)' }}>
-              {item.message}
+              {text(item, 'message')}
             </Text>
             {item.docsUrl && /^https:\/\//i.test(item.docsUrl) ? (
               <Text size="1">

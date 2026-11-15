@@ -5,7 +5,7 @@ import pytest
 
 from .test_integration import connect
 
-TABLES = ("node_keys", "records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "graph_changes", "projection_state")
+TABLES = ("node_keys", "records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "graph_changes", "projection_state", "scopes")
 READERS = ("pipeshub_connectors", "pipeshub_indexing", "pipeshub_query")
 
 

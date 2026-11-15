@@ -87,6 +87,14 @@ class TestBuildInitialState:
         state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
         assert state["deep_research"] is expected
 
+    @pytest.mark.parametrize(("chat_query", "expected"), [
+        ({"query": "q", "webSearchUnset": True}, True),
+        ({"query": "q"}, False),
+    ], ids=["unset", "absent"])
+    def test_an_org_without_web_search_reaches_the_agent(self, mock_deps, minimal_user_info, chat_query, expected) -> None:
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["web_search_unset"] is expected
+
     def test_the_resolved_web_config_keeps_every_stored_provider(self, mock_deps, minimal_user_info) -> None:
         """The agent route resolves the fallbacks and page readers; they must reach the tools."""
         others = [{"provider": "crawl4ai", "configuration": {"baseUrl": "http://crawl4ai:11235"}}, "junk"]

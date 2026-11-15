@@ -2,7 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import winston from 'winston'
-import { audit } from '../../../src/libs/services/audit'
+import { audit, auditRefusal, refusal, refusalReason } from '../../../src/libs/services/audit'
 import { Logger } from '../../../src/libs/services/logger.service'
 import * as seam from '../../../src/libs/services/structured-logging'
 import { runWithRequestContext, setContextIdentity } from '../../../src/libs/context/request-context'
@@ -128,5 +128,63 @@ describe('audit(): one fixed-shape line per security event', () => {
     })
     audit('config.update', { actor: USER, target: TARGET, outcome: 'success' })
     expect(record()).to.include({ actor: null, target: TARGET })
+  })
+
+  it('shows a known sign-in method as auth_method, after reason, in text and JSON', () => {
+    audit('auth.sign_in', { actor: USER, org: ORG, outcome: 'success', authMethod: 'password' })
+    expect(record()).to.include({ auth_method: 'password' })
+    expect(consoleLine(record())).to.match(/actor=\S+ auth_method=password$/)
+    freshRoot('json')
+    audit('auth.sign_in', { actor: USER, org: ORG, outcome: 'success', authMethod: 'google' })
+    expect(JSON.parse(consoleLine(record()))).to.include({ auth_method: 'google' })
+  })
+
+  it('shows any other method as other: an email or free text never reaches a field or metadata', () => {
+    for (const authMethod of ['ceo@example.com', 'pass word', 'github2', 'SAMLSSO']) {
+      for (const format of [undefined, 'json']) {
+        freshRoot(format)
+        audit('auth.sign_in', { org: ORG, outcome: 'failure', reason: 'method_not_allowed', authMethod })
+        expect(record().auth_method).to.equal('other')
+        expect(record().metadata).to.equal(undefined)
+        expect(JSON.stringify(record())).to.not.include(authMethod)
+        expect(consoleLine(record())).to.not.include(authMethod)
+      }
+    }
+  })
+
+  it('[guard] has a partial outcome for a passed step of a multi-step decision', () => {
+    audit('auth.sign_in', { actor: USER, org: ORG, outcome: 'partial', authMethod: 'password' })
+    expect(record()).to.include({ outcome: 'partial' })
+  })
+
+  describe('refusal tags', () => {
+    it('are invisible: not in JSON, keys, a spread or the logged error, and the same error is returned', () => {
+      const error = new Error('The email or password is incorrect.')
+      expect(refusal(error, 'bad_password')).to.equal(error)
+      expect(refusalReason(error)).to.equal('bad_password')
+      expect(JSON.stringify(Object.assign({}, error))).to.equal('{}')
+      expect(Object.keys(error)).to.deep.equal([])
+      expect(Reflect.ownKeys(Object.assign({}, error))).to.deep.equal([])
+      Logger.getInstance().warn('x', { error })
+      expect(JSON.stringify(record())).to.not.include('bad_password')
+    })
+
+    it('keep the first reason, and are not read from a cause', () => {
+      const error = refusal(refusal(new Error('x'), 'locked'), 'bad_password')
+      expect(refusalReason(error)).to.equal('locked')
+      const wrapped = new Error('db down', { cause: error })
+      expect(refusalReason(wrapped)).to.equal(undefined)
+      expect(refusalReason('locked')).to.equal(undefined)
+      expect(refusalReason(undefined)).to.equal(undefined)
+    })
+
+    it('auditRefusal writes one failure line for an allowed tag and nothing for an untagged or foreign one', () => {
+      auditRefusal('auth.sign_in', refusal(new Error('x'), 'locked'), { actor: USER, org: ORG, authMethod: 'otp' }, ['locked'])
+      expect(log.callCount).to.equal(1)
+      expect(record()).to.include({ message: 'auth.sign_in', outcome: 'failure', reason: 'locked', actor: USER, org_id: ORG, auth_method: 'otp' })
+      auditRefusal('auth.sign_in', new Error('db down'), {}, ['locked'])
+      auditRefusal('auth.sign_in', refusal(new Error('x'), 'not_admin'), {}, ['locked'])
+      expect(log.callCount).to.equal(1)
+    })
   })
 })

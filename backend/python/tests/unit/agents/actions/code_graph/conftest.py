@@ -87,7 +87,8 @@ class FakeGraphProvider:
         # The owning `records` rows carry the connector; `codeFiles` does not,
         # so the listing re-applies repo scope and access from here.
         self.records = {
-            rid: {"_key": rid, "orgId": ORG, "connectorId": CONN, "virtualRecordId": f"v-{rid[-1]}"}
+            rid: {"_key": rid, "orgId": ORG, "connectorId": CONN, "virtualRecordId": f"v-{rid[-1]}",
+                  "recordGroupId": "repo-1"}
             for rid in ("rec-a", "rec-b", "rec-c", "rec-d")
         }
         self.record_groups = {"repo-1": {"_key": "repo-1", "orgId": ORG, "connectorId": CONN,
@@ -108,6 +109,8 @@ class FakeGraphProvider:
         if collection == CODE_FILES:
             return [d for d in self._code_file_docs()
                     if all(d.get(k) == v for k, v in filters.items())]
+        if collection == RECORDS:
+            return [d for d in self.records.values() if all(d.get(k) == v for k, v in filters.items())]
         if collection != BLOCKS:
             return []
         return [d for d in self.blocks.values()
@@ -163,6 +166,27 @@ class FakeGraphProvider:
                        and (record_group_ids is None or d.get("recordGroupId") in record_group_ids)
                        and any(r.startswith(p) for r in d.get("externalRefs") or () for p in prefixes)),
                       key=lambda d: d["_key"])[:limit]
+
+    async def find_uncalled_blocks(self, org_id, connector_id, record_ids, kinds, relations, limit,
+                                   after_key=None, uncounted_caller_records=None, transaction=None, *,
+                                   raise_on_error=False) -> tuple[list[dict], str | None]:
+        """As the providers do it: blocks of *kinds* in *record_ids* with no inbound edge of *relations* from a
+        node outside *uncounted_caller_records*."""
+        uncounted = set(uncounted_caller_records or ())
+
+        def record_of(node: str) -> str:
+            collection, _, key = node.partition("/")
+            return self.blocks[key]["recordId"] if collection == BLOCKS and key in self.blocks else key
+
+        targets = {e["_to"] for e in self.edges
+                   if e.get("relationshipType") in relations and record_of(e["_from"]) not in uncounted}
+        wanted = set(record_ids)
+        rows = sorted((d for d in self.blocks.values()
+                       if d.get("orgId") == org_id and d.get("connectorId") == connector_id
+                       and d.get("kind") in kinds and d.get("recordId") in wanted
+                       and (after_key is None or d["_key"] > after_key)
+                       and f"{BLOCKS}/{d['_key']}" not in targets), key=lambda d: d["_key"])[:limit]
+        return rows, (rows[-1]["_key"] if len(rows) == limit else None)
 
     async def search_nodes_by_field_terms(
         self, collection, field_name, terms, filters=None, limit=400,

@@ -97,15 +97,17 @@ class ToolCallContext:
     metadata: dict[str, Any] = field(default_factory=dict)
     _decision: PreDecision = field(default=PreDecision.ALLOW, repr=True)
     decision_reason: str | None = None
+    # Why it was denied, as a short code for the `tool_call.end` line (`deny_reason`); the reason is model-facing text.
+    decision_code: str | None = None
     pending_approval: PendingApproval | None = None
 
     @property
     def decision(self) -> PreDecision:
         return self._decision
 
-    def deny(self, reason: str) -> None:
-        """Escalate the decision to DENY (terminal; short-circuits the pipeline)."""
-        self._escalate(PreDecision.DENY, reason)
+    def deny(self, reason: str, *, code: str | None = None) -> None:
+        """Escalate the decision to DENY (terminal; short-circuits the pipeline). `code` names why, for the log."""
+        self._escalate(PreDecision.DENY, reason, code)
 
     def ask(self, reason: str) -> None:
         """Escalate the decision to ASK (human-in-the-loop approval required).
@@ -120,10 +122,11 @@ class ToolCallContext:
         if self._decision == PreDecision.ASK:
             self.pending_approval = pending
 
-    def _escalate(self, new: PreDecision, reason: str) -> None:
+    def _escalate(self, new: PreDecision, reason: str, code: str | None = None) -> None:
         if PRE_SEVERITY[new] > PRE_SEVERITY[self._decision]:
             self._decision = new
             self.decision_reason = reason
+            self.decision_code = code
 
 
 @dataclass
@@ -187,21 +190,23 @@ class AgentLifecycleContext:
     metadata: dict[str, Any] = field(default_factory=dict)
     _decision: PreDecision = field(default=PreDecision.ALLOW, repr=True)
     decision_reason: str | None = None
+    decision_code: str | None = None
 
     @property
     def decision(self) -> PreDecision:
         return self._decision
 
-    def deny(self, reason: str) -> None:
-        self._escalate(PreDecision.DENY, reason)
+    def deny(self, reason: str, *, code: str | None = None) -> None:
+        self._escalate(PreDecision.DENY, reason, code)
 
     def ask(self, reason: str) -> None:
         self._escalate(PreDecision.ASK, reason)
 
-    def _escalate(self, new: PreDecision, reason: str) -> None:
+    def _escalate(self, new: PreDecision, reason: str, code: str | None = None) -> None:
         if PRE_SEVERITY[new] > PRE_SEVERITY[self._decision]:
             self._decision = new
             self.decision_reason = reason
+            self.decision_code = code
 
 
 @dataclass
@@ -218,21 +223,23 @@ class TurnContext:
     metadata: dict[str, Any] = field(default_factory=dict)
     _decision: PreDecision = field(default=PreDecision.ALLOW, repr=True)
     decision_reason: str | None = None
+    decision_code: str | None = None
 
     @property
     def decision(self) -> PreDecision:
         return self._decision
 
-    def deny(self, reason: str) -> None:
-        self._escalate(PreDecision.DENY, reason)
+    def deny(self, reason: str, *, code: str | None = None) -> None:
+        self._escalate(PreDecision.DENY, reason, code)
 
     def ask(self, reason: str) -> None:
         self._escalate(PreDecision.ASK, reason)
 
-    def _escalate(self, new: PreDecision, reason: str) -> None:
+    def _escalate(self, new: PreDecision, reason: str, code: str | None = None) -> None:
         if PRE_SEVERITY[new] > PRE_SEVERITY[self._decision]:
             self._decision = new
             self.decision_reason = reason
+            self.decision_code = code
 
 
 @dataclass

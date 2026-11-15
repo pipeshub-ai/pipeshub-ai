@@ -57,6 +57,7 @@ from app.agents.mcp.url_guard import (
     private_network_allowed,
 )
 from app.utils.env_utils import env_int
+from app.utils.error_class import innermost_type
 from app.utils.logging_fields import log_event
 from app.utils.url_redaction import redact_url, redact_urls_in_text
 from mcp import Client
@@ -291,19 +292,6 @@ def _describe_error(exc: BaseException) -> str:
         response = exc.response
         return f"HTTP {response.status_code} {response.reason_phrase} from {redact_url(str(exc.request.url))}"
     return redact_urls_in_text(str(exc)) or type(exc).__name__
-
-
-def _innermost_type(exc: BaseException) -> str:
-    """The type name of the deepest cause (ConnectError, gaierror, SSLError): what kind of failure, without its text."""
-    seen: set[int] = set()
-    current = first_leaf(exc)
-    while id(current) not in seen:
-        seen.add(id(current))
-        deeper = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
-        if deeper is None:
-            break
-        current = first_leaf(deeper)
-    return type(current).__name__
 
 
 def _keep_results_that_miss_their_schema(client: Client) -> None:
@@ -680,7 +668,7 @@ class MCPClientManager:
             self._log_connect_end(
                 mode, started, outcome="failure", error_class=mcp_error_class(error),
                 mcp_reason=classify_mcp_failure(error).value, status=getattr(error, "status_code", None),
-                error_type=type(error).__name__, cause_type=_innermost_type(error),
+                error_type=type(error).__name__, cause_type=innermost_type(error),
             )
             raise error from error.__cause__
         _remember_handshake(self.config, client, mode)
@@ -962,7 +950,7 @@ class MCPClientManager:
             if session.runner.failure is not None:
                 log_event(
                     logger, "mcp.session.ended", level=logging.WARNING,
-                    mcp_server_id=self.config.id, error_type=_innermost_type(session.runner.failure),
+                    mcp_server_id=self.config.id, error_type=innermost_type(session.runner.failure),
                 )
             return MCPConnectionLostError("The connection to the MCP server closed.")
         if error.code == CONNECTION_CLOSED and error.message.startswith(_SDK_STREAM_LOST):

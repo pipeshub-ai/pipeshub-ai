@@ -19,6 +19,7 @@ import {
   type OAuthAppDto,
   type OAuthAppPatch,
   type OAuthAppRepository,
+  type OrgAppListQuery,
   type OwnedAppListQuery,
   type UpdateOwnedOptions,
 } from './types';
@@ -120,11 +121,20 @@ const PATCH: Record<string, [string, boolean]> = {
   tokenIdentityUserId: ['token_identity_user_id', false],
 };
 
-/** The apps a person manages in Developer Settings: theirs, live, not an internal or dynamically registered client. */
-function owned(p: Params, orgId: string, userId: string): string {
-  return `org_id = ${p.add(orgId)} AND created_by = ${p.add(userId)} AND NOT is_deleted AND NOT is_dynamic AND client_id <> ${p.add(FIRST_PARTY_DEVICE_CLIENT_ID)}
+/**
+ * The apps a person manages in Developer Settings: theirs, live, not an internal or dynamically registered client.
+ * Without a creator, every such app of the org.
+ */
+function owned(p: Params, orgId: string, userId?: string): string {
+  const creator =
+    userId === undefined ? '' : ` AND created_by = ${p.add(userId)}`;
+  return `org_id = ${p.add(orgId)}${creator} AND NOT is_deleted AND NOT is_dynamic AND client_id <> ${p.add(FIRST_PARTY_DEVICE_CLIENT_ID)}
     AND NOT starts_with(client_id, ${p.add(PAT_APP_CLIENT_ID_PREFIX)}) AND NOT starts_with(client_id, ${p.add(SERVICE_TOKEN_APP_CLIENT_ID_PREFIX)})`;
 }
+
+/** Live apps the user created whose own `client_credentials` tokens act as them: no service account named. */
+const ACTING_AS_CREATOR = `org_id = $1 AND created_by = $2 AND NOT is_deleted AND token_identity_user_id IS NULL
+  AND 'client_credentials' = ANY(allowed_grant_types)`;
 
 export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
   /** The migration copy: documents as they were stored (see ./pg-import.ts). */
@@ -205,6 +215,38 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
   ): Promise<{ rows: OAuthAppDto[]; total: number }> {
     const user = oidOf(userId);
     if (!user) return { rows: [], total: 0 };
+    return this.listWhere(orgId, user, q);
+  }
+
+  async findInOrg(orgId: string, appId: string): Promise<OAuthAppDto | null> {
+    const id = oidOf(appId);
+    if (!id) return null;
+    return inOrgUnit(orgId, undefined, false, async (k) => {
+      const p = new Params();
+      const where = owned(p, k.orgId);
+      const { rows } = await k.query<AppRow>(
+        `/* pipeshub:oauth.app_find_in_org */ SELECT ${COLS} FROM oauth.apps WHERE ${where} AND id = ${p.add(id)}`,
+        p.values,
+      );
+      return rows[0] ? appDto(rows[0]) : null;
+    });
+  }
+
+  async listInOrg(
+    orgId: string,
+    q: OrgAppListQuery,
+  ): Promise<{ rows: OAuthAppDto[]; total: number }> {
+    if (q.createdBy === undefined) return this.listWhere(orgId, undefined, q);
+    const user = oidOf(q.createdBy);
+    if (!user) return { rows: [], total: 0 };
+    return this.listWhere(orgId, user, q);
+  }
+
+  private listWhere(
+    orgId: string,
+    user: string | undefined,
+    q: OwnedAppListQuery,
+  ): Promise<{ rows: OAuthAppDto[]; total: number }> {
     return inOrgUnit(orgId, undefined, false, async (k) => {
       const p = new Params();
       let where = owned(p, k.orgId, user);
@@ -408,7 +450,7 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
     });
   }
 
-  async listClientIdsCreatedBy(
+  async listClientIdsActingAsCreator(
     orgId: string,
     userId: string,
   ): Promise<string[]> {
@@ -416,14 +458,14 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
     if (!id) return [];
     return inOrgUnit(orgId, undefined, false, async (k) => {
       const { rows } = await k.query<{ client_id: string }>(
-        `/* pipeshub:oauth.app_created_by */ SELECT client_id FROM oauth.apps WHERE org_id = $1 AND created_by = $2 AND NOT is_deleted ORDER BY created_at, id`,
+        `/* pipeshub:oauth.app_acting_as_creator */ SELECT client_id FROM oauth.apps WHERE ${ACTING_AS_CREATOR} ORDER BY created_at, id`,
         [k.orgId, id],
       );
       return rows.map((r) => r.client_id);
     });
   }
 
-  async softDeleteCreatedBy(
+  async softDeleteActingAsCreator(
     orgId: string,
     userId: string,
     deletedBy: string,
@@ -433,9 +475,26 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
     if (!user || !by) return;
     await inOrgUnit(orgId, undefined, true, (k) =>
       k.query(
-        `/* pipeshub:oauth.app_soft_delete_created_by */ UPDATE oauth.apps SET is_deleted = true, status = 'revoked', deleted_by = $3, updated_at = $4
-           WHERE org_id = $1 AND created_by = $2 AND NOT is_deleted`,
+        `/* pipeshub:oauth.app_soft_delete_acting_as_creator */ UPDATE oauth.apps SET is_deleted = true, status = 'revoked', deleted_by = $3, updated_at = $4
+           WHERE ${ACTING_AS_CREATOR}`,
         [k.orgId, user, by, new Date()],
+      ),
+    );
+  }
+
+  async transferCreatedBy(
+    orgId: string,
+    fromUserId: string,
+    toUserId: string,
+  ): Promise<void> {
+    const from = oidOf(fromUserId);
+    const to = oidOf(toUserId);
+    if (!from || !to) return;
+    await inOrgUnit(orgId, undefined, true, (k) =>
+      k.query(
+        `/* pipeshub:oauth.app_transfer_created_by */ UPDATE oauth.apps SET created_by = $3, updated_at = $4
+           WHERE org_id = $1 AND created_by = $2 AND NOT is_deleted`,
+        [k.orgId, from, to, new Date()],
       ),
     );
   }

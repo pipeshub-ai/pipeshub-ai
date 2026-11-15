@@ -2,7 +2,7 @@ import axios, { AxiosError } from 'axios';
 import { injectable } from 'inversify';
 import { InternalServerError } from '../../../libs/errors/http.errors';
 import { HttpError } from '../../../libs/errors/http.errors';
-import { Logger } from '../../../libs/services/logger.service';
+import { withCause } from '../../../libs/errors/base.error';
 import {
   keepDeliberateWording,
   markClientSafe,
@@ -19,10 +19,6 @@ export const GOOGLE_AUTH_CONFIG_PATH =
   'api/v1/configurationManager/internal/authConfig/google';
 export const MICROSOFT_AUTH_CONFIG_PATH =
   'api/v1/configurationManager/internal/authConfig/microsoft';
-
-const logger = Logger.getInstance({
-  service: 'Auth Config Service',
-});
 
 @injectable()
 export class ConfigurationManagerService {
@@ -57,9 +53,12 @@ export class ConfigurationManagerService {
         );
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
-      logger.error('Reading the configuration failed', { error });
-      throw markClientSafe(
-        new InternalServerError(serverFailureMessage('read that setting')),
+      // The error middleware logs it once, with this cause.
+      throw withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage('read that setting')),
+        ),
+        error,
       );
     }
   }

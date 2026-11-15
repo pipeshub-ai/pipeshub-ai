@@ -602,3 +602,27 @@ class TestGetMrSyncCheckpointException:
         mrs = MergeRequestsSync(c)
         result = await mrs._get_mr_sync_checkpoint(42)
         assert result is None
+
+
+class TestMergeRequestMentions:
+    async def test_names_the_issues_and_addresses_in_its_text(self) -> None:
+        """As a GitHub PR is: the MR joins the Jira issue its title names and the records its description
+        links to, so `history` finds a ticket on GitLab too."""
+        c = make_mock_connector()
+        mr = _make_mr(title="PA-1844: fix the export")
+        mr.description = "Follow-up of https://acme.atlassian.net/browse/PA-1718"
+        mr.assignees, mr.reviewers, mr.merged_by, mr.merge_status = [], [], None, "can_be_merged"
+        mr.merged_at = mr.closed_at = None
+        ru = await MergeRequestsSync(c)._process_mr_to_pull_request(mr)
+
+        related = ru.record.related_external_records
+        assert [r.weburl for r in related if r.weburl] == ["https://acme.atlassian.net/browse/PA-1718"]
+        assert [r.issue_key for r in related if r.issue_key] == ["PA-1844"]
+
+    async def test_an_mr_that_names_nothing_links_nothing(self) -> None:
+        c = make_mock_connector()
+        mr = _make_mr(title="Tidy imports")
+        mr.assignees, mr.reviewers, mr.merged_by, mr.merge_status = [], [], None, "can_be_merged"
+        mr.merged_at = mr.closed_at = None
+        ru = await MergeRequestsSync(c)._process_mr_to_pull_request(mr)
+        assert ru.record.related_external_records == []

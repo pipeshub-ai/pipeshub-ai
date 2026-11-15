@@ -57,6 +57,7 @@ from app.modules.demo_data.chat import (
 )
 from app.modules.retrieval import degraded_notice
 from app.utils.conversation_tasks import begin_run, discard_tasks
+from app.utils.error_class import log_failure
 from app.utils.logging_fields import bind_log_fields
 from app.utils.stage_timer import RunTimer
 from app.utils.time_conversion import set_llm_time_zone
@@ -542,8 +543,8 @@ async def run_agent_loop_stream(
             if context.sandbox_manager is not None:
                 try:
                     await context.sandbox_manager.destroy_all()
-                except Exception:
-                    log.warning("agent-loop stream: sandbox cleanup failed", exc_info=True)
+                except Exception as exc:
+                    log_failure(log, "agent_turn.cleanup_failed", exc, step="sandbox")
             # Tears down every MCP session `MCPToolProvider`/`MCPToolAdapter`
             # opened this request (see `mcp_session.py`). Guarded on the cache
             # dict itself (rather than always constructing a manager) so a
@@ -555,8 +556,8 @@ async def run_agent_loop_stream(
                     from app.agents.agent_loop.mcp_session import MCPSessionManager
 
                     await MCPSessionManager(context).aclose_all()
-                except Exception:
-                    log.warning("agent-loop stream: MCP session cleanup failed", exc_info=True)
+                except Exception as exc:
+                    log_failure(log, "agent_turn.cleanup_failed", exc, step="mcp_sessions")
             await event_sink.flush()
             await queue.put(_DONE)
 

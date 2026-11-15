@@ -15,12 +15,14 @@ import logging
 import multiprocessing
 import os
 import shutil
+import signal
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from . import cpu
 from . import materialiser_child as child
-from .contract import PushRefusal
+from .contract import DISK_FULL, PushRefusal, spool_full
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -32,8 +34,11 @@ WALL_BUDGET_S = 90.0
 START_TIMEOUT_S = 60.0
 TOKEN_TTL_S = 180
 
-#: ``outcome`` values of ``on_task_end``: the 8b-4 ledger plugs in here; until then it is a no-op.
-OUTCOMES = ("ok", "refused", "overrun", "died")
+#: A child is replaced after this many tasks, so a death can be told apart by the task's index in its life.
+MAX_TASKS_PER_CHILD = 8
+#: ``outcome`` values of ``on_task_end(outcome, cpu_s)``; ``crashed`` is a death by SIGSEGV, SIGABRT or SIGBUS.
+OUTCOMES = ("ok", "refused", "overrun", "died", "crashed")
+_CRASH_SIGNALS = frozenset(getattr(signal, n) for n in ("SIGABRT", "SIGSEGV", "SIGBUS") if hasattr(signal, n))
 
 
 @dataclass
@@ -51,6 +56,7 @@ class _Slot:
         self.proc: multiprocessing.process.BaseProcess | None = None
         self.conn: Any = None
         self.busy = False
+        self.tasks = 0
 
 
 class Materialiser:
@@ -59,7 +65,8 @@ class Materialiser:
     The hooks are constructor arguments and ``None``/no-op in production: ``resolver_override`` and ``ca_file``
     let a test reach a local server under a real host name, ``allow_loopback`` admits a loopback stored URL,
     ``before_task`` runs in the parent just before a task is handed to the child (a race test replaces an image
-    there), ``on_task_end`` receives ``(outcome, cpu_s)``.
+    there), ``on_task_end`` receives ``(outcome, cpu_s)`` (the child's own CPU seconds, None when it cannot be read).
+    ``run(task, account=...)`` reports ``strike``, ``suspect`` and ``overrun`` to the caller's ledger.
     """
 
     def __init__(
@@ -72,7 +79,7 @@ class Materialiser:
         ca_file: str | None = None,
         allow_loopback: bool = False,
         before_task: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-        on_task_end: Callable[[str, float], None] | None = None,
+        on_task_end: Callable[[str, float | None], None] | None = None,
     ) -> None:
         child.validate_override(resolver_override)
         self.listed_origins = child.parse_origin_list(listed_origins or [], allow_loopback_http=allow_loopback)
@@ -138,32 +145,47 @@ class Materialiser:
     def make_dir(self, spool_dir: str) -> str:
         """The per-push directory every temp file of a task lives in, owned (and removed) by the parent."""
         path = os.path.join(spool_dir, f"img-{os.urandom(8).hex()}")
-        os.makedirs(path, mode=0o700)
+        try:
+            os.makedirs(path, mode=0o700)
+        except OSError as e:
+            if e.errno in DISK_FULL:
+                raise spool_full() from e
+            raise
         return path
 
-    async def run(self, task: dict[str, Any]) -> Materialised:
+    async def run(self, task: dict[str, Any], account: Callable[[str, float], None] | None = None) -> Materialised:
         """Run ``task`` (see ``materialiser_child.run_task``). Raises ``PushRefusal``."""
         task = {
             **task, "listed_origins": self.listed_origins, "resolver_override": self.resolver_override,
             "ca_file": self.ca_file, "allow_loopback": self.allow_loopback,
         }
+        report = account or (lambda event, value=0.0: None)
         slot = await self._acquire()
-        started = time.monotonic()
         outcome = "died"
+        used: float | None = None
         try:
-            if slot.proc is None or not slot.proc.is_alive():
+            if slot.proc is None or not slot.proc.is_alive() or slot.tasks >= MAX_TASKS_PER_CHILD:
                 await self._reap(self._kill(slot))
                 await asyncio.to_thread(self._start, slot)
+                slot.tasks = 0
             if self.before_task is not None:
                 await self.before_task(task)
             conn, proc = slot.conn, slot.proc
+            reused = slot.tasks > 0
+            slot.tasks += 1
             try:
                 await asyncio.to_thread(conn.send, task)
             except OSError:  # the child is gone (killed between the check and the send)
                 await self._reap(self._kill(slot))
                 raise PushRefusal(503, "PUSH_TIMEOUT", "The image worker stopped; retry.", extra={"retryAfter": 5}) from None
+            baseline = cpu.read(getattr(proc, "pid", None))
+            began = time.monotonic()
             if not await asyncio.to_thread(conn.poll, self.wall_budget_s):
                 outcome = "overrun"
+                # Read before the kill (a reaped pid can be reused). Stalled storage keeps the child idle, which is
+                # not the caller's doing; a child that was busy for half the wall budget is.
+                used = cpu.seconds_between(baseline, cpu.read(getattr(proc, "pid", None)))
+                report("strike" if cpu.cpu_bound(used, time.monotonic() - began) else "overrun", 0.0)
                 await self._reap(self._kill(slot))
                 raise PushRefusal(503, "PUSH_TIMEOUT", "The images took too long to process.", extra={"retryAfter": 5})
             try:
@@ -173,7 +195,12 @@ class Materialiser:
                 code = proc.exitcode
                 await self._reap(self._kill(slot))
                 logger.warning("the push materialiser died (exit %s)", code)
+                if code is not None and code < 0 and -code in _CRASH_SIGNALS:
+                    outcome = "crashed"
+                    # On a child that served earlier pushes the state may be someone else's doing: suspect, not a strike.
+                    report("suspect" if reused else "strike", 0.0)
                 raise PushRefusal(503, "PUSH_TIMEOUT", "The image worker stopped; retry.", extra={"retryAfter": 5}) from None
+            used = cpu.seconds_between(baseline, cpu.read(getattr(proc, "pid", None)))
             if kind == "ok":
                 outcome = "ok"
                 return Materialised(payload["size"], payload["content_rev"])
@@ -189,7 +216,7 @@ class Materialiser:
             raise
         finally:
             self._release(slot)
-            self.on_task_end(outcome, time.monotonic() - started)
+            self.on_task_end(outcome, used)
 
     @staticmethod
     def remove_dir(path: str | None) -> None:

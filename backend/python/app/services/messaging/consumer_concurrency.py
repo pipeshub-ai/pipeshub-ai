@@ -43,7 +43,17 @@ from app.services.messaging.distributed_concurrency import (
 )
 from app.services.messaging.redis_errors import report_redis_error
 from app.services.resource_governor import classify, gate_pool, index_pool, parse_cost
-from app.services.resource_governor.memory_budget import record_memory_cost
+from app.services.resource_governor.kinds import (
+    EXCESS_WAIT_SECONDS,
+    ParseKind,
+    classify_kind,
+    permit_excess_bytes,
+)
+from app.services.resource_governor.memory_budget import kind_reservation_cost
+from app.services.resource_governor.memory_domain import (
+    reset_permit_covers,
+    set_permit_covers,
+)
 from app.services.resource_governor.models import ParseTier, Pool
 from app.services.resource_governor.probe import memory_domain_id
 from app.utils.loop_bridge import run_on_loop
@@ -53,6 +63,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
     from logging import Logger
 
+    from app.modules.indexing.record_progress import RecordProgress
     from app.services.distributed.interface import (
         IDistributedLeaseManager,
         IRetryTracker,
@@ -1159,11 +1170,49 @@ class RequeueWithoutAttempt(Exception):
     # Whether hand-backs count toward the delivery backstop, which stops a message from
     # being handed back forever.
     counts_toward_backstop = True
+    # Whether the reason holds for the whole stage (a paused dependency), so a consumer that
+    # can stop claiming does; False when only this message has to wait.
+    pauses_consumer = True
 
     def __init__(self, message: str = "", *, delay_s: float | None = None) -> None:
         super().__init__(message)
         # How long the broker holds it before redelivery; None for the first retry backoff.
         self.delay_s = delay_s
+
+
+class ProgressRequeue(RequeueWithoutAttempt):
+    """A record's attempt ran out of time after embedding part of it: it resumes where it stopped.
+
+    Not a failure and not queue time, so it is not counted as an attempt, and it does not count
+    toward the delivery backstop either: what bounds it is the embedding time kept on the record.
+    """
+
+    counts_toward_backstop = False
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, delay_s=messaging_env.embed_cut_requeue_delay_seconds)
+
+
+async def requeue_after_productive_cut(
+    host: ConcurrencyHost,
+    progress: "RecordProgress | None",
+    lease_handle: "LeaseHandle | None",
+    message_id: str,
+) -> None:
+    """Raise ``ProgressRequeue`` when the attempt's timeout ended it after progress; otherwise return.
+
+    Called from the ``except TimeoutError`` of a consumer, after the handler has unwound. The
+    decision is made here and not in the handler because only the consumer knows why the handler
+    stopped: a shutdown or a lost lease cancels it too, and neither is a reason to requeue.
+    """
+    if progress is None:
+        return
+    lease_intact = lease_handle is None or not lease_handle.lost.is_set()
+    counted = await progress.settle_cut(lease_intact=lease_intact, running=bool(host.running))
+    if counted is None:
+        raise ProgressRequeue(
+            f"{message_id} ran out of time at {progress.done} of {progress.total} points and resumes"
+        )
 
 
 class ParseAdmissionTimeout(RequeueWithoutAttempt):
@@ -1296,6 +1345,7 @@ async def reserve_record_memory(
     *,
     downloaded: bool = False,
     current: "Admission | None" = None,
+    kind: ParseKind | None = None,
 ) -> "Admission | None":
     """Reserve what a record too big for the governor's count limits is
     expected to hold, until it finishes; ``None`` when it needs no reservation
@@ -1308,11 +1358,17 @@ async def reserve_record_memory(
     when it covers the size downloaded, else given back and the larger one
     reserved (a document's ``sizeInBytes`` can be stale). With *timeout*,
     raises ``MemoryAdmissionTimeout`` instead of waiting on.
+
+    With *kind*, the reservation is the larger of the file estimate and the part of the kind's
+    parent working set that the parse permit's base does not cover, so the permit takes no
+    memory of its own and nothing waits for memory while it holds one.
     """
     governor = host.governor
     if governor is None:
         return current
-    cost = record_memory_cost(tier if tier is not None else ParseTier.HEAVY, size_bytes)
+    cost = kind_reservation_cost(
+        tier if tier is not None else ParseTier.HEAVY, size_bytes, kind, governor.heavy_working_set
+    )
     if current is not None and not current.released and current.cost >= cost:
         return current
     release_admission(current)
@@ -1353,6 +1409,8 @@ async def acquire_parsing_slot(
     tier: ParseTier | None,
     size_bytes: int | None,
     timeout: float | None = None,
+    kind: ParseKind | None = None,
+    reserved_bytes: int = 0,
 ) -> "Admission":
     """Acquire a parsing permit, routing heavy vs. light through the
     governor when one is configured, else falling back to the single legacy
@@ -1363,6 +1421,11 @@ async def acquire_parsing_slot(
     they run no more Docling conversions than free memory holds.
 
     With *timeout*, raises ``ParseAdmissionTimeout`` instead of waiting on.
+
+    *kind* and *reserved_bytes* (what the record reserved before the permit, see
+    ``reserve_record_memory``) cover a caller that reserved nothing, such as the parsing route: the
+    part of the kind's excess still missing is reserved here, but a permit holder never waits for
+    memory longer than ``EXCESS_WAIT_SECONDS``: it gives the permit back and the caller queues again.
     """
     governor = host.governor
     if governor is not None:
@@ -1395,12 +1458,34 @@ async def acquire_parsing_slot(
         if slots is None:
             gate.release(cost)
             raise ParseAdmissionTimeout(pool.value, timeout or 0.0)
+        missing = 0
+        if kind is not None:
+            ws = governor.heavy_working_set
+            missing = max(0, permit_excess_bytes(kind, ws.gb, ws.source, size_bytes) - reserved_bytes)
+        extra = 0
+        if missing:
+            budget = governor.memory_budget
+            try:
+                got = await budget.reserve(missing, EXCESS_WAIT_SECONDS)
+            except BaseException:
+                slots.release()
+                gate.release(cost)
+                raise
+            if not got:
+                slots.release()
+                gate.release(cost)
+                raise ParseAdmissionTimeout("record_memory", EXCESS_WAIT_SECONDS)
+            extra = missing
         stamp = set_admitted_in(memory_domain_id())
+        covers = set_permit_covers()
 
         def _release() -> None:
             slots.release()
             gate.release(cost)
+            if extra:
+                governor.memory_budget.release(extra)
             reset_admitted_in(stamp)
+            reset_permit_covers(covers)
 
         return Admission(tier=resolved_tier, cost=cost, _release=_release)
 
@@ -1433,3 +1518,9 @@ def report_memory_incident_if_applicable(
     if host.governor is None or not isinstance(error, MemoryError):
         return
     host.governor.report_memory_incident(f"MemoryError processing {message_id}")
+
+
+def record_parse_kind(payload: "dict[str, Any] | None") -> ParseKind:
+    """The kind of a record from its own ``extension`` and ``mimeType``; anything else is ``UNKNOWN``."""
+    data = payload or {}
+    return classify_kind(data.get("extension"), data.get("mimeType"))

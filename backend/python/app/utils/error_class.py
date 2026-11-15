@@ -84,7 +84,41 @@ def _chain(exc: BaseException) -> Iterator[BaseException]:
         link = link.__cause__ if link.__cause__ is not None else (None if link.__suppress_context__ else link.__context__)
 
 
+def on_chain(exc: BaseException, target: BaseException) -> bool:
+    """Whether ``target`` is ``exc`` or in the chain its class and text are read from (see ``_chain``)."""
+    return any(link is target for link in _chain(exc))
+
+
+def chain_has(exc: BaseException, *types: type[BaseException]) -> bool:
+    """Whether ``exc`` or a link of its chain (see ``_chain``) is one of ``types``."""
+    return any(isinstance(link, types) for link in _chain(exc))
+
+
+def first_leaf(exc: BaseException) -> BaseException:
+    """The first exception in ``exc`` that isn't a group: what a task group's failure was."""
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    return exc
+
+
+def innermost_type(exc: BaseException) -> str:
+    """The type name of the deepest cause (ConnectError, gaierror, SSLError): what kind of failure, without its text.
+    ``__cause__``, else ``__context__`` unless suppressed; a group counts as its first leaf."""
+    seen: set[int] = set()
+    current = first_leaf(exc)
+    while id(current) not in seen:
+        seen.add(id(current))
+        deeper = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+        if deeper is None:
+            break
+        current = first_leaf(deeper)
+    return type(current).__name__
+
+
 def _classify_link(link: BaseException) -> str | None:
+    stamped = getattr(link, "log_error_class", None)  # set by mark_error, or declared by an exception type
+    if stamped in ERROR_CLASSES:
+        return stamped
     if isinstance(link, (asyncio.CancelledError, concurrent.futures.CancelledError, RunCancelled)):
         return "cancelled"
     if (
@@ -138,6 +172,35 @@ def classify_error(exc_or_status: BaseException | int) -> str:
     return "internal"
 
 
+def mark_error(exc: BaseException, error_class: str | None = None, *, hide_text: bool = False) -> None:
+    """Record on ``exc`` the class a lower layer (a database client) found, and whether its text can quote what was sent.
+    :func:`classify_error` then answers that class and :func:`log_failure` leaves the text out, for every handler that logs the
+    chain. Sets only ``log_error_class`` and ``log_hide_text``. Without ``error_class`` the class is left to
+    :func:`classify_error` and only ``hide_text`` is stamped. The first class stamped wins; hiding can be added later. Never raises."""
+    with contextlib.suppress(AttributeError, TypeError):
+        if error_class is not None and not is_stamped(exc):
+            exc.log_error_class = error_class  # type: ignore[attr-defined]
+        if hide_text:
+            exc.log_hide_text = True  # type: ignore[attr-defined]
+
+
+def is_stamped(exc: BaseException) -> bool:
+    """:func:`mark_error` already gave this instance a class: a lower layer recorded it (a class-level ``log_error_class``,
+    declared by an exception type, does not count)."""
+    return "log_error_class" in getattr(exc, "__dict__", {})
+
+
+def _hides_text(exc: BaseException) -> bool:
+    """A link of the chain, or a member of an exception group in it, was stamped as able to quote sent values."""
+    for link in _chain(exc):
+        if getattr(link, "log_hide_text", False) is True:
+            return True
+        # every member, not only the first (first_leaf): the stamped one may be any of them
+        if isinstance(link, BaseExceptionGroup) and any(_hides_text(member) for member in link.exceptions):
+            return True
+    return False
+
+
 def _chain_text(exc: BaseException) -> str:
     return "; caused by ".join(f"{type(link).__name__}: {link}" for link in _chain(exc))
 
@@ -160,6 +223,14 @@ def logged_level(exc: BaseException) -> int | None:
     ``from``, at; None if never. For a per-unit line that must not be demoted when several units
     fail with one shared exception."""
     return _prior_level(exc)
+
+
+def already_logged(exc: BaseException, level: int) -> bool:
+    """Whether :func:`log_failure` already wrote ``exc`` (or one it was raised ``from``) at ``level`` or above.
+    A per-unit line (one tool call, one request, one server's listing) then logs with ``log_event`` at its own
+    level: no second stack, no text, never demoted."""
+    prior = _prior_level(exc)
+    return prior is not None and prior >= level
 
 
 _CAUSE_SEPARATOR = "\nThe above exception was the direct cause of the following exception:\n\n"
@@ -201,9 +272,11 @@ def log_failure(
     the one already written. ``include_error_text=False`` leaves ``error_message`` out, for errors
     whose text can echo what was sent (tool arguments in an MCP or OpenAPI server's answer); the
     stack written at ERROR then keeps its frames but shows each exception as ``Type: <message omitted>``, and the record
-    carries that stack as ``exc_text`` only, with no ``exc_info``. Never raises: it runs inside ``except`` blocks.
+    carries that stack as ``exc_text`` only, with no ``exc_info``. A chain that :func:`mark_error` stamped with
+    ``hide_text`` (a database driver's error) is always logged that way. Never raises: it runs inside ``except`` blocks.
     """
     try:
+        include_error_text = include_error_text and not _hides_text(exc)
         cls = error_class or classify_error(exc)
         want = level if level is not None else level_for(cls)
         prior = _prior_level(exc)

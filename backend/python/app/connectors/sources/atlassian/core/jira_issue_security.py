@@ -99,6 +99,18 @@ class IssueSecurityContext:
     read_status: int | None = None
     # Jira said the token lacks a scope. Any other 401 is a token Jira no longer accepts.
     scope_refused: bool = False
+    # Browse Projects holders that name people on each issue (reporter, assignee, user or group
+    # field). None when the project's permission scheme could not be read.
+    browse_holders: list[dict[str, Any]] | None = field(default_factory=list)
+
+    def browse_fingerprint(self) -> str:
+        """"?" when the holders are unknown, "" when there are none, else a digest of them."""
+        if self.browse_holders is None:
+            return "?"
+        return hashlib.sha256(",".join(sorted(
+            f"{h.get('type')}:{h.get('parameter') or h.get('value') or (h['field'].get('id') if isinstance(h.get('field'), dict) else '')}"
+            for h in self.browse_holders
+        )).encode()).hexdigest()[:16] if self.browse_holders else ""
 
     def level_fingerprints(
         self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
@@ -199,8 +211,14 @@ async def collect_paged_values(
         if not isinstance(page, list):
             return status, None
         values.extend(item for item in page if isinstance(item, dict))
-        if body.get("isLast", True) or not page:
+        if not page or body.get("isLast") is True:
             return 200, values
+        if "isLast" not in body:
+            # A server that pages with ``total`` only: complete when the total is reached, else keep reading
+            # (an empty page ends it), never taken as complete after the first page.
+            total = body.get("total")
+            if isinstance(total, int) and not isinstance(total, bool) and len(values) >= total:
+                return 200, values
         step = body.get("maxResults") or len(page) or 50
         try:
             start += int(step)
@@ -225,6 +243,8 @@ UNREADABLE_SCOPE = "scope"
 UNREADABLE_AUTH = "auth"
 UNREADABLE_PERMISSION = "permission"
 UNREADABLE_ROLES = "roles"
+UNREADABLE_NOT_LISTED = "not_listed"
+UNREADABLE_UNCLEAR_404 = "unclear_404"
 UNREADABLE_TRANSIENT = "transient"
 UNREADABLE_OTHER = "other"
 
@@ -236,13 +256,21 @@ UNREADABLE_REASONS = {
     UNREADABLE_AUTH: "Jira refused the connector's authorisation (HTTP 401). Reconnect the connector",
     UNREADABLE_PERMISSION: "the sync account lacks the Administer Jira permission (HTTP 403)",
     UNREADABLE_ROLES: "a level names an application role whose members could not be read this sync",
+    UNREADABLE_NOT_LISTED: (
+        "Jira does not list who holds each issue security level (HTTP 404, 405 or 501), "
+        "so an issue that has a level cannot be shown to anyone"
+    ),
     UNREADABLE_TRANSIENT: "Jira did not answer this sync (rate limit, server or network error)",
+    UNREADABLE_UNCLEAR_404: (
+        "Jira answered the scheme read with a not-found that does not say the project has no scheme "
+        "(HTTP 404; a proxy or a missing route can answer so)"
+    ),
     UNREADABLE_OTHER: "the read failed",
 }
 
 # Reasons after which issues keep the grants they were stored with, until a sync reads the
 # levels; after any other reason an issue that carries a level is closed to everyone.
-UNREADABLE_KEEPS_STORED_ACCESS = frozenset({UNREADABLE_ROLES, UNREADABLE_TRANSIENT})
+UNREADABLE_KEEPS_STORED_ACCESS = frozenset({UNREADABLE_ROLES, UNREADABLE_TRANSIENT, UNREADABLE_UNCLEAR_404})
 
 
 def unreadable_reason(context: IssueSecurityContext) -> str | None:
@@ -258,9 +286,20 @@ def unreadable_reason(context: IssueSecurityContext) -> str | None:
         return UNREADABLE_PERMISSION
     if context.knowledge == SchemeKnowledge.PRESENT and context.read_status is None and context.members_by_level:
         return UNREADABLE_ROLES
+    if context.defer_checkpoint and context.knowledge == SchemeKnowledge.UNKNOWN and context.read_status == 404:
+        return UNREADABLE_UNCLEAR_404
     if context.defer_checkpoint:
         return UNREADABLE_TRANSIENT
+    if context.knowledge == SchemeKnowledge.PRESENT and context.read_status in (404, 405, 501):
+        return UNREADABLE_NOT_LISTED
     return UNREADABLE_OTHER
+
+
+def _says_no_scheme(message: object) -> bool:
+    """A not-found message that names the issue security scheme or level: a proxy's "Not Found" or a
+    missing project's message does not establish that the project has no scheme."""
+    text = message.lower() if isinstance(message, str) else ""
+    return "security" in text and ("scheme" in text or "level" in text)
 
 
 def classify_scheme_response(
@@ -268,8 +307,13 @@ def classify_scheme_response(
     body: object,
     *,
     project_style: str | None = None,
+    project_is_visible: bool = False,
 ) -> tuple[SchemeKnowledge, str | None]:
     """A 200 body with an ``id`` is a scheme. A bare 404 or a 403 is unknown.
+
+    ``project_is_visible``: the caller lists this project, so a 404 whose JSON body carries
+    error messages is the server answering "no scheme" (Data Center documents 404 only for a
+    project that is missing or hidden). A 404 with no such body may be a route the server lacks.
 
     Jira answers "this project has no issue security scheme" with 404 and
     ``Security level for project {id} does not exist``. A 403, or a 404 that
@@ -286,6 +330,8 @@ def classify_scheme_response(
         and isinstance(body, dict)
     ):
         messages = body.get("errorMessages") or []
+        if project_is_visible and any(_says_no_scheme(message) for message in messages):
+            return SchemeKnowledge.NONE, None
         if any(
             isinstance(message, str)
             and "security level for project" in message.lower()
@@ -475,7 +521,8 @@ def _permissions_for_holder(
         if inactive:
             return grants, False, None
         add_user(email)
-        return grants, False, None
+        # A person who resolves to no e-mail is unread, not outside the level.
+        return grants, False, None if email else HOLDER_USER
 
     if holder_type == HOLDER_PROJECT_ROLE:
         role = holder.get("projectRole") if isinstance(holder.get("projectRole"), dict) else {}
@@ -531,6 +578,7 @@ def _permissions_for_holder(
             return grants, True, holder_type
         present_key = next(key for key in keys if key in fields)
         value_at_field = fields.get(present_key)
+        unresolved = False
         for entry in _field_entries(value_at_field):
             if holder_type == HOLDER_GROUP_FIELD:
                 add_group(entry.get("groupId") or entry.get("name") or entry.get("value"))
@@ -538,7 +586,8 @@ def _permissions_for_holder(
                 email, inactive = _holder_user_email({"user": entry, "parameter": entry.get("accountId")}, user_by_id)
                 if not inactive:
                     add_user(email)
-        return grants, False, None
+                    unresolved = unresolved or not email
+        return grants, False, holder_type if unresolved else None
 
     return grants, False, str(holder_type) if holder_type else "unknown"
 
@@ -551,6 +600,23 @@ def _field_entries(value: object) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, dict)]
     return []
+
+
+def browse_holder_grants(
+    holders: list[dict[str, Any]], *, project_key: str, fields: dict[str, Any], user_by_id: dict[str, Any],
+    reporter_email: str | None, assignee_email: str | None,
+) -> list[Permission]:
+    """The people a project's Browse holders name on this issue. A holder whose field is not
+    in the payload grants nobody; it does not stop the others."""
+    grants: list[Permission] = []
+    seen: set[str] = set()
+    for holder in holders:
+        portion, _unreadable, _skipped = _permissions_for_holder(
+            holder, project_key=project_key, fields=fields, user_by_id=user_by_id, app_roles_mapping=None,
+            reporter_email=reporter_email, assignee_email=assignee_email, seen=seen,
+        )
+        grants.extend(portion)
+    return grants
 
 
 def level_grants(
@@ -631,9 +697,24 @@ def apply_issue_access_settled(
         return [], [], False
 
     def project_open() -> tuple[list[Permission], list[str], bool]:
-        record.access_rule = AccessRule.STRICT
+        # An issue filed under another one, or a stub, only follows it. A top-level issue is
+        # also read by the people the project's Browse holders name on it (its reporter, say),
+        # who need not read the project, so a direct grant must be enough: OPEN, not STRICT.
+        top_level = not (record.parent_external_record_id or getattr(record, "is_placeholder", False))
+        if top_level and context.browse_holders is None and not present:
+            # Holders unread and the level not returned: keep the stored grants and stay OPEN so a stored
+            # reporter grant still opens the issue. An explicit null level is not this: the issue may have
+            # been RESTRICTED, and its old level members must lose it (OPEN would accept their grant alone).
+            record.access_rule = AccessRule.OPEN
+            record.rewrite_permissions = False
+            return [], [], True
+        grants = browse_holder_grants(
+            context.browse_holders or [], project_key=project_key, fields=fields or {},
+            user_by_id=users, reporter_email=reporter_email, assignee_email=assignee_email,
+        ) if top_level else []
+        record.access_rule = AccessRule.OPEN if grants else AccessRule.STRICT
         record.rewrite_permissions = True
-        return [], [], True
+        return grants, [], True
 
     if present and security is None:
         # A null level is a positive "no level", whatever the scheme state: replace any stale grants.
@@ -704,3 +785,109 @@ def apply_attachment_access(record: Record) -> list[Permission]:
     record.access_rule = AccessRule.STRICT
     record.rewrite_permissions = True
     return []
+
+
+def hold_levels_naming_unread_roles(
+    security: IssueSecurityContext, *, app_roles_unread: bool,
+) -> IssueSecurityContext:
+    """A level naming an application role is unknown, not narrower, while the role list
+    could not be read in full: its issues keep their stored grants until a sync reads it."""
+    if app_roles_unread and any(
+        isinstance(holder, dict) and holder.get("type") == HOLDER_APPLICATION_ROLE
+        for holders in security.members_by_level.values() for holder in holders
+    ):
+        security.members_readable = False
+        security.defer_checkpoint = True
+    return security
+
+
+def plan_level_reread(
+    security: IssueSecurityContext,
+    stored: dict[str, str] | None,
+    *,
+    is_new_project: bool,
+    app_roles_mapping: dict[str, list[dict[str, Any]]] | None,
+) -> tuple[str | None, list[str] | None, dict[str, str]]:
+    """Decide the second pass over already-stored issues, and the level map saved after it.
+
+    No issue's ``updated`` moves when a level gains or loses a member, or when a level or
+    the scheme is removed, so the checkpoint keeps a digest per level. ``"*"`` in it marks
+    issues written while their level could not be applied: ``retry`` after a transient
+    read (the stored grants were kept), ``held`` after one on a project never tightened (its
+    leveled issues were closed), ``unreadable`` after a lasting one (they were closed). Returns ``(pass, level_ids, to_save)``; the pass is ``"levels"`` (only
+    ``level_ids``), ``"leveled"`` (every issue with a level), ``"project"`` (every issue,
+    since one may have lost its level without an update) or None. A project synced before
+    levels were tracked has no map, which reads as ``"leveled"``: that is the one-time re-read
+    that closes issues stored open before levels were applied.
+    """
+    stored_real = {k: v for k, v in (stored or {}).items() if k != "*"}
+    marker = (stored or {}).get("*")
+    if security.defer_checkpoint:
+        # Nothing was settled this sync: keep the digests and re-read once it is. A project never
+        # tightened has no grants of its own to keep, so its leveled issues are closed meanwhile.
+        # ``held`` marks that pass done, so a read that keeps failing does not repeat it.
+        held = marker == "held"
+        never_tightened = (
+            not stored_real and not is_new_project and not held and security.knowledge != SchemeKnowledge.NONE
+        )
+        return ("leveled" if never_tightened else None), None, {
+            **stored_real, "*": "held" if never_tightened or held else "retry"}
+    if security.knowledge == SchemeKnowledge.NONE:
+        # A removed scheme clears the issues' levels without changing their `updated`.
+        return ("project" if stored and not is_new_project else None), None, {}
+    if not security.members_readable or security.knowledge != SchemeKnowledge.PRESENT:
+        # Close every leveled issue once; a lasting failure does not repeat the walk.
+        closed = is_new_project or marker == "unreadable"
+        return (None if closed else "leveled"), None, {**stored_real, "*": "unreadable"}
+    current = security.level_fingerprints(app_roles_mapping)
+    if is_new_project:
+        return None, None, current
+    if stored is None:
+        # Synced before levels were tracked: every leveled issue, holder-less levels included.
+        return "leveled", None, current
+    if stored_real.keys() - current.keys():
+        # A level lost its last holder or was deleted. An issue moved out of it to no level
+        # matches no level predicate.
+        return "project", None, current
+    if marker is not None:
+        return "leveled", None, current
+    changed = sorted(lid for lid in current if stored_real.get(lid) != current[lid])
+    return ("levels" if changed else None), changed or None, current
+
+
+def pre_walk_marker(stored: dict[str, str] | None) -> dict[str, str]:
+    """The level map saved before the walk when a read is deferred: the digests, and a marker that
+    asks for a re-read. A pass already done on a project never tightened (``held``) stays marked, so
+    a read that keeps failing does not repeat it."""
+    held = (stored or {}).get("*") == "held"
+    return {**{k: v for k, v in (stored or {}).items() if k != "*"}, "*": "held" if held else "retry"}
+
+
+def levels_after_walk(levels_to_save: dict[str, str], build_failures: int) -> dict[str, str]:
+    """The level map to save after the walk. An issue that failed to build in a pass that closed the
+    leveled issues of a project never tightened may have stayed open, so the pass is not marked done."""
+    if build_failures and levels_to_save.get("*") == "held":
+        return {**levels_to_save, "*": "retry"}
+    return levels_to_save
+
+
+def unreadable_security_notices(
+    unreadable: dict[str, str], never_tightened: frozenset[str] | set[str] = frozenset(),
+) -> list[tuple[str, str, list[str], str]]:
+    """``(reason, effect, project keys, message)`` per reason and effect, for the projects (key ->
+    ``UNREADABLE_*`` reason) whose issue security levels could not be applied this sync.
+    ``never_tightened``: projects with no grants of their own stored yet, whose leveled issues are
+    hidden even after a read that may pass."""
+    by_reason: dict[tuple[str, str], list[str]] = {}
+    for project_key, reason in unreadable.items():
+        keeps = reason in UNREADABLE_KEEPS_STORED_ACCESS and project_key not in never_tightened
+        effect = "keep the access they had" if keeps else "are hidden from everyone"
+        by_reason.setdefault((reason, effect), []).append(project_key)
+    notices = []
+    for (reason, effect), project_keys in by_reason.items():
+        keys = sorted(project_keys)
+        notices.append((reason, effect, keys, (
+            f"{', '.join(keys)}: {UNREADABLE_REASONS[reason]}. Issues with a "
+            f"security level there {effect} until their levels can be read."
+        )))
+    return notices

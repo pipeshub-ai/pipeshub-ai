@@ -643,6 +643,9 @@ class BoxConnector(BaseConnector):
                 if not isinstance(accessible_by, dict):
                     continue
                 role = collab.get('role', 'viewer')
+                # Box shows an uploader item names, but no preview or download.
+                if role == 'uploader':
+                    continue
 
                 # Map Box roles to our permission types
                 permission_type = PermissionType.READ
@@ -1848,9 +1851,9 @@ class BoxConnector(BaseConnector):
                     if not owner_id:
                         try:
                             if item_type == 'folder':
-                                item_response = await self.data_source.folders_get_folder_by_id(item_id)
+                                item_response = await self.data_source.folders_get_folder_by_id(item_id, fields=ITEM_FIELDS)
                             else:
-                                item_response = await self.data_source.files_get_file_by_id(item_id)
+                                item_response = await self.data_source.files_get_file_by_id(item_id, fields=ITEM_FIELDS)
 
                             if item_response.success:
                                 item_data = self._to_dict(item_response.data)
@@ -1872,7 +1875,8 @@ class BoxConnector(BaseConnector):
                     # regardless of whether the owner is internal or external. Individually-shared
                     # files never surface in the grantee's own folder-tree walk, so this is the only
                     # way to discover them - even for same-enterprise (internal) shares.
-                    if item_id and granted_email and granted_user_box_id:
+                    role = get_val(source, 'role') or get_val(get_val(event, 'additional_details'), 'role')
+                    if item_id and granted_email and granted_user_box_id and role != 'uploader':
                         collaborators_in_org = await self._get_app_users_by_emails([granted_email])
                         if collaborators_in_org:
                             items_to_sync_shared_with_me.append((
@@ -2124,14 +2128,14 @@ class BoxConnector(BaseConnector):
                 for item_id, item_type in collab_items:
                     try:
                         if (item_type or "").lower() == "folder":
-                            folder_response = await self.data_source.folders_get_folder_by_id(item_id)
+                            folder_response = await self.data_source.folders_get_folder_by_id(item_id, fields=ITEM_FIELDS)
                             if not folder_response.success:
                                 self.logger.warning(f"Failed to fetch folder {item_id} as shared-with-me: {folder_response.error}")
                                 self._mark_read_incomplete(folder_response.error)
                                 continue
                             entry = self._to_dict(folder_response.data)
                         else:
-                            file_response = await self.data_source.files_get_file_by_id(item_id)
+                            file_response = await self.data_source.files_get_file_by_id(item_id, fields=ITEM_FIELDS)
                             if not file_response.success:
                                 self.logger.warning(f"Failed to fetch file {item_id} as shared-with-me: {file_response.error}")
                                 self._mark_read_incomplete(file_response.error)
@@ -2178,7 +2182,7 @@ class BoxConnector(BaseConnector):
             await self.data_source.set_as_user_context(owner_id)
 
             # 2. Parallel Fetch of File Details
-            tasks = [self.data_source.files_get_file_by_id(fid) for fid in file_ids]
+            tasks = [self.data_source.files_get_file_by_id(fid, fields=ITEM_FIELDS) for fid in file_ids]
             responses = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Convert each response to a dict once and reuse it for logging + both passes below.
@@ -2256,7 +2260,7 @@ class BoxConnector(BaseConnector):
 
                 # Fetch folder from Box and create it
                 self.logger.info(f"📁 Parent folder {folder_id} not found in DB, fetching and creating...")
-                folder_response = await self.data_source.folders_get_folder_by_id(folder_id)
+                folder_response = await self.data_source.folders_get_folder_by_id(folder_id, fields=ITEM_FIELDS)
 
                 if not folder_response.success:
                     self.logger.warning(f"Failed to fetch parent folder {folder_id}: {folder_response.error}")
@@ -2306,7 +2310,7 @@ class BoxConnector(BaseConnector):
             for folder_id in folder_ids:
                 try:
                     # 2. Fetch folder metadata from Box
-                    folder_response = await self.data_source.folders_get_folder_by_id(folder_id)
+                    folder_response = await self.data_source.folders_get_folder_by_id(folder_id, fields=ITEM_FIELDS)
 
                     if not folder_response.success:
                         self.logger.warning(f"Failed to fetch folder {folder_id}: {folder_response.error}")
@@ -2637,9 +2641,9 @@ class BoxConnector(BaseConnector):
                     tasks = []
                     for rec in owner_records:
                         if rec.mime_type != MimeTypes.FOLDER.value:
-                            tasks.append(self.data_source.files_get_file_by_id(rec.external_record_id))
+                            tasks.append(self.data_source.files_get_file_by_id(rec.external_record_id, fields=ITEM_FIELDS))
                         else:
-                            tasks.append(self.data_source.folders_get_folder_by_id(rec.external_record_id))
+                            tasks.append(self.data_source.folders_get_folder_by_id(rec.external_record_id, fields=ITEM_FIELDS))
 
                     responses = await asyncio.gather(*tasks, return_exceptions=True)
 

@@ -226,8 +226,9 @@ export function getArtifactSetFolder(
 }
 
 /**
- * Where one content revision of a virtual record keeps its files.
- * e.g. 'org1/PipesHub/record-revisions/vr-1/0123abcd'
+ * Where one artifact set of a virtual record keeps its files, by the set's key
+ * (`artifactSet.rev`): e.g. 'org1/PipesHub/record-revisions/vr-1/0123abcd' for a
+ * revision's shared set, '.../vr-1/0123abcd-<writeId>' for a stored write's own.
  */
 export function getArtifactSetRoot(
   orgId: string,

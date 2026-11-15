@@ -14,6 +14,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.data_processor.pr_links import Linked
 from app.connectors.sources.gitlab.comments import CommentsHelper
 from app.connectors.sources.gitlab.constants import MR_FILE_INLINE_CONTENT_MAX_BYTES
 
@@ -739,3 +740,47 @@ class TestMrFileChangeContent:
         groups = await self._groups(helper)
 
         assert groups["big.py"] == "Existing file\n\nDiff content\n\n\n\n[TRUNCATED] Diff"
+
+    async def test_each_file_group_says_what_changed_as_data_beside_its_markdown(self) -> None:
+        """Path, previous path and status in GitHub's words; GitLab gives no line counts (None)."""
+        _, helper, _ = self._run([
+            _change("src/a.py"),
+            _change("src/new.py", diff="@@ -0,0 +1 @@\n+x", new_file=True),
+            _change("src/gone.py", diff="@@ -1 +0,0 @@\n-x", deleted_file=True),
+            _change("src/moved.py", old_path="src/old.py", renamed_file=True),
+        ])
+        blocks, _ = await helper.build_merge_request_comment_blocks(
+            "https://gitlab.com/ns/proj/-/merge_requests/1", 0, _make_record())
+        meta = {b.name.removeprefix("block for file "): b.file_change_metadata for b in blocks if b.file_change_metadata}
+        assert {p: (m.status, m.previous_path) for p, m in meta.items()} == {
+            "src/a.py": ("modified", None), "src/new.py": ("added", None),
+            "src/gone.py": ("removed", None), "src/moved.py": ("renamed", "src/old.py")}
+        assert all(m.path == p and m.additions is None and m.deletions is None for p, m in meta.items())
+        assert isinstance(next(b for b in blocks if b.file_change_metadata).data, str)
+
+    @pytest.mark.parametrize("mr_url, base_url", [
+        ("https://gitlab.com/a/b/proj/-/merge_requests/1", "https://gitlab.com"),          # nested groups
+        ("https://git.acme.test/gitlab/a/b/proj/-/merge_requests/1", "https://git.acme.test/gitlab"),  # prefixed
+        ("http://gitlab.acme.test/a/b/proj/-/merge_requests/1", "https://gitlab.acme.test"),  # http vs https
+    ])
+    async def test_code_files_are_named_on_the_path_the_code_walk_used_not_the_url(self, mr_url, base_url) -> None:
+        """The project path comes from the code checkpoint (the project's path_with_namespace the walk
+        built ids on), so a prefixed or mismatched URL cannot point the edges at another project."""
+        c, helper, _ = self._run([_change("src/a.py")])
+        c._gitlab_base_url = base_url
+        c.repos.synced_project_path = AsyncMock(return_value="a/b/proj")
+        c.data_entities_processor.on_pr_file_changes = AsyncMock(return_value=Linked(1, 0))
+        record = _make_record()
+        await helper.build_merge_request_comment_blocks(mr_url, 0, record)
+        c.repos.synced_project_path.assert_awaited_once_with(42)
+        pr, changes, external_id = c.data_entities_processor.on_pr_file_changes.await_args.args
+        assert pr is record and [ch.path for ch in changes] == ["src/a.py"]
+        assert external_id("src/a.py") == "/a/b/proj/-/blob/HEAD/src/a.py", "the id the code-file walk writes"
+
+    async def test_a_project_whose_code_never_synced_links_nothing(self) -> None:
+        c, helper, _ = self._run([_change("src/a.py")])
+        c.repos.synced_project_path = AsyncMock(return_value=None)
+        c.data_entities_processor.on_pr_file_changes = AsyncMock()
+        await helper.build_merge_request_comment_blocks(
+            "https://gitlab.com/ns/proj/-/merge_requests/1", 0, _make_record())
+        c.data_entities_processor.on_pr_file_changes.assert_not_awaited()

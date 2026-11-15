@@ -311,9 +311,11 @@ export class OAuthDcrService {
     const memberAllowed = new Set(
       this.scopeValidatorService.getAllowedScopeNamesForRole(false),
     )
+    // With no scope asked for, the agent preset is offered as far as this instance's MCP_SCOPES allows (a scope an operator has not
+    // enabled, such as code:write, is left out); a scope that is asked for by name and not allowed is still refused.
     const requested = scope
       ? this.scopeValidatorService.parseScopes(scope)
-      : [...AgentMcpScopes]
+      : AgentMcpScopes.filter((s) => mcp.size === 0 || mcp.has(s))
 
     const granted: string[] = []
     for (const s of requested) {

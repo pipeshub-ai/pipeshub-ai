@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useCallback, useMemo, useState, Suspense, u
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { isProcessedError } from '@/lib/api';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { isElectron } from '@/lib/electron';
@@ -61,6 +62,9 @@ function PersonalConnectorsPageContent() {
 
   const managedWatcherIdsRef = useRef<Set<string>>(new Set());
   const [isRefreshingAllInstances, setIsRefreshingAllInstances] = useState(false);
+  const [listsLoaded, setListsLoaded] = useState(false);
+  const isAdmin = useUserStore(selectIsAdmin);
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
   const {
     registryConnectors,
@@ -132,6 +136,7 @@ function PersonalConnectorsPageContent() {
 
   // ── Fetch connector list data ───────────────────────────────
   const fetchData = useCallback(async () => {
+    setListsLoaded(false);
     setIsLoading(true);
     setError(null);
     try {
@@ -147,6 +152,10 @@ function PersonalConnectorsPageContent() {
       }
       if (activeRes.status === 'fulfilled') {
         setActiveConnectors(filterConnectorsForScope(activeRes.value.connectors, 'personal'));
+      }
+      // Only lists that both loaded can show a connector type is in neither.
+      if (registryRes.status === 'fulfilled' && activeRes.status === 'fulfilled') {
+        setListsLoaded(true);
       }
 
       if (registryRes.status === 'rejected' && activeRes.status === 'rejected') {
@@ -166,6 +175,26 @@ function PersonalConnectorsPageContent() {
   useEffect(() => {
     fetchData();
   }, [fetchData, catalogRefreshToken]);
+
+  // A link can name a connector only an admin adds for the whole organization (Jira,
+  // Confluence): it is not in this catalog, and its details page would render empty.
+  useEffect(() => {
+    const requested = searchParams.get('connectorType')?.trim();
+    if (
+      !requested ||
+      connectorType ||
+      !listsLoaded ||
+      !isProfileInitialized ||
+      typeof isAdmin !== 'boolean'
+    ) {
+      return;
+    }
+    router.replace(
+      isAdmin
+        ? `/workspace/connectors/team/?connectorType=${encodeURIComponent(requested)}`
+        : '/workspace/connectors/personal/'
+    );
+  }, [searchParams, connectorType, listsLoaded, isProfileInitialized, isAdmin, router]);
 
   /** Stable across upserts that only change fields on existing instances (same ids → same string). */
   const instanceDetailKeys = useMemo(() => {

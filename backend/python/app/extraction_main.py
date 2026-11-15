@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.api.middlewares.body_limit import BodyLimitMiddleware
@@ -26,6 +27,7 @@ from app.api.routes.extraction import (
     MAX_CLASSIFY_REQUEST_BYTES,
 )
 from app.api.routes.extraction import router as extraction_router
+from app.api.validation_errors import input_free_422
 from app.containers.extraction import ExtractionAppContainer, initialize_container
 from app.edition_services import configure_app
 from app.modules.transformers.document_extraction import DocumentExtraction
@@ -108,6 +110,7 @@ app = FastAPI(
     description="LLM-based document classification and metadata extraction",
     version="2.0.0",
     lifespan=lifespan,
+    exception_handlers={RequestValidationError: input_free_422},
 )
 configure_app(app, "extraction")
 # Refuse before the block container is parsed into memory (see the cap in the route module).

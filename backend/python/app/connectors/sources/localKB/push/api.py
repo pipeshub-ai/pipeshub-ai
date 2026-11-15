@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import dataclasses
 import logging
 import os
 from dataclasses import dataclass
@@ -9,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.core import org_context
 from app.models.record_metadata import MetadataSchema, PropertyDefinition
 from app.modules.record_metadata.projection import (
     default_union_cache,
@@ -25,8 +29,9 @@ from app.modules.record_metadata.schemas import (
 from .admission import Admission
 from .contract import PushRefusal
 from .image_admission import ImageAdmission
+from .ledger import PushLedger
 from .materialiser import Materialiser
-from .spool import Spool, default_root, sweep
+from .spool import Spool, spool_report, sweep_loop
 from .worker import PushWorker
 
 if TYPE_CHECKING:
@@ -47,6 +52,9 @@ class PushRuntime:
     worker: PushWorker
     spool: Spool
     admission: Admission
+    ledger: PushLedger = dataclasses.field(default_factory=PushLedger)
+    #: The spool sweep timer; made with the runtime, so with the push routes off nothing exists.
+    sweeper: Any = None
     # Both are made on first use and start no process until the first image task.
     _materialiser: Materialiser | None = None
     _materialiser_failed: bool = False
@@ -79,10 +87,30 @@ def runtime_for(app: FastAPI) -> PushRuntime:
     """One worker, spool and admission per connectors process, made on first use."""
     runtime = getattr(app.state, "kb_push_runtime", None)
     if runtime is None:
-        sweep(default_root())
-        runtime = PushRuntime(PushWorker(), Spool(), Admission())
+        # Takes its lock before the timer exists; the timer's first pass (in a thread) cleans up after earlier runs.
+        spool = Spool()
+        report = spool_report(spool.root)
+        (logger.warning if report["fstype"] in ("tmpfs", "ramfs") else logger.info)(
+            "the push spool is on %s (%s)%s", report["fstype"], report["mount"],
+            "; its files count as memory of this container" if report["fstype"] in ("tmpfs", "ramfs") else "",
+        )
+        runtime = PushRuntime(PushWorker(), spool, Admission())
+        runtime.sweeper = org_context.spawn_detached(sweep_loop(spool), name="kb-push-spool-sweep")
         app.state.kb_push_runtime = runtime
     return runtime
+
+
+async def close_runtime(app: FastAPI) -> None:
+    """Lifespan teardown: stop the spool timer, then remove this run's spool directory. Nothing to do if no push ran."""
+    runtime = getattr(app.state, "kb_push_runtime", None)
+    if runtime is None:
+        return
+    app.state.kb_push_runtime = None
+    if runtime.sweeper is not None:
+        runtime.sweeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.sweeper
+    await asyncio.to_thread(runtime.spool.close)
 
 
 def error_body(r: PushRefusal, request_id: str | None = None) -> dict[str, Any]:

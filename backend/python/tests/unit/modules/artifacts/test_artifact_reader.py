@@ -50,6 +50,7 @@ from app.modules.transformers.blob_storage import (
     BlobStorage,
     clean_stored_record,
 )
+from app.modules.transformers.stored_write import write_id
 from app.modules.transformers.transformer import TransformContext
 from tests.unit.modules.artifacts.fake_storage import FakeStorage
 
@@ -178,7 +179,8 @@ async def _write_sidecar(
 ) -> dict[str, Any]:
     """File a classification sidecar the way a copy-on-write metadata write does; the lookup update that names it."""
     store = NodeArtifactStore(storage.blob_storage())
-    plan = await store.presign_revision(ORG, VRID, REV, [(path, "application/json")])
+    # Into the set the lookup names whatever the envelope says, so the reader's own checks are what is tested.
+    plan = await store.presign_revision(ORG, VRID, REV, [(path, "application/json")], write_id=write_id(RUN))
     body = {"storedRun": run, "storedMeta": named_path or path, "classification": payload}
     await store.put(plan.files[path], canonical_json(body), "application/json")
     return {"storedMeta": path}
@@ -189,7 +191,7 @@ def _backend(storage: FakeStorage, mappings: _Mappings) -> ArtifactRecordBackend
 
 
 def _key(path: str) -> str:
-    return f"{FakeStorage.root(VRID, REV)}/{path}"
+    return f"{FakeStorage.root(VRID, REV, write_id(RUN))}/{path}"
 
 
 class TestArtifactRecordBackend:
@@ -301,7 +303,7 @@ class TestArtifactRecordBackend:
     ) -> None:
         lookup = {**await _write(storage, _record()), "currentRev": "fedcba9876543210", "storedRev": "fedcba9876543210"}
         # The pointer names a revision the document does not hold.
-        storage.roots[lookup["manifestDocId"]] = FakeStorage.root(VRID, REV)
+        storage.roots[lookup["manifestDocId"]] = FakeStorage.root(VRID, REV, write_id(RUN))
 
         assert await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup) is None
         assert outcomes == ["invalid"]

@@ -269,7 +269,7 @@ CLASSIFICATION: dict[str, str] = {
         "delete_connector_instance", "delete_record", "delete_records_and_relations", "delete_records_recursive", "delete_single_record", "delete_team_member_edges",
         "delete_record_entity_relations",
         "increment_node_field", "purge_trash_kept_record_groups", "purge_trashed_records", "remove_authenticated_as", "remove_nodes_by_field",
-        "remove_sync_point", "stage_states_delete_for_virtual_records", "stage_states_delete_unheld_revisions",
+        "remove_sync_point", "stage_states_delete_for_virtual_records", "stage_states_delete_unheld_revisions", "sweep_deleted_connector_writes",
         "unlink_nodes_missed_by_full_sync", "update_sync_point_if", "upsert_sync_point",
     ], "none"),
 }

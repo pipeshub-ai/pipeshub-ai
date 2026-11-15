@@ -44,6 +44,7 @@ vi.mock('@/lib/hooks/use-user-directory-entry', () => ({ useUserDirectoryEntry: 
 
 import PersonalConnectorsPage from '../connectorsPersonalPage';
 import { useConnectorsStore } from '../../store';
+import { useUserStore } from '@/lib/store/user-store';
 import {
   installDomShims,
   renderInTheme,
@@ -173,5 +174,63 @@ describe('Personal connectors page', () => {
     await waitFor(() => expect(api.getConnectorInstance).toHaveBeenCalledWith('conn-1'));
     await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
     expect(toastTitles()).not.toContain('Connector sync enabled');
+  });
+
+  describe('a link to a connector that is not in the personal catalog', () => {
+    it('sends a member to the personal catalog instead of an empty page', async () => {
+      nav.params = new URLSearchParams('connectorType=Confluence');
+      renderInTheme(<PersonalConnectorsPage />);
+
+      await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/workspace/connectors/personal/'));
+    });
+
+    it('sends an admin to the team page for that connector', async () => {
+      signInAs('admin');
+      nav.params = new URLSearchParams('connectorType=Confluence');
+      renderInTheme(<PersonalConnectorsPage />);
+
+      await waitFor(() =>
+        expect(nav.replace).toHaveBeenCalledWith('/workspace/connectors/team/?connectorType=Confluence')
+      );
+    });
+
+    it('does not redirect when the catalog did not load', async () => {
+      api.getRegistryConnectors.mockRejectedValue({ type: 'SERVER_ERROR', message: 'down' });
+      nav.params = new URLSearchParams('connectorType=Gmail');
+      renderInTheme(<PersonalConnectorsPage />);
+      await waitFor(() => expect(api.getActiveConnectors).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(nav.replace).not.toHaveBeenCalledWith('/workspace/connectors/personal/');
+    });
+
+    it('waits for a known role before choosing where to send the link', async () => {
+      useUserStore.setState({ isInitialized: true, profile: null });
+      nav.params = new URLSearchParams('connectorType=Confluence');
+      renderInTheme(<PersonalConnectorsPage />);
+      await waitFor(() => expect(api.getActiveConnectors).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(nav.replace).not.toHaveBeenCalled();
+    });
+
+    it('does not redirect when the list of connected sources did not load', async () => {
+      api.getActiveConnectors.mockRejectedValue({ type: 'SERVER_ERROR', message: 'down' });
+      nav.params = new URLSearchParams('connectorType=Confluence');
+      renderInTheme(<PersonalConnectorsPage />);
+      await waitFor(() => expect(api.getRegistryConnectors).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(nav.replace).not.toHaveBeenCalledWith('/workspace/connectors/personal/');
+    });
+
+    it('stays on the page for a personal connector', async () => {
+      nav.params = new URLSearchParams('connectorType=gmail');
+      renderInTheme(<PersonalConnectorsPage />);
+      await waitFor(() => expect(api.getRegistryConnectors).toHaveBeenCalled());
+      await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/workspace/connectors/personal/?connectorType=Gmail'));
+
+      expect(nav.replace).not.toHaveBeenCalledWith('/workspace/connectors/personal/');
+    });
   });
 });

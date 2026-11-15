@@ -14,6 +14,7 @@ import pytest
 
 from app.config.constants.arangodb import EventTypes
 from app.exceptions.indexing_exceptions import IndexingError
+from app.modules.indexing.embed_resume import EMBED_FIELDS
 from tests.unit.events.test_orchestrator_flow import (
     _make_event_data,
     _make_event_processor,
@@ -66,6 +67,7 @@ async def test_an_update_to_empty_content_drops_the_old_vectors_and_the_indexed_
     assert saved.args[2] == "vr-1" and not any(saved.args[3].values())
     assert _status_writes(ep)[-1] == {
         "indexingStatus": "EMPTY", "hasIndexedCopy": False, "processingStartedAt": None,
+        **dict.fromkeys(EMBED_FIELDS),  # the status that ends the event ends its embedding marker too
     }
 
 

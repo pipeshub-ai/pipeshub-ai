@@ -1,10 +1,6 @@
 import { HttpMethod } from '../../enums/http-methods.enum';
 import { BaseCommand } from '../command.interface';
-import { Logger } from '../../services/logger.service';
-
-const logger = Logger.getInstance({
-  service: 'StorageServiceCommand',
-});
+import { upstreamFetch } from '../../http/upstream-call';
 
 export interface StorageCommandOptions {
   uri: string;
@@ -39,22 +35,14 @@ export class StorageServiceCommand extends BaseCommand<Response> {
       requestOptions.body = this.body;
     }
 
-    try {
-      const response = await this.fetchWithRetry(
-        async () => fetch(url, requestOptions),
-        3,
-        300,
-      );
+    const response = await this.fetchWithRetry(
+      (attempt) => upstreamFetch(url, requestOptions, attempt),
+      3,
+      300,
+    );
 
-      // Assuming the response is JSON; adjust as needed.
-      const data = await response.json();
-      return data;
-    } catch (error: any) {
-      logger.error('Storage service command failed', {
-        error: error.message,
-        url: url,
-      });
-      throw error;
-    }
+    // Assuming the response is JSON; adjust as needed.
+    const data = await response.json();
+    return data;
   }
 }

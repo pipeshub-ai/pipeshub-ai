@@ -17,6 +17,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import IndexingFilterKey, ListOperator, SyncFilterKey
 from app.models.blocks import ChildRecord, ChildType, GroupSubType
+from app.connectors.sources.atlassian.core.jira_issue_security import IssueSecurityContext, SchemeKnowledge
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     GroupMemberships,
     GroupPickerPage,
@@ -60,7 +61,10 @@ def _make_connector() -> JiraDataCenterConnector:
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
-    return JiraDataCenterConnector(logger, dep, dsp, cs, "conn-dc-cov", "team", "u1")
+    conn = JiraDataCenterConnector(logger, dep, dsp, cs, "conn-dc-cov", "team", "u1")
+    # These tests do not serve issue security: a project without a scheme.
+    conn._load_issue_security = AsyncMock(return_value=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+    return conn
 
 
 def _list_unavailable_resp() -> MagicMock:

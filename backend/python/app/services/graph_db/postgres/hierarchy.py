@@ -30,6 +30,7 @@ from app.services.graph_db.postgres.base import (
     _ekey,
     _j,
 )
+from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.records import _TYPE_COLLS
 from app.services.graph_db.taxonomy import RECORD_ENRICHMENT_EDGE_COLLECTIONS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -129,7 +130,7 @@ class HierarchyMixin(PgBase):
                                                   org, colls, from_collection, from_id, to_collection, kind), transaction, write=True)
 
     async def delete_edges_by_relationship_types(self, from_id: str, from_collection: str, collection: str, relationship_types: list[str],
-                                                 transaction: str | None = None) -> int:
+                                                 transaction: str | None = None, *, raise_on_error: bool = False) -> int:
         """``nodeRelations`` is the hierarchy and the links, ``recordLinks`` the links only (Neo4j's ``NODE_RELATION|RECORD_LINK`` and ``RECORD_LINK``)."""
         org = current_org_id()
         colls, kind = _edge_scope(collection)
@@ -139,6 +140,8 @@ class HierarchyMixin(PgBase):
                 SELECT count(*) FROM d""", org, colls, from_collection, from_id, relationship_types, kind), transaction, write=True)
         except Exception as e:
             self.logger.error(f"❌ Delete edges by relationship types failed: {e}")
+            if raise_on_error:
+                raise
             return 0
 
     async def delete_parent_child_edge_to_record(self, record_id: str, transaction: str | None = None) -> bool:
@@ -150,8 +153,12 @@ class HierarchyMixin(PgBase):
         return bool(n)
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None) -> RecordGroup | None:
-        d = await self._one("""/* pipeshub:graph.get_record_group_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups'
-            AND doc->>'connectorId' = $2 AND doc->>'externalGroupId' = $3 LIMIT 1""", current_org_id(), connector_id, external_id, transaction=transaction)
+        org = current_org_id()
+        if isinstance(connector_id, str) and isinstance(external_id, str) and 0 < len(connector_id) <= 200 and 0 < len(external_id) <= 2000:      # the vetted read of graph_0008
+            d = await self._one("/* pipeshub:graph.node_by_external */ SELECT node_id, doc FROM graph.node_by_external('recordGroups', $1, $2)", connector_id, external_id, transaction=transaction)
+        else:
+            d = await self._one("""/* pipeshub:graph.get_record_group_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups'
+                AND doc->>'connectorId' = $2 AND doc->>'externalGroupId' = $3 LIMIT 1""", org, connector_id, external_id, transaction=transaction)
         return RecordGroup.from_arango_base_record_group(_arango(d, "recordGroups")) if d else None
 
     async def batch_upsert_record_groups(
@@ -321,9 +328,10 @@ class HierarchyMixin(PgBase):
             return {}
         safe = max(1, min(int(max_depth), 10))
         rec_depth = max(1, safe - 1)
-        try:
+
+        async def walk(tx: Tx) -> dict[str, int]:
             if parent_type == "app":
-                rows = await self._rows("""/* pipeshub:graph.get_node_depths_batch_app */ WITH RECURSIVE w(id, lvl) AS (
+                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_app */ WITH RECURSIVE w(id, lvl) AS (
                       SELECT s.id, 1 FROM (SELECT b.from_id AS id FROM graph.nodes g JOIN graph.edges b ON b.org_id = g.org_id AND b.coll = 'belongsTo'
                           AND b.to_coll = 'recordGroups' AND b.to_id = g.id AND b.from_coll = 'records'
                         WHERE g.org_id = $1 AND g.coll = 'recordGroups' AND g.doc->>'connectorId' = $2 AND NOT coalesce((g.doc->>'isDeleted')::boolean, false)
@@ -334,7 +342,7 @@ class HierarchyMixin(PgBase):
                       WHERE w.lvl <= $4)
                     SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) GROUP BY id""", org, parent_id, list(node_ids), rec_depth)
             elif parent_type == "recordGroup":
-                rows = await self._rows("""/* pipeshub:graph.get_node_depths_batch_group */ WITH RECURSIVE w(id, lvl) AS (
+                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_group */ WITH RECURSIVE w(id, lvl) AS (
                       SELECT b.from_id, 1 FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.to_coll = 'recordGroups' AND b.to_id = $2
                         AND b.from_coll = 'records'
                       UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
@@ -342,12 +350,17 @@ class HierarchyMixin(PgBase):
                       WHERE w.lvl <= $4)
                     SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) GROUP BY id""", org, parent_id, list(node_ids), rec_depth)
             else:
-                rows = await self._rows("""/* pipeshub:graph.get_node_depths_batch_record */ WITH RECURSIVE w(id, lvl) AS (SELECT $2::text, 0
+                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_record */ WITH RECURSIVE w(id, lvl) AS (SELECT $2::text, 0
                       UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
                           AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records' AND e.from_id = w.id AND e.to_coll = 'records') nx ON true
                       WHERE w.lvl < $4)
                     SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) AND lvl >= 1 GROUP BY id""", org, parent_id, list(node_ids), safe)
             return {r["id"]: int(r["lvl"]) for r in rows}
+        got = await kg_hier.answer(self, "depths", None, lambda tx: kg_hier.depths(tx, org, parent_id, parent_type, list(node_ids), safe, rec_depth), walk=walk)
+        if got is not None:
+            return got
+        try:
+            return await self._q(walk, None)
         except Exception as e:
             self.logger.error("get_node_depths_batch failed: %s", e)
             return {}

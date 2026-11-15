@@ -358,6 +358,21 @@ class TestUpdateKnowledgeBase:
         resp = client.put("/api/v1/kb/kb1", content="bad", headers={"content-type": "application/json"})
         assert resp.status_code == 400
 
+    def test_a_refused_field_comes_back_without_the_value_sent(self) -> None:
+        # F47: only `input` is dropped; Node logs this body.
+        app, kb_svc, _ = _make_app()
+        description = "F47SEED-kb-description-Ada " + "y" * 2000
+        resp = TestClient(app).put("/api/v1/kb/kb1", json={"description": description})
+        assert resp.status_code == 422
+        (entry,) = resp.json()["detail"]
+        assert "input" not in entry
+        assert entry["loc"] == ["description"]
+        assert entry["msg"] == "String should have at most 2000 characters"
+        assert entry["ctx"] == {"max_length": 2000}
+        assert entry["url"].startswith("https://errors.pydantic.dev/")
+        assert "F47SEED" not in resp.text
+        kb_svc.update_knowledge_base.assert_not_called()
+
     def test_failure(self):
         app, kb_svc, _ = _make_app()
         kb_svc.update_knowledge_base = AsyncMock(return_value={
