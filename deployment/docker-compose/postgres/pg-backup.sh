@@ -32,9 +32,10 @@ hold_s=$(( ${PG_BACKUP_GAP_HOLD_DAYS:-14} * 86400 ))   # a hold's age is its fil
 lock="${PG_BACKUP_LOCK:-/tmp/pg-backup.lock}"   # taken around each backup and its expire, and by clear-gap-hold
 
 if [ "${1:-}" = clear-gap-hold ]; then
-  if [ -n "$(drops)" ]; then echo "pg-backup: WAL drops are still uncovered by a full backup; the holds stay" >&2; exit 1; fi
+  # the lock first: drops and holds are read, and expire runs, all under it
   exec 9>"$lock"
   flock -w "${PG_BACKUP_LOCK_WAIT_SECS:-60}" 9 || { echo "pg-backup: a backup is running; try again when it ends" >&2; exit 1; }
+  if [ -n "$(drops)" ]; then echo "pg-backup: WAL drops are still uncovered by a full backup; the holds stay" >&2; exit 1; fi
   targets="${2:-$(held)}"
   [ -n "$targets" ] || { echo "pg-backup: no gap is held"; exit 0; }
   for t in $targets; do [ -e "$holds/$t" ] || { echo "pg-backup: no hold for gap $t" >&2; exit 1; }; done

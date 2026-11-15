@@ -137,6 +137,12 @@ check "the other gap stays held" "$(ls "$holds")" "000000010000000000000050"
 ( exec 9>"$work/lock"; flock 9; /bin/sleep 3 ) & /bin/sleep 0.5
 check "clear-gap-hold waits for the scheduler's lock and gives up if a backup holds it" "$(clear_hold)" "1 "
 wait
+# a drop written while clear-gap-hold waits for the lock is seen: the check runs under the lock
+( exec 9>"$work/lock"; flock 9; /bin/sleep 1; : > "$gaps/000000010000000000000070"; /bin/sleep 1 ) & /bin/sleep 0.3
+check "a drop written while clear-gap-hold waits for the lock refuses the release" "$(clear_hold PG_BACKUP_LOCK_WAIT_SECS=10)" "1 "
+wait
+check "and the hold stays" "$(ls "$holds")" "000000010000000000000050"
+rm -f "${gaps:?}"/*
 check "the last hold: expire, then release" "$(clear_hold)" "0 expire"
 check "no hold is left" "$(ls -A "$holds" | wc -l | tr -d ' ')" 0
 check "without a hold or drops, backups are followed by expire" \

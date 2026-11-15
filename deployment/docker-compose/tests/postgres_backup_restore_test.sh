@@ -271,10 +271,11 @@ for major in ${DRILL_MAJORS:-17 18}; do
   scripts/pipeshub-compose.sh exec -T pg-backup pgbackrest check > "$work/check.log" 2>&1 \
     || { echo "FAIL $major: pgbackrest check at the restore point"; tail -5 "$work/check.log"; fail=1; }
   at_loss="$(sql -c "$checksums")"
-  # why not a time: with no commit after the quiet moment, recovery to its time cannot stop and the server shuts down
+  # Why not a time: recovery to a time stops only at a later commit. A time an hour ahead is beyond every archived commit for certain
+  # (whatever autovacuum or the archive timeout did since the mark), so recovery ends before it and the server shuts down.
   copy="${proj}_pg_restore_quiet_time_$$"; copies+=("$copy"); rc=0
-  scripts/pg-restore.sh "$(sql -c 'select clock_timestamp()')" --into "$copy" > "$work/quiet-time.log" 2>&1 || rc=$?
-  check "$major: a time after the last commit cannot be reached" \
+  scripts/pg-restore.sh "$(sql -c "select clock_timestamp() + interval '1 hour'")" --into "$copy" > "$work/quiet-time.log" 2>&1 || rc=$?
+  check "$major: a time after the last archived commit cannot be reached" \
     "$rc $(grep -q 'recovery ended before configured recovery target was reached' "$work/quiet-time.log" && echo ended)" "1 ended"
   # the restored copies run as one-off pg-backup containers, which mount the data volume too: they go first, as the docs say
   for c in "${copies[@]}"; do $DOCKER rm -f "$c" >/dev/null 2>&1 || true; $DOCKER volume rm "$c" >/dev/null 2>&1 || true; done; copies=()
