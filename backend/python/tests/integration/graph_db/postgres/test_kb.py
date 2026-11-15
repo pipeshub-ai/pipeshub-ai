@@ -3,7 +3,8 @@
 The answers are those of ``Neo4jProvider`` (the same shapes, errors and empty cases). Access is asked in both directions: nobody gets a collection
 they hold no role on (another user, another org, a revoked grant, a hidden collection), and everybody gets the ones they do (directly or through a team).
 
-Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none.
+Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none, and PG_ADMIN_URL (an owner DSN, to analyse
+before the folder-name plan test).
 """
 from __future__ import annotations
 
@@ -375,13 +376,15 @@ async def test_folder_checks_know_membership_trash_names_depth_and_height(w: Wor
 async def test_a_folder_name_check_reads_the_parent_and_not_the_whole_organisation(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """Creating a folder asks whether its name is taken under the parent (or at the collection's root). The check reads that parent's children or that
     collection's records, so its cost does not grow with the records of the organisation's other connectors."""
+    admin_url = os.environ.get("PG_ADMIN_URL")
+    assert admin_url, "set PG_ADMIN_URL (an owner DSN): this test analyses graph.nodes and graph.edges before it reads the plans"
     await kb(w)
     await kb(w, "kb2")
     await folder(w, "top")
     await folder(w, "mid", parent="top")
     await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'n' || g,
         jsonb_build_object('recordName', 'top', 'mimeType', $2::text, 'connectorId', 'other') FROM generate_series(1, 20000) g""", w.org, FOLDER), write=True)
-    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    con = await asyncpg.connect(admin_url)
     try:
         await con.execute("ANALYZE graph.nodes; ANALYZE graph.edges")      # as autovacuum would have by now: a plan that needs no statistics is not what is measured
     finally:
