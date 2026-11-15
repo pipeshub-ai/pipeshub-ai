@@ -151,7 +151,8 @@ def test_the_provider_keeps_the_config_service_callers_read_from_it() -> None:
 HELPERS = ["_normalize_name", "_normalized_name_variants_lower", "_generate_upload_message", "_analyze_upload_structure", "_populate_file_destinations"]
 CALLER_METHODS = ["_get_kb_context_for_record", "_fetch_existing_file_names_in_parent", "_validate_upload_context", "get_user_app_ids",
                   "get_user_permission_app_ids", "_create_reindex_event_payload", "delete_inherit_permissions_relation_record_group", "get_user_apps",
-                  "delete_all_edges_for_node", "get_template", "clone_agent_template"]
+                  "delete_all_edges_for_node", "get_template", "clone_agent_template", "get_all_agent_templates", "update_agent_template",
+                  "delete_agent_template", "get_all_agents", "update_agent", "delete_agent"]
 
 
 def _providers() -> list[type]:
