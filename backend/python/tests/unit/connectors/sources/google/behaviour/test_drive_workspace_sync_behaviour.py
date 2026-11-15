@@ -3952,6 +3952,26 @@ async def test_an_item_read_again_by_id_then_trashed_in_the_same_run_is_not_writ
     assert "n" not in ws.records.records, "the flush does not write an item her feed reported in the trash"
 
 
+async def test_a_new_item_below_a_folder_trashed_in_the_same_run_is_not_written(ws: Workspace) -> None:
+    ws.world.folder("top", "Top", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    ws.world.folder("sub", "Sub", parent="top", owner=BOB)
+    await ws.sync()
+    ws.world.add_item("c", "c.txt", parent="sub", owner=BOB, perms=[reader(ALICE)])
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[ALICE].user_id}"))
+    ws.sync_points.sync_points[key]["feed_failed_items"] = ["c"]
+    # Only the folder is reported trashed: Google does not say each descendant gets a change of its own.
+    done = _after_permission_read_by(ws, "c", ALICE, lambda: ws.world.trash("top"))
+    bob = ws.world.users.pop(BOB)  # only Alice's run this time, so no other read of the item writes it
+    try:
+        await ws.sync()
+    finally:
+        ws.world.users[BOB] = bob
+
+    assert done, "her read by id came first"
+    assert "c" not in ws.records.records, "below a folder in the trash: not written"
+    assert "top" not in ws.records.records, "nor its folders, as placeholders above it"
+
+
 async def test_a_shared_drive_item_read_again_by_id_then_trashed_in_the_same_run_is_not_written(ws: Workspace) -> None:
     from app.connectors.sources.google.drive.team.connector import FAILED_ITEMS
 
