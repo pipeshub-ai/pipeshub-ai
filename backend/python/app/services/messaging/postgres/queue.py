@@ -94,6 +94,8 @@ UPDATE platform.queue_deliveries SET status = 'ready', locked_until = NULL, cons
   attempts = attempts - $7::int,
   visible_at = now() + make_interval(secs => $6::double precision)
 WHERE group_id = $1 AND topic = $2 AND message_id = $3 AND attempts = $4 AND status = 'claimed'"""
+_REISSUE = """/* pipeshub:queue.reissue */
+UPDATE platform.queue_messages SET value = $2 WHERE id = $1"""
 _DEAD = """/* pipeshub:queue.dead */
 UPDATE platform.queue_deliveries SET status = 'dead', locked_until = NULL, visible_at = now(), last_error = $5
 WHERE group_id = $1 AND topic = $2 AND message_id = $3 AND attempts = $4 AND status = 'claimed'"""
@@ -244,11 +246,15 @@ class PgQueue:
             ).endswith(" 1")
 
     async def nack(
-        self, group_id: str, d: Delivery, delay_s: float, error: str = "", *, refund: bool = False
+        self, group_id: str, d: Delivery, delay_s: float, error: str = "", *, refund: bool = False, value: str | None = None
     ) -> bool:
-        """Make the delivery visible again after ``delay_s``. ``refund`` gives back the attempt the claim counted (queue time, not failure)."""
+        """Make the delivery visible again after ``delay_s``. ``refund`` gives back the attempt the claim counted (queue time, not failure).
+
+        ``value`` replaces the stored message in the same transaction: the same event, signed again, so a message that waits
+        through many hand-backs does not outlive its envelope. It is applied only when this nack took effect.
+        """
         async with await self._write() as tx:
-            return (
+            nacked = (
                 await tx.execute(
                     _NACK,
                     group_id,
@@ -260,6 +266,9 @@ class PgQueue:
                     1 if refund else 0,
                 )
             ).endswith(" 1")
+            if nacked and value is not None:
+                await tx.execute(_REISSUE, d.message_id, value)
+            return nacked
 
     async def dead(self, group_id: str, d: Delivery, error: str = "") -> bool:
         async with await self._write() as tx:

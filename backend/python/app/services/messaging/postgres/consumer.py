@@ -26,6 +26,7 @@ from app.core.envelope import (
     decode_message,
     open_configured,
     open_stream_message,
+    refresh_envelope,
 )
 from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
@@ -424,7 +425,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                 # handed back for ever (a lease that is never freed): charged as a failure, so the delivery limit ends it
                 await self.queue.nack(group, d, delay, f"handed back {n} times: {e}"[:500])
                 return
-            await self.queue.nack(group, d, delay, str(e), refund=True)
+            await self.queue.nack(group, d, delay, str(e), refund=True, **await self._reissued(d))
             return
         self._handbacks.pop((d.topic, d.message_id), None)
         if success:
@@ -475,8 +476,24 @@ class PgMessagingConsumer(IMessagingConsumer):
         n = self._count_handback(key)
         delay = delays[0] if n == 1 else delays[0] * 10
         self._handback_log["precision"] = self._handback_log.get("precision", 0) + 1
-        await self.queue.nack(self.config.group_id, d, delay, "waiting for the embedding precision", refund=True)
+        await self.queue.nack(
+            self.config.group_id, d, delay, "waiting for the embedding precision", refund=True, **await self._reissued(d)
+        )
         return True
+
+    async def _reissued(self, d: Delivery) -> dict[str, str]:
+        """``nack`` keywords that store the message signed again, for a delivery being handed back without an attempt.
+
+        Such a message can wait far longer than an envelope lives, and its age counts from the signature. It is verified
+        first, so a tampered or already stale message is stored as it was and refused when next read.
+        """
+        try:
+            raw = decode_message(d.value)
+            fresh = await refresh_envelope(d.topic, raw) if isinstance(raw, dict) else None
+        except Exception as e:
+            self.logger.warning("Could not renew the envelope of %s before its hand-back: %s", d.message_id, type(e).__name__)
+            return {}
+        return {} if fresh is None else {"value": json.dumps(fresh)}
 
     async def _parse_for_sink(self, d: Delivery) -> StreamMessage | None:
         """The message of a delivery that will not be processed, for the disposition sink; None when it cannot be read."""

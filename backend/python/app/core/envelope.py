@@ -225,7 +225,7 @@ async def open_envelope(
     keys: Sequence[bytes] = (),
     required: bool | None = None,
     inbox: Inbox | None = None,
-    now: Callable[[], float] = time.time,
+    now: Callable[[], float] | None = None,
 ) -> Opened:
     """Verify a consumed message and derive its OrgContext. Raises EnvelopeRejected / DuplicateEnvelope."""
     required = ctx_required() if required is None else required
@@ -265,7 +265,7 @@ async def open_envelope(
             raise EnvelopeRejected("bad_signature")
     except (KeyError, TypeError, UnicodeEncodeError) as e:  # a lone surrogate cannot be encoded for the HMAC
         raise EnvelopeRejected("malformed") from e
-    age = now() - c["issuedAt"]
+    age = (now or time.time)() - c["issuedAt"]
     if age > max_age_seconds():
         STALE.inc(topic)
         if enforcing():
@@ -373,6 +373,27 @@ def with_event_id(message: dict[str, Any]) -> dict[str, Any]:
     if isinstance(message.get("eventId"), str) and message["eventId"]:
         return message
     return {**message, "eventId": str(uuid.uuid4())}
+
+
+async def refresh_envelope(topic: str, message: dict[str, Any]) -> dict[str, Any] | None:
+    """The same signed message issued again now, for a consumer that keeps it waiting past its lifetime.
+
+    A delivery that is handed back repeatedly keeps its stored envelope, so the time it has waited counts as its age and
+    the envelope would be refused as stale. The message is verified first (signature, age, shape), exactly as on receipt;
+    only then is ``issuedAt`` renewed and the signature recomputed over the unchanged payload. Raises EnvelopeRejected for a
+    message that does not verify, which includes one that is already stale. Returns None when there is nothing to renew: no
+    envelope, or no key to verify or sign with.
+    """
+    if not isinstance(message.get("ctx"), dict) or not _sign_key or _keys is None:
+        return None
+    keys = await _keys()
+    if not keys:
+        return None
+    await open_envelope(topic, message, keys=keys, required=True)
+    c = {**message["ctx"], "issuedAt": int(time.time())}
+    event_type = message.get("eventType")
+    c["sig"] = compute_sig(_sign_key, topic, c, message["payload"], event_type if isinstance(event_type, str) else "")
+    return {**message, "ctx": c}
 
 
 def sign_message(topic: str, message: dict[str, Any]) -> dict[str, Any]:
