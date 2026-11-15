@@ -29,7 +29,10 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -72,6 +75,7 @@ from app.connectors.sources.atlassian.core.html_utils import (
     inline_images_as_markdown,
 )
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    ROLE_LIST_MAX_AGE_MS,
     UNREADABLE_REASONS,
     IssueSecurityContext,
     SchemeKnowledge,
@@ -80,7 +84,6 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     classify_scheme_response,
     collect_paged_values,
     custom_field_ids_from_members,
-    hold_levels_naming_unread_roles,
     http_status_is_transient,
     index_members,
     level_reads_alike,
@@ -89,12 +92,17 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     pre_walk_marker,
     read_security_level,
     refuses_a_scope,
+    roles_for_levels,
     scheme_has_no_levels,
     unreadable_reason,
     unreadable_security_notices,
 )
 from app.connectors.sources.atlassian.core.oauth import OAUTH_JIRA_CONFIG_PATH
-from app.connectors.sources.atlassian.core.people import atlassian_person, jira_user, ticket_people
+from app.connectors.sources.atlassian.core.people import (
+    atlassian_person,
+    jira_user,
+    ticket_people,
+)
 from app.connectors.sources.atlassian.core.read_outcome import (
     JiraReadError,
     StoredAccessReadError,
@@ -141,7 +149,6 @@ from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import datetime_to_epoch_ms
-
 
 # Pagination/constants
 DEFAULT_MAX_RESULTS: int = 50
@@ -431,6 +438,9 @@ def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], s
 class JiraDataCenterConnector(BaseConnector):
     """Jira Data Center connector: sync orchestration aligned with Jira Cloud"""
 
+    # How long a sync that cannot read the application roles applies the last list read (``roles_for_levels``).
+    ROLE_LIST_MAX_AGE_MS = ROLE_LIST_MAX_AGE_MS
+
     # A team connector applies issue security levels; a personal one shows its account's
     # issues to that account only, so it has no level to apply.
     _enforces_issue_security: bool = True
@@ -534,6 +544,8 @@ class JiraDataCenterConnector(BaseConnector):
         self._never_tightened_security: set[str] = set()
         self._skipped_holders_logged: set[tuple[str, str | None, str]] = set()
         self._app_roles_mapping: dict[str, list[dict[str, Any]]] = {}
+        # The role list security levels apply: the one read this sync, or the last one kept (``roles_for_levels``).
+        self._level_roles: dict[str, list[dict[str, Any]]] = {}
         # Issues of the project being synced that failed to build, this run.
         self._issue_build_failures: int = 0
         # Issue id -> (project id, level id) of a parent issue read this sync; None when it is gone
@@ -977,6 +989,7 @@ class JiraDataCenterConnector(BaseConnector):
 
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
             self._app_roles_mapping = app_roles_mapping
+            await self._read_level_roles()
 
             # Get project_keys filter if configured (to fetch only those projects)
             allowed_keys = None
@@ -3298,10 +3311,20 @@ class JiraDataCenterConnector(BaseConnector):
             for row in rows
         ]
 
-    def _security_with_roles(self, security: IssueSecurityContext) -> IssueSecurityContext:
-        # A refused role list (403) leaves the role's groups unknown too, not empty: its levels are held the same way.
-        return hold_levels_naming_unread_roles(
-            security, app_roles_unread=self._app_roles_unread or self._app_roles_forbidden)
+    async def _read_level_roles(self) -> None:
+        """The role list security levels apply this sync (``roles_for_levels``): the one read, or the last one kept."""
+        read = not (self._app_roles_forbidden or self._app_roles_unread)
+        self._level_roles, expired = await roles_for_levels(
+            self.issues_sync_point, self._app_roles_mapping, read=read, now_ms=get_epoch_timestamp_in_ms(),
+            max_age_ms=self.ROLE_LIST_MAX_AGE_MS,
+        )
+        if expired:
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title("cannot read Jira roles"),
+                message="Jira roles unreadable: grant the connector account Jira admin to restore role-based access.",
+            )
 
     async def _warn_unreadable_security(self) -> None:
         """One warning per reason for the projects whose issue security levels could not be
@@ -3378,7 +3401,7 @@ class JiraDataCenterConnector(BaseConnector):
         # members of each level are fingerprinted in the checkpoint and only the issues in a level
         # whose members changed are read again, after the normal incremental pass. A project
         # synced before levels were applied has no digest, which reads every leveled issue again once.
-        security = self._security_with_roles(await self._load_issue_security(project_key))
+        security = await self._load_issue_security(project_key)
         self._issue_security[project_id] = security
         self._issue_build_failures = 0
         self._reread_whole_project = False
@@ -3392,7 +3415,7 @@ class JiraDataCenterConnector(BaseConnector):
         if not isinstance(stored_levels, dict):
             stored_levels = None
         reread, changed_levels, levels_to_save = plan_level_reread(
-            security, stored_levels, is_new_project=is_new_project, app_roles_mapping=self._app_roles_mapping,
+            security, stored_levels, is_new_project=is_new_project, app_roles_mapping=self._level_roles,
         )
         if levels_to_save.get("*") == "held":
             self._never_tightened_security.add(project_key)  # hidden meanwhile, not kept as stored
@@ -4710,7 +4733,7 @@ class JiraDataCenterConnector(BaseConnector):
             project_key=(fields.get("project") or {}).get("key") or "",
             context=context,
             user_by_account_id=level_users,
-            app_roles_mapping=self._app_roles_mapping,
+            app_roles_mapping=self._level_roles,
             reporter_email=record.reporter_email,
             assignee_email=record.assignee_email,
         )
@@ -4891,10 +4914,9 @@ class JiraDataCenterConnector(BaseConnector):
                         project_key=(fields.get("project") or {}).get("key") or str(issue_key).rsplit("-", 1)[0],
                         context=security,
                         user_by_account_id=level_users,
-                        app_roles_mapping=self._app_roles_mapping,
+                        app_roles_mapping=self._level_roles,
                         reporter_email=reporter_email,
                         assignee_email=assignee_email,
-                        stored_unchanged=not (is_new or is_placeholder or is_issue_changed or self._rereading_children),
                     )
                     if (
                         issue_record.access_rule == AccessRule.RESTRICTED and not issue_record.rewrite_permissions
@@ -6454,7 +6476,7 @@ class JiraDataCenterConnector(BaseConnector):
             project_ref = project.get("key") or project_id
             security = (security_by_project or {}).get(project_ref)
             if security is None:
-                security = self._security_with_roles(await self._load_issue_security(project_ref, cached=False))
+                security = await self._load_issue_security(project_ref, cached=False)
                 if security_by_project is not None:
                     security_by_project[project_ref] = security
             if parent_external_id and not issue_data["is_subtask"]:
@@ -6517,7 +6539,7 @@ class JiraDataCenterConnector(BaseConnector):
                 project_key=project.get("key") or str(issue.get("key") or "").rsplit("-", 1)[0],
                 context=security,
                 user_by_account_id=user_by_account_id,
-                app_roles_mapping=self._app_roles_mapping,
+                app_roles_mapping=self._level_roles,
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
             )

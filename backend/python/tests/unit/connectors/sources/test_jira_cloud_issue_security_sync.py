@@ -8,20 +8,18 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.config.constants.arangodb import AccessRule
 from app.connectors.sources.atlassian.core.jira_issue_security import (
-    HELD_DIGEST,
     UNREADABLE_AUTH,
     UNREADABLE_PERMISSION,
     UNREADABLE_SCOPE,
     UNREADABLE_TRANSIENT,
     IssueSecurityContext,
     SchemeKnowledge,
-    plan_level_reread,
     unreadable_reason,
 )
 from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
@@ -62,7 +60,7 @@ def _resp(status: int = 200, body: object = None) -> MagicMock:
 def _connector() -> JiraConnector:
     dep = MagicMock()
     dep.org_id = "org-1"
-    for name in ("on_new_records", "on_record_content_update", "on_new_record_groups", "note_kept_record_group"):
+    for name in ("on_new_records", "on_record_content_update", "on_new_record_groups"):
         setattr(dep, name, AsyncMock())
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.get_record_group_by_external_id = AsyncMock(return_value=None)
@@ -111,95 +109,6 @@ async def _build(
     connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
     records, _ = await connector._build_issue_records([issue], PROJECT_ID, _users())
     return records[0]
-
-
-async def _rebuild_unchanged(connector: JiraConnector, issue: dict, context: IssueSecurityContext) -> tuple:
-    """An issue stored and unchanged at source, read again by a pass over stored issues."""
-    stored = MagicMock(id="rid", version=2, is_placeholder=False,
-                       source_updated_at=connector._parse_jira_timestamp(issue["fields"]["updated"]))
-    connector._issue_security[PROJECT_ID] = context
-    connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=stored)
-    records, _ = await connector._build_issue_records([issue], PROJECT_ID, _users(), is_new_project=True)
-    return records[0]
-
-
-def _held(members: dict, *, connector: JiraConnector) -> IssueSecurityContext:
-    connector._app_roles_forbidden, connector._app_roles_mapping = True, {}
-    return connector._hold_levels_naming_unread_roles(_present(members=members))
-
-
-def _subtask(issue: dict) -> dict:
-    issue["fields"]["issuetype"] = {"name": "Sub-task", "hierarchyLevel": -1, "subtask": True}
-    issue["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
-    return issue
-
-
-class TestAHeldLevel:
-    """A level naming an application role while the roles are refused (403): what its issues get."""
-    ROLE_AND_GROUP = {"10102": [{"type": "applicationRole", "parameter": "jira-software"}, {"type": "group", "value": "g-2"}]}
-
-    @pytest.mark.asyncio
-    async def test_a_new_issue_joins_the_stored_group(self) -> None:
-        c = _connector()
-        ctx = _held(self.ROLE_AND_GROUP, connector=c)
-        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id="lvl"))
-        await c._write_level_groups(PROJECT_ID, "PROJ", ctx, ["10102"], {})
-        c.data_entities_processor.on_new_record_groups.assert_not_awaited()  # the stored group keeps the role's groups
-        record, perms, _ = await _build(c, _issue({"id": "10102"}), ctx)
-        assert (record.access_group_external_id, record.access_rule, record.rewrite_permissions) == (
-            "level:p-1:10102", AccessRule.STRICT, True)
-
-    @pytest.mark.asyncio
-    async def test_a_group_never_stored_is_written_with_the_holders_that_resolved(self) -> None:
-        c = _connector()
-        ctx = _held(self.ROLE_AND_GROUP, connector=c)
-        await c._write_level_groups(PROJECT_ID, "PROJ", ctx, ["10102"], {})
-        (group, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
-        assert group.external_group_id == "level:p-1:10102" and [g.external_id for g in grants] == ["g-2"]
-        record, _, _ = await _build(c, _issue({"id": "10102"}), ctx)
-        assert record.access_group_external_id == "level:p-1:10102"
-
-    @pytest.mark.asyncio
-    async def test_an_issue_moved_onto_it_takes_its_group_and_loses_its_old_grants(self) -> None:
-        c = _connector()
-        ctx = _held(self.ROLE_AND_GROUP, connector=c)
-        moved = MagicMock(id="rid", version=2, source_updated_at=1, is_placeholder=False)  # changed at source
-        record, _, _ = await _build(c, _issue({"id": "10102"}), ctx, existing=moved)
-        assert (record.access_group_external_id, record.rewrite_permissions) == ("level:p-1:10102", True)
-
-    @pytest.mark.asyncio
-    async def test_a_sub_task_moved_onto_it_is_written_with_the_holders_that_resolved(self) -> None:
-        c = _connector()
-        ctx = _held(self.ROLE_AND_GROUP, connector=c)
-        moved = MagicMock(id="rid", version=2, source_updated_at=1, is_placeholder=False)
-        record, perms, _ = await _build(c, _subtask(_issue({"id": "10102"}, key="PROJ-2", issue_id="1002")), ctx, existing=moved)
-        assert (record.access_rule, record.rewrite_permissions) == (AccessRule.RESTRICTED, True)
-        assert [p.external_id for p in perms] == ["g-2"]  # the old level's holders do not survive
-
-    @pytest.mark.asyncio
-    async def test_a_sub_task_read_again_through_its_parent_is_not_known_unchanged(self) -> None:
-        """Jira copies a parent's level onto a sub-task without moving its ``updated``."""
-        c = _connector()
-        ctx = _held(self.ROLE_AND_GROUP, connector=c)
-        c._rereading_children = True
-        record, _, _ = await _rebuild_unchanged(c, _subtask(_issue({"id": "10102"}, key="PROJ-2", issue_id="1002")), ctx)
-        assert record.rewrite_permissions is True
-
-    @pytest.mark.asyncio
-    async def test_an_unchanged_sub_task_keeps_its_copy_through_a_full_sync(self) -> None:
-        """Its copy names the role's groups: a full sync's first write, which replaces grants, must not reach it."""
-        c = _connector()
-        ctx = _held(self.ROLE_AND_GROUP, connector=c)
-        record, perms, changed = await _rebuild_unchanged(c, _subtask(_issue({"id": "10102"}, key="PROJ-2", issue_id="1002")), ctx)
-        assert (perms, record.rewrite_permissions, changed) == ([], False, False)
-        await c._process_new_records([(record, perms, changed)], "PROJ", {"new_count": 0, "updated_count": 0})
-        c.data_entities_processor.on_new_records.assert_not_awaited()
-        c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record)
-
-
-def _readable(members: dict, roles: dict) -> dict[str, str]:
-    """The level digests a sync saves while it reads the roles."""
-    return plan_level_reread(_present(members=members), None, is_new_project=True, app_roles_mapping=roles, split=True)[2]
 
 
 class TestSecuredIssues:
@@ -794,13 +703,14 @@ class TestReindexAppliesTheLevel:
 
     @pytest.mark.asyncio
     async def test_a_role_list_read_in_part_leaves_the_stored_record_alone(self) -> None:
+        """A reindex applies the role list of the last sync (``_level_roles``); with none, a role holder does not
+        resolve and the stored record stays."""
         members = {"isLast": True, "values": [{"issueSecurityLevelId": "10102", "holder": {
             "type": "applicationRole", "parameter": "jira-software"}}]}
         c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, members)])
-        c._app_roles_mapping, c._app_roles_unread = {"jira-software": [{"groupId": "g-1"}]}, True
         assert await c._check_and_fetch_updated_issue(_stored_ticket(), {}) is None
         c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, members)])
-        c._app_roles_mapping = {"jira-software": [{"groupId": "g-1"}]}
+        c._level_roles = {"jira-software": [{"groupId": "g-1"}]}
         _, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {})
         (_, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
         assert perms == [] and {p.external_id for p in grants} == {"g-1"}
@@ -1009,125 +919,18 @@ class TestLevelPassAfterFailuresAndRemovals:
         assert saved_before == []
 
     @pytest.mark.asyncio
-    async def test_a_level_naming_a_role_read_in_part_keeps_its_grants(self) -> None:
-        """The role's groups are unknown, not fewer: the level is held, its stored digest kept and marked."""
-        members = {"10102": [{"type": "applicationRole", "parameter": "jira-software"}]}
-        stored = _readable(members, {"jira-software": [{"groupId": "g-1"}]})
-        c = _connector()
-        c._app_roles_unread = True
-        c, ctx, calls, _ = await self._sync(stored_levels=stored, ctx=_present(members=members), connector=c)
-        assert ctx.held_levels == {"10102"} and ctx.members_readable is True and ctx.defer_checkpoint is False
-        assert len(calls) == 1
-        saved = json.loads(c.issues_sync_point.update_sync_point.await_args.args[1]["security_levels"])
-        assert saved == {"10102": stored["10102"] + HELD_DIGEST}
-        record, perms, _ = await _build(c, _issue({"id": "10102"}), ctx)
-        assert (record.access_group_external_id, record.rewrite_permissions) == ("level:p-1:10102", True)  # joins it
-
-    @pytest.mark.asyncio
-    async def test_a_refused_role_list_holds_a_level_naming_a_role_until_the_roles_are_read(self) -> None:
-        """A 403 leaves the role's groups unknown, not empty: no pass rewrites the level's issues (a sub-task holds a
-        copy of its level's holders) and the stored digest stays, so the next sync that reads the roles re-reads them."""
+    async def test_a_level_naming_a_role_read_in_part_applies_the_role_list_kept(self) -> None:
+        """The role's groups are the ones last read (``roles_for_levels``), not none: nothing changed, nothing re-read."""
         members = {"10102": [{"type": "applicationRole", "parameter": "jira-software"}]}
         roles = {"jira-software": [{"groupId": "g-1"}]}
-        stored = _readable(members, roles)
-        sub = _issue({"id": "10102"}, key="PROJ-2", issue_id="1002")
-        sub["fields"]["issuetype"] = {"name": "Sub-task", "hierarchyLevel": -1, "subtask": True}
-        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
-
         c = _connector()
-        c._app_roles_forbidden, c._app_roles_mapping = True, {}
-        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id="lvl"))
+        c._app_roles_unread, c._app_roles_mapping, c._level_roles = True, {}, roles
+        stored = _present(members=members).level_fingerprints(roles, split=True)
         c, ctx, calls, _ = await self._sync(stored_levels=stored, ctx=_present(members=members), connector=c)
+        assert ctx.members_readable is True and ctx.defer_checkpoint is False
         assert len(calls) == 1
-        c.data_entities_processor.on_new_record_groups.assert_not_awaited()
-        saved = json.loads(c.issues_sync_point.update_sync_point.await_args.args[1]["security_levels"])
-        assert saved == {"10102": stored["10102"] + HELD_DIGEST}
-        record, perms, _ = await _rebuild_unchanged(c, sub, ctx)
-        assert (perms, record.rewrite_permissions) == ([], False)  # its stored copy, the role's groups included
-
-        c = _connector()
-        c._app_roles_mapping = roles
-        c, ctx, calls, _ = await self._sync(stored_levels=saved, ctx=_present(members=members), connector=c)
-        assert [call["level_ids"] for call in calls] == [None, ["10102"]]  # the marked digest re-reads the level
-        record, perms, _ = await _rebuild_unchanged(c, sub, ctx)
-        assert record.rewrite_permissions and (EntityType.GROUP, "g-1") in {(p.entity_type, p.external_id) for p in perms}
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("cause", ["refused", "unread"])
-    async def test_a_level_naming_no_role_is_applied_while_another_names_a_role(self, cause: str) -> None:
-        """While the roles cannot be read, only the level naming one is held: a holder removed from a plain level of the
-        same scheme loses its issues at once, through the plain level's group and its re-read."""
-        role_level = [{"type": "applicationRole", "parameter": "jira-software"}]
-        roles = {"jira-software": [{"groupId": "g-1"}]}
-        before = _present(members={"10102": role_level, "10103": [{"type": "group", "value": "g-old"}]})
-        stored = _readable(before.members_by_level, roles)
-        now = _present(members={"10102": role_level, "10103": [{"type": "group", "value": "g-new"}]})
-        c = _connector()
-        c._app_roles_mapping = {}
-        if cause == "refused":
-            c._app_roles_forbidden = True
-        else:
-            c._app_roles_unread = True
-        c.data_entities_processor.note_kept_record_group = AsyncMock()
-        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id="lvl"))
-        c, ctx, calls, _ = await self._sync(stored_levels=stored, ctx=now, connector=c)
-        assert [call["level_ids"] for call in calls] == [None, ["10103"]]
-        (group, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
-        assert group.external_group_id == "level:p-1:10103" and [g.external_id for g in grants] == ["g-new"]
-        c.data_entities_processor.note_kept_record_group.assert_awaited_once_with("conn-sec", "level:p-1:10102")
-        saved = json.loads(c.issues_sync_point.update_sync_point.await_args.args[1]["security_levels"])
-        assert saved == {"10102": stored["10102"] + HELD_DIGEST, "10103": now.level_fingerprints({}, split=True)["10103"]}
-        plain, _, _ = await _build(c, _issue({"id": "10103"}), ctx)
-        assert (plain.access_group_external_id, plain.rewrite_permissions) == ("level:p-1:10103", True)
-        held, perms, _ = await _build(c, _issue({"id": "10102"}, key="PROJ-2", issue_id="1002"), ctx)
-        assert (held.access_group_external_id, held.access_rule, held.rewrite_permissions) == (
-            "level:p-1:10102", AccessRule.STRICT, True)  # joins the stored group, which keeps the role's groups
-
-    ROLE_AND_GROUPS = [{"type": "applicationRole", "parameter": "jira-software"},
-                       {"type": "group", "value": "g-2"}, {"type": "group", "value": "g-3"}]
-
-    async def _refused(self, stored: dict, members: dict, *, group_stored: bool) -> tuple:
-        c = _connector()
-        c._app_roles_forbidden, c._app_roles_mapping = True, {}
-        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(
-            return_value=MagicMock(id="lvl") if group_stored else None)
-        c, ctx, calls, _ = await self._sync(stored_levels=stored, ctx=_present(members=members), connector=c)
-        maps = [call.args[1]["security_levels"] for call in c.issues_sync_point.update_sync_point.await_args_list
-                if "security_levels" in call.args[1]]
-        return c, ctx, calls, json.loads(maps[-1]) if maps else stored
-
-    @staticmethod
-    def _written(c: JiraConnector) -> list[str]:
-        await_args = c.data_entities_processor.on_new_record_groups.await_args
-        return [] if await_args is None else [g.external_id for _, grants in await_args.args[0] for g in grants]
-
-    @pytest.mark.asyncio
-    async def test_a_group_first_written_during_a_hold_follows_its_holders(self) -> None:
-        """Written while the roles were refused, it holds only the holders that resolved: nothing of the roles to keep.
-        A holder removed from the level is removed from it on the next sync, and the level's issues are read again."""
-        c, _, _, saved = await self._refused({}, {"10102": self.ROLE_AND_GROUPS}, group_stored=False)
-        assert sorted(self._written(c)) == ["g-2", "g-3"]
-        c, ctx, calls, _ = await self._refused(saved, {"10102": self.ROLE_AND_GROUPS[:2]}, group_stored=True)
-        assert self._written(c) == ["g-2"] and ctx.held_levels == set()
-        assert [call["level_ids"] for call in calls] == [None, ["10102"]]
-
-    @pytest.mark.asyncio
-    async def test_a_level_held_from_a_read_state_keeps_its_roles_groups(self) -> None:
-        roles = {"jira-software": [{"groupId": "g-1"}]}
-        stored = _readable({"10102": self.ROLE_AND_GROUPS}, roles)
-        c, ctx, calls, saved = await self._refused(stored, {"10102": self.ROLE_AND_GROUPS}, group_stored=True)
-        assert self._written(c) == [] and ctx.held_levels == {"10102"} and len(calls) == 1
-        c, ctx, _, _ = await self._refused(saved, {"10102": self.ROLE_AND_GROUPS}, group_stored=True)
-        assert self._written(c) == [] and ctx.held_levels == {"10102"}  # and on every sync of the hold
-
-    @pytest.mark.asyncio
-    async def test_a_holder_removed_from_a_level_held_from_a_read_state_is_applied_without_the_roles(self) -> None:
-        """The residual: without the role list the roles' groups cannot be told from the group's other grants, so the
-        removal is applied and the roles' groups are left out until a sync reads them (fewer readers, never more)."""
-        stored = _readable({"10102": self.ROLE_AND_GROUPS}, {"jira-software": [{"groupId": "g-1"}]})
-        c, ctx, calls, _ = await self._refused(stored, {"10102": self.ROLE_AND_GROUPS[:2]}, group_stored=True)
-        assert self._written(c) == ["g-2"] and ctx.held_levels == set()
-        assert [call["level_ids"] for call in calls] == [None, ["10102"]]
+        record, _, _ = await _build(c, _issue({"id": "10102"}), ctx)
+        assert (record.access_group_external_id, record.rewrite_permissions) == ("level:p-1:10102", True)
 
     @pytest.mark.asyncio
     async def test_a_role_read_in_part_does_not_hold_levels_without_roles(self) -> None:
@@ -1198,7 +1001,7 @@ class TestLevelPassAfterFailuresAndRemovals:
         sub-tasks, which hold a copy."""
         ctx = _present(members={"10102": [{"type": "applicationRole", "parameter": "jira-software"}]})
         c = _connector()
-        c._app_roles_mapping = {"jira-software": [{"groupId": "g-1"}]}
+        c._level_roles = {"jira-software": [{"groupId": "g-1"}]}
         stored = ctx.level_fingerprints({"jira-software": [{"groupId": "g-1"}, {"groupId": "g-removed"}]}, split=True)
         _, _, calls, _ = await self._sync(stored_levels=stored, ctx=ctx, connector=c)
         assert [call["level_ids"] for call in calls] == [None, ["10102"]]
@@ -2005,19 +1808,18 @@ class TestAPartialUserReadKeepsTheStoredLevelGroup:
         assert [g.external_id for g in grants] == ["group-1"]
 
     @pytest.mark.asyncio
-    async def test_a_refused_role_list_keeps_a_stored_group_naming_a_role(self) -> None:
+    async def test_a_refused_role_list_writes_the_group_with_the_role_list_kept(self) -> None:
         """A 403 from applicationrole ("Returned if the user is not an administrator") leaves the role's groups unknown,
-        not empty: a group written while they were read (a kept held level) keeps them."""
+        not empty: the group is written with the groups the roles had when last read."""
         c = _connector()
         c._issue_security[PROJECT_ID] = _present(members={"10102": [
             {"type": "group", "value": "group-1"}, {"type": "applicationRole", "parameter": "jira-software"}]})
-        c._issue_security[PROJECT_ID].held_levels = {"10102"}
         c._app_roles_forbidden, c._app_roles_mapping = True, {}
-        c.data_entities_processor.note_kept_record_group = AsyncMock()
+        c._level_roles = {"jira-software": [{"groupId": "g-1"}]}
         c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id="lvl"))
         await c._write_level_groups(PROJECT_ID, "PROJ", c._issue_security[PROJECT_ID], ["10102"], {})
-        c.data_entities_processor.on_new_record_groups.assert_not_awaited()
-        c.data_entities_processor.note_kept_record_group.assert_awaited_once_with("conn-sec", "level:p-1:10102")
+        (_, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert sorted(g.external_id for g in grants) == ["g-1", "group-1"]
 
     @pytest.mark.asyncio
     async def test_a_finished_read_writes_the_group_without_the_holder(self) -> None:
@@ -2026,6 +1828,115 @@ class TestAPartialUserReadKeepsTheStoredLevelGroup:
         c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id="lvl"))
         await c._write_level_groups(PROJECT_ID, "PROJ", c._issue_security[PROJECT_ID], ["10102"], {})
         c.data_entities_processor.on_new_record_groups.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_issue_keeping_its_grants_is_not_replaced_by_a_full_sync() -> None:
+    """A level read that will be retried keeps an unchanged issue's grants: a full sync's first write, which replaces
+    grants, must not reach it, so it goes through the content update, which never does."""
+    c = _connector()
+    ctx = _present()
+    ctx.members_readable, ctx.defer_checkpoint = False, True  # the members read failed for now
+    issue = _issue({"id": "10102"})
+    c._issue_security[PROJECT_ID] = ctx
+    c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(
+        id="rid", version=2, is_placeholder=False, source_updated_at=c._parse_jira_timestamp(issue["fields"]["updated"])))
+    (record, perms, changed), = (await c._build_issue_records([issue], PROJECT_ID, _users(), is_new_project=True))[0]
+    assert (record.rewrite_permissions, changed) == (False, False)
+    await c._process_new_records([(record, perms, changed)], "PROJ", {"new_count": 0, "updated_count": 0})
+    c.data_entities_processor.on_new_records.assert_not_awaited()
+    c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record)
+
+
+class _KeptSyncPoints:
+    """Sync points kept across connectors, as the store keeps them across syncs."""
+
+    def __init__(self) -> None:
+        self.points: dict[str, dict] = {}
+
+    async def read_sync_point(self, key: str) -> dict:
+        return dict(self.points.get(key, {}))
+
+    async def update_sync_point(self, key: str, data: dict) -> None:
+        self.points[key] = dict(data)
+
+
+HOUR_MS = 60 * 60 * 1000
+
+
+async def _roles_at(points: _KeptSyncPoints, now_ms: int, *, roles: dict | None) -> JiraConnector:
+    """A connector whose sync read the roles (``roles``) or was refused them (None) at ``now_ms``."""
+    c = _connector()
+    c.issues_sync_point = points
+    c.notify = AsyncMock()
+    c._app_roles_forbidden, c._app_roles_mapping = roles is None, roles or {}
+    with patch("app.connectors.sources.atlassian.jira_cloud.connector.get_epoch_timestamp_in_ms", return_value=now_ms):
+        await c._read_level_roles()
+    return c
+
+
+class TestRolesKeptForLevels:
+    """applicationrole needs "Administer Jira" and answers 403 "Returned if the user is not an administrator"
+    (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-application-roles/): the last role list read
+    is applied for a bounded time, so a level's other holders still follow Jira."""
+    ROLES = {"jira-software": [{"groupId": "g-1"}]}
+    LEVEL = [{"type": "applicationRole", "parameter": "jira-software"},
+             {"type": "group", "value": "g-2"}, {"type": "group", "value": "g-3"}]
+
+    async def _group_written(self, c: JiraConnector, stored: dict, members: list) -> tuple[list[str], list]:
+        _, _, calls, _ = await TestMemberChangeRereadsOnlyTheAffectedLevels()._sync(
+            stored_levels=stored, ctx=_present(members={"10102": members}), connector=c)
+        (_, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
+        return sorted(g.external_id for g in grants), [call["level_ids"] for call in calls]
+
+    @pytest.mark.asyncio
+    async def test_a_holder_removed_while_the_roles_are_refused_is_removed_and_the_roles_groups_stay(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        stored = _present(members={"10102": self.LEVEL}).level_fingerprints(self.ROLES, split=True)
+        c = await _roles_at(points, HOUR_MS, roles=None)
+        written, passes = await self._group_written(c, stored, self.LEVEL[:2])
+        assert written == ["g-1", "g-2"] and passes == [None, ["10102"]]
+        c.notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_past_the_bound_the_roles_groups_are_dropped_and_the_owner_told_once(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        stored = _present(members={"10102": self.LEVEL}).level_fingerprints(self.ROLES, split=True)
+        c = await _roles_at(points, 25 * HOUR_MS, roles=None)
+        written, passes = await self._group_written(c, stored, self.LEVEL)
+        assert written == ["g-2", "g-3"] and passes == [None, ["10102"]]  # its sub-tasks' copies are read again too
+        c.notify.assert_awaited_once()
+        assert "grant the connector account Jira admin" in c.notify.await_args.kwargs["message"]
+        c = await _roles_at(points, 26 * HOUR_MS, roles=None)
+        assert c._level_roles == {}
+        c.notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_role_group_change_during_the_refusal_does_not_outlast_the_bound(self) -> None:
+        """Jira moved the role from g-1 to g-new while the list was refused: g-1 is granted only until the bound."""
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        within = await _roles_at(points, 23 * HOUR_MS, roles=None)
+        assert within._level_roles == self.ROLES
+        past = await _roles_at(points, 25 * HOUR_MS, roles=None)
+        assert past._level_roles == {}
+        read = await _roles_at(points, 26 * HOUR_MS, roles={"jira-software": [{"groupId": "g-new"}]})
+        assert read._level_roles == {"jira-software": [{"groupId": "g-new"}]}
+        assert (await _roles_at(points, 27 * HOUR_MS, roles=None))._level_roles == read._level_roles
+
+    @pytest.mark.asyncio
+    async def test_a_sub_task_keeps_its_roles_groups_while_the_roles_are_refused(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        c = await _roles_at(points, HOUR_MS, roles=None)
+        sub = _issue({"id": "10102"}, key="PROJ-2", issue_id="1002")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "hierarchyLevel": -1, "subtask": True}
+        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
+        record, perms, _ = await _build(c, sub, _present(members={"10102": self.LEVEL}))
+        assert record.access_rule == AccessRule.RESTRICTED
+        assert sorted(p.external_id for p in perms if p.entity_type == EntityType.GROUP) == ["g-1", "g-2", "g-3"]
 
 
 class TestSkippedHoldersAreReportedOncePerLevel:

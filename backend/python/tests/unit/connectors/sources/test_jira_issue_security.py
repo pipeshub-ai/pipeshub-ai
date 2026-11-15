@@ -6,7 +6,6 @@ import pytest
 
 from app.config.constants.arangodb import AccessRule, Connectors, OriginTypes
 from app.connectors.sources.atlassian.core.jira_issue_security import (
-    HELD_DIGEST,
     UNREADABLE_AUTH,
     UNREADABLE_KEEPS_STORED_ACCESS,
     UNREADABLE_NOT_LISTED,
@@ -26,7 +25,6 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     classify_scheme_response,
     closed_level_groups,
     collect_paged_values,
-    hold_levels_naming_unread_roles,
     level_group_grants,
     level_reads_alike,
     levels_after_walk,
@@ -34,6 +32,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     pre_walk_marker,
     refuses_a_scope,
     resolve_scheme_knowledge,
+    roles_for_levels,
     scheme_has_no_levels,
     unreadable_reason,
     unreadable_security_notices,
@@ -736,27 +735,39 @@ class TestPlanLevelReread:
         assert plan_level_reread(refused, to_save, is_new_project=False, app_roles_mapping={})[0] is None
 
 
-class TestHoldLevelsNamingUnreadRoles:
-    def test_a_level_naming_an_application_role_is_unknown_while_the_roles_are_unread(self) -> None:
-        security = IssueSecurityContext(
-            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
-            members_by_level={"1": [{"type": "applicationRole", "parameter": "jira-software"}]})
-        held = hold_levels_naming_unread_roles(security, app_roles_unread=True)
-        assert held.held_levels == {"1"} and held.members_readable is True and held.defer_checkpoint is False
+class _Points:
+    def __init__(self) -> None:
+        self.points: dict[str, dict] = {}
 
-    def test_other_levels_and_read_roles_are_untouched(self) -> None:
-        security = _with_users(**{"1": ["a"]})
-        held = hold_levels_naming_unread_roles(security, app_roles_unread=True)
-        assert (held.held_levels, held.members_readable) == (set(), True)
+    async def read_sync_point(self, key: str) -> dict:
+        return dict(self.points.get(key, {}))
 
-    def test_a_project_stored_before_levels_were_tracked_holds_nothing(self) -> None:
-        """Its issues were stored open: nothing of the level to keep, so the level is applied as read (roles left out)."""
-        security = IssueSecurityContext(
-            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
-            members_by_level={"1": [{"type": "applicationRole", "parameter": "jira-software"}]})
-        hold_levels_naming_unread_roles(security, app_roles_unread=True)
-        reread, _, to_save = plan_level_reread(security, None, is_new_project=False, app_roles_mapping={})
-        assert (reread, security.held_levels, to_save["1"].endswith(HELD_DIGEST)) == ("leveled", set(), True)
+    async def update_sync_point(self, key: str, data: dict) -> None:
+        self.points[key] = dict(data)
+
+
+class TestRolesForLevels:
+    ROLES = {"jira-software": [{"groupId": "g-1"}]}
+    DAY = 24 * 60 * 60 * 1000
+
+    @pytest.mark.asyncio
+    async def test_a_list_read_is_kept_and_applied(self) -> None:
+        points = _Points()
+        assert await roles_for_levels(points, self.ROLES, read=True, now_ms=5) == (self.ROLES, False)
+        assert await roles_for_levels(points, {}, read=False, now_ms=5 + self.DAY) == (self.ROLES, False)
+
+    @pytest.mark.asyncio
+    async def test_past_the_bound_none_is_applied_and_the_expiry_is_told_once(self) -> None:
+        points = _Points()
+        await roles_for_levels(points, self.ROLES, read=True, now_ms=0)
+        assert await roles_for_levels(points, {}, read=False, now_ms=self.DAY + 1) == ({}, True)
+        assert await roles_for_levels(points, {}, read=False, now_ms=self.DAY + 2) == ({}, False)
+        await roles_for_levels(points, self.ROLES, read=True, now_ms=2 * self.DAY)  # read again: told again next time
+        assert await roles_for_levels(points, {}, read=False, now_ms=4 * self.DAY) == ({}, True)
+
+    @pytest.mark.asyncio
+    async def test_with_none_kept_none_is_applied_and_nothing_told(self) -> None:
+        assert await roles_for_levels(_Points(), {}, read=False, now_ms=1) == ({}, False)
 
 
 class TestUnreadableNotices:
@@ -792,13 +803,6 @@ class TestDeferredReadOnAProjectNeverTightened:
     def test_a_project_with_no_scheme_has_nothing_to_close(self) -> None:
         none = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, defer_checkpoint=True)
         assert plan_level_reread(none, None, is_new_project=False, app_roles_mapping={})[0] is None
-
-    def test_a_level_naming_unread_roles_on_a_project_never_tightened_is_closed_too(self) -> None:
-        security = IssueSecurityContext(
-            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
-            members_by_level={"1": [{"type": "applicationRole", "parameter": "jira-software"}]})
-        held = hold_levels_naming_unread_roles(security, app_roles_unread=True)
-        assert plan_level_reread(held, None, is_new_project=False, app_roles_mapping={})[0] == "leveled"
 
     def test_the_notice_says_hidden_for_such_a_project_and_kept_for_the_others(self) -> None:
         notices = unreadable_security_notices(

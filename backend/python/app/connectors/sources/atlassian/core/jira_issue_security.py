@@ -38,6 +38,7 @@ Center ``/rest/api/2`` where the server exposes them):
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -107,9 +108,6 @@ class IssueSecurityContext:
     browse_holders: list[dict[str, Any]] | None = field(default_factory=list)
     # Level id -> its name, from the scheme read, to name the level's record group.
     level_names: dict[str, str] = field(default_factory=dict)
-    # Levels naming an application role while the role list is unread or refused: their issues and group
-    # keep what is stored, their digest is kept and marked; every other level is applied as read.
-    held_levels: set[str] = field(default_factory=set)
 
     def browse_fingerprint(self) -> str:
         """"?" when the holders are unknown, "" when there are none, else a digest of them."""
@@ -700,7 +698,6 @@ def apply_issue_access_settled(
     reporter_email: str | None = None,
     assignee_email: str | None = None,
     project_id: str | None = None,
-    stored_unchanged: bool = False,
 ) -> tuple[list[Permission], list[str], bool]:
     """Set the issue's access rule and return the grants to write, the holder types
     skipped, and whether the result is settled. Settled means the level (or its
@@ -743,21 +740,15 @@ def apply_issue_access_settled(
     record.inherit_permissions_from_group = False
     users = user_by_account_id or {}
     present, level_id = read_security_level(fields)
-    # A level naming an application role while the roles are unknown: an issue taking the level's group joins it as
-    # usual (the group keeps what is stored); one holding a copy of the level's holders keeps it when unchanged.
-    held = level_id in context.held_levels
-    grouped = project_id is not None and level_id in context.members_by_level and not is_subtask
     security = fields.get("security") if isinstance(fields, dict) else None
 
     def close() -> tuple[list[Permission], list[str], bool]:
         # RESTRICTED with no grant hides the issue. A transient failure is
-        # retried, so the grants already stored stay until that retry; so do those of an unchanged
-        # issue on a held level that holds a copy of its level's holders.
-        keep = context.defer_checkpoint or (held and not grouped and stored_unchanged)
-        if keep:
+        # retried, so the grants already stored stay until that retry.
+        if context.defer_checkpoint:
             record.access_group_external_id = None  # and so does its level's group, with its stored rule
         record.access_rule = AccessRule.RESTRICTED
-        record.rewrite_permissions = not keep
+        record.rewrite_permissions = not context.defer_checkpoint
         return [], [], False
 
     def project_open() -> tuple[list[Permission], list[str], bool]:
@@ -806,9 +797,7 @@ def apply_issue_access_settled(
         return close()
 
     holders = context.members_by_level.get(level_id, [])
-    if held and not grouped and stored_unchanged:
-        # Its stored copy names the role's groups, which this sync cannot read: keep it as it is.
-        return close()
+    grouped = project_id is not None and level_id in context.members_by_level and not is_subtask
     if grouped:
         holders = [h for h in holders if isinstance(h, dict) and h.get("type") not in _SAME_ON_EVERY_ISSUE]
     grants, unreadable, skipped = level_grants(
@@ -830,17 +819,13 @@ def apply_issue_access_settled(
         # A grant of an OPEN record admits on its own (a seed), so the issue is OPEN only when every grant it holds is to someone
         # Jira shows it to without the project: Browse named on this issue, and named by its level.
         alone_keys = {_grant_key(g) for g in alone}
-        # On a held level the issue joins the level's group as usual; not settled, so a reindex, which would write the
-        # group, leaves the stored record and group alone.
         if alone and all(_grant_key(g) in alone_keys for g in grants):
             record.access_rule = AccessRule.OPEN
-            return alone, skipped, not held
+            return alone, skipped, True
         record.access_rule = AccessRule.STRICT
-        return grants, skipped, not held
+        return grants, skipped, True
     record.access_rule = AccessRule.RESTRICTED
-    # On a held level (a new or changed issue, so nothing of this level may be stored): the holders that resolved,
-    # the role's groups left out until a sync reads them; not settled, so a reindex leaves the stored record.
-    return grants, skipped, not held
+    return grants, skipped, True
 
 
 def _grant_key(grant: Permission) -> tuple[str, str]:
@@ -879,7 +864,6 @@ def apply_issue_access(
     reporter_email: str | None = None,
     assignee_email: str | None = None,
     project_id: str | None = None,
-    stored_unchanged: bool = False,
 ) -> tuple[list[Permission], list[str]]:
     """``apply_issue_access_settled`` without the settled flag: the grants to write
     and the holder types skipped."""
@@ -887,7 +871,6 @@ def apply_issue_access(
         record, fields, is_subtask=is_subtask, project_key=project_key, context=context,
         user_by_account_id=user_by_account_id, app_roles_mapping=app_roles_mapping,
         reporter_email=reporter_email, assignee_email=assignee_email, project_id=project_id,
-        stored_unchanged=stored_unchanged,
     )
     return grants, skipped
 
@@ -901,18 +884,44 @@ def apply_attachment_access(record: Record) -> list[Permission]:
     return []
 
 
-def hold_levels_naming_unread_roles(
-    security: IssueSecurityContext, *, app_roles_unread: bool,
-) -> IssueSecurityContext:
-    """A level naming an application role is unknown, not narrower, while the role list could not be read in
-    full (unread, or refused: a 403 lasts while the account is not an administrator): its issues and group keep
-    what is stored until a sync reads it (``held_levels``). The other levels are read and applied as usual."""
-    if app_roles_unread:
-        security.held_levels = {level_id for level_id, holders in security.members_by_level.items() if _names_role(holders)}
-    return security
+# A sync that cannot read the application roles applies the last list read for a bounded time. The list needs
+# "Administer Jira" and a 403 is "Returned if the user is not an administrator"
+# (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-application-roles/), which lasts until the
+# account is made one. 24 h, as long as other connectors trust a confirmation they cannot repeat.
+ROLE_LIST_SYNC_KEY = "application_roles"
+ROLE_LIST_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 
-HELD_DIGEST = "|held"
+async def roles_for_levels(
+    sync_point: Any,  # noqa: ANN401
+    mapping: dict[str, list[dict[str, Any]]],
+    *,
+    read: bool,
+    now_ms: int,
+    max_age_ms: int = ROLE_LIST_MAX_AGE_MS,
+) -> tuple[dict[str, list[dict[str, Any]]], bool]:
+    """The role list a sync applies to security levels, and whether to tell the owner that the last one expired.
+
+    Read in full: it is kept with its time and applied. Otherwise the last list kept is applied while it is younger
+    than ``max_age_ms``, so a level's other holders follow Jira and its role holders stay the groups the roles had.
+    Past that, or with none kept, role holders are left out: fewer readers, never more. So a group removed from a
+    role while the list cannot be read keeps its access for at most ``max_age_ms``. The expiry is told once."""
+    if read:
+        await sync_point.update_sync_point(ROLE_LIST_SYNC_KEY, {"roles": json.dumps(mapping, sort_keys=True), "read_at": now_ms})
+        return mapping, False
+    kept = await sync_point.read_sync_point(ROLE_LIST_SYNC_KEY) or {}
+    read_at = kept.get("read_at")
+    if isinstance(read_at, int) and now_ms - read_at <= max_age_ms:
+        try:
+            roles = json.loads(kept.get("roles") or "{}")
+        except (TypeError, ValueError):
+            roles = None
+        if isinstance(roles, dict):
+            return roles, False
+    if read_at is None or kept.get("expired_told"):
+        return {}, False
+    await sync_point.update_sync_point(ROLE_LIST_SYNC_KEY, {**kept, "expired_told": True})
+    return {}, True
 
 
 def plan_level_reread(
@@ -955,13 +964,6 @@ def plan_level_reread(
         closed = is_new_project or marker == "unreadable"
         return (None if closed else "leveled"), None, {**stored_real, "*": "unreadable"}
     current = security.level_fingerprints(app_roles_mapping, split=split)
-    # Without the roles' groups: what the holders that resolve without the role list name (see ``_held_digests``).
-    resolved = security.level_fingerprints({}, split=split)
-    roles = {lid for lid, holders in security.members_by_level.items() if _names_role(holders)}
-    for lid in roles - security.held_levels:
-        current[lid] = f"{current[lid]}~{resolved[lid]}"
-    held, reread_held = _held_digests(security, stored_real if stored is not None else {}, resolved)
-    current.update(held)
     if is_new_project:
         return None, None, current
     if stored is None:
@@ -973,47 +975,8 @@ def plan_level_reread(
         return "project", None, current
     if marker is not None:
         return "leveled", None, current
-    changed = sorted(
-        lid for lid in current if (lid in reread_held or lid not in held) and stored_real.get(lid) != current[lid])
+    changed = sorted(lid for lid in current if stored_real.get(lid) != current[lid])
     return ("levels" if changed else None), changed or None, current
-
-
-def _names_role(holders: list[dict[str, Any]]) -> bool:
-    return any(isinstance(holder, dict) and holder.get("type") == HOLDER_APPLICATION_ROLE for holder in holders)
-
-
-def _held_digests(
-    security: IssueSecurityContext, stored: dict[str, str], resolved: dict[str, str],
-) -> tuple[dict[str, str], set[str]]:
-    """The digests saved for the levels held this sync, and those of them whose issues are read again. Narrows
-    ``security.held_levels`` to the levels whose stored state is kept.
-
-    A level naming a role is saved as ``<digest>~<resolved>``: its digest with the roles' groups, and the one of
-    the holders that resolve without them. While the role list cannot be read, a level whose stored state was
-    written with the roles read (``<digest>`` set) and whose other holders are unchanged (``<resolved>`` equal)
-    keeps its group and its issues' copies: they still name the roles' groups. Any other held level is applied
-    with the holders that resolve, the roles' groups left out: its group is written, and its issues are read
-    again when those holders changed, so a holder removed from it loses its issues on this sync.
-
-    shortcut: a change to a held level's other holders drops the roles' groups until the roles are read (an
-    under-share of the roles' members, never more access); keeping them would need the last role list read
-    stored with the checkpoint."""
-    held: dict[str, str] = {}
-    reread: set[str] = set()
-    kept: set[str] = set()
-    for lid in security.held_levels:
-        if lid not in resolved:
-            continue
-        digest, _, before = stored.get(lid, "").removesuffix(HELD_DIGEST).rpartition("~")
-        if digest and before == resolved[lid]:
-            kept.add(lid)
-            held[lid] = f"{digest}~{before}{HELD_DIGEST}"
-        else:
-            held[lid] = f"~{resolved[lid]}{HELD_DIGEST}"
-            if before != resolved[lid]:
-                reread.add(lid)
-    security.held_levels = kept
-    return held, reread
 
 
 def closed_level_groups(stored: dict[str, str] | None, current: dict[str, str]) -> list[str]:

@@ -1,13 +1,12 @@
 """Jira Data Center issue security: the parts of the connector that are not a whole sync."""
 
 import logging
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.config.constants.arangodb import AccessRule
 from app.connectors.sources.atlassian.core.jira_issue_security import (
-    HELD_DIGEST,
     IssueSecurityContext,
     SchemeKnowledge,
     apply_issue_access,
@@ -248,76 +247,70 @@ class TestParentKeyLookup:
         assert connector._issue_id_to_key_cache["8"] == "P-8"
 
 
-def _readable(members: dict) -> dict[str, str]:
-    """The level digests a sync saves while it reads the roles."""
-    context = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level=members)
-    return plan_level_reread(context, None, is_new_project=True, app_roles_mapping={"jira-software": [{"groupId": "g"}]})[2]
+class _KeptSyncPoints:
+    def __init__(self) -> None:
+        self.points: dict[str, dict] = {}
+
+    async def read_sync_point(self, key: str) -> dict:
+        return dict(self.points.get(key, {}))
+
+    async def update_sync_point(self, key: str, data: dict) -> None:
+        self.points[key] = dict(data)
 
 
-def _refused(connector: JiraDataCenterConnector, members: dict) -> IssueSecurityContext:
-    connector._app_roles_forbidden, connector._app_roles_mapping = True, {}
-    return connector._security_with_roles(
-        IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level=members))
+HOUR_MS = 60 * 60 * 1000
 
 
-class TestRefusedRoleList:
-    def test_a_copy_first_written_during_a_hold_loses_a_removed_holder_on_the_next_full_sync(self) -> None:
-        role_and_groups = [{"type": "applicationRole", "parameter": "jira-software"},
-                           {"type": "group", "value": "g-2"}, {"type": "group", "value": "g-3"}]
-        connector = _connector()
-        security = _refused(connector, {"1": role_and_groups})
-        _, _, saved = plan_level_reread(security, {}, is_new_project=False, app_roles_mapping={})
-        security = _refused(connector, {"1": role_and_groups[:2]})
-        reread, levels, _ = plan_level_reread(security, saved, is_new_project=False, app_roles_mapping={})
-        assert (reread, levels, security.held_levels) == ("levels", ["1"], set())
-        issue = _ticket()  # stored and unchanged, read again by the full sync
-        grants, _ = apply_issue_access(issue, {"security": {"id": "1"}}, is_subtask=False, project_key="P", context=security,
-                                       stored_unchanged=True)
-        assert (issue.rewrite_permissions, [g.external_id for g in grants]) == (True, ["g-2"])
-
-    def test_a_copy_held_from_a_read_state_keeps_its_roles_groups(self) -> None:
-        role_level = [{"type": "applicationRole", "parameter": "jira-software"}, {"type": "group", "value": "g-2"}]
-        connector = _connector()
-        security = _refused(connector, {"1": role_level})
-        reread, _, _ = plan_level_reread(security, _readable({"1": role_level}), is_new_project=False, app_roles_mapping={})
-        assert (reread, security.held_levels) == (None, {"1"})
-        issue = _ticket()
-        grants, _ = apply_issue_access(issue, {"security": {"id": "1"}}, is_subtask=False, project_key="P", context=security,
-                                       stored_unchanged=True)
-        assert (grants, issue.rewrite_permissions) == ([], False)
+async def _roles_at(points: _KeptSyncPoints, now_ms: int, *, roles: dict | None) -> JiraDataCenterConnector:
+    connector = _connector()
+    connector.issues_sync_point = points
+    connector.notify = AsyncMock()
+    connector._app_roles_forbidden, connector._app_roles_mapping = roles is None, roles or {}
+    with patch("app.connectors.sources.atlassian.jira_data_center.connector.get_epoch_timestamp_in_ms",
+               return_value=now_ms):
+        await connector._read_level_roles()
+    return connector
 
 
-    def test_only_the_level_naming_a_role_is_held_and_a_plain_level_is_applied(self) -> None:
-        """A 403 from applicationrole lasts while the account is not an administrator: only the level naming a role
-        keeps its stored copy; a holder removed from a plain level loses its issues on this sync."""
-        connector = _connector()
-        connector._app_roles_forbidden, connector._app_roles_mapping = True, {}
-        role_level = [{"type": "applicationRole", "parameter": "jira-software"}]
-        stored = _readable({"1": role_level, "2": [{"type": "group", "value": "g-old"}]})
-        security = connector._security_with_roles(IssueSecurityContext(
-            knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={
-                "1": role_level, "2": [{"type": "group", "value": "g-new"}]}))
-        assert (security.held_levels, security.members_readable, security.defer_checkpoint) == ({"1"}, True, False)
-        reread, levels, to_save = plan_level_reread(security, stored, is_new_project=False, app_roles_mapping={})
-        assert security.held_levels == {"1"}  # written while the roles were read, and its other holders unchanged
-        assert (reread, levels, to_save["1"]) == ("levels", ["2"], stored["1"] + HELD_DIGEST)
-        plain = _ticket()
-        grants, _ = apply_issue_access(plain, {"security": {"id": "2"}}, is_subtask=False, project_key="P", context=security)
-        assert plain.rewrite_permissions and [g.external_id for g in grants] == ["g-new"]
-        held = _ticket()
-        grants, _ = apply_issue_access(held, {"security": {"id": "1"}}, is_subtask=False, project_key="P", context=security,
-                                       stored_unchanged=True)
-        assert (grants, held.rewrite_permissions) == ([], False)  # its stored copy names the role's groups
+class TestRolesKeptForLevels:
+    """applicationrole answers 403 to an account that is not an administrator: the last role list read is applied for
+    a bounded time, so a level's other holders still follow Jira on the issues' copies."""
+    ROLES = {"jira-software": [{"groupId": "g-1"}]}
+    LEVEL = [{"type": "applicationRole", "parameter": "jira-software"},
+             {"type": "group", "value": "g-2"}, {"type": "group", "value": "g-3"}]
 
-    def test_a_new_or_moved_issue_on_a_held_level_gets_the_holders_that_resolved(self) -> None:
-        """Nothing of this level may be stored for it: its old grants must not survive. The role's groups are left out
-        (narrower) until a sync reads them; a group holder of the level is granted."""
-        connector = _connector()
-        connector._app_roles_forbidden, connector._app_roles_mapping = True, {}
-        security = connector._security_with_roles(IssueSecurityContext(
-            knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={
-                "1": [{"type": "applicationRole", "parameter": "jira-software"}, {"type": "group", "value": "g-2"}]}))
-        issue = _ticket()
-        grants, _ = apply_issue_access(issue, {"security": {"id": "1"}}, is_subtask=False, project_key="P", context=security)
-        assert (issue.access_rule, issue.rewrite_permissions, [g.external_id for g in grants]) == (
-            AccessRule.RESTRICTED, True, ["g-2"])
+    @staticmethod
+    def _copy(connector: JiraDataCenterConnector, members: list, stored: dict) -> tuple[tuple, list[str]]:
+        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={"1": members})
+        plan = plan_level_reread(security, stored, is_new_project=False, app_roles_mapping=connector._level_roles)
+        grants, _ = apply_issue_access(_ticket(), {"security": {"id": "1"}}, is_subtask=False, project_key="P",
+                                       context=security, app_roles_mapping=connector._level_roles)
+        return plan[:2], sorted(g.external_id for g in grants)
+
+    def _stored(self) -> dict:
+        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={"1": self.LEVEL})
+        return security.level_fingerprints(self.ROLES)
+
+    @pytest.mark.asyncio
+    async def test_a_holder_removed_while_the_roles_are_refused_is_removed_and_the_roles_groups_stay(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        connector = await _roles_at(points, HOUR_MS, roles=None)
+        plan, grants = self._copy(connector, self.LEVEL[:2], self._stored())
+        assert (plan, grants) == (("levels", ["1"]), ["g-1", "g-2"])
+
+    @pytest.mark.asyncio
+    async def test_past_the_bound_the_roles_groups_are_dropped(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        connector = await _roles_at(points, 25 * HOUR_MS, roles=None)
+        plan, grants = self._copy(connector, self.LEVEL, self._stored())
+        assert (plan, grants) == (("levels", ["1"]), ["g-2", "g-3"])
+        connector.notify.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_role_group_change_during_the_refusal_does_not_outlast_the_bound(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        assert (await _roles_at(points, 23 * HOUR_MS, roles=None))._level_roles == self.ROLES
+        assert (await _roles_at(points, 25 * HOUR_MS, roles=None))._level_roles == {}
