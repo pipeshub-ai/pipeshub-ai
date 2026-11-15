@@ -6013,6 +6013,8 @@ class IGraphDBProvider(ABC):
         skip: int = 0,
         limit: int = 25,
         single_file_batches_only: bool = False,
+        after: tuple[int, str] | None = None,
+        count_cap: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """One page of what delete actions put in the trash in one connector (a KB), newest first.
@@ -6026,6 +6028,10 @@ class IGraphDBProvider(ABC):
         one file are listed (what a file organizer may restore). Sorted by the
         batch's ``deletedAtTimestamp``, then batch id, both descending, and
         paged inside the query; ``total`` counts batches in a separate read.
+        ``after`` is a keyset: the ``(batchDeletedAt, batchId)`` of the last
+        batch already listed, so the page starts strictly after it in that
+        order (``skip`` still applies on top). With ``count_cap``, ``total``
+        stops counting at ``count_cap + 1`` batches.
         Each read walks only this connector's trash, through an index that
         holds only the trash, at a fixed cost per record, so a deleted folder's
         files never cost a read of their whole batch.
@@ -6037,9 +6043,11 @@ class IGraphDBProvider(ABC):
         root), ``isFile``, ``fileMimeType`` and ``sizeInBytes`` from its type
         doc, ``rootCount`` (the batch's roots), ``otherRootNames`` (up to
         ``TRASH_LIST_OTHER_ROOT_NAMES`` other roots' names, by key),
-        ``batchSize`` (records in the batch in this connector) and
+        ``batchSize`` (records in the batch in this connector),
         ``deletedByName`` and ``deletedByEmail`` for the user in
-        ``deletedByUserId`` (None when unknown). A failed read raises.
+        ``deletedByUserId`` (None when unknown), and ``batchId`` and
+        ``batchDeletedAt``, the batch's sort key, for ``after``. A failed read
+        raises.
         """
         raise NotImplementedError
 
