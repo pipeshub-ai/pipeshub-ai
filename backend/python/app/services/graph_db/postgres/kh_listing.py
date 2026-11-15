@@ -25,6 +25,7 @@ from app.exceptions.graph_db_exceptions import (
 )
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase, _doc
+from app.services.graph_db.postgres.kg import counts as kg_counts
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.model import CODE_COLL, CODE_EPOCH
@@ -544,12 +545,22 @@ class KhListingMixin(PgBase):
         """The total of a connector kg serves, from the stamped classes: what the viewer's grants open by class are counted where the rows are, up to COUNT_CAP, and the few rows kg does not decide
         are counted from the access check's answer."""
         left, walked = viewer["left"], viewer["walked"]
+        # With no filter and nothing hidden, the classes met with no grant of the row's own are counted from the counters (every row of them, no cap); the rows that need
+        # their own grant are still counted where they are.
+        folded = None
+        if kg_counts.serving() and not where:
+            plain = sorted(set(viewer["plain"]) - set(viewer["unvouched"]))
+            folded = await self._kq(lambda tx: kg_counts.class_rows(tx, org, app_sk, plain), transaction)
         q = kgl.Params(list(base.values))
         q.values[2] = COUNT_CAP + 1
-        sql = kgl.count_sql(where, q.add(viewer["plain"]), q.add(viewer["own"]), q.add(viewer["granted"]), q.add(viewer["unvouched"]))
+        sql = kgl.count_sql(where, q.add([] if folded is not None else viewer["plain"]), q.add(viewer["own"]), q.add(viewer["granted"]), q.add(viewer["unvouched"]))
         counts = {"record": 0, "folder": 0, "recordGroup": 0}
+        scanned = 0
         for r in await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction):
             counts["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += r["n"]
+            scanned += r["n"]
+        for (kind, folder), n in (folded or {}).items():
+            counts["recordGroup" if kind == 2 else "folder" if folder else "record"] += n
         if left:       # the rows the check admitted, by type, from their own rows
             by_id = {r["id"]: r for r in await self._kq(lambda tx: tx.fetch("/* pipeshub:kg.listing_walked */ SELECT id, kind, folder FROM kg.records r WHERE org_id = $1 AND app_sk = $2 AND kind IN (2, 3) AND id = ANY($3::text[])", org, app_sk, sorted(walked)), transaction)}
             for i in walked:
@@ -557,6 +568,8 @@ class KhListingMixin(PgBase):
                 if r:
                     counts["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += 1
         total = sum(counts.values())
+        if folded is not None and scanned <= COUNT_CAP:
+            return total, {k: v for k, v in counts.items() if v}, False
         return min(total, COUNT_CAP), {k: v for k, v in counts.items() if v}, total > COUNT_CAP
 
     async def _kh_flat_count(self, org: str, app_sk: int, where: str, base: kgl.Params, admit: Any, transaction: str | None) -> tuple[int, dict[str, int], bool]:  # noqa: ANN401

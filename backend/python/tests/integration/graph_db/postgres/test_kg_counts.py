@@ -1,0 +1,186 @@
+"""The counters of the typed graph (kg.counts): after any sequence of changes, folded or not, a key's rows sum to count(*) of what it counts (by the listing's own
+predicates); a seed counts a connector whole and repairs what drifted; a fold that races the writers loses and doubles nothing; and a listing that counts from them
+counts only what the viewer's classes open."""
+from __future__ import annotations
+
+import asyncio
+import random
+
+import pytest
+
+from app.services.graph_db.postgres import kh_listing
+from app.services.graph_db.postgres.kg import counts
+from app.services.graph_db.postgres.kg import listing as kgl
+from app.services.graph_db.postgres.kg.writers import KgWriter
+
+from .pg_support import new_org
+from .test_kg_derivation import ctx, edge, prov
+from .test_kg_projection import run
+from .test_kg_projection_races import OPS, everything2, world2
+from .test_kg_read import flip
+
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
+
+TRUTH = f"""SELECT r.app_sk, 1::smallint AS facet, r.class_id, r.kind, r.folder, NULL::text AS record_type, NULL::text AS origin, count(*) AS n FROM kg.records r
+    WHERE r.org_id = $1 AND r.app_sk IS NOT NULL AND {kgl.LIVE} AND {kgl.DECIDED} GROUP BY 1, 3, 4, 5
+  UNION ALL SELECT r.app_sk, 2::smallint, NULL, NULL, NULL, r.record_type, r.origin, count(*) FROM kg.records r
+    WHERE r.org_id = $1 AND r.app_sk IS NOT NULL AND {counts.FACET_ROWS} GROUP BY 1, 6, 7"""
+HELD = """SELECT app_sk, facet, class_id, kind, folder, record_type, origin, sum(n) AS n FROM kg.counts WHERE org_id = $1 AND facet <> 0
+    GROUP BY 1, 2, 3, 4, 5, 6, 7 HAVING sum(n) <> 0"""
+
+
+def _keyed(rows) -> dict:
+    return {tuple(r[c] for c in counts.KEY): r["n"] for r in rows}
+
+
+async def state(p, org: str) -> tuple[dict, dict, int]:
+    """(count(*) by key, the counters by key, the deltas not folded), read when no write is running."""
+    async def go(tx) -> tuple:
+        return _keyed(await tx.fetch(TRUTH, org)), _keyed(await tx.fetch(HELD, org)), await tx.fetchval("SELECT count(*) FROM kg.counts WHERE org_id = $1 AND NOT folded", org)
+    with ctx(org):
+        return await p._q(go, None)
+
+
+async def fence_some(p, org: str, rng: random.Random, *, lift: bool) -> None:
+    """Hide (or show again) a random record of the org as a pending restamp does: the rows leave (or rejoin) what a listing counts by class."""
+    async def go(tx) -> None:
+        rows = await tx.fetch("SELECT sk, coll, id, kind FROM kg.records WHERE org_id = $1 AND kind IN (2, 3) ORDER BY sk", org)
+        if rows:
+            pick = rng.sample(list(rows), k=min(len(rows), rng.randint(1, 3)))
+            await KgWriter(tx).fence_rows([(r["sk"], r["coll"], r["id"], r["kind"]) for r in pick], None if lift else 77)
+    with ctx(org):
+        await p._q(go, None, write=True)
+
+
+async def fold_all(pg_db, org: str) -> None:
+    with ctx(org):
+        while await counts.fold(pg_db, org):
+            pass
+
+
+@pytest.mark.parametrize("seed", range(40))
+async def test_after_random_changes_the_counters_are_count_star_folded_or_not(pg_db, seed: int) -> None:
+    rng = random.Random(seed)
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await run(p, org, await everything2(p, org))
+    for _ in range(rng.randint(3, 10)):
+        r = rng.random()
+        if r < 0.15:
+            await fence_some(p, org, rng, lift=False)
+        elif r < 0.25:
+            await fence_some(p, org, rng, lift=True)
+        elif r < 0.4:
+            await fold_all(pg_db, org)
+        else:
+            await run(p, org, await rng.choice(OPS)(p, org))
+        truth, held, _ = await state(p, org)
+        assert held == truth
+    await fold_all(pg_db, org)
+    truth, held, unfolded = await state(p, org)
+    assert held == truth and unfolded == 0
+
+
+async def test_a_seed_counts_a_connector_whole_repairs_a_drift_and_marks_it_readable(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await run(p, org, await everything2(p, org))
+
+    async def app_sk(tx) -> int:
+        return await tx.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+    with ctx(org):
+        sk = await p._q(app_sk, None)
+        assert await p._q(lambda tx: counts.class_rows(tx, org, sk, [1]), None) is None          # not counted whole yet: not read
+
+        async def drift(tx) -> None:
+            await KgWriter(tx).counts_add([(sk, 2, None, None, None, "FILE", "CONNECTOR", 1000)])
+        await p._q(drift, None, write=True)
+    truth, held, _ = await state(p, org)
+    assert held != truth
+    with ctx(org):
+        assert await counts.seed(pg_db, org, sk)
+    truth, held, _ = await state(p, org)
+    assert held == truth
+    with ctx(org):
+        assert await p._q(lambda tx: counts.class_rows(tx, org, sk, []), None) == {}
+        got = await p._q(lambda tx: counts.facets(tx, org, sk), None)
+    assert got is not None and got["origins"] == sorted({k[6] for k in truth if k[0] == sk and k[1] == 2 and k[6]})
+
+
+async def test_a_fold_that_races_the_writers_loses_and_doubles_nothing(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await run(p, org, await everything2(p, org))
+    rng = random.Random(7)
+    done = asyncio.Event()
+
+    async def writer() -> None:
+        try:
+            for _ in range(20):
+                await run(p, org, await rng.choice(OPS)(p, org))
+        finally:
+            done.set()
+
+    async def folder() -> None:
+        while not done.is_set():
+            with ctx(org):
+                await counts.fold(pg_db, org, limit=3)
+            await asyncio.sleep(0)
+    await asyncio.gather(writer(), folder(), folder())
+    truth, held, _ = await state(p, org)
+    assert held == truth
+
+
+async def test_the_counters_of_one_organisation_are_never_read_or_folded_by_another(pg_db) -> None:
+    p, a, b = prov(pg_db), new_org(), new_org()
+    for o in (a, b):
+        await world2(p, o)
+        await run(p, o, await everything2(p, o))
+    before = await state(p, b)
+    await fold_all(pg_db, a)
+    assert await state(p, b) == before and before[2] > 0                                         # b's deltas are still there, unfolded
+    with ctx(a):
+        assert await p._q(lambda tx: tx.fetchval("SELECT count(*) FROM kg.counts WHERE org_id = $1", b), None) == 0       # the row policy hides them
+
+
+async def _group_world(p, db, org: str, n: int) -> None:
+    """One connector of ``n`` records under a group that ``u1`` is granted on (every record inherits it); ``u2`` may use the connector and is granted nothing."""
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "G", "connectorId": "app1", "orgId": org}], "recordGroups")
+        await p.batch_upsert_nodes([{"_key": f"r{i:04d}", "recordName": f"R{i:04d}", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+                                    for i in range(n)], "records")
+        await p.batch_create_edges([edge(f"r{i:04d}", "records", "g1", "recordGroups") for i in range(n)], "belongsTo")
+        await p.batch_create_edges([edge("g1", "recordGroups", f"r{i:04d}", "records", relationshipType="PARENT_CHILD") for i in range(n)], "nodeRelations")
+        await p.batch_create_edges([edge(f"r{i:04d}", "records", "g1", "recordGroups") for i in range(n)], "inheritPermissions")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}, {"_key": "u2", "orgId": org, "email": "v@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps"), edge("u2", "users", "app1", "apps")], "userAppRelation")
+        await p.batch_create_edges([edge("u1", "users", "g1", "recordGroups", type="USER", role="READER")], "permission")
+    await flip(db, org)
+
+
+def _asks(org: str, user: str, **kw) -> dict:
+    return {"app_id": "app1", "org_id": org, "grantee_ids": [user], "gated_app_ids": ["app1"], "granted_ids": ["g1"] if user == "u1" else [], **kw}
+
+
+async def _page(p, org: str, user: str, **kw) -> dict:
+    with ctx(org):
+        return await p.get_knowledge_hub_connector_page_v3(**_asks(org, user, **kw), limit=3, include_total=True)
+
+
+async def test_a_listing_counts_past_its_cap_from_the_counters_and_only_what_the_viewer_may_read(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _group_world(p, pg_db, org, 12)
+    monkeypatch.setattr(kh_listing, "COUNT_CAP", 4)
+    page = await _page(p, org, "u1")
+    assert page["total"] == 4 and page["totalCapped"] is True                    # counted where the rows are: stops at the cap
+    monkeypatch.setenv("PG_KG_COUNTERS", "1")
+    page = await _page(p, org, "u1")
+    assert page["total"] == 4 and page["totalCapped"] is True                    # not counted whole yet: the same
+    await counts.run(pg_db, org)
+    page = await _page(p, org, "u1")
+    assert page["total"] == 13 and not page.get("totalCapped") and page["counts"] == {"record": 12, "recordGroup": 1}       # the group itself: by its own grant, counted where it is
+    nobody = await _page(p, org, "u2")                                            # granted nothing: the counters say nothing of the rows
+    assert nobody["total"] == 0 and not nobody["rows"]
+    filtered = await _page(p, org, "u1", filters={"search_query": "R000"})        # a filter is counted where the rows are
+    assert filtered["total"] == 4 and filtered["totalCapped"] is True

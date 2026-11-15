@@ -715,3 +715,55 @@ functions:
         GET DIAGNOSTICS v_n = ROW_COUNT;
         RETURN v_n;
       END;
+
+  # kg_0015: the fold of the counters (kg/counts.py). The trigger on kg.records adds a delta row per key a statement changed (folded false); the fold takes a batch of them
+  # with the folded rows of the same keys, deletes those rows and inserts one folded row per key with their sum, in one unit under the org's counters lock.
+  - name: kg.w_counts_add
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "insert", "rel": "kg.counts"}]
+    args:
+      - {"name": "p_apps", "type": "bigint[]", "max_items": 5000, "item_not_null": true, "item_range": [0, 9223372036854775807]}
+      - {"name": "p_facets", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [0, 2]}
+      - {"name": "p_classes", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_range": [2, 3]}
+      - {"name": "p_folders", "type": "boolean[]", "max_items": 5000}
+      - {"name": "p_record_types", "type": "text[]", "max_items": 5000, "item_length": [0, 64]}
+      - {"name": "p_origins", "type": "text[]", "max_items": 5000, "item_enum": ["CONNECTOR", "UPLOAD"]}
+      - {"name": "p_ns", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_facets) <> cardinality(p_apps) OR cardinality(p_classes) <> cardinality(p_apps) OR cardinality(p_kinds) <> cardinality(p_apps) OR cardinality(p_folders) <> cardinality(p_apps) OR cardinality(p_record_types) <> cardinality(p_apps) OR cardinality(p_origins) <> cardinality(p_apps) OR cardinality(p_ns) <> cardinality(p_apps) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.counts (org_id, app_sk, facet, class_id, kind, folder, record_type, origin, n, folded) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f, k.g, k.h, true FROM unnest(p_apps, p_facets, p_classes, p_kinds, p_folders, p_record_types, p_origins, p_ns) AS k(a, b, c, d, e, f, g, h);
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_counts_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.counts", "key": ["id"]}]
+    args:
+      - {"name": "p_ids", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1) INTO p_ids FROM (SELECT DISTINCT ON (k.c1) k.c1 FROM unnest(p_ids) WITH ORDINALITY AS k(c1, n) ORDER BY k.c1, k.n DESC) s;
+        DELETE FROM kg.counts t USING unnest(p_ids) AS k(a) WHERE t.org_id = v_org AND t.id = k.a;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
