@@ -6,10 +6,15 @@
 --               record, migration flags and runtime state
 --   query       reads as connectors; writes the toolset, API toolset and MCP keys, parked agent turns, the model API modes, scope fields,
 --               the vector collection settings and runtime state
---   indexing    reads only what it uses (signing keys, endpoints, storage, store connection settings, AI models, platform settings,
---               connector metadata schemas, ...; no connector, OAuth app, toolset or MCP credential); writes runtime state, scope fields,
---               the vector collection settings, artifact rollout membership, entity cleanup intents and its backfill flags
---   kv          reads the AI model settings, the signing keys, endpoints, platform and telemetry settings; writes nothing
+--   indexing    reads only the keys its code reads (signing keys, endpoints, storage, store connection settings, AI models, the AI gateway
+--               identity policy, named-entity, telemetry and platform settings, two migration flags, connector metadata schemas); writes
+--               runtime state, scope fields, the vector collection settings, artifact rollout membership, entity cleanup intents and its
+--               backfill flags
+--   kv          reads the AI model settings, the signing keys, the AI gateway identity policy, the telemetry settings and one migration
+--               flag; writes nothing
+-- Indexing's and kv's lists are allow-lists checked against the code (backend/db/tests/test_kv_access_map.py: every key their services
+-- reach is listed with its reader or with why it is not read, and the matrix grants exactly the listed keys), and on top of them
+-- platform.kv_admin_or_credential is refused whatever the list says.
 -- Mode (platform.kv_access, set by db.migrate from PG_KV_ACCESS): shadow (the default) admits everything and writes each access outside
 -- a role's prefixes to the server log; enforce refuses it: such a row is not visible, and inserting or upserting it fails with 42501.
 -- The table owner (migrations) is not subject to the policies (row-level security is enabled, not forced).
@@ -21,6 +26,18 @@ CREATE TABLE platform.kv_access (
 INSERT INTO platform.kv_access DEFAULT VALUES;
 SELECT kernel.register_internal('platform.kv_access');
 GRANT SELECT ON platform.kv_access TO pipeshub_node, pipeshub_connectors, pipeshub_indexing, pipeshub_query, pipeshub_kv;
+
+-- A guard on top of indexing's and kv's allow-lists (never a grant): the Node API's own settings (mail, chat bot, sign-in providers, MCP
+-- access policy, crawl marks), and the credentials of connectors, OAuth apps, toolsets, API toolsets, MCP servers and web search, and
+-- parked agent turns, which only connectors and query use. A connector's metadata schemas (indexing reads them) are not credentials.
+CREATE FUNCTION platform.kv_admin_or_credential(p_key text) RETURNS boolean
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+SELECT p_key IN ('/services/smtp', '/services/slackBot', '/services/webSearch') OR pg_catalog.starts_with(p_key, '/services/auth/')
+    OR pg_catalog.starts_with(p_key, '/services/mcp/accessPolicy/') OR pg_catalog.starts_with(p_key, 'crawl:')
+    OR (pg_catalog.starts_with(p_key, '/services/connectors/') AND NOT p_key OPERATOR(pg_catalog.~) '^/services/connectors/[^/]+/metadataSchemas/')
+    OR pg_catalog.starts_with(p_key, '/services/oauth/') OR pg_catalog.starts_with(p_key, '/services/oauths/')
+    OR pg_catalog.starts_with(p_key, '/services/toolset') OR pg_catalog.starts_with(p_key, '/services/api-toolsets/')
+    OR pg_catalog.starts_with(p_key, '/services/mcp/') OR pg_catalog.starts_with(p_key, '/services/agents/') $$;
 
 -- The matrix. No SET clause, so the planner inlines it into the policies; its functions are schema-qualified, and the service roles
 -- can create nothing in any schema, so a caller's search_path cannot change what it calls. (Not a SQL-standard body: the security
@@ -51,20 +68,18 @@ SELECT CASE current_user
       OR pg_catalog.starts_with(p_key, '/services/scopeFields/') OR pg_catalog.starts_with(p_key, '/services/vectordb/') OR pg_catalog.starts_with(p_key, 'state:')
     ELSE NOT (p_key IN ('/services/smtp', '/services/slackBot') OR pg_catalog.starts_with(p_key, '/services/auth/')
               OR pg_catalog.starts_with(p_key, '/services/mcp/accessPolicy/') OR pg_catalog.starts_with(p_key, 'crawl:')) END
-  WHEN 'pipeshub_indexing' THEN
+  WHEN 'pipeshub_indexing' THEN NOT platform.kv_admin_or_credential(p_key) AND (
       pg_catalog.starts_with(p_key, 'state:') OR pg_catalog.starts_with(p_key, '/services/scopeFields/') OR pg_catalog.starts_with(p_key, '/services/vectordb/')
       OR pg_catalog.starts_with(p_key, '/services/platform/artifactRollout/membership/') OR pg_catalog.starts_with(p_key, '/services/entityCleanup/')
       OR pg_catalog.starts_with(p_key, '/migrations/class_units_backfill/')
       OR (NOT p_write AND (
-        p_key IN ('/services/secretKeys', '/services/endpoints', '/services/storage', '/services/deployment', '/services/arangodb',
-                  '/services/neo4j', '/services/kafka', '/services/redis', '/services/qdrant', '/services/pgvector', '/services/opensearch',
-                  '/services/redis-vector', '/services/aiModels', '/services/namedEntities', '/services/metricsCollection')
-        OR pg_catalog.starts_with(p_key, '/services/aiModels/') OR pg_catalog.starts_with(p_key, '/services/aiGateway/') OR pg_catalog.starts_with(p_key, '/services/platform/')
-        OR pg_catalog.starts_with(p_key, '/migrations/') OR p_key OPERATOR(pg_catalog.~) '^/services/connectors/[^/]+/metadataSchemas/'))
-  WHEN 'pipeshub_kv' THEN NOT p_write AND (
-      p_key IN ('/services/aiModels', '/services/secretKeys', '/services/endpoints', '/services/platform/settings',
-                '/services/metricsCollection', '/migrations/etcd_to_redis')
-      OR pg_catalog.starts_with(p_key, '/services/aiModels/'))
+        p_key IN ('/services/secretKeys', '/services/endpoints', '/services/storage', '/services/arangodb', '/services/kafka', '/services/redis',
+                  '/services/qdrant', '/services/pgvector', '/services/opensearch', '/services/redis-vector', '/services/aiModels',
+                  '/services/aiGateway/identityPolicy', '/services/namedEntities', '/services/metricsCollection', '/services/platform/settings',
+                  '/migrations/kh_listing_state_v1', '/migrations/etcd_to_redis')
+        OR p_key OPERATOR(pg_catalog.~) '^/services/connectors/[^/]+/metadataSchemas/')))
+  WHEN 'pipeshub_kv' THEN NOT p_write AND NOT platform.kv_admin_or_credential(p_key) AND p_key IN (
+      '/services/aiModels', '/services/secretKeys', '/services/aiGateway/identityPolicy', '/services/metricsCollection', '/migrations/etcd_to_redis')
   ELSE false END $$;
 
 -- Outside the role's prefixes: in enforce, refused (false); in shadow, admitted (true) and written to the server log (level LOG: the
@@ -84,8 +99,8 @@ BEGIN
   RETURN true;
 END $$;
 
-REVOKE ALL ON FUNCTION platform.kv_may(text, boolean), platform.kv_outside(text, text, timestamptz) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION platform.kv_may(text, boolean), platform.kv_outside(text, text, timestamptz)
+REVOKE ALL ON FUNCTION platform.kv_may(text, boolean), platform.kv_admin_or_credential(text), platform.kv_outside(text, text, timestamptz) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION platform.kv_may(text, boolean), platform.kv_admin_or_credential(text), platform.kv_outside(text, text, timestamptz)
   TO pipeshub_node, pipeshub_connectors, pipeshub_indexing, pipeshub_query, pipeshub_kv;
 
 ALTER TABLE platform.kv_entries ENABLE ROW LEVEL SECURITY;
