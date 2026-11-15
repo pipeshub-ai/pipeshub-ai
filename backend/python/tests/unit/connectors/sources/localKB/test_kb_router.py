@@ -299,6 +299,20 @@ class TestListUserKnowledgeBases:
         assert call_kwargs["page"] == 2
         assert call_kwargs["permissions"] == ["OWNER", "READER"]
 
+    def test_the_folders_truncated_flag_reaches_the_caller(self) -> None:
+        app, kb_svc, _ = _make_app()
+        kb = {"id": "kb1", "name": "KB", "createdAtTimestamp": 1, "updatedAtTimestamp": 2, "createdBy": "u1",
+              "folders": [{"id": f"f{i:03}", "name": f"f{i:03}"} for i in range(100)]}
+        kb_svc.list_user_knowledge_bases = AsyncMock(return_value={
+            "knowledgeBases": [{**kb, "foldersTruncated": True}, {**kb, "id": "kb2", "folders": []}],
+            "pagination": self._valid_pagination, "filters": self._valid_filters,
+        })
+        resp = TestClient(app).get("/api/v1/kb/")
+        assert resp.status_code == 200
+        first, second = resp.json()["knowledgeBases"]
+        assert len(first["folders"]) == 100 and first["foldersTruncated"] is True
+        assert second["foldersTruncated"] is False          # a store that leaves it out has not truncated
+
     def test_service_failure(self):
         app, kb_svc, _ = _make_app()
         kb_svc.list_user_knowledge_bases = AsyncMock(return_value={
