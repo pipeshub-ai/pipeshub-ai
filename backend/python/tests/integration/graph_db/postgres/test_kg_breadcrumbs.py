@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from app.services.graph_db.postgres.hierarchy import HUB_NODES
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from tests.permissions import gen
 from tests.permissions.scenario import load_all
@@ -218,15 +219,18 @@ async def test_a_sampled_trail_that_differs_from_the_walk_takes_the_connector_ba
 
 
 async def test_every_trail_statement_is_answered_by_index_searches(pg_provider, pg_db) -> None:
-    """EXPLAIN gate: a group of 12,000 members and a record under it, never analysed and then analysed: no trail statement scans a kg or graph table whole (the trail reads only
-    the edges up from a node, never a group's members)."""
+    """EXPLAIN gate: a group of 12,000 members and 12,000 other records, never analysed and then analysed: no trail statement scans a kg or graph table whole (the trail reads
+    only the edges up from a node, never a group's members, and each step's document by its own key, never the organisation's nodes)."""
     org = new_org()
     await _tree(pg_provider, pg_db, org)
     await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id) SELECT $1, 'belongsTo', 'records', 'm-' || g, 'recordGroups', 'g2'
         FROM generate_series(1, 12000) g""", org)
     with ctx(org):
         row = await pg_db.run(lambda tx: tx.fetchrow("SELECT sk FROM kg.records WHERE org_id = $1 AND coll = 2 AND id = 'g2'", org))
-    cases = {"node": (kg_hier.TRAIL_NODE, [row["sk"]]), "app": (kg_hier.TRAIL_APP, ["recordGroups", "g1"])}
+    await _admin("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'm-' || g, jsonb_build_object('id', 'm-' || g, 'recordName', 'm' || g)
+        FROM generate_series(1, 12000) g""", org)
+    cases = {"node": (kg_hier.TRAIL_NODE, [row["sk"]]), "app": (kg_hier.TRAIL_APP, ["recordGroups", "g1"]),
+             "documents": (HUB_NODES, [["b", "a", "f", "g2", "g1", "app1", "missing"]])}
     for state in ("fresh", "analysed"):
         if state == "analysed":
             await _admin("ANALYZE kg.records; ANALYZE kg.links; ANALYZE kg.node_keys; ANALYZE graph.nodes; ANALYZE graph.edges")
@@ -238,6 +242,12 @@ async def test_every_trail_statement_is_answered_by_index_searches(pg_provider, 
                 return _scans(plan), max(_rows(plan))
             with ctx(org):
                 bad, most = await pg_db.run(go, custom_plan=True)
+            if bad:
+                async def text(tx, sql=sql, args=args) -> str:
+                    await tx.fetchval(kg_hier.PROFILE)
+                    return "\n".join(r[0] for r in await tx.fetch("EXPLAIN " + sql, org, *args))
+                with ctx(org):
+                    print(await pg_db.run(text, custom_plan=True))
             assert not bad, f"{state} {name}: {bad}"
             assert most < 100, f"{state} {name}: a node read {most} rows"          # not the group's 12,000 members
 

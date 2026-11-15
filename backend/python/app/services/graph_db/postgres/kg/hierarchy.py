@@ -73,17 +73,23 @@ def _links_up(x: str, kind: int) -> str:
             f"ORDER BY l.child_sk, l.kind)")
 
 
+def _not_held() -> str:
+    """Whether kg holds no row for the edge end ``e`` (collection name ``e.oc``, id ``e.oi``): one seek per collection, each on a constant collection code. A code computed
+    from the end (a CASE) leaves the collection out of the index bound, and PostgreSQL 18.7 then planned a scan of the organisation's records with a disabled sort."""
+    return (f"CASE e.oc WHEN 'records' THEN NOT EXISTS (SELECT 1 FROM {_id('3', 'e.oi')} k) WHEN 'recordGroups' THEN NOT EXISTS (SELECT 1 FROM {_id('2', 'e.oi')} k) "
+            f"ELSE NOT EXISTS (SELECT 1 FROM {_id('1', 'e.oi')} k) END")
+
+
 def _unheld(x: str) -> str:
     """Whether an edge the walk can follow touches the node of id ``x`` and a node kg does not hold: a hierarchy relation or a belongs-to edge, out of it or into it, whose
     other end is a record, a record group or an App kg has no row for (an id longer than its writers take, or a node removed while its edge stays). The walk follows such an
     edge; kg cannot, so the walk must answer. One rule for every read: each visited node is held to it."""
-    held = _id("(CASE e.oc WHEN 'records' THEN 3 WHEN 'recordGroups' THEN 2 ELSE 1 END)::smallint", "e.oi")
     out = [f"(SELECT e.to_coll AS oc, e.to_id AS oi FROM graph.edges e WHERE e.org_id = $1 AND e.coll = '{c}' AND e.from_id >= {x} AND e.from_id <= {x} ORDER BY e.from_id)"
            for c in ("nodeRelations", "belongsTo")]
     into = [f"(SELECT e.from_coll AS oc, e.from_id AS oi FROM graph.edges e WHERE e.org_id = $1 AND e.coll = '{c}' AND e.to_id >= {x} AND e.to_id <= {x} ORDER BY e.to_id)"
             for c in ("nodeRelations", "belongsTo")]
     return (f"EXISTS (SELECT 1 FROM ({' UNION ALL '.join(out + into)}) e WHERE e.oc IN ('records', 'recordGroups', 'apps') "
-            f"AND NOT EXISTS (SELECT 1 FROM {held} k))")
+            f"AND {_not_held()})")
 
 
 APP_KEY = "/* pipeshub:kg.hier_app */ SELECT sk FROM (SELECT * FROM kg.node_keys k WHERE k.org_id = $1 AND k.coll = 1 AND k.id >= $2 ORDER BY k.id LIMIT 1) s WHERE s.id = $2"
@@ -153,11 +159,10 @@ APP_MEMBERS = f"""/* pipeshub:kg.hier_app_members */ SELECT c.sk FROM unnest($2:
 def _unheld_up(x: str) -> str:
     """Whether an edge the hub's trail follows up from the node of id ``x`` (a hierarchy relation into it, a belongs-to edge out of it) has an end kg does not hold. Only these:
     :func:`_unheld` also reads the edges down, every member of a large group."""
-    held = _id("(CASE e.oc WHEN 'records' THEN 3 WHEN 'recordGroups' THEN 2 ELSE 1 END)::smallint", "e.oi")
     return (f"EXISTS (SELECT 1 FROM ((SELECT e.from_coll AS oc, e.from_id AS oi FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id >= {x} "
             f"AND e.to_id <= {x} AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') ORDER BY e.to_id) "
             f"UNION ALL (SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_id >= {x} AND e.from_id <= {x} ORDER BY e.from_id)) e "
-            f"WHERE e.oc IN ('records', 'recordGroups', 'apps') AND NOT EXISTS (SELECT 1 FROM {held} k))")
+            f"WHERE e.oc IN ('records', 'recordGroups', 'apps') AND {_not_held()})")
 
 
 # One node of the hub's trail ($2, an sk): its row, its record parents (the primary one and the linked ones that are records), its groups (the first and the linked ones) and
