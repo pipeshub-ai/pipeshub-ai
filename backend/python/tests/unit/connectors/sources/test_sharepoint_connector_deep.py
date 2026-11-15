@@ -37,6 +37,9 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 # ===========================================================================
 # Helpers
@@ -75,7 +78,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs, tx = _make_mock_deps()
-    c = SharePointConnector(logger, dep, dsp, cs, "conn-sp-deep", "team", "test-user-id")
+    c = stub_source_accounts(SharePointConnector(logger, dep, dsp, cs, "conn-sp-deep", "team", "test-user-id"))
     return c, dep, dsp, cs, tx
 
 

@@ -36,7 +36,7 @@ from app.connectors.sources.microsoft.sharepoint_online.everyone_groups import (
 from app.models.entities import (
     RecordType,
 )
-from app.models.permission import EntityType
+from app.models.permission import EntityType, PermissionType
 from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
     stub_source_accounts,
 )
@@ -2466,10 +2466,37 @@ class TestReusedAddress:
     def test_grants_to_a_reused_address(self) -> None:
         connector, *_ = _make_connector()
         connector.source_accounts.current = {"ana@x.com": "new-oid"}
-        connector.source_accounts.reused = {"ana@x.com"}
+        connector.source_accounts.reused = {"ana@x.com": "new-oid"}
         assert not connector._user_may_be_granted("ana@x.com")
         assert not connector._user_may_be_granted("ana@x.com", "old-oid")
         assert connector._user_may_be_granted("ANA@x.com", "new-oid")
         assert connector._user_may_be_granted("bo@x.com")
         old = MagicMock(id="old-oid", additional_data={"email": "ana@x.com"})
         assert connector._is_inactive_identity(old)
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_in_a_fresh_process_reads_the_saved_state_before_granting(self) -> None:
+        """A reindex runs no user sync first: the grant writers load what an earlier sync saved."""
+        connector, *_ = _make_connector()
+        connector.source_accounts.loaded = False
+        connector.source_accounts.config_service.get_config = AsyncMock(
+            return_value={"withdrawn": {}, "reused": {"ana@x.com": "new-oid"}})
+        connector._disabled_set_unknown = False
+        rest_user = {"LoginName": "i:0#.f|membership|ana@x.com", "PrincipalType": 1, "Email": "ana@x.com", "Id": 7}
+        assert await connector._sharepoint_principal_permissions(rest_user, PermissionType.READ, "site-1") == []
+        old = MagicMock(granted_to_v2=MagicMock(user=MagicMock(id="old-oid", additional_data={"email": "ana@x.com"}),
+                                                group=None, site_group=None, site_user=None),
+                        granted_to_identities_v2=None, link=None, roles=["read"])
+        assert await connector._convert_to_permissions([old], "site-1") == []
+        bo = {**rest_user, "LoginName": "i:0#.f|membership|bo@x.com", "Email": "bo@x.com"}
+        assert [p.email for p in await connector._sharepoint_principal_permissions(bo, PermissionType.READ, "site-1")] == ["bo@x.com"]
+
+    @pytest.mark.asyncio
+    async def test_a_saved_state_that_cannot_be_read_grants_nothing(self) -> None:
+        connector, *_ = _make_connector()
+        connector.source_accounts.loaded = False
+        connector.source_accounts.config_service.get_config = AsyncMock(side_effect=RuntimeError("store down"))
+        rest_user = {"LoginName": "i:0#.f|membership|bo@x.com", "PrincipalType": 1, "Email": "bo@x.com", "Id": 7}
+        with pytest.raises(RuntimeError):
+            await connector._sharepoint_principal_permissions(rest_user, PermissionType.READ, "site-1")
+        assert not connector.source_accounts.may_grant("bo@x.com", None)

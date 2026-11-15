@@ -332,7 +332,7 @@ async def test_a_grant_to_the_deleted_account_behind_a_reused_address_is_not_wri
     """A Graph grant names its account by object id: one to the old account that held ana@x.com stays unwritten."""
     c, _ = _connector([], [])
     c.source_accounts.current = {"ana@x.com": "new-oid"}
-    c.source_accounts.reused = {"ana@x.com"}
+    c.source_accounts.reused = {"ana@x.com": "new-oid"}
 
     def grant(oid: str) -> MagicMock:
         user = MagicMock(id=oid, additional_data={"email": "ana@x.com"})

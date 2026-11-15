@@ -99,7 +99,7 @@ async def test_an_address_taken_after_the_old_account_was_withdrawn_loses_its_gr
     await accounts.admit([_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
 
     assert directory.calls[0] == ("remove", "ana@x.com")
-    assert store.values() == {"withdrawn": {}, "reused": ["ana@x.com"]}
+    assert store.values() == {"withdrawn": {}, "reused": {"ana@x.com": "new-oid"}}
 
 
 @pytest.mark.asyncio

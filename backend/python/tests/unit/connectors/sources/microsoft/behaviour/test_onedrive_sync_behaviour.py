@@ -2819,3 +2819,64 @@ class TestRunActionItems:
 
         assert codes(connector.last_action_items) == ["sharepoint_permission_missing"]
         assert connector.last_action_items[0].severity == "error"
+
+
+class TestReusedAddressOutsideAUserSync:
+    """bo@acme.com was re-used: a new account (u-bo-new) holds it, and the sharing lists still name the deleted one
+    (u-bo-old). A webhook or a reindex in a process that ran no user sync yet must not write that grant."""
+
+    @staticmethod
+    async def fresh_connector(db: FakeRecordsDb, checkpoints: FakeCheckpointStore, saved: object = None) -> OneDriveConnector:
+        from app.connectors.sources.microsoft.common.source_accounts import (
+            source_accounts_key,
+        )
+
+        connector = await ready_connector(db, checkpoints)
+        connector.config_service.saved[source_accounts_key(CONNECTOR_ID)] = (
+            {"withdrawn": {}, "reused": {"bo@acme.com": "u-bo-new"}} if saved is None else saved
+        )
+        return connector
+
+    def shared_with_old_bo(self, tenant: Tenant) -> TokenFeed:
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        feed.by_token[None] = page([drive_item("f1", "one.pdf", shared=True)], delta_link=delta_link("u-ana", "D1"))
+        tenant.share("f1", [user_grant("u-ana", "ana@acme.com", "owner"), user_grant("u-bo-old", "bo@acme.com"),
+                            user_grant("u-bo-new", "bo@acme.com", "write")])
+        return feed
+
+    async def test_a_webhook_sync_writes_only_the_grant_to_the_account_that_holds_the_address(self, cloud, tenant, db, checkpoints) -> None:
+        self.shared_with_old_bo(tenant)
+        connector = await self.fresh_connector(db, checkpoints)
+
+        await connector.handle_webhook_notification({"resource": "users/u-ana/drive/root", "changeType": "updated"})
+
+        assert {(p.external_id, p.email) for p in db.record_permissions["f1"]} == {
+            ("u-ana", "ana@acme.com"), ("u-bo-new", "bo@acme.com")}
+
+    async def test_a_reindex_writes_no_grant_to_the_deleted_account(self, cloud, tenant, db, checkpoints) -> None:
+        self.shared_with_old_bo(tenant)
+        tenant.share("f1", [user_grant("u-ana", "ana@acme.com", "owner")])
+        await (await ready_connector(db, checkpoints)).run_sync()          # an earlier process synced the file
+        tenant.share("f1", [user_grant("u-ana", "ana@acme.com", "owner"), user_grant("u-bo-old", "bo@acme.com")])
+        cloud.on("GET", f"/v1.0/drives/{DRIVE}/items/f1", drive_item("f1", "one.pdf", etag="v2", shared=True))
+        connector = await self.fresh_connector(db, checkpoints)
+
+        await connector.reindex_records([db.records["f1"]])
+
+        assert {p.email for p in db.record_permissions["f1"]} == {"ana@acme.com"}
+
+    async def test_a_state_that_cannot_be_read_writes_nothing(self, cloud, tenant, db, checkpoints) -> None:
+        self.shared_with_old_bo(tenant)
+        connector = await self.fresh_connector(db, checkpoints)
+        real_get = connector.config_service.get_config
+
+        async def get_config(path: str, *args: object, **kwargs: object) -> object:
+            if path.endswith("/sourceAccounts"):
+                raise RuntimeError("store down")
+            return await real_get(path, *args, **kwargs)
+
+        connector.config_service.get_config = get_config
+
+        await connector.handle_webhook_notification({"resource": "users/u-ana/drive/root", "changeType": "updated"})
+
+        assert "f1" not in db.record_permissions

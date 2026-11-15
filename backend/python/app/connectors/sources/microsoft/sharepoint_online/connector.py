@@ -2794,6 +2794,7 @@ class SharePointConnector(BaseConnector):
         Handles user, group and SharePoint site group permissions; site groups
         need the ``site_id`` they were synced under.
         """
+        await self.source_accounts.ensure_loaded()     # a reindex reaches here before any user sync
         permissions = []
 
 
@@ -2960,6 +2961,7 @@ class SharePointConnector(BaseConnector):
 
     async def _sharepoint_principal_permissions(self, principal: dict, role: PermissionType, site_id: str) -> list[Permission]:
         """Grants for one SharePoint principal: a role assignment's Member, or a user of an associated site group."""
+        await self.source_accounts.ensure_loaded()     # a reindex reaches here before any user sync
         login_name = principal.get('LoginName') or ''
         principal_type = principal.get('PrincipalType')
 
@@ -3362,6 +3364,7 @@ class SharePointConnector(BaseConnector):
     async def _site_group_member_users(self, site_id: str, group_id: str, principals: list[dict]) -> list[AppUser]:
         """The enabled people a SharePoint group's members stand for. Raises when a member group can't be read.
         A tenant-wide claim is noted for the group (see _site_group_permissions), not expanded."""
+        await self.source_accounts.ensure_loaded()     # a reindex reaches here before any user sync
         users: list[dict] = []
         for principal in principals:
             login_name = principal.get('LoginName', '') or ''

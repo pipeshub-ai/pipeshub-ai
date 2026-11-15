@@ -42,26 +42,39 @@ class SourceAccounts:
         self.connector_id = connector_id
         self.config_service = config_service
         self.logger = logger
+        self.loaded = False                   # until the saved state is read, no grant is written (may_grant)
         self.current: dict[str, str] = {}     # address -> object id of the account listed with it in this run
-        self.reused: set[str] = set()         # addresses another account held before
+        self.reused: dict[str, str] = {}      # address another account held before -> object id that holds it now
 
-    async def _state(self) -> tuple[dict[str, str], set[str]]:
+    async def _state(self) -> tuple[dict[str, str], dict[str, str]]:
+        """The saved state. A failed read raises: without it no grant may be judged."""
         stored = await self.config_service.get_config(
             source_accounts_key(self.connector_id), use_cache=False, raise_on_error=True
         ) or {}
-        return dict(stored.get("withdrawn") or {}), {e.lower() for e in stored.get("reused") or []}
+        reused = stored.get("reused") or {}
+        if not isinstance(reused, dict):     # addresses without the account now holding them: no grant reaches them
+            reused = dict.fromkeys(reused, "")
+        return dict(stored.get("withdrawn") or {}), {e.lower(): sid for e, sid in reused.items()}
 
-    async def _save(self, withdrawn: dict[str, str], reused: set[str]) -> None:
+    async def _save(self, withdrawn: dict[str, str], reused: dict[str, str]) -> None:
         saved = await self.config_service.set_config(
-            source_accounts_key(self.connector_id), {"withdrawn": withdrawn, "reused": sorted(reused)}
+            source_accounts_key(self.connector_id), {"withdrawn": withdrawn, "reused": reused}
         )
         if not saved:
             raise RuntimeError(f"Could not save which accounts the users of connector {self.connector_id} were linked to")
+
+    async def ensure_loaded(self) -> None:
+        """Read the saved state once, before the first grant is judged in any path (a sync, a reindex, a webhook).
+        A failed read raises, so the caller writes nothing."""
+        if not self.loaded:
+            _, self.reused = await self._state()
+            self.loaded = True
 
     async def admit(self, users: list["AppUser"]) -> None:
         """Link ``users`` (``on_new_app_users``), after taking this connector's grants from any PipesHub user whose
         address now belongs to a different account than the one it was linked to."""
         withdrawn, self.reused = await self._state()
+        self.loaded = True
         try:
             links = {link.id: link.source_user_id for link in await self.processor.get_app_user_links(self.connector_id)}
         except Exception as e:
@@ -80,7 +93,7 @@ class SourceAccounts:
             before = links.get(pipeshub_user.id) or withdrawn.get(pipeshub_user.id)
             if before and before != user.source_user_id:
                 removed = await self.processor.remove_user_access_to_connector(self.connector_id, user.email)
-                self.reused.add(user.email.lower())
+                self.reused[user.email.lower()] = user.source_user_id
                 self.logger.info(
                     "The address of user %s belongs to a new account now; removed %d grant(s) of the previous one",
                     pipeshub_user.id, removed,
@@ -100,10 +113,13 @@ class SourceAccounts:
 
     def may_grant(self, email: str, object_id: str | None) -> bool:
         """Whether a grant to ``email`` reaches the account that holds it now. ``object_id`` is the Entra object id
-        the source named, or None when it named none (a SharePoint REST principal)."""
-        # shortcut: before this process's first user sync (a reindex right after a restart) nothing is loaded and
-        # every grant passes, as before; keep the listed object ids with the state if that window matters.
+        the source named, or None when it named none (a SharePoint REST principal). False until the saved state is
+        read (``ensure_loaded`` or ``admit``)."""
+        if not self.loaded:
+            return False
         email = email.lower()
+        if email in self.reused:
+            return object_id is not None and object_id == self.reused[email]
         if object_id is not None and email in self.current:
             return self.current[email] == object_id
-        return email not in self.reused
+        return True

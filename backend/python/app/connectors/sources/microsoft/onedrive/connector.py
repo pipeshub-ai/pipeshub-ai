@@ -1133,6 +1133,7 @@ class OneDriveConnector(BaseConnector):
         Convert Microsoft Graph permissions to our Permission model.
         Handles both user and group permissions.
         """
+        await self.source_accounts.ensure_loaded()     # a reindex or a webhook reaches here before any user sync
         permissions = []
 
         for perm in msgraph_permissions:

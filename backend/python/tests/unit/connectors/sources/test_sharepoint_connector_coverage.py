@@ -28,6 +28,9 @@ from app.connectors.sources.microsoft.sharepoint_online.everyone_groups import (
 )
 from app.models.entities import RecordType
 from app.models.permission import EntityType
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 MODULE = "app.connectors.sources.microsoft.sharepoint_online.connector"
 
@@ -48,7 +51,7 @@ def _make_connector(*, return_dep: bool = False):
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
-    c = SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "test-user-id")
+    c = stub_source_accounts(SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "test-user-id"))
     c.rate_limiter = AsyncMock()
     c.rate_limiter.__aenter__ = AsyncMock(return_value=None)
     c.rate_limiter.__aexit__ = AsyncMock(return_value=None)
