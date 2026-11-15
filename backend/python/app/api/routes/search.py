@@ -359,6 +359,9 @@ async def _rewritten_queries(
 ) -> list[str]:
     """The query rewritten and expanded by the model, for retrieval."""
     llm = await resolve_llm_for_search(request, retrieval_service)
+    if llm is None:
+        # Retrieval needs only the embedding model, so search runs on the typed query.
+        return _queries_for_search(query, None, None)
     rewrite_chain, expansion_chain = setup_query_transformation(llm)
 
     # OpikTracer is invoke-config only (not a constructor callback); without
