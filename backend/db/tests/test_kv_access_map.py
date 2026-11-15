@@ -1,14 +1,20 @@
-"""Every key-value key the Python services can reach is readable by the role each service runs as, or is denied on purpose.
+"""The key-value keys each service role may read, checked against the code in both directions.
 
-How the map is built (static, an over-approximation): for each service's entry module, the import closure inside ``backend/python/app``
-(every ``import app...`` / ``from app... import`` / relative import, lazy ones included), and in it every key the code names: the
-``config_node_constants`` members, and string or f-string literals starting with ``/services/``, ``/migrations/`` or ``state:`` (an
-f-string's placeholders become ``x``). A literal is checked as written and with ``/x`` appended (the keys under it). The closure of
-every entry module is nearly the whole package, so this cannot tell which keys a service reads at run time; it can tell that no key
-any service could read is refused without a reviewed reason. A denied key must be listed in ``DENIED`` with its reason, and every
-listed prefix must really be denied (so the list cannot go stale). Keys built only at run time from other values are not seen.
+How the map is built: for each service's entry module, the import closure inside ``backend/python/app`` (every ``import app...`` /
+``from app... import`` / relative import, lazy ones included), and in it every key the code names: the ``config_node_constants``
+members used, and string or f-string literals starting with ``/services/``, ``/migrations/`` or ``state:`` (placeholders become ``x``).
+The closure of every entry module is nearly the whole package, so the scan over-approximates what a service reads. For the two roles
+whose reads are allow-lists (indexing, kv) every reachable key must therefore be classified by hand: in ``READS`` with the file:line that
+reads it at run time (the grant), or in ``NOT_READ`` with why that service never reads it. The tests then check
+- under-grant: every reachable key is classified, and every key in ``READS`` is readable by the role in enforce;
+- over-grant: on every key the code names (and the keys under it, and a few made-up ones), the role's matrix answers exactly what
+  ``READS`` says, so a new readable key needs a ``READS`` entry and a reader;
+- the citations: each ``READS`` reader line names its key.
+connectors and query read every key but the Node API's own (a deny-list): for them the check is that every reachable key is readable
+unless it is one of those. Keys built at run time from other values are not seen by the scan.
 """
 import ast
+import functools
 import re
 from pathlib import Path
 
@@ -31,19 +37,86 @@ SERVICES = {
     "kv": ["app.embedding_main", "app.docling_main", "app.parsing_main", "app.extraction_main"],
 }
 
-_ADMIN = "the Node API's own settings; no Python service reads them"
-_CRED = ("credentials used only by connectors (sync, token refresh, admin routes) and query (agent tools and toolsets); indexing reads "
-         "record bytes through the connectors service and the configuration-only services never open a connector, toolset or MCP server")
-_DENIED_ALL = {"/services/smtp": _ADMIN, "/services/slackBot": _ADMIN, "/services/auth/": _ADMIN, "/services/mcp/accessPolicy/": _ADMIN,
-               "crawl:": _ADMIN}
-_DENIED_CRED = {
-    **_DENIED_ALL,
-    "/services/connectors/": _CRED + " (a connector's metadata schemas, which indexing reads, stay readable)",
-    "/services/oauth/": _CRED, "/services/oauths/": _CRED, "/services/toolset": _CRED, "/services/api-toolsets/": _CRED,
-    "/services/mcp/": _CRED, "/services/webSearch": "web search runs in query's agents only",
-    "/services/agents/": "parked agent turns (conversation content): query's agent loop only",
+# connectors and query: everything but these
+NODE_ONLY = ("/services/smtp", "/services/slackBot", "/services/auth/", "/services/mcp/accessPolicy/", "crawl:")
+
+# The grants: key (exact), "prefix*", or "re:<regex>" -> the line that reads it at run time (path below backend/python, and a text that
+# line contains). Reads only; writes are the revision's own allow-lists.
+_META = "re:^/services/connectors/[^/]+/metadataSchemas/"
+READS = {
+    "kv": {
+        "/services/aiModels": ("app/embedding_main.py:1178", "AI_MODELS"),         # also utils/llm.py:267 (docling, parsing), extraction/client.py:153
+        "/services/secretKeys": ("app/api/middlewares/auth.py:206", "SECRET_KEYS"),  # parsing and extraction routes; policy_store.py:75 (pseudonyms)
+        "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py:64", "AI_GATEWAY_IDENTITY_POLICY"),  # parsing.py:276, extraction.py:116
+        "/services/metricsCollection": ("app/telemetry/pusher.py:29", "/services/metricsCollection"),  # embedding, docling (pusher bound at start)
+        "/migrations/etcd_to_redis": ("app/config/configuration_service.py:271", "/migrations/etcd_to_redis"),  # every ConfigurationService
+    },
+    "indexing": {
+        "state:*": ("app/services/pg_state.py:24", "state:lock:"),
+        "/services/scopeFields/*": ("app/services/permissions/generation.py:40", "/services/scopeFields/"),
+        "/services/vectordb/*": ("app/services/vector_db/strategy_resolver.py:34", "/services/vectordb/"),
+        "/services/platform/artifactRollout/membership/*": ("app/services/messaging/membership.py:35", "/services/platform/artifactRollout/membership/"),
+        "/services/entityCleanup/*": ("app/connectors/services/entity_cleanup_intents.py:21", "/services/entityCleanup/"),  # entity_index_rebuild.py:40
+        "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py:53", "/migrations/class_units_backfill/"),
+        "/services/secretKeys": ("app/core/envelope.py:322", "SECRET_KEYS"),
+        "/services/endpoints": ("app/modules/transformers/blob_storage.py:954", "ENDPOINTS"),
+        "/services/storage": ("app/modules/transformers/blob_storage.py:963", "STORAGE"),
+        "/services/arangodb": ("app/health/health.py:267", "ARANGODB"),
+        "/services/kafka": ("app/services/messaging/utils.py:113", "KAFKA"),
+        "/services/redis": ("app/config/configuration_service.py:577", "REDIS"),
+        "/services/qdrant": ("app/services/vector_db/qdrant/qdrant.py:379", "QDRANT"),
+        "/services/pgvector": ("app/services/vector_db/pgvector/pgvector.py:160", "PGVECTOR"),
+        "/services/opensearch": ("app/services/vector_db/opensearch/opensearch.py:324", "OPENSEARCH"),
+        "/services/redis-vector": ("app/services/vector_db/redis/redis_vector.py:303", "REDIS_VECTOR"),
+        "/services/aiModels": ("app/modules/transformers/entity_vectorstore.py:459", "AI_MODELS"),
+        "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py:64", "AI_GATEWAY_IDENTITY_POLICY"),
+        "/services/namedEntities": ("app/modules/named_entities/domain/config.py:70", "NAMED_ENTITIES"),
+        "/services/metricsCollection": ("app/telemetry/pusher.py:29", "/services/metricsCollection"),
+        "/services/platform/settings": ("app/services/featureflag/platform_settings.py:21", "/services/platform/settings"),  # pipeline stages
+        "/migrations/kh_listing_state_v1": ("app/services/graph_db/interface/graph_db_provider.py:46", "/migrations/kh_listing_state_v1"),
+        "/migrations/etcd_to_redis": ("app/config/configuration_service.py:271", "/migrations/etcd_to_redis"),
+        _META: ("app/modules/record_metadata/schemas.py:92", "metadataSchemas"),  # sink_orchestrator.py:38 (indexing)
+    },
 }
-DENIED = {"connectors": _DENIED_ALL, "query": _DENIED_ALL, "indexing": _DENIED_CRED, "kv": _DENIED_CRED}
+
+_CONN = "connector configuration, credentials and leases: the connectors service and query's agent tools"
+_TOOLS = "toolsets, API toolsets, MCP servers and their credentials: query's agents and the connectors service's admin routes"
+_ADMIN = "the Node API's own settings"
+_QUERY = "query only (chat, agents, search)"
+_CJOBS = "the connectors service's own background jobs and migrations (containers/connector.py, connectors_main.py)"
+_ENVFB = "named by ConfigurationService's environment fallback (a key comparison), read only by the service that opens that store"
+_DEAD = "named in config_node_constants, read by no code"
+_LIST = "listed in encrypted_store.py as stored unencrypted, not read there"
+# Reachable from a service's entry module but never read by it at run time, with why.
+_COMMON_NOT_READ = {
+    "/services/connectors/*": _CONN, "/services/oauth/*": _CONN, "/services/oauths/*": _TOOLS, "/services/toolset*": _TOOLS,
+    "/services/api-toolsets*": _TOOLS, "/services/mcp*": _TOOLS, "/services/agents/*": _QUERY, "/services/webSearch": _QUERY,
+    "/services/aiModelApiModes": "read only by query, which creates the store at start (query_main.py:95); elsewhere get_llm_api_mode_store() is None",
+    "/services/systemPrompts": _QUERY, "/services/demoData/*": "demo data markers: the connectors service and query's retrieval",
+    "/services/softDeletePurge/*": _CJOBS, "/services/storageRelease/*": _CJOBS, "/services/lateWriteSweep/*": _CJOBS,
+    "/services/storageMigration/*": _CJOBS, "/migrations/*": _CJOBS,
+    "/services/deployment": "read by the connectors container at start (containers/connector.py:299); " + _LIST,
+    "/services/migrations": _DEAD, "/services/inheritance": _DEAD, "/services/neo4j": _DEAD, "/services/message-broker": _DEAD,
+    "/services/redis-streams": _DEAD, "/services/aiModels/*": _DEAD + " (/services/aiModels/embedding)",
+    "/services/mongodb": _ADMIN, "/services/smtp": _ADMIN, "/services/slackBot": _ADMIN, "/services/auth/*": _ADMIN, "crawl:*": _ADMIN,
+}
+NOT_READ = {
+    "indexing": {**_COMMON_NOT_READ,
+                 "/services/platform/*": "only settings (READS) and the rollout membership (READS) under it are read",
+                 "/services/scopeFields*": "the keys under /services/scopeFields/ are in READS"},
+    "kv": {**_COMMON_NOT_READ,
+           "state:*": "runtime locks, leases and retry counters: the message consumers (connectors, indexing, query)",
+           "/services/scopeFields*": "register_scope_generation runs in connectors_main, indexing_main and query_main only",
+           "/services/vectordb/*": "vector collection settings: indexing and query",
+           "/services/platform/*": "feature flags and rollout membership: read by the indexing pipeline, query and the connectors service",
+           "/services/entityCleanup/*": "cleanup intents: the connectors service and indexing",
+           "/services/endpoints": "service URLs: read by query, indexing and the connectors service (caller_role.py is not mounted here)",
+           "/services/storage": "storage settings: the Node API and indexing's blob reads",
+           "/services/namedEntities": "named-entity settings: indexing and query",
+           "/services/arangodb": "BaseAppContainer's ArangoDB client is resolved only by services with a graph connection; " + _ENVFB,
+           "/services/kafka": _ENVFB, "/services/redis": _ENVFB, "/services/qdrant": _ENVFB, "/services/opensearch": _ENVFB,
+           "/services/redis-vector": _ENVFB, "/services/pgvector": "the pgvector store: indexing and query"},
+}
 
 
 def _module_file(mod: str) -> Path | None:
@@ -81,6 +154,7 @@ def _constants() -> dict[str, str]:
     return {s.targets[0].id: s.value.value for s in cls.body if isinstance(s, ast.Assign) and isinstance(s.value, ast.Constant)}
 
 
+@functools.cache
 def reachable_keys(entry: str) -> dict[str, str]:
     """{key as written (placeholders as x): the first module that names it}"""
     consts, out = _constants(), {}
@@ -102,6 +176,20 @@ def reachable_keys(entry: str) -> dict[str, str]:
     return out
 
 
+def _entry_matches(entry: str, key: str) -> bool:
+    if entry.startswith("re:"):
+        return re.match(entry[3:], key) is not None
+    return key.startswith(entry[:-1]) if entry.endswith("*") else key == entry
+
+
+def _reachable(role: str) -> dict[str, str]:
+    keys: dict[str, str] = {}
+    for entry in SERVICES[role]:
+        for k, mod in reachable_keys(entry).items():
+            keys.setdefault(k, f"{entry}: {mod}")
+    return keys
+
+
 def test_the_scan_finds_the_keys_it_must():
     """The scan itself: it sees constants, literals, f-strings and lazily imported modules."""
     keys = reachable_keys("app.extraction_main")
@@ -109,6 +197,25 @@ def test_the_scan_finds_the_keys_it_must():
               "state:lease:", "/migrations/etcd_to_redis"):
         assert k in keys, k
     assert not any(k.startswith("/services/data/") for k in keys)          # Salesforce REST paths are not keys
+
+
+@pytest.mark.parametrize("role", sorted(READS))
+def test_each_reader_citation_names_its_key(role):
+    wrong = []
+    for key, (where, text) in READS[role].items():
+        path, line = where.rsplit(":", 1)
+        lines = (PYTHON / path).read_text(encoding="utf-8").splitlines()
+        if text not in lines[int(line) - 1]:
+            wrong.append((key, where, text))
+    assert wrong == []
+
+
+@pytest.mark.parametrize("role", sorted(READS))
+def test_every_reachable_key_is_classified_as_read_or_not_read(role):
+    """Under-grant, by review: a key a service can reach and its role cannot read needs a reason it is never read."""
+    loose = [(k, where) for k, where in sorted(_reachable(role).items())
+             if not any(_entry_matches(e, k) or _entry_matches(e, k.rstrip("/") + "/x") for e in (*READS[role], *NOT_READ[role]))]
+    assert loose == [], f"pipeshub_{role}: classify these keys in READS (with the line that reads them) or NOT_READ (with why): {loose}"
 
 
 @pytest.fixture(scope="module")
@@ -134,17 +241,30 @@ def matrix(cluster):
         a.execute(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
 
 
-@pytest.mark.parametrize("role", sorted(SERVICES))
-def test_every_key_a_service_can_reach_is_readable_by_its_role_or_denied_with_a_reason(matrix, role):
-    keys: dict[str, str] = {}
-    for entry in SERVICES[role]:
-        for k, mod in reachable_keys(entry).items():
-            keys.setdefault(k, f"{entry}: {mod}")
-    refused = [(probe, where) for key, where in sorted(keys.items()) for probe in sorted({key, key.rstrip("/") + "/x"})
-               if not matrix(role, probe) and not any(probe.startswith(p) for p in DENIED[role])]
-    assert refused == [], f"pipeshub_{role} cannot read these keys and no reason is listed in DENIED: {refused}"
+@pytest.mark.parametrize("role", sorted(READS))
+def test_the_role_can_read_every_key_it_reads(matrix, role):
+    """Under-grant, against the matrix: every READS entry is readable in enforce (a prefix through a key under it)."""
+    probe = {e: (e[:-1] + "x" if e.endswith("*") else ("/services/connectors/c1/metadataSchemas/latest" if e == _META else e)) for e in READS[role]}
+    assert [e for e, k in probe.items() if not matrix(role, k)] == []
 
 
-@pytest.mark.parametrize("role", sorted(SERVICES))
-def test_every_listed_denial_is_a_real_one(matrix, role):
-    assert [p for p in DENIED[role] if matrix(role, p + "x" if p.endswith((":", "/")) else p)] == []
+@pytest.mark.parametrize("role", sorted(READS))
+def test_the_role_can_read_nothing_else(matrix, role):
+    """Over-grant: on every key the code names, the keys under it and made-up ones, the matrix grants exactly what READS lists."""
+    universe = {"/services/someNewProvider", "/services/someNewProvider/secret", "/migrations/some_new_flag", "state:x", "other:x"}
+    for k in _reachable(role):
+        universe |= {k, k.rstrip("/") + "/x"}
+    for e in (*READS[role], *NOT_READ[role]):
+        if not e.startswith("re:"):
+            universe |= {e.rstrip("*"), e.rstrip("*") + "x"}
+    wrong = [(k, got) for k in sorted(universe)
+             if (got := matrix(role, k)) != any(_entry_matches(e, k) for e in READS[role])]
+    assert wrong == [], f"pipeshub_{role}: the matrix and READS disagree on (key, matrix grants): {wrong}"
+
+
+@pytest.mark.parametrize("role", ["connectors", "query"])
+def test_connectors_and_query_read_every_reachable_key_but_the_node_api_own(matrix, role):
+    refused = [(probe, where) for key, where in sorted(_reachable(role).items()) for probe in sorted({key, key.rstrip("/") + "/x"})
+               if not matrix(role, probe) and not probe.startswith(NODE_ONLY)]
+    assert refused == []
+    assert [p for p in NODE_ONLY if matrix(role, p + "x" if p.endswith((":", "/")) else p)] == []
