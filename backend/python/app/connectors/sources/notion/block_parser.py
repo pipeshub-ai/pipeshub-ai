@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
+from app.connectors.sources.notion import pagination
 from app.models.blocks import (
     Block,
     BlockComment,
@@ -72,9 +73,11 @@ def property_items_fetcher(
             else:
                 merged["results"].extend(data.get("results", []))
                 merged["property_item"] = data.get("property_item", merged.get("property_item"))
-            if not data.get("has_more"):
+            if pagination.stopped_short(data, cursor):
+                return None  # a partial list would replace the value as if whole
+            cursor = pagination.next_cursor(data)
+            if cursor is None:
                 return merged
-            cursor = data.get("next_cursor")
         return merged
 
     return fetch

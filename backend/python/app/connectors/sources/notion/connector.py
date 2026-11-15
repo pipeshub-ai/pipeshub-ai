@@ -77,7 +77,7 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     load_connector_filters,
 )
-from app.connectors.sources.notion import personal_tokens
+from app.connectors.sources.notion import pagination, personal_tokens
 from app.connectors.sources.notion.block_parser import NotionBlockParser, property_items_fetcher
 from app.connectors.sources.notion.common.apps import NotionApp
 from app.connectors.utils.record_ids import new_record_id
@@ -243,14 +243,6 @@ def _with_comment_digest(
 # page, database, the undocumented link_mention (a pasted link, titled by its target) and any type
 # added later, keeps only its target's id or URL.
 _MENTIONS_OF_NO_OTHER_PAGE = frozenset({"user", "date", "template_mention", "link_preview"})
-
-
-def _stopped_short(page: dict[str, Any], cursor: str | None) -> bool:
-    """Whether a list page says there is more but gives nothing to go on: no results, or no new cursor."""
-    if not page.get("has_more"):
-        return False
-    next_cursor = page.get("next_cursor")
-    return not page.get("results") or not next_cursor or next_cursor == cursor
 
 
 def _without_linked_content(node: object) -> None:
@@ -1059,11 +1051,11 @@ class NotionConnector(BaseConnector):
             for obj in results:
                 if isinstance(obj, dict) and obj.get("id"):
                     found[obj["id"]] = obj
-            if _stopped_short(data, cursor):
+            if pagination.stopped_short(data, cursor):
                 return None
-            if not data.get("has_more"):
+            cursor = pagination.next_cursor(data)
+            if cursor is None:
                 return found
-            cursor = data["next_cursor"]
 
     async def _reconcile_with_source(self) -> None:
         """Make the stored pages and data sources match what the integration can see now.
@@ -2608,25 +2600,14 @@ class NotionConnector(BaseConnector):
 
                 response_data = response.data.json() if response.data else {}
                 users_data = response_data.get("results", [])
-                has_more = response_data.get("has_more", False)
-                next_cursor = response_data.get("next_cursor")
-                if next_cursor is not None and next_cursor == cursor:
-                    self.logger.warning(
-                        "Notion users pagination cursor did not advance "
-                        "(start_cursor=%s next_cursor=%s has_more=%r)",
-                        cursor,
-                        next_cursor,
-                        has_more,
-                    )
+                unfinished = pagination.stopped_short(response_data, cursor)
+                if unfinished:
+                    # Not the end: members on later pages were never read.
+                    self.logger.warning("Notion users pagination stopped before its end (start_cursor=%s)", cursor)
                     user_details_complete = False
                     listing_complete = False
 
                 if not users_data:
-                    if has_more:
-                        # Not the end: members on later pages were never read.
-                        self.logger.warning("Notion users pagination returned an empty page that still has more")
-                        user_details_complete = False
-                        listing_complete = False
                     self.logger.info("No more users to process")
                     break
 
@@ -2742,18 +2723,9 @@ class NotionConnector(BaseConnector):
                         })
                         self.logger.info(f"✅ Synced {len(app_users)} users in this batch")
 
-                if has_more and not next_cursor:
-                    self.logger.warning("Notion users pagination stopping: more pages but no cursor")
-                    user_details_complete = False
-                    listing_complete = False
-                if not has_more or not next_cursor:
+                cursor = pagination.next_cursor(response_data)
+                if unfinished or cursor is None:
                     break
-                if next_cursor == cursor:
-                    self.logger.warning("Notion users pagination stopping: next_cursor equals start_cursor (%s)", cursor)
-                    user_details_complete = False
-                    listing_complete = False
-                    break
-                cursor = next_cursor
 
             if persons_seen and persons_without_email == persons_seen:
                 # Every member came back without an email: the integration lacks the "user
@@ -2917,8 +2889,13 @@ class NotionConnector(BaseConnector):
                 if not isinstance(data, dict):
                     data = {}
                 objects = data.get("results", [])
-                has_more = data.get("has_more")
-                next_cursor = data.get("next_cursor")
+                unfinished = pagination.stopped_short(data, cursor)
+                if unfinished:
+                    self.logger.warning(
+                        "Notion %s search stopped before its end (cursor=%s); holding the checkpoint",
+                        object_type, cursor,
+                    )
+                    walk_incomplete = True
                 if (data.get("request_status") or {}).get("type") == "incomplete":
                     # Notion stopped answering this search before the end (a result cap).
                     self.logger.warning(
@@ -2928,13 +2905,7 @@ class NotionConnector(BaseConnector):
                     walk_incomplete = True
 
                 if not objects:
-                    if has_more:
-                        self.logger.warning(
-                            "Notion %s search returned an empty page that still has more; holding "
-                            "the checkpoint", object_type,
-                        )
-                        walk_incomplete = True
-                    else:
+                    if not unfinished:
                         self.logger.info(f"No {object_type}s found after time {last_sync_time}")
                     break
 
@@ -2998,20 +2969,9 @@ class NotionConnector(BaseConnector):
                 if should_stop:
                     break
 
-                if has_more and not next_cursor:
-                    self.logger.warning("Notion %s search has more but gave no cursor; holding the checkpoint", object_type)
-                    walk_incomplete = True
-                if not has_more or not next_cursor:
+                cursor = pagination.next_cursor(data)
+                if unfinished or cursor is None:
                     break
-                if next_cursor == cursor:
-                    self.logger.warning(
-                        "Notion %s search cursor did not advance (cursor=%s); holding the checkpoint",
-                        object_type,
-                        cursor,
-                    )
-                    walk_incomplete = True
-                    break
-                cursor = next_cursor
 
             if walk_incomplete or oldest_failed_time:
                 self._sync_incomplete = True
@@ -3393,7 +3353,7 @@ class NotionConnector(BaseConnector):
 
                 data = response.data.json() if response.data else {}
                 results = data.get("results", [])
-                if _stopped_short(data, cursor):
+                if pagination.stopped_short(data, cursor):
                     raise RuntimeError("Notion's row listing stopped before its end")  # not the whole table
 
                 if not results:
@@ -3401,10 +3361,9 @@ class NotionConnector(BaseConnector):
 
                 all_rows.extend(results)
 
-                # Check for more pages
-                if not data.get("has_more") or not data.get("next_cursor"):
+                cursor = pagination.next_cursor(data)
+                if cursor is None:
                     break
-                cursor = data.get("next_cursor")
 
             except HTTPException:
                 raise
@@ -3559,7 +3518,7 @@ class NotionConnector(BaseConnector):
                     break
 
                 results = data.get("results", [])
-                if _stopped_short(data, cursor):
+                if pagination.stopped_short(data, cursor):
                     raise RuntimeError(f"Notion's block listing for {block_id} stopped before its end")
                 if not results:
                     break
@@ -3600,11 +3559,8 @@ class NotionConnector(BaseConnector):
                         attachment_blocks.extend(child_attachments)
                         all_block_ids.extend(child_block_ids)
 
-                # Check for more pages
-                has_more = data.get("has_more", False)
-                cursor = data.get("next_cursor")
-
-                if not has_more or not cursor:
+                cursor = pagination.next_cursor(data)
+                if cursor is None:
                     break
 
             except Exception as e:
@@ -3692,18 +3648,15 @@ class NotionConnector(BaseConnector):
                     break
 
                 results = data.get("results", [])
-                if _stopped_short(data, cursor):
+                if pagination.stopped_short(data, cursor):
                     raise RuntimeError(f"Notion's comment listing for {block_id} stopped before its end")
                 if not results:
                     break
 
                 all_comments.extend(results)
 
-                # Check for more pages
-                has_more = data.get("has_more", False)
-                cursor = data.get("next_cursor")
-
-                if not has_more or not cursor:
+                cursor = pagination.next_cursor(data)
+                if cursor is None:
                     break
 
             except HTTPException:
@@ -3864,7 +3817,7 @@ class NotionConnector(BaseConnector):
                 break
 
             results = data.get("results", [])
-            if _stopped_short(data, cursor):
+            if pagination.stopped_short(data, cursor):
                 # A page streamed from the blocks read so far would index as the whole page.
                 raise to_stream_error(RuntimeError(f"Notion's block listing for {block_id} stopped before its end"),
                                       connector=self.display_name)
@@ -3873,11 +3826,8 @@ class NotionConnector(BaseConnector):
 
             all_blocks.extend(results)
 
-            # Check for more pages
-            has_more = data.get("has_more", False)
-            cursor = data.get("next_cursor")
-
-            if not has_more or not cursor:
+            cursor = pagination.next_cursor(data)
+            if cursor is None:
                 break
 
         return all_blocks
@@ -5079,13 +5029,12 @@ class NotionConnector(BaseConnector):
                 data = response.data.json()
                 self._bot_user_ids.update(
                     u["id"] for u in data.get("results") or [] if u.get("type") == "bot" and u.get("id"))
-                next_cursor = data.get("next_cursor")
-                if not data.get("has_more") or not next_cursor:
+                if pagination.stopped_short(data, cursor):
+                    return  # a partial list: the bots on the pages not read stay unknown
+                cursor = pagination.next_cursor(data)
+                if cursor is None:
                     self._bot_ids_complete = True
                     return
-                if next_cursor == cursor:
-                    return
-                cursor = next_cursor
         except Exception as e:
             self.logger.warning("Could not load Notion bot users: %s", e)
 

@@ -296,6 +296,59 @@ async def test_a_listing_notion_stopped_short_fails_instead_of_passing_for_the_w
         await calls[read]()
 
 
+@pytest.mark.parametrize("first_page", [
+    _people_page([{"id": "bot-1", "type": "bot", "bot": {}}], True, None),  # more, but no cursor
+    _people_page([], True, "c1"),  # an empty page that still has more
+])
+@pytest.mark.asyncio
+async def test_a_bot_list_notion_did_not_finish_is_not_taken_for_all_the_bots(first_page: MagicMock) -> None:
+    """A partial list would let a bot on a page not read pass for a person (``notion_person``)."""
+    conn = _connector()
+    users = MagicMock()
+    users.list_users = AsyncMock(side_effect=[first_page, _people_page([], False, None)])
+    conn._get_fresh_datasource = AsyncMock(return_value=users)
+    conn._bot_ids_complete = False
+    await conn._load_bot_user_ids()
+    assert conn._bot_ids_complete is False
+
+
+@pytest.mark.asyncio
+async def test_a_property_listing_notion_did_not_finish_keeps_the_value_the_page_had() -> None:
+    from app.connectors.sources.notion.block_parser import property_items_fetcher
+
+    ds = MagicMock()
+    ds.retrieve_page_property_item = AsyncMock(return_value=_make_api_response(data={
+        "object": "list", "results": [{"relation": {"id": "r1"}}], "has_more": True, "next_cursor": None}))
+    assert await property_items_fetcher(ds)("p1", "prop1") is None
+
+
+def test_every_notion_list_is_paged_through_the_one_helper() -> None:
+    """A loop that reads has_more or next_cursor itself can take a list Notion did not finish for the whole."""
+    import ast
+    from pathlib import Path
+
+    from app.connectors.sources.notion import pagination
+
+    offenders = []
+    root = Path(pagination.__file__).parent
+    for path in [*root.glob("*.py"), *root.parent.joinpath("notion_personal").glob("*.py")]:
+        if path.name == "pagination.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            key, receiver = None, None
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" and node.args:
+                key, receiver = node.args[0], node.func.value
+            elif isinstance(node, ast.Subscript):
+                key, receiver = node.slice, node.value
+            if not (isinstance(key, ast.Constant) and key.value in ("has_more", "next_cursor")):
+                continue
+            # A relation property's own has_more flag (block_parser), not a list page.
+            if key.value == "has_more" and isinstance(receiver, ast.Name) and receiver.id == "prop":
+                continue
+            offenders.append(f"{path.name}:{node.lineno}")
+    assert offenders == [], f"page through app/connectors/sources/notion/pagination.py instead: {offenders}"
+
+
 @pytest.mark.asyncio
 async def test_a_token_relinked_while_the_sync_checked_the_old_one_is_kept() -> None:
     conn = _connector(_datasource(_bot(owner_id="notion-bob"), _search("p1")))
