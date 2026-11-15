@@ -5545,8 +5545,9 @@ class JiraConnector(BaseConnector):
         of the stored ones that are gone or now public (the issue's own content shows those), with
         the files filed under them; a file still on the issue is filed again by this read.
 
-        Each is RESTRICTED under the issue: read by those who read the issue and are named by its
-        ``visibility`` (or, for an internal note, have product access), as Jira shows it.
+        Each is PARENT_AND_GRANT under the issue: read by those who read the issue, by any path (a
+        reporter who reads it only as its reporter, too), and are named by its ``visibility`` (or, for
+        an internal note, have product access), as Jira shows it.
         """
         stored_by_id = {
             r.external_record_id: r for r in await self._stored_comment_records(issue_record.external_record_id)
@@ -5589,7 +5590,7 @@ class JiraConnector(BaseConnector):
                 parent_node_id=issue_record.id,
                 inherit_permissions=True,
                 rewrite_permissions=True,
-                access_rule=AccessRule.RESTRICTED,
+                access_rule=AccessRule.PARENT_AND_GRANT,
             )
             record.indexing_status = issue_record.indexing_status
             grants = restricted_comment_grants(

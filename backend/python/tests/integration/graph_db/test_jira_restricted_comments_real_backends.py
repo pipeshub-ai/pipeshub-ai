@@ -218,7 +218,7 @@ async def test_a_file_never_outlives_its_comment_record_under_a_wider_parent(wor
 
 async def test_search_and_chat_retrieval_hand_a_restricted_comment_only_to_its_group(world: dict[str, Any]) -> None:
     """Every search and chat path ends in one of these checks. The enumerated map they start from
-    gives a RESTRICTED record to every reader of its issue, so each check must take it away again
+    gives a comment record to every reader of its issue, so each check must take it away again
     from bob and carol, who read the issue but are not in the group."""
     await _comment_world(world)
     await _write_comments(world, "plain task", "2024-06-16T10:00:00.000+0000", [_comment("501", group=ADMINS_GROUP)])
@@ -250,3 +250,46 @@ async def test_search_and_chat_retrieval_hand_a_restricted_comment_only_to_its_g
         problems += [f"{name} {'cannot' if allowed else 'can'} get the comment as a {how}"
                      for how, got in seen.items() if got != allowed]
     assert not problems, "\n  ".join(problems)
+
+
+async def test_a_reporter_outside_the_project_reads_a_comment_of_their_issue_their_group_names(
+    world: dict[str, Any],
+) -> None:
+    """Browse held by the reporter: dave reads his own issue, so the comment restricted to his group too, by the access
+    check and by search; bob and carol, outside the group, read neither."""
+    await _comment_world(world)
+    world["connector"]._issue_security[PROJECT_ID].browse_holders = [{"type": "reporter"}]
+    issue = _edited("plain task", "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]},
+                    comment={"comments": [_comment("501", group=ADMINS_GROUP)], "total": 1})
+    built, _ = await world["connector"]._build_issue_records([issue], PROJECT_ID, _users(world), is_new_project=True)
+    await world["connector"]._process_new_records(built, PROJECT_KEY, {"new_count": 0, "updated_count": 0})
+    record_id = (await _comment_ids(world))["comment_501"]  # indexed as vr-<record id>
+    graph, org_id = world["graph"], world["org_id"]
+    for name, allowed in (("alice", True), ("dave", True), ("bob", False), ("carol", False)):
+        user_id = world["user_ids"][name]
+        checked = await graph.filter_accessible_record_ids([record_id], user_id, org_id)
+        searched = await graph.filter_accessible_virtual_record_ids([f"vr-{record_id}"], user_id, org_id)
+        assert (bool(checked), bool(searched)) == (allowed, allowed), f"{name} {'cannot' if allowed else 'can'} read comment_501"
+
+
+async def test_a_reporter_outside_the_project_reads_a_file_shown_only_in_a_comment_their_group_names(
+    world: dict[str, Any],
+) -> None:
+    """Browse held by the reporter: dave reads his issue and the comment restricted to his group, so the file shown only in it."""
+    await _comment_world(world)
+    world["connector"]._issue_security[PROJECT_ID].browse_holders = [{"type": "reporter"}]
+    shown = {**_comment("501", group=ADMINS_GROUP),
+             "renderedBody": '<p><a href="https://site.example/rest/api/3/attachment/content/777">figures.txt</a></p>'}
+    issue = _edited("plain task", "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]},
+                    comment={"comments": [shown], "total": 1},
+                    attachment=[{"id": "777", "filename": "figures.txt", "mimeType": "text/plain", "size": 5,
+                                 "created": "2024-06-15T10:00:00.000+0000"}])
+    issue["renderedFields"] = {"description": "", "comment": {"comments": [{"id": "501", "body": shown["renderedBody"]}]}}
+    built, _ = await world["connector"]._build_issue_records([issue], PROJECT_ID, _users(world), is_new_project=True)
+    await world["connector"]._process_new_records(built, PROJECT_KEY, {"new_count": 0, "updated_count": 0})
+    stored = await world["processor"].get_record_by_external_id(
+        connector_id=world["connector_id"], external_record_id="attachment_777")
+    assert stored is not None and stored.parent_external_record_id == "comment_501"
+    for name, allowed in (("alice", True), ("dave", True), ("bob", False), ("carol", False)):
+        checked = await world["graph"].filter_accessible_record_ids([stored.id], world["user_ids"][name], world["org_id"])
+        assert bool(checked) == allowed, f"{name} {'cannot' if allowed else 'can'} read the file"

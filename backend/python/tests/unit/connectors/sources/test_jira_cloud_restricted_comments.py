@@ -4,7 +4,7 @@ Jira shows a comment restricted to a project role or a group (``visibility``) to
 can open its issue and are in that role or group, and a Service Management internal note
 (``jsdPublic`` false) to those who open the issue in Jira itself rather than through the
 customer portal. The issue's content is served to every reader of the issue, so such a comment
-is a record of its own under the issue, RESTRICTED to those people.
+is a record of its own under the issue (PARENT_AND_GRANT), read by those people only.
 """
 
 from __future__ import annotations
@@ -130,7 +130,7 @@ def _stored_comment(comment_id: str, record_id: str, updated: int) -> CommentRec
         parent_external_record_id="100", source_updated_at=updated, author_source_id="acc-a")
 
 
-async def test_each_restricted_comment_is_a_restricted_record_under_its_issue() -> None:
+async def test_each_restricted_comment_is_a_record_under_its_issue_that_needs_the_issue_and_its_own_grant() -> None:
     connector = _connector()
     records, delete_ids = await _build(connector, _issue([ROLE_COMMENT, GROUP_COMMENT, INTERNAL_NOTE, PUBLIC_COMMENT]))
 
@@ -142,7 +142,7 @@ async def test_each_restricted_comment_is_a_restricted_record_under_its_issue() 
     assert comments["comment_12"][1] == {(EntityType.GROUP, "g-admins")}
     assert comments["comment_13"][1] == {(EntityType.GROUP, "g-sd"), (EntityType.GROUP, "g-sw")}
     for record, _, changed in comments.values():
-        assert record.access_rule == AccessRule.RESTRICTED
+        assert record.access_rule == AccessRule.PARENT_AND_GRANT
         assert record.inherit_permissions and record.rewrite_permissions
         assert record.parent_external_record_id == "100" and record.parent_record_type == RecordType.TICKET
         assert record.parent_node_id == ticket.id and record.is_dependent_node
