@@ -2,7 +2,7 @@
 from alembic import op
 from db.lib.vetted import run_vetted
 
-revision = "kg_0015"
+revision = "kg_0014"
 down_revision = "kg_0013"
 branch_labels = None
 depends_on = None
