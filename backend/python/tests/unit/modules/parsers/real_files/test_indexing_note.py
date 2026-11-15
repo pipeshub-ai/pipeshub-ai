@@ -118,3 +118,24 @@ async def test_a_log_no_longer_capped_drops_the_note_of_an_earlier_run() -> None
         new_type_harness._record = real_record  # type: ignore[assignment]
     assert record["indexingStatus"] == ProgressStatus.COMPLETED.value
     assert api_record(record).get(NOTE_FIELD) is None
+
+
+@pytest.mark.parametrize("twin_note", [partly_indexed_text(), None])
+async def test_a_duplicate_takes_its_twins_note(twin_note: str | None) -> None:
+    from tests.unit.events.test_events import _make_event_processor
+
+    ep, _, _, gp = _make_event_processor()
+    twin = {
+        "_key": "twin", "virtualRecordId": "vr-shared", "recordType": "FILE",
+        "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.SKIPPED.value,
+        NOTE_FIELD: twin_note,
+    }
+    gp.find_duplicate_records.return_value = [twin]
+    doc = {
+        "_key": "r1", "orgId": "org-1", "virtualRecordId": "vr-shared", "md5Checksum": "abc",
+        "recordType": "FILE", "sizeInBytes": 10, NOTE_FIELD: "an earlier run's note",
+    }
+    with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+    assert result.skip_indexing is True
+    assert doc[NOTE_FIELD] == twin_note

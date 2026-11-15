@@ -1341,6 +1341,11 @@ class EventProcessor:
                     {
                         "isDirty": False,
                         "indexingStatus": twin.get("indexingStatus"),
+                        # The copy is indexed from the twin's content, so it says what the twin's says.
+                        **(
+                            {INDEXING_NOTE_FIELD: twin.get(INDEXING_NOTE_FIELD)}
+                            if twin.get(INDEXING_NOTE_FIELD) != doc.get(INDEXING_NOTE_FIELD) else {}
+                        ),
                         **indexed_copy_fields(twin.get("indexingStatus")),
                         **_parsed_like(twin),
                         "processingStartedAt": None,
