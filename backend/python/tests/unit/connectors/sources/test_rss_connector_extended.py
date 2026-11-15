@@ -332,6 +332,7 @@ class TestProcessEntry:
     async def test_entry_fallback_to_title(self):
         conn = _make_connector()
         conn.fetch_full_content = False
+        conn._fetch_article_content = AsyncMock(return_value=None)  # the article page has nothing either; not fetched in a unit test
         entry = _make_entry(summary="")
         result = await conn._process_entry(entry, "https://feed.com/rss")
         assert result is not None

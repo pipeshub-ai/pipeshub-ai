@@ -197,6 +197,11 @@ class TestJiraDataCenterAttachmentMimeResolution:
 
 
 class TestJiraDataCenterConnectorInit:
+    @pytest.fixture(autouse=True)
+    def _fields_already_known(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """init reads the instance's field list over HTTP (hierarchy link fields); not what these tests are about."""
+        monkeypatch.setattr(JiraDataCenterConnector, "_discover_hierarchy_link_field_ids", AsyncMock())
+
     @pytest.mark.asyncio
     async def test_init_api_token_pat_success(self) -> None:
         conn = _make_connector()

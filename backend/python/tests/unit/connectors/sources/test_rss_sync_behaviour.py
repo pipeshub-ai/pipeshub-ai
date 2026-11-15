@@ -362,7 +362,7 @@ class TestRemovedFeeds:
         conn = _connector(store, [FEED_A, FEED_B])
         await _sync(conn, {FEED_A: _feed(_entry("1")), FEED_B: _feed(_entry("2", link="https://b.example.com/2"))})
 
-        conn.config_service.get_config = AsyncMock(return_value={"sync": {"feed_urls": FEED_A}})
+        conn.config_service.get_config = AsyncMock(return_value={"sync": {"feed_urls": FEED_A, "fetch_full_content": False}})
         await _sync(conn, {FEED_A: _feed(_entry("1"))})
 
         assert store.deleted_groups == [FEED_B]

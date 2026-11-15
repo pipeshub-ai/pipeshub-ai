@@ -2511,6 +2511,7 @@ class TestRelocateOnReindex:
     @pytest.mark.asyncio
     async def test_shared_content_stays_where_it_was_filed(self) -> None:
         bs = self._bs(holders=("rec-1", "rec-2"))
+        bs.get_record_from_storage = AsyncMock(return_value={"id": "rec-1"})
         ctx = self._ctx()
         with patch("app.modules.transformers.blob_storage.post_move_tree", new_callable=AsyncMock) as move:
             await bs.apply(ctx)

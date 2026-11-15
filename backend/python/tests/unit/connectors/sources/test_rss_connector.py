@@ -393,6 +393,7 @@ class TestRSSConnectorEntryProcessing:
     async def test_process_entry_fallback_to_title(self):
         connector = _make_connector()
         connector.fetch_full_content = False
+        connector._fetch_article_content = AsyncMock(return_value=None)  # the article page has nothing either; not fetched in a unit test
         entry = {
             "title": "Title Only",
             "link": "https://example.com/title-only",
@@ -1440,6 +1441,7 @@ class TestProcessEntryExtended:
     async def test_fallback_to_title(self):
         conn = _make_connector_cov()
         conn.fetch_full_content = False
+        conn._fetch_article_content = AsyncMock(return_value=None)  # the article page has nothing either; not fetched in a unit test
         entry = {
             "title": "Only Title Here",
             "link": "https://example.com/article",

@@ -2528,15 +2528,18 @@ class TestStreamContentUrlParseException:
     @pytest.mark.asyncio
     async def test_url_parse_fallback(self):
         """The URL parse succeeds for normal URLs, test with very long URL."""
-        long_url = "https://example.com/" + "a" * 300
-        # This just tests that the function initializes correctly with a long URL
-        # It will fail at the HTTP request, but the URL parsing should succeed
+        import socket
+
         import aiohttp
         from fastapi import HTTPException
 
-        with pytest.raises((HTTPException, TypeError, aiohttp.ClientError, Exception)):
-            async for _ in stream_content(long_url, record_id="r1", file_name="test.pdf"):
-                pass
+        # It fails at the HTTP request, but the URL parsing should succeed; a bound port that does not listen refuses at once.
+        with socket.socket() as closed:
+            closed.bind(("127.0.0.1", 0))
+            long_url = f"http://127.0.0.1:{closed.getsockname()[1]}/" + "a" * 300
+            with pytest.raises((HTTPException, TypeError, aiohttp.ClientError, Exception)):
+                async for _ in stream_content(long_url, record_id="r1", file_name="test.pdf"):
+                    pass
 
 
 class TestIncompleteCitationScanIsBounded:

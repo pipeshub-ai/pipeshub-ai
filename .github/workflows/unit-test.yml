@@ -153,6 +153,8 @@ jobs:
       # One fixed place for the fastembed model files, so the cache step, the
       # pre-download step and test_bm25_golden.py all use the same directory.
       FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.fastembed-cache
+      # The same for tiktoken's encodings: unit tests have no network (tests/unit/conftest.py).
+      TIKTOKEN_CACHE_DIR: ${{ github.workspace }}/.tiktoken-cache
 
     strategy:
       fail-fast: false
@@ -222,6 +224,37 @@ jobs:
             sleep $((attempt * 10))
           done
           echo "Could not download Qdrant/bm25; test_bm25_golden.py will fail" >&2
+          exit 1
+
+      - name: Check whether this shard counts tokens with tiktoken
+        id: tiktoken
+        working-directory: backend/python
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          owns=$(python3 ../../scripts/unit_shards.py owns "$SHARD" tests/unit/services/extraction/test_classify_request.py)
+          echo "needs_tiktoken=$owns" >> "$GITHUB_OUTPUT"
+
+      # test_classify_request.py checks properties of the real cl100k encoding; the unit tests
+      # cannot fetch it themselves, so it is cached and fetched here with retries.
+      - name: Cache tiktoken encoding
+        if: steps.tiktoken.outputs.needs_tiktoken == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TIKTOKEN_CACHE_DIR }}
+          key: tiktoken-cl100k-${{ hashFiles('backend/python/pyproject.toml') }}
+
+      - name: Pre-download tiktoken encoding
+        if: steps.tiktoken.outputs.needs_tiktoken == 'true'
+        run: |
+          for attempt in 1 2 3 4; do
+            if python3 -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"; then
+              exit 0
+            fi
+            echo "attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 10))
+          done
+          echo "Could not download cl100k_base; test_classify_request.py will fail" >&2
           exit 1
 
       # -n logical: one worker per vCPU (`auto` counts physical cores). --dist

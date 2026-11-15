@@ -5,6 +5,7 @@ Files REST API, so request shapes (paging, ranges, headers) and the SDK's own
 parsing (aware vs naive datetimes) are what the service would see and return.
 """
 
+import socket
 from unittest.mock import patch
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -20,12 +21,19 @@ from app.sources.client.azure.azure_files import (
     AzureFilesRESTClient,
 )
 from app.sources.external.azure.azure_files import AzureFilesDataSource
+from tests.support import network_guard
 
 KEY_CONNECTION_STRING = (
     "DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=a2V5a2V5a2V5;EndpointSuffix=core.windows.net"
 )
 WRITTEN = "2024-05-01T10:00:00.1234567Z"
 CONTENT = b"0123456789"
+
+
+@pytest.fixture(autouse=True)
+def _account_host_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The client checks the account's host is a public address before the SDK runs; answered here, not by DNS."""
+    monkeypatch.setattr(socket, "getaddrinfo", network_guard.answering({"acct.file.core.windows.net": "20.60.0.10"}))
 
 
 class _Body:

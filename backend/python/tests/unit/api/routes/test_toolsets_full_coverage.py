@@ -1268,6 +1268,14 @@ class TestGetInstanceOAuthAuthorizationUrl:
 # ===================================================================
 class TestHandleToolsetOAuthCallbackFlows:
 
+    @pytest.fixture(autouse=True)
+    def _setup_check_stays_local(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The callback's setup check calls the provider's API (Jira's accessible resources) through the toolset's
+        factory. Without one it passes; a test that is about the check patches in a factory of its own."""
+        monkeypatch.setattr(
+            "app.agents.tools.factories.registry.ClientFactoryRegistry.get_factory", MagicMock(return_value=None)
+        )
+
     def _encode_state(self, state, instance_id, user_id, is_agent=False):
         from app.api.routes.toolsets import _encode_state_with_instance
         return _encode_state_with_instance(state, instance_id, user_id, is_agent=is_agent)

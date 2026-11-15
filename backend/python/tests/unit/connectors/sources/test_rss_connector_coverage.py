@@ -866,6 +866,7 @@ class TestProcessEntryExtended:
     async def test_fallback_to_title(self):
         conn = _make_connector()
         conn.fetch_full_content = False
+        conn._fetch_article_content = AsyncMock(return_value=None)  # the article page has nothing either; not fetched in a unit test
         entry = {
             "title": "Only Title Here",
             "link": "https://example.com/article",

@@ -213,6 +213,7 @@ class TestMetadataBufferRetry:
 
         b._update_metadata_buffer = always_fail
         b._create_metadata_document = AsyncMock(return_value="meta-new")
+        b._delete_replaced_document = AsyncMock()
 
         async def get_doc(vrid, collection):
             return {"record_metadata_doc_id": "meta-existing"}
@@ -227,3 +228,4 @@ class TestMetadataBufferRetry:
         )
 
         b._create_metadata_document.assert_awaited_once()
+        b._delete_replaced_document.assert_awaited_once_with("org-1", "meta-existing", "vrid-1")

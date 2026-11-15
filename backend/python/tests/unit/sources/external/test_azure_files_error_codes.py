@@ -5,6 +5,7 @@ The real SDK runs over an in-process transport that answers like the Azure Files
 REST API, so the error classes and codes are the ones the service would produce.
 """
 
+import socket
 import time
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
@@ -27,11 +28,18 @@ from app.sources.external.azure.azure_files import (
     describe_error,
     error_code_of,
 )
+from tests.support import network_guard
 
 KEY_CONNECTION_STRING = (
     "DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=a2V5a2V5a2V5;EndpointSuffix=core.windows.net"
 )
 WRITTEN = "2024-05-01T10:00:00.1234567Z"
+
+
+@pytest.fixture(autouse=True)
+def _account_host_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The client checks the account's host is a public address before the SDK runs; answered here, not by DNS."""
+    monkeypatch.setattr(socket, "getaddrinfo", network_guard.answering({"acct.file.core.windows.net": "20.60.0.10"}))
 
 
 class _Response(AsyncHttpResponse):

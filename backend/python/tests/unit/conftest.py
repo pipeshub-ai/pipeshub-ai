@@ -8,6 +8,31 @@ from collections.abc import Iterator
 
 import pytest
 
+from tests.support import network_guard
+
+# Before a test module imports a model library: they read these at import, and a download attempt then fails at once
+# instead of going out (the guard below refuses it anyway).
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+# boto looks for credentials at the cloud metadata address (169.254.169.254) when none are configured.
+os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
+# tiktoken's encodings are files fetched once into this cache (CI fetches cl100k before the tests). Its default sits
+# under the temp dir, which _private_temp_dir below replaces with an empty one, so the default is taken now.
+os.environ.setdefault("TIKTOKEN_CACHE_DIR", os.path.join(tempfile.gettempdir(), "data-gym-cache"))
+if "huggingface_hub" in sys.modules:
+    sys.modules["huggingface_hub"].constants.HF_HUB_OFFLINE = True
+network_guard.install()
+
+
+@pytest.fixture(autouse=True)
+def _no_network() -> Iterator[None]:
+    """A test that reaches beyond this machine fails, even when the code under test swallowed the refusal."""
+    before = len(network_guard.blocked)
+    yield
+    tried = network_guard.blocked[before:]
+    if tried:
+        pytest.fail(f"this test tried to use the network ({'; '.join(tried)}): patch the call or serve it locally")
+
 
 @pytest.fixture(autouse=True)
 def _no_table_model(monkeypatch: pytest.MonkeyPatch) -> None:

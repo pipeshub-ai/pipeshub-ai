@@ -5,6 +5,7 @@ Listings run against ``FakeServiceNow``. The HTTP-level tests send through the r
 and resilient transport, with only the network replaced.
 """
 
+import socket
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -381,9 +382,13 @@ async def test_init_twice_then_cleanup_closes_both_clients(servicenow_connector)
         "redirectUri": "https://pipeshub.example/callback",
     })
     clients = []
+    # The client checks the instance address is public; answered here, not by DNS.
+    public = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
     with patch.object(sc, "test_connection_and_access", AsyncMock(return_value=True)), \
          patch.object(sc, "_resolve_kb_portal_suffix", AsyncMock(return_value="kb")), \
-         patch.object(sc, "_resolve_article_read_criteria", AsyncMock(return_value=False)):
+         patch.object(sc, "_resolve_article_read_criteria", AsyncMock(return_value=False)), \
+         patch.object(sc, "_resolve_block_no_criteria", AsyncMock(return_value=True)), \
+         patch("socket.getaddrinfo", return_value=public):
         for _ in range(2):
             assert await sc.init() is True
             clients.append(sc.servicenow_client)
