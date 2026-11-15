@@ -17,13 +17,17 @@ rows="${DRILL_ROWS:-20000}"
 work="$(mktemp -d)"; proj=""; major=""
 schemas="kernel platform identity oauth conversation content integrations graph kg retrieval"
 copies=()
-cleanup() {
+teardown() { # one iteration's copies, stack and host repository directory, on every way out of it
   for c in "${copies[@]}"; do $DOCKER rm -f "$c" >/dev/null 2>&1 || true; $DOCKER volume rm "$c" >/dev/null 2>&1 || true; done
+  copies=()
   if [ -n "$proj" ]; then dc down -v >/dev/null 2>&1 || true; fi
+  proj=""
   # the host repository directories belong to root and postgres (Docker created them)
-  for d in "$work"/repo-*; do [ -d "$d" ] && $DOCKER run --rm -v "$work:/w" --entrypoint rm "$image" -rf "/w/${d##*/}"; done
-  rm -rf "$work"
+  for d in "$work"/repo-*; do
+    if [ -d "$d" ]; then $DOCKER run --rm -v "$work:/w" --entrypoint rm "$image" -rf "/w/${d##*/}" || true; fi
+  done
 }
+cleanup() { teardown; rm -rf "$work"; }
 trap cleanup EXIT
 trap 'exit 1' INT TERM
 pw() { head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
@@ -34,7 +38,7 @@ pwvars="PG_ADMIN_PASSWORD PG_NODE_PASSWORD PG_CONNECTORS_PASSWORD PG_INDEXING_PA
 
 envfile() { # major image
   { for v in $pwvars; do echo "$v=$(pw)"; done; echo "PG_MAJOR=$1"; echo "PG_IMAGE=${2%:*}"; echo "PG_IMAGE_REV=${2##*:$1-}"
-    echo "REDIS_PASSWORD=x"; echo "COMPOSE_PROFILES=postgres"; echo "PGBACKREST_ENV_FILE=$work/pgbackrest.env"
+    echo "REDIS_PASSWORD=x"; echo "COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate"; echo "PGBACKREST_ENV_FILE=$work/pgbackrest.env"
     echo "PG_MEMORY_LIMIT=${DRILL_PG_MEMORY:-2G}"; echo "PG_SHARED_BUFFERS=${DRILL_PG_SHARED_BUFFERS:-256MB}"
     echo "PG_ARCHIVE_TIMEOUT=${DRILL_ARCHIVE_TIMEOUT:-60}"; echo "PG_BACKUP_INCR_HOURS=10000"; echo "PG_BACKUP_FULL_DAYS=10000"
     echo "PG_BACKUP_RETRY_SECS=10"
@@ -44,9 +48,10 @@ envfile() { # major image
   printf 'PGBACKREST_REPO1_RETENTION_FULL=2\nPGBACKREST_COMPRESS_TYPE=zst\nPGBACKREST_START_FAST=y\nPGBACKREST_ARCHIVE_PUSH_QUEUE_MAX=128MiB\n%s' \
     "${DRILL_PGBACKREST_EXTRA:-}" > "$work/pgbackrest.env"
 }
-# scripts/pg-restore.sh reads the stack the way an operator gives it: COMPOSE_FILE, COMPOSE_PROJECT_NAME and an env file
+# the stack exactly as postgres/README.md and the docs give it (document-store file and profiles included), through COMPOSE_FILE,
+# COMPOSE_PROJECT_NAME and an env file holding COMPOSE_PROFILES; only postgres and pg-backup are started
 stack_env() {
-  export COMPOSE_FILE="docker-compose.yml:docker-compose.postgres-backup.yml${EXTRA_COMPOSE_FILE:+:$EXTRA_COMPOSE_FILE}"
+  export COMPOSE_FILE="docker-compose.yml:docker-compose.postgres-docstore.yml:docker-compose.postgres-backup.yml${EXTRA_COMPOSE_FILE:+:$EXTRA_COMPOSE_FILE}"
   export COMPOSE_PROJECT_NAME="$proj" COMPOSE_ENV_FILES="$work/env$major"
 }
 dc() { $DOCKER compose "$@"; }
@@ -110,6 +115,7 @@ restore_new() { # label target -> sets copy (the restored copy's container and v
 }
 
 for major in ${DRILL_MAJORS:-17 18}; do
+  teardown   # the previous iteration's, also when it stopped early
   image_var="PG_IMAGE_$major"; default="pmcompose/postgres:$major-pmc"; image="${!image_var:-$default}"
   proj="${PROJECT_PREFIX:-pgimg}-backup-$major-$$"
   envfile "$major" "$image"; stack_env
@@ -120,7 +126,9 @@ for major in ${DRILL_MAJORS:-17 18}; do
 
   # the service's first run: stanza, check, then a full backup because there is none
   dc up -d --no-build pg-backup > "$work/up.log" 2>&1 || { echo "FAIL $major: pg-backup did not start:"; cat "$work/up.log"; fail=1; continue; }
-  healthy pg-backup 5400 || { echo "FAIL $major: the first backup did not succeed"; dc logs pg-backup | tail -30; fail=1; continue; }
+  # pg-backup is healthy while its first full backup runs; wait for the backup itself
+  for _ in $(seq 1 5400); do [ "$(backup_secs full 2>/dev/null)" != none ] && [ -n "$(backup_secs full 2>/dev/null)" ] && break; sleep 2; done
+  healthy pg-backup || { echo "FAIL $major: pg-backup is not healthy after its first backup"; dc logs pg-backup | tail -30; fail=1; continue; }
   full_s=$(backup_secs full); echo "info $major: full backup took ${full_s}s"
   check "$major: the scheduler's first backup is a full one" "$([ "$full_s" != none ] && echo yes)" yes
 
@@ -156,6 +164,22 @@ for major in ${DRILL_MAJORS:-17 18}; do
     check "$major: restore latest: rows and checksums per schema equal the live database" "$(copy_sql "$copy" "$checksums")" "$live"
   fi
 
+  # A size raised on the server after the newest backup: the copy starts with the backup's value, and recovery pauses where the WAL
+  # records the higher one. pg-restore.sh must stop and show why, not wait.
+  sql -c "alter system set max_locks_per_transaction = 128" >/dev/null
+  dc restart postgres >/dev/null 2>&1; healthy postgres || { echo "FAIL $major: postgres did not come back after the restart"; fail=1; }
+  sql -c "create table platform.after_raise as select 1 as v" >/dev/null
+  seg="$(sql -c 'select pg_walfile_name(pg_current_wal_lsn())')"; sql -c "select pg_switch_wal()" >/dev/null
+  for _ in $(seq 1 60); do [ "$(sql -c "select coalesce(last_archived_wal >= '$seg', false) from pg_stat_archiver")" = t ] && break; sleep 2; done
+  copy="${proj}_pg_restore_paused_$$"; copies+=("$copy")
+  rc=0; PG_RESTORE_WAIT_SECS=900 timeout 1200 scripts/pg-restore.sh latest --into "$copy" > "$work/paused.log" 2>&1 || rc=$?
+  check "$major: a paused recovery makes pg-restore.sh stop with an error" "$rc" 1
+  check "$major: and show the log that names the setting" \
+    "$(grep -q 'recovery paused before reaching the target' "$work/paused.log" && grep -q 'max_locks_per_transaction' "$work/paused.log" && echo yes)" yes
+
+  check "$major: pg-restore.sh stops on Compose's error when the profiles do not match the stack's" \
+    "$(COMPOSE_PROFILES=postgres scripts/pg-restore.sh latest >"$work/mismatch.log" 2>&1; echo "$? $(grep -c 'undefined service "pipeshub-migrate"' "$work/mismatch.log")")" "2 1"
+
   # in place, as after a mistake on the live database: stop, restore over the volume, start
   dc stop > /dev/null 2>&1
   check "$major: in-place restore is refused while the server runs" "$(dc start postgres >/dev/null 2>&1; scripts/pg-restore.sh "$target" --in-place >/dev/null 2>&1; echo $?)" 3
@@ -170,6 +194,8 @@ for major in ${DRILL_MAJORS:-17 18}; do
   check "$major: archiving and backups go on after an in-place restore" \
     "$(dc exec -T pg-backup pgbackrest check > "$work/check.log" 2>&1 && dc exec -T pg-backup pgbackrest backup --type=incr >> "$work/check.log" 2>&1 && echo ok || tail -5 "$work/check.log")" ok
 
+  for _ in $(seq 1 75); do [ "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" = healthy ] && break; sleep 2; done
+  check "$major: pg-backup is healthy after its restart, with no new backup" "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" healthy
   # The repository becomes unwritable: beyond the archive queue cap (128MiB here) the server drops WAL instead of filling its volume,
   # pg-backup turns unhealthy and says restores have a gap; once the repository is back, a full backup closes the gap.
   arch=/var/lib/pgbackrest/archive/pipeshub
@@ -185,12 +211,16 @@ for major in ${DRILL_MAJORS:-17 18}; do
   $DOCKER exec -u root "$proj-pg-backup-1" chmod "$mode" "$arch"
   for _ in $(seq 1 150); do dc exec -T pg-backup test -f /tmp/pg-backup.ok && break; sleep 2; done
   check "$major: a full backup closes the gap once the repository is back" \
-    "$(dc exec -T pg-backup sh -c 'test -f /tmp/pg-backup.ok && ! test -e /var/run/postgresql/pgbackrest-wal-gap' && echo closed || echo open)" closed
+    "$(dc exec -T pg-backup sh -c 'test -f /tmp/pg-backup.ok && [ -z "$(ls -A /var/run/postgresql/pgbackrest-wal-gap.d)" ]' && echo closed || echo open)" closed
   check "$major: the newest backup is a full one" "$(dc exec -T pg-backup pgbackrest --output=json info | perl -MJSON::PP -e '
     my @b = @{ decode_json(join "", <STDIN>)->[0]{backup} }; print $b[-1]{type}')" full
+  # the healthcheck itself fails as soon as a drop is marked, even while the last backup's success is still recorded
+  hc="$($DOCKER inspect -f '{{index .Config.Healthcheck.Test 1}}' "$proj-pg-backup-1")"
+  check "$major: the healthcheck passes with no drop marked" "$($DOCKER exec "$proj-pg-backup-1" sh -c "$hc" && echo pass || echo fail)" pass
+  $DOCKER exec "$proj-pg-backup-1" sh -c ': > /var/run/postgresql/pgbackrest-wal-gap.d/drill'
+  check "$major: the healthcheck fails at once on a marked drop" "$($DOCKER exec "$proj-pg-backup-1" sh -c "$hc" && echo pass || echo fail)" fail
+  $DOCKER exec "$proj-pg-backup-1" rm -f /var/run/postgresql/pgbackrest-wal-gap.d/drill
 
-  for c in "${copies[@]}"; do $DOCKER rm -f "$c" >/dev/null 2>&1; $DOCKER volume rm "$c" >/dev/null 2>&1; done; copies=()
-  dc down -v >/dev/null 2>&1; proj=""
 done
 
 exit $fail

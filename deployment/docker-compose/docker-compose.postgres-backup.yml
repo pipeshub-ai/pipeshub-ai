@@ -4,8 +4,11 @@
 # pgbackrest.env.example, or name another file with PGBACKREST_ENV_FILE). That file says where the repository is: this host's
 # `pg_backup_repo` volume (or the host directory PG_BACKUP_REPO names), or S3, Azure or GCS.
 #
-#   COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate \
-#     docker compose -f docker-compose.yml -f docker-compose.postgres-docstore.yml -f docker-compose.postgres-backup.yml -p pipeshub-ai up -d
+#   export COMPOSE_FILE=docker-compose.yml:docker-compose.postgres-docstore.yml:docker-compose.postgres-backup.yml
+#   export COMPOSE_PROJECT_NAME=pipeshub-ai COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate
+#   docker compose up -d
+#
+# Later `docker compose` commands and scripts/pg-restore.sh need the same three settings (or put them in .env).
 #
 # What it adds:
 #   - postgres: archives every finished WAL segment to the repository (archive_mode=on, archive_command=pgbackrest-archive-push.sh, set by
@@ -67,12 +70,15 @@ services:
     networks:
       - pipeshub
     healthcheck:
-      test: ["CMD", "test", "-f", "/tmp/pg-backup.ok"]
+      # the last backup succeeded, and no WAL was dropped since (pgbackrest-archive-push.sh adds a file per drop, even during a backup)
+      test: ["CMD-SHELL", 'test -f /tmp/pg-backup.ok && [ -z "$$(ls -A /var/run/postgresql/pgbackrest-wal-gap.d 2>/dev/null)" ]']
       interval: 60s
       timeout: 5s
       retries: 1
-      # a first full backup of a large database takes a while; until it succeeds the service reports `starting`
-      start_period: 24h
+      # Failures in the start period are not counted until a check has passed ("if a health check succeeds during the start period, the
+      # container is considered started", https://docs.docker.com/reference/dockerfile/#healthcheck), so a long one would hide a drop
+      # right after a restart. Stanza creation takes seconds, and a first full backup counts as healthy while it runs (pg-backup.sh).
+      start_period: 10m
 
 volumes:
   pg_backup_socket:

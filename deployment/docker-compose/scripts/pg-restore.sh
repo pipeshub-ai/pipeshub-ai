@@ -10,7 +10,9 @@
 # Recovery"). Run it from deployment/docker-compose with the compose files, project and profiles of the stack, given as COMPOSE_FILE,
 # COMPOSE_PROJECT_NAME and COMPOSE_PROFILES (environment or .env), for example
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.postgres-docstore.yml:docker-compose.postgres-backup.yml COMPOSE_PROJECT_NAME=pipeshub-ai \
-#   COMPOSE_PROFILES=postgres scripts/pg-restore.sh latest
+#   COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate scripts/pg-restore.sh latest
+# (the document-store file needs both `postgres` and `postgres-migrate`). It restores PostgreSQL only: Neo4j, Qdrant and Redis come back
+# from their own copy.
 #
 # A new-volume restore leaves the stack untouched: the copy runs as container <volume>, does not archive (so it never writes to the
 # repository), and listens on its own socket; read it with `docker exec -it <volume> psql -h /tmp -U postgres -d pipeshub`. Remove it with
@@ -33,7 +35,9 @@ done
 [ "$in_place" = 1 ] && [ -n "$into" ] && { echo "pg-restore: --in-place and --into exclude each other" >&2; exit 2; }
 
 # read whole outputs first: with pipefail, a reader that stops early (grep -q, head) fails the pipeline when compose gets SIGPIPE
-config="$(docker compose config)"; services="$(docker compose config --services)"
+config="$(docker compose config)" || {
+  echo "pg-restore: Compose rejected the project (above): COMPOSE_FILE, COMPOSE_PROJECT_NAME and COMPOSE_PROFILES must be the stack's own" >&2; exit 2; }
+services="$(docker compose config --services)"
 project="$(sed -n '1s/^name: //p' <<<"$config")"
 [ -n "$project" ] || { echo "pg-restore: could not read the compose project; set COMPOSE_FILE and COMPOSE_PROJECT_NAME" >&2; exit 2; }
 grep -qx pg-backup <<<"$services" \
@@ -76,7 +80,8 @@ fi
 
 # Recovery refuses to run with max_connections and four other sizes below the original server's (https://www.postgresql.org/docs/17/
 # hot-standby.html, 26.4.3), so the copy takes them from the restored control file.
-# shortcut: a size raised on the original after this backup stops recovery with a message naming it; restart the copy with it set.
+# shortcut: a size raised on the original after this backup pauses recovery (below: the script stops and shows the log naming it);
+# restart the copy with that setting raised.
 sizes=$(docker compose run --rm --no-deps -T -v "$volume:/pgbackrest-restore" --entrypoint pg_controldata pg-backup /pgbackrest-restore |
   awk -F': *' '{ n = $1; sub(/ setting$/, "", n) }
     n ~ /^max_(connections|worker_processes|wal_senders)$/ { print "-c " n "=" $2 }
@@ -91,12 +96,25 @@ docker compose run -d --no-deps --name "$volume" -v "$volume:/pgbackrest-restore
   -e PGDATA=/pgbackrest-restore -e PGBACKREST_PG1_PATH=/pgbackrest-restore --entrypoint docker-entrypoint.sh pg-backup \
   postgres -c shared_preload_libraries=pg_stat_statements,auto_explain,pg_textsearch -c unix_socket_directories=/tmp \
   -c archive_mode=off $sizes >/dev/null
-# Recovery is over once the server accepts writes (it promotes at the target). A target past the end of the archive stops the server.
+# Recovery is over once the server accepts writes (it promotes at the target). A target past the end of the archive stops the server;
+# a setting the WAL needs higher than the copy has pauses it ("If the standby replays WAL showing a higher value than its own, it logs a
+# warning and pauses recovery", https://www.postgresql.org/docs/17/hot-standby.html 26.4.3); so does nothing else here, since the
+# target action is promote. Either way, and past PG_RESTORE_WAIT_SECS, stop with the server's log and leave the copy to inspect.
+deadline=$(( $(date +%s) + ${PG_RESTORE_WAIT_SECS:-21600} ))
 while :; do
   if [ "$(docker inspect -f '{{.State.Running}}' "$volume")" != true ]; then
     echo "pg-restore: the restored server stopped; its log:" >&2; docker logs --tail 30 "$volume" >&2; exit 1
   fi
-  [ "$(docker exec "$volume" psql -h /tmp -U postgres -d pipeshub -tAc 'select pg_is_in_recovery()' 2>/dev/null)" = f ] && break
+  state="$(docker exec "$volume" psql -h /tmp -U postgres -d pipeshub -tAc \
+    "select case when not pg_is_in_recovery() then 'promoted' when pg_is_wal_replay_paused() then 'paused' end" 2>/dev/null)" || state=""
+  [ "$state" = promoted ] && break
+  if [ "$state" = paused ]; then
+    echo "pg-restore: recovery paused before reaching the target; the copy's log says why:" >&2; docker logs --tail 30 "$volume" >&2; exit 1
+  fi
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "pg-restore: recovery not finished after PG_RESTORE_WAIT_SECS=${PG_RESTORE_WAIT_SECS:-21600}s; the copy's log:" >&2
+    docker logs --tail 30 "$volume" >&2; exit 1
+  fi
   sleep 2
 done
 echo "pg-restore: restored and running in $(( $(date +%s) - start ))s: container ${volume}, volume ${volume}"
