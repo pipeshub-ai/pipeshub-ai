@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import random
 from logging import getLogger
 from unittest.mock import AsyncMock
 
@@ -33,6 +35,7 @@ CLAIM_MS = 20
 STOPPED_MS = 200
 BUFFER = 8
 HEADROOM = BUFFER // 4
+RETRY_BATCH = 10  # _RECOVERY_BATCH
 
 
 def _fields(record_id: str, connector_id: str = "conn-a") -> dict[str, str]:
@@ -65,6 +68,22 @@ async def consumer(provider: FakeRedisConnectionProvider) -> IndexingRedisStream
     consumer.running = True
     for lane in (LANE, OTHER_LANE):
         await consumer.redis.xgroup_create(lane, GROUP, id="0", mkstream=True)
+    return consumer
+
+
+async def _fifo_consumer(provider: FakeRedisConnectionProvider) -> IndexingRedisStreamsConsumer:
+    """The same consumer without fair scheduling: records start as they are taken."""
+    consumer = IndexingRedisStreamsConsumer(
+        getLogger("test_reclaim_while_reading_fifo"),
+        RedisStreamsConfig(
+            topics=[LANE, OTHER_LANE], group_id=GROUP, client_id="live-fifo", claim_min_idle_ms=CLAIM_MS,
+            stopped_consumer_after_ms=STOPPED_MS,
+        ),
+        provider=provider,
+    )
+    consumer.redis = provider.create_client()
+    consumer.running = True
+    consumer._start_processing_task = AsyncMock()
     return consumer
 
 
@@ -489,3 +508,84 @@ class TestRetryOrder:
             await _fill_with_new_events(consumer, BUFFER - 1 - consumer._scheduler.pending_count)
 
         assert sorted(offered) == sorted(ids)  # each once, none left behind
+
+
+class TestEveryRememberedIdIsExamined:
+    """However the remembered ids behave -- trimmed, waiting for room, or
+    failing their check -- none can keep others from being examined."""
+
+    @staticmethod
+    async def _owned_ids(consumer, count: int) -> list[str]:
+        for i in range(count):
+            await consumer.redis.xadd(LANE, _fields(f"r-{i}", f"conn-{i}"))
+        read = await consumer.redis.xreadgroup(GROUP, consumer.consumer_name, {LANE: ">"}, count=count)
+        return [message_id for _s, entries in read for message_id, _f in entries]
+
+    @staticmethod
+    def _failing_checks(consumer, failing: set[str], examined: list[str]) -> None:
+        real = consumer.redis.xpending_range
+
+        async def xpending_range(*args, **kwargs):  # noqa: ANN202
+            message_id = kwargs.get("min")
+            if message_id not in (None, "-") and message_id == kwargs.get("max"):
+                examined.append(message_id)
+                if message_id in failing:
+                    raise ConnectionError("lost the connection")
+            return await real(*args, **kwargs)
+
+        consumer.redis.xpending_range = xpending_range
+
+    async def _pass(self, consumer) -> None:
+        await consumer.redis.xreadgroup(GROUP, "live-peer", {LANE: ">"}, count=1)
+        consumer._last_unhanded_retry = 0.0
+        consumer._last_recovery = 0.0
+        if consumer._scheduler is not None:
+            await _read_pass(consumer)
+        else:
+            # What the FIFO read loop runs before it reads.
+            await consumer._IndexingRedisStreamsConsumer__retry_unhanded_when_due()
+            await consumer._IndexingRedisStreamsConsumer__recover_while_reading()
+
+    @pytest.mark.parametrize("path", ["fair", "fifo"])
+    @pytest.mark.parametrize("seed", range(12))
+    async def test_within_ceil_n_over_batch_passes_whatever_the_mix(
+        self, consumer, provider, seed: int, path: str
+    ) -> None:
+        if path == "fifo":
+            consumer = await _fifo_consumer(provider)
+        rng = random.Random(seed)
+        await consumer.redis.xreadgroup(GROUP, "live-peer", {LANE: ">"}, count=1)
+        n = rng.randint(1, 35)
+        ids = await self._owned_ids(consumer, n)
+        kinds = {message_id: rng.choice(("trimmed", "body", "failing")) for message_id in ids}
+        for message_id, kind in kinds.items():
+            if kind == "trimmed":
+                await consumer.redis.xdel(LANE, message_id)
+            consumer._IndexingRedisStreamsConsumer__remember_unhanded(LANE, message_id)
+        examined: list[str] = []
+        self._failing_checks(consumer, {m for m, k in kinds.items() if k == "failing"}, examined)
+        if path == "fair":
+            await _fill_with_new_events(consumer, BUFFER)
+
+        for _ in range(math.ceil(n / RETRY_BATCH)):
+            await self._pass(consumer)
+
+        assert set(examined) == set(ids)
+        mine = {e["message_id"] for e in await _owned(consumer, consumer.consumer_name)}
+        assert not {m for m, k in kinds.items() if k == "trimmed"} & mine
+
+    async def test_a_trimmed_entry_behind_ten_failing_checks_is_acknowledged(self, consumer) -> None:
+        await consumer.redis.xreadgroup(GROUP, "live-peer", {LANE: ">"}, count=1)
+        ids = await self._owned_ids(consumer, 11)
+        failing, trimmed = set(ids[:10]), ids[10]
+        await consumer.redis.xdel(LANE, trimmed)
+        for message_id in ids:
+            consumer._IndexingRedisStreamsConsumer__remember_unhanded(LANE, message_id)
+        self._failing_checks(consumer, failing, [])
+        await _fill_with_new_events(consumer, BUFFER)
+
+        for _ in range(2):
+            await self._pass(consumer)
+
+        assert trimmed not in {e["message_id"] for e in await _owned(consumer, consumer.consumer_name)}
+        assert (LANE, trimmed) not in consumer._unhanded

@@ -772,8 +772,9 @@ class TestTheIdleDrainOnEveryRedisVersion:
 
 
 class TestOwnEntriesBesideALivePeer:
+    @pytest.mark.parametrize("fair_scheduling", [True, False], ids=["fair", "fifo"])
     async def test_one_left_untracked_with_the_retry_list_full_comes_back_once_the_error_clears(
-        self, redis_available, redis_client, base_stream, unique_suffix, monkeypatch
+        self, redis_available, redis_client, base_stream, unique_suffix, monkeypatch, fair_scheduling
     ) -> None:
         """The retry list is full, another consumer is live, events keep
         arriving, and the check before buffering this consumer's own unheld
@@ -803,6 +804,8 @@ class TestOwnEntriesBesideALivePeer:
             max_per_entity_messages=40,
         )
         done: list[str] = []
+        if not fair_scheduling:
+            fair = None
         owner = IndexingRedisStreamsConsumer(logging.getLogger("it-own"), config.model_copy(), fair_scheduler_config=fair)
         peer = IndexingRedisStreamsConsumer(logging.getLogger("it-own-peer"), config.model_copy(), fair_scheduler_config=fair)
         # Read by the owner, and never handed on: pending under it, unheld.

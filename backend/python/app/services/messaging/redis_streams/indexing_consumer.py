@@ -1346,10 +1346,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
     def __remember_unhanded(self, topic: str, message_id: str, *, gone: bool = False) -> None:
         """Keep an entry that recovery may have left pending under this consumer
-        without holding it, for ``__retry_unhanded``. Beside another live
-        consumer nothing else would take it back while traffic flows: read-time
-        own-pending recovery runs only when this consumer is alone, peers take
-        only from stopped consumers, and the idle drain needs quiet lanes."""
+        without holding it, for ``__retry_unhanded``: a faster way back than
+        read-time own-pending recovery, which finds it again from the pending
+        list (beside other consumers too, once a second and only with room),
+        so a full list never strands it."""
         key = (topic, message_id)
         self._unhanded.pop(key, None)
         self._unacked_gone.pop(key, None)
@@ -1385,8 +1385,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         Ids whose entry is gone need only an XACK: all of them, every pass,
         whatever the buffer. Entries with a body are offered again in turn, up
-        to ``_RECOVERY_BATCH`` a pass from the front of the list; one with no
-        room yet goes to the back, so the pass always moves on. Each is first
+        to ``_RECOVERY_BATCH`` a pass from the front of the list, each moved to
+        the back as it is examined, so every one is examined within
+        ceil(n / batch) passes. Each is first
         confirmed pending under this consumer (else it was acknowledged or
         taken, and is forgotten); ``__recover_entry(owned=True)`` reasserts
         ownership with ``XCLAIM JUSTID``, so no delivery is counted.
@@ -1404,19 +1405,23 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if not self.running:
                 return
             key = (topic, message_id)
+            # To the back before anything else, whatever the outcome (done,
+            # failed, still waiting): no set of ids can keep the front of the
+            # list and shadow the rest.
+            self._unhanded.pop(key, None)
+            self._unhanded[key] = None
             try:
                 if self.__already_held(message_id, topic) or not await self.__pending_here(topic, message_id):
-                    del self._unhanded[key]
+                    self._unhanded.pop(key, None)
                     continue
                 found = await self.redis.xrange(topic, min=message_id, max=message_id, count=1)  # type: ignore[union-attr]
                 if not found:
                     await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore[union-attr]
-                    del self._unhanded[key]
+                    self._unhanded.pop(key, None)
                     continue
-                del self._unhanded[key]
                 if self._scheduler is not None and not self.__buffer_has_room():
-                    self._unhanded[key] = None
                     continue
+                self._unhanded.pop(key, None)
                 await self.__recover_entry(topic, message_id, found[0][1], owned=True)
             except Exception as e:
                 self.logger.warning("Could not retry pending entry %s on %s: %s", message_id, topic, e)
@@ -1743,7 +1748,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         changes nothing.
         """
         scheduler = self._scheduler
-        if scheduler is None or self.redis is None:
+        if self.redis is None:
             return
         now = time.monotonic()
         if now - self._last_recovery < _RECOVERY_INTERVAL_SECONDS:
@@ -1777,11 +1782,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         if not unheld:
             return
 
-        room = self.__buffer_room() or 0
+        # Without a scheduler (both read loops call this) room is the dispatch
+        # budget, and there is nothing held to give up.
+        room = self.__buffer_room() if scheduler is not None else self._dispatch_budget().remaining
+        room = room or 0
         if room > 0:
             lanes = [t for t in topics if t in unheld]
             limit = min(_RECOVERY_BATCH, room)
-        elif alone:
+        elif alone and scheduler is not None:
             lanes = [
                 t
                 for t in topics
@@ -1808,7 +1816,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 continue
             for message_id, fields in found:
                 undo = None
-                if not self.__buffer_has_room():
+                if scheduler is None:
+                    if self._dispatch_budget().remaining <= 0:
+                        break
+                elif not self.__buffer_has_room():
                     undo = self.__release_for_room(topic)
                     if undo is None:
                         break
@@ -2926,6 +2937,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         )
                         self._backpressure_active = False
 
+                    await self.__recover_while_reading()
                     await self.__reclaim_while_reading()
                     budget = self._dispatch_budget()
                     if budget.remaining <= 0:
