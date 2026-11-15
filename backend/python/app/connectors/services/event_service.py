@@ -1552,6 +1552,17 @@ class EventService:
                     break
                 continue
 
+            excluded = await connector.records_excluded_by_indexing_filters(records)
+            if excluded:
+                self.logger.info(
+                    f"Skipping {len(excluded)} records the connector's indexing filters exclude"
+                )
+                records = [r for r in records if r.id not in excluded]
+                if not records:
+                    if fetched_count < batch_size:
+                        break
+                    continue
+
             # Connectors that publish via on_new_records drop AUTO_INDEX_OFF records;
             # reindex is an explicit user action, so clear that in memory too.
             # A folder has nothing to index: indexing marks it COMPLETED, and some
