@@ -1452,28 +1452,35 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert len(calls) == 1 and self._saved_digests(c) == []
 
     @pytest.mark.asyncio
-    async def test_holders_unread_after_the_checkpoints_were_cleared_stay_unknown_and_stored_grants_stay(self) -> None:
+    @pytest.mark.parametrize("build_fails", [False, True], ids=["clean_walk", "an_issue_fails_to_build"])
+    async def test_holders_unread_after_the_checkpoints_were_cleared_stay_unknown_and_stored_grants_stay(
+        self, build_fails: bool,
+    ) -> None:
         """A full resync clears the project's checkpoint, so no stored digest is not proof that the holders granted
-        nothing: a stored issue a reporter reads through them keeps its grants until they are read."""
+        nothing: a stored issue a reporter or assignee reads through them keeps its grants until they are read. The
+        unknown marker is saved before the walk, so a walk cut short by an issue that fails to build, which still
+        advances the cursor, does not leave the next sync reading the holders as none."""
         c = _connector()  # no holders read this sync
+        store: dict = {}
         c.issues_sync_point = MagicMock()
-        c.issues_sync_point.read_sync_point = AsyncMock(return_value={})
-        c.issues_sync_point.update_sync_point = AsyncMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: dict(store.get(k) or {}))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, dict(v)))
         c._load_issue_security = AsyncMock(return_value=_present())
 
         async def fetch(*a, **kw) -> AsyncIterator:
-            return
-            yield
+            if build_fails:
+                c._issue_build_failures += 1
+            yield [], False, 1_700_000_000_000  # the batch moves the cursor
 
         c._fetch_issues_batched = fetch
+        c._reread_leveled_issues = AsyncMock()
         await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
         assert c._issue_security[PROJECT_ID].browse_holders is None
         assert c._keeps_stored_grants(_stored_ticket(version=0)) is True
-        assert self._saved_digests(c) == ["?"], "the next sync, no longer new, must still see them unknown"
-        c.issues_sync_point.read_sync_point = AsyncMock(return_value={
-            "last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
-            "security_levels": json.dumps(_present().level_fingerprints()), "browse_holders": "?"})
+        assert store["project_PROJ"]["last_sync_time"] and store["project_PROJ"]["browse_holders"] == "?"
+
         await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        assert c._issue_security[PROJECT_ID].browse_holders is None, "the next sync, no longer new, still sees them unknown"
         assert c._keeps_stored_grants(_stored_ticket(version=0)) is True
 
     @pytest.mark.asyncio

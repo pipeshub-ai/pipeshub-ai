@@ -4284,10 +4284,11 @@ class JiraConnector(BaseConnector):
         browse = security.browse_fingerprint()
         if not is_new_project and browse not in ("?", stored_browse):
             reread, changed_levels = "project", None
-        browse_to_save = browse if browse != "?" or stored_browse or is_new_project else stored_browse
-        if browse == "?" and stored_browse not in ("", "?"):
-            # Saved before the walk, as the level marker is: issues written meanwhile keep their
-            # stored grants, and only this marker makes the next sync that reads them re-read.
+        browse_to_save = browse
+        if browse == "?" and stored_browse != "?":
+            # Saved before the walk, as the level marker is: issues written meanwhile keep their stored grants, and
+            # only this marker makes the next sync that reads them re-read. On a project with no checkpoint too: an
+            # issue that fails to build still moves the cursor, and the next sync must not read the holders as none.
             await self._update_project_sync_checkpoint(project_key, browse_holders="?")
             stored_browse = "?"
         if levels_to_save.get("*") == "held":
