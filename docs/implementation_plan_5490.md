@@ -61,10 +61,11 @@ The existing integration test covers **padded input**, not a padded stored row.
 
 **Plan:**
 
-1. Run only the final cross-organization `fetch_unnormalized_users` read inside `org_context.system(...)`. Keep per-organization writes inside `for_org(...)`.
-2. Preserve `EXIT_PARTIAL` and leave the flag unset if the read fails or finds a remaining candidate.
-3. The baseline schema grants `pipeshub_jobs` read access and defines a jobs policy for `graph.nodes`. Verify that the deployed job uses that role and can see users across organizations; the schema alone does not verify deployed access.
-4. Add PostgreSQL integration coverage for a successful all-org apply, a remaining user outside the enumerated organizations, and a failed system read. Verify the flag in each case.
+1. Require stopping or upgrading every writer that can store unnormalized user emails before the final `fetch_unnormalized_users` read, and keep that fence in place until the completion flag write succeeds.
+2. Run only the final cross-organization `fetch_unnormalized_users` read inside `org_context.system(...)`. Keep per-organization writes inside `for_org(...)`.
+3. Preserve `EXIT_PARTIAL` and leave the flag unset if the read fails or finds a remaining candidate.
+4. The baseline schema grants `pipeshub_jobs` read access and defines a jobs policy for `graph.nodes`. Verify that the deployed job uses that role and can see users across organizations; the schema alone does not verify deployed access.
+5. Add PostgreSQL integration coverage for a successful all-org apply, a remaining user outside the enumerated organizations, and a failed system read. Verify the flag in each case.
 
 ### 6. Remove email addresses from logs
 

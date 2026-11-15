@@ -325,6 +325,7 @@ class TestHandleUserDeleted:
     @pytest.mark.asyncio
     async def test_user_not_found(self):
         svc, logger, gp, _ = _make_service()
+        gp.get_user_by_email = AsyncMock(return_value=None)
         gp.get_entity_id_by_email = AsyncMock(return_value=None)
         result = await svc.process_event("userDeleted", {
             "orgId": "org-1", "email": "ghost@example.com"
@@ -334,21 +335,70 @@ class TestHandleUserDeleted:
     @pytest.mark.asyncio
     async def test_user_found_and_soft_deleted(self):
         svc, logger, gp, _ = _make_service()
-        gp.get_entity_id_by_email = AsyncMock(return_value="key-1")
+        gp.get_user_by_email = AsyncMock(return_value={"id": "key-1", "orgId": "org-1", "email": "alice@example.com"})
         gp.batch_upsert_nodes = AsyncMock()
         result = await svc.process_event("userDeleted", {
             "orgId": "org-1", "email": "alice@example.com"
         })
         assert result is True
+        gp.batch_upsert_nodes.assert_awaited_once()
+        node = gp.batch_upsert_nodes.await_args.args[0][0]
+        assert node["id"] == "key-1"
+        assert node["orgId"] == "org-1"
+        assert node["isActive"] is False
 
     @pytest.mark.asyncio
     async def test_exception_raises(self):
         svc, logger, gp, _ = _make_service()
-        gp.get_entity_id_by_email = AsyncMock(side_effect=Exception("fail"))
+        gp.get_user_by_email = AsyncMock(side_effect=Exception("fail"))
+        gp.batch_upsert_nodes = AsyncMock()
         with pytest.raises(Exception, match="fail"):
             await svc.process_event("userDeleted", {
                 "orgId": "org-1", "email": "x@x.com"
             })
+        gp.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_legacy_fallback_with_matching_ownership(self):
+        svc, logger, gp, _ = _make_service()
+        gp.get_user_by_email = AsyncMock(return_value=None)
+        gp.get_entity_id_by_email = AsyncMock(return_value="key-1")
+        gp.get_document = AsyncMock(return_value={"id": "key-1", "orgId": "org-1"})
+        gp.batch_upsert_nodes = AsyncMock()
+        result = await svc.process_event("userDeleted", {
+            "orgId": "org-1", "email": "alice@example.com"
+        })
+        assert result is True
+        gp.batch_upsert_nodes.assert_awaited_once()
+        node = gp.batch_upsert_nodes.await_args.args[0][0]
+        assert node["id"] == "key-1"
+        assert node["isActive"] is False
+
+    @pytest.mark.asyncio
+    async def test_legacy_fallback_missing_document(self):
+        svc, logger, gp, _ = _make_service()
+        gp.get_user_by_email = AsyncMock(return_value=None)
+        gp.get_entity_id_by_email = AsyncMock(return_value="key-1")
+        gp.get_document = AsyncMock(return_value=None)
+        gp.batch_upsert_nodes = AsyncMock()
+        result = await svc.process_event("userDeleted", {
+            "orgId": "org-1", "email": "alice@example.com"
+        })
+        assert result is False
+        gp.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_legacy_fallback_mismatched_ownership(self):
+        svc, logger, gp, _ = _make_service()
+        gp.get_user_by_email = AsyncMock(return_value=None)
+        gp.get_entity_id_by_email = AsyncMock(return_value="key-1")
+        gp.get_document = AsyncMock(return_value={"id": "key-1", "orgId": "other-org"})
+        gp.batch_upsert_nodes = AsyncMock()
+        result = await svc.process_event("userDeleted", {
+            "orgId": "org-1", "email": "alice@example.com"
+        })
+        assert result is False
+        gp.batch_upsert_nodes.assert_not_awaited()
 
 
 # ============================================================================

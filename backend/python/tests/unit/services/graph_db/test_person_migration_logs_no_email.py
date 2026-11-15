@@ -144,8 +144,17 @@ async def test_postgres_batch_upsert_app_users_logs_a_failed_adoption_by_user_id
     provider = PostgresGraphProvider(logging.getLogger(LOGGER_NAME), MagicMock())
     provider.get_all_orgs = AsyncMock(return_value=[{"id": "org-1"}])
     provider._q = AsyncMock()
-    # lower(email) for the batch, then no existing user with that address.
-    provider._id_rows = AsyncMock(side_effect=[[{"raw": EMAIL, "low": EMAIL}], []])
+
+    async def _mock_id_rows(query: str, *args, **kwargs) -> list:
+        if "pipeshub:graph.lower_emails" in query:
+            return [{"raw": EMAIL, "low": EMAIL}]
+        if "pipeshub:graph.users_by_email_vetted" in query or "pipeshub:graph.users_by_email" in query:
+            return []
+        if "pipeshub:graph.app_links_of_shared_addresses" in query:
+            return []
+        raise AssertionError(f"Unexpected query in _id_rows: {query}")
+
+    provider._id_rows = AsyncMock(side_effect=_mock_id_rows)
     provider.batch_upsert_nodes = AsyncMock()
     provider.batch_create_edges = AsyncMock()
     provider.migrate_person_to_user = AsyncMock(side_effect=RuntimeError("graph down"))

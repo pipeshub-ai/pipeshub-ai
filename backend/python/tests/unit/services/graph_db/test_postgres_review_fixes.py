@@ -219,6 +219,39 @@ async def test_users_by_email_rows_falls_back_when_vetted_misses_padded_email() 
     assert rows[0]["id"] == "u1"
 
 
+async def test_users_by_email_rows_partial_vetted_read_discards_and_runs_fallback_on_all_emails() -> None:
+    h = Harness()
+    # Vetted read finds only user1, misses user2
+    h.p._id_rows = AsyncMock(side_effect=[
+        [{"email": "user1@example.com", "id": "u1", "active": True}],  # partial vetted read
+        [
+            {"email": "user1@example.com", "id": "u1", "active": True},
+            {"email": "user2@example.com", "id": "u2", "active": True},
+        ],  # fallback resolves all requested emails
+    ])
+    rows = await h.call("_users_by_email_rows", "org-1", ["user1@example.com", "user2@example.com"], None)
+    assert len(rows) == 2
+    # Verify fallback was invoked with ALL requested emails
+    assert h.p._id_rows.await_count == 2
+    fallback_call_args = h.p._id_rows.await_args_list[1].args
+    assert "users_by_email" in fallback_call_args[0]
+    assert fallback_call_args[1] == ["org-1", ["user1@example.com", "user2@example.com"]]
+
+
+async def test_users_by_email_rows_returns_vetted_rows_when_no_addresses_missing() -> None:
+    h = Harness()
+    # Vetted read finds all requested emails
+    h.p._id_rows = AsyncMock(return_value=[
+        {"email": "user1@example.com", "id": "u1", "active": True},
+        {"email": "user2@example.com", "id": "u2", "active": True},
+    ])
+    rows = await h.call("_users_by_email_rows", "org-1", ["user1@example.com", "user2@example.com"], None)
+    assert len(rows) == 2
+    # Only vetted query called, fallback not called
+    assert h.p._id_rows.await_count == 1
+    assert "users_by_email_vetted" in h.p._id_rows.await_args.args[0]
+
+
 async def test_batch_upsert_app_users_uses_ambient_org_as_org_node() -> None:
     from app.config.constants.arangodb import Connectors
     from app.models.entities import AppUser

@@ -436,3 +436,43 @@ async def test_batch_upsert_app_users_uses_app_org_id_before_get_all_orgs() -> N
         for call in p.get_user_by_email.await_args_list
     )
 
+
+# ---- 9. get_person_by_email blank address handling ----------------------------------------------
+
+
+async def test_get_person_by_email_rejects_blank_and_whitespace_email() -> None:
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = logging.getLogger("test")
+    p.client = MagicMock()
+    p.client.execute_query = AsyncMock()
+
+    for blank in ("", " ", "   \t\n  "):
+        res = await p.get_person_by_email(blank, "org-1")
+        assert res is None
+        p.client.execute_query.assert_not_awaited()
+
+
+async def test_get_person_by_email_queries_with_normalized_address() -> None:
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = logging.getLogger("test")
+    p.client = MagicMock()
+    p.client.execute_query = AsyncMock(return_value=[{
+        "p": {
+            "id": "p1",
+            "name": "Person One",
+            "email": "person@example.com",
+            "orgId": "org-1",
+            "createdAtTimestamp": 1000,
+            "updatedAtTimestamp": 1000,
+        }
+    }])
+
+    person = await p.get_person_by_email("  Person@Example.COM  ", "org-1")
+    assert person is not None
+    assert person.id == "p1"
+    assert person.email == "person@example.com"
+    p.client.execute_query.assert_awaited_once()
+    params = p.client.execute_query.await_args.kwargs["parameters"]
+    assert params["email"] == "person@example.com"
+    assert params["org_id"] == "org-1"
+

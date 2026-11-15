@@ -9010,6 +9010,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         raise_on_error: bool = False,
     ) -> Person | None:
         """Get a person by (org_id, email) — Person's business key, same as User's."""
+        normalized_email = email.strip().lower() if email else ""
+        if not normalized_email:
+            return None
+
         try:
             exact_query = f"""
             FOR doc IN {CollectionNames.PEOPLE.value}
@@ -9018,7 +9022,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN doc
             """
             exact_bind_vars: dict[str, Any] = {
-                "email": email.lower(),
+                "email": normalized_email,
                 "org_id": org_id,
             }
 
@@ -9035,7 +9039,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN doc
             """
             fallback_bind_vars: dict[str, Any] = {
-                "stripped": email.strip().lower(),
+                "stripped": normalized_email,
                 "org_id": org_id,
             }
             fallback_results = await self.http_client.execute_aql(

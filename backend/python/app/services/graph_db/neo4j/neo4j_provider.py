@@ -18856,17 +18856,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         raise_on_error: bool = False,
     ) -> Person | None:
         """Get a person by (org_id, email) — Person's business key, same as User's."""
+        normalized_email = email.strip().lower() if email else ""
+        if not normalized_email:
+            return None
+
         try:
             label = collection_to_label(CollectionNames.PEOPLE.value)
             query = f"""
             MATCH (p:{label})
-            WHERE p.orgId = $org_id AND (p.email = $email OR toLower(trim(p.email)) = $stripped)
+            WHERE p.orgId = $org_id AND (p.email = $email OR toLower(trim(p.email)) = $email)
             RETURN p
             LIMIT 1
             """
             parameters: dict[str, Any] = {
-                "email": email.lower(),
-                "stripped": email.strip().lower(),
+                "email": normalized_email,
                 "org_id": org_id,
             }
 

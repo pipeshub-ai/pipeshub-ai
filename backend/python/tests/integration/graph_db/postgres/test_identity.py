@@ -198,8 +198,11 @@ async def test_synced_users_are_looked_up_by_the_vetted_email_read_and_the_state
     from .test_kg_lookups import spy
     await member(w, "existing", userId="ue", email="Old@X.com", isActive=True)
     sent = spy(monkeypatch)
-    await w.p.batch_upsert_app_users([app_user("old@x.com", "n1"), app_user("new@x.com", "n2")])
+    await w.p.batch_upsert_app_users([app_user("old@x.com", "n1")])
     assert "users_by_email_vetted" in sent and "users_by_email" not in sent
+    sent.clear()
+    await w.p.batch_upsert_app_users([app_user("old@x.com", "n1"), app_user("new@x.com", "n2")])
+    assert "users_by_email_vetted" in sent and "users_by_email" in sent
     assert {u["email"].lower(): u["_key"] for u in await w.p.get_all_documents("users")}["old@x.com"] == "existing"          # found, not duplicated
     sent.clear()
     await w.p.batch_upsert_app_users([app_user("e" * 1001 + "@x.com", "n3")])
@@ -447,3 +450,13 @@ async def test_get_users_by_emails_prefers_active_padded_match_over_inactive_exa
     assert res["bob@example.com"].id == "act"
     assert res["bob@example.com"].is_active is True
 
+
+async def test_a_source_account_already_linked_to_padded_user_sharing_address_keeps_that_link(w: World) -> None:
+    await member(w, "a-unpadded", userId="ua", email="dup@x.com", isActive=True)
+    await member(w, "b-padded", userId="ub", email="  dup@x.com  ", isActive=True)
+    await w.edge("userAppRelation", ("users", "b-padded"), ("apps", APP), sourceUserId="src-linked")
+    await w.p.batch_upsert_app_users([app_user("dup@x.com", "linked")])
+    links = {(r["id"], r["sourceUserId"]) for r in await w.p.get_app_user_links(w.org, APP)}
+    assert ("b-padded", "src-linked") in links and not any(i == "a-unpadded" for i, _ in links)
+    rows = await w.p._users_by_email_rows(w.org, ["dup@x.com"], None)
+    assert sorted(r["id"] for r in rows if r["email"] == "dup@x.com") == ["a-unpadded", "b-padded"]

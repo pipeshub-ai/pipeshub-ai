@@ -139,27 +139,17 @@ class IdentityMixin(PgBase):
         """``(email, id, active)`` of the users whose lower-cased email is one of the lower-cased ``emails``: the vetted read of graph_0006 for up to its bound of
         addresses, or the statement for more, for an address out of its bounds or a page that may not be all of the matches. One read either way: chunks would each
         see their own snapshot, and a login moving between two of them would be missed by both (the batch would then create a duplicate user)."""
-        found: list = []
-        missing = emails
         if emails and len(emails) <= 1000 and all(0 < len(e) <= 1000 for e in emails):
             rows = await self._id_rows("""/* pipeshub:graph.users_by_email_vetted */ SELECT lower(btrim(p.doc->>'email', E' \t\r\n')) AS email, p.node_id AS id,
                    coalesce((p.doc->>'isActive')::boolean, false) AS active FROM graph.principals_by_email(ARRAY['users'], $1::text[]) p
                    WHERE lower(btrim(p.doc->>'email', E' \t\r\n')) = ANY($1::text[]) ORDER BY p.node_id""", [emails], transaction)
             if rows is not None and len(rows) < _PRINCIPALS_PAGE:
-                found = list(rows)
-                found_emails = {r["email"] for r in found}
-                missing = [e for e in emails if e not in found_emails]
-                if not missing:
-                    return found
-            else:
-                missing = emails
+                found_emails = {r["email"] for r in rows}
+                if all(e in found_emails for e in emails):
+                    return list(rows)
 
-        if missing:
-            fb_rows = await self._id_rows("""/* pipeshub:graph.users_by_email */ SELECT lower(btrim(doc->>'email', E' \t\r\n')) AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
-                   FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', E' \t\r\n')) = ANY($2::text[]) ORDER BY id""", [org, missing], transaction)
-            if fb_rows:
-                found.extend(fb_rows)
-        return found
+        return await self._id_rows("""/* pipeshub:graph.users_by_email */ SELECT lower(btrim(doc->>'email', E' \t\r\n')) AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
+               FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(btrim(doc->>'email', E' \t\r\n')) = ANY($2::text[]) ORDER BY id""", [org, emails], transaction)
 
     async def _verified_email_peers(self, org: str, email: str, transaction: str | None) -> list:
         """The users whose lower-cased email is ``email``'s, by id: the vetted read of graph_0006, or the statement for an address out of its bounds."""
@@ -944,10 +934,11 @@ class IdentityMixin(PgBase):
     @_soft(None, flag=True)
     async def get_person_by_email(self, email: str, org_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> Person | None:
         """The person of this org with this email (stored lowercase). Persons are looked up by a document field: there is no index for it."""
-        if not self._mine(org_id):
+        normalized_email = email.strip().lower() if email else ""
+        if not normalized_email or not self._mine(org_id):
             return None
         d = await self._one("/* pipeshub:graph.get_person_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'person' AND doc->>'email' = $2 ORDER BY id LIMIT 1",
-                            current_org_id(), email.lower(), transaction=transaction)
+                            current_org_id(), normalized_email, transaction=transaction)
         return Person.from_arango_person(_arango(d, "person")) if d else None
 
     @_soft(None, flag=True)
