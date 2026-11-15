@@ -127,6 +127,22 @@ async def test_classify_passes_record_name_and_type_in_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_classify_sends_the_stage_job_it_runs_for() -> None:
+    """The Extraction service's breaker rotates its half-open trials over the waiting jobs, so it must know which job a
+    call is for; outside a stage job nothing is sent."""
+    from app.services.llm_gateway.gateway import llm_job
+
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    mock_post = AsyncMock(return_value=_make_response(200, {"success": True, "classification": None}))
+    with patch.object(client, "_post_json", new=mock_post):
+        with llm_job("classify:vr-1:rev-a"):
+            await client.classify(_bc(), "org-1")
+        await client.classify(_bc(), "org-1")
+    assert mock_post.call_args_list[0][0][1]["job_key"] == "classify:vr-1:rev-a"
+    assert "job_key" not in mock_post.call_args_list[1][0][1]
+
+
+@pytest.mark.asyncio
 async def test_classify_record_name_and_type_default_to_empty_string() -> None:
     client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
 

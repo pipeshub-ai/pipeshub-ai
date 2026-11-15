@@ -162,6 +162,38 @@ def test_classify_forwards_record_name_and_type() -> None:
     assert call_kwargs["record_type"] == "FILE"
 
 
+def test_classify_runs_its_model_calls_as_the_callers_stage_job() -> None:
+    """The job key in the request is the job the gateway admits the calls as, so the half-open trial of an open breaker
+    rotates over the waiting jobs and one job does not carry every trial of a long outage."""
+    from app.services.llm_gateway.gateway import current_job_key
+
+    seen: list[str] = []
+
+    async def classify(**_kwargs: object) -> None:
+        seen.append(current_job_key())
+
+    mock_extraction = MagicMock()
+    mock_extraction.classify = classify
+    client = TestClient(_build_app(mock_extraction))
+    for body in ({"job_key": "classify:vr-1:rev-a"}, {}):
+        response = client.post(
+            "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123", **body}
+        )
+        assert response.status_code == 200
+    assert seen == ["classify:vr-1:rev-a", ""]
+
+
+def test_classify_refuses_an_oversized_job_key() -> None:
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(return_value=None)
+    response = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify",
+        json={"block_container": _empty_bc_dict(), "org_id": "org-123", "job_key": "k" * 1000},
+    )
+    assert response.status_code == 422
+    mock_extraction.classify.assert_not_called()
+
+
 def test_classify_record_name_and_type_default_to_empty() -> None:
     mock_extraction = MagicMock()
     mock_extraction.classify = AsyncMock(return_value=None)

@@ -26,6 +26,7 @@ from app.modules.transformers.document_extraction import (
     classify_request_blocks,
 )
 from app.services.base_client import BaseServiceClient, parse_retry_after
+from app.services.llm_gateway.gateway import current_job_key
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
@@ -107,6 +108,8 @@ class ExtractionClient(BaseServiceClient):
             "record_name": record_name,
             "record_type": record_type,
         }
+        if job_key := current_job_key():
+            payload["job_key"] = job_key
 
         response = await self._post_json(
             "/api/v1/extract/classify",

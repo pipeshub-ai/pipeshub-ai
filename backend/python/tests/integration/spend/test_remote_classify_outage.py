@@ -68,3 +68,50 @@ async def test_a_lone_job_survives_an_outage_in_remote_mode(fleet, hours: float)
     state = await h.pause_state(job)
     assert state is not None and state.sends <= 20 and state.charged == 0
 
+
+async def _job_key_across_the_wire(job_key: str) -> str:
+    """The job key the Extraction gateway admits a call as: the real client builds the request inside the stage job,
+    the route's request model parses it, and the route runs the call inside that job."""
+    from app.api.routes.extraction import ClassifyRequest
+    from app.services.llm_gateway.gateway import current_job_key, llm_job
+
+    client = ExtractionClient(service_url="http://extraction:8093", max_retries=1)
+    sent = AsyncMock(return_value=httpx.Response(200, json={"success": True, "classification": None}))
+    with patch.object(client, "_post_json", new=sent), llm_job(job_key):
+        await client.classify(BlocksContainer(blocks=[], block_groups=[]), "org-1")
+    body = ClassifyRequest.model_validate(sent.call_args[0][1])
+    with llm_job(body.job_key or ""):
+        return current_job_key()
+
+
+@pytest.fixture
+def remote_admissions(monkeypatch) -> dict[str, str]:
+    """Every admission of the simulation is made with the job key the Extraction service receives."""
+    import tests.support.spend_sim as sim
+
+    original = sim.FleetBreaker.admit
+    crossed: dict[str, str] = {}
+
+    async def admit(self, pk, cls, job=""):  # noqa: ANN202
+        if job and job not in crossed:
+            crossed[job] = await _job_key_across_the_wire(job)
+        return await original(self, pk, cls, crossed.get(job, job))
+
+    monkeypatch.setattr(sim.FleetBreaker, "admit", admit)
+    return crossed
+
+
+@pytest.mark.timeout(900)
+@pytest.mark.parametrize("seed", [62011, 62017])
+@pytest.mark.parametrize("kind", ["fast5xx", "hang"])
+@pytest.mark.parametrize(("jobs", "hours", "max_sends"), [(20, 20, 11), (200, 20, 11), (20, 4, None), (200, 4, None)])
+async def test_trials_rotate_over_the_jobs_in_remote_mode(fleet, remote_admissions, seed, kind, jobs, hours, max_sends) -> None:
+    """A full outage, every call through the Extraction service: the half-open trials rotate over the waiting jobs, so
+    no job is FAILED and none sends more than 11 times in 20 h. Without the job key on the wire one job carried most
+    trials and ended at the absolute cap."""
+    from tests.support.spend_scenarios import no_failure
+    from tests.support.spend_sim import run_world
+
+    res = await run_world(fleet, seed, jobs=jobs, outage_s=hours * HOUR, kind=kind)
+    no_failure(max_sends=max_sends)(res)
+    assert remote_admissions and all(job == crossed for job, crossed in remote_admissions.items())

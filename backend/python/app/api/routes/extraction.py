@@ -20,7 +20,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.middlewares.auth import (
     authMiddleware,
@@ -37,6 +37,7 @@ from app.modules.named_entities.domain.kinds import EntityKind, default_enabled_
 from app.modules.transformers.document_extraction import (
     ExtractionLLMError,
 )
+from app.services.llm_gateway.gateway import llm_job
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
 from app.utils.env_utils import env_positive_int
@@ -75,6 +76,9 @@ class ClassifyRequest(BaseModel):
     departments: list[str] = []
     record_name: str = ""
     record_type: str = ""
+    # The caller's stage job (its state key). The model calls are admitted as that job, so the half-open trials of an
+    # open breaker rotate over the waiting jobs instead of one job carrying them all.
+    job_key: str | None = Field(default=None, max_length=256)
 
 
 class ClassifyResponse(BaseModel):
@@ -133,14 +137,15 @@ async def classify(
             fallback_service="extraction",
             config_service=_config_service(request),
         ):
-            metadata = await document_extraction.classify(
-                blocks=body.block_container.blocks,
-                org_id=org_id,
-                departments=body.departments or None,
-                record_name=body.record_name,
-                record_type=body.record_type,
-                block_groups=body.block_container.block_groups,
-            )
+            with llm_job(body.job_key or ""):
+                metadata = await document_extraction.classify(
+                    blocks=body.block_container.blocks,
+                    org_id=org_id,
+                    departments=body.departments or None,
+                    record_name=body.record_name,
+                    record_type=body.record_type,
+                    block_groups=body.block_container.block_groups,
+                )
     except LLMNotConfiguredError as exc:
         # 4xx: a configuration state, not an outage — the client must neither retry it
         # nor count it against its circuit breaker.
