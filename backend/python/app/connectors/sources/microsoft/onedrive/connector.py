@@ -2751,7 +2751,8 @@ class OneDriveConnector(BaseConnector):
         await tracker.remember({f"{drive_id}|{owner}" for drive_id, owner in keep.items()})
 
     async def _app_reads_a_drive(self) -> bool:
-        """Whether a drive synced in this run answers now: a 404 on another drive is then not the app's own access."""
+        """Whether some drive synced in this run answers now: a 404 on another drive is then not the app's own access.
+        False only when every synced drive fails, or none was synced."""
         for drive_id in sorted(self._drives_read):
             try:
                 async with self.msgraph_client.rate_limiter:
@@ -2759,7 +2760,6 @@ class OneDriveConnector(BaseConnector):
                 return True
             except Exception as e:
                 self.logger.warning(f"Synced OneDrive {drive_id} does not answer: {e}")
-                return False
         return False
 
     async def _delete_drive_records(self, drive_id: str) -> bool:

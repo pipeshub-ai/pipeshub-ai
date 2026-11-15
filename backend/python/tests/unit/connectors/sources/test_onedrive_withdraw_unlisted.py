@@ -464,3 +464,14 @@ async def test_each_run_starts_with_no_drive_read() -> None:
     c._collect_action_items = AsyncMock()
     await c.run_incremental_sync()
     c.data_entities_processor.on_record_group_deleted.assert_awaited_once_with("d-gone", "c1")
+
+
+@pytest.mark.asyncio
+async def test_one_synced_drive_that_does_not_answer_does_not_hide_another_that_does() -> None:
+    """The app reads drives if any synced drive answers; the first one failing is not enough to keep a dead drive."""
+    c, checkpoints = _drive_reader({"d-a": RuntimeError("timeout"), "d-b": MagicMock(), "d-gone": _odata(404)},
+                                   owners={"d-gone": "owner-d-gone"})
+    c._drives_read = {"d-a": "owner-d-a", "d-b": "owner-d-b"}
+    await c._remove_deleted_drives()
+    c.data_entities_processor.on_record_group_deleted.assert_awaited_once_with("d-gone", "c1")
+    assert _known(checkpoints) == ["d-a|owner-d-a", "d-b|owner-d-b"]
