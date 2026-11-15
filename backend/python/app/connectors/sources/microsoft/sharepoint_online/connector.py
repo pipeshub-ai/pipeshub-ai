@@ -106,6 +106,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     map_msgraph_roles_to_permission_type,
 )
 from app.connectors.sources.microsoft.common.source_accounts import SourceAccounts
+from app.connectors.sources.microsoft.common.msgraph_client import list_deleted_users
 from app.connectors.sources.microsoft.sharepoint_online.container_tracker import (
     ContainerTracker,
 )
@@ -666,7 +667,8 @@ class SharePointConnector(BaseConnector):
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
         self.connector_id = connector_id
-        self.source_accounts = SourceAccounts(data_entities_processor, connector_id, config_service, logger)
+        self.source_accounts = SourceAccounts(data_entities_processor, connector_id, config_service, logger,
+                                              deleted_users=lambda: list_deleted_users(self.client))
 
         self.filters = {"exclude_onedrive_sites": True, "exclude_pages": True, "exclude_lists": True, "exclude_document_libraries": False}
         # Batch processing configuration
@@ -2952,12 +2954,18 @@ class SharePointConnector(BaseConnector):
         return permissions
 
     async def _m365_owner_permissions(self, group_id: str, role: PermissionType) -> list[Permission]:
+        await self.source_accounts.ensure_loaded()
         if group_id not in self._m365_group_owners:
             self._m365_group_owners[group_id] = await self._fetch_graph_group_members(group_id, is_owner=True)
         return [
             Permission(external_id=owner['id'], email=owner['email'], type=role, entity_type=EntityType.USER)
-            for owner in self._m365_group_owners[group_id]
+            for owner in self._m365_group_owners[group_id] if self._names_current_holder(owner)
         ]
+
+    def _names_current_holder(self, member: dict) -> bool:
+        """An expanded Graph member (``id``, ``email``) whose address its account still holds (see SourceAccounts)."""
+        email = member.get('email')
+        return isinstance(email, str) and self.source_accounts.may_grant(email, member.get('id'))
 
     async def _sharepoint_principal_permissions(self, principal: dict, role: PermissionType, site_id: str) -> list[Permission]:
         """Grants for one SharePoint principal: a role assignment's Member, or a user of an associated site group."""
@@ -3001,9 +3009,10 @@ class SharePointConnector(BaseConnector):
             return []
         object_id = match.group(1)
         if await self._get_directory_object_type(object_id) == DIRECTORY_ROLE_ODATA_TYPE:
+            await self.source_accounts.ensure_loaded()
             return [
                 Permission(external_id=member['id'], email=member['email'], type=role, entity_type=EntityType.USER)
-                for member in await self._get_directory_role_member_users(object_id)
+                for member in await self._get_directory_role_member_users(object_id) if self._names_current_holder(member)
             ]
         return [Permission(external_id=object_id, email=None, type=role, entity_type=EntityType.GROUP)]
 

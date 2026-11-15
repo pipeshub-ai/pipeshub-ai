@@ -26,10 +26,10 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType
+from tests.support.in_memory_config import InMemoryConfigService
 
 from ..processor_harness import build_processor
 from ..write_path_support import ORG, _seed_app, _seed_user, _suffix
-from tests.support.in_memory_config import InMemoryConfigService
 
 pytestmark = pytest.mark.integration
 

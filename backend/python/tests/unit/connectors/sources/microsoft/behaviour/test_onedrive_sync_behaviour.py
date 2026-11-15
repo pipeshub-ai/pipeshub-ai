@@ -153,6 +153,8 @@ class Tenant:
         cloud.on("GET", "/v1.0/users", lambda _r: json_response(page(self.users)))
         cloud.on("GET", "/v1.0/groups", lambda _r: json_response(page(self.groups)))
         cloud.on("GET", GROUPS_DELTA_PATH, self.groups_delta)
+        # the directory's deleted users (the SDK writes the cast as graph.user)
+        cloud.on("GET", "/v1.0/directory/deletedItems/graph.user", lambda _r: json_response(page([])))
 
     def add_user(self, user_id: str, email: str, name: str, user_type: str = "Member") -> TokenFeed:
         self.users.append({"id": user_id, "displayName": name, "mail": email, "userPrincipalName": email,

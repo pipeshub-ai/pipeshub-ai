@@ -33,11 +33,14 @@ class _Directory:
         self.calls: list[tuple] = []
         self.processor = MagicMock()
         self.processor.get_app_user_links = AsyncMock(side_effect=lambda _c: [
-            SimpleNamespace(id=i, source_user_id=s) for i, s in self.links.items()])
+            SimpleNamespace(id=i, source_user_id=s, email=self.email_of(i)) for i, s in self.links.items()])
         self.processor.get_user_by_email = AsyncMock(side_effect=self._by_email)
         self.processor.remove_user_access_to_connector = AsyncMock(side_effect=self._remove)
         self.processor.on_new_app_users = AsyncMock(side_effect=self._link)
         self.processor.withdraw_app_user_access = AsyncMock(side_effect=self._withdraw)
+
+    def email_of(self, user_id: str) -> str | None:
+        return next((e for e, n in self.nodes.items() if n == user_id), None)
 
     async def _by_email(self, email: str, **_: object) -> object | None:
         node = self.nodes.get(email.lower())
@@ -70,7 +73,13 @@ class _Saved:
 def world() -> tuple[_Directory, SourceAccounts, _Saved]:
     config = FakeConfigService(CONNECTOR, {})
     directory = _Directory()
-    return directory, SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t")), _Saved(config)
+    directory.deleted: dict[str, str] = {}      # the directory's deleted items: address -> object id
+
+    async def deleted_users() -> dict[str, str]:
+        return dict(directory.deleted)
+
+    accounts = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"), deleted_users=deleted_users)
+    return directory, accounts, _Saved(config)
 
 
 async def _withdraw_gone(directory: _Directory, accounts: SourceAccounts, sid: str) -> None:
@@ -99,7 +108,7 @@ async def test_an_address_taken_after_the_old_account_was_withdrawn_loses_its_gr
     await accounts.admit([_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
 
     assert directory.calls[0] == ("remove", "ana@x.com")
-    assert store.values() == {"withdrawn": {}, "reused": {"ana@x.com": "new-oid"}}
+    assert (store.values()["withdrawn"], store.values()["reused"]) == ({}, {"ana@x.com": "new-oid"})
 
 
 @pytest.mark.asyncio
@@ -175,3 +184,81 @@ async def test_a_state_that_cannot_be_saved_links_nobody(world) -> None:
     with pytest.raises(RuntimeError):
         await accounts.admit([_user("ana@x.com", "a")])
     directory.processor.on_new_app_users.assert_not_awaited()
+
+
+
+@pytest.mark.asyncio
+async def test_a_run_whose_links_cannot_be_read_writes_no_grant_until_one_can(world) -> None:
+    """sh7X: an earlier run's listing must not vouch for an object id while this run could not check the links."""
+    directory, accounts, _ = world
+    await accounts.admit([_user("ana@x.com", "a")])
+    assert accounts.may_grant("ana@x.com", "a")
+    directory.processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("db down"))
+    await accounts.admit([_user("ana@x.com", "b")])
+    assert not accounts.may_grant("ana@x.com", "a") and not accounts.may_grant("ana@x.com", "b")
+    with pytest.raises(RuntimeError):
+        await accounts.ensure_loaded()             # the grant writers stop: nothing is rewritten this run
+    directory.processor.get_app_user_links = AsyncMock(side_effect=lambda _c: [
+        SimpleNamespace(id=i, source_user_id=sid, email=directory.email_of(i)) for i, sid in directory.links.items()])
+    await accounts.admit([_user("ana@x.com", "a")])
+    await accounts.ensure_loaded()
+    assert accounts.may_grant("ana@x.com", "a")
+
+
+@pytest.mark.asyncio
+async def test_an_account_renamed_onto_a_deleted_accounts_address_is_compared_by_address(world) -> None:
+    """sh7Y: B moves from bo@ to ana@ after A (ana@) was deleted. B's id is linked already, to bo@'s user, which says
+    nothing about ana@: ana@'s user was last linked to A."""
+    directory, accounts, store = world
+    await accounts.admit([_user("ana@x.com", "a"), _user("bo@x.com", "b")])
+    await _withdraw_gone(directory, accounts, "a")
+    directory.calls.clear()
+
+    await accounts.admit([_user("ana@x.com", "b")])
+
+    assert directory.calls[0] == ("remove", "ana@x.com")
+    assert store.values()["reused"] == {"ana@x.com": "b"}
+    assert not accounts.may_grant("ana@x.com", "a") and not accounts.may_grant("ana@x.com", None)
+
+
+@pytest.mark.asyncio
+async def test_an_address_an_earlier_version_already_linked_to_its_new_account_is_found_in_deleted_items(world) -> None:
+    """swj_: the stored link already names the new id (written before this state was kept) and nothing is saved; the
+    deleted account in the directory's deleted items still holds the address under the old id."""
+    directory, accounts, store = world
+    directory.nodes["ana@x.com"] = "node-ana@x.com"
+    directory.links["node-ana@x.com"] = "new-oid"
+    directory.deleted = {"ana@x.com": "old-oid"}
+
+    await accounts.admit([_user("ana@x.com", "new-oid")])
+
+    assert directory.calls[0] == ("remove", "ana@x.com")
+    assert store.values()["reused"] == {"ana@x.com": "new-oid"} and store.values()["deletedChecked"] is True
+    assert not accounts.may_grant("ana@x.com", "old-oid") and not accounts.may_grant("ana@x.com", None)
+    assert accounts.may_grant("ana@x.com", "new-oid")
+    directory.calls.clear()
+    directory.deleted = {}
+    await accounts.admit([_user("ana@x.com", "new-oid")])      # read once: no second removal
+    assert ("remove", "ana@x.com") not in directory.calls
+
+
+@pytest.mark.asyncio
+async def test_deleted_items_that_cannot_be_read_are_read_again_next_run(world) -> None:
+    directory, accounts, store = world
+    directory.nodes["ana@x.com"] = "node-ana@x.com"
+    directory.links["node-ana@x.com"] = "new-oid"
+    accounts.deleted_users = AsyncMock(side_effect=RuntimeError("403"))
+    await accounts.admit([_user("ana@x.com", "new-oid")])
+    assert store.values()["deletedChecked"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_restored_account_keeps_its_old_id_until_it_is_linked(world) -> None:
+    """sh7a: the link write fails after the comparison; the withdrawn id must still be there for the next run."""
+    directory, accounts, store = world
+    await accounts.admit([_user("ana@x.com", "a")])
+    await _withdraw_gone(directory, accounts, "a")
+    directory.processor.on_new_app_users = AsyncMock(side_effect=RuntimeError("write failed"))
+    with pytest.raises(RuntimeError):
+        await accounts.admit([_user("ana@x.com", "a")])
+    assert store.values()["withdrawn"] == {"node-ana@x.com": "a"}

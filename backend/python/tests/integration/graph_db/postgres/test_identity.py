@@ -406,6 +406,7 @@ async def test_a_withdrawn_user_gets_the_link_back_when_the_next_listing_shows_t
 
     await processor.on_new_app_users([listed])
     assert await links() == {"m"}
+    assert [u.email for u in await processor.get_app_user_links(APP)] == ["m@x.com"]
     await processor.withdraw_app_user_access(APP, [SimpleNamespace(id="m")])
     assert await links() == set()
     await processor.on_new_app_users([listed])                                  # the next listing shows the user again

@@ -6049,7 +6049,7 @@ class DataSourceEntitiesProcessor:
         failed read raises."""
         async with self.data_store_provider.transaction() as tx_store:
             links = await tx_store.get_app_user_links(self.org_id, connector_id)
-        return [SimpleNamespace(id=link["id"], source_user_id=link["sourceUserId"]) for link in links]
+        return [SimpleNamespace(id=link["id"], source_user_id=link["sourceUserId"], email=link.get("email")) for link in links]
 
     async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[AppUserGroup]:
         async with self.data_store_provider.transaction() as tx_store:

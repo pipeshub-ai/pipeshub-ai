@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from logging import Logger
 
     from app.config.configuration_service import ConfigurationService
@@ -36,86 +37,133 @@ def source_accounts_key(connector_id: str) -> str:
 class SourceAccounts:
     def __init__(
         self, processor: "DataSourceEntitiesProcessor", connector_id: str, config_service: "ConfigurationService",
-        logger: "Logger",
+        logger: "Logger", deleted_users: "Callable[[], Awaitable[dict[str, str]]] | None" = None,
     ) -> None:
         self.processor = processor
         self.connector_id = connector_id
         self.config_service = config_service
         self.logger = logger
+        # address -> object id of each user in the directory's deleted items, read once to find addresses an earlier
+        # version linked to their new account before this state was kept
+        self.deleted_users = deleted_users
         self.loaded = False                   # until the saved state is read, no grant is written (may_grant)
+        self.admission_failed = False         # the stored links could not be read this run: no grant is written
         self.current: dict[str, str] = {}     # address -> object id of the account listed with it in this run
         self.reused: dict[str, str] = {}      # address another account held before -> object id that holds it now
 
-    async def _state(self) -> tuple[dict[str, str], dict[str, str]]:
+    async def _state(self) -> dict:
         """The saved state. A failed read raises: without it no grant may be judged."""
         stored = await self.config_service.get_config(
             source_accounts_key(self.connector_id), use_cache=False, raise_on_error=True
         ) or {}
+        if not isinstance(stored, dict):
+            raise TypeError(f"the saved account state of connector {self.connector_id} is not a mapping")
         reused = stored.get("reused") or {}
         if not isinstance(reused, dict):     # addresses without the account now holding them: no grant reaches them
             reused = dict.fromkeys(reused, "")
-        return dict(stored.get("withdrawn") or {}), {e.lower(): sid for e, sid in reused.items()}
+        return {"withdrawn": dict(stored.get("withdrawn") or {}), "reused": {e.lower(): sid for e, sid in reused.items()},
+                "deletedChecked": bool(stored.get("deletedChecked"))}
 
-    async def _save(self, withdrawn: dict[str, str], reused: dict[str, str]) -> None:
-        saved = await self.config_service.set_config(
-            source_accounts_key(self.connector_id), {"withdrawn": withdrawn, "reused": reused}
-        )
+    async def _save(self, state: dict) -> None:
+        saved = await self.config_service.set_config(source_accounts_key(self.connector_id), state)
         if not saved:
             raise RuntimeError(f"Could not save which accounts the users of connector {self.connector_id} were linked to")
 
     async def ensure_loaded(self) -> None:
         """Read the saved state once, before the first grant is judged in any path (a sync, a reindex, a webhook).
-        A failed read raises, so the caller writes nothing."""
+        A failed read raises, and so does a run whose stored links could not be read, so the caller writes nothing
+        and keeps what is stored."""
+        if self.admission_failed:
+            raise RuntimeError(f"the stored users of connector {self.connector_id} could not be read this run")
         if not self.loaded:
-            _, self.reused = await self._state()
+            self.reused = (await self._state())["reused"]
             self.loaded = True
 
     async def admit(self, users: list["AppUser"]) -> None:
         """Link ``users`` (``on_new_app_users``), after taking this connector's grants from any PipesHub user whose
         address now belongs to a different account than the one it was linked to."""
-        withdrawn, self.reused = await self._state()
+        state = await self._state()
+        withdrawn, self.reused = state["withdrawn"], state["reused"]
         self.loaded = True
         try:
-            links = {link.id: link.source_user_id for link in await self.processor.get_app_user_links(self.connector_id)}
+            links = await self.processor.get_app_user_links(self.connector_id)
         except Exception as e:
-            # Who held each address before is unknown, so nobody is linked; the sync goes on with the stored links.
+            # Who held each address before is unknown: nobody is linked and no grant is written this run.
+            self.admission_failed, self.current = True, {}
             self.logger.error(f"Could not read the stored users; no user is linked this run: {e}")
             return
-        linked = set(links.values())
+        self.admission_failed = False
+        by_address = {link.email.lower(): link for link in links if getattr(link, "email", None)}
+        by_user = {link.id: link.source_user_id for link in links}
+        deleted = await self._deleted_users(state)
+        settled: list[str] = []       # withdrawn users this listing links again, to forget once the link is written
         for user in users:
-            if not user.email or not user.source_user_id or user.source_user_id in linked:
+            if not user.email or not user.source_user_id:
                 continue
-            if not links and not withdrawn:
-                break   # nobody was linked before: nothing to compare with
-            pipeshub_user = await self.processor.get_user_by_email(user.email, raise_on_error=True)
-            if pipeshub_user is None:
-                continue
-            before = links.get(pipeshub_user.id) or withdrawn.get(pipeshub_user.id)
+            address = user.email.lower()
+            link = by_address.get(address)
+            if link is not None and link.source_user_id == user.source_user_id:
+                old = deleted.get(address)
+                if old is None or old == user.source_user_id or address in self.reused:
+                    continue      # this address kept its account
+                before = old      # linked to the new account by an earlier version: the deleted one held it
+                user_id = link.id
+            else:
+                if link is not None:
+                    user_id = link.id
+                elif by_user or withdrawn or address in deleted:
+                    pipeshub_user = await self.processor.get_user_by_email(user.email, raise_on_error=True)
+                    if pipeshub_user is None:
+                        continue
+                    user_id = pipeshub_user.id
+                else:
+                    continue      # nobody was linked before: nothing to compare with
+                before = by_user.get(user_id) or withdrawn.get(user_id) or (
+                    None if address in self.reused else deleted.get(address))
             if before and before != user.source_user_id:
                 removed = await self.processor.remove_user_access_to_connector(self.connector_id, user.email)
-                self.reused[user.email.lower()] = user.source_user_id
+                self.reused[address] = user.source_user_id
                 self.logger.info(
                     "The address of user %s belongs to a new account now; removed %d grant(s) of the previous one",
-                    pipeshub_user.id, removed,
+                    user_id, removed,
                 )
-            withdrawn.pop(pipeshub_user.id, None)
-        await self._save(withdrawn, self.reused)
+            if user_id in withdrawn:
+                settled.append(user_id)
+        state.update(withdrawn=withdrawn, reused=self.reused)
+        await self._save(state)
         self.current = {u.email.lower(): u.source_user_id for u in users if u.email and u.source_user_id}
         await self.processor.on_new_app_users(users)
+        if settled:       # forgotten only once the link is written: a failed write leaves them to compare with
+            for user_id in settled:
+                withdrawn.pop(user_id, None)
+            await self._save(state)
+
+    async def _deleted_users(self, state: dict) -> dict[str, str]:
+        """The directory's deleted users by address, read once (``deletedChecked``); a failed read is tried again."""
+        if state["deletedChecked"] or self.deleted_users is None:
+            return {}
+        try:
+            deleted = {address.lower(): sid for address, sid in (await self.deleted_users()).items()}
+        except Exception as e:
+            self.logger.warning(f"Could not read the directory's deleted users; trying again next run: {e}")
+            return {}
+        state["deletedChecked"] = True
+        return deleted
 
     async def withdraw(self, users: list) -> None:
         """``withdraw_app_user_access``, remembering which account each withdrawn user was linked to (its grants stay,
         so restoring that very account gives them back)."""
-        withdrawn, reused = await self._state()
-        withdrawn.update({u.id: u.source_user_id for u in users if u.id and u.source_user_id})
-        await self._save(withdrawn, reused)
+        state = await self._state()
+        state["withdrawn"].update({u.id: u.source_user_id for u in users if u.id and u.source_user_id})
+        await self._save(state)
         await self.processor.withdraw_app_user_access(self.connector_id, users)
 
     def may_grant(self, email: str, object_id: str | None) -> bool:
         """Whether a grant to ``email`` reaches the account that holds it now. ``object_id`` is the Entra object id
         the source named, or None when it named none (a SharePoint REST principal). False until the saved state is
-        read (``ensure_loaded`` or ``admit``)."""
-        if not self.loaded:
+        read (``ensure_loaded`` or ``admit``), and for a grant naming an object id while the stored links could not be
+        read this run."""
+        if not self.loaded or (self.admission_failed and object_id is not None):
             return False
         email = email.lower()
         if email in self.reused:
