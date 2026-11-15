@@ -7,6 +7,7 @@ issuesecurityschemes/level/member, issue.fields.security); the same shapes come 
 import contextlib
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,6 +25,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
 )
 from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
 from app.connectors.sources.atlassian.jira_cloud.connector import (
+    ANONYMOUS_GATE_KEY,
     ANONYMOUS_READ_PAGES,
     ISSUE_PLACEMENT,
     ISSUE_SEARCH_FIELDS,
@@ -1950,13 +1952,51 @@ class TestAnonymousBrowseReachesEveryone:
                                                          type=PermissionType.READ)])]
 
     @staticmethod
-    def _gated(scope: str = "team", *, readable: bool | None = True) -> JiraConnector:
+    def _gated(scope: str = "team", *, readable: bool | None = True, confirmed_hours_ago: float | None = None,
+               ) -> JiraConnector:
         c = _connector()
         c.scope = scope
         c.data_entities_processor.open_app_to_org_team = AsyncMock()
         c.data_entities_processor.withdraw_team_app_edge = AsyncMock()
         c._read_anonymously = AsyncMock(return_value=readable)
+        c.notify = AsyncMock()
+        c.stored = {}
+        if confirmed_hours_ago is not None:
+            c.stored[ANONYMOUS_GATE_KEY] = {"confirmed_at": int(time.time() * 1000 - confirmed_hours_ago * 3_600_000)}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: c.stored.get(k))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: c.stored.__setitem__(k, v))
         return c
+
+    @pytest.mark.asyncio
+    async def test_no_answer_within_a_day_of_the_last_confirmation_keeps_the_gate(self) -> None:
+        c = self._gated(readable=None, confirmed_hours_ago=23)
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
+        c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
+        c.notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_answer_for_more_than_a_day_closes_the_gate_and_tells_the_owner_once(self) -> None:
+        """A project made private while every signed-out search goes unanswered must not stay open to the org."""
+        c = self._gated(readable=None, confirmed_hours_ago=25)
+        for _ in range(2):
+            await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        assert c.data_entities_processor.withdraw_team_app_edge.await_count == 2
+        c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
+        c.notify.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_confirmation_opens_the_gate_again_and_restarts_the_day(self) -> None:
+        c = self._gated(readable=None, confirmed_hours_ago=25)
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        c._read_anonymously = AsyncMock(return_value=True)
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        c.data_entities_processor.open_app_to_org_team.assert_awaited_once_with("conn-sec")
+        c._read_anonymously = AsyncMock(return_value=None)
+        c.data_entities_processor.withdraw_team_app_edge.reset_mock()
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_project_a_signed_out_search_reads_opens_the_gate_to_the_org(self) -> None:
@@ -1982,8 +2022,8 @@ class TestAnonymousBrowseReachesEveryone:
     @pytest.mark.asyncio
     async def test_a_signed_out_search_without_an_answer_leaves_the_gate_as_it_is(self) -> None:
         """A search cut short (page bound hit on a fresh token, or no response) neither opens the gate nor removes
-        an open one; the next sync asks again."""
-        c = self._gated(readable=None)
+        an open one confirmed within the day; the next sync asks again."""
+        c = self._gated(readable=None, confirmed_hours_ago=1)
         await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
         c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
         c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
@@ -2069,6 +2109,7 @@ class TestAnonymousBrowseReachesEveryone:
 
         real = httpx.AsyncClient
         monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(answer), **kw))
+        monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
         c = _connector()
         c.site_url = "https://acme.atlassian.net"
         assert await c._read_anonymously("PUB") is public
@@ -2089,14 +2130,51 @@ class TestAnonymousBrowseReachesEveryone:
         real = httpx.AsyncClient
         monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kw: real(
             transport=httpx.MockTransport(lambda _request: httpx.Response(status, json={})), **kw))
-        c = _connector()
+        monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
+        c = self._gated(confirmed_hours_ago=1)
+        del c._read_anonymously
         c.site_url = "https://acme.atlassian.net"
-        c.scope = "team"
-        c.data_entities_processor.open_app_to_org_team = AsyncMock()
-        c.data_entities_processor.withdraw_team_app_edge = AsyncMock()
         await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
         c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
         c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_rate_limit_that_passes_within_the_probe_is_an_answer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Rate limiting: Retry-After is "Only returned with 429 responses. Indicates how many seconds to wait before
+        retrying." The probe waits that long and asks again, a bounded number of times."""
+        import httpx
+
+        from app.connectors.sources.atlassian.jira_cloud import connector as module
+
+        answers = iter([httpx.Response(429, headers={"Retry-After": "2"}, json={}),
+                        httpx.Response(200, json={"issues": [{"id": "1"}], "isLast": True})])
+        real = httpx.AsyncClient
+        monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kw: real(
+            transport=httpx.MockTransport(lambda _request: next(answers)), **kw))
+        slept = AsyncMock()
+        monkeypatch.setattr(module.asyncio, "sleep", slept)
+        c = _connector()
+        assert await c._read_anonymously("PUB") is True
+        slept.assert_awaited_once_with(2.0)
+
+    @pytest.mark.asyncio
+    async def test_a_rate_limit_that_lasts_past_the_attempts_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import httpx
+
+        from app.connectors.sources.atlassian.jira_cloud import connector as module
+
+        sent: list = []
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return httpx.Response(503, json={})
+
+        real = httpx.AsyncClient
+        monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(answer), **kw))
+        monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
+        c = _connector()
+        assert await c._read_anonymously("PUB") is None
+        assert len(sent) == module.ANONYMOUS_READ_ATTEMPTS
 
     @pytest.mark.asyncio
     async def test_a_signed_out_search_with_no_response_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:

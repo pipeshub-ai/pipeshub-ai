@@ -289,6 +289,12 @@ SUBTASK_REREAD_CHUNK: int = 50
 ANONYMOUS_READ_TIMEOUT_S: float = 20.0
 # Pages of that search followed past empty ones; reaching it on a fresh token is no answer, and the gate stays as it is.
 ANONYMOUS_READ_PAGES: int = 20
+# Answers to one page of it before a 429 or gateway error counts as no answer, each after the wait Jira asks for.
+ANONYMOUS_READ_ATTEMPTS: int = 3
+# The connector's sync point holding when that search last confirmed every public project. Past
+# ANONYMOUS_GATE_MAX_AGE_MS with no answer since, the org's access closes until a search confirms it again.
+ANONYMOUS_GATE_KEY: str = "anonymous_gate"
+ANONYMOUS_GATE_MAX_AGE_MS: int = 24 * 60 * 60 * 1000
 PEOPLE_REREAD_CHUNK: int = 20  # kept small: a clause's argument limit is not published
 # The connector's sync point holding newly listed accounts not yet handed to every project.
 PEOPLE_REREAD_KEY: str = "people_reread"
@@ -2865,13 +2871,32 @@ class JiraConnector(BaseConnector):
             return
         public = [group for group, perms in projects if any(p.entity_type == EntityType.ORG for p in perms or [])]
         answers = [await self._read_anonymously(group.short_name) for group in public] if written_in_full else []
-        if not written_in_full or not public or False in answers:
-            await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
-        elif None in answers:
+        now = get_epoch_timestamp_in_ms()
+        confirmed_at = int(((await self.issues_sync_point.read_sync_point(ANONYMOUS_GATE_KEY)) or {}).get("confirmed_at")
+                           or 0)
+        if written_in_full and public and answers and all(a is True for a in answers):
+            await self.data_entities_processor.open_app_to_org_team(self.connector_id)
+            await self.issues_sync_point.update_sync_point(ANONYMOUS_GATE_KEY, {"confirmed_at": now})
+            return
+        if written_in_full and public and False not in answers and now - confirmed_at <= ANONYMOUS_GATE_MAX_AGE_MS:
             # A search with no answer is not proof either way: an open gate stays open, a closed one closed.
             self.logger.warning("Could not tell whether every public Jira project is public; org access kept as is")
-        else:
-            await self.data_entities_processor.open_app_to_org_team(self.connector_id)
+            return
+        await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
+        if not confirmed_at:
+            return
+        await self.issues_sync_point.update_sync_point(ANONYMOUS_GATE_KEY, {"confirmed_at": 0})
+        if written_in_full and public and False not in answers:
+            # Unanswered for a day: a project made private meanwhile must not stay open to the whole org.
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title("closed public projects to the organization"),
+                message=(
+                    "For a day, Jira has not answered the signed-out search that shows which projects are public. "
+                    "Public projects now reach only linked Jira users until a sync gets an answer."
+                ),
+            )
 
     async def _read_anonymously(self, project_key: str | None) -> bool | None:
         """Whether a search with no credentials returns an issue of the project; None when it gave no answer. POST
@@ -2881,8 +2906,11 @@ class JiraConnector(BaseConnector):
         The operation documents 200, 400 ("Returned if the search request is invalid") and 401 ("Returned if the
         authentication credentials are incorrect or missing"). A terminal page with no issue, a 400, a 401, a body
         that is not JSON, or any other status the docs do not describe (403, ...) reads as not public: a project with
-        no issue has nothing to read anyway. A rate limit or gateway error (429, RETRYABLE_SERVER_STATUSES), no
-        response, or the page bound reached while the token is still new is no answer."""
+        no issue has nothing to read anyway. A rate limit or gateway error (429, RETRYABLE_SERVER_STATUSES) is asked
+        again ANONYMOUS_READ_ATTEMPTS times after the wait Jira asks for: Retry-After is "Only returned with 429
+        responses. Indicates how many seconds to wait before retrying", and "Some transient 5xx responses (such as 503)
+        may also include a Retry-After header" (https://developer.atlassian.com/cloud/jira/platform/rate-limiting/).
+        One that lasts, no response, or the page bound reached while the token is still new is no answer."""
         if not self.site_url or not project_key:
             return False
         jql = 'project = "{}"'.format(project_key.replace("\\", "\\\\").replace('"', '\\"'))
@@ -2894,12 +2922,17 @@ class JiraConnector(BaseConnector):
                     body: dict[str, Any] = {"jql": jql, "maxResults": ISSUE_ID_LISTING_PAGE_SIZE, "fields": ["id"]}
                     if token:
                         body["nextPageToken"] = token
-                    response = await client.post(
-                        f"{self.site_url.rstrip('/')}/rest/api/3/search/jql", json=body,
-                        headers={"Accept": "application/json"},
-                    )
-                    if (response.status_code == HttpStatusCode.TOO_MANY_REQUESTS.value
-                            or response.status_code in RETRYABLE_SERVER_STATUSES):
+                    for attempt in range(ANONYMOUS_READ_ATTEMPTS):
+                        response = await client.post(
+                            f"{self.site_url.rstrip('/')}/rest/api/3/search/jql", json=body,
+                            headers={"Accept": "application/json"},
+                        )
+                        if not (response.status_code == HttpStatusCode.TOO_MANY_REQUESTS.value
+                                or response.status_code in RETRYABLE_SERVER_STATUSES):
+                            break
+                        if attempt < ANONYMOUS_READ_ATTEMPTS - 1:
+                            await asyncio.sleep(self._rate_limit_delay(response, attempt))
+                    else:
                         self.logger.warning("Signed-out search of project %s answered %s; asking again next sync",
                                             project_key, response.status_code)
                         return None
