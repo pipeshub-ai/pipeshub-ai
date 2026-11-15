@@ -36,8 +36,13 @@ LANGUAGE sql IMMUTABLE PARALLEL SAFE SET search_path = pg_catalog, pg_temp AS $f
 $fn$;
 
 -- PostgreSQL refuses transition tables on a trigger of several events, so: one function, three triggers. A statement that changes nothing counted adds no row.
+-- A restore (db.restore_window: plain INSERTs as the restore role, triggers on) adds no delta, and the counter rows it carries are not kept (kg_counts_restore below): the
+-- connector then has no facet 0 mark, so the worker counts it whole from the restored rows. Counters are derived data, and exported counters need not match the exported rows.
 CREATE FUNCTION kg.count_change() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, kg, pg_temp AS $fn$
 BEGIN
+  IF current_user = 'pipeshub_restore' THEN
+    RETURN NULL;
+  END IF;
   IF TG_OP = 'INSERT' THEN
     INSERT INTO kg.counts (org_id, app_sk, facet, class_id, kind, folder, record_type, origin, n)
       SELECT * FROM kg.count_keys((SELECT array_agg(t::kg.records) FROM newtab t), 1);
@@ -59,3 +64,9 @@ SELECT kernel.exempt_trigger('kg.count_change()', 'inserts the counter deltas of
 CREATE TRIGGER kg_records_count_insert AFTER INSERT ON kg.records REFERENCING NEW TABLE AS newtab FOR EACH STATEMENT EXECUTE FUNCTION kg.count_change();
 CREATE TRIGGER kg_records_count_update AFTER UPDATE ON kg.records REFERENCING OLD TABLE AS oldtab NEW TABLE AS newtab FOR EACH STATEMENT EXECUTE FUNCTION kg.count_change();
 CREATE TRIGGER kg_records_count_delete AFTER DELETE ON kg.records REFERENCING OLD TABLE AS oldtab FOR EACH STATEMENT EXECUTE FUNCTION kg.count_change();
+
+CREATE FUNCTION kg.count_restored() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $fn$
+BEGIN
+  RETURN NULL;
+END $fn$;
+CREATE TRIGGER kg_counts_restore BEFORE INSERT ON kg.counts FOR EACH ROW WHEN (current_user = 'pipeshub_restore') EXECUTE FUNCTION kg.count_restored();

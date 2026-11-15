@@ -26,6 +26,8 @@ def downgrade():
     op.execute("DELETE FROM kernel.trigger_exemptions WHERE proc = 'kg.count_change()'::regprocedure")
     op.execute("DROP FUNCTION kg.count_change()")
     op.execute("DROP FUNCTION kg.count_keys(kg.records[], bigint)")
+    op.execute("DROP TRIGGER kg_counts_restore ON kg.counts")
+    op.execute("DROP FUNCTION kg.count_restored()")
     names = ", ".join(f"'{n}'" for n in WRITERS)
     op.execute(f"""
 DO $$

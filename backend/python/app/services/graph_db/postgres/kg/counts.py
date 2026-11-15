@@ -7,7 +7,8 @@ keeps them few: :func:`fold` replaces a batch of deltas and the folded rows of t
 replace in one statement (one snapshot) and delete exactly the rows they read, so a delta committed meanwhile is kept, never lost or counted twice.
 
 Reading a count is off unless ``PG_KG_COUNTERS=1``: a listing then counts what the viewer's classes open from here instead of from the rows (:func:`class_rows`). A count
-sums only the classes the caller hands in, so it says nothing about rows the viewer may not read.
+sums only the classes the caller hands in, so it says nothing about rows the viewer may not read. The fold and the seed run whatever that switch says: the trigger adds
+deltas on every write, and unfolded they would grow without bound. A restore keeps no counter row and adds no delta (kg_0014), so the seed counts each connector whole again.
 """
 from __future__ import annotations
 
@@ -43,13 +44,13 @@ UNION ALL SELECT c.id, c.app_sk, c.facet, c.class_id, c.kind, c.folder, c.record
     AND c.app_sk = k.app_sk AND c.facet = 2 AND c.record_type IS NOT DISTINCT FROM k.record_type AND c.origin IS NOT DISTINCT FROM k.origin WHERE k.facet = 2"""
 UNSEEDED = """/* pipeshub:kg.counts_unseeded */ SELECT s.app_sk FROM kg.projection_state s WHERE s.org_id = $1 AND s.app_sk <> 0
     AND NOT EXISTS (SELECT 1 FROM kg.counts c WHERE c.org_id = s.org_id AND c.app_sk = s.app_sk AND c.facet = 0) ORDER BY s.app_sk LIMIT $2"""
-# What a connector's rows count now, beside the ids of every counter row of the connector that the same snapshot sees (the rows a seed replaces).
-RECOUNT = f"""/* pipeshub:kg.counts_recount */ WITH old AS (SELECT coalesce(array_agg(id), '{{}}') AS ids FROM kg.counts WHERE org_id = $1 AND app_sk = $2)
-SELECT old.ids, x.facet, x.class_id, x.kind, x.folder, x.record_type, x.origin, x.n FROM old LEFT JOIN (
-  SELECT 1::smallint AS facet, r.class_id, r.kind, r.folder, NULL::text AS record_type, NULL::text AS origin, count(*) AS n FROM kg.records r
+# What a connector's rows count now and, in one row of its own (facet NULL), the ids of every counter row of the connector that the same snapshot sees (the rows a seed replaces).
+RECOUNT = f"""/* pipeshub:kg.counts_recount */ SELECT coalesce(array_agg(c.id), '{{}}') AS ids, NULL::smallint AS facet, NULL::bigint AS class_id, NULL::smallint AS kind,
+    NULL::boolean AS folder, NULL::text AS record_type, NULL::text AS origin, NULL::bigint AS n FROM kg.counts c WHERE c.org_id = $1 AND c.app_sk = $2
+  UNION ALL SELECT NULL, 1::smallint, r.class_id, r.kind, r.folder, NULL, NULL, count(*) FROM kg.records r
     WHERE r.org_id = $1 AND r.app_sk = $2 AND {LIVE} AND {DECIDED} GROUP BY r.class_id, r.kind, r.folder
-  UNION ALL SELECT 2::smallint, NULL::bigint, NULL::smallint, NULL::boolean, r.record_type, r.origin, count(*) FROM kg.records r
-    WHERE r.org_id = $1 AND r.app_sk = $2 AND {FACET_ROWS} GROUP BY r.record_type, r.origin) x ON true"""
+  UNION ALL SELECT NULL, 2::smallint, NULL, NULL, NULL, r.record_type, r.origin, count(*) FROM kg.records r
+    WHERE r.org_id = $1 AND r.app_sk = $2 AND {FACET_ROWS} GROUP BY r.record_type, r.origin"""
 SEEDED = "/* pipeshub:kg.counts_seeded */ SELECT EXISTS (SELECT 1 FROM kg.counts WHERE org_id = $1 AND app_sk = $2 AND facet = 0)"
 CLASS_ROWS = """/* pipeshub:kg.counts_class_rows */ SELECT kind, folder, sum(n)::bigint AS n FROM kg.counts
     WHERE org_id = $1 AND app_sk = $2 AND facet = 1 AND class_id = ANY($3::bigint[]) GROUP BY kind, folder"""
@@ -95,8 +96,9 @@ async def seed(db: KernelDB, org: str, app_sk: int) -> bool:
         if not await _locked(tx, org):
             return False
         rows = await tx.fetch(RECOUNT, org, app_sk)
+        ids = next(r["ids"] for r in rows if r["facet"] is None)
         sums = {(app_sk, r["facet"], r["class_id"], r["kind"], r["folder"], r["record_type"], r["origin"]): r["n"] for r in rows if r["facet"] is not None}
-        await _replace(tx, list(rows[0]["ids"]), {(app_sk, 0, None, None, None, None, None): 0, **sums})
+        await _replace(tx, list(ids), {(app_sk, 0, None, None, None, None, None): 0, **sums})
         return True
     return await db.run(go, write=True)
 

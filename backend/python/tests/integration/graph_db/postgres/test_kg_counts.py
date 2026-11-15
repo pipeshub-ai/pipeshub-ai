@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 
+import asyncpg
 import pytest
 
 from app.services.graph_db.postgres import kh_listing
@@ -230,3 +232,33 @@ async def test_a_capped_listing_keeps_the_exact_class_count_and_its_counts_add_u
     assert len(seen) > 1 and len(set(seen)) == 1, seen                          # one total and one breakdown for the whole listing
     total, capped, counted, items = seen[0]
     assert total == counted == sum(n for _, n in items) == 16 and capped is True
+
+
+async def test_a_restore_keeps_no_counter_and_the_seed_counts_the_restored_rows(pg_db) -> None:
+    """A restore (db.restore_window) inserts an org's exported rows as the restore role, with the triggers on. Its kg.records rows add no delta and the exported counter
+    rows are not kept, so the connector carries no mark that it was counted whole: the worker's seed counts it again from the restored rows."""
+    p, src, dst = prov(pg_db), new_org(), new_org()
+    await world2(p, src)
+    await run(p, src, await everything2(p, src))
+    await counts.run(pg_db, src)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        tables = {t: [dict(r) for r in await con.fetch(f"SELECT * FROM kg.{t} WHERE org_id = $1", src)] for t in ("node_keys", "projection_state", "counts", "records")}
+        assert tables["counts"] and tables["records"]
+        await con.execute("INSERT INTO kernel.restore_window (org, until) VALUES ($1, now() + interval '1 hour')", dst)
+        try:
+            async with con.transaction():
+                await con.execute("SET LOCAL ROLE pipeshub_restore")
+                for t, rows in tables.items():
+                    cols = list(rows[0])
+                    await con.executemany(f"INSERT INTO kg.{t} ({', '.join(cols)}) VALUES ({', '.join(f'${i + 1}' for i in range(len(cols)))})",
+                                          [[dst if c == "org_id" else r[c] for c in cols] for r in rows])
+        finally:
+            await con.execute("DELETE FROM kernel.restore_window WHERE org = $1", dst)
+        assert await con.fetchval("SELECT count(*) FROM kg.counts WHERE org_id = $1", dst) == 0
+        assert await con.fetchval("SELECT count(*) FROM kg.records WHERE org_id = $1", dst) == len(tables["records"])
+    finally:
+        await con.close()
+    assert await counts.run(pg_db, dst)                                          # every restored connector is counted whole again
+    truth, held, unfolded = await state(p, dst)
+    assert truth and held == truth and unfolded == 0
