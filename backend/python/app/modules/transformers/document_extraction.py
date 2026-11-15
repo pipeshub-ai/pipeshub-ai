@@ -14,6 +14,7 @@ from app.agents.agent_loop.prompt_cache import (
     family_cache_strategy,
     forget_cache_params,
 )
+from app.config import file_types
 from app.config.constants.arangodb import DepartmentNames
 from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import Block, BlockGroup, BlocksContainer, SemanticMetadata
@@ -665,6 +666,8 @@ class DocumentExtraction(Transformer):
         DepartmentNames defaults. A code file takes the code prompt (or none, see
         ``_classify_code``), whichever path calls this.
         """
+        if not file_types.classifies(record_name):
+            return None  # indexed for search only (a .log/.cfg): no model call, on any path
         code = await self._classify_code(blocks, block_groups, record_type)
         if code is not _NOT_CODE:
             return code
@@ -857,6 +860,8 @@ class DocumentExtraction(Transformer):
         *,
         allow_remote_image_uri: bool,
     ) -> SemanticMetadata | None:
+        if not file_types.classifies(record_name):
+            return None  # indexed for search only (a .log/.cfg): no model call, on any path
         self.logger.info("🖼️ Processing blocks for semantic metadata extraction")
         code = await self._classify_code(blocks, block_groups, record_type)
         if code is not _NOT_CODE:

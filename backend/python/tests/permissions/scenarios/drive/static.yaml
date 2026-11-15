@@ -21,3 +21,21 @@
       henry: {minutes: admit, folder:Q4-Board: admit, plan: admit}
       lee: {folder:Q4-Board: deny}
   tags: [drive, "cell:drive/limited-folder"]
+- id: DRIVE-S-03
+  title: Link-only share; the notes are open to anyone with the link, so Fay, who has it, can open them in Drive
+  source: >
+    Drive Help, share files: "Anyone on the internet who has the link can open the file"
+    (https://support.google.com/drive/answer/2494822); Drive API, permissions: allowFileDiscovery is "Whether the
+    permission allows the file to be discovered through search"
+    (https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions)
+  rule: union
+  comment: >
+    A link-only share (allowFileDiscovery false) is stored as nothing (google/drive/team/connector.py:1393-1394), so
+    the world holds no grant for it: an "anyone" or domain permission names no one, so who holds the link is unknown.
+  world: golden/drive_q4
+  expect:
+    verdicts:
+      fay: {notes: admit}
+      mo: {notes: deny}
+    source_delta: DELTA-02
+  tags: [drive, "cell:drive/link-only"]

@@ -14,6 +14,9 @@ class FakeSyncPoints:
         # land a request in exactly that window.
         self.before_cas = None
 
+    async def get_all_orgs(self, **_) -> list[dict]:
+        return [{"_key": o} for o in sorted({p["orgId"] for p in self.points.values() if p.get("orgId")})]
+
     async def get_nodes_by_filters(self, collection, filters, return_fields=None,
                                    transaction=None, *, raise_on_error=False) -> list[dict]:
         assert collection == CollectionNames.SYNC_POINTS.value

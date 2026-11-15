@@ -48,13 +48,15 @@ HUB_FILTERS = {
     "record_group_ids": ["g1"],
 }
 
-# start_id, start_type, flatten
+# start_id, start_type, flatten, the view's own filters
 HUB_VIEWS = {
-    "all records": (None, "app", True),
-    "app children": (None, "app", False),
-    "group children": ("g1", "recordGroup", False),
-    "folder children": ("f1", "folder", False),
-    "below a folder": ("f1", "folder", True),
+    "all records": (None, "app", True, None),
+    "app children": (None, "app", False, None),
+    "group children": ("g1", "recordGroup", False, None),
+    "folder children": ("f1", "folder", False, None),
+    "below a folder": ("f1", "folder", True, None),
+    # the sidebar of a folder whose record can have an arrow: its arrow is read apart (`sidebar_rows`)
+    "folder sidebar": ("f1", "folder", False, {"only_containers": True}),
 }
 
 
@@ -95,6 +97,7 @@ class _Hub:
             "check:targets": [target],
             "check:seeds": [{"node": "p1", "seed": "s2"}],
             "slim": [["records/r1", "record", "a"]],
+            "sidebar_rows": [["records/r1", True, False]],
             "connector": ["app1"],
             "name_matches": ["records/r1"],
             "own_groups": ["recordGroups/g1"],
@@ -112,6 +115,8 @@ class _Hub:
         if name is None:
             name = "slim" if "kh_handles" in query else "connector"
         self.sent.add(name)
+        if name == "slim" and "kh_side" in query:
+            return [["records/r1", "record", "a", False, True]]      # a browse sidebar's record that can have an arrow
         if name in self._levels:
             frontier = bind_vars.get("kh_frontier") or bind_vars.get("kh_front") or []
             found = [h for h in self._levels[name] if h not in frontier]
@@ -135,12 +140,12 @@ def _arango_hub(*, opens: bool, from_app: bool) -> tuple[ArangoHTTPProvider, _Hu
 @pytest.mark.parametrize("filtered", [False, True])
 async def test_all_records_sends_exactly_the_binds_it_declares(view, opens, from_app, filtered) -> None:
     provider, hub = _arango_hub(opens=opens, from_app=from_app)
-    start_id, start_type, flatten = HUB_VIEWS[view]
+    start_id, start_type, flatten, own = HUB_VIEWS[view]
 
     page = await provider.get_knowledge_hub_connector_page_v3(
         "app1", "org1", ["uk1", "org1"], ["app1"], ["s1", "g1"], 10,
         flatten=flatten, sort_field="updatedAt", sort_dir="DESC",
-        filters=HUB_FILTERS if filtered else None, start_id=start_id, start_type=start_type,
+        filters={**(HUB_FILTERS if filtered else {}), **(own or {})} or None, start_id=start_id, start_type=start_type,
         include_scope=True,
     )
 
@@ -155,10 +160,10 @@ async def test_all_records_sends_exactly_the_binds_it_declares(view, opens, from
 async def test_every_knowledge_hub_statement_is_reached_by_some_view() -> None:
     """Or a statement with a wrong bind would pass the test above unseen."""
     reached: set[str] = set()
-    for start_id, start_type, flatten in HUB_VIEWS.values():
+    for start_id, start_type, flatten, own in HUB_VIEWS.values():
         for opens in (False, True):
             for from_app in (False, True):
-                for filters in (None, {"search_query": "report"}):
+                for filters in (own, {"search_query": "report", **(own or {})}):
                     provider, hub = _arango_hub(opens=opens, from_app=from_app)
                     await provider.get_knowledge_hub_connector_page_v3(
                         "app1", "org1", ["uk1", "org1"], ["app1"], ["s1", "g1"], 10,

@@ -30,6 +30,7 @@ from app.services.graph_db.postgres.base import (
     _ekey,
     _j,
 )
+from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.records import _TYPE_COLLS
 from app.services.graph_db.taxonomy import RECORD_ENRICHMENT_EDGE_COLLECTIONS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -327,9 +328,10 @@ class HierarchyMixin(PgBase):
             return {}
         safe = max(1, min(int(max_depth), 10))
         rec_depth = max(1, safe - 1)
-        try:
+
+        async def walk(tx: Tx) -> dict[str, int]:
             if parent_type == "app":
-                rows = await self._rows("""/* pipeshub:graph.get_node_depths_batch_app */ WITH RECURSIVE w(id, lvl) AS (
+                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_app */ WITH RECURSIVE w(id, lvl) AS (
                       SELECT s.id, 1 FROM (SELECT b.from_id AS id FROM graph.nodes g JOIN graph.edges b ON b.org_id = g.org_id AND b.coll = 'belongsTo'
                           AND b.to_coll = 'recordGroups' AND b.to_id = g.id AND b.from_coll = 'records'
                         WHERE g.org_id = $1 AND g.coll = 'recordGroups' AND g.doc->>'connectorId' = $2 AND NOT coalesce((g.doc->>'isDeleted')::boolean, false)
@@ -340,7 +342,7 @@ class HierarchyMixin(PgBase):
                       WHERE w.lvl <= $4)
                     SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) GROUP BY id""", org, parent_id, list(node_ids), rec_depth)
             elif parent_type == "recordGroup":
-                rows = await self._rows("""/* pipeshub:graph.get_node_depths_batch_group */ WITH RECURSIVE w(id, lvl) AS (
+                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_group */ WITH RECURSIVE w(id, lvl) AS (
                       SELECT b.from_id, 1 FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.to_coll = 'recordGroups' AND b.to_id = $2
                         AND b.from_coll = 'records'
                       UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
@@ -348,12 +350,17 @@ class HierarchyMixin(PgBase):
                       WHERE w.lvl <= $4)
                     SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) GROUP BY id""", org, parent_id, list(node_ids), rec_depth)
             else:
-                rows = await self._rows("""/* pipeshub:graph.get_node_depths_batch_record */ WITH RECURSIVE w(id, lvl) AS (SELECT $2::text, 0
+                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_record */ WITH RECURSIVE w(id, lvl) AS (SELECT $2::text, 0
                       UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
                           AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records' AND e.from_id = w.id AND e.to_coll = 'records') nx ON true
                       WHERE w.lvl < $4)
                     SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) AND lvl >= 1 GROUP BY id""", org, parent_id, list(node_ids), safe)
             return {r["id"]: int(r["lvl"]) for r in rows}
+        got = await kg_hier.answer(self, "depths", None, lambda tx: kg_hier.depths(tx, org, parent_id, parent_type, list(node_ids), safe, rec_depth), walk=walk)
+        if got is not None:
+            return got
+        try:
+            return await self._q(walk, None)
         except Exception as e:
             self.logger.error("get_node_depths_batch failed: %s", e)
             return {}
@@ -543,20 +550,24 @@ class HierarchyMixin(PgBase):
             return {}
 
     async def is_record_descendant_of(self, record_id: str, ancestor_id: str, transaction: str | None = None) -> bool:
-        """Whether the record lies below the ancestor over PARENT_CHILD edges between records (one hop or more; a record is not its own descendant unless a cycle says so)."""
+        """Whether the record lies below the ancestor over PARENT_CHILD edges between records (one hop or more; a record is not its own descendant unless a cycle says so).
+        Read from kg's PARENT_CHILD links for a connector it serves (``kg.hierarchy.pc_ancestor``), else walked."""
         org = current_org_id()
-        try:
-            return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.is_record_descendant_of */ WITH RECURSIVE up(id) AS (
+
+        async def walk(tx: Tx) -> bool:
+            return bool(await tx.fetchval("""/* pipeshub:graph.is_record_descendant_of */ WITH RECURSIVE up(id) AS (
                   SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id = $2 AND e.to_coll = 'records' AND e.from_coll = 'records'
                     AND e.doc->>'relationshipType' = 'PARENT_CHILD'
                   UNION
                   SELECT e.from_id FROM up JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id = up.id AND e.to_coll = 'records' AND e.from_coll = 'records'
                     AND e.doc->>'relationshipType' = 'PARENT_CHILD')
-                SELECT EXISTS (SELECT 1 FROM up WHERE up.id = $3)""", org, record_id, ancestor_id), transaction))
+                SELECT EXISTS (SELECT 1 FROM up WHERE up.id = $3)""", org, record_id, ancestor_id))
+        try:
+            got = await kg_hier.answer(self, "pc_ancestor", transaction, lambda tx: kg_hier.pc_ancestor(tx, org, record_id, ancestor_id), walk=walk)
+            return got if got is not None else await self._q(walk, transaction)
         except Exception:
             self.logger.exception("Is record descendant check failed")
             return False
-
 
 # ---- the knowledge hub's root listing, parent and trail --------------------------------------------------------------------------
 _KH_SORT_FIELDS = ("name", "createdAt", "updatedAt", "nodeType", "origin", "connector", "sizeInBytes")
@@ -579,6 +590,9 @@ def _kh_order(a: dict, b: dict, *, ascending: bool) -> int:
     return (a["id"] > b["id"]) - (a["id"] < b["id"])
 
 
+_COLL_OF_CODE = {1: "apps", 2: "recordGroups", 3: "records"}
+
+
 class HubMixin(PgBase):
     async def get_knowledge_hub_filter_options(self, user_key: str, org_id: str, transaction: str | None = None) -> dict[str, list[dict[str, Any]]]:
         """The connector apps the user passes the gate for (a collection is not one), by name. An unreadable gate lists none."""
@@ -591,43 +605,64 @@ class HubMixin(PgBase):
         rows = [{"id": a.get("_key") or a.get("id"), "name": a.get("name"), "type": a.get("type")} for a in apps if (a.get("type") or "") != "KB" and (a.get("_key") or a.get("id"))]
         return {"apps": sorted(rows, key=lambda a: (a.get("name") or "").lower())}
 
-    async def _hub_step(self, tx: Tx, org: str, node_id: str) -> dict | None:
-        """One node of the hub (a record, else a group, else an app) with its parent in the trail: a record's hierarchy parent, else the group
-        it belongs to, else the app (a collection's folders); a group's group, else its app."""
-        n = await tx.fetchrow("""/* pipeshub:graph.hub_node */ SELECT n.coll, n.doc, (SELECT f.doc->>'isFile' FROM graph.edges t JOIN graph.nodes f ON f.org_id = t.org_id
-              AND f.coll = 'files' AND f.id = t.to_id WHERE t.org_id = $1 AND t.coll = 'isOfType' AND t.from_coll = 'records' AND t.from_id = n.id LIMIT 1) AS is_file
-            FROM graph.nodes n WHERE n.org_id = $1 AND n.id = $2 AND n.coll IN ('records', 'recordGroups', 'apps')
-            ORDER BY CASE n.coll WHEN 'records' THEN 0 WHEN 'recordGroups' THEN 1 ELSE 2 END LIMIT 1""", org, node_id)
-        if not n:
-            return None
-        d, coll = _doc(n["doc"]), n["coll"]
-        parent = await tx.fetchval("""/* pipeshub:graph.hub_parent */ SELECT pid FROM (
-              SELECT 1 AS pri, e.from_id AS pid FROM graph.edges e WHERE $2 = 'records' AND e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = $3
-                AND e.from_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
-              UNION ALL SELECT 2, b.to_id FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3 AND b.to_coll = 'recordGroups'
-              UNION ALL SELECT 3, b.to_id FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3 AND b.to_coll = 'apps') p
-            ORDER BY pri, pid LIMIT 1""", org, coll, node_id)
-        kind = ("folder" if n["is_file"] == "false" else "record") if coll == "records" else "recordGroup" if coll == "recordGroups" else "app"
-        sub = d.get("recordType") if coll == "records" else (("COLLECTION" if d.get("connectorName") == "KB" else d.get("groupType") or d.get("connectorName")) if coll == "recordGroups" else d.get("type"))
-        return {"id": d.get("id"), "name": d.get("recordName") or d.get("groupName") or d.get("name"), "nodeType": kind, "subType": sub, "parentId": parent}
+    async def _hub_nodes(self, tx: Tx, org: str, ids: list[str]) -> dict[str, dict]:
+        """The hub's node of each id (a record, else a group, else an app), shaped as a step of the trail, with its collection."""
+        out: dict[str, dict] = {}
+        for n in await tx.fetch(kg_hier.HUB_NODES, org, ids):
+            d, coll = _doc(n["doc"]), n["coll"]
+            kind = ("folder" if n["is_file"] == "false" else "record") if coll == "records" else "recordGroup" if coll == "recordGroups" else "app"
+            sub = d.get("recordType") if coll == "records" else (("COLLECTION" if d.get("connectorName") == "KB" else d.get("groupType") or d.get("connectorName")) if coll == "recordGroups" else d.get("type"))
+            out[n["key"]] = {"coll": coll, "id": d.get("id"), "name": d.get("recordName") or d.get("groupName") or d.get("name"), "nodeType": kind, "subType": sub}
+        return out
+
+    async def _hub_trail(self, tx: Tx, org: str, node_id: str) -> list[dict[str, Any]]:
+        """The trail from the node up to its root, every step's parent in the trail: a record's hierarchy parent, else the group it belongs to, else the app (a
+        collection's folders); a group's group, else its app. It stops at a node with no name, and before a node it has passed."""
+        trail: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        cur: str | None = node_id
+        while cur and cur not in seen:
+            seen.add(cur)
+            info = (await self._hub_nodes(tx, org, [cur])).get(cur)
+            if not info or not info["id"] or not info["name"]:
+                break
+            trail.append({k: info[k] for k in ("id", "name", "nodeType", "subType")})
+            cur = await tx.fetchval("""/* pipeshub:graph.hub_parent */ SELECT pid FROM (
+                  SELECT 1 AS pri, e.from_id AS pid FROM graph.edges e WHERE $2 = 'records' AND e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = $3
+                    AND e.from_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
+                  UNION ALL SELECT 2, b.to_id FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3 AND b.to_coll = 'recordGroups'
+                  UNION ALL SELECT 3, b.to_id FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3 AND b.to_coll = 'apps') p
+                ORDER BY pri, pid LIMIT 1""", org, info["coll"], cur)
+        return trail
+
+    async def _hub_trail_kg(self, tx: Tx, org: str, node_id: str) -> list[dict[str, Any]]:
+        """:meth:`_hub_trail` with the steps chosen in kg (``kg.hierarchy.trail``) and their documents read in one statement, as the walk reads each."""
+        trail: list[dict[str, Any]] = []
+        steps = await kg_hier.trail(tx, org, node_id)
+        nodes = await self._hub_nodes(tx, org, [nid for _, nid in steps])
+        for coll, nid in steps:
+            info = nodes.get(nid)
+            if info is not None and info["coll"] != _COLL_OF_CODE[coll]:
+                raise kg_hier.Fallback("coll")          # the id names a node of another collection too, which the walk would step to
+            if not info or not info["id"] or not info["name"]:
+                break
+            trail.append({k: info[k] for k in ("id", "name", "nodeType", "subType")})
+        return trail
+
+    async def _kh_trail(self, org: str, node_id: str, transaction: str | None) -> list[dict[str, Any]]:
+        """The node's trail before any access check: from kg for a connector it serves, else walked."""
+        trail = await kg_hier.answer(self, "breadcrumbs", transaction, lambda tx: self._hub_trail_kg(tx, org, node_id),
+                                     walk=lambda tx: self._hub_trail(tx, org, node_id))
+        return trail if trail is not None else await self._q(lambda tx: self._hub_trail(tx, org, node_id), transaction)
 
     async def get_knowledge_hub_breadcrumbs(self, node_id: str, user_key: str, org_id: str, transaction: str | None = None) -> list[dict[str, Any]]:
         """The trail from the root to the node, without the ancestors the user cannot see (skipped, not cut off); empty when the node itself is not
-        visible or any read fails."""
+        visible or any read fails. The trail is read from kg for a connector it serves (``kg.hierarchy.trail``), else walked."""
         org = current_org_id()
         if org_id != org:
             return []
         try:
-            trail: list[dict[str, Any]] = []
-            seen: set[str] = set()
-            cur: str | None = node_id
-            while cur and cur not in seen:
-                seen.add(cur)
-                info = await self._q(lambda tx, c=cur: self._hub_step(tx, org, c), transaction)
-                if not info or not info["id"] or not info["name"]:
-                    break
-                trail.append({"id": info["id"], "name": info["name"], "nodeType": info["nodeType"], "subType": info["subType"]})
-                cur = info["parentId"]
+            trail = await self._kh_trail(org, node_id, transaction)
             if not trail:
                 return []
             visible = (await self.check_access(user_key, org_id, node_ids=[s["id"] for s in trail], transaction=transaction)).node_ids

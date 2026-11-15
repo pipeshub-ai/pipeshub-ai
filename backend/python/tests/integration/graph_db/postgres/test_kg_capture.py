@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import pytest
 
+from app.services.graph_db.postgres.kg.model import CODE_EPOCH
+
 from .pg_support import new_org
 from .test_kg_derivation import ctx, edge, prov
 
@@ -29,7 +31,7 @@ async def log(p, org: str) -> list[tuple[str, list[str]]]:
 
 async def clear(p, org: str) -> None:
     async def go(tx) -> None:
-        await tx.execute("/* pipeshub:test.clear_log */ SELECT kg.w_changes_delete(ARRAY(SELECT id FROM kg.graph_changes WHERE org_id = $1))", org)
+        await tx.execute("/* pipeshub:test.clear_log */ SELECT kg.w_changes_delete(ARRAY(SELECT id FROM kg.graph_changes WHERE org_id = $1), $2)", org, CODE_EPOCH)
     with ctx(org):
         await p._q(go, None, write=True)
 

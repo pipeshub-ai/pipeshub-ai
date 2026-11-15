@@ -39,12 +39,15 @@ from app.services.graph_db.postgres.base import (
     _node,
 )
 from app.services.graph_db.postgres.hierarchy import _EDGE_COLLS, _remove_records
+from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.records import _rec, _uniq, _vis
 from app.services.graph_db.postgres.trash import _sweep_edges
 from app.services.graph_db.vector_membership_queries import PAGE_RECORD_FIELDS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from app.core.db import Tx
 
 
@@ -475,13 +478,22 @@ class LookupsMixin(PgBase):
         by_id = {r["id"]: r for r in rows}
         return [_typed(by_id[i]["rec"], by_id[i]["typ"]) for i in ids if i in by_id]
 
-    async def _page_ids(self, sql: str, args: tuple, user_key: str | None, org_id: str, limit: int | None, offset: int, transaction: str | None) -> list[str]:
+    async def _page_ids(self, sql: str, args: tuple, user_key: str | None, org_id: str, limit: int | None, offset: int, transaction: str | None,
+                        kg: tuple[str, Callable[[Tx, int, int | None], Awaitable[list[str]]]] | None = None) -> list[str]:
         """``sql`` (a literal ending in ``OFFSET $n LIMIT $m``) selects the candidate ids in id order; without a user the page is cut in SQL, with one the
-        whole candidate list is read, the user's access applied, then the page cut."""
+        whole candidate list is read, the user's access applied, then the page cut. ``kg``: (what, read) the same ids from the typed graph, the walk's when it does not answer."""
+        async def walk(tx: Tx, off: int, lim: int | None) -> list[str]:
+            return [r["id"] for r in await tx.fetch(sql, *args, off, lim)]
+
+        async def ids_at(off: int, lim: int | None) -> list[str]:
+            if kg is not None:
+                got = await kg_hier.answer(self, kg[0], transaction, lambda tx: kg[1](tx, off, lim), walk=lambda tx: walk(tx, off, lim))
+                if got is not None:
+                    return got
+            return [r["id"] for r in await self._lrows(sql, *args, off, lim, transaction=transaction)]
         if not user_key:
-            rows = await self._lrows(sql, *args, offset if limit is not None else 0, limit, transaction=transaction)
-            return [r["id"] for r in rows]
-        ids = [r["id"] for r in await self._lrows(sql, *args, 0, None, transaction=transaction)]
+            return await ids_at(offset if limit is not None else 0, limit)
+        ids = await ids_at(0, None)
         allowed = await self._permitted(user_key, org_id, ids, transaction)
         ids = [i for i in ids if i in allowed]
         return ids[offset:offset + limit] if limit is not None else ids
@@ -500,8 +512,11 @@ class LookupsMixin(PgBase):
                   WHERE w.d < $3)
                 SELECT DISTINCT r.id FROM w JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = w.id
                 WHERE r.doc->>'connectorId' = $4 AND (r.doc->>'orgId' = $5 OR r.doc->>'orgId' IS NULL) AND coalesce((r.doc->>'isDeleted')::boolean, false) = false AND ($6::text[] IS NULL OR r.doc->>'indexingStatus' = ANY($6::text[])) AND ($7::text[] IS NULL OR NOT coalesce(r.doc->>'indexingStatus', '') = ANY($7::text[])) AND ($8::text IS NULL OR r.id > $8) ORDER BY r.id OFFSET $9 LIMIT $10"""
-            ids = await self._page_ids(sql, (org, parent_record_id, 100 if depth == -1 else depth, connector_id, org_id, status_filters or None, exclude_statuses or None, after_key), user_key, org_id,
-                                       limit, offset, transaction)
+            bound = 100 if depth == -1 else depth
+            ids = await self._page_ids(sql, (org, parent_record_id, bound, connector_id, org_id, status_filters or None, exclude_statuses or None, after_key), user_key, org_id,
+                                       limit, offset, transaction,
+                                       kg=("by_parent", lambda tx, off, lim: kg_hier.below(tx, org, parent_record_id, connector_id, org_id, bound, status_filters or None,
+                                                                                           exclude_statuses or None, after_key, off, lim)))
             return await self._records_page(ids, transaction)
         except PermissionVerificationUnavailableError:
             raise
@@ -517,12 +532,20 @@ class LookupsMixin(PgBase):
         try:
             if depth < -1:
                 raise ValueError(f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}")
-            groups = [r["id"] for r in await self._lrows("""/* pipeshub:graph.record_group_nested */ WITH RECURSIVE nest(id, d) AS (
+            bound = 100 if depth == -1 else depth
+            nest_sql = """/* pipeshub:graph.record_group_nested */ WITH RECURSIVE nest(id, d) AS (
                   SELECT g.id, 0 FROM graph.nodes g WHERE g.org_id = $1 AND g.coll = 'recordGroups' AND g.id = $2 AND g.doc->>'orgId' = $3
                   UNION SELECT c.id, nest.d + 1 FROM nest JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.to_coll = 'recordGroups' AND e.to_id = nest.id
                     AND e.from_coll = 'recordGroups' JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'recordGroups' AND c.id = e.from_id
                     AND (c.doc->>'orgId' = $3 OR c.doc->>'orgId' IS NULL) WHERE nest.d < $4)
-                SELECT DISTINCT id FROM nest""", org, record_group_id, org_id, 100 if depth == -1 else depth, transaction=transaction)]
+                SELECT DISTINCT id FROM nest"""
+
+            async def walk_nest(tx: Tx) -> list[str]:
+                return sorted(r["id"] for r in await tx.fetch(nest_sql, org, record_group_id, org_id, bound))
+            nested = await kg_hier.answer(self, "by_group_nest", transaction, lambda tx: kg_hier.nested_groups(tx, org, record_group_id, connector_id, org_id, bound),
+                                          walk=walk_nest, shape=lambda got: sorted(i for _, i in got))
+            sk_of = {i: sk for sk, i in nested or []}
+            groups = [i for _, i in nested] if nested is not None else [r["id"] for r in await self._lrows(nest_sql, org, record_group_id, org_id, bound, transaction=transaction)]
             if groups and user_key:
                 allowed = await self._permitted(user_key, org_id, groups, transaction)
                 groups = [g for g in groups if g in allowed]
@@ -544,7 +567,10 @@ class LookupsMixin(PgBase):
                   SELECT e.to_id, reach.d + 1 FROM reach JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = 'records' AND e.from_id = reach.id
                     AND e.to_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.to_id IN (SELECT id FROM cand) WHERE reach.d < 100)
                 SELECT DISTINCT id FROM reach ORDER BY id OFFSET $8 LIMIT $9"""
-            ids = await self._page_ids(sql, (org, groups, connector_id, org_id, status_filters or None, exclude_statuses or None, after_key), user_key, org_id, limit, offset, transaction)
+            kg = ("by_group", lambda tx, off, lim: kg_hier.group_records(tx, org, [sk_of[g] for g in groups], connector_id, org_id, status_filters or None, exclude_statuses or None,
+                                                                    after_key, off, lim)) if nested is not None else None
+            ids = await self._page_ids(sql, (org, groups, connector_id, org_id, status_filters or None, exclude_statuses or None, after_key), user_key, org_id, limit, offset, transaction,
+                                       kg=kg)
             return await self._records_page(ids, transaction)
         except PermissionVerificationUnavailableError:
             raise

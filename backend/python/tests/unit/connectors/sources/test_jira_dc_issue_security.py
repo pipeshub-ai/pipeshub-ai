@@ -74,7 +74,7 @@ class TestStoredGrantsKept:
 
         await connector._process_new_records([(record, [])], "P", {"new_count": 0, "updated_count": 0})
 
-        connector.data_entities_processor.on_record_content_update.assert_awaited_once_with(record)
+        connector.data_entities_processor.on_record_content_update.assert_awaited_once_with(record, content_changed=False)
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.parametrize(

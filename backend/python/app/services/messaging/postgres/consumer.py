@@ -479,7 +479,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                     return False, True, None, "unparseable message"
                 parsed.is_final_failure = final
                 # A hand-back is a nack of the same row, so the row names the event across its retries.
-                stamp_delivery_id(parsed.payload, f"{d.topic}:{d.message_id}")
+                stamp_delivery_id(parsed.payload, f"{d.topic}:{d.message_id}", parsed.org_ctx)
                 await self._drive_indexing(parsed, f"message:{d.message_id}")
                 return True, False, parsed, ""
             try:

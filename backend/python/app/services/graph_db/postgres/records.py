@@ -241,6 +241,21 @@ class RecordsMixin(PgBase):
             AND ($3::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($3::int = 2))""", org, wanted, _vis(visibility)), transaction)
         return {r["v"] for r in rows}
 
+    async def get_virtual_record_holders(self, virtual_record_ids: list[str], org_id: str, transaction: str | None = None) -> dict[str, list[dict]]:
+        """Every record of the org holding each virtual record id, trashed ones included; another org's id reads as nobody. A failure raises."""
+        org = current_org_id()
+        wanted = _uniq(virtual_record_ids)
+        if not wanted or org_id != org:
+            return {}
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_virtual_record_holders */ SELECT n.doc->>'virtualRecordId' AS v, jsonb_build_object('id', n.id,
+              'connectorId', n.doc->'connectorId', 'connectorName', n.doc->'connectorName', 'recordGroupId', n.doc->'recordGroupId', 'recordName', n.doc->'recordName',
+              'webUrl', n.doc->'webUrl', 'contentRev', n.doc->'contentRev', 'isDeleted', coalesce(n.doc->'isDeleted' = 'true'::jsonb, false)) AS h
+            FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'virtualRecordId' = ANY($2::text[]) ORDER BY n.id""", org, wanted), transaction)
+        holders: dict[str, list[dict]] = {}
+        for r in rows:
+            holders.setdefault(r["v"], []).append(_doc(r["h"]))
+        return holders
+
     # ---- writes ------------------------------------------------------------------------------------------------
     async def batch_upsert_records(self, records: list, transaction: str | None = None, *, release_trashed_external_ids: bool = False) -> None:
         """Each record's base document, type document and ``isOfType`` edge, set-based per record type, in one transaction.
