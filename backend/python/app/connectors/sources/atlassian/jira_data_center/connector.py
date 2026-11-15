@@ -4787,7 +4787,7 @@ class JiraDataCenterConnector(BaseConnector):
         due, just_held = await absent_accounts_due(
             self.issues_sync_point, {u.source_user_id for u in absent}, len(self._stored_app_users),
             get_epoch_timestamp_in_ms(),
-        ) if absent else (True, False)
+        ) if self._directory_read_complete() else (True, False)
         if not due:
             gone = [u for u in gone if u not in absent]
             self.logger.warning(
