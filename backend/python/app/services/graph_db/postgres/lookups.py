@@ -770,6 +770,7 @@ class LookupsMixin(PgBase):
     async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
         # The org's links only: a storage document belongs to one org (the storage service reads it by org and id, and the push asks it in the
         # caller's org first), and a record of another org naming its id is not a link the platform wrote to it.
+        current_org_id()      # no org or a system context is an error, not the jobs role's refusal
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.ref_links */ SELECT doc_id, kind, node_id, origin, connector_name, connector_id
             FROM graph.ref_links($1::text[], $2, $3, $4)""", doc_ids, OriginTypes.UPLOAD.value, Connectors.KNOWLEDGE_BASE.value, REF_LINKS_PER_DOC), None)
         return [{"docId": r["doc_id"], "recordId": r["node_id"], "kind": r["kind"], "origin": r["origin"],
