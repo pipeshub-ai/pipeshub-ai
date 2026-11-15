@@ -45,7 +45,7 @@ NODE_ONLY = ("/services/smtp", "/services/slackBot", "/services/auth/", "/servic
 _META = "re:^/services/connectors/[^/]+/metadataSchemas/"
 READS = {
     "kv": {
-        "/services/aiModels": ("app/embedding_main.py:1178", "AI_MODELS"),         # also utils/llm.py:267 (docling, parsing), extraction/client.py:153
+        "/services/aiModels": ("app/embedding_main.py:1177", "AI_MODELS"),         # also utils/llm.py:267 (docling, parsing), extraction/client.py:153
         "/services/secretKeys": ("app/api/middlewares/auth.py:206", "SECRET_KEYS"),  # parsing and extraction routes; policy_store.py:75 (pseudonyms)
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py:64", "AI_GATEWAY_IDENTITY_POLICY"),  # parsing.py:276, extraction.py:116
         "/services/metricsCollection": ("app/telemetry/pusher.py:29", "/services/metricsCollection"),  # embedding, docling (pusher bound at start)
@@ -58,7 +58,7 @@ READS = {
         "/services/platform/artifactRollout/membership/*": ("app/services/messaging/membership.py:35", "/services/platform/artifactRollout/membership/"),
         "/services/entityCleanup/*": ("app/connectors/services/entity_cleanup_intents.py:21", "/services/entityCleanup/"),  # entity_index_rebuild.py:40
         "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py:53", "/migrations/class_units_backfill/"),
-        "/services/secretKeys": ("app/core/envelope.py:322", "SECRET_KEYS"),
+        "/services/secretKeys": ("app/core/envelope.py:330", "SECRET_KEYS"),
         "/services/endpoints": ("app/modules/transformers/blob_storage.py:954", "ENDPOINTS"),
         "/services/storage": ("app/modules/transformers/blob_storage.py:963", "STORAGE"),
         "/services/arangodb": ("app/health/health.py:267", "ARANGODB"),
