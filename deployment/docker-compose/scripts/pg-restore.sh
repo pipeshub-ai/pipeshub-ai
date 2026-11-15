@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Restores the PostgreSQL profile's database from the pgBackRest repository of docker-compose.postgres-backup.yml.
+#
+#   scripts/pg-restore.sh <time|latest> [--into <volume>]   restore into a NEW volume and start it as a separate server (the default)
+#   scripts/pg-restore.sh <time|latest> --in-place          restore over the stack's own data volume (the stack must be stopped)
+#
+# <time> is a PostgreSQL timestamp with a time zone, for example "2026-11-15 09:30:00+00": the restore keeps every transaction committed
+# up to it and nothing after (recovery_target_time, https://www.postgresql.org/docs/17/runtime-config-wal.html 19.5.6). `latest` replays
+# every archived WAL segment. pgBackRest picks the backup that can reach the time (https://pgbackrest.org/user-guide.html, "Point-in-Time
+# Recovery"). Run it from deployment/docker-compose with the compose files, project and profiles of the stack, given as COMPOSE_FILE,
+# COMPOSE_PROJECT_NAME and COMPOSE_PROFILES (environment or .env), for example
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.postgres-docstore.yml:docker-compose.postgres-backup.yml COMPOSE_PROJECT_NAME=pipeshub-ai \
+#   COMPOSE_PROFILES=postgres scripts/pg-restore.sh latest
+#
+# A new-volume restore leaves the stack untouched: the copy runs as container <volume>, does not archive (so it never writes to the
+# repository), and listens on its own socket; read it with `docker exec -it <volume> psql -h /tmp -U postgres -d pipeshub`. Remove it with
+# `docker rm -f <volume> && docker volume rm <volume>`. To put the stack itself back to that time, stop the stack and use --in-place.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+usage() { sed -n '4,5p' "$0" >&2; exit 2; }
+[ $# -ge 1 ] || usage
+target="$1"; shift
+into=""; in_place=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --into) [ $# -ge 2 ] || usage; into="$2"; shift 2 ;;
+    --in-place) in_place=1; shift ;;
+    *) usage ;;
+  esac
+done
+[ -n "$target" ] || usage
+[ "$in_place" = 1 ] && [ -n "$into" ] && { echo "pg-restore: --in-place and --into exclude each other" >&2; exit 2; }
+
+# read whole outputs first: with pipefail, a reader that stops early (grep -q, head) fails the pipeline when compose gets SIGPIPE
+config="$(docker compose config)"; services="$(docker compose config --services)"
+project="$(sed -n '1s/^name: //p' <<<"$config")"
+[ -n "$project" ] || { echo "pg-restore: could not read the compose project; set COMPOSE_FILE and COMPOSE_PROJECT_NAME" >&2; exit 2; }
+grep -qx pg-backup <<<"$services" \
+  || { echo "pg-restore: the pg-backup service is not in this stack; add docker-compose.postgres-backup.yml and the postgres profile" >&2; exit 2; }
+
+restore=(pgbackrest restore)
+if [ "$target" != latest ]; then restore+=(--type=time "--target=$target" --target-action=promote); fi
+if [ "$in_place" = 1 ]; then
+  volume="${project}_postgres_data"
+  # pgBackRest also refuses while the server runs (postmaster.pid); this stops earlier and says what to do
+  if [ -n "$(docker compose ps -q --status running postgres)" ]; then
+    echo "pg-restore: the postgres service is running; stop the stack first (docker compose stop)" >&2; exit 3
+  fi
+  # --delta keeps the files that already match the backup; archiving stays on, so the restored server continues the backup history
+  restore+=(--delta)
+else
+  volume="${into:-${project}_pg_restore_$(date -u +%Y%m%d%H%M%S)}"
+  if docker volume inspect "$volume" >/dev/null 2>&1; then
+    echo "pg-restore: volume $volume already exists; name a new one with --into" >&2; exit 3
+  fi
+  docker volume create "$volume" >/dev/null
+  # a copy must never archive into the repository it was restored from
+  restore+=(--archive-mode=off)
+fi
+
+start=$(date +%s)
+echo "pg-restore: restoring ${target} into volume ${volume}"
+# pg1-path through the environment, not the command line: pgBackRest copies command-line options into the restored restore_command, and
+# the server that replays the WAL has its data at another path (the stack's server at /var/lib/postgresql/data)
+docker compose run --rm --no-deps -T -v "$volume:/pgbackrest-restore" -e PGBACKREST_PG1_PATH=/pgbackrest-restore pg-backup "${restore[@]}"
+
+if [ "$in_place" = 1 ]; then
+  echo "pg-restore: restored in $(( $(date +%s) - start ))s. Start the stack (docker compose up -d); the server replays WAL to the target first."
+  exit 0
+fi
+
+# Recovery refuses to run with max_connections and four other sizes below the original server's (https://www.postgresql.org/docs/17/
+# hot-standby.html, 26.4.3), so the copy takes them from the restored control file.
+# shortcut: a size raised on the original after this backup stops recovery with a message naming it; restart the copy with it set.
+sizes=$(docker compose run --rm --no-deps -T -v "$volume:/pgbackrest-restore" --entrypoint pg_controldata pg-backup /pgbackrest-restore |
+  awk -F': *' '{ n = $1; sub(/ setting$/, "", n) }
+    n ~ /^max_(connections|worker_processes|wal_senders)$/ { print "-c " n "=" $2 }
+    n == "max_prepared_xacts" { print "-c max_prepared_transactions=" $2 }
+    n == "max_locks_per_xact" { print "-c max_locks_per_transaction=" $2 }')
+[ "$(echo "$sizes" | grep -c .)" = 5 ] || { echo "pg-restore: could not read the restored control file:" >&2; echo "$sizes" >&2; exit 1; }
+# The preload list of postgres/pg-entrypoint.sh (pg_textsearch must be preloaded), a socket of its own, no archiving.
+# shellcheck disable=SC2086 # $sizes is "-c name=value" words
+docker compose run -d --no-deps --name "$volume" -v "$volume:/pgbackrest-restore" \
+  -e PGDATA=/pgbackrest-restore -e PGBACKREST_PG1_PATH=/pgbackrest-restore --entrypoint docker-entrypoint.sh pg-backup \
+  postgres -c shared_preload_libraries=pg_stat_statements,auto_explain,pg_textsearch -c unix_socket_directories=/tmp \
+  -c archive_mode=off $sizes >/dev/null
+# Recovery is over once the server accepts writes (it promotes at the target). A target past the end of the archive stops the server.
+while :; do
+  if [ "$(docker inspect -f '{{.State.Running}}' "$volume")" != true ]; then
+    echo "pg-restore: the restored server stopped; its log:" >&2; docker logs --tail 30 "$volume" >&2; exit 1
+  fi
+  [ "$(docker exec "$volume" psql -h /tmp -U postgres -d pipeshub -tAc 'select pg_is_in_recovery()' 2>/dev/null)" = f ] && break
+  sleep 2
+done
+echo "pg-restore: restored and running in $(( $(date +%s) - start ))s: container ${volume}, volume ${volume}"
+echo "pg-restore: docker exec -it ${volume} psql -h /tmp -U postgres -d pipeshub"
