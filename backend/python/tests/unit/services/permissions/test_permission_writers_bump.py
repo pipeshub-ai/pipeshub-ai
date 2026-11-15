@@ -178,6 +178,8 @@ NO_BUMP = {
     "connectors/sources/salesforce/connector.py::write_permissions": "connector writer: the sync bumps for the orgs it narrowed",
     "migrations/nextcloud_user_app_edges_migration.py::migrate":
         "one-off startup repair of a connector's user edges; a scope cached before it expires with its entry TTL",
+    "migrations/nextcloud_user_app_edges_migration.py::migrate_org":
+        "one-off startup repair of a connector's user edges; a scope cached before it expires with its entry TTL",
     "modules/transformers/edge_reconciler.py::reconcile": "record enrichment edges (topics, entities), not permissions",
     "modules/transformers/graphdb.py::_reconcile_edges": "record enrichment edges (topics, entities), not permissions",
 }

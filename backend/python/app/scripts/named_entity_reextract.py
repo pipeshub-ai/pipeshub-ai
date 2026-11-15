@@ -155,6 +155,7 @@ async def reproject_allowed(config_service: Any) -> bool:  # noqa: ANN401 - Conf
 async def _main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     from app.containers.indexing import IndexingAppContainer
+    from app.core.org_context import for_org
     from app.modules.transformers.blob_storage import BlobStorage
 
     container = IndexingAppContainer.init("named_entity_reextract")
@@ -170,10 +171,12 @@ async def _main(argv: list[str]) -> int:
             sys.stderr.write(json.dumps({"error": EXTRACTION_OFF_MSG}) + "\n")
             return EXIT_FAILED
         blob_storage = BlobStorage(logger, container.config_service(), graph_provider)
-        tally = await queue_reextractions(
-            graph_provider, blob_storage, org_id=args.org, everything=args.all, apply=args.apply,
-            reproject=args.reproject, after_key=args.after_key, limit=args.limit,
-        )
+        # The org this run acts for: the graph runs every statement under one org (PostgreSQL refuses an unbound one).
+        with for_org(args.org, job="named_entity_reextract"):
+            tally = await queue_reextractions(
+                graph_provider, blob_storage, org_id=args.org, everything=args.all, apply=args.apply,
+                reproject=args.reproject, after_key=args.after_key, limit=args.limit,
+            )
         sys.stdout.write(json.dumps({"done": True, "applied": args.apply, **asdict(tally)}) + "\n")
         return 0
     except Exception as exc:

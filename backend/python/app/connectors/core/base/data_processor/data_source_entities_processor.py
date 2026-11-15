@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, Optional
 
+from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AccessRule,
@@ -2773,6 +2774,8 @@ class DataSourceEntitiesProcessor:
                 record.record_name, existing_record.id,
             )
             return _not_stored(record, SkipReason.OWNED_ELSEWHERE)
+        if existing_record is not None:
+            self._keep_the_stored_text_mime(record, existing_record)
         if record.is_placeholder:
             # Stubs are never published, so a stub left at the model's QUEUED
             # default (connector placeholder sweeps) would stay QUEUED forever.
@@ -2806,6 +2809,15 @@ class DataSourceEntitiesProcessor:
                     "Not storing %s (%s): %s", record.record_name, record.external_record_id, skip_reason
                 )
                 return _not_stored(record, SkipReason.NOT_CONTENT)
+        if existing_record is None:
+            # One rule for every connector: a client's stamp or a guessed text/plain must not put a
+            # new .log/.cfg on the old text path. A row stored under this id keeps its mime.
+            stored_mime = (
+                same_id.get("mimeType") if isinstance(same_id, dict) else getattr(same_id, "mime_type", None)
+            )
+            record.mime_type = file_types.mime_to_store(
+                record.mime_type, record.record_name, stored_mime, existing=same_id is not None
+            )
         restored_from_trash = reindex_restored = False
         if existing_record is not None and not is_live_record(existing_record):
             # A user's delete holds until the purge even though the source still
@@ -3379,6 +3391,8 @@ class DataSourceEntitiesProcessor:
         self,
         record: Record,
         permissions: list[Permission] | None = None,
+        *,
+        content_changed: bool = True,
     ) -> None:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         narrowed_connectors: set[str] = set()
@@ -3406,7 +3420,11 @@ class DataSourceEntitiesProcessor:
                     f"Skipping content update event for record {record.id} with AUTO_INDEX_OFF status"
                 )
             elif processed_record is not None:
-                should_publish = True
+                # A caller that says the content did not change (a write only to keep the stored grants) gets the
+                # event only when the save asked for indexing, as on_new_records does; a kept outcome would only
+                # repeat work. Callers that do not say keep publishing: several store the new revision through a
+                # metadata update first, so the save alone cannot tell their content changed.
+                should_publish = content_changed or _requests_index_event(processed_record)
 
         await self._publish_record_titles(title_changes.values())
         await self._publish_membership_sync(moved_virtual_record_ids)
@@ -3510,6 +3528,20 @@ class DataSourceEntitiesProcessor:
         return (
             getattr(new_record.record_type, "value", new_record.record_type) == RecordType.CODE_FILE.value
             and getattr(new_record, "file_path", None) != getattr(old_record, "file_path", None)
+        )
+
+    @staticmethod
+    def _keep_the_stored_text_mime(new_record: Record, old_record: Record) -> None:
+        """The mime to save for a file already stored (file_types.mime_to_store).
+
+        A .log/.cfg stored as text/plain keeps it and the text reader it had; one stored
+        under its own mime keeps that when its connector sends text/plain again.
+        """
+        new_record.mime_type = file_types.mime_to_store(
+            getattr(new_record, "mime_type", None),
+            getattr(new_record, "record_name", None),
+            getattr(old_record, "mime_type", None),
+            existing=True,
         )
 
     @staticmethod
@@ -3784,6 +3816,7 @@ class DataSourceEntitiesProcessor:
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
                     )
+                    self._keep_the_stored_text_mime(new_record, old_record)
                     needs_reindex = self._content_changed(
                         new_record, old_record
                     ) or self._code_path_changed(new_record, old_record)

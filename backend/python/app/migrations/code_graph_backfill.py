@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus, RecordTypes
 from app.connectors.services.reindex_events import build_reindex_event
+from app.core.org_jobs import for_each_org
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.version import PARSER_VERSION
 from app.utils.env_utils import env_bool
@@ -54,15 +55,15 @@ class StaleRepo(NamedTuple):
     current_blocks: int
 
 
-async def find_stale_repos(graph_provider: IGraphDBProvider) -> list[StaleRepo]:
-    """Repos with an indexed code file and no blocks, or blocks of another version."""
+async def find_stale_repos(graph_provider: IGraphDBProvider, org_id: str) -> list[StaleRepo]:
+    """The org's repos with an indexed code file and no blocks, or blocks of another version."""
     groups: dict[str, tuple[str, str, str]] = {}
     after: str | None = None
     while True:
         page = await graph_provider.get_documents_paginated(
             collection=CollectionNames.RECORDS.value, limit=_PAGE, sort_field="_key",
             after_key=after, raise_on_error=True,
-            filters={"recordType": RecordTypes.CODE_FILE.value,
+            filters={"orgId": org_id, "recordType": RecordTypes.CODE_FILE.value,
                      "indexingStatus": ProgressStatus.COMPLETED.value},
             return_fields=["_key", "orgId", "connectorId", "connectorName", "recordGroupId"],
         )
@@ -75,14 +76,14 @@ async def find_stale_repos(graph_provider: IGraphDBProvider) -> list[StaleRepo]:
         after = page[-1].get("_key")
 
     stale: list[StaleRepo] = []
-    for group, (org_id, connector_id, connector_name) in sorted(groups.items()):
-        scope = {"orgId": org_id, "recordGroupId": group}
+    for group, (group_org, connector_id, connector_name) in sorted(groups.items()):
+        scope = {"orgId": group_org, "recordGroupId": group}
         blocks = await graph_provider.count_nodes_by_filters(CollectionNames.BLOCKS.value, scope)
         current = await graph_provider.count_nodes_by_filters(
             CollectionNames.BLOCKS.value, {**scope, "parserVersion": PARSER_VERSION},
         )
         if blocks == 0 or current < blocks:
-            stale.append(StaleRepo(org_id, connector_id, connector_name, group, blocks, current))
+            stale.append(StaleRepo(group_org, connector_id, connector_name, group, blocks, current))
     return stale
 
 
@@ -114,27 +115,34 @@ async def run_code_graph_backfill(
     if isinstance(flag, dict) and flag.get("done") is True:
         return 0
 
-    stale = await find_stale_repos(graph_provider)
-    for i, repo in enumerate(stale):
-        connector = repo.connector_name.replace(" ", "").lower()
-        event = build_reindex_event(
-            event_type=f"{connector}.reindex", org_id=repo.org_id, connector_id=repo.connector_id,
-            connector_name=connector, record_group_id=repo.record_group_id, depth=-1,
-        )
-        await kafka_service.publish_event(event["topic"], {
-            "eventType": event["eventType"],
-            "timestamp": get_epoch_timestamp_in_ms(),
-            "payload": event["payload"],
-        })
-        logger.info("Code graph backfill: re-indexing %s (%d of %d blocks at %s)",
-                    repo.record_group_id, repo.current_blocks, repo.blocks, PARSER_VERSION)
-        if i + 1 < len(stale):
-            await asyncio.sleep(pause_seconds)
+    asked = 0
 
+    async def backfill_org(org_id: str) -> None:
+        nonlocal asked
+        for repo in await find_stale_repos(graph_provider, org_id):
+            if asked:
+                await asyncio.sleep(pause_seconds)
+            connector = repo.connector_name.replace(" ", "").lower()
+            event = build_reindex_event(
+                event_type=f"{connector}.reindex", org_id=repo.org_id, connector_id=repo.connector_id,
+                connector_name=connector, record_group_id=repo.record_group_id, depth=-1,
+            )
+            await kafka_service.publish_event(event["topic"], {
+                "eventType": event["eventType"],
+                "timestamp": get_epoch_timestamp_in_ms(),
+                "payload": event["payload"],
+            })
+            asked += 1
+            logger.info("Code graph backfill: re-indexing %s (%d of %d blocks at %s)",
+                        repo.record_group_id, repo.current_blocks, repo.blocks, PARSER_VERSION)
+
+    if await for_each_org(graph_provider, "code_graph_backfill", backfill_org, logger, raise_on_error=True):
+        logger.warning("Code graph backfill did not finish for every org; it will look again on the next start")
+        return asked
     try:
-        await config_service.set_config(flag_key, {"done": True, "repos": len(stale)})
+        await config_service.set_config(flag_key, {"done": True, "repos": asked})
     except Exception:
         logger.warning("Code graph backfill finished but its flag was not saved; "
                        "it will look again on the next start", exc_info=True)
-    logger.info("Code graph backfill for %s: %d repo(s) re-indexed", PARSER_VERSION, len(stale))
-    return len(stale)
+    logger.info("Code graph backfill for %s: %d repo(s) re-indexed", PARSER_VERSION, asked)
+    return asked

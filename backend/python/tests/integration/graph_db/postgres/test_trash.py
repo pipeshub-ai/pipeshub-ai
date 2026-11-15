@@ -135,6 +135,31 @@ async def test_the_trash_lists_one_row_per_batch_newest_first_and_counts_batches
     assert (await bound(pg_db).list_trashed_records("c1", p.org))["total"] == 0                                  # another org sees none of it
 
 
+async def test_the_trash_pages_by_keyset_through_tied_delete_times_and_its_count_stops_at_the_cap(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, f"k{i}") for i in range(7)], "records")
+    for i in range(7):
+        await trash(p, [f"k{i}"], f"bt{i}")
+    at = 1_790_000_000_000
+    await p.batch_update_nodes([{"id": f"k{i}", "deletedAtTimestamp": at if i < 3 else at - 1} for i in range(7)], "records")
+    whole = (await p.list_trashed_records("c1", p.org, limit=100))["items"]
+    keys = [(i["batchDeletedAt"], i["batchId"]) for i in whole]
+    assert keys == sorted(keys, reverse=True) and len(set(keys)) == 7 and keys[0] == (at, "bt2")
+
+    seen, after = [], None
+    while True:
+        page = await p.list_trashed_records("c1", p.org, limit=2, after=after)
+        seen += [i["record"]["id"] for i in page["items"]]
+        if len(page["items"]) < 2:
+            break
+        after = (page["items"][-1]["batchDeletedAt"], page["items"][-1]["batchId"])
+    assert seen == [i["record"]["id"] for i in whole]                                                            # no gap, no repeat at a tie
+    assert (await p.list_trashed_records("c1", p.org, after=(at - 1, "bt3")))["items"] == []
+    assert [i["record"]["id"] for i in (await p.list_trashed_records("c1", p.org, after=(at, "bt0"), skip=1, limit=1))["items"]] == ["k5"]
+    assert [(await p.list_trashed_records("c1", p.org, count_cap=cap))["total"] for cap in (0, 3, 6, 7, None)] == [1, 4, 7, 7, 7]
+    assert (await bound(pg_db).list_trashed_records("c1", p.org, after=(at + 1, "z")))["total"] == 0              # another org: none, cursor or not
+
+
 async def test_the_purge_takes_what_is_due_keeps_what_has_a_child_and_counts_failures(pg_db) -> None:
     p = bound(pg_db)
     await tree(p)

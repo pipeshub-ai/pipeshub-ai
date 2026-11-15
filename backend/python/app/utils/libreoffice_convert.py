@@ -1,7 +1,7 @@
 """Async LibreOffice document conversion.
 
 DocParser, PPTParser and XLSParser each convert legacy Office formats
-(.doc/.ppt/.xls) to their OOXML equivalents via headless LibreOffice before
+(.doc/.ppt/.xls), and OpenDocument text and RTF, to their OOXML equivalents via headless LibreOffice before
 handing off to the OOXML-capable parser. The conversion uses
 ``asyncio.create_subprocess_exec`` so LibreOffice's ~seconds-long runtime
 neither blocks the event loop nor occupies a slot in a bounded thread pool.
@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.core.org_context import spawn_in_request
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.llm_gateway.limiter import CrossLoopSemaphore
 from app.services.parsing.interface import (
@@ -74,6 +75,8 @@ _PROBE_SAMPLES: dict[str, tuple[str, str]] = {
     "doc": ("fodt", _FODT),
     "xls": ("fods", _FODS),
     "ppt": ("fodp", _FODP),
+    "odt": ("fodt", _FODT),
+    "rtf": ("fodt", _FODT),
 }
 # Formats LibreOffice can write but not open, in any release (its only EPUB
 # filter is export-only). Converting from them is refused before LibreOffice
@@ -139,7 +142,28 @@ async def stop_process(process: asyncio.subprocess.Process) -> None:
     soffice.bin running, so a group is killed even when the launcher has
     already exited. A process without its own group is killed only if it
     outlives the grace period.
+
+    Callers run this while handling a cancellation, then release the
+    conversion slot and remove the temp dir. A further cancel must neither
+    abort the stop between TERM and KILL nor let the caller move on before
+    it ends, so it is waited out (bounded by two grace periods) and the
+    cancellation is raised afterwards.
     """
+    stop = spawn_in_request(_stop_process(process), name="libreoffice-stop")
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            await asyncio.shield(stop)
+            break
+        except asyncio.CancelledError as exc:
+            if stop.done():
+                raise
+            cancelled = exc
+    if cancelled is not None:
+        raise cancelled
+
+
+async def _stop_process(process: asyncio.subprocess.Process) -> None:
     group = _leads_own_group(process)
     _signal(process, signal.SIGTERM, group=group)
     try:
