@@ -716,10 +716,12 @@ async def test_a_wide_page_reads_each_linked_child_by_its_key_whatever_the_organ
             base.values[1], base.values[2] = g1, 51
             sql = kgl.page_sql(field, "ASC", "next", where, None, None, kgl.browse_scopes(base.add(linked)))
             plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *base.values))
-            loose = [(n.get("Index Name"), n.get("Index Cond")) for n in _nodes(plan) if str(n.get("Index Name")).startswith("records_")
-                     and not (str(n["Index Name"]).startswith(("records_children_", "records_parent")) and "parent_sk = " in (n.get("Index Cond") or ""))
-                     and not (n["Index Name"] == "records_pkey" and re.search(r"\bsk = (?!ANY)", n.get("Index Cond") or ""))]
-            assert loose == [], (field, loose)
+            scans = [n for n in _nodes(plan) if n.get("Relation Name") == "records" or str(n.get("Index Name")).startswith("records_")]
+            probes = [n for n in scans if n.get("Index Name") == "records_pkey" and re.search(r"\bsk = (?!ANY)", n.get("Index Cond") or "")]
+            ranges = [n for n in scans if str(n.get("Index Name")).startswith(("records_children_", "records_parent")) and "parent_sk = " in (n.get("Index Cond") or "")]
+            # a bitmap heap scan is as bounded as its bitmap index scans, which are checked themselves; any other read of records (a seq scan) is loose
+            loose = [(n["Node Type"], n.get("Index Name"), n.get("Index Cond")) for n in scans if n["Node Type"] != "Bitmap Heap Scan" and n not in probes and n not in ranges]
+            assert loose == [] and probes, (field, loose, plan)
             assert len(await con.fetch(sql, *base.values)) == 51
     finally:
         await con.execute("DELETE FROM kg.records WHERE org_id IN (SELECT left(md5('decoy' || $1), 24) UNION ALL SELECT left(md5('tiny' || $1 || g), 24) FROM generate_series(1, 2000) g)", org)
