@@ -396,8 +396,10 @@ def test_a_connection_that_is_being_answered_is_not_evicted(tmp_path: Path) -> N
         server._live.add(handler)
         server._max = 1
         c, d = socket.socketpair()
-        server.process_request(c, ("x", 0))  # nothing evictable: the newcomer is closed, the answer goes on
-        assert a in server._conns
+        server.process_request(c, ("x", 0))  # nothing evictable: the newcomer waits its turn, then gets a 503
+        d.settimeout(ox.ADMIT_WAIT_S + 5)
+        assert d.recv(100).startswith(b"HTTP/1.1 503")  # a short reply, then the close
+        assert a in server._conns and server._conns[a][1] is True  # the answer went on, uncut
         assert c.fileno() == -1
         a.close()
         b.close()

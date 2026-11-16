@@ -245,8 +245,9 @@ HAMMER = textwrap.dedent(
 
 
 def test_a_scrape_flood_over_64_snapshot_files_does_not_stall_the_event_loop(tmp_path: Path) -> None:
-    """The holder lives in the indexing process: eight scrapers over 64 large snapshot files must leave its
-    event loop responsive (the folded result is cached, the connections are bounded)."""
+    """The holder lives in the indexing process: sixteen scrapers (one per slot) over 64 large snapshot files must
+    leave its event loop as responsive as idle, within twice its idle p99 (scrapes share one render; the
+    window spans several of the 1 s collection rounds, each of which empties the cache)."""
     import asyncio
 
     from app.telemetry import ops_exporter as ox
@@ -273,21 +274,29 @@ def test_a_scrape_flood_over_64_snapshot_files_does_not_stall_the_event_loop(tmp
         return sorted(out)
 
     port = _free(BASE_PORT + 50)
-    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), stale_after=7200, bind="127.0.0.1")
+    exporter = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), stale_after=7200, bind="127.0.0.1", interval=1.0)
     exporter.start()
     deadline = time.time() + 5
     while not exporter.holds_port and time.time() < deadline:
         time.sleep(0.05)
     assert exporter.holds_port
-    hammer = subprocess.Popen([sys.executable, "-c", HAMMER, str(port), "4", "8"])
+    hammer = None
     try:
+        idle = asyncio.run(lag(2.0))
+        hammer = subprocess.Popen([sys.executable, "-c", HAMMER, str(port), "6", "16"])
         time.sleep(0.3)
-        busy = asyncio.run(lag(3.0))
+        busy = asyncio.run(lag(5.0))
     finally:
-        hammer.wait(timeout=30)
+        if hammer is not None:
+            hammer.wait(timeout=30)
         exporter._stop.set()
         if exporter._server:
             exporter._server.shutdown()
             exporter._server.server_close()
-    p99 = busy[min(len(busy) - 1, int(0.99 * len(busy)))] * 1000
-    assert p99 <= 50 and busy[-1] * 1000 <= 1000, f"event loop lag under a scrape flood: p99 {p99:.1f} ms, max {busy[-1] * 1000:.1f} ms"
+    def p99_of(samples: list[float]) -> float:
+        return samples[min(len(samples) - 1, int(0.99 * len(samples)))] * 1000
+
+    p99, idle_p99 = p99_of(busy), p99_of(idle)
+    bound = max(2 * idle_p99, 25.0)  # a 25 ms floor keeps a 1 ms idle p99 from making the bound a noise test
+    assert p99 <= bound and busy[-1] * 1000 <= 1000, (
+        f"event loop lag under a scrape flood: p99 {p99:.1f} ms (idle {idle_p99:.1f}), max {busy[-1] * 1000:.1f} ms")

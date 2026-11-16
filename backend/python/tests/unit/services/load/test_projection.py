@@ -202,6 +202,7 @@ def _rand_value(rng: random.Random, depth: int = 0) -> object:
 def test_hostile_stats_shapes_never_raise_and_never_leak() -> None:
     """2000 seeded shapes (a bool where a dict is expected, a list of lists, org-looking strings): no raise, no leak."""
     rng = random.Random(SEED)
+    validator = jsonschema.validators.validator_for(SCHEMA)(SCHEMA)  # built once: validate() rebuilds it per call (15 ms)
     for i in range(2000):
         stats = {k: _rand_value(rng) for k in rng.sample(STAT_KEYS, rng.randrange(len(STAT_KEYS)))}
         if rng.random() < 0.5:
@@ -213,7 +214,7 @@ def test_hostile_stats_shapes_never_raise_and_never_leak() -> None:
         body = explain.project(stats)  # must not raise
         leaked = [s for s in _walk_strings(body) if any(o in s for o in ORGISH)]
         assert not leaked, (leaked, stats)
-        jsonschema.validate(body, SCHEMA)
+        validator.validate(body)
 
 
 @pytest.mark.parametrize(

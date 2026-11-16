@@ -18,6 +18,7 @@ service name; nothing carries a pid, pod, member, org, connector or record.
 """
 from __future__ import annotations
 
+import collections
 import contextlib
 import ipaddress
 import json
@@ -42,7 +43,7 @@ from app.services.resource_governor.explain import (
     normalise_dependency,
     project,
 )
-from app.services.resource_governor.probe import read_pressure
+from app.services.resource_governor.probe import memory_domain_id, read_pressure
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -67,7 +68,8 @@ _FOLDED_KEPT = 256
 MAX_SERIES = 300
 DEFAULT_BIND = "0.0.0.0"  # the scraper is another pod; the chart narrows it to the pod IP
 MAX_CONNECTIONS = 16  # handler threads of the port; past them the oldest unfinished request is evicted
-ADMIT_WAIT_S = 1.0  # how long a new connection waits for an evicted handler's thread to exit before it is refused
+ADMIT_WAIT_S = 1.0  # how long a queued connection waits for a slot before it gets a 503
+ADMIT_QUEUE_MAX = 32  # connections waiting for a slot; one more gets a 503 at once
 REQUEST_DEADLINE_S = 2.0  # the whole request (line and headers) must arrive within this, however it trickles
 CONNECTION_TIMEOUT_S = 5.0  # a single read or write that blocks this long is dropped (the answer's own I/O)
 COLLECT_CACHE_TTL_S = 1.0  # a scrape inside this window reuses the folded result
@@ -457,7 +459,9 @@ class SignalCollector:
         is_alive: Callable[[int, str | None], bool] | None = None,
         cache_ttl: float = COLLECT_CACHE_TTL_S,
         max_series: int = MAX_SERIES,
+        domain: Callable[[], str | None] = memory_domain_id,
     ) -> None:
+        self._domain = domain
         self._dir = run_dir / "signals"
         self._carry_path = run_dir / CARRY_FILE
         self._stale_after = stale_after
@@ -479,16 +483,26 @@ class SignalCollector:
     # -- carry -----------------------------------------------------------------
 
     def _load_carry(self) -> dict[str, Any]:
+        """The carry file. Its high-water marks belong to the memory domain that wrote them.
+
+        A new cgroup (a container restart that kept the run directory) starts from its own kernel
+        counters, so the marks of the old one are dropped; kept, they would hide its first kills.
+        """
+        carry: dict[str, Any] = {"folded": [], "values": {}, "hw": {}}
         try:
-            carry = json.loads(self._carry_path.read_text())
-            if isinstance(carry, dict) and isinstance(carry.get("values"), dict):
+            loaded = json.loads(self._carry_path.read_text())
+            if isinstance(loaded, dict) and isinstance(loaded.get("values"), dict):
+                carry = loaded
                 carry.setdefault("folded", [])
                 if not isinstance(carry.get("hw"), dict):
                     carry["hw"] = {}
-                return carry
         except (OSError, ValueError):
             pass
-        return {"folded": [], "values": {}, "hw": {}}
+        domain = self._domain()
+        if carry.get("domain") != domain:
+            carry["hw"] = {}
+            carry["domain"] = domain
+        return carry
 
     @contextlib.contextmanager
     def _carry_lock(self) -> Iterator[None]:
@@ -737,6 +751,53 @@ class SignalCollector:
                        self._max_series, ", ".join(cut[:8]))
 
 
+class SingleFlight:
+    """One render at a time: scrapes that arrive while a render runs share its result.
+
+    The next render starts only after the running one has finished, so no result is reused beyond the
+    flight it was made in. A flood of scrapes then costs one render on the holder's event loop, not one per
+    connection slot.
+    """
+
+    class _Flight:
+        __slots__ = ("done", "error", "value")
+
+        def __init__(self) -> None:
+            self.done = threading.Event()
+            self.value: bytes = b""
+            self.error: BaseException | None = None
+
+    def __init__(self, wait_s: float = CONNECTION_TIMEOUT_S) -> None:
+        self._wait = wait_s
+        self._lock = threading.Lock()
+        self._current: SingleFlight._Flight | None = None
+        self.waiting = 0  # followers inside the current flight (read by tests)
+
+    def run(self, render: Callable[[], bytes]) -> bytes:
+        with self._lock:
+            flight = self._current
+            leader = flight is None
+            if flight is None:
+                flight = self._current = SingleFlight._Flight()
+            else:
+                self.waiting += 1
+        if leader:
+            try:
+                flight.value = render()
+            except BaseException as exc:
+                flight.error = exc
+            finally:
+                with self._lock:
+                    self._current = None
+                    self.waiting = 0
+                flight.done.set()
+        elif not flight.done.wait(self._wait):
+            raise TimeoutError("the shared render did not finish in time")
+        if flight.error is not None:
+            raise flight.error
+        return flight.value
+
+
 class _Handler(BaseHTTPRequestHandler):
     registry: CollectorRegistry
     timeout = CONNECTION_TIMEOUT_S  # StreamRequestHandler applies it to the socket
@@ -750,7 +811,8 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        body = generate_latest(self.registry)
+        render = getattr(self.server, "render", None)
+        body = render(self.registry) if render is not None else generate_latest(self.registry)
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -761,18 +823,25 @@ class _Handler(BaseHTTPRequestHandler):
         return
 
 
+_REFUSAL = b"HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+
+
 class BoundedServer(HTTPServer):
     """A scrape is always answerable, however many clients sit on the port doing nothing.
 
     The port is unauthenticated. Each connection has one deadline for the whole request (``request_deadline``,
-    not one per ``recv``), enforced by a reaper that closes the socket under the reader. Threads are bounded
-    by ``max_connections``; a connection that finds them all taken evicts the oldest one that has not yet
-    sent a complete request, so idle or trickling clients can never keep a real scrape out. A connection
-    that is already being answered is never evicted.
+    not one per ``recv``), enforced by a reaper that closes the socket under the reader. Handler threads
+    are bounded by ``max_connections``, counted until the thread has exited.
+
+    The acceptor never waits: it takes the connection at once and either starts a handler (a slot is free) or
+    puts it in a bounded admission queue (``ADMIT_QUEUE_MAX``). One admitter thread gives queued connections
+    slots as they free up, evicting the oldest connection that has not yet sent a complete request, so idle or
+    trickling clients can never keep a real scrape out. A connection that is already being answered is never
+    evicted. One that finds the queue full, or waits ``ADMIT_WAIT_S`` for a slot, gets a short 503 and is closed.
     """
 
     daemon_threads = True
-    request_queue_size = 16
+    request_queue_size = 128
 
     def __init__(
         self,
@@ -781,15 +850,24 @@ class BoundedServer(HTTPServer):
         max_connections: int = MAX_CONNECTIONS,
         request_deadline: float | None = None,
     ) -> None:
-        super().__init__(address, handler)
+        # Everything server_close() touches exists before the base class binds: a failed bind (the port is
+        # held by another process) calls server_close() from inside __init__.
         self._max = max_connections
         self._deadline = REQUEST_DEADLINE_S if request_deadline is None else request_deadline
         self._conns: dict[socket.socket, list[Any]] = {}  # socket -> [accepted at, being answered]
         self._lock = threading.Lock()
+        self._wake = threading.Condition(self._lock)
         self._live: set[threading.Thread] = set()  # handler threads that have not yet exited: the real slot count
         self._cut_socks: set[socket.socket] = set()  # evicted, not yet gone
-        self._reaper_stop = threading.Event()
+        self._queue: collections.deque[tuple[socket.socket, object, float]] = collections.deque()
+        self._closing = threading.Event()
+        self._flight = SingleFlight()
+        super().__init__(address, handler)
         threading.Thread(target=self._reap, name="ops-exporter-reaper", daemon=True).start()
+        threading.Thread(target=self._admit_loop, name="ops-exporter-admit", daemon=True).start()
+
+    def render(self, registry: CollectorRegistry) -> bytes:
+        return self._flight.run(lambda: generate_latest(registry))
 
     def mark_serving(self, sock: socket.socket) -> None:
         with self._lock:
@@ -804,41 +882,87 @@ class BoundedServer(HTTPServer):
 
     def _reap(self) -> None:
         tick = max(0.05, min(0.25, self._deadline / 4))
-        while not self._reaper_stop.wait(tick):
+        while not self._closing.wait(tick):
             now = time.monotonic()
             with self._lock:
                 late = [s for s, (at, serving) in self._conns.items() if not serving and now - at > self._deadline]
             for sock in late:
                 self._cut(sock)
 
-    def process_request(self, request: socket.socket | tuple[bytes, socket.socket], client_address: object) -> None:
-        sock: socket.socket = request  # type: ignore[assignment]
-        thread = threading.Thread(target=self._serve, args=(request, client_address), name="ops-exporter-conn", daemon=True)
-        give_up = time.monotonic() + ADMIT_WAIT_S
-        while True:
-            with self._lock:
-                self._live = {t for t in self._live if t.is_alive()}  # a slot is held until its thread has exited
-                if len(self._live) < self._max:
-                    self._conns[sock] = [time.monotonic(), False]
-                    self._live.add(thread)
-                    break
-                waiting = [(at, s) for s, (at, serving) in self._conns.items() if not serving and s not in self._cut_socks]
-                if waiting:
-                    victim = min(waiting, key=lambda item: item[0])[1]
-                    self._cut_socks.add(victim)
-                    self._cut(victim)
-                all_answering = len(self._conns) >= self._max and not waiting and not self._cut_socks
-            if all_answering or time.monotonic() >= give_up:
-                sock.close()  # every slot is mid-answer, or none freed within the bound: refuse, never exceed the cap
-                return
-            time.sleep(0.005)  # an evicted handler is leaving: re-check until its thread has exited
+    def _refuse(self, sock: socket.socket) -> None:
+        """A short reply and a close, never a wait: the socket is non-blocking."""
+        with contextlib.suppress(OSError):
+            sock.setblocking(False)
+            with contextlib.suppress(BlockingIOError):
+                sock.recv(65536)  # drain what the client sent, so the close is not a reset that eats the reply
+            sock.send(_REFUSAL)
+        self.shutdown_request(sock)
+
+    def _free_slots_locked(self) -> int:
+        self._live = {t for t in self._live if t.is_alive()}  # a slot is held until its thread has exited
+        return self._max - len(self._live)
+
+    def _take_slot_locked(self, sock: socket.socket, client_address: object) -> bool:
+        """Give *sock* a slot and start its handler, under the lock so the slot count never counts a thread
+        that is registered but not yet started. False when the thread cannot start."""
+        thread = threading.Thread(target=self._serve, args=(sock, client_address), name="ops-exporter-conn", daemon=True)
+        self._conns[sock] = [time.monotonic(), False]
+        self._live.add(thread)
         try:
             thread.start()
         except Exception:
-            with self._lock:
-                self._conns.pop(sock, None)
-                self._live.discard(thread)
-            self.shutdown_request(request)
+            self._conns.pop(sock, None)
+            self._live.discard(thread)
+            return False
+        return True
+
+    def _evict_locked(self) -> None:
+        """Cut the oldest incomplete request, once per queued connection (one slot is enough for each)."""
+        if len(self._cut_socks) >= len(self._queue):
+            return
+        waiting = [(at, s) for s, (at, serving) in self._conns.items() if not serving and s not in self._cut_socks]
+        if waiting:
+            victim = min(waiting, key=lambda item: item[0])[1]
+            self._cut_socks.add(victim)
+            self._cut(victim)
+
+    def process_request(self, request: socket.socket | tuple[bytes, socket.socket], client_address: object) -> None:
+        """Runs on the acceptor thread: it never waits."""
+        sock: socket.socket = request  # type: ignore[assignment]
+        with self._lock:
+            if not self._queue and self._free_slots_locked() > 0:
+                refuse = not self._take_slot_locked(sock, client_address)
+            elif len(self._queue) >= ADMIT_QUEUE_MAX:
+                refuse = True  # the queue is full
+            else:
+                self._queue.append((sock, client_address, time.monotonic() + ADMIT_WAIT_S))
+                self._evict_locked()
+                self._wake.notify()
+                return
+        if refuse:
+            self._refuse(sock)
+
+    def _admit_loop(self) -> None:
+        while not self._closing.is_set():
+            refused: list[socket.socket] = []
+            with self._wake:
+                if not self._queue:
+                    self._wake.wait(0.5)
+                    continue
+                now = time.monotonic()
+                while self._queue and self._queue[0][2] <= now:
+                    refused.append(self._queue.popleft()[0])
+                free = self._free_slots_locked()
+                while self._queue and free > 0:
+                    sock, client_address, _ = self._queue.popleft()
+                    free -= 1
+                    if not self._take_slot_locked(sock, client_address):
+                        refused.append(sock)
+                if self._queue:
+                    self._evict_locked()
+                    self._wake.wait(0.005)  # an evicted handler is leaving: look again once its thread has exited
+            for sock in refused:
+                self._refuse(sock)
 
     def _serve(self, request: socket.socket | tuple[bytes, socket.socket], client_address: object) -> None:
         try:
@@ -852,7 +976,13 @@ class BoundedServer(HTTPServer):
             self.shutdown_request(request)
 
     def server_close(self) -> None:
-        self._reaper_stop.set()
+        self._closing.set()
+        with self._wake:
+            queued = [item[0] for item in self._queue]
+            self._queue.clear()
+            self._wake.notify_all()
+        for sock in queued:
+            self.shutdown_request(sock)
         super().server_close()
 
     def handle_error(self, request: object, client_address: object) -> None:
