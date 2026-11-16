@@ -88,6 +88,11 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId={null} name="PayPal" />)).toBe('paypal icon');
   });
 
+  it("shows Egnyte's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="egnyte" name="Egnyte" />)).toBe('egnyte icon');
+    expect(logo(<McpServerIcon typeId={null} name="Egnyte MCP" />)).toBe('egnyte icon');
+  });
+
   it("shows Hugging Face's logo, also for a custom server named after it", () => {
     expect(logo(<McpServerIcon typeId="huggingface" name="Hugging Face" />)).toBe('huggingface icon');
     expect(logo(<McpServerIcon typeId={null} name="Hugging Face" />)).toBe('huggingface icon');
