@@ -4,6 +4,7 @@ Two orgs can each hold an app with the same name. The other org's app is written
 first, so a pick of "the first app with this name" over every org lands on it and misses this org's relation.
 An app written before apps carried ``orgId`` is still this org's through the org's relation to it. A relation
 from this org's user to another org's app (written before apps carried an org) is neither read nor set.
+The app user of an address is the user that holds the connector's relation, whichever org's user has the address first.
 
 Runs in backend-matrix on both graph jobs. Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL,
 ARANGO_IT_PASSWORD.
@@ -131,4 +132,32 @@ async def test_an_app_the_user_sync_creates_is_the_orgs_for_its_sync_state(graph
             stored = await graph.get_user_by_email(email, org_id=org)
             if stored is not None:
                 await graph.delete_nodes_and_edges([stored.id], CollectionNames.USERS.value)
+            await graph.delete_nodes_and_edges([connector], CollectionNames.APPS.value)
+
+
+async def test_the_app_user_of_an_address_is_the_one_the_connector_holds(graph: IGraphDBProvider) -> None:
+    """Two orgs hold a user with one address; the other org's is written first and its key sorts first. The connector's app user is
+    the one with the connector's relation, not the first user with the address."""
+    run = uuid.uuid4().hex[:10]
+    now = get_epoch_timestamp_in_ms()
+    stamps = {"createdAtTimestamp": now, "updatedAtTimestamp": now}
+    other, mine, email, connector = f"org-a-{run}", f"org-b-{run}", f"lee-{run}@example.com", f"conn-{run}"
+    their_user, my_user = f"a0-user-{run}", f"b-user-{run}"
+    try:
+        assert await graph.batch_upsert_nodes(
+            [{"id": connector, "orgId": mine, "name": connector, "type": "Drive", "appGroup": "Google Workspace", "scope": "team",
+              "isActive": True, **stamps}], collection=CollectionNames.APPS.value)
+        assert await graph.batch_upsert_nodes(
+            [{"id": key, "userId": key, "orgId": org, "email": email, "fullName": "Lee", "isActive": True, **stamps}
+             for key, org in ((their_user, other), (my_user, mine))], collection=CollectionNames.USERS.value)
+        assert await graph.batch_create_edges(
+            [{"from_id": my_user, "from_collection": CollectionNames.USERS.value, "to_id": connector,
+              "to_collection": CollectionNames.APPS.value, "sourceUserId": f"src-{run}", "syncState": "NOT_STARTED", "lastSyncUpdate": now,
+              **stamps}], collection=CollectionNames.USER_APP_RELATION.value)
+
+        found = await graph.get_app_user_by_email(email, connector)
+        assert found is not None and found.source_user_id == f"src-{run}" and found.org_id == mine
+    finally:
+        with contextlib.suppress(Exception):
+            await graph.delete_nodes_and_edges([their_user, my_user], CollectionNames.USERS.value)
             await graph.delete_nodes_and_edges([connector], CollectionNames.APPS.value)
