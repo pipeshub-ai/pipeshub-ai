@@ -564,22 +564,45 @@ class TestGateTokenIsExactlyOnceUnderConcurrentEnds:
         assert host.gate_waiters.snapshot() == {H: 0, L: 0}
 
     def test_the_counter_operations_stay_within_the_hot_path_budget(self) -> None:
-        import time
+        # Counted, not timed: one round (a construction and three calls) takes 2 us, 11 us under the CI unit job's
+        # branch coverage and about 30 us with its workers on every core, so a microsecond bound measured the
+        # runner. The calls and bytecode instructions a round runs are the same everywhere, coverage or not.
+        import sys
+        from types import FrameType
 
-        host = self._host()
-        rounds = 20000
-        best = float("inf")
-        for _ in range(5):
-            started = time.perf_counter()
-            for _ in range(rounds):
+        def work_per_round(live: int) -> tuple[int, int]:
+            host = self._host()
+            held = [GateWaiterToken(host, H) for _ in range(live)]
+            for token in held:
+                token.enter_gate()
+            work = {"call": 0, "opcode": 0}
+
+            def count(frame: FrameType, event: str, _arg: object) -> object:
+                if event in work:
+                    work[event] += 1
+                if event == "call":
+                    frame.f_trace_opcodes = True  # a loop that makes no call still runs its instructions
+                return count
+
+            previous = sys.gettrace()
+            sys.settrace(count)
+            try:
                 token = GateWaiterToken(host, H)
                 token.enter_gate()
                 token.admit()
                 token.release()
-            best = min(best, (time.perf_counter() - started) / rounds)
-        # four calls and one construction per round; each operation well under the 1 microsecond budget
-        # on a quiet host, so the bound here only has to catch an order-of-magnitude regression
-        assert best / 5 < 5e-6, best
+            finally:
+                sys.settrace(previous)  # coverage's tracer, under --cov
+            return work["call"], work["opcode"]
+
+        # Python 3.12 starts reporting a code object's instructions from the round after it was first traced.
+        work_per_round(0)
+        python_calls, instructions = work_per_round(0)
+        # No more Python work with 10,000 records at the gate: the hot path does not grow with the records waiting.
+        assert work_per_round(10_000) == (python_calls, instructions)
+        # 13 calls and 296 instructions today; the bounds leave room for a small change and catch the
+        # order-of-magnitude regression the old timing bound was for (a log line, a lookup through other objects).
+        assert python_calls <= 20 and instructions <= 600, (python_calls, instructions)
 
 
 class TestBufferedIsNotCountedTwiceForTheLane:

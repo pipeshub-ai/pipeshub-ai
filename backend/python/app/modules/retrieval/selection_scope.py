@@ -30,6 +30,7 @@ from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
 )
+from app.utils.user_lookup import get_caller_user
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Iterable, Mapping
@@ -103,7 +104,7 @@ async def _answered(read: Awaitable[_T]) -> _T:
 
 async def resolve_user_key(graph_provider: IGraphDBProvider, user_id: str) -> str | None:
     """The user's graph key; None when no such user exists. Raises when the lookup fails."""
-    user = await _answered(graph_provider.get_user_by_user_id(user_id=user_id, raise_on_error=True))
+    user = await _answered(get_caller_user(graph_provider, user_id, raise_on_error=True))
     return (user.get("_key") or user.get("id")) if user else None
 
 

@@ -5345,6 +5345,7 @@
     "mcpServerNeedsToolsTooltip": "हर MCP सर्वर के लिए टूल चुनें, या \"सभी टूल\" चालू करें।",
     "mcpServerNeedsToolsBanner": "{{names}} के लिए कम से कम एक टूल चुनें, या \"सभी टूल\" चालू करें।",
     "mcpPersonalOnSharedAgentNotify": "{{name}} आपका व्यक्तिगत MCP सर्वर है। इसे आपके संगठन के साथ साझा किए गए या सेवा खाते के रूप में चलने वाले एजेंट में नहीं जोड़ा जा सकता।",
+    "serviceAgentCollectionsNeedBinding": "इस सर्विस एजेंट को किसी सर्विस अकाउंट से जोड़ने के बाद ही संग्रह जोड़े जा सकते हैं।",
     "mcpAgentApprovalsEnterprise": "हर एजेंट के लिए टूल अनुमोदन Enterprise Edition का हिस्सा हैं। यहाँ, हर व्यक्ति के अपने टूल अनुमोदन लागू होते हैं।",
     "mcpAgentApprovals": "हर एजेंट के लिए टूल अनुमोदन",
     "limitSource": "चुनें कि {{name}} में क्या खोजा जाए",
