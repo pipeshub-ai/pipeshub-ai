@@ -718,6 +718,39 @@ async def test_an_other_id_noted_while_a_user_sync_saves_the_same_bucket_keeps_b
 
 
 @pytest.mark.asyncio
+async def test_an_other_id_noted_while_another_process_saves_the_same_bucket_keeps_both(world) -> None:
+    """No shared lock across replicas: the note finds the bucket changed when it saves, reads it again and keeps the
+    other replica's entry."""
+    directory, accounts, config = world
+    other = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))     # another replica
+    ana = "a0@x.com"
+    bo = next(f"a{i}@x.com" for i in range(1, 10_000) if _bucket(f"a{i}@x.com") == _bucket(ana))
+    await _admit(directory, accounts, [_user(ana, "old-oid")])
+    await _admit(directory, accounts, [_user(ana, "new-oid")])
+    bucket_key = source_accounts_key(CONNECTOR, _bucket(ana))
+    real_cas = config.compare_and_set_config
+    saving, linked = asyncio.Event(), asyncio.Event()
+
+    async def slow_cas(key: str, expected: object, new: object) -> bool:
+        if key == bucket_key and not saving.is_set():
+            saving.set()       # the note read the bucket and is about to save it
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(linked.wait(), 0.2)
+        return await real_cas(key, expected, new)
+
+    async def other_replica() -> None:
+        await saving.wait()
+        await other.before_link([_user(bo, "bo-oid")])
+        linked.set()
+
+    config.compare_and_set_config = slow_cas
+    await asyncio.gather(accounts.note_other_ids({ana: ("new-oid", "perm-new")}), other_replica())
+
+    assert _saved(config)["linked"][bo] == "bo-oid"
+    assert _saved(config)["other"] == {ana: ["new-oid", "perm-new"]}
+
+
+@pytest.mark.asyncio
 async def test_an_other_id_stops_passing_once_the_address_changes_hands_again(world) -> None:
     directory, accounts, _ = world
     await _admit(directory, accounts, [_user("ana@x.com", "a1")])

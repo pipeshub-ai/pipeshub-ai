@@ -399,12 +399,18 @@ class SourceAccounts:
         ``holds`` only while ``account`` holds it, so it can never pass a grant of the earlier account."""
         wanted = {e.lower(): pair for e, pair in ids.items()}
         async with self._lock:
-            deleted = await self._load({_bucket(e) for e in wanted})     # fresh: another process may have written
-            changed: set[int] = set()
-            for email, (account, other_id) in wanted.items():
-                bucket = _bucket(email)
-                if self.holder(email) != account or self._other.get(bucket, {}).get(email) == [account, other_id]:
-                    continue
-                self._other.setdefault(bucket, {})[email] = [account, other_id]
-                changed.add(bucket)
-            await self._save(changed, deleted)
+            for _ in range(_SAVE_ATTEMPTS):
+                deleted = await self._load({_bucket(e) for e in wanted})     # fresh: another process may have written
+                changed: set[int] = set()
+                for email, (account, other_id) in wanted.items():
+                    bucket = _bucket(email)
+                    if self.holder(email) != account or self._other.get(bucket, {}).get(email) == [account, other_id]:
+                        continue
+                    self._other.setdefault(bucket, {})[email] = [account, other_id]
+                    changed.add(bucket)
+                try:
+                    await self._save(changed, deleted)
+                    return
+                except _Conflict:
+                    continue        # another process saved a bucket meanwhile: read it again and decide again
+            raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")
