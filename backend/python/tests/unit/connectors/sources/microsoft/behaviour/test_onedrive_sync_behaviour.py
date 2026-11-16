@@ -405,7 +405,7 @@ class TestDriveDeltaSync:
         group = db.record_groups[DRIVE]
         assert group.name == "Ana's OneDrive" and group.group_type == RecordGroupType.DRIVE
         (owner,) = db.record_group_permissions[DRIVE]
-        assert (owner.email, owner.type) == ("ana@acme.com", PermissionType.OWNER)
+        assert (owner.email, owner.external_id, owner.type) == ("ana@acme.com", "u-ana", PermissionType.OWNER)
         assert cloud.unrouted == []
 
     async def test_the_next_sync_starts_from_the_saved_delta_link_and_adds_only_changes(self, cloud, tenant, db, checkpoints) -> None:
